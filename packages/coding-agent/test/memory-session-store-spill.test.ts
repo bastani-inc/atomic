@@ -1126,6 +1126,10 @@ const FIXTURE = fileURLToPath(new URL("./fixtures/released-history-host.ts", imp
 const REPOSITORY = fileURLToPath(new URL("../../../", import.meta.url));
 /** Loading the store through jiti in a new process, then a release: structural, not a slow test. */
 const HOST_TIMEOUT_MS = 60_000;
+/** Two startup sweeps plus process identity lookups on Windows need setup headroom beyond their removal deadlines. */
+const STARTUP_SWEEP_TEST_TIMEOUT_MS = 60_000;
+const DIRECTORY_REMOVAL_TIMEOUT_MS = 20_000;
+const DIRECTORY_REMOVAL_POLL_MS = 250;
 
 /** Starts a process that releases a session into a store over `root` (see the fixture), once it has printed `ready`. */
 async function startHost(root: string, mode: string, ready: string) {
@@ -1161,12 +1165,19 @@ const filesUnder = (directory: string): string[] =>
 async function afterDirectoryRemoval<T>(path: string, start: () => T | Promise<T>): Promise<T> {
 	let watcher: fs.FSWatcher | undefined;
 	let timeout: ReturnType<typeof setTimeout> | undefined;
+	let poll: ReturnType<typeof setInterval> | undefined;
 	const removed = new Promise<void>((resolve, reject) => {
-		watcher = fs.watch(dirname(path), () => {
+		const check = () => {
 			if (!existsSync(path)) resolve();
-		});
+		};
+		watcher = fs.watch(dirname(path), check);
 		watcher.on("error", reject);
-		timeout = setTimeout(() => reject(new Error(`startup sweep did not remove ${path}`)), HOST_TIMEOUT_MS);
+		check();
+		poll = setInterval(check, DIRECTORY_REMOVAL_POLL_MS);
+		timeout = setTimeout(() => {
+			if (!existsSync(path)) resolve();
+			else reject(new Error(`startup sweep did not remove ${path}`));
+		}, DIRECTORY_REMOVAL_TIMEOUT_MS);
 	});
 	try {
 		const [result] = await Promise.all([start(), removed]);
@@ -1174,69 +1185,116 @@ async function afterDirectoryRemoval<T>(path: string, start: () => T | Promise<T
 	} finally {
 		watcher?.close();
 		clearTimeout(timeout);
+		clearInterval(poll);
 	}
 }
 
-describe("released history outlives no process, except one killed, until the next sweep (#4502)", () => {
-	test("a sweep removes what processes that are gone left, and keeps what a process that may run holds", async () => {
-		const root = join(agentDir, "sweep");
-		const store = new MemorySessionStore(undefined, releasedHistoryFiles(root));
-		opened.push(store);
-		await created(store, "s", entries("e", 2));
-		await store.releaseSession("s");
-		const [own] = processDirectories(root) as [string];
-		const host = join(own, "..");
-		const gonePid = childProcess.spawnSync(process.execPath, ["-e", ""]).pid;
-		const plant = (name: string) => {
-			mkdirSync(join(host, name, "store"), { recursive: true });
-			writeFileSync(join(host, name, "store", "1"), "{}");
-			return join(host, name);
-		};
-		const gone = plant(`${gonePid}-1`);
-		const pidReused = plant(`${process.ppid}-1`);
-		const earlierOwnPid = plant(`${process.pid}-1`);
-		const startUnknown = plant(`${process.ppid}-unknown`);
-		const notCreatedHere = [plant("notes"), plant("0-1"), plant(`a${gonePid}-1`), plant(`${gonePid}-1.keep`)];
-		const parentStart = (() => {
-			if (process.platform !== "linux") return [];
-			const stat = fs.readFileSync(`/proc/${process.ppid}/stat`, "utf8");
-			return [plant(`${process.ppid}-${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`)];
-		})();
-
-		await sweepReleasedHistory(root);
-
-		assert.deepEqual(
-			[gone, pidReused, earlierOwnPid].filter((path) => existsSync(path)),
-			[],
-			"no process has that pid, or has it with another start time",
-		);
-		assert.deepEqual(
-			[own, startUnknown, ...parentStart, ...notCreatedHere].filter((path) => existsSync(path)),
-			[own, startUnknown, ...parentStart, ...notCreatedHere],
-		);
-		assert.deepEqual((await store.load("s")).entries, entries("e", 2));
-
-		const opening = join(agentDir, "sweep-on-open");
-		const left = join(releasedHistoryUnder(opening), basename(host), `${gonePid}-1`);
-		mkdirSync(left, { recursive: true });
-		const memory = await afterDirectoryRemoval(left, () =>
-			new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir: opening, domain: "sessions" }),
-		);
-		assert.equal(existsSync(left), false, "opening a store sweeps its agent directory");
-		await memory.close();
-
-		const resolving = join(agentDir, "sweep-on-resolve");
-		const leftThere = join(releasedHistoryUnder(resolving), basename(host), `${gonePid}-1`);
-		mkdirSync(leftThere, { recursive: true });
-		const sessions = await afterDirectoryRemoval(leftThere, () =>
-			resolveSessionStore(resolving, {
-				agentDir: resolving,
-				sessionStore: { kind: "jsonl", dir: join(resolving, "sessions") },
-			}),
-		);
-		assert.equal(existsSync(leftThere), false, "resolving any session store at startup sweeps it too");
-		await sessions.close();
+describe("directory-removal observation (#4519)", () => {
+	test("an already-absent target resolves without waiting for a notification", async () => {
+		mkdirSync(agentDir, { recursive: true });
+		vi.useFakeTimers();
+		let completed = false;
+		const removal = afterDirectoryRemoval(join(agentDir, "already-absent"), () => "started").then((result) => {
+			assert.equal(result, "started");
+			completed = true;
+		});
+		const settled = removal.catch(() => undefined);
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			assert.equal(completed, true);
+		} finally {
+			await vi.advanceTimersByTimeAsync(DIRECTORY_REMOVAL_TIMEOUT_MS);
+			await settled;
+			vi.useRealTimers();
+		}
 	});
+
+	test("polling observes removal when watcher notifications are suppressed", async () => {
+		const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+		vi.spyOn(fs, "watch").mockImplementationOnce((path) => actualFs.watch(path, () => undefined));
+		const target = join(agentDir, "unnotified-removal");
+		mkdirSync(target, { recursive: true });
+		vi.useFakeTimers();
+		let completed = false;
+		const removal = afterDirectoryRemoval(target, () => rmSync(target, { recursive: true })).then(() => {
+			completed = true;
+		});
+		const settled = removal.catch(() => undefined);
+		try {
+			await vi.advanceTimersByTimeAsync(DIRECTORY_REMOVAL_POLL_MS);
+			assert.equal(completed, true);
+		} finally {
+			await vi.advanceTimersByTimeAsync(DIRECTORY_REMOVAL_TIMEOUT_MS);
+			await settled;
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("released history outlives no process, except one killed, until the next sweep (#4502)", () => {
+	test(
+		"a sweep removes what processes that are gone left, and keeps what a process that may run holds",
+		async () => {
+			const root = join(agentDir, "sweep");
+			const store = new MemorySessionStore(undefined, releasedHistoryFiles(root));
+			opened.push(store);
+			await created(store, "s", entries("e", 2));
+			await store.releaseSession("s");
+			const [own] = processDirectories(root) as [string];
+			const host = join(own, "..");
+			const gonePid = childProcess.spawnSync(process.execPath, ["-e", ""]).pid;
+			const plant = (name: string) => {
+				mkdirSync(join(host, name, "store"), { recursive: true });
+				writeFileSync(join(host, name, "store", "1"), "{}");
+				return join(host, name);
+			};
+			const gone = plant(`${gonePid}-1`);
+			const pidReused = plant(`${process.ppid}-1`);
+			const earlierOwnPid = plant(`${process.pid}-1`);
+			const startUnknown = plant(`${process.ppid}-unknown`);
+			const notCreatedHere = [plant("notes"), plant("0-1"), plant(`a${gonePid}-1`), plant(`${gonePid}-1.keep`)];
+			const parentStart = (() => {
+				if (process.platform !== "linux") return [];
+				const stat = fs.readFileSync(`/proc/${process.ppid}/stat`, "utf8");
+				return [plant(`${process.ppid}-${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`)];
+			})();
+
+			await sweepReleasedHistory(root);
+
+			assert.deepEqual(
+				[gone, pidReused, earlierOwnPid].filter((path) => existsSync(path)),
+				[],
+				"no process has that pid, or has it with another start time",
+			);
+			assert.deepEqual(
+				[own, startUnknown, ...parentStart, ...notCreatedHere].filter((path) => existsSync(path)),
+				[own, startUnknown, ...parentStart, ...notCreatedHere],
+			);
+			assert.deepEqual((await store.load("s")).entries, entries("e", 2));
+
+			const opening = join(agentDir, "sweep-on-open");
+			const left = join(releasedHistoryUnder(opening), basename(host), `${gonePid}-1`);
+			mkdirSync(left, { recursive: true });
+			const memory = await afterDirectoryRemoval(left, () =>
+				new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir: opening, domain: "sessions" }),
+			);
+			assert.equal(existsSync(left), false, "opening a store sweeps its agent directory");
+			await memory.close();
+
+			const resolving = join(agentDir, "sweep-on-resolve");
+			const leftThere = join(releasedHistoryUnder(resolving), basename(host), `${gonePid}-1`);
+			mkdirSync(leftThere, { recursive: true });
+			const sessions = await afterDirectoryRemoval(leftThere, () =>
+				resolveSessionStore(resolving, {
+					agentDir: resolving,
+					sessionStore: { kind: "jsonl", dir: join(resolving, "sessions") },
+				}),
+			);
+			assert.equal(existsSync(leftThere), false, "resolving any session store at startup sweeps it too");
+			await sessions.close();
+		},
+		STARTUP_SWEEP_TEST_TIMEOUT_MS,
+	);
 
 	test(
 		"a process killed with SIGKILL leaves its directory, and the next process to open a store there removes it",
