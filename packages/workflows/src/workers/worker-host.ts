@@ -521,7 +521,7 @@ function hostRestorePort(
 		git,
 	});
 	return (binding, hook) =>
-		restoreRunWorktree(hook.snapshot?.envHash ?? binding.envHash, () => restore(binding, hook), {
+		restoreRunWorktree(hook.snapshot?.envHash, () => restore(binding, hook), {
 			signal: hook.signal,
 			agentDir,
 		});
