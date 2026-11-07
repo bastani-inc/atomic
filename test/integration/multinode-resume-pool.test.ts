@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, test } from "vitest";
@@ -213,6 +213,7 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 			const { clone: nodeA } = await git.remoteWithClone("node-a", {
 				"README.md": "hello\n",
 				"lib/util.txt": "util\n",
+				"package-lock.json": "{}\n",
 			});
 			// Node A's worktree, as a session leaves it: an unpushed commit, an uncommitted edit and an untracked file.
 			git.write(join(nodeA, "committed.txt"), "unpushed\n");
@@ -221,6 +222,17 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 			git.write(join(nodeA, "notes", "untracked.txt"), "untracked\n");
 			const expected = treeDigest(nodeA);
 			const c = campaign("multinode-pool", CAMPAIGN_BUDGET.waitMs, git);
+			// Every host's own agent directory configures the resume setup hook: it records each worktree it sets up.
+			const hookLog = (host: string) => join(c.directory, `hook-${host}.log`);
+			for (const host of ["B", "C", "D", "E"]) {
+				const agentDir = join(c.directory, host, "agent");
+				mkdirSync(agentDir, { recursive: true });
+				const record = `require('fs').appendFileSync('${hookLog(host).replaceAll("\\", "/")}', process.env.ATOMIC_RESUME_WORKTREE + '\\n')`;
+				writeFileSync(
+					join(agentDir, "settings.json"),
+					JSON.stringify({ resume: { setupCommand: `"${process.execPath}" -e "${record}"` } }),
+				);
+			}
 			const hosts = new Map<string, BudgetedProcess>();
 			let rootA: BudgetedProcess | undefined;
 			try {
@@ -344,6 +356,26 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 					// Restored byte for byte: every file of node A's worktree, and the commit it was on.
 					assert.deepEqual(JSON.parse(child.finalFiles), expected);
 					assert.equal(child.finalHead, head);
+				}
+				// Each host set up every worktree it restored exactly once, before the child ran there; C restored none.
+				const setUp = (host: string) =>
+					existsSync(hookLog(host)) ? readFileSync(hookLog(host), "utf8").trim().split("\n") : [];
+				for (const host of ["B", "D", "E"]) {
+					const worktrees = setUp(host);
+					assert.equal(new Set(worktrees).size, worktrees.length, `${host} set up a worktree twice`);
+					for (const worktree of worktrees) assert.ok(worktree.startsWith(restoreRoots(host)), worktree);
+				}
+				assert.deepEqual(setUp("C"), []);
+				for (const [index, child] of outcome.children.entries()) {
+					const lost = index === onB ? "B" : "D";
+					assert.ok(
+						setUp(lost).some((worktree) => child.firstCwd.startsWith(worktree)),
+						child.firstCwd,
+					);
+					assert.ok(
+						setUp("E").some((worktree) => child.finalCwd.startsWith(worktree)),
+						child.finalCwd,
+					);
 				}
 				// Bound work only ever ran on hosts that can restore, never on C.
 				const holders = new Set(markers(c.directory, "held-").map((name) => name.split("-")[1]));
