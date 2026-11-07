@@ -522,13 +522,74 @@ describe("replacing an older broker (#4538)", () => {
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
 
+	for (const status of ["malformed", "dropped"] as const) {
+		test(
+			`a broker whose status cannot be read (${status}) is left alone`,
+			async () => {
+				const legacy = await startFakeLegacyBroker({ status });
+				const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+				assert.equal(await upgradeBroker("bun", [], 30_000), "current");
+				assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [1, 0]);
+			},
+			UPGRADE_TEST_TIMEOUT_MS,
+		);
+	}
+
 	test(
-		"a broker whose status cannot be read is left alone",
+		"an older broker that closes its shutdown request unanswered fails the replacement at once, without waiting for it",
 		async () => {
-			const legacy = await startFakeLegacyBroker({ status: "malformed" });
+			const legacy = await startFakeLegacyBroker({ shutdown: "dropped" });
 			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
-			assert.equal(await upgradeBroker("bun", [], 30_000), "current");
-			assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [1, 0]);
+			const error = await upgradeBroker("bun", [], 30_000).catch((caught: unknown) => caught);
+			const { isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+			assert.deepEqual([error.phase, error.previousPid, error.cause], ["stop", legacy.pid, undefined]);
+			assert.equal(legacy.shutdownRequests(), 1);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	for (const [label, select] of [
+		[
+			"settings",
+			(selection: string) =>
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ storage: JSON.parse(selection) })),
+		],
+		["ATOMIC_STORAGE", (selection: string) => vi.stubEnv("ATOMIC_STORAGE", selection)],
+	] as const) {
+		test(
+			`an older broker that reads the storage selection its successor would read from ${label} is replaced`,
+			async () => {
+				const selection = JSON.stringify({ adapter: "@example/adapter-that-is-not-installed", prefix: "team_" });
+				select(selection);
+				vi.resetModules();
+				const { sharedStorageDigest } = await import("../../packages/intercom/broker/shared-storage-setting.js");
+				const legacy = await startFakeLegacyBroker({
+					storage: {
+						digest: sharedStorageDigest(JSON.parse(selection)),
+						source: label === "settings" ? "settings" : "env",
+					},
+				});
+				const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+				assert.equal(await upgradeBroker("bun", [], 30_000), "upgraded");
+				assert.equal(legacy.shutdownRequests(), 1);
+				assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 2 });
+			},
+			UPGRADE_TEST_TIMEOUT_MS,
+		);
+	}
+
+	test(
+		"starts this version's broker for an agent directory that has no Intercom directory yet",
+		async () => {
+			const fresh = temporaryAgentDir(process.env[ENV_WORKFLOW_ARTIFACT_DIR]);
+			vi.stubEnv("ATOMIC_CODING_AGENT_DIR", fresh);
+			vi.resetModules();
+			cleanups.push(() => stopDetachedBroker(fresh));
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			assert.equal(await upgradeBroker("bun", [], 30_000), "started");
+			const { queryIntercomBroker } = await control();
+			await vi.waitFor(async () => assert.equal((await queryIntercomBroker(fresh)).state, "running"), WAIT);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
@@ -576,7 +637,10 @@ describe("replacing an older broker (#4538)", () => {
 			writeFileSync(lockPath, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
 			try {
 				const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+				const { BROKER_STOP_TIMEOUT_MS } = await import("../../packages/intercom/broker/broker-stop.js");
+				const startedAt = Date.now();
 				assert.equal(await upgradeBroker("bun", [], 1), "busy");
+				assert.ok(Date.now() - startedAt >= BROKER_STOP_TIMEOUT_MS, "it waited the stop bound for the lock");
 				assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [0, 0]);
 				assert.equal(existsSync(lockPath), true, "another process's lock is left as it is");
 			} finally {

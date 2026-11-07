@@ -313,7 +313,8 @@ type StatusFault =
 	| "legacy"
 	| "legacy-shared"
 	| "legacy-multi-node"
-	| "future";
+	| "future"
+	| "current";
 
 interface FaultyBroker {
 	statusRequests: number;
@@ -351,6 +352,8 @@ function faultyStatusReport(fault: StatusFault): Record<string, JsonWireValue> |
 			return { pid: 1, sessions: 0, multiNode: { status: "on" } };
 		case "future":
 			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 3, max: 4 } };
+		case "current":
+			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 1, max: 2 } };
 		case "malformed":
 			return { pid: "unknown" };
 		default:
@@ -386,6 +389,13 @@ async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
 					if (message.type === "register_verified") {
 						broker.verifiedRegistrations += 1;
 						if (fault.startsWith("legacy") || fault === "future") socket.destroy();
+						if (fault === "current")
+							writeMessage(socket, {
+								type: "registered",
+								sessionId: `fake-session-${broker.verifiedRegistrations}`,
+								multiNodeRouting: "off",
+								protocol: { min: 1, max: 2 },
+							});
 					}
 					if (message.type === "list")
 						writeMessage(socket, { type: "sessions", requestId: message.requestId, sessions: [] });
@@ -678,6 +688,20 @@ test("a broker that shares no protocol version with this session is left running
 	assert.equal(notices.length, 1, notices.join("\n"));
 	assert.match(notices[0] ?? "", LOCAL_ONLY_WARNING);
 	assert.doesNotMatch(notices[0] ?? "", /Replacing it failed/);
+});
+
+test("a session registers verified, without a warning, with a broker that speaks this version's protocol (#4538)", async () => {
+	const faulty = await startFaultyBroker("current");
+	const notices: string[] = [];
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "current-broker", notices);
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.deepEqual([faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations], [0, 1, 0]);
+	assert.deepEqual(notices, []);
 });
 
 test("a session without a UI writes the single-machine warning to stderr once (#4538)", async () => {

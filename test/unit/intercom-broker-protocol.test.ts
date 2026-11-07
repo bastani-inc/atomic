@@ -174,6 +174,20 @@ describe("frames a broker writes to a client of protocol 1 (#4538)", () => {
 		assert.equal(frames.length, 0);
 	});
 
+	test("a confirmed write to an open socket writes the frame and reports it written, and one to a closed socket does not", () => {
+		const { socket, frames } = recordingSocket();
+		recordClientProtocol(socket, range(1, 2));
+		const outcomes: boolean[] = [];
+		writeMessageWithOutcome(socket, { type: "delivered", messageId: "m1" }, (written) => outcomes.push(written));
+		assert.deepEqual(outcomes, [true]);
+		assert.equal(frames.length, 1);
+		(socket as unknown as { destroyed: boolean }).destroyed = true;
+		writeMessageWithOutcome(socket, { type: "delivered", messageId: "m2" }, (written) => outcomes.push(written));
+		assert.equal(writeMessageIfOpen(socket, { type: "delivered", messageId: "m3" }), false);
+		assert.deepEqual(outcomes, [true, false]);
+		assert.equal(frames.length, 1);
+	});
+
 	test("a client of protocol 2, or one recorded again as protocol 2, receives every frame", () => {
 		for (const record of [[range(1, 2)], [LEGACY_BROKER_PROTOCOL, range(1, 2)], [range(2, 7)]]) {
 			const { socket, frames } = recordingSocket();

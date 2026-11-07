@@ -84,11 +84,7 @@ export class IntercomRoutingUnavailableError extends IntercomRoutingError {
 		super(
 			"broker-routing-unavailable",
 			`The Intercom broker did not report its routing state (${phase}: ${reason}), so this session cannot tell whether it routes across machines (broker-routing-unavailable). ${REPLACE_BROKER_HINT}`,
-			{
-				hint: REPLACE_BROKER_HINT,
-				retryable: true,
-				...(options.cause === undefined ? {} : { cause: options.cause }),
-			},
+			{ hint: REPLACE_BROKER_HINT, retryable: true, cause: options.cause },
 		);
 		this.reason = reason;
 		this.phase = phase;

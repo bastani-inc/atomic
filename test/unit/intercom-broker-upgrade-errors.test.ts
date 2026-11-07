@@ -158,10 +158,29 @@ describe.each(MEMBERS)("$name (#4538)", (member) => {
 		for (const value of [null, undefined, member.name, 7]) assert.equal(member.guard(value), false, String(value));
 	});
 
+	test("an instance is recognized by its class first, even one whose name was changed", () => {
+		assert.ok(member.guard(Object.assign(member.make(), { name: "Error" })));
+	});
+
+	test("a copy under another name or code rebuilds as the family base with that name and code", () => {
+		const form = serializeIntercomBrokerError(member.make());
+		for (const other of [
+			{ ...form, name: "IntercomBrokerFutureError" },
+			{ ...form, code: "broker-future" },
+			{ ...form, name: "IntercomBrokerError", code: "broker-future" },
+		]) {
+			const rebuilt = rehydrateIntercomBrokerError(other);
+			assert.equal(rebuilt.constructor, IntercomBrokerError, `${other.name} ${other.code}`);
+			assert.deepEqual([rebuilt.name, rebuilt.code], [other.name, other.code]);
+			assert.equal(member.guard(rebuilt), false);
+		}
+	});
+
 	test("a copy that kept its name, code and facts is a member of the family", () => {
 		const copy = JSON.parse(JSON.stringify(member.make())) as object;
 		assert.ok(isIntercomBrokerError(copy));
 		assert.ok(member.guard(copy));
+		assert.equal(member.guard({ ...copy, code: "broker-future" }), false);
 		assert.equal(isIntercomBrokerError({ ...copy, code: "broker-future" }), false);
 		assert.equal(isIntercomBrokerError({ ...copy, name: "IntercomBrokerFutureError" }), false);
 	});
@@ -169,6 +188,10 @@ describe.each(MEMBERS)("$name (#4538)", (member) => {
 
 test("an upgrade copy is recognized for either phase it names, and not for another (#4538)", () => {
 	for (const phase of ["stop", "start"] as const) {
+		const original = new IntercomBrokerUpgradeError({ phase, previousPid: 9, previousProtocolMax: 1 });
+		const rebuilt = rehydrateIntercomBrokerError(serializeIntercomBrokerError(original));
+		assert.ok(rebuilt instanceof IntercomBrokerUpgradeError, phase);
+		assert.equal(rebuilt.phase, phase);
 		const copy = JSON.parse(
 			JSON.stringify(new IntercomBrokerUpgradeError({ phase, previousPid: 9, previousProtocolMax: 1 })),
 		) as object;

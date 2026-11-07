@@ -372,19 +372,20 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function projectGroupOf(ctx: ExtensionContext | null): () => string | undefined {
     return () => (multiNodeRouting() ? projectGroup(ctx?.cwd ?? process.cwd(), createGitEnvironment()) : undefined);
   }
+  /** Called only for a context `settleBrokerRouting` just found live. */
   function warnLocalOnly(ctx: ExtensionContext, reason: IntercomRoutingUnavailableError): void {
     if (localOnlyWarned) return;
-    const liveContext = getLiveContext(ctx);
-    if (liveContext === null) return;
     localOnlyWarned = true;
-    if (liveContext.hasUI) notifyIfLive(liveContext, localOnlyBrokerWarning(reason), "warning");
+    if (ctx.hasUI) notifyIfLive(ctx, localOnlyBrokerWarning(reason), "warning");
     else warnLocalOnlyBrokerWithoutUi(reason);
   }
   /**
    * #4538: a broker older than this version is replaced by this version's (`upgradeBroker`); the routing is then read
    * from whichever broker answers. A failed replacement leaves the older broker, which the caller verifies as such.
    */
-  async function upgradeOlderBroker(agentDir: string): Promise<{ routing: BrokerRouting; upgradeFailure?: Error }> {
+  async function upgradeOlderBroker(
+    agentDir: string,
+  ): Promise<{ routing: BrokerRouting; upgradeFailure: Error | undefined }> {
     let upgradeFailure: Error | undefined;
     try {
       await upgradeBroker(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
@@ -393,8 +394,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       upgradeFailure = error;
     }
     await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
-    const routing = await queryBrokerRouting(agentDir);
-    return upgradeFailure === undefined ? { routing } : { routing, upgradeFailure };
+    return { routing: await queryBrokerRouting(agentDir), upgradeFailure };
   }
   /**
    * The routing this session registers with. #4538: a broker that cannot verify it (no `broker_status`, or a protocol
@@ -414,11 +414,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       const agreed = agreedProtocol(BROKER_PROTOCOL, routing.protocol);
       if (agreed === undefined || agreed < VERIFIED_REGISTRATION_PROTOCOL) {
-        unverified = new IntercomRoutingUnavailableError(
-          "unsupported",
-          "register",
-          upgradeFailure === undefined ? {} : { cause: upgradeFailure },
-        );
+        unverified = new IntercomRoutingUnavailableError("unsupported", "register", { cause: upgradeFailure });
       }
     } catch (error) {
       if (!isIntercomRoutingUnavailableError(error)) throw error;

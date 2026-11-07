@@ -790,20 +790,19 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
         }
+        if (this._sessionId !== null) {
+          throw new Error("Received duplicate registered message");
+        }
         // #4538: a session that registered unverified on a broker it took for single-machine is refused if the broker
         // that answered routes otherwise, as `register_verified` would have been, before it takes the registration.
         const expected = this.registrationExpectedRouting;
         if (
-          expected !== undefined && !expected.verify && this._sessionId === null
+          expected !== undefined && !expected.verify
           && brokerMessage.multiNodeRouting !== undefined
           && (brokerMessage.multiNodeRouting !== "off") !== expected.acrossMachines
         ) {
           this.emit("_registration_failed", new IntercomRoutingChangedError(expected.acrossMachines));
           break;
-        }
-
-        if (this._sessionId !== null) {
-          throw new Error("Received duplicate registered message");
         }
         this._sessionId = brokerMessage.sessionId;
         this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"

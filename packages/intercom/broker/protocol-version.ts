@@ -40,7 +40,7 @@ export function agreedProtocol(own: BrokerProtocolRange, running: BrokerProtocol
 }
 
 function isProtocolVersion(value: JsonWireValue | undefined): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+	return Number.isSafeInteger(value) && (value as number) >= 1;
 }
 
 /** Whether a wire value is a protocol range: positive integers with `min <= max`. */

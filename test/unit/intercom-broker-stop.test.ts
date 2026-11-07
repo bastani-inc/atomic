@@ -94,6 +94,16 @@ describe("the single-machine warning (#4538)", () => {
 		);
 	});
 
+	test("a process that has not warned yet writes the warning the first time", async () => {
+		vi.resetModules();
+		const fresh = await import("../../packages/intercom/local-only-broker.js");
+		const lines: string[] = [];
+		fresh.warnLocalOnlyBrokerWithoutUi(new IntercomRoutingUnavailableError("unsupported", "register"), (line) =>
+			lines.push(line),
+		);
+		assert.equal(lines.length, 1);
+	});
+
 	test("a session without a UI writes it to stderr once per process, until it is reset", () => {
 		const lines: string[] = [];
 		const reason = new IntercomRoutingUnavailableError("unsupported", "broker_status");

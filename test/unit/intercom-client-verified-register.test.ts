@@ -338,6 +338,17 @@ describe("registering unverified with a broker of protocol 1 (#4538)", () => {
 		assert.deepEqual(client.brokerProtocol, LEGACY_BROKER_PROTOCOL);
 	});
 
+	test("a registered frame whose capabilities are malformed fails the connection", async () => {
+		await fakeBroker((socket) =>
+			writeMessage(socket, { type: "registered", sessionId: "fake-session", extendsSaves: false }),
+		);
+
+		const error = await connectFailure(false, true);
+
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /Invalid registered message/);
+	});
+
 	for (const protocol of [{ min: 2, max: 1 }, { min: 0, max: 2 }, { min: 1 }, "2"]) {
 		test(`a registered frame with the malformed protocol ${JSON.stringify(protocol)} fails the connection`, async () => {
 			await fakeBroker((socket) =>

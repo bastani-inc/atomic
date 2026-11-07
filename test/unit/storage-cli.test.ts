@@ -158,6 +158,9 @@ describe("atomic storage and atomic intercom arguments", () => {
 		assert.match(unknown.err, /Unknown intercom command "stop"/);
 		const extra = await run((log, error) => runIntercomCommand(["restart", "now"], { agentDir, log, error }));
 		assert.equal(extra.code, 1);
+		assert.equal(extra.err, "Usage: atomic intercom restart");
+		const extraStatus = await run((log, error) => runIntercomCommand(["status", "now"], { agentDir, log, error }));
+		assert.deepEqual([extraStatus.code, extraStatus.err], [1, "Usage: atomic intercom status"]);
 	});
 });
 
@@ -358,7 +361,10 @@ describe("storage status checks", () => {
 		assert.match(status.out, /Intercom broker: not running/);
 		const restart = await run((log, error) => runIntercomCommand(["restart"], { agentDir, log, error }));
 		assert.equal(restart.code, 0, restart.err);
-		assert.match(restart.out, /No Intercom broker is running/);
+		assert.equal(
+			restart.out,
+			"No Intercom broker is running. The next session that uses Intercom starts one with the current storage selection.",
+		);
 		const upgrade = await run((log, error) => runIntercomCommand(["upgrade"], { agentDir, log, error }));
 		assert.equal(upgrade.code, 0, upgrade.err);
 		assert.equal(
