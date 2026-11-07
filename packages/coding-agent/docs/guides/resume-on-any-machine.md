@@ -13,10 +13,10 @@ Every machine must use the same shared storage. Install the libSQL adapter and j
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
-atomic team join <url> --token-file <path>
+atomic storage join <url> --token-file <path>
 ```
 
-`atomic storage join <url> --token-file <path>` selects the same shared storage without the rest of the team setup. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
+`atomic storage join` keeps sessions and workflow runs in the shared database, so both resume on any joined machine. `atomic team join` shares workflow runs and Intercom but keeps sessions on each machine, so with it only workflow runs resume elsewhere. See [Sharing storage across hosts](/storage#sharing-storage-across-hosts) for prefixes, tokens and `atomic storage status`.
 
 Keep snapshots on (`snapshots.enabled`, the default). A session records the state of each Git checkout it changes at the end of every turn that ran a file-writing tool, including uncommitted edits, untracked files and commits that were never pushed. That record lives in the shared storage, so a joined machine needs nothing else.
 
@@ -27,7 +27,7 @@ Resume as usual, with `atomic --session <id>`, `atomic --resume` or `/resume`. W
 - If you start Atomic inside a checkout of the same repository and its files match what the session recorded, the session continues there.
 - Otherwise Atomic restores the recorded state into a new worktree under `~/.atomic/agent/worktree-snapshots` and continues there. It never writes into an existing checkout. One line names the new worktree.
 - If you start `atomic` inside a checkout of the same repository that differs from the recording and has uncommitted or untracked changes, Atomic asks whether to restore a fresh worktree (the default), continue in your checkout as it is, or cancel. `/resume` and non-interactive modes such as `-p` do not ask; they restore a fresh worktree. A clean checkout that differs, such as a fresh clone at another commit, is left alone without asking, and a fresh worktree is restored. A checkout where the recorded edits were committed counts as matching.
-- A session that worked in several repositories gets each of them back, also when it worked from a directory outside all of them: the checkout you started in is used for its repository, and every other recorded checkout that is missing or changed here is restored. If you choose to continue in a checkout that differs, the other checkouts are not restored, and a warning names them.
+- A session that worked in several repositories gets each of them back, also when it worked from a directory outside all of them: the checkout you started in is used for its repository, and every other recorded checkout that is missing or changed here is restored. If you choose to continue in a checkout that differs, the other checkouts are not restored, and a warning names those that are missing here.
 
 Absolute paths from the earlier machine keep working: a tool call that names a file under the old checkout opens the same file in the restored worktree. Shell commands are run as written, so a command that names an old absolute path needs the new one.
 
@@ -55,7 +55,7 @@ Each restored checkout gets the setup hook below before the run continues, and a
 
 A restored worktree contains the repository's files but not installed dependencies or build output. When the restored files include a dependency lockfile or toolchain file (such as `package-lock.json`, `Cargo.lock` or `.nvmrc`), Atomic runs a setup hook in the worktree before continuing:
 
-1. `.atomic/setup` from the repository, when the project is trusted (`--approve` or `"defaultProjectTrust": "always"`). It runs with bash, the same shell as the bash tool (Git Bash on Windows), so give it a shebang. Or else
+1. `.atomic/setup` from the repository, when the project is trusted (`--approve` or `"defaultProjectTrust": "always"`). It runs with bash (Git Bash on Windows) as `./.atomic/setup`, so make it executable and give it a shebang. Or else
 2. the command in `resume.setupCommand` in your global settings (`~/.atomic/agent/settings.json`). A project's own settings cannot set it, so a repository never chooses a command for a machine that has not trusted it:
 
 ```json
@@ -72,7 +72,7 @@ Missing setup is checked in one pass before anything is restored: the storage ad
 
 | Error | Code | When it happens | What to do |
 |---|---|---|---|
-| `ResumeNotFoundError` | `not-found` | The session id matches nothing this machine can read. With reason `local-storage-not-joined`, this machine uses local storage only. | Join the machine with `atomic team join <url> --token-file <path>`. With reason `shared-miss`, check the id and that every machine uses the same storage and prefix. |
+| `ResumeNotFoundError` | `not-found` | The session id matches nothing this machine can read. With reason `local-storage-not-joined`, this machine uses local storage only. | Join the machine's sessions with `atomic storage join <url> --token-file <path>`; `atomic team join` keeps sessions on each machine. With reason `shared-miss`, check the id and that every machine uses the same storage and prefix. |
 | `ResumePreconditionError` | `preconditions-unmet` | Setup the resume needs is missing. Every missing piece is listed in `problems`: `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`, `setup-hook-missing`. With `git-unavailable`, its `cause` is the `GitUnavailableError` that says why. | Run each listed fix, for example `atomic install npm:@bastani/atomic-storage-libsql`, write the token file, unset offline mode or install Git, or configure a setup hook. |
 | `GitUnavailableError` | `not-installed`, `unsupported-platform`, `offline`, `checksum-mismatch`, `download-failed`, `install-failed` | A checkout must be verified or restored and no Git can be started or provisioned. | Do what its hint says, for example unset `ATOMIC_OFFLINE` or install Git with the command it names. |
 | `ResumeCatalogUnavailableError` | `catalog-unavailable` | The shared storage could not be reached while looking the session or run up. Retryable. | Check connectivity with `atomic storage status` and resume again. |

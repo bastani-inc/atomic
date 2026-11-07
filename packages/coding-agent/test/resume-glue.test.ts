@@ -99,11 +99,11 @@ describe("resume error family (#4329)", () => {
 		});
 		assert.equal(
 			error.message,
-			"No session found matching 'abc': this node uses local-only storage (node-sqlite at /home/u/.atomic/workflows/journal.sqlite) and is not joined to the shared storage where other nodes record their work (not-found). Join this node to the shared storage with `atomic team join <url> --token-file <path>`, then resume again.",
+			"No session found matching 'abc': this node uses local-only storage (node-sqlite at /home/u/.atomic/workflows/journal.sqlite) and is not joined to the shared storage where other nodes record their work (not-found). Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (`atomic team join` keeps sessions on each machine), then resume again.",
 		);
 		assert.equal(
 			error.hint,
-			`Join this node to the shared storage with \`${TEAM_JOIN_COMMAND}\`, then resume again.`,
+			"Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (`atomic team join` keeps sessions on each machine), then resume again.",
 		);
 		assert.deepEqual(error.fields, {
 			subject: "session",
