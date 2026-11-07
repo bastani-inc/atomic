@@ -12,7 +12,8 @@
  *       Starts a worker host (`startWorkflowWorkerHost`) with its own agent directory A and host id H. With
  *       --setup-log, A's global settings set `resume.setupCommand` to append each worktree it sets up to L. Writes
  *       `W/host-ready-H` once it serves, and its stats to `W/host-stats-H.json` every second, with `maxBusy`, the most
- *       workers it ever ran a child on. Stops on SIGTERM.
+ *       workers it ever had busy. A worker counts as busy while its claim request is in flight too, so an idle host
+ *       that asks for work and takes none shows it; the journal's claim count says who took a child. Stops on SIGTERM.
  *   root --ref-dir D --dir W --root R --worktree P --agent-dir A --children N --workers K --lease-ms L
  *        --claim-window-ms C <journal>
  *       Runs root R with `workers: { placement: "shared" }`, bound to the worktree P, with N children. Writes

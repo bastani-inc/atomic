@@ -187,9 +187,10 @@ n3 the git-less node.
    worktree it sets up. The root's tree has a lockfile, so a host that restores it runs the hook. Once n2's host holds
    the child in a worktree it restored, a capable host joins on n1 and n2's host is SIGKILLed with its workers. The
    suite checks that the child was claimed again and finished on n1's host, in a worktree restored with the recorded
-   tree and commit (manifest equality), replaying its completed first step instead of running it again; that each host that restored the child ran the hook
-   exactly once, in that worktree, before the child ran; and that n3's host, which has no Git and no restore port,
-   never ran a child, including while the reclaimed one waited.
+   tree and commit (manifest equality), replaying its completed first step instead of running it again; that each host
+   that restored the child ran the hook exactly once, in that worktree, before the child ran; and that n3's host, which
+   has no Git and no restore port, never claimed the child, including while the reclaimed one waited: the journal
+   records exactly two claims, n2's host's and n1's host's.
 4. **Fork on a third node.** n1 runs a two-stage workflow. After scenario 6 provisioned Git on n3, a fork from the
    second stage runs on n3, is SIGKILLed right after `git worktree add`, and is retried; the retried fork's stage must
    see the state the first stage left, in a restored worktree, with no partial worktree left.
