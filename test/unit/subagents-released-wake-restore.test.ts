@@ -864,31 +864,43 @@ test("a child whose directory is gone here continues in the worktree its owner r
 	assert.equal(run.sessionManager?.getCwd(), worktree);
 });
 
-test("a child whose own checkout is gone here is restored from its own snapshot before it continues (#4329)", async () => {
-	const sandbox = new GitSandbox();
-	cleanups.push(() => sandbox.dispose());
-	const h = harness({ sessionManager: await sqlOwner() });
+/** A released child that worked in a checkout of its own, in the owner's database, whose snapshot it recorded. */
+async function childWorkedInCheckout(
+	h: Harness,
+	sandbox: GitSandbox,
+	runId: string,
+	edit: string,
+): Promise<{ record: SubagentChildRecord; clone: string }> {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
 	const store = h.sessionManager.getSessionStore();
 	const child = await SessionManager.create(store, clone);
 	await child.appendMessage({ role: "user", content: "edit", timestamp: 1 });
-	sandbox.write(join(clone, "README.md"), "edited by the child on node A\n");
+	sandbox.write(join(clone, "README.md"), edit);
 	const capture = await captureWorktreeSnapshot(clone, {
 		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 		blobs: store.snapshotBlobs,
 	});
 	if (capture.status !== "captured") throw new Error(capture.status);
 	await child.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	const released = await releasedChild(h, "wake-own-checkout");
-	await appendRecord(h, {
-		...released,
-		cwd: clone,
-		childSessionId: child.getSessionId(),
-		childSessionFile: undefined,
-	});
+	const released = await releasedChild(h, runId);
+	const record = { ...released, cwd: clone, childSessionId: child.getSessionId(), childSessionFile: undefined };
+	await appendRecord(h, record);
+	return { record, clone };
+}
+
+test("a child whose own checkout is gone here is restored from its own snapshot before it continues (#4329)", async () => {
+	const sandbox = new GitSandbox();
+	cleanups.push(() => sandbox.dispose());
+	const h = harness({ sessionManager: await sqlOwner() });
+	const { record, clone } = await childWorkedInCheckout(
+		h,
+		sandbox,
+		"wake-own-checkout",
+		"edited by the child on node A\n",
+	);
 	renameSync(clone, sandbox.path("node-a-offline"));
 
-	const run = await restored(h, released.childId, { prompt: "carry on" });
+	const run = await restored(h, record.childId, { prompt: "carry on" });
 
 	const worktree = run.cwd;
 	assert.ok(worktree !== undefined && worktree !== clone && existsSync(worktree), String(worktree));
@@ -900,33 +912,125 @@ test("a child whose own checkout is gone here is restored from its own snapshot 
 	);
 });
 
+test("a child woken again continues in the worktree it was restored into, which is not restored again (#4329)", async () => {
+	const sandbox = new GitSandbox();
+	cleanups.push(() => sandbox.dispose());
+	const h = harness({ sessionManager: await sqlOwner() });
+	const { record, clone } = await childWorkedInCheckout(h, sandbox, "wake-twice", "edited by the child on node A\n");
+	renameSync(clone, sandbox.path("node-a-offline"));
+	const first = await restored(h, record.childId, { prompt: "carry on" });
+	// Its record still names the directory it was recorded in, as when the restore was not recorded with it.
+	await appendRecord(h, { ...h.latest(record.childId)!, cwd: clone });
+
+	const second = await restored(h, record.childId, { prompt: "carry on again" });
+
+	assert.equal(second.cwd, first.cwd);
+	assert.equal(second.sessionManager?.getCwd(), first.cwd);
+	assert.equal(second.sessionManager?.getWorktreeRootMappings().length, 1, "restored once");
+});
+
 test("a child whose own checkout is still here as it worked in it keeps it, with no Git involved in moving it (#4329)", async () => {
 	const sandbox = new GitSandbox();
 	cleanups.push(() => sandbox.dispose());
 	const h = harness({ sessionManager: await sqlOwner() });
-	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
-	const store = h.sessionManager.getSessionStore();
-	const child = await SessionManager.create(store, clone);
-	await child.appendMessage({ role: "user", content: "edit", timestamp: 1 });
-	sandbox.write(join(clone, "README.md"), "edited by the child\n");
-	const capture = await captureWorktreeSnapshot(clone, {
-		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
-		blobs: store.snapshotBlobs,
-	});
-	if (capture.status !== "captured") throw new Error(capture.status);
-	await child.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	const released = await releasedChild(h, "wake-own-here");
-	await appendRecord(h, {
-		...released,
-		cwd: clone,
-		childSessionId: child.getSessionId(),
-		childSessionFile: undefined,
-	});
+	const { record, clone } = await childWorkedInCheckout(h, sandbox, "wake-own-here", "edited by the child\n");
 	sandbox.write(join(clone, "later.txt"), "written after the release\n");
 
-	const run = await restored(h, released.childId, { prompt: "carry on" });
+	const run = await restored(h, record.childId, { prompt: "carry on" });
 
 	assert.equal(run.cwd, clone);
 	assert.deepEqual(run.sessionManager?.getWorktreeRootMappings(), []);
 	assert.equal(readFileSync(join(clone, "later.txt"), "utf8"), "written after the release\n");
+});
+
+test("a woken child follows only the well-formed restores its record holds (#4329)", async () => {
+	const h = harness();
+	const valid = restoreOf("/node-a/repo", join(h.cwd, "restored-for-the-launch"));
+	const record = await withWorktreeRootMappings([valid], () => releasedChild(h, "wake-damaged"));
+	const { restoredAt: _a, ...withoutRestoredAt } = restoreOf("/a", "/b");
+	const { tree: _b, ...withoutTree } = restoreOf("/c", "/d");
+	const { snapshotId: _c, ...withoutSnapshot } = restoreOf("/e", "/f");
+	const { to: _d, ...withoutTo } = restoreOf("/g", "/h");
+	const damaged = [
+		valid,
+		null,
+		{ ...restoreOf("/i", "/j"), from: 42 },
+		withoutTo,
+		withoutSnapshot,
+		withoutTree,
+		withoutRestoredAt,
+	] as unknown as SubagentChildRecord["worktreeRootMappings"];
+	await appendRecord(h, { ...record, worktreeRootMappings: damaged });
+
+	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+
+	assert.deepEqual(h.runs.at(-1)?.scope, [valid]);
+});
+
+test("a woken child whose record holds something other than a list of restores follows none (#4329)", async () => {
+	const h = harness();
+	const record = await withWorktreeRootMappings([restoreOf("/node-a/repo", "/node-b/repo")], () =>
+		releasedChild(h, "wake-not-a-list"),
+	);
+	await appendRecord(h, {
+		...record,
+		worktreeRootMappings: "oops" as unknown as SubagentChildRecord["worktreeRootMappings"],
+	});
+
+	await restored(h, record.childId, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT });
+
+	assert.deepEqual(h.runs.at(-1)?.scope, []);
+});
+
+test("a child launched outside any restores records none, and one launched inside records exactly those (#4329)", async () => {
+	const h = harness();
+	const plain = await releasedChild(h, "launch-plain");
+	assert.equal("worktreeRootMappings" in plain, false);
+	const restore = restoreOf("/node-a/repo", "/node-b/repo");
+
+	const scoped = await withWorktreeRootMappings([restore], () => releasedChild(h, "launch-scoped"));
+
+	assert.deepEqual(scoped.worktreeRootMappings, [restore]);
+});
+
+test("a woken child whose agent is no longer defined is reported unrestorable, naming the agent (#4329)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-agent-gone");
+	await appendRecord(h, { ...record, agent: "ghost" });
+
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "carry on" });
+
+	assert.equal(outcome.kind, "unrestorable");
+	assert.equal(outcome.kind === "unrestorable" ? outcome.reason : "", 'agent "ghost" (project) is no longer defined');
+});
+
+test("a woken child recorded without its agent's source names only the agent when it is no longer defined (#4329)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-agent-gone-no-source");
+	await appendRecord(h, { ...record, agent: "ghost", agentSource: undefined });
+
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "carry on" });
+
+	assert.equal(outcome.kind === "unrestorable" ? outcome.reason : "", 'agent "ghost" is no longer defined');
+});
+
+test("a child that never started and whose directory is gone here is reported unrestorable, naming the directory (#4329)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "wake-never-started");
+	const gone = join(h.cwd, "no-such-directory");
+	await appendRecord(h, {
+		...record,
+		cwd: gone,
+		childSessionId: undefined,
+		childSessionFile: undefined,
+		launch: { task: ORIGINAL_TASK },
+	});
+
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, { prompt: "carry on" });
+
+	assert.equal(outcome.kind, "unrestorable");
+	assert.equal(
+		outcome.kind === "unrestorable" ? outcome.reason : "",
+		`its working directory no longer exists: ${gone}`,
+	);
 });
