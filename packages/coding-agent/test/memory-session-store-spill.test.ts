@@ -1064,7 +1064,7 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 		}
 	});
 
-	test("across many stores and releases, the process's start time is read once and its directory created once", async () => {
+	test("across many stores and releases, boot identity and the process's start time are read once and its directory created once", async () => {
 		vi.resetModules();
 		const fresh = await import("../src/core/storage/session/released-history-files.js");
 		const freshFs = vi.mocked(await import("node:fs"));
@@ -1088,9 +1088,27 @@ describe("spill failures are typed and never lose history (#4502)", () => {
 					await created(store, `s${session}`, entries(`e${index}-${session}`, 2));
 					await store.releaseSession(`s${session}`);
 				}
+			// Boot identity and process start time each launch their own command on Windows and macOS.
+			const bootIdentityLookups =
+				freshFs.readFileSync.mock.calls.filter(([path]) => String(path) === "/proc/sys/kernel/random/boot_id")
+					.length +
+				freshChildProcess.execFile.mock.calls.filter(
+					([command, args]) =>
+						Array.isArray(args) &&
+						(args.includes(
+							"(Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime.ToFileTimeUtc()",
+						) ||
+							(command === "sysctl" && args.join(" ") === "-n kern.boottime")),
+				).length;
 			const startTimeLookups =
 				freshFs.readFileSync.mock.calls.filter(([path]) => String(path) === `/proc/${process.pid}/stat`).length +
-				freshChildProcess.execFile.mock.calls.length;
+				freshChildProcess.execFile.mock.calls.filter(
+					([command, args]) =>
+						Array.isArray(args) &&
+						(args.includes(`(Get-Process -Id ${process.pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`) ||
+							(command === "ps" && args.join(" ") === `-o lstart= -p ${process.pid}`)),
+				).length;
+			assert.equal(bootIdentityLookups, 1);
 			assert.equal(startTimeLookups, 1);
 			assert.equal(freshPromises.mkdir.mock.calls.length, 1 + stores.length, "the process's, then one per store");
 			assert.equal(securityChecks, 0);
