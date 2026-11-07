@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { fstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -385,6 +385,9 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			expect(stdout).toContain(`Updated atomic from ${VERSION} to ${VERSION}`);
 			// The new Atomic is asked to retire an older Intercom broker, without this installation's package override.
 			expect(fakeAtomic.upgradeCalls()).toEqual([{ args: ["intercom", "upgrade"], packageDir: null }]);
+			// Its output reaches the user's terminal: the upgrade writes to this process's own standard output.
+			const ownStdout = fstatSync(1);
+			expect(fakeAtomic.upgradeStdout()).toEqual([{ dev: ownStdout.dev, ino: ownStdout.ino }]);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();

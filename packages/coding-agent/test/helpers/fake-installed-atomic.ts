@@ -5,6 +5,8 @@ import { vi } from "vitest";
 export interface FakeInstalledAtomic {
 	/** Parsed `intercom upgrade` invocations the fake `atomic` on PATH received, in order. */
 	upgradeCalls(): Array<{ args: string[]; packageDir: string | null }>;
+	/** The device and inode of each `intercom upgrade` invocation's standard output, to tell an inherited one apart. */
+	upgradeStdout(): Array<{ dev: number; ino: number }>;
 }
 
 /**
@@ -18,6 +20,7 @@ export function installFakeAtomicOnPath(
 	const binDir = join(directory, "fake-installed-atomic-bin");
 	const scriptPath = join(directory, "fake-installed-atomic.cjs");
 	const recordPath = join(directory, "fake-installed-atomic-upgrades.jsonl");
+	const stdoutRecordPath = join(directory, "fake-installed-atomic-upgrade-stdout.jsonl");
 	mkdirSync(binDir, { recursive: true });
 	writeFileSync(
 		scriptPath,
@@ -26,6 +29,8 @@ export function installFakeAtomicOnPath(
 			"const args = process.argv.slice(2);",
 			'if (args[0] === "intercom" && args[1] === "upgrade") {',
 			`\tfs.appendFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, packageDir: process.env.ATOMIC_PACKAGE_DIR ?? null }) + "\\n");`,
+			"\tconst stdout = fs.fstatSync(1);",
+			`\tfs.appendFileSync(${JSON.stringify(stdoutRecordPath)}, JSON.stringify({ dev: stdout.dev, ino: stdout.ino }) + "\\n");`,
 			...(options.upgradeSignal === undefined
 				? []
 				: [`\tprocess.kill(process.pid, ${JSON.stringify(options.upgradeSignal)});`]),
@@ -51,6 +56,13 @@ export function installFakeAtomicOnPath(
 						.split("\n")
 						.filter(Boolean)
 						.map((line) => JSON.parse(line) as { args: string[]; packageDir: string | null })
+				: [],
+		upgradeStdout: () =>
+			existsSync(stdoutRecordPath)
+				? readFileSync(stdoutRecordPath, "utf8")
+						.split("\n")
+						.filter(Boolean)
+						.map((line) => JSON.parse(line) as { dev: number; ino: number })
 				: [],
 	};
 }
