@@ -1700,6 +1700,7 @@ It returns the verified worktree path or rejects with a typed error.
   - a recorded remote URL is no longer configured (`drift`, reason `remote-changed`);
   - the store's branch and the remote's diverged (`drift`, reason `branch-diverged`);
   - both the branch and the worktree are gone, unless the branch is created again as described above (`restore-failed`).
+- On a machine where the recorded worktree does not exist and the repository, branch or step commits cannot be restored, a run that recorded worktree snapshots continues the child in the worktree its resume restored from them, with uncommitted and unpushed work included, instead of failing with `restore-failed`. A worktree that exists here and lost its history still fails closed. See [Resume on any machine](/guides/resume-on-any-machine).
 - A resumed child whose steps ran one after another checks only the commit of its latest step on the binding's branch, so a step may amend, squash or rebase the commits of the steps before it, and those earlier commits need not have been pushed. A step reads the branch head before it completes, so when steps on one branch run in parallel, the step that completed last can hold an older commit than one that completed before it. The resume therefore checks the commit of the step that started last and of every step that was still running when it started, and fails closed if any of them is gone. A step with no recorded start time makes the resume check every step's commit.
 
 ### Writer lease

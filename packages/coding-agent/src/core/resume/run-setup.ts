@@ -61,7 +61,9 @@ export async function runRestorePreconditionError(
 			break;
 		}
 	}
-	return problems.length === 0 ? undefined : new ResumePreconditionError({ entryPoint: "workflow-resume", problems });
+	return problems.length === 0
+		? undefined
+		: new ResumePreconditionError({ entryPoint: "workflow-resume", problems }, git);
 }
 
 /**

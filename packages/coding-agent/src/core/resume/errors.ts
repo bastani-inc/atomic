@@ -15,8 +15,8 @@ export type ResumeErrorFieldValue =
 	| { readonly [key: string]: ResumeErrorFieldValue };
 export type ResumeErrorFields = { readonly [key: string]: ResumeErrorFieldValue };
 
-/** What a resume looked up. */
-export type ResumeSubject = "session";
+/** What a resume looked up: an interactive session or a workflow run. */
+export type ResumeSubject = "session" | "run";
 
 export type ResumeNotFoundErrorCode = "not-found";
 /**
@@ -43,7 +43,7 @@ export type ResumeErrorName =
 	| "ResumeCatalogTimeoutError";
 
 /** The entry point that ran the check, for messages and fields. */
-export type ResumeEntryPoint = "cli" | "switch-session" | "create-agent-session" | "workflow-resume";
+export type ResumeEntryPoint = "cli" | "switch-session" | "create-agent-session" | "workflow-resume" | "rehydrate";
 
 /**
  * One unmet precondition: `subject` names the adapter, variable, file or hook (never a secret value), `why` says
@@ -83,7 +83,8 @@ export class ResumeError extends Error {
 }
 
 export interface ResumeNotFoundErrorFields {
-	readonly subject: ResumeSubject;
+	/** Run ids that match nothing are reported by the journal catalog's own `run-not-found` error. */
+	readonly subject: "session";
 	/** The session id or id prefix that was looked up. */
 	readonly id: string;
 	readonly reason: ResumeNotFoundReason;
@@ -95,7 +96,7 @@ export interface ResumeNotFoundErrorFields {
 export class ResumeNotFoundError extends ResumeError {
 	override readonly name = "ResumeNotFoundError" as const;
 	declare readonly code: ResumeNotFoundErrorCode;
-	declare readonly subject: ResumeSubject;
+	declare readonly subject: "session";
 	declare readonly id: string;
 	declare readonly reason: ResumeNotFoundReason;
 	declare readonly storage: string;
@@ -187,6 +188,8 @@ export class ResumeSetupHookError extends ResumeError {
 	}
 }
 
+const LOOKED_UP: Readonly<Record<ResumeSubject, string>> = { session: "the session", run: "the workflow run" };
+
 export interface ResumeCatalogUnavailableErrorFields {
 	readonly subject: ResumeSubject;
 	/** The id or selector being looked up, or null for a picker or "most recent" lookup. */
@@ -212,7 +215,7 @@ export class ResumeCatalogUnavailableError extends ResumeError {
 	constructor(fields: ResumeCatalogUnavailableErrorFields, cause?: Error) {
 		super(
 			"catalog-unavailable",
-			`Cannot look up the session${fields.id === null ? "" : ` ${fields.id}`}: the storage (${fields.storage}) could not be reached`,
+			`Cannot look up ${LOOKED_UP[fields.subject]}${fields.id === null ? "" : ` ${fields.id}`}: the storage (${fields.storage}) could not be reached`,
 			"Check that this node can reach the shared storage (`atomic storage status`), then resume again; nothing was changed.",
 			{ ...fields },
 			cause,
@@ -248,7 +251,7 @@ export class ResumeCatalogTimeoutError extends ResumeError {
 	constructor(fields: ResumeCatalogTimeoutErrorFields, cause?: Error) {
 		super(
 			"catalog-timeout",
-			`Cannot look up the session${fields.id === null ? "" : ` ${fields.id}`}: the storage (${fields.storage}) did not answer within ${fields.timeoutMs} ms`,
+			`Cannot look up ${LOOKED_UP[fields.subject]}${fields.id === null ? "" : ` ${fields.id}`}: the storage (${fields.storage}) did not answer within ${fields.timeoutMs} ms`,
 			"Check that this node can reach the shared storage (`atomic storage status`), then resume again; nothing was changed.",
 			{ ...fields },
 			cause,

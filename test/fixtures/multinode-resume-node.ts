@@ -5,6 +5,9 @@
  *   record <json>  writes a file through a deterministic model turn, prints {"sessionId"}, then waits to be killed
  *   resume <json>  resumes the session the way `atomic --session <id>` does and prints what it observed
  *   sdk-open <json> opens the session through SDK `createAgentSession({ sessionManager })` and prints where it starts
+ *
+ * With PROVISION_ARCHIVE set, a node without Git provisions it from that archive (PROVISION_SHA256, PROVISION_VERSION)
+ * as Atomic provisions its portable Git, through a fetch that serves the archive, or answers 503 when PROVISION_FAIL=1.
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +21,11 @@ import { resolveSessionStore } from "../../packages/coding-agent/src/core/sessio
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { selectProcessStorage } from "../../packages/coding-agent/src/core/storage/process-selection.ts";
 import { openCliSession } from "../../packages/coding-agent/src/main-session.ts";
+import {
+	type GitRelease,
+	type GitTargetKey,
+	withGitProvisionSettingsForTest,
+} from "../../packages/coding-agent/src/utils/tools-manager.ts";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
 
 interface RecordArgs {
@@ -130,15 +138,63 @@ async function resume(args: ResumeArgs): Promise<void> {
 	await sessionManager.getSessionStore().close();
 }
 
+const TARGETS: readonly GitTargetKey[] = [
+	"darwin-x64",
+	"darwin-arm64",
+	"linux-x64",
+	"linux-arm64",
+	"linux-arm",
+	"win32-x64",
+	"win32-arm64",
+	"win32-ia32",
+];
+
+/** Runs `action` with Git provisioned from PROVISION_ARCHIVE when that is set; see the header. */
+async function withProvisioning(action: () => Promise<void>): Promise<void> {
+	const archive = process.env.PROVISION_ARCHIVE;
+	if (archive === undefined) return action();
+	const bytes = new Uint8Array(readFileSync(archive));
+	const fail = process.env.PROVISION_FAIL === "1";
+	globalThis.fetch = Object.assign(
+		async () => (fail ? new Response("unavailable", { status: 503 }) : new Response(bytes)),
+		globalThis.fetch,
+	);
+	const asset = { name: "portable-git.tar.gz", sha256: process.env.PROVISION_SHA256 ?? "" };
+	const release: GitRelease = {
+		repo: "example/portable-git",
+		tag: "v0.0.0-multinode",
+		version: process.env.PROVISION_VERSION ?? "",
+		assets: Object.fromEntries(TARGETS.map((target) => [target, asset])) as GitRelease["assets"],
+	};
+	return withGitProvisionSettingsForTest({ release }, action);
+}
+
 const [command, json] = process.argv.slice(2);
 try {
-	if (command === "record") await record(JSON.parse(json!) as RecordArgs);
-	else if (command === "resume") await resume(JSON.parse(json!) as ResumeArgs);
-	else if (command === "sdk-open") await sdkOpen(JSON.parse(json!) as SdkOpenArgs);
-	else throw new Error(`unknown command ${command}`);
+	await withProvisioning(async () => {
+		if (command === "record") await record(JSON.parse(json!) as RecordArgs);
+		else if (command === "resume") await resume(JSON.parse(json!) as ResumeArgs);
+		else if (command === "sdk-open") await sdkOpen(JSON.parse(json!) as SdkOpenArgs);
+		else throw new Error(`unknown command ${command}`);
+	});
 	process.exit(0);
 } catch (error) {
-	const typed = error as { name?: string; code?: string; message?: string };
-	emit({ error: { name: typed.name, code: typed.code, message: typed.message, rendered: resumeFailureMessage(error) } });
+	const typed = error as {
+		name?: string;
+		code?: string;
+		message?: string;
+		problems?: readonly { code: string; subject: string }[];
+		cause?: { name?: string; code?: string };
+	};
+	emit({
+		error: {
+			name: typed.name,
+			code: typed.code,
+			message: typed.message,
+			rendered: resumeFailureMessage(error),
+			problems: typed.problems?.map((problem) => ({ code: problem.code, subject: problem.subject })),
+			...(typed.cause === undefined ? {} : { cause: { name: typed.cause.name, code: typed.cause.code } }),
+		},
+	});
 	process.exit(2);
 }

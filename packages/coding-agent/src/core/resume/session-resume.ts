@@ -374,7 +374,7 @@ async function assertRestorePreconditions(
 			break;
 		}
 	}
-	assertResumePreconditions(options.entryPoint, problems);
+	assertResumePreconditions(options.entryPoint, problems, git);
 }
 
 /**

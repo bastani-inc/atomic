@@ -6,10 +6,15 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { parseArgs } from "../src/cli/args.js";
-import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
+import {
+	type AgentSessionRuntime,
+	type CreateAgentSessionRuntimeFactory,
+	createAgentSessionRuntime,
+} from "../src/core/agent-session-runtime.ts";
 import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { RESUME_CATALOG_TIMEOUT_MS } from "../src/core/resume/not-found.ts";
 import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { sessionResumeOptions } from "../src/core/resume/session-resume.ts";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.ts";
@@ -522,6 +527,74 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const cwd = runtime.session.sessionManager.getCwd();
 		assert.equal(existsSync(join(cwd, "..", "hook-ran")), false);
 		assert.equal(readFileSync(marker, "utf8"), "ran\n");
+	});
+
+	/** Makes the runtime's store look like `adapter` and delays each session load by `delayMs` of timer time. */
+	function slowStore(runtime: AgentSessionRuntime, adapter: string, delayMs: number): SessionStore {
+		const store = runtime.session.sessionManager.getSessionStore();
+		const descriptor = { ...store.descriptor, adapter };
+		Object.defineProperty(store, "descriptor", { value: descriptor, configurable: true });
+		const load = store.load.bind(store);
+		store.load = (id) =>
+			new Promise((resolveLoad, rejectLoad) => setTimeout(() => load(id).then(resolveLoad, rejectLoad), delayMs));
+		return store;
+	}
+
+	test("a /resume whose shared storage does not answer fails retryable at the lookup deadline and keeps the session", async () => {
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
+		const before = runtime.session.sessionId;
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			slowStore(runtime, "libsql", RESUME_CATALOG_TIMEOUT_MS * 2);
+			const pending = runtime.switchSession(sessionId).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await vi.advanceTimersByTimeAsync(RESUME_CATALOG_TIMEOUT_MS);
+			const error = await pending;
+			assert.ok(isResumeCatalogTimeoutError(error), String(error));
+			assert.deepEqual(
+				[error.subject, error.id, error.storage, error.timeoutMs, error.retryable],
+				["session", sessionId, "libsql", RESUME_CATALOG_TIMEOUT_MS, true],
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+		assert.equal(runtime.session.sessionId, before);
+	});
+
+	test("a /resume from storage only this node reads sets no lookup deadline", async () => {
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(sandbox.path("agent"), { resume: { setupCommand: "true" } });
+		const store = runtime.session.sessionManager.getSessionStore();
+		assert.equal(store.descriptor.adapter, "node-sqlite");
+		const load = store.load.bind(store);
+		let release!: () => void;
+		let loading!: () => void;
+		const released = new Promise<void>((resolveRelease) => {
+			release = resolveRelease;
+		});
+		const loadStarted = new Promise<void>((resolveLoading) => {
+			loading = resolveLoading;
+		});
+		store.load = async (id) => {
+			loading();
+			await released;
+			return load(id);
+		};
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		let switched: Promise<{ cancelled: boolean }>;
+		try {
+			switched = runtime.switchSession(sessionId);
+			await loadStarted;
+			assert.equal(vi.getTimerCount(), 0, "no deadline waits on the lookup");
+		} finally {
+			vi.useRealTimers();
+		}
+		release();
+		assert.deepEqual(await switched, { cancelled: false });
+		assert.equal(runtime.session.sessionId, sessionId);
 	});
 
 	test("a /resume that needs a restore on a node without Git fails as a switch-session precondition", async () => {

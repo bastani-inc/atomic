@@ -302,14 +302,14 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 describe("resume not-found classification (#4329)", () => {
 	test("built-in local adapters are local-only and named with their location", () => {
 		for (const adapter of ["node-sqlite", "jsonl", "memory"]) {
-			const error = resumeNotFoundError("session", "id", { adapter, location: "/x" });
+			const error = resumeNotFoundError("id", { adapter, location: "/x" });
 			assert.equal(error.reason, "local-storage-not-joined");
 			assert.equal(error.storage, `${adapter} at /x`);
 		}
 	});
 
 	test("a shared adapter miss never exposes the storage location", () => {
-		const error = resumeNotFoundError("session", "s", {
+		const error = resumeNotFoundError("s", {
 			adapter: "libsql",
 			location: "https://db.example?authToken=s",
 		});

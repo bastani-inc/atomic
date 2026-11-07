@@ -20,6 +20,8 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";
+import type { ResumeEntryPoint } from "./resume/errors.ts";
+import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline } from "./resume/not-found.ts";
 import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
@@ -579,15 +581,36 @@ export class AgentSessionRuntime {
 	}
 
 	/**
+	 * `lookup`, a read of session `sessionId` from this runtime's session store. In shared storage it fails as a
+	 * retryable `ResumeCatalogTimeoutError` when the storage does not answer within {@link RESUME_CATALOG_TIMEOUT_MS},
+	 * and as `ResumeCatalogUnavailableError` when it cannot be reached, instead of waiting for the network to give up.
+	 */
+	private boundedSessionLookup<T>(lookup: Promise<T>, sessionId: string): Promise<T> {
+		const { adapter } = this.session.sessionManager.getSessionStore().descriptor;
+		if (isLocalOnlySessionStorage(adapter)) return lookup;
+		return withResumeLookupDeadline(
+			lookup,
+			{ subject: "session", id: sessionId, storage: adapter },
+			RESUME_CATALOG_TIMEOUT_MS,
+		).catch((error: unknown) => {
+			throw resumeLookupError(error, "session", sessionId);
+		});
+	}
+
+	/**
 	 * Prepares a resumed session's checkout on this host (see {@link prepareSessionResume}) and returns the session
 	 * opened where it continues. Without a UI here, a dirty checkout of the session's repository is never used; the
 	 * snapshot is restored into a fresh worktree instead.
 	 */
-	private async resumeWorktree(sessionManager: SessionManager, sessionDirectory?: string): Promise<SessionManager> {
+	private async resumeWorktree(
+		sessionManager: SessionManager,
+		sessionDirectory?: string,
+		entryPoint: ResumeEntryPoint = "switch-session",
+	): Promise<SessionManager> {
 		const settings = this.services.settingsManager;
 		const prepared = await prepareSessionResume(sessionManager, {
 			...sessionResumeOptions(
-				"switch-session",
+				entryPoint,
 				this.cwd,
 				this.services.agentDir,
 				settings,
@@ -615,10 +638,9 @@ export class AgentSessionRuntime {
 			}
 
 			const previousSessionId = this.session.sessionId;
-			const opened = await this.session.sessionManager.openSessionById(
+			const opened = await this.boundedSessionLookup(
+				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory),
 				sessionId,
-				options?.cwdOverride,
-				options?.sessionDirectory,
 			);
 			const sessionManager = await this.resumeWorktree(opened, options?.sessionDirectory);
 			assertSessionCwdExists(sessionManager, this.cwd);
@@ -761,7 +783,9 @@ export class AgentSessionRuntime {
 	 * runtime's services when the cwd matches. It runs beside `session` and does not replace it; release it again
 	 * with `release()`. A session that is live already is returned as it is, and concurrent calls for one id share
 	 * one rehydration. A session this node's storage does not hold fails at once with a `session-not-found`
-	 * {@link AgentRehydrateError}, before the factory runs.
+	 * {@link AgentRehydrateError}, before the factory runs. A session whose working directory is not on this node, as
+	 * when another node released it, has its checkouts prepared first, as `/resume` prepares them, and continues where
+	 * they were restored. Lookups in shared storage are bounded as `/resume`'s are.
 	 */
 	rehydrate(sessionId: string): Promise<AgentSession> {
 		return this.admit(async () => {
@@ -783,7 +807,7 @@ export class AgentSessionRuntime {
 
 	private async rehydrateFromStore(sessionId: string): Promise<AgentSession> {
 		const store = this.session.sessionManager.getSessionStore();
-		if ((await store.readHeader(sessionId)) === undefined) {
+		if ((await this.boundedSessionLookup(store.readHeader(sessionId), sessionId)) === undefined) {
 			const storage = store.descriptor.adapter;
 			throw new AgentRehydrateError("session-not-found", {
 				sessionId,
@@ -791,7 +815,10 @@ export class AgentSessionRuntime {
 				localOnly: isLocalOnlySessionStorage(storage),
 			});
 		}
-		const sessionManager = await this.session.sessionManager.openSessionById(sessionId);
+		const opened = await this.boundedSessionLookup(this.session.sessionManager.openSessionById(sessionId), sessionId);
+		const sessionManager = existsSync(opened.getCwd())
+			? opened
+			: await this.resumeWorktree(opened, undefined, "rehydrate");
 		const cwd = sessionManager.getCwd();
 		const result = await sessionLifecycleCreation.run({ scope: {} }, () =>
 			this.sessionFactory({

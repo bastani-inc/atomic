@@ -9,17 +9,13 @@ import {
 } from "./errors.ts";
 
 /**
- * The typed miss for a resume whose id matched nothing in `descriptor`'s storage. Local-only storage says the node is
- * not joined to the shared storage; shared storage names only its adapter, never its URL.
+ * The typed miss for a session resume whose id matched nothing in `descriptor`'s storage. Local-only storage says the
+ * node is not joined to the shared storage; shared storage names only its adapter, never its URL.
  */
-export function resumeNotFoundError(
-	subject: ResumeSubject,
-	id: string,
-	descriptor: StorageDescriptor,
-): ResumeNotFoundError {
+export function resumeNotFoundError(id: string, descriptor: StorageDescriptor): ResumeNotFoundError {
 	const local = isLocalOnlySessionStorage(descriptor.adapter);
 	return new ResumeNotFoundError({
-		subject,
+		subject: "session",
 		id,
 		reason: local ? "local-storage-not-joined" : "shared-miss",
 		storage: local ? `${descriptor.adapter} at ${descriptor.location}` : descriptor.adapter,
