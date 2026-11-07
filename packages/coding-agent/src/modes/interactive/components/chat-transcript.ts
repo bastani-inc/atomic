@@ -8,8 +8,9 @@ import {
 	Spacer,
 	truncateToWidth,
 	visibleWidth,
+	type WheelScrollLines,
 } from "@earendil-works/pi-tui";
-import { WheelScrollAccelerator, type WheelScrollLines } from "@earendil-works/pi-tui/dist/wheel-scroll.js";
+import { WheelScrollAccelerator } from "./wheel-scroll-accelerator.ts";
 
 /**
  * Roles that participate in pi's chat spacing contract.

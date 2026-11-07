@@ -395,6 +395,8 @@ test("isolated chat settings include only the builtin Mermaid transformer", () =
 				getImageWidthCells: () => 60,
 				getMermaidRenderingMode: () => "streaming",
 				getLatexRenderingEnabled: () => true,
+				getFullscreenScrollbar: () => "auto",
+				getFullscreenWheelScrollLines: () => "auto",
 			},
 		},
 	});

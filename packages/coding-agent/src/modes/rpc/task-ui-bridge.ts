@@ -3,7 +3,7 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
-import { ChatSessionHost } from "../interactive/components/chat-session-host.js";
+import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { TaskInspector } from "../interactive/components/task-inspector.js";
 import { isActiveBackgroundTask, renderTaskFooter } from "../interactive/components/task-list.js";
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
