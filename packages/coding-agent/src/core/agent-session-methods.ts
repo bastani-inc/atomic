@@ -344,6 +344,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	supportsThinking(): boolean;
 	_getThinkingLevelForModelSwitch(targetModel?: Model<Api>, explicitLevel?: ThinkingLevel): ThinkingLevel;
 	_clampThinkingLevel(level: ThinkingLevel, availableLevels: ThinkingLevel[]): ThinkingLevel;
+	_recordThinkingLevel(): Promise<string> | undefined;
 
 	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;
 	compact(options?: SessionCompactOptions): Promise<VerbatimCompactionResult>;

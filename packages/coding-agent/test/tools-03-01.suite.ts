@@ -5,8 +5,13 @@ import { access } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
-import { computeEditsDiff } from "../src/core/tools/edit-diff.js";
-import { EditTargetError, isEditTargetError } from "../src/core/tools/file-tool-errors.js";
+import {
+	applyEditsToNormalizedContent,
+	applyReplacementsToOriginal,
+	computeEditsDiff,
+	normalizeToLF,
+} from "../src/core/tools/edit-diff.js";
+import { EditTargetError, isEditMatchError, isEditTargetError } from "../src/core/tools/file-tool-errors.js";
 import { createEditTool } from "../src/index.js";
 
 const readOnlyErrorCode = process.platform === "win32" ? "EPERM" : "EACCES";
@@ -632,5 +637,163 @@ describe("edit tool CRLF handling", () => {
 
 		const content = readFileSync(testFile, "utf-8");
 		assert.equal(content, "\uFEFFfirst\r\nSECOND\r\nthird\r\nFOURTH\r\n");
+	});
+
+	it("should write CRLF for inserted lines in CRLF files", async () => {
+		const testFile = join(testDir, "crlf-bytes.txt");
+		writeFileSync(testFile, "first\r\nsecond\r\nthird");
+
+		await editTool.execute("test-crlf-bytes", {
+			path: testFile,
+			edits: [{ oldText: "second\nthird", newText: "2a\r\n2b\nthird!" }],
+		});
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("first\r\n2a\r\n2b\r\nthird!")));
+	});
+
+	it("should write LF for inserted lines in LF files", async () => {
+		const testFile = join(testDir, "lf-bytes.txt");
+		writeFileSync(testFile, "first\nsecond\nthird");
+
+		await editTool.execute("test-lf-bytes", {
+			path: testFile,
+			edits: [{ oldText: "second\nthird", newText: "2a\r\n2b\nthird!" }],
+		});
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("first\n2a\n2b\nthird!")));
+	});
+
+	it("should keep CRLF lines when the first line ends with LF (pi #8544)", async () => {
+		const testFile = join(testDir, "mixed-lf-first.txt");
+		writeFileSync(testFile, "a\nb\r\nX = 1\r\n");
+
+		await editTool.execute("test-mixed-lf-first", {
+			path: testFile,
+			edits: [{ oldText: "X = 1", newText: "X = 2" }],
+		});
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("a\nb\r\nX = 2\r\n")));
+	});
+
+	it("should keep LF lines when the first line ends with CRLF (pi #8544)", async () => {
+		const testFile = join(testDir, "mixed-crlf-first.txt");
+		writeFileSync(testFile, "a\r\nb\nc");
+
+		await editTool.execute("test-mixed-crlf-first", { path: testFile, edits: [{ oldText: "c", newText: "C" }] });
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("a\r\nb\nC")));
+	});
+
+	it("should keep a lone CR in an untouched line (pi #8544)", async () => {
+		const testFile = join(testDir, "lone-cr.txt");
+		writeFileSync(testFile, "a\rb\nX = 1\n");
+
+		await editTool.execute("test-lone-cr", { path: testFile, edits: [{ oldText: "X = 1", newText: "X = 2" }] });
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("a\rb\nX = 2\n")));
+	});
+
+	it("should give inserted lines CR line endings in a file without any LF (pi #8544)", async () => {
+		const testFile = join(testDir, "classic-mac.txt");
+		writeFileSync(testFile, "a\rb\rc");
+
+		await editTool.execute("test-classic-mac", { path: testFile, edits: [{ oldText: "b", newText: "B1\nB2" }] });
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("a\rB1\rB2\rc")));
+	});
+
+	it("should give inserted lines the line ending of the line they replace in multi-edit mode (pi #8544)", async () => {
+		const testFile = join(testDir, "mixed-multi.txt");
+		writeFileSync(testFile, "lf1\nlf2\ncr1\r\ncr2\r\n");
+
+		await editTool.execute("test-mixed-multi", {
+			path: testFile,
+			edits: [
+				{ oldText: "lf1\n", newText: "A\nB\n" },
+				{ oldText: "cr1\n", newText: "C\nD\n" },
+			],
+		});
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("A\nB\nlf2\nC\r\nD\r\ncr2\r\n")));
+	});
+
+	it("should give inserted lines on an unterminated last line the line ending of the line before (pi #8544)", async () => {
+		const testFile = join(testDir, "mixed-last.txt");
+		writeFileSync(testFile, "a\nb\r\nlast");
+
+		await editTool.execute("test-mixed-last", { path: testFile, edits: [{ oldText: "last", newText: "x\ny" }] });
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("a\nb\r\nx\r\ny")));
+	});
+
+	it("should keep untouched line endings when fuzzy matching widens the edit to whole lines (pi #8544)", async () => {
+		const testFile = join(testDir, "mixed-fuzzy.txt");
+		writeFileSync(testFile, "a\r\nfoo   \r\nb\n");
+
+		await editTool.execute("test-mixed-fuzzy", { path: testFile, edits: [{ oldText: "foo\n", newText: "FOO\n" }] });
+
+		assert.ok(readFileSync(testFile).equals(Buffer.from("a\r\nFOO\r\nb\n")));
+	});
+
+	it("should not merge a kept lone CR with a line feed after it", async () => {
+		const cases = [
+			{ edit: { oldText: "b", newText: "\nB" }, written: "a\r\n\nB\nc", diffed: "a\n\nB\nc" },
+			{ edit: { oldText: "b", newText: "" }, written: "a\r\n\nc", diffed: "a\n\nc" },
+		];
+		for (const [index, { edit, written, diffed }] of cases.entries()) {
+			const testFile = join(testDir, `cr-seam-${index}.txt`);
+			writeFileSync(testFile, "a\rb\nc");
+
+			const result = await editTool.execute("test-cr-seam", { path: testFile, edits: [edit] });
+
+			assert.ok(readFileSync(testFile).equals(Buffer.from(written)));
+			assert.equal(applyPatch("a\nb\nc", result.details?.patch ?? ""), diffed);
+		}
+	});
+
+	it("should not merge an inserted CR line ending with a kept line feed after it", () => {
+		const written = applyReplacementsToOriginal("a\rb\nc", [{ matchIndex: 2, matchLength: 1, newText: "\r" }]);
+
+		assert.equal(normalizeToLF(written), "a\n\n\nc");
+	});
+
+	it("should give inserted lines LF in text without line breaks and CR in text with only lone CRs", () => {
+		assert.equal(applyReplacementsToOriginal("abc", [{ matchIndex: 1, matchLength: 1, newText: "x\ny" }]), "ax\nyc");
+		assert.equal(
+			applyReplacementsToOriginal("a\rb", [{ matchIndex: 2, matchLength: 1, newText: "x\ny" }]),
+			"a\rx\ry",
+		);
+	});
+
+	it("should write content that normalizes to the diffed content for random mixed line endings", () => {
+		let seed = 1;
+		const random = (n: number): number => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			// The high bits: the low bits of this generator repeat with a short period.
+			return Math.floor((seed / 0x80000000) * n);
+		};
+		const endings = ["\n", "\r\n", "\r", ""];
+		let checked = 0;
+		for (let run = 0; run < 3000; run++) {
+			let original = "";
+			for (let line = random(12) + 1; line > 0; line--) {
+				original += `w${random(100)}${random(5) === 0 ? "  " : ""}${endings[random(4)]}`;
+			}
+			const normalized = normalizeToLF(original);
+			const start = random(normalized.length);
+			const oldText = normalized.slice(start, start + 1 + random(12));
+			const newText = ["", "\n", "X\n", "\nY", "\r", "Z"][random(6)];
+			let applied: ReturnType<typeof applyEditsToNormalizedContent>;
+			try {
+				applied = applyEditsToNormalizedContent(normalized, [{ oldText, newText }], "f.txt");
+			} catch (error) {
+				if (isEditMatchError(error)) continue;
+				throw error;
+			}
+
+			assert.equal(normalizeToLF(applyReplacementsToOriginal(original, applied.replacements)), applied.newContent);
+			checked++;
+		}
+		assert.ok(checked > 1000);
 	});
 });

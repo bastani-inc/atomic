@@ -27,7 +27,12 @@ const grepSchema = Type.Object(
 	{
 		pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
 		path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
-		glob: Type.Optional(Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" })),
+		glob: Type.Optional(
+			Type.String({
+				description:
+					"Filter files by glob pattern, relative to path, e.g. '*.ts', 'src/**/*.ts' or '**/*.spec.ts'. A pattern without '/' matches file names at any depth",
+			}),
+		),
 		ignoreCase: Type.Optional(Type.Boolean({ description: "Case-insensitive search (default: false)" })),
 		type: Type.Optional(Type.String({ description: "File type filter for native grep." })),
 		literal: Type.Optional(
@@ -250,14 +255,9 @@ export function createGrepToolDefinition(
 						const contextAfterValue = contextAfter === undefined ? contextValue : clampLineCount(contextAfter);
 						const nativeCache = options?.nativeCache === true;
 						const effectiveLimit = Math.max(1, Math.floor(limit ?? DEFAULT_LIMIT));
-						const formatPath = (filePath: string): string => {
-							if (isDirectory) {
-								if (!path.isAbsolute(filePath)) return filePath.replace(/\\/g, "/");
-								const relative = path.relative(searchPath, filePath);
-								if (relative && !relative.startsWith("..")) return relative.replace(/\\/g, "/");
-							}
-							return path.basename(filePath);
-						};
+						const relativeGlob = glob?.replace(/^(!?)(?:\.\/)+/, "$1");
+						const formatPath = (filePath: string): string =>
+							isDirectory ? path.normalize(filePath).replace(/\\/g, "/") : path.basename(filePath);
 
 						if (!customOps && !literal) {
 							const nativeBinding = loadNativeSearchBinding();
@@ -266,7 +266,7 @@ export function createGrepToolDefinition(
 									pattern,
 									path: searchPath,
 									cwd: executionCwd,
-									glob,
+									glob: relativeGlob,
 									ignoreCase,
 									hidden: hidden ?? true,
 									gitignore: gitignore !== false,
@@ -359,14 +359,15 @@ export function createGrepToolDefinition(
 						if (pattern.includes("\n") || pattern.includes("\\n")) args.push("--multiline");
 						if (type) args.push("--type", type);
 						if (maxCountPerFile !== undefined) args.push("--max-count", String(maxCountPerFile));
-						if (glob) args.push("--glob", glob);
+						if (relativeGlob) args.push("--glob", relativeGlob);
 						const contentMode = mode !== "count" && mode !== "filesWithMatches";
 						// rg emits the surrounding lines as `context` events, so no matched file is ever read here (pi #9276).
 						if (contentMode && contextBeforeValue > 0) args.push("--before-context", String(contextBeforeValue));
 						if (contentMode && contextAfterValue > 0) args.push("--after-context", String(contextAfterValue));
-						args.push("--", pattern, searchPath);
+						args.push("--", pattern, isDirectory ? "." : searchPath);
 
 						const child = spawn(rgPath, args, {
+							cwd: isDirectory ? searchPath : undefined,
 							env: createChildProcessEnvironment(),
 							stdio: ["ignore", "pipe", "pipe"],
 						});

@@ -249,6 +249,12 @@ export const OpenAICompletionsCompatSchema = Type.Object(
 					'Whether replayed assistant messages with no text (e.g. tool-call-only messages) must send "" instead of null content. Default: false.',
 			}),
 		),
+		requiresToolsWithToolHistory: Type.Optional(
+			Type.Boolean({
+				description:
+					'Whether requests without tools must send "tools": [] when the conversation contains tool calls or tool results. Needed by some proxies in front of Anthropic, such as older LiteLLM versions. Default: false, the field is omitted.',
+			}),
+		),
 		requiresThinkingAsText: Type.Optional(
 			Type.Boolean({
 				description:

@@ -357,9 +357,31 @@ describe("parseCommandArgs", () => {
 		expect(parseCommandArgs('"line1\nline2" second')).toEqual(["line1\nline2", "second"]);
 		assert.deepEqual(parseCommandArgs('""\tline1\nline2'), ["", "line1\nline2"]);
 	});
-	test("should handle escaped quotes inside quoted strings", () => {
-		// Note: This implementation doesn't handle escaped quotes - backslash is literal
-		expect(parseCommandArgs('"quoted \\"text\\""')).toEqual(["quoted \\text\\"]);
+	test("should handle escaped quotes inside quoted strings (#11861)", () => {
+		expect(parseCommandArgs('"quoted \\"text\\""')).toEqual(['quoted "text"']);
+		expect(parseCommandArgs("'it\\'s here' next")).toEqual(["it's here", "next"]);
+		expect(parseCommandArgs("\"C:\\dir\\file\" '\\\\server\\share'")).toEqual(["C:\\dir\\file", "\\\\server\\share"]);
+		expect(parseCommandArgs("\"it's\" 'a\\\"b'")).toEqual(["it's", 'a\\"b']);
+		expect(parseCommandArgs('say \\"hi')).toEqual(["say", '\\"hi']);
+	});
+	test("should keep apostrophes inside words (#11861)", () => {
+		expect(parseCommandArgs("why doesn't the user's cache work")).toEqual([
+			"why",
+			"doesn't",
+			"the",
+			"user's",
+			"cache",
+			"work",
+		]);
+		expect(parseCommandArgs("why doesn't this work")).toEqual(["why", "doesn't", "this", "work"]);
+	});
+	test("should treat an unclosed quote as literal text (#11861)", () => {
+		expect(parseCommandArgs("'tis the season")).toEqual(["'tis", "the", "season"]);
+		expect(parseCommandArgs('say "hello world')).toEqual(["say", '"hello', "world"]);
+		expect(parseCommandArgs("a '")).toEqual(["a", "'"]);
+		expect(parseCommandArgs('"abc\\"')).toEqual(['"abc\\"']);
+		expect(parseCommandArgs("\"it's\" 'x")).toEqual(["it's", "'x"]);
+		expect(parseCommandArgs("'line1\nline2 next")).toEqual(["'line1\nline2", "next"]);
 	});
 	test("should handle trailing spaces", () => {
 		expect(parseCommandArgs("a b c   ")).toEqual(["a", "b", "c"]);

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -381,6 +381,35 @@ describe("Coding Agent Tools", () => {
 			);
 			assert.equal(readFile.mock.calls.length, 0);
 		});
+
+		// literal: true takes the ripgrep path, which roots --glob at its working directory; the default takes the native search.
+		for (const literal of [false, true]) {
+			it(`should resolve folder globs relative to path (pi #11807, literal: ${literal})`, async () => {
+				const repo = join(testDir, "repo");
+				mkdirSync(join(repo, "migrations", "main"), { recursive: true });
+				mkdirSync(join(repo, "nested", "migrations", "main"), { recursive: true });
+				writeFileSync(join(repo, "migrations", "main", "a.js"), "hello\n");
+				writeFileSync(join(repo, "nested", "migrations", "main", "b.js"), "hello\n");
+				const link = join(testDir, "repo-link");
+				symlinkSync(repo, link, "junction");
+
+				for (const searchPath of [repo, link]) {
+					const search = async (glob: string) =>
+						getTextOutput(
+							await grepTool.execute("test-call-glob", { pattern: "hello", path: searchPath, glob, literal }),
+						);
+
+					expect(await search("migrations/main/*.js")).toBe("migrations/main/a.js:1: hello");
+					expect((await search("**/migrations/main/*.js")).split("\n").sort()).toEqual([
+						"migrations/main/a.js:1: hello",
+						"nested/migrations/main/b.js:1: hello",
+					]);
+					expect(await search("./migrations/main/*.js")).toBe("migrations/main/a.js:1: hello");
+					expect(await search("././migrations/main/*.js")).toBe("migrations/main/a.js:1: hello");
+					if (literal) expect(await search("!./migrations/**")).toBe("nested/migrations/main/b.js:1: hello");
+				}
+			});
+		}
 
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");

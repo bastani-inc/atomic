@@ -33,6 +33,7 @@ export interface InteractiveSubmissionHost {
 	editor: Editor;
 	editorContainer: { children: object[] };
 	pendingMessagesContainer: Container;
+	pendingBashComponents: Component[];
 	tuiInputSubscriptions: Set<object>;
 	addTuiInputListener: () => () => void;
 	compactionQueuedMessages: Array<{ text: string; mode: "steer" | "followUp" }>;
@@ -133,6 +134,7 @@ export function createInteractiveSubmissionHost(session: AgentSession): Interact
 		editor,
 		editorContainer: { children: [editor] },
 		pendingMessagesContainer: new Container(),
+		pendingBashComponents: [],
 		tuiInputSubscriptions: new Set(),
 		addTuiInputListener: () => () => {},
 		compactionQueuedMessages: [],

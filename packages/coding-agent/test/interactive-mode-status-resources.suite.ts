@@ -169,6 +169,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		fakeThis.chatContainer.addChild(fakeThis.resourceDisclosureContainer);
 		fakeThis.customHeader = undefined;
 		fakeThis.builtInHeader = undefined;
+		fakeThis.pendingMessagesContainer = new Container();
 		fakeThis.ui = { requestRender: () => {} };
 
 		InteractiveMode.prototype.showLoadedResources.call(fakeThis, {

@@ -96,7 +96,7 @@ Answers depend on DeepWiki's repository indexing and availability. Check the rep
 - Every `oldText` must match exactly one region of the file as it is when the edit runs, including whitespace and newlines. Edits are matched against the original file, not one after another, and must not overlap. Merge changes to the same or nearby lines into one edit.
 - `edit` does not depend on an earlier `read`. A file changed by `bash`, another tool, or another program is edited by its current text.
 - When no exact match exists, `edit` retries after normalizing trailing whitespace, Unicode quotes, dashes, and spaces, and leaves lines outside the replaced regions byte-for-byte unchanged.
-- A UTF-8 byte-order mark and the file's line endings (LF or CRLF) are kept.
+- A UTF-8 byte-order mark is kept, and every line outside the replaced text keeps its own line ending (LF, CRLF, or a lone CR). Line breaks in `newText` take the line ending of the line where the replaced text starts; a file that uses only lone CR line endings gets CR.
 - Either every edit applies or the file is left unchanged.
 - In the built-in tool, a notebook (`.ipynb`) is edited through the same `# %% [code] cell:N` text that `read` shows; cell metadata, outputs, and execution counts are kept.
 

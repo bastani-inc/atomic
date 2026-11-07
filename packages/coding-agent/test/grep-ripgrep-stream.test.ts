@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { ChildProcess, spawn } from "child_process";
 import { beforeEach, describe, it, vi } from "vitest";
@@ -24,6 +25,7 @@ type RgEvent = object | string;
 
 interface RgRun {
 	args: string[];
+	cwd: string | URL | undefined;
 	kills: number;
 	eventsDeliveredAtKill: number | undefined;
 }
@@ -44,13 +46,14 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
  * stdout chunk; a kill request is recorded together with how many events had been delivered, and the process then
  * closes like a killed child (code null) while the remaining events are still delivered.
  */
-async function runRipgrep(events: RgEvent[], input: Omit<GrepToolInput, "pattern"> = {}) {
-	const run: RgRun = { args: [], kills: 0, eventsDeliveredAtKill: undefined };
+async function runRipgrep(events: RgEvent[], input: Omit<GrepToolInput, "pattern"> = {}, isDirectory = true) {
+	const run: RgRun = { args: [], cwd: undefined, kills: 0, eventsDeliveredAtKill: undefined };
 	let delivered = 0;
 	let deliveryError: Error | undefined;
 
-	vi.mocked(spawn).mockImplementationOnce((_command, args) => {
+	vi.mocked(spawn).mockImplementationOnce((_command, args, options) => {
 		run.args = [...args];
+		run.cwd = options?.cwd;
 		const child = new ChildProcess();
 		const stdout = new PassThrough();
 		child.stdout = stdout;
@@ -83,7 +86,7 @@ async function runRipgrep(events: RgEvent[], input: Omit<GrepToolInput, "pattern
 		return child;
 	});
 
-	const tool = createGrepTool(process.cwd(), { operations: { isDirectory: () => true } });
+	const tool = createGrepTool(process.cwd(), { operations: { isDirectory: () => isDirectory } });
 	const result = await tool.execute("rg-stream", { pattern: "needle", ...input });
 	if (deliveryError) throw deliveryError;
 	return { result, run, output: textOf(result) };
@@ -457,6 +460,64 @@ describe("grep ripgrep JSON stream handling", () => {
 
 				assert.equal(flagValue(run.args, "--before-context"), before);
 				assert.equal(flagValue(run.args, "--after-context"), after);
+			});
+		}
+	});
+
+	describe("globs relative to path (pi #11807)", () => {
+		it("runs ripgrep inside a searched directory, searches '.' and prints paths relative to it", async () => {
+			const { run, output } = await runRipgrep([matchEvent("./migrations/main/a.js", 1, "needle")], {
+				path: "repo",
+				glob: "migrations/main/*.js",
+			});
+
+			assert.equal(run.cwd, resolve(process.cwd(), "repo"));
+			assert.deepEqual(run.args.slice(-3), ["--", "needle", "."]);
+			assert.equal(flagValue(run.args, "--glob"), "migrations/main/*.js");
+			assert.equal(output, "migrations/main/a.js:1: needle");
+		});
+
+		it("lists ripgrep's ./-relative files relative to the searched directory", async () => {
+			const { output } = await runRipgrep(
+				[matchEvent("./sub/b.txt", 3, "needle"), matchEvent("./a.txt", 1, "needle")],
+				{ mode: "filesWithMatches" },
+			);
+
+			assert.equal(output, ["sub/b.txt", "a.txt"].join("\n"));
+		});
+
+		it("searches a single file by its own path from the current directory", async () => {
+			const filePath = resolve(process.cwd(), "notes", "a.txt");
+			const { run, output } = await runRipgrep([matchEvent(filePath, 2, "needle")], { path: "notes/a.txt" }, false);
+
+			assert.equal(run.cwd, undefined);
+			assert.deepEqual(run.args.slice(-3), ["--", "needle", filePath]);
+			assert.equal(output, "a.txt:2: needle");
+		});
+
+		const globs: ReadonlyArray<readonly [string, string]> = [
+			["./src/*.ts", "src/*.ts"],
+			["././src/*.ts", "src/*.ts"],
+			["!./dist/**", "!dist/**"],
+			["!././dist/**", "!dist/**"],
+			["src/./*.ts", "src/./*.ts"],
+			["a/b/*.ts", "a/b/*.ts"],
+			[".hidden/*", ".hidden/*"],
+			["!dist/**", "!dist/**"],
+		];
+		for (const [glob, expected] of globs) {
+			it(`passes the glob ${glob} to ripgrep as ${expected}`, async () => {
+				const { run } = await runRipgrep([], { glob });
+
+				assert.equal(flagValue(run.args, "--glob"), expected);
+			});
+		}
+
+		for (const glob of [undefined, "", "./"]) {
+			it(`passes no glob to ripgrep for ${JSON.stringify(glob)}`, async () => {
+				const { run } = await runRipgrep([], glob === undefined ? {} : { glob });
+
+				assert.equal(run.args.includes("--glob"), false);
 			});
 		}
 	});

@@ -82,7 +82,7 @@ describe("compatibility schemas", () => {
 		}
 	});
 
-	it("documents the prompt cache key mode, non-null assistant content and session-id header", () => {
+	it("documents the prompt cache key mode, non-null assistant content, tools with tool history and session-id header", () => {
 		const description = (schema: { properties: object }, field: string) =>
 			(schema.properties as Record<string, { description?: string }>)[field]?.description ?? "";
 
@@ -96,6 +96,12 @@ describe("compatibility schemas", () => {
 		expect(description(OpenAICompletionsCompatSchema, "requiresNonNullAssistantContent")).toContain(
 			'must send "" instead of null content',
 		);
+		expect(description(OpenAICompletionsCompatSchema, "requiresToolsWithToolHistory")).toContain(
+			'must send "tools": [] when the conversation contains tool calls or tool results',
+		);
+		expect(ProviderCompatSchema.properties).toHaveProperty("requiresToolsWithToolHistory");
+		expect(Compile(OpenAICompletionsCompatSchema).Check({ requiresToolsWithToolHistory: true })).toBe(true);
+		expect(Compile(OpenAICompletionsCompatSchema).Check({ requiresToolsWithToolHistory: "yes" })).toBe(false);
 		expect(description(OpenAIResponsesCompatSchema, "sessionAffinityFormat")).toContain(
 			"openai sends session-id and x-client-request-id",
 		);

@@ -84,6 +84,7 @@ InteractiveModeBase.prototype.setToolsExpanded = function (this: InteractiveMode
 		}
 	};
 	setNestedExpandables(this.chatContainer);
+	setNestedExpandables(this.pendingMessagesContainer);
 	// The rendered chat is the feedback; a status line restating it only adds noise.
 	this.ui.requestRender();
 };

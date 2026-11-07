@@ -85,6 +85,9 @@ InteractiveModeBase.prototype.clearAllQueues = async function (
 
 InteractiveModeBase.prototype.updatePendingMessagesDisplay = function (this: InteractiveModeBase): void {
 	this.pendingMessagesContainer.clear();
+	for (const component of this.pendingBashComponents) {
+		this.pendingMessagesContainer.addChild(component);
+	}
 	const { steering: steeringMessages, followUp: followUpMessages } = this.getAllQueuedMessages();
 	if (steeringMessages.length > 0 || followUpMessages.length > 0) {
 		this.pendingMessagesContainer.addChild(new Spacer(1));
