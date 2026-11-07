@@ -5,6 +5,7 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
 	findTaskMessageError,
+	isRetryableTaskMessageError,
 	isTaskMessageError,
 	isTaskMessageTimeoutError,
 	rehydrateTaskMessageError,
@@ -132,7 +133,7 @@ test("a refusal is delivery-refused, retryable, and names the target and the cha
 	assert.equal(bare.error.detail, undefined);
 });
 
-test("a channel that throws is delivery-refused with the failure as its cause (#4521)", async () => {
+test("a channel that throws is delivery-unconfirmed, not retryable, with the failure as its cause (#4521)", async () => {
 	const failure = new Error("relay unavailable");
 	const { error } = await sendThroughOwner(
 		intercomTranscript(async () => {
@@ -140,8 +141,16 @@ test("a channel that throws is delivery-refused with the failure as its cause (#
 		}),
 	);
 	assert.ok(error instanceof TaskMessageError);
-	assert.equal(error.code, "delivery-refused");
+	assert.ok(!(error instanceof TaskMessageTimeoutError));
+	assert.ok(!isTaskMessageTimeoutError(error), "a plain unconfirmed error is not taken for the timeout");
+	assert.equal(error.code, "delivery-unconfirmed");
+	assert.equal(error.retryable, false);
+	assert.equal(error.target, "worker-1");
 	assert.equal(error.cause, failure);
+	assert.equal(
+		error.message,
+		"Intercom did not confirm the message: worker-1 (delivery-unconfirmed). The agent may still receive it; check its transcript before sending it again.",
+	);
 	assert.equal(findTaskMessageError(new Error("wrapper", { cause: error })), error);
 	assert.equal(findTaskMessageError(new Error("unrelated")), undefined);
 });
@@ -203,6 +212,19 @@ test("task message errors cross a process boundary as data and come back typed (
 	assert.equal(rehydrateTaskMessageError("TaskMessageError"), undefined);
 	assert.ok(!isTaskMessageError({ name: "TaskMessageError", code: "invented" }));
 	assert.ok(!isTaskMessageError({ name: "Error", code: "delivery-refused" }));
+});
+
+test("only a delivery-refused message error, also in a cause chain or as a copy, is retryable (#4521)", () => {
+	const refused = new TaskMessageError("delivery-refused", { taskId: "task-1" });
+	assert.equal(isRetryableTaskMessageError(refused), true);
+	assert.equal(isRetryableTaskMessageError(new Error("wrapper", { cause: refused })), true);
+	assert.equal(isRetryableTaskMessageError(JSON.parse(JSON.stringify(refused))), true);
+	for (const code of ["task-unavailable", "messages-unsupported", "delivery-unconfirmed"] as const)
+		assert.equal(isRetryableTaskMessageError(new TaskMessageError(code, { taskId: "task-1" })), false, code);
+	const timeout = new TaskMessageTimeoutError({ taskId: "task-1", target: "w", timeoutMs: 1, elapsedMs: 1 });
+	assert.equal(isRetryableTaskMessageError(timeout), false);
+	assert.equal(isRetryableTaskMessageError(new Error("unrelated", { cause: { retryable: true } })), false);
+	assert.equal(isRetryableTaskMessageError(undefined), false);
 });
 
 test("the Intercom relay delivers a typed message to the child target and reports its acknowledgement (#4521)", async () => {

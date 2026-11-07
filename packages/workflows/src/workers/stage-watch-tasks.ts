@@ -87,7 +87,7 @@ async function sendStageTaskMessage(source: TaskViewSource, taskId: TaskId, text
 		return { kind: "message" };
 	} catch (error) {
 		const failure =
-			findTaskMessageError(error) ?? new TaskMessageError("delivery-refused", { taskId }, { cause: error });
+			findTaskMessageError(error) ?? new TaskMessageError("delivery-unconfirmed", { taskId }, { cause: error });
 		return { kind: "message", error: failure.toJSON() };
 	}
 }

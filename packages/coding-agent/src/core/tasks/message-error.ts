@@ -72,7 +72,7 @@ const TASK_MESSAGE_COPY: Readonly<
 		retryable: true,
 	},
 	"delivery-unconfirmed": {
-		failure: "Intercom did not confirm the message in time",
+		failure: "Intercom did not confirm the message",
 		hint: "The agent may still receive it; check its transcript before sending it again",
 		retryable: false,
 	},
@@ -164,6 +164,16 @@ export function isTaskMessageTimeoutError(error: unknown): error is TaskMessageT
 	return (
 		error instanceof TaskMessageTimeoutError ||
 		hasErrorIdentity(error, new Set([TASK_MESSAGE_TIMEOUT_ERROR_NAME]), new Set(["delivery-unconfirmed"]))
+	);
+}
+
+/** True when `error`, or an error in its `cause` chain, is a {@link TaskMessageError} that may be sent again. */
+export function isRetryableTaskMessageError(error: unknown): boolean {
+	return (
+		findInCauseChain(
+			error,
+			(candidate): candidate is TaskMessageError => isTaskMessageError(candidate) && candidate.retryable === true,
+		) !== undefined
 	);
 }
 

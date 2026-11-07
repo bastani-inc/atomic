@@ -53,10 +53,24 @@ test("the worker's typed refusal comes back to the root as the same error (#4521
 	}));
 	const fallback = await failureOf(unknown.sendTaskMessage(TASK, "hello"));
 	assert.ok(fallback instanceof TaskMessageError);
-	assert.equal(fallback.code, "delivery-refused");
+	assert.equal(fallback.code, "delivery-unconfirmed", "an unreadable answer may follow a delivered message");
+	assert.equal(fallback.retryable, false);
+	assert.equal(fallback.detail, "unreadable reply from the local worker");
 });
 
 test("a worker that lost the task, answered something else, or failed to answer is a typed failure (#4521)", async () => {
+	const refusal = new Error("the pool is paused");
+	const refusedSource = new PooledStageTaskSource(
+		async () => {
+			throw refusal;
+		},
+		(error) => error === refusal,
+	);
+	const refused = await failureOf(refusedSource.sendTaskMessage(TASK, "hello"));
+	assert.ok(refused instanceof TaskMessageError);
+	assert.equal(refused.code, "delivery-refused", "a refusal before the worker ran the action can be sent again");
+	assert.equal(refused.retryable, true);
+	assert.equal(refused.cause, refusal);
 	const missing = await failureOf(new PooledStageTaskSource(async () => undefined).sendTaskMessage(TASK, "hello"));
 	assert.ok(missing instanceof TaskMessageError);
 	assert.equal(missing.code, "task-unavailable");
@@ -67,7 +81,7 @@ test("a worker that lost the task, answered something else, or failed to answer 
 		),
 	);
 	assert.ok(wrong instanceof TaskMessageError);
-	assert.equal(wrong.code, "delivery-refused");
+	assert.equal(wrong.code, "delivery-unconfirmed");
 	assert.equal(wrong.detail, "unexpected reply from the local worker");
 	const cause = new Error("worker connection closed");
 	const broken = await failureOf(
@@ -76,7 +90,9 @@ test("a worker that lost the task, answered something else, or failed to answer 
 		}).sendTaskMessage(TASK, "hello"),
 	);
 	assert.ok(broken instanceof TaskMessageError);
-	assert.equal(broken.code, "delivery-refused");
+	assert.equal(broken.code, "delivery-unconfirmed", "a lost answer may follow a delivered message");
+	assert.equal(broken.retryable, false);
+	assert.equal(broken.detail, "the local worker did not answer");
 	assert.equal(broken.cause, cause);
 });
 
@@ -122,7 +138,7 @@ test("the worker answers a message action with nothing, or with the task's typed
 		{ kind: "message", text: "hello" },
 	);
 	assert.equal(untyped.kind, "message");
-	assert.equal(untyped.kind === "message" ? untyped.error?.code : undefined, "delivery-refused");
+	assert.equal(untyped.kind === "message" ? untyped.error?.code : undefined, "delivery-unconfirmed");
 	assert.equal(untyped.kind === "message" ? untyped.error?.cause?.message : undefined, "relay crashed");
 
 	const unsupported = await runStageTaskAction(workerSource({}), TASK, { kind: "message", text: "hello" });

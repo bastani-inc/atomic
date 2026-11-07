@@ -99,6 +99,7 @@ export {
 } from "./core/tasks/heartbeat-notice.js";
 export {
 	findTaskMessageError,
+	isRetryableTaskMessageError,
 	isTaskMessageError,
 	isTaskMessageTimeoutError,
 	rehydrateTaskMessageError,

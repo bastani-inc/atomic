@@ -238,7 +238,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			try {
 				delivery = await session.sendMessage(text);
 			} catch (cause) {
-				throw new TaskMessageError("delivery-refused", { taskId: id, target }, { cause });
+				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
 			}
 			if (delivery.delivered) return;
 			if (delivery.reason === "unconfirmed")

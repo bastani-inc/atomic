@@ -172,6 +172,7 @@ export class PooledStageHandle implements StageControlHandle {
 	/** The stage session's background tasks, as the worker last sent them; actions run there. */
 	private readonly taskView = new PooledStageTaskSource(
 		async (taskId, action) => (await this.sessionCommand({ kind: "task", taskId, action })).task,
+		(error) => error instanceof PooledStageDeliveryError,
 	);
 	/** The outbox's sender while it runs; one at a time keeps send order. */
 	private pumping?: Promise<void>;
