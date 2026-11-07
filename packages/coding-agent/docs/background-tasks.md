@@ -208,7 +208,7 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 | Task list | Up/Down selects; Enter opens detail; Escape returns to chat. |
 | Task detail | Up/Down selects an action; Enter activates it; PageUp/PageDown scrolls the body. |
 | Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
-| Transcript display | Ctrl+T toggles thinking blocks and Ctrl+O toggles tool output, the same settings the chat uses. |
+| Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |
 | Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. Up/Down, Home/End and Left/Right edit the prompt. |
 | Go back | Escape returns from transcript to detail, then from detail to the list. Left does the same when the prompt is empty. |
 | Stop | On a task's detail page, `x` requests cancellation; confirm with `y`, or keep running with `n` or Escape. A bound `app.tasks.cancel` key also works from the list. |

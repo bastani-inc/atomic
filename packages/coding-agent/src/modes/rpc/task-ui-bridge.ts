@@ -21,22 +21,23 @@ export type EngineTaskInspectorMount = Pick<ExtensionUIContext, "custom"> & {
 };
 
 /**
- * The isolated engine's `/tasks`, opened from the host's chat: tool output follows the host's Ctrl+O, which the
- * inspector leaves to the host. The engine's own state stands in only until a render request carries the host's.
+ * The isolated engine's `/tasks`, opened from the host's chat. Its transcripts show tool output as the host chat does
+ * (the engine's own state stands in until a render request carries the host's), and Ctrl+O there changes it for this
+ * inspector only, as an attached stage chat keeps its own.
  */
 export function engineTaskInspectorUi(
 	ui: Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded">,
 	mount: EngineTaskInspectorMount,
 ): TaskInspectorUi {
-	const hostToolsExpanded = () => mount.getHostRenderSettings?.()?.toolOutputExpanded;
+	let toggled: boolean | undefined;
+	const toolsExpanded = () => toggled ?? mount.getHostRenderSettings?.()?.toolOutputExpanded ?? ui.getToolsExpanded();
 	return {
 		custom: mount.custom,
-		getChatRenderSettings: () => {
-			const settings = ui.getChatRenderSettings();
-			const toolOutputExpanded = hostToolsExpanded();
-			return toolOutputExpanded === undefined ? settings : { ...settings, toolOutputExpanded };
+		getChatRenderSettings: () => ({ ...ui.getChatRenderSettings(), toolOutputExpanded: toolsExpanded() }),
+		getToolsExpanded: toolsExpanded,
+		setToolsExpanded: (expanded) => {
+			toggled = expanded;
 		},
-		getToolsExpanded: () => hostToolsExpanded() ?? ui.getToolsExpanded(),
 	};
 }
 

@@ -242,10 +242,9 @@ test("fullscreen viewport ownership keeps Ctrl+T with its focused host owner", (
 	);
 	assert.equal(
 		shouldHandleFullscreenViewportInput(overlay, editor, "\x0f", false, true, keybindings),
-		false,
-		"focused overlays defer the host tool-output binding until their input declines (#4521)",
+		true,
+		"Ctrl+O is no viewport action: a focused overlay keeps it (#4521)",
 	);
-	assert.equal(shouldHandleFullscreenViewportInput(inline, editor, "\x0f", false, false, keybindings), true);
 	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "a", false, true, keybindings), true);
 	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, mouse, true, true, keybindings), false);
 	assert.equal(shouldHandleFullscreenViewportInput(inline, editor, mouse, true, false, keybindings), true);
@@ -909,7 +908,7 @@ test("fullscreen workflow overlay Ctrl+T invokes the production host thinking ac
 		tui.stop();
 	}
 });
-test("a focused overlay that declines Ctrl+O hands it to the host's tool output (#4521)", async () => {
+test("a focused overlay that declines Ctrl+O does not change the host's tool output (#4521)", async () => {
 	const inputs: string[] = [];
 	const hostKeybindings = new KeybindingsManager();
 	const host = makeProductionThinkingHandler(hostKeybindings);
@@ -942,9 +941,9 @@ test("a focused overlay that declines Ctrl+O hands it to the host's tool output 
 	try {
 		terminal.input("\x0f");
 		await flush();
-		assert.deepEqual(inputs, ["\x0f"], "the focused overlay sees Ctrl+O first");
-		assert.equal(host.mode.toolOutputExpanded, true, "the declined Ctrl+O expands the host's tool output");
-		assert.equal(host.handler("a"), false, "other declined keys are not host actions");
+		assert.deepEqual(inputs, ["\x0f"], "the focused overlay sees Ctrl+O");
+		assert.equal(host.mode.toolOutputExpanded, false, "a mounted overlay keeps Ctrl+O from the chat behind it");
+		assert.equal(host.handler("\x0f"), false, "a declined Ctrl+O is no host action");
 	} finally {
 		overlay.hide();
 		tui.stop();

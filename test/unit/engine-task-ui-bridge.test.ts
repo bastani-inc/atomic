@@ -167,7 +167,7 @@ test("engine task picker opens inline and detail uses an opaque fullscreen overl
 type ChatRenderSettings = ReturnType<ExtensionUIContext["getChatRenderSettings"]>;
 const renderSettings = (settings: Partial<ChatRenderSettings>) => settings as ChatRenderSettings;
 
-test("the engine's /tasks follows the host chat's tool output and leaves Ctrl+O to the host (#4521)", () => {
+test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O there changes only its own (#4521)", () => {
 	let engineExpanded = false;
 	let host: EngineHostRenderSettings | undefined;
 	const custom = (() => Promise.resolve(undefined)) as ExtensionUIContext["custom"];
@@ -179,26 +179,34 @@ test("the engine's /tasks follows the host chat's tool output and leaves Ctrl+O 
 		{ custom, getHostRenderSettings: () => host },
 	);
 	assert.equal(ui.custom, custom);
-	assert.equal(ui.setToolsExpanded, undefined, "the host owns Ctrl+O, so the inspector cannot set tool output");
 	engineExpanded = true;
 	assert.equal(ui.getToolsExpanded?.(), true, "before a render carried the host's settings the engine's stand in");
-	assert.equal(ui.getChatRenderSettings?.().toolOutputExpanded, true);
+	assert.deepEqual(ui.getChatRenderSettings?.(), { hideThinkingBlock: true, toolOutputExpanded: true });
 	host = {
 		hideThinkingBlock: false,
 		toolOutputExpanded: false,
 		fullscreenScrollbar: "auto",
 		fullscreenWheelScrollLines: 3,
 	};
-	assert.equal(ui.getToolsExpanded?.(), false);
+	assert.equal(ui.getToolsExpanded?.(), false, "the host chat's setting wins once known");
 	assert.deepEqual(ui.getChatRenderSettings?.(), { hideThinkingBlock: true, toolOutputExpanded: false });
-	host = { ...host, toolOutputExpanded: true };
-	engineExpanded = false;
-	assert.equal(ui.getToolsExpanded?.(), true);
+	ui.setToolsExpanded?.(true);
+	assert.equal(ui.getToolsExpanded?.(), true, "Ctrl+O in the inspector sets its own tool output");
 	assert.equal(ui.getChatRenderSettings?.().toolOutputExpanded, true);
+	host = { ...host, toolOutputExpanded: false };
+	engineExpanded = false;
+	assert.equal(ui.getToolsExpanded?.(), true, "and keeps it while the inspector is open");
+	ui.setToolsExpanded?.(false);
+	assert.equal(ui.getToolsExpanded?.(), false);
+	assert.equal(engineExpanded, false, "the engine's own chat state is untouched");
+	const reopened = engineTaskInspectorUi(
+		{ getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }), getToolsExpanded: () => true },
+		{ custom, getHostRenderSettings: () => ({ ...host!, toolOutputExpanded: true }) },
+	);
+	assert.equal(reopened.getToolsExpanded?.(), true, "a new inspector starts from the host chat again");
 	const withoutHost = engineTaskInspectorUi(
 		{ getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }), getToolsExpanded: () => true },
 		{ custom },
 	);
-	assert.equal(withoutHost.getToolsExpanded?.(), true);
-	assert.deepEqual(withoutHost.getChatRenderSettings?.(), { hideThinkingBlock: false });
+	assert.deepEqual(withoutHost.getChatRenderSettings?.(), { hideThinkingBlock: false, toolOutputExpanded: true });
 });

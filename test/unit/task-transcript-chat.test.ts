@@ -329,7 +329,7 @@ test("Ctrl+T is offered to the host, Ctrl+O toggles the inherited tool output, a
 	}
 });
 
-test("where the host owns tool output, Ctrl+O is left to it and the transcript follows its setting (#4521)", async () => {
+test("a transcript that cannot set tool output follows its environment's, and Ctrl+O changes nothing there (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Run the listing", timestamp: 0 });
 	await session.appendMessage(
@@ -353,8 +353,8 @@ test("where the host owns tool output, Ctrl+O is left to it and the transcript f
 	});
 	try {
 		assert.doesNotMatch(host.text(), /OUTPUT-0\b/);
-		assert.equal(host.inspector.handleInput("\x0f"), false, "Ctrl+O goes to the host that owns tool output");
-		assert.doesNotMatch(host.text(), /OUTPUT-0\b/, "declining does not toggle anything itself");
+		assert.equal(host.inspector.handleInput("\x0f"), true, "Ctrl+O stays on the task page");
+		assert.doesNotMatch(host.text(), /OUTPUT-0\b/, "and toggles nothing");
 		toolOutputExpanded = true;
 		assert.match(host.text(), /OUTPUT-0\b[\s\S]*OUTPUT-39/, "the transcript follows the host's tool output");
 	} finally {
