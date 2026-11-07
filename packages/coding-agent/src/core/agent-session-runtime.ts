@@ -24,8 +24,12 @@ import type { ResumeEntryPoint } from "./resume/errors.ts";
 import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline } from "./resume/not-found.ts";
 import { isInside, registerWorktreeRootMappings } from "./resume/path-mapping.ts";
 import {
+	holdsSnapshotCommit,
+	latestSessionSnapshot,
+	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	resumeStoreDir,
+	retryFailedSessionSetup,
 	savedProjectTrust,
 	sessionResumeOptions,
 } from "./resume/session-resume.ts";
@@ -614,18 +618,22 @@ export class AgentSessionRuntime {
 		sessionDirectory?: string,
 		entryPoint: ResumeEntryPoint = "switch-session",
 	): Promise<SessionManager> {
-		const settings = this.services.settingsManager;
 		const prepared = await prepareSessionResume(sessionManager, {
-			...sessionResumeOptions(
-				entryPoint,
-				this.cwd,
-				this.services.agentDir,
-				settings,
-				savedProjectTrust(this.services.agentDir, settings),
-			),
+			...this.resumeOptions(entryPoint),
 			sessionDirectory,
 		});
 		return prepared.status === "ready" ? prepared.sessionManager : sessionManager;
+	}
+
+	private resumeOptions(entryPoint: ResumeEntryPoint): PrepareSessionResumeOptions {
+		const settings = this.services.settingsManager;
+		return sessionResumeOptions(
+			entryPoint,
+			this.cwd,
+			this.services.agentDir,
+			settings,
+			savedProjectTrust(this.services.agentDir, settings),
+		);
 	}
 
 	async switchSession(
@@ -813,21 +821,29 @@ export class AgentSessionRuntime {
 	}
 
 	/**
-	 * Where a rehydrated session continues. When the directory it last worked in, after the restores it recorded, is in a
-	 * worktree this node restored, it continues there as it is, since work done there after the release belongs to it.
-	 * Any other directory, such as the checkout it was recorded in or one at the same path on another node, is checked
-	 * against the session's snapshot as `/resume` checks it: the session continues there when the tree matches and in a
-	 * restored worktree otherwise.
+	 * Where a rehydrated session continues. When the directory it last worked in, after the restores it recorded, is the
+	 * checkout it worked in on this node (a worktree this node restored for it, or a checkout whose repository holds the
+	 * commit of its latest snapshot), it continues there as it is, since work done there after the release belongs to
+	 * it, and a setup hook that failed there runs again. Any other directory, such as one at the same path on another
+	 * node, is checked against the session's snapshot as `/resume` checks it.
 	 */
 	private async continueWhereItWorked(opened: SessionManager): Promise<SessionManager> {
 		const mappings = opened.getWorktreeRootMappings();
 		const cwd = mapRestoredPath(opened.getCwd(), mappings);
-		if (!existsSync(cwd) || !isInside(resumeStoreDir(this.services.agentDir), cwd)) {
+		if (!existsSync(cwd) || !(await this.workedIn(opened, cwd))) {
 			return this.resumeWorktree(opened, undefined, "rehydrate");
 		}
 		registerWorktreeRootMappings(mappings);
+		await retryFailedSessionSetup(opened, this.resumeOptions("rehydrate"));
 		if (cwd === resolve(opened.getCwd())) return opened;
 		return this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId());
+	}
+
+	/** Whether `cwd`, where `opened` last worked, is the checkout it worked in on this node. */
+	private async workedIn(opened: SessionManager, cwd: string): Promise<boolean> {
+		if (isInside(resumeStoreDir(this.services.agentDir), cwd)) return true;
+		const match = latestSessionSnapshot(opened);
+		return match === undefined || (await holdsSnapshotCommit(match.snapshot, match.root));
 	}
 
 	private async rehydrateFromStore(sessionId: string): Promise<AgentSession> {

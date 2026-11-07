@@ -1,13 +1,13 @@
 import { stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import type { GitUnavailableError } from "../../utils/git-errors.ts";
+import { type GitUnavailableError, isGitUnavailableError } from "../../utils/git-errors.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { currentWorktreeSnapshots, mapRestoredPath, openSessionInWorktree } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
 import { ProjectTrustStore } from "../trust-manager.ts";
 import { locateCheckout, readRepositoryConfig } from "../worktree-snapshot/capture.ts";
 import { isWorkspaceDriftError, isWorkspaceSnapshotError } from "../worktree-snapshot/errors.ts";
-import { gitText } from "../worktree-snapshot/git.ts";
+import { gitText, runGit } from "../worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "../worktree-snapshot/head-advance.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
@@ -360,6 +360,42 @@ async function setUpRestoredCheckouts(
 		}
 	}
 	return notices;
+}
+
+/**
+ * Whether the repository of the checkout at `root` holds the commit that records `snapshot`. That commit is written
+ * only where the snapshot was taken, so it tells the checkout a session worked in, even after it changed, from another
+ * checkout of the same repository at the same path on another node. A checkout that is not a repository, or a node
+ * without Git, does not hold it.
+ */
+export async function holdsSnapshotCommit(
+	snapshot: WorktreeSnapshot,
+	root: string,
+	signal?: AbortSignal,
+): Promise<boolean> {
+	try {
+		const { exitCode } = await runGit(["cat-file", "-e", `${snapshot.snapshot}^{commit}`], {
+			cwd: root,
+			signal,
+			allowExitCodes: [1, 128],
+		});
+		return exitCode === 0;
+	} catch (error) {
+		if (isGitUnavailableError(error)) return false;
+		throw error;
+	}
+}
+
+/**
+ * Runs the setup hook again in each worktree Atomic restored for the session whose last hook there failed, as a resume
+ * that restores nothing does.
+ */
+export async function retryFailedSessionSetup(
+	sessionManager: SessionManager,
+	options: PrepareSessionResumeOptions,
+): Promise<ResumeNotice[]> {
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	return setUpRestoredCheckouts(sessionManager, new Set(), storeDir, options);
 }
 
 /**

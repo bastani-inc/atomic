@@ -334,7 +334,7 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 ### Worktree snapshots
 
-A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI, TUI and `createAgentSession({ sessionManager })` restore missing or drifted checkouts into fresh worktrees before continuing, and `runtime.rehydrate()` does the same when it wakes a session. A session whose last working directory is a worktree this machine restored for it continues there as it is; any other directory, including one at the same path on another machine, is checked against the session's snapshot first. Pass the stored session directly unless you want to choose its working directory explicitly with `cwd` or bind it with `workspace`:
+A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI, TUI and `createAgentSession({ sessionManager })` restore missing or drifted checkouts into fresh worktrees before continuing, and `runtime.rehydrate()` does the same when it wakes a session. A session whose last working directory is the checkout it worked in on this machine (a worktree this machine restored for it, or a checkout whose repository holds the commit of its latest snapshot) continues there as it is, even if it changed since; any other directory, including another clone at the same path on another machine, is checked against the session's snapshot first. Pass the stored session directly unless you want to choose its working directory explicitly with `cwd` or bind it with `workspace`:
 
 ```typescript
 import { createAgentSession, SessionManager } from "@bastani/atomic";
