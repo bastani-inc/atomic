@@ -126,7 +126,7 @@ Before any scenario, the gate checks and records:
 | Suite | Issue | On a ref without the feature |
 | --- | --- | --- |
 | `smoke` | #4331 | always runs |
-| `multi-node-resume` | #4329 | skips: no `WorkspaceError` export |
+| `multi-node-resume` | #4329 | skips: no `ResumeError` export |
 | `cross-host-pools` | #4310 | skips: no `WorkerPlacementError` export |
 | `shard-contention` | #4325 | skips: no `JournalShardUnavailableError` export |
 | `idle-density` | #4309/#4326, #4394 | skips: no `AgentSessionRuntime.rehydrate` |
@@ -141,7 +141,7 @@ A skip is a result with `status: "skipped"` and a typed reason: `feature-unavail
 export the interface, `scenario-pending` when it does but the suite's scenarios have not been written yet. A failed
 import, a broken deployment or a failing call into an available feature is a failure, never a skip. The PR that adds a
 feature adds its scenarios under `test/distributed/harness/` and sets `implemented: true` on its probe in
-`suites.mjs`. `smoke` and `idle-density` have scenarios; the others skip as `scenario-pending` on a ref that has their
+`suites.mjs`. `smoke`, `idle-density` and `multi-node-resume` have scenarios; the others skip as `scenario-pending` on a ref that has their
 interface.
 
 ### The smoke suite
@@ -165,6 +165,27 @@ At the end the suite checks:
 - a writer completed after the last fault, without intervention;
 - the replica caught up with the primary;
 - a node with a skewed clock never took over a live lease.
+
+### The multi-node-resume suite
+
+The suite needs at least three nodes, including the git-less node. It runs the same session and workflow fixture drivers
+as the reduced multi-process acceptance tests, with each node's own Atomic home and one shared, authenticated sqld
+namespace. A pinned Bun 1.4.4 binary is copied over the private control path and checked on each node. A run's synthetic
+Git remotes are copied to the same path on each node; the nodes and database never need a public endpoint.
+
+The first node records a session with uncommitted and untracked files plus an unpushed commit, then is SIGKILLed. The
+second node observes a typed timeout during a database partition, is SIGKILLed during restore, then resumes the session;
+the suite checks the tree, HEAD, conversation, mapped path, setup count and absence of partial worktrees. On the
+git-less node an unsuccessful provision must fail typed before restoration; the suite then provisions Git from a
+synthetic archive of the first node's Git and restores the session. The provision test uses the same CI driver's
+fetch override, not Internet egress from the private node.
+
+For workflow resume the first node runs children bound to two repositories, with completed `ctx.tool` effects before
+it is killed. The second node waits for the real owner lease to expire, checks that a database partition gives a typed
+run lookup timeout, then resumes both children and checks their trees and effects. A fork on the second node verifies it
+materializes its earlier stage's snapshot. The suite also checks the shared database's integrity. Its `partition` and
+`sigkill` profiles are required for full acceptance. The pooled-host and released-subagent scenarios are exercised by
+the reduced CI integration tests, not by this suite.
 
 ### The idle-density suite
 

@@ -252,7 +252,7 @@ export async function stageBase(host, { nodeTarball, harnessDir }) {
  * @param {string} harnessDir
  */
 export async function stageHarness(host, harnessDir) {
-	for (const file of ["agent.mjs", "gateway.mjs", "released.mjs"])
+	for (const file of ["agent.mjs", "gateway.mjs", "released.mjs", "resume-check.mjs"])
 		await host.upload(join(harnessDir, file), `${REMOTE_ROOT}/harness/${file}`, `upload ${file}`);
 }
 

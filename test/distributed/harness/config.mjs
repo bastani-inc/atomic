@@ -41,6 +41,7 @@ export const CHAOS_PROFILES = Object.freeze([
 /** The chaos profiles each suite with scenarios runs; a run's `--chaos` selection is narrowed to them per suite. */
 export const SUITE_PROFILES = Object.freeze({
 	smoke: CHAOS_PROFILES,
+	"multi-node-resume": Object.freeze(["partition", "sigkill"]),
 	"idle-density": Object.freeze([
 		"partition",
 		"sigkill",
@@ -53,8 +54,8 @@ export const SUITE_PROFILES = Object.freeze({
 	]),
 });
 
-/** Suites that need more than one node: the idle-density owner and its senders run on different nodes. */
-export const SUITE_MIN_NODES = Object.freeze({ "idle-density": 2 });
+/** Suites that need distinct nodes for their owner, senders, or git-less resume. */
+export const SUITE_MIN_NODES = Object.freeze({ "idle-density": 2, "multi-node-resume": 3 });
 
 /**
  * The profiles of `chaos` that `suite` runs, in the order given.
@@ -461,7 +462,9 @@ export function resolveRunOptions(args, topology, { randomSeed, replay = {} }) {
 	if (Number(nodesText) < minNodes)
 		throw cliError(
 			"--nodes",
-			`at least ${minNodes}: the idle-density suite runs its owner and its senders on different nodes`,
+			minNodes === 3
+				? "at least 3: the multi-node-resume suite needs three nodes, one without git"
+				: "at least 2: the idle-density suite runs its owner and its senders on different nodes",
 			nodesText,
 		);
 	const seedText = args.seed ?? replay.seed;
