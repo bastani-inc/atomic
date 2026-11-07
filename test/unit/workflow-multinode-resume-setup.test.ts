@@ -3,11 +3,14 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+	captureWorktreeSnapshot,
+	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	type GitUnavailableError,
 	isResumePreconditionError,
 	isResumeSetupHookError,
 	ProjectTrustStore,
 	restoreRunWorktree,
+	restoreWorktree,
 	runRestorePreconditionError,
 	setUpRestoredRunWorktrees,
 	setWorktreeSnapshotGit,
@@ -35,7 +38,7 @@ import type { WorkflowDefinition } from "../../packages/workflows/src/shared/typ
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
-import { openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
+import { openSqlSnapshotJournal, openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
 useTemporaryAgentDir();
@@ -746,4 +749,62 @@ test("a worker host restore without the snapshot's fingerprint reads it from the
 			error.problems[0]!.subject === "setup hook",
 	);
 	assert.equal(restores, 1);
+});
+
+test("a worker host trusted for its restored worktrees restores a snapshot with dependency inputs (#4329)", async () => {
+	const hostAgentDir = sandbox.path("host-agent");
+	mkdirSync(hostAgentDir, { recursive: true });
+	writeFileSync(join(hostAgentDir, "settings.json"), "{}");
+	new ProjectTrustStore(hostAgentDir).set(join(hostAgentDir, "worktree-snapshots", "worktrees"), true);
+	let restores = 0;
+
+	const restored = await restoreRunWorktree(
+		"e".repeat(64),
+		async () => {
+			restores++;
+			return sandbox.path("restored-elsewhere");
+		},
+		{ agentDir: hostAgentDir },
+	);
+
+	assert.deepEqual([restored, restores], [sandbox.path("restored-elsewhere"), 1]);
+});
+
+test("a worker host whose hook fails removes the worktree it restored from its own store (#4329)", async () => {
+	const hostAgentDir = sandbox.path("host-agent");
+	mkdirSync(hostAgentDir, { recursive: true });
+	writeFileSync(
+		join(hostAgentDir, "settings.json"),
+		JSON.stringify({ resume: { setupCommand: nodeCommand("process.exit(3)") } }),
+	);
+	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
+	sandbox.write(join(clone, "README.md"), "edited\n");
+	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+	cleanups.push(() => fixture.close());
+	const capture = await captureWorktreeSnapshot(clone, {
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		blobs: fixture.journal.snapshotBlobs,
+	});
+	if (capture.status !== "captured") throw new Error(capture.status);
+	let restored = "";
+
+	await assert.rejects(
+		restoreRunWorktree(
+			capture.snapshot.envHash,
+			async () => {
+				restored = (
+					await restoreWorktree(capture.snapshot, {
+						blobs: fixture.journal.snapshotBlobs,
+						storeDir: join(hostAgentDir, "worktree-snapshots"),
+					})
+				).path;
+				return restored;
+			},
+			{ agentDir: hostAgentDir },
+		),
+		(error: unknown) =>
+			isResumeSetupHookError(error) && (error as { cleanupCause?: unknown }).cleanupCause === undefined,
+	);
+	assert.ok(restored.startsWith(join(hostAgentDir, "worktree-snapshots")), restored);
+	assert.equal(existsSync(restored), false);
 });
