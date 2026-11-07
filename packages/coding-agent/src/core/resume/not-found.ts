@@ -22,13 +22,41 @@ export function resumeNotFoundError(id: string, descriptor: StorageDescriptor): 
 	});
 }
 
+/** Network codes, along a storage failure's cause chain, of storage this node cannot reach for now. */
+const UNREACHABLE_CODES: ReadonlySet<unknown> = new Set([
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"ECONNABORTED",
+	"EPIPE",
+	"ETIMEDOUT",
+	"ENETUNREACH",
+	"ENETDOWN",
+	"EHOSTUNREACH",
+	"EHOSTDOWN",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+	"UND_ERR_CONNECT_TIMEOUT",
+	"UND_ERR_SOCKET",
+]);
+
+function unreachable(error: StorageUnavailableError): boolean {
+	if (isRetryableStorageError(error)) return true;
+	let current: unknown = error.cause;
+	for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+		if (UNREACHABLE_CODES.has((current as NodeJS.ErrnoException).code)) return true;
+		current = current.cause;
+	}
+	return false;
+}
+
 /**
- * `error` as a resume lookup failure: storage that could not be reached for a reason that passes (a retryable storage
- * error, such as a refused or broken connection) becomes a retryable {@link ResumeCatalogUnavailableError} with the
- * original as its cause; anything else, such as a missing token file, is returned unchanged.
+ * `error` as a resume lookup failure: storage this node cannot reach for now (a retryable storage error, or a network
+ * failure such as a refused connection or an unreachable host) becomes a retryable
+ * {@link ResumeCatalogUnavailableError} with the original as its cause; anything else, such as a missing token file,
+ * is returned unchanged.
  */
 export function resumeLookupError(error: unknown, subject: ResumeSubject, id: string | null): unknown {
-	if (!(error instanceof StorageUnavailableError) || !isRetryableStorageError(error)) return error;
+	if (!(error instanceof StorageUnavailableError) || !unreachable(error)) return error;
 	return new ResumeCatalogUnavailableError({ subject, id, storage: error.adapter, phase: "catalog-lookup" }, error);
 }
 
