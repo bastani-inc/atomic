@@ -844,6 +844,16 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(readFileSync(join(worktree, "notes.txt"), "utf8"), "written after the release\n");
 	});
 
+	test("rehydrating with snapshots turned off still continues in the worktree this node restored for the session", async () => {
+		const agentDir = sandbox.path("agent");
+		const { sessionId, worktree } = await sessionEditedOnNodeB(agentDir);
+		const { runtime } = await runtimeOn(agentDir, { snapshots: { enabled: false } });
+
+		const woken = await runtime.rehydrate(sessionId);
+
+		assert.equal(woken.sessionManager.getCwd(), worktree);
+	});
+
 	test("rehydrating on the first node a session that worked on in node B's worktree continues from node B's work", async () => {
 		const { clone, sessionId, runtime, worktree } = await sessionEditedOnNodeB(sandbox.path("agent"));
 		renameSync(worktree, sandbox.path("node-b-offline"));

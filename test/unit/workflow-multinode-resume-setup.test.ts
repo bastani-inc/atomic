@@ -155,6 +155,35 @@ test("a run restored on another node runs its setup hook once before live work, 
 	);
 });
 
+test("a run that restored nothing resolves every path its work names as given (#4329)", async () => {
+	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
+	cleanups.push(() => fixture.close());
+	const elsewhere = join(sandbox.root, "elsewhere", "state.txt");
+	const resolved: string[] = [];
+	const definition = workflow({
+		name: "restored-nothing",
+		description: "",
+		inputs: {},
+		outputs: { ok: Type.Boolean() },
+		run: async (ctx) => {
+			await ctx.tool("resolve", {}, async () => {
+				resolved.push(resolveToCwd(elsewhere, ctx.cwd!));
+				return "resolved";
+			});
+			return { ok: true };
+		},
+	});
+
+	const result = await run(
+		definition,
+		{},
+		{ cwd: sandbox.root, durableBackend: fixture.backend, store: createStore() },
+	);
+
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(resolved, [elsewhere]);
+});
+
 test("a run bound to an input worktree resumes on another node in the worktree restored for it (#4329)", async () => {
 	const marker = sandbox.path("setup-runs");
 	writeSettings({ resume: { setupCommand: appendLineCommand(marker, "ran") } });
