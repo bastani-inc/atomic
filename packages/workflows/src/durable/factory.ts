@@ -45,9 +45,15 @@ export interface DurableBackendOptions {
 	 * other caller waits on it, a journal that opens later is closed.
 	 */
 	abandonSignal?: AbortSignal;
+	/**
+	 * Called once the selected journal has opened, before its runs are listed: the point at which its storage answered.
+	 * Not called when the opening fails.
+	 */
+	onJournalAnswered?: () => void;
 }
 
 const callersOfOpening = new WeakMap<SelectedDurableBackend, number>();
+const journalAnswers = new WeakMap<SelectedDurableBackend, Promise<unknown>>();
 
 function abandonOpening(
 	selected: Map<string | object, SelectedDurableBackend>,
@@ -97,9 +103,10 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	owner.selectedBackends ??= new Map();
 	const selected = owner.selectedBackends;
 	const existing = selected.get(key);
+	const journal = existing === undefined ? openSelectedRunJournal(selection, agentDir) : undefined;
 	const entry: SelectedDurableBackend = existing ?? {
-		ready: openSelectedRunJournal(selection, agentDir)
-			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal, runs: [] }))
+		ready: journal!
+			.then((opened) => JournalDurableBackend.open(opened, { ownsJournal, runs: [] }))
 			.then(async (opened) => {
 				// Every run is listed from its latest snapshot; a run's history is folded only when it is needed (#3892).
 				try {
@@ -119,10 +126,18 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 		holders: new Set(),
 		pinned: false,
 	};
+	if (journal !== undefined) journalAnswers.set(entry, journal);
 	if (existing === undefined) selected.set(key, entry);
 	if (holder === undefined) entry.pinned = true;
 	else entry.holders.add(holder);
 	callersOfOpening.set(entry, (callersOfOpening.get(entry) ?? 0) + 1);
 	options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
+	const answered = options.onJournalAnswered;
+	if (answered !== undefined) {
+		void (journalAnswers.get(entry) ?? entry.ready).then(
+			() => answered(),
+			() => undefined,
+		);
+	}
 	return withRunJournalConfigSource(selection, () => entry.ready);
 }
