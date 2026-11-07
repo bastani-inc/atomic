@@ -505,7 +505,7 @@ function withCleanupFailures(primary: unknown, cleanup: readonly unknown[]): unk
  * directory, followed by the resume setup hook of this host's agent directory in the restored worktree (#4329). None
  * for a host started with `restore: false` or without git: it takes bound work only when its tree is warm.
  */
-function hostRestorePort(
+export function hostRestorePort(
 	options: WorkflowWorkerHostOptions,
 	git: WorkerHostGit | undefined,
 	shared: SqlSharedPool,
