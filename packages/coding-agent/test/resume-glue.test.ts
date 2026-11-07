@@ -7,7 +7,7 @@ import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.
 import { getBinDir } from "../src/config.ts";
 import { STORAGE_JOIN_COMMAND } from "../src/core/agent-rehydrate-errors.ts";
 import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
-import { StorageAdapterLoadError, StorageUnavailableError } from "../src/core/storage/errors.js";
+import { StorageAdapterLoadError, StorageTransientError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
 import { inMemorySecret, LIBSQL_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
 import { GitUnavailableError, isGitUnavailableError } from "../src/core/worktree-snapshot/errors.ts";
@@ -248,8 +248,9 @@ describe("resume error family (#4329)", () => {
 
 describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 	test("an unreachable store during the lookup becomes a retryable typed error that keeps the cause", () => {
-		const cause = new StorageUnavailableError(
+		const cause = new StorageTransientError(
 			{ adapter: "libsql", location: "https://db?authToken=s" },
+			{ code: "connection-refused", outcome: "not-applied", attempts: 1 },
 			new Error("ECONNREFUSED"),
 		);
 		const error = resumeLookupError(cause, "session", "abc");
@@ -269,9 +270,17 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 	});
 
 	test("a picker lookup has no id, and other failures pass through unchanged", () => {
-		const cause = new StorageUnavailableError({ adapter: "node-sqlite", location: "/x" }, undefined);
+		const cause = new StorageTransientError(
+			{ adapter: "node-sqlite", location: "/x" },
+			{ code: "connection-lost", outcome: "unknown", attempts: 1 },
+		);
 		const picker = resumeLookupError(cause, "session", null) as ResumeCatalogUnavailableError;
 		assert.match(picker.message, /^Cannot look up the session: the storage \(node-sqlite\)/);
+		const missingToken = new StorageUnavailableError(
+			{ adapter: "@bastani/atomic-storage-libsql", location: "team-token" },
+			Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+		);
+		assert.equal(resumeLookupError(missingToken, "run", "r"), missingToken);
 		const other = new TypeError("bug");
 		assert.equal(resumeLookupError(other, "session", "abc"), other);
 		assert.equal(isRetryableResumeError(other), false);

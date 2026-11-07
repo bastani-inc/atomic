@@ -22,7 +22,12 @@ import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { StorageAdapterLoadError, StorageConfigError, StorageUnavailableError } from "../src/core/storage/errors.js";
+import {
+	StorageAdapterLoadError,
+	StorageConfigError,
+	StorageTransientError,
+	StorageUnavailableError,
+} from "../src/core/storage/errors.js";
 import { resolveAdapterOptions, type StorageSelection } from "../src/core/storage/provider.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
@@ -173,24 +178,22 @@ describe("openCliSession (#4329)", () => {
 		});
 	}
 
-	test("a resume whose storage cannot be opened is a retryable typed lookup failure; a new session is not", async () => {
+	test("a resume whose storage cannot be opened fails with that storage error, not a retryable lookup failure", async () => {
 		sandbox.write(sandbox.path("not-a-directory"), "file");
 		const unreachable: StorageSelection = { kind: "sqlite", path: sandbox.path("not-a-directory", "s.sqlite") };
 		const options = { agentDir: sandbox.path("agent"), sessionStorage: unreachable, trusted: () => false };
 		await assert.rejects(
 			openCliSession(parseArgs(["--session", "abc"]), sandbox.root, settings(), options),
 			(error) => {
-				assert.ok(isResumeCatalogUnavailableError(error));
-				assert.equal(error.id, "abc");
-				assert.equal(error.subject, "session");
-				assert.equal(error.storage, "node-sqlite");
-				assert.equal(error.retryable, true);
+				assert.ok(error instanceof StorageUnavailableError, String(error));
+				assert.equal(isResumeCatalogUnavailableError(error), false);
+				assert.equal(error.adapter, "node-sqlite");
 				return true;
 			},
 		);
 		await assert.rejects(openCliSession(parseArgs(["--continue"]), sandbox.root, settings(), options), (error) => {
-			assert.ok(isResumeCatalogUnavailableError(error));
-			assert.equal(error.id, null);
+			assert.ok(error instanceof StorageUnavailableError, String(error));
+			assert.equal(isResumeCatalogUnavailableError(error), false);
 			return true;
 		});
 		await assert.rejects(openCliSession(parseArgs([]), sandbox.root, settings(), options), (error) => {
@@ -607,8 +610,9 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			value: { ...store.descriptor, adapter: "libsql" },
 			configurable: true,
 		});
-		const unreachable = new StorageUnavailableError(
+		const unreachable = new StorageTransientError(
 			{ adapter: "libsql", location: "remote" },
+			{ code: "connection-lost", outcome: "not-applied", attempts: 1 },
 			new Error("ECONNRESET"),
 		);
 		store.load = async () => Promise.reject(unreachable);
@@ -1114,7 +1118,11 @@ export async function openSessionStore() {
 }
 `,
 		);
-		const unavailable = new StorageUnavailableError({ adapter: "probe", location: "test" }, new Error("ECONNRESET"));
+		const unavailable = new StorageTransientError(
+			{ adapter: "probe", location: "test" },
+			{ code: "connection-lost", outcome: "not-applied", attempts: 1 },
+			new Error("ECONNRESET"),
+		);
 		const probe = { reads: [] as string[], closes: 0, read: async () => Promise.reject(unavailable) };
 		(globalThis as { __atomicProbe?: typeof probe }).__atomicProbe = probe;
 		cleanups.push(() => {

@@ -28,6 +28,7 @@ import {
 	ensureResumeSetup,
 	predictedSetupProblem,
 	type ResumeSetupConfig,
+	readResumeSetupLedger,
 } from "./setup-hook.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
@@ -224,6 +225,7 @@ export async function prepareSessionResume(
 		await assertRestorePreconditions(sessionManager, restoring, storeDir, options, git.unavailable);
 	}
 	const snapshots = sessionManager.getWorktreeSnapshotRecords();
+	const restoredBefore = new Set(sessionManager.getWorktreeRootMappings().map((mapping) => resolve(mapping.to)));
 	const opened = await openSessionInWorktree(sessionManager, {
 		settings: options.settings,
 		storeDir,
@@ -235,7 +237,7 @@ export async function prepareSessionResume(
 	const mappings = opened.sessionManager.getWorktreeRootMappings();
 	registerWorktreeRootMappings(mappings);
 	notices.push(...opened.notices);
-	notices.push(...(await setUpRestoredCheckouts(opened.sessionManager, storeDir, options)));
+	notices.push(...(await setUpRestoredCheckouts(opened.sessionManager, restoredBefore, storeDir, options)));
 	return { status: "ready", sessionManager: opened.sessionManager, notices };
 }
 
@@ -326,15 +328,21 @@ async function assertRestoredSetupAvailable(
 	}
 }
 
-/** Runs the setup hook of every worktree Atomic restored for the session, once per worktree and environment. */
+/**
+ * Runs the setup hook of every worktree Atomic restored for the session: once per environment in a worktree this resume
+ * restored, and in one an earlier resume restored only until a hook has succeeded there, since later changes to its
+ * lockfiles are the session's own work.
+ */
 async function setUpRestoredCheckouts(
 	sessionManager: SessionManager,
+	restoredBefore: ReadonlySet<string>,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
 ): Promise<ResumeNotice[]> {
 	const notices: ResumeNotice[] = [];
 	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
 		if (!isInside(storeDir, root)) continue;
+		if (restoredBefore.has(root) && (await readResumeSetupLedger(storeDir, root))?.exitStatus === 0) continue;
 		const setup = await ensureResumeSetup({
 			entryPoint: options.entryPoint,
 			worktree: root,
