@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.ts";
+import type { SqliteDatabase, SqliteRow, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.ts";
 import {
@@ -292,6 +292,70 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 				assert.equal(await reopened.getBlob("session", hashes[1]!), undefined);
 			},
 		);
+		test.each([64, 128, 256])(
+			"reads a %i MiB legacy blob byte-exactly in linear time",
+			async (mib) => {
+				const database = await openDatabase();
+				await database.exec(`CREATE TABLE session_blobs (
+				session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, data BLOB NOT NULL,
+				PRIMARY KEY (session_id, hash)) STRICT`);
+				const original = Buffer.alloc(mib * 1024 * 1024).fill(Buffer.from([0, 1, 127, 128, 255]));
+				const hash = createHash("sha256").update(original).digest("hex");
+				await database.run(
+					"INSERT INTO session_blobs VALUES ('session', ?, ?, ?)",
+					hash,
+					original.length,
+					original,
+				);
+				const sessions = await SqlSessionStore.open(database);
+				closers.push(() => sessions.close());
+				const started = performance.now();
+				const restored = await sessions.getBlob("session", hash);
+				const elapsed = performance.now() - started;
+				process.stdout.write(`${adapter}: ${mib} MiB legacy read ${elapsed.toFixed(0)} ms\n`);
+				assert.ok(restored !== undefined && original.equals(restored), "legacy bytes must match exactly");
+				// Allow slow CI and linear copying, but reject repeatedly reading the entire source for every chunk.
+				assert.ok(elapsed < 1_500 + mib * 12, `${mib} MiB legacy read took ${elapsed.toFixed(0)} ms`);
+			},
+			120_000,
+		);
+
+		test("reads all bytes when a legacy blob is published as chunks between read statements", async () => {
+			const database = await openDatabase();
+			await database.exec(`CREATE TABLE session_blobs (
+				session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, data BLOB NOT NULL,
+				PRIMARY KEY (session_id, hash)) STRICT`);
+			const original = Buffer.alloc(2 * 1024 * 1024 + 17).fill(Buffer.from([0, 1, 127, 128, 255]));
+			const hash = createHash("sha256").update(original).digest("hex");
+			await database.run("INSERT INTO session_blobs VALUES ('session', ?, ?, ?)", hash, original.length, original);
+			const writer = await SqlSessionStore.open(database);
+			closers.push(() => writer.close());
+			await createSession(writer, "session", []);
+			let publish = false;
+			const interleaved: SqliteDatabase = {
+				descriptor: database.descriptor,
+				exec: database.exec.bind(database),
+				run: database.run.bind(database),
+				all: database.all.bind(database),
+				transaction: database.transaction.bind(database),
+				close: database.close.bind(database),
+				async get<T extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) {
+					const row = await database.get<T>(sql, ...params);
+					if (publish && Number(row?.chunks) === -1) {
+						publish = false;
+						await writer.putBlob("session", original);
+					}
+					return row;
+				},
+			};
+			const reader = await SqlSessionStore.open(interleaved);
+			closers.push(() => reader.close());
+			publish = true;
+			const restored = await reader.getBlob("session", hash);
+			assert.ok(restored !== undefined && original.equals(restored));
+			assert.equal(publish, false, "conversion must finish after the reader sees the legacy header");
+		});
+
 		test("opens a 256 MiB legacy blob without rewriting it and converts only on its next write", async () => {
 			const database = await openDatabase();
 			const sessions = await SqlSessionStore.open(database);

@@ -34,13 +34,13 @@ import { validateSessionEntries, validateSessionHeader, validateSessionText } fr
 
 export const SESSION_SCHEMA_VERSION = 1;
 /**
- * The most bytes of a session blob one row holds. A blob is stored as a header row and rows of at most this size,
- * so no value a statement binds or returns exceeds it: libSQL servers cap a row and a bound value (sqld's default is
+ * The most bytes of a chunked session blob one row holds. New blobs use a header row and rows of at most this size,
+ * so their bound and returned values stay within it: libSQL servers cap a row and a bound value (sqld's default is
  * 5 MB) and a statement's response (10 MB), and the HTTP protocol carries a blob as base64 in JSON, about 1.4 MB for
  * this size. A different size needs different table names, because a blob's rows are addressed by their index.
  */
 export const SESSION_BLOB_CHUNK_BYTES = 1024 * 1024;
-/** Materialize one bounded slice once, rather than loading the entire legacy BLOB for every chunk. */
+/** Bound each write transaction while reusing the bytes already supplied to putBlob. */
 const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
 	meta: "meta",
@@ -75,6 +75,7 @@ async function migrateLegacyBlobBatch(
 	tables: Tables,
 	sessionId: string,
 	hash: string,
+	data: Uint8Array,
 ): Promise<boolean> {
 	const params = [sessionId, hash];
 	const row = await tx.get<SqliteRow & { bytes: number }>(
@@ -89,22 +90,12 @@ async function migrateLegacyBlobBatch(
 	const next = Number(progress!.next);
 	const chunks = Math.ceil(Number(row.bytes) / SESSION_BLOB_CHUNK_BYTES);
 	const end = Math.min(next + LEGACY_BLOB_BATCH_CHUNKS, chunks);
-	if (next < end) {
+	for (let index = next; index < end; index++) {
 		await tx.run(
-			`WITH RECURSIVE source(data) AS MATERIALIZED (
-				SELECT substr(data, ?, ?) FROM ${tables.blobs} WHERE session_id = ? AND hash = ?
-			), indices(idx) AS (
-				SELECT 0 UNION ALL SELECT idx + 1 FROM indices WHERE idx + 1 < ?
-			)
-			INSERT INTO ${tables.blobChunks} (session_id, hash, idx, data)
-			SELECT ?, ?, idx + ?, substr(data, idx * ${SESSION_BLOB_CHUNK_BYTES} + 1, ${SESSION_BLOB_CHUNK_BYTES})
-			FROM source CROSS JOIN indices`,
-			next * SESSION_BLOB_CHUNK_BYTES + 1,
-			(end - next) * SESSION_BLOB_CHUNK_BYTES,
+			`INSERT INTO ${tables.blobChunks} (session_id, hash, idx, data) VALUES (?, ?, ?, ?)`,
 			...params,
-			end - next,
-			...params,
-			next,
+			index,
+			data.subarray(index * SESSION_BLOB_CHUNK_BYTES, (index + 1) * SESSION_BLOB_CHUNK_BYTES),
 		);
 	}
 	if (end === chunks) {
@@ -357,7 +348,9 @@ export class SqlSessionStore implements SessionStore {
 			// Each batch releases the writer queue; a crash loses at most one batch and readers keep the old bytes.
 			if (previous.chunks === -1) {
 				while (
-					await this.database.transaction((tx) => migrateLegacyBlobBatch(tx, this.tables, sessionId, blob.hash))
+					await this.database.transaction((tx) =>
+						migrateLegacyBlobBatch(tx, this.tables, sessionId, blob.hash, stored),
+					)
 				) {
 					await new Promise<void>((resolve) => setTimeout(resolve, 0));
 				}
@@ -398,25 +391,34 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * Reads the blob a chunk at a time, each one statement returning at most {@link SESSION_BLOB_CHUNK_BYTES}. Rows
-	 * never change once written, so no transaction is needed. A session deleted meanwhile holds nothing; a header
-	 * whose rows are not all there is a `blob-incomplete` failure.
+	 * Reads chunked blobs a row at a time, each returning at most {@link SESSION_BLOB_CHUNK_BYTES}. Legacy blobs
+	 * are read in one query: slicing their data column repeatedly would reread the entire BLOB for every chunk.
+	 * Rows never change once written. A session deleted meanwhile holds nothing; missing bytes are `blob-incomplete`.
 	 */
 	async getBlob(sessionId: string, hash: string): Promise<Uint8Array | undefined> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
-		const header = await this.blobHeader(sessionId, hash);
+		let header = await this.blobHeader(sessionId, hash);
 		if (header === undefined) return undefined;
+		if (header.chunks === -1) {
+			const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
+				`SELECT data FROM ${this.tables.blobs} WHERE session_id = ? AND hash = ? AND chunks = -1`,
+				sessionId,
+				hash,
+			);
+			if (row) {
+				if (row.data.byteLength === header.bytes) return row.data;
+				throw new SessionBlobError("blob-incomplete", { sessionId, hash, bytes: header.bytes });
+			}
+			// A writer may have published the chunked layout between the header and data reads.
+			header = await this.blobHeader(sessionId, hash);
+			if (header === undefined) return undefined;
+		}
 		const data = new Uint8Array(header.bytes);
 		let offset = 0;
-		const chunks = header.chunks < 0 ? Math.ceil(header.bytes / SESSION_BLOB_CHUNK_BYTES) : header.chunks;
-		for (let index = 0; index < chunks; index++) {
+		for (let index = 0; index < header.chunks; index++) {
 			const row = await this.database.get<SqliteRow & { data: Uint8Array | null }>(
-				this.legacyBlobData
-					? `SELECT CASE WHEN chunks = -1 THEN substr(data, ${index * SESSION_BLOB_CHUNK_BYTES + 1}, ${SESSION_BLOB_CHUNK_BYTES})
-						ELSE (SELECT data FROM ${this.tables.blobChunks} WHERE session_id = b.session_id AND hash = b.hash AND idx = ?)
-						END AS data FROM ${this.tables.blobs} b WHERE session_id = ? AND hash = ?`
-					: `SELECT data FROM ${this.tables.blobChunks} WHERE idx = ? AND session_id = ? AND hash = ?`,
+				`SELECT data FROM ${this.tables.blobChunks} WHERE idx = ? AND session_id = ? AND hash = ?`,
 				index,
 				sessionId,
 				hash,
