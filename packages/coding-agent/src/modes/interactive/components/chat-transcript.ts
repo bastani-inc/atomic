@@ -320,7 +320,7 @@ export class ScrollableComponentViewport implements Component {
 	 * honour it. See `scrollTo` for why the request has to outlive the call.
 	 */
 	private pendingScrollRow: number | undefined;
-	/** Ctrl+Home holds the first row, also while earlier history loads above it, until another scroll. */
+	/** Ctrl+Home holds the first row of content taller than the view, also while earlier history loads, until another scroll. */
 	private pinnedToTop = false;
 	private readonly keybindings: Pick<KeybindingsManager, "matches"> | undefined;
 	private readonly options: ScrollableComponentViewportOptions;
@@ -503,6 +503,8 @@ export class ScrollableComponentViewport implements Component {
 		// transcript built without a cache key is not windowed, but it is still
 		// one component spanning the anchor and still knows its own rows.
 		const segments = componentRows.map((rows) => rows.segments);
+		// Content that fits on one screen has no top to hold: Ctrl+Home there keeps following, as the main transcript does.
+		if (maxScroll === 0) this.pinnedToTop = false;
 		const pendingScrollRow = this.pinnedToTop ? 0 : this.pendingScrollRow;
 		this.pendingScrollRow = undefined;
 		if (pendingScrollRow !== undefined) {

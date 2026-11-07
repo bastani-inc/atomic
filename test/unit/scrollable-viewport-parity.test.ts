@@ -358,3 +358,13 @@ test("a reader scrolled up keeps their distance from the end when the width chan
 	assert.equal(view.getScrollFromBottom(), 7, "the reader stays seven rows above the end");
 	assert.equal(wide.length, 10);
 });
+
+test("Ctrl+Home on content that fits on one screen keeps following new rows, as the main transcript does (#4521)", () => {
+	const { view, content, paint } = viewport(numbered(3), {}, 10);
+	view.handleInput(CTRL_HOME);
+	assert.equal(paint()[0], "row-0");
+	content.lines = numbered(30);
+	const frame = paint();
+	assert.equal(view.getScrollFromBottom(), 0, "the view still follows the end");
+	assert.equal(frame.at(-1), "row-29");
+});
