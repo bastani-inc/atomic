@@ -1,6 +1,6 @@
 import { isLocalOnlySessionStorage } from "../agent-rehydrate-errors.ts";
 import type { StorageDescriptor } from "../storage/database.js";
-import { StorageUnavailableError } from "../storage/errors.js";
+import { isRetryableStorageError, StorageUnavailableError } from "../storage/errors.js";
 import {
 	ResumeCatalogTimeoutError,
 	ResumeCatalogUnavailableError,
@@ -23,11 +23,12 @@ export function resumeNotFoundError(id: string, descriptor: StorageDescriptor): 
 }
 
 /**
- * `error` as a resume lookup failure: storage that could not be reached becomes a retryable
- * {@link ResumeCatalogUnavailableError} with the original as its cause; anything else is returned unchanged.
+ * `error` as a resume lookup failure: storage that could not be reached for a reason that passes (a retryable storage
+ * error, such as a refused or broken connection) becomes a retryable {@link ResumeCatalogUnavailableError} with the
+ * original as its cause; anything else, such as a missing token file, is returned unchanged.
  */
 export function resumeLookupError(error: unknown, subject: ResumeSubject, id: string | null): unknown {
-	if (!(error instanceof StorageUnavailableError)) return error;
+	if (!(error instanceof StorageUnavailableError) || !isRetryableStorageError(error)) return error;
 	return new ResumeCatalogUnavailableError({ subject, id, storage: error.adapter, phase: "catalog-lookup" }, error);
 }
 

@@ -1374,6 +1374,26 @@ describe("setup plan before restoring (#4329)", () => {
 		assert.ok(existsSync(restored));
 	});
 
+	test("a worktree an earlier resume restored and set up needs no hook again after the session changes its lockfile", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		renameSync(clone, sandbox.path("gone"));
+		const restored = cwdOf(await prepareSessionResume(manager, options()))!;
+		assert.equal(setupRuns(), 1);
+		sandbox.write(join(restored, "package-lock.json"), '{ "changed": true }\n');
+		const capture = await captureWorktreeSnapshot(restored, {
+			settings,
+			blobs: manager.getSessionStore().snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(restored, capture.snapshot.id, capture.snapshot);
+
+		const prepared = await prepareSessionResume(manager, options({ setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), restored);
+		assert.equal(setupRuns(), 1);
+	});
+
 	test("a user checkout verified in place never runs the setup hook", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);

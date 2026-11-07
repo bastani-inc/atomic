@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
+import { StorageTransientError, StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import {
 	isResumeCatalogTimeoutError,
 	isResumeCatalogUnavailableError,
@@ -168,8 +168,9 @@ test("a resume whose shared journal comes from the settings of the project it ru
 test("a resume whose shared journal cannot be reached fails as a retryable lookup error that keeps the cause (#4329)", async () => {
 	const adapter = journalAdapter("unreachable-journal.mjs");
 	const runId = randomUUID();
-	const unreachable = new StorageUnavailableError(
+	const unreachable = new StorageTransientError(
 		{ adapter: "libsql", location: "remote" },
+		{ code: "connection-refused", outcome: "not-applied", attempts: 1 },
 		new Error("ECONNREFUSED"),
 	);
 	probe.__runLookupProbe = { failure: unreachable };
