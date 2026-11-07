@@ -87,6 +87,11 @@ const FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS = [
 
 const FULLSCREEN_VIEWPORT_ACTIONS = FULLSCREEN_TRANSCRIPT_SCROLL_ACTIONS;
 
+/** The chat display actions a focused overlay may leave to the host: thinking blocks and tool output. */
+function isHostDisplayToggle(data: string, keybindings: KeybindingsManager): boolean {
+	return keybindings.matches(data, "app.thinking.toggle") || keybindings.matches(data, "app.tools.expand");
+}
+
 export function isFullscreenViewportAction(data: string, keybindings: KeybindingsManager): boolean {
 	return FULLSCREEN_VIEWPORT_ACTIONS.some((action) => keybindings.matches(data, action));
 }
@@ -144,7 +149,7 @@ export function shouldHandleFullscreenViewportInput(
 	if (focused === editor || !focused) return true;
 	if (!focused.handleInput && !focusedIsOverlay) return true;
 	if (isMouseInput) return !focusedIsOverlay;
-	if (focusedIsOverlay && keybindings.matches(data, "app.thinking.toggle")) return false;
+	if (focusedIsOverlay && isHostDisplayToggle(data, keybindings)) return false;
 	return !isFullscreenViewportAction(data, keybindings);
 }
 
@@ -236,9 +241,9 @@ export class InteractiveModeBase {
 	private readonly onOverlayInternalUiAction = (url: string): InternalUiActionResult =>
 		handleFocusedOverlayInternalUiAction(this.renderer, url);
 
-	/** Dispatch the host thinking action after a focused workflow overlay declines input. */
+	/** Dispatch the host thinking or tool-output action after a focused overlay declines input. */
 	handleOverlayUnhandledInput(data: string): boolean {
-		if (isKeyRelease(data) || !this.keybindings.matches(data, "app.thinking.toggle")) return false;
+		if (isKeyRelease(data) || !isHostDisplayToggle(data, this.keybindings)) return false;
 		// Reuse the default editor's action dispatcher even while a workflow
 		// overlay owns focus. This keeps the host binding and its user remap as
 		// the source of truth instead of calling the implementation directly.
@@ -764,6 +769,7 @@ export class InteractiveModeBase {
 				onRendererReplaced: (listener) => this.onTuiRendererChange(listener),
 				chatRenderSettings: () => ({
 					hideThinkingBlock: this.hideThinkingBlock,
+					toolOutputExpanded: this.toolOutputExpanded,
 					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
 					fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
 				}),

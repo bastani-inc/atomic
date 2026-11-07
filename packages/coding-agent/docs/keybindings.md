@@ -218,7 +218,7 @@ Interactive model and thinking choices automatically become startup defaults. Th
 
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
-| `app.tools.expand` | `ctrl+o` | Collapse or expand tool and workflow-node detail in main chat or an attached workflow stage chat |
+| `app.tools.expand` | `ctrl+o` | Collapse or expand tool and workflow-node detail in main chat, an attached workflow stage chat, or a `/tasks` transcript |
 | `app.auth.copyUrl` | `ctrl+x` | Copy the URL on an OAuth sign-in screen |
 | `app.message.followUp` | `alt+enter` | Queue follow-up message |
 | `app.message.dequeue` | `alt+up` | Restore queued messages to editor |

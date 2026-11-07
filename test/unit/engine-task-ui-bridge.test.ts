@@ -8,6 +8,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
+import type { EngineHostRenderSettings } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import {
 	type InteractiveEngineMessage,
 	parseInteractiveEngineMessage,
@@ -15,6 +16,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import {
 	bindEngineTaskWidget,
+	engineTaskInspectorUi,
 	showEngineTaskInspector,
 } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
@@ -160,4 +162,43 @@ test("engine task picker opens inline and detail uses an opaque fullscreen overl
 		await fixture.dispose();
 		setKeybindings(previousKeys);
 	}
+});
+
+type ChatRenderSettings = ReturnType<ExtensionUIContext["getChatRenderSettings"]>;
+const renderSettings = (settings: Partial<ChatRenderSettings>) => settings as ChatRenderSettings;
+
+test("the engine's /tasks follows the host chat's tool output and leaves Ctrl+O to the host (#4521)", () => {
+	let engineExpanded = false;
+	let host: EngineHostRenderSettings | undefined;
+	const custom = (() => Promise.resolve(undefined)) as ExtensionUIContext["custom"];
+	const ui = engineTaskInspectorUi(
+		{
+			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: true, toolOutputExpanded: engineExpanded }),
+			getToolsExpanded: () => engineExpanded,
+		},
+		{ custom, getHostRenderSettings: () => host },
+	);
+	assert.equal(ui.custom, custom);
+	assert.equal(ui.setToolsExpanded, undefined, "the host owns Ctrl+O, so the inspector cannot set tool output");
+	engineExpanded = true;
+	assert.equal(ui.getToolsExpanded?.(), true, "before a render carried the host's settings the engine's stand in");
+	assert.equal(ui.getChatRenderSettings?.().toolOutputExpanded, true);
+	host = {
+		hideThinkingBlock: false,
+		toolOutputExpanded: false,
+		fullscreenScrollbar: "auto",
+		fullscreenWheelScrollLines: 3,
+	};
+	assert.equal(ui.getToolsExpanded?.(), false);
+	assert.deepEqual(ui.getChatRenderSettings?.(), { hideThinkingBlock: true, toolOutputExpanded: false });
+	host = { ...host, toolOutputExpanded: true };
+	engineExpanded = false;
+	assert.equal(ui.getToolsExpanded?.(), true);
+	assert.equal(ui.getChatRenderSettings?.().toolOutputExpanded, true);
+	const withoutHost = engineTaskInspectorUi(
+		{ getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }), getToolsExpanded: () => true },
+		{ custom },
+	);
+	assert.equal(withoutHost.getToolsExpanded?.(), true);
+	assert.deepEqual(withoutHost.getChatRenderSettings?.(), { hideThinkingBlock: false });
 });

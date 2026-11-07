@@ -267,6 +267,39 @@ test("Ctrl+T is offered to the host, Ctrl+O toggles the inherited tool output, a
 	}
 });
 
+test("where the host owns tool output, Ctrl+O is left to it and the transcript follows its setting (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Run the listing", timestamp: 0 });
+	await session.appendMessage(
+		assistant([{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "seq 1 40" } }], "toolUse"),
+	);
+	await session.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-1",
+		toolName: "bash",
+		content: [{ type: "text", text: Array.from({ length: 40 }, (_, i) => `OUTPUT-${i}`).join("\n") }],
+		isError: false,
+		timestamp: 2,
+	});
+	let toolOutputExpanded = false;
+	const host = await openTranscript(session, {
+		height: 80,
+		environment: {
+			getChatRenderSettings: () => ({ hideThinkingBlock: false, toolOutputExpanded }),
+			getToolsExpanded: () => toolOutputExpanded,
+		},
+	});
+	try {
+		assert.doesNotMatch(host.text(), /OUTPUT-0\b/);
+		assert.equal(host.inspector.handleInput("\x0f"), false, "Ctrl+O goes to the host that owns tool output");
+		assert.doesNotMatch(host.text(), /OUTPUT-0\b/, "declining does not toggle anything itself");
+		toolOutputExpanded = true;
+		assert.match(host.text(), /OUTPUT-0\b[\s\S]*OUTPUT-39/, "the transcript follows the host's tool output");
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("compaction boundaries, branch summaries and extension notices appear in a reopened transcript (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	const prompt = await session.appendMessage({ role: "user", content: "Long task", timestamp: 0 });

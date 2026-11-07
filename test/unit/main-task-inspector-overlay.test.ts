@@ -57,13 +57,23 @@ import { buildGraphOverlayAdapter, type OverlayUISurface } from "../../packages/
 import { taskFixture } from "../helpers/task-projection.js";
 import { createStore, fakeFooterAgentSession } from "./stage-chat-view-helpers.js";
 
+const CTRL_T = "\x14";
+const CTRL_O = "\x0f";
+/** Ctrl+Home, Ctrl+End, Ctrl+Up, Ctrl+Down and the test's half-page bindings: main transcript actions. */
+const MAIN_VIEWPORT_KEYS = ["\x1b[1;5H", "\x1b[1;5F", "\x1b[1;5A", "\x1b[1;5B", "\x1b\x15", "\x1b\x04"];
+
 async function flush(): Promise<void> {
 	for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 async function mountMainInspector(isolated: boolean, populated = true) {
 	initTheme("dark");
-	const keys = new KeybindingsManager({ "app.tasks.inspect": "ctrl+e", "app.tasks.cancel": "ctrl+x" });
+	const keys = new KeybindingsManager({
+		"app.tasks.inspect": "ctrl+e",
+		"app.tasks.cancel": "ctrl+x",
+		"tui.altScreen.halfPageUp": "ctrl+alt+u",
+		"tui.altScreen.halfPageDown": "ctrl+alt+d",
+	});
 	setKeybindings(keys);
 	const fixture = taskFixture();
 	if (populated) await fixture.start("Fullscreen review");
@@ -82,7 +92,10 @@ async function mountMainInspector(isolated: boolean, populated = true) {
 		terminal,
 		shouldHandleViewportInput: (data, mouse, overlay) =>
 			shouldHandleFullscreenViewportInput(tui.getFocusedComponent(), editor, data, mouse, overlay, keys),
-		onOverlayUnhandledInput: () => {
+		// As the interactive mode does: a declined key reaches a host action only for the thinking and tool-output
+		// toggles, and everything else declined is replayed into the main transcript.
+		onOverlayUnhandledInput: (data) => {
+			if (data !== CTRL_T && data !== CTRL_O) return false;
 			hostFallbacks++;
 			return true;
 		},
@@ -270,6 +283,15 @@ for (const isolated of [false, true]) {
 			const picker = await host.paint();
 			assert.ok(picker.length <= 12 && picker.length < host.terminal.rows);
 			assert.match(stripVTControlCharacters(picker.join("\n")), /Background tasks/);
+			const pickerScrollTop = host.scroll.scrollTop;
+			for (const key of MAIN_VIEWPORT_KEYS) {
+				await host.input(key);
+				assert.equal(
+					host.scroll.scrollTop,
+					pickerScrollTop,
+					`the picker let ${JSON.stringify(key)} scroll the chat`,
+				);
+			}
 			const assertFrame = async () => {
 				const frame = await host.paint();
 				assert.equal(frame.length, host.terminal.rows);
@@ -290,12 +312,12 @@ for (const isolated of [false, true]) {
 					"\x1b[F",
 					"\x1b[A",
 					"\x1b[B",
-					"\x0f",
 					"\x06",
 					"\x15",
 					"\x04",
 					"\x1b[1;2A",
 					"\x1b[1;2B",
+					...MAIN_VIEWPORT_KEYS,
 					"\x1b[<64;10;5M",
 					"ordinary text",
 				]) {
@@ -306,7 +328,8 @@ for (const isolated of [false, true]) {
 				}
 			};
 			// A task transcript is a chat (#4521): its keys belong to its own composer and viewport. The thinking
-			// toggle alone goes to the host action, as it does from a stage chat; the main chat never scrolls.
+			// toggle goes to the host action, as it does from a stage chat, and so does the tool-output toggle when the
+			// transcript cannot set the chat's tool output itself (the isolated engine); the main chat never scrolls.
 			const assertTranscriptKeysOwned = async () => {
 				const fallbacks = host.hostFallbacks;
 				for (const key of [
@@ -316,11 +339,14 @@ for (const isolated of [false, true]) {
 					"\x1b[F",
 					"\x1b[A",
 					"\x1b[B",
-					"\x0f",
 					"\x06",
 					"\x15",
 					"\x1b[1;2A",
 					"\x1b[1;2B",
+					"\x1b[1;5A",
+					"\x1b[1;5B",
+					"\x1b\x15",
+					"\x1b\x04",
 					"\x1b[<64;10;5M",
 					"\x1b[<72;10;5M",
 					"ordinary text",
@@ -331,13 +357,22 @@ for (const isolated of [false, true]) {
 					assert.equal(host.hostFallbacks, fallbacks, `main action received ${JSON.stringify(key)}`);
 				}
 				assert.match(await assertFrame(), /ordinary text/, "typed text lands in the transcript's composer");
-				await host.input("\x14");
+				await host.input(CTRL_T);
 				assert.equal(host.hostFallbacks, fallbacks + 1, "Ctrl+T reaches the host thinking toggle");
+				await host.input(CTRL_O);
+				assert.equal(
+					host.hostFallbacks,
+					fallbacks + (isolated ? 2 : 1),
+					isolated ? "Ctrl+O reaches the host's tool output" : "Ctrl+O sets the chat's tool output in place",
+				);
 				assert.equal(host.scroll.scrollTop, scrollTop);
 			};
 			await assertKeysOwned();
-			await host.input("\x14");
+			await host.input(CTRL_T);
 			assert.equal(host.hostFallbacks, 1, "the task pages no longer swallow the host's Ctrl+T (#4521)");
+			await host.input(CTRL_O);
+			assert.equal(host.hostFallbacks, 2, "nor its Ctrl+O");
+			assert.equal(host.scroll.scrollTop, scrollTop);
 			// Restore the first detail action after the arrow-key checks.
 			await host.input("\x1b");
 			await host.input("\x05");
@@ -379,7 +414,11 @@ for (const isolated of [false, true]) {
 			await reopened;
 			assert.equal(host.tui.getFocusedComponent(), host.editor);
 			assert.equal(host.fixture.runners[0].context.signal.aborted, false);
-			assert.equal(host.hostFallbacks, 2, "only the two Ctrl+T presses reached a host action");
+			assert.equal(
+				host.hostFallbacks,
+				isolated ? 4 : 3,
+				"only the Ctrl+T and Ctrl+O presses the pages left to the host reached a host action",
+			);
 			const beforeChatScroll = host.scroll.scrollTop;
 			await host.input("\x1b[5~");
 			assert.ok(host.scroll.scrollTop < beforeChatScroll, "main chat paging resumes after closing");

@@ -154,14 +154,18 @@ export interface EngineExplicitQuitCommand {
  */
 export interface EngineHostRenderSettings {
 	hideThinkingBlock: boolean;
+	toolOutputExpanded: boolean;
 	fullscreenScrollbar: "auto" | "always" | "hidden";
 	fullscreenWheelScrollLines: number | "auto";
 }
 
 function parseEngineHostRenderSettings(value: unknown): EngineHostRenderSettings | undefined {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-	const { hideThinkingBlock, fullscreenScrollbar, fullscreenWheelScrollLines } = value as Record<string, unknown>;
-	if (typeof hideThinkingBlock !== "boolean") return undefined;
+	const { hideThinkingBlock, toolOutputExpanded, fullscreenScrollbar, fullscreenWheelScrollLines } = value as Record<
+		string,
+		unknown
+	>;
+	if (typeof hideThinkingBlock !== "boolean" || typeof toolOutputExpanded !== "boolean") return undefined;
 	if (fullscreenScrollbar !== "auto" && fullscreenScrollbar !== "always" && fullscreenScrollbar !== "hidden")
 		return undefined;
 	const wheelLinesValid =
@@ -170,7 +174,7 @@ function parseEngineHostRenderSettings(value: unknown): EngineHostRenderSettings
 			Number.isFinite(fullscreenWheelScrollLines) &&
 			fullscreenWheelScrollLines >= 1);
 	if (!wheelLinesValid) return undefined;
-	return { hideThinkingBlock, fullscreenScrollbar, fullscreenWheelScrollLines };
+	return { hideThinkingBlock, toolOutputExpanded, fullscreenScrollbar, fullscreenWheelScrollLines };
 }
 
 export type InteractiveEngineCommand =

@@ -23,7 +23,9 @@ const flush = async () => {
  * A host and an engine joined as the isolated CLI joins them: the engine's overlay renders from the engine's
  * extension UI context, and the host proxies it through a remote component.
  */
-async function mountEngineOverlay(host: { hideThinkingBlock: boolean; wheel: number | "auto" } | undefined) {
+async function mountEngineOverlay(
+	host: { hideThinkingBlock: boolean; toolOutputExpanded: boolean; wheel: number | "auto" } | undefined,
+) {
 	const listeners = new Set<(message: InteractiveEngineMessage) => void>();
 	const commands: InteractiveEngineCommand[] = [];
 	const service = new EngineCustomUiService((line) => {
@@ -64,6 +66,7 @@ async function mountEngineOverlay(host: { hideThinkingBlock: boolean; wheel: num
 			: {
 					chatRenderSettings: () => ({
 						hideThinkingBlock: host.hideThinkingBlock,
+						toolOutputExpanded: host.toolOutputExpanded,
 						fullscreenScrollbar: "always" as const,
 						fullscreenWheelScrollLines: host.wheel,
 					}),
@@ -92,7 +95,7 @@ const renderRequests = (commands: readonly InteractiveEngineCommand[]) =>
 	commands.filter((command) => command.type === "engine_custom_render");
 
 test("an engine overlay follows the host's thinking display and scroll settings (#4521)", async () => {
-	const host = { hideThinkingBlock: false, wheel: 7 as number | "auto" };
+	const host = { hideThinkingBlock: false, toolOutputExpanded: false, wheel: 7 as number | "auto" };
 	const engine = await mountEngineOverlay(host);
 	try {
 		assert.equal(await engine.paint(), "hide=false bar=always wheel=7");
@@ -105,6 +108,10 @@ test("an engine overlay follows the host's thinking display and scroll settings 
 		host.wheel = "auto";
 		assert.equal(await engine.paint(), "hide=true bar=always wheel=auto");
 		assert.equal(engine.service.getHostRenderSettings()?.fullscreenWheelScrollLines, "auto");
+		host.toolOutputExpanded = true;
+		await engine.paint();
+		assert.equal(renderRequests(engine.commands).length, requests + 3, "Ctrl+O in the host requests a new frame");
+		assert.equal(engine.service.getHostRenderSettings()?.toolOutputExpanded, true);
 	} finally {
 		engine.controller.dispose();
 		engine.service.dispose();
@@ -135,7 +142,12 @@ test("render requests accept only well-formed host settings (#4521)", () => {
 				renderSettings,
 			}),
 		);
-	const valid = { hideThinkingBlock: true, fullscreenScrollbar: "hidden", fullscreenWheelScrollLines: 3 };
+	const valid = {
+		hideThinkingBlock: true,
+		toolOutputExpanded: false,
+		fullscreenScrollbar: "hidden",
+		fullscreenWheelScrollLines: 3,
+	};
 	assert.deepEqual(request(valid), {
 		type: "engine_custom_render",
 		componentId: "c",
@@ -150,13 +162,20 @@ test("render requests accept only well-formed host settings (#4521)", () => {
 		requestId: 1,
 		width: 80,
 		rows: 24,
-		renderSettings: { hideThinkingBlock: true, fullscreenScrollbar: "auto", fullscreenWheelScrollLines: "auto" },
+		renderSettings: {
+			hideThinkingBlock: true,
+			toolOutputExpanded: false,
+			fullscreenScrollbar: "auto",
+			fullscreenWheelScrollLines: "auto",
+		},
 	});
 	for (const invalid of [
 		null,
 		[],
 		"settings",
 		{ ...valid, hideThinkingBlock: "yes" },
+		{ ...valid, toolOutputExpanded: "yes" },
+		{ ...valid, toolOutputExpanded: undefined },
 		{ ...valid, fullscreenScrollbar: "sometimes" },
 		{ ...valid, fullscreenWheelScrollLines: 0 },
 		{ ...valid, fullscreenWheelScrollLines: Number.POSITIVE_INFINITY },

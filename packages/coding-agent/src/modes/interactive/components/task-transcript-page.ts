@@ -149,7 +149,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		const keybindings = keybindingsOf(this.env.keybindings);
 		// The host owns thinking display; only its default physical key leaves the composer, as in a stage chat.
 		if (matchesKey(data, "ctrl+t") && keybindings.matches(data, "app.thinking.toggle")) return false;
-		if (keybindings.matches(data, "app.tools.expand") && this.env.setToolsExpanded !== undefined) {
+		if (keybindings.matches(data, "app.tools.expand")) {
+			if (this.env.setToolsExpanded === undefined) return false;
 			this.env.setToolsExpanded(this.env.getToolsExpanded?.() !== true);
 			this.chat.invalidate();
 			this.requestRender();

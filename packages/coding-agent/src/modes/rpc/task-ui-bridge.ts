@@ -9,10 +9,36 @@ import { isActiveBackgroundTask, renderTaskFooter } from "../interactive/compone
 import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
 import { getEditorTheme } from "../interactive/theme/theme.js";
+import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
 	Partial<Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "setToolsExpanded">>;
+
+/** The engine's custom UI, with the render settings of the host chat that opened the inspector. */
+export type EngineTaskInspectorMount = Pick<ExtensionUIContext, "custom"> & {
+	getHostRenderSettings?(): EngineHostRenderSettings | undefined;
+};
+
+/**
+ * The isolated engine's `/tasks`, opened from the host's chat: tool output follows the host's Ctrl+O, which the
+ * inspector leaves to the host. The engine's own state stands in only until a render request carries the host's.
+ */
+export function engineTaskInspectorUi(
+	ui: Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded">,
+	mount: EngineTaskInspectorMount,
+): TaskInspectorUi {
+	const hostToolsExpanded = () => mount.getHostRenderSettings?.()?.toolOutputExpanded;
+	return {
+		custom: mount.custom,
+		getChatRenderSettings: () => {
+			const settings = ui.getChatRenderSettings();
+			const toolOutputExpanded = hostToolsExpanded();
+			return toolOutputExpanded === undefined ? settings : { ...settings, toolOutputExpanded };
+		},
+		getToolsExpanded: () => hostToolsExpanded() ?? ui.getToolsExpanded(),
+	};
+}
 
 const widgetVisibility = new WeakMap<AgentSession, (visible: boolean) => void>();
 

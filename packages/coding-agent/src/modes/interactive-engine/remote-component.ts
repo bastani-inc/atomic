@@ -95,7 +95,7 @@ class RemoteComponent implements Component {
 		const renderSettingsKey =
 			renderSettings === undefined
 				? ""
-				: `${renderSettings.hideThinkingBlock}|${renderSettings.fullscreenScrollbar}|${renderSettings.fullscreenWheelScrollLines}`;
+				: `${renderSettings.hideThinkingBlock}|${renderSettings.toolOutputExpanded}|${renderSettings.fullscreenScrollbar}|${renderSettings.fullscreenWheelScrollLines}`;
 		if (
 			!this.disposed &&
 			(this.dirty || width !== this.width || rows !== this.rows || renderSettingsKey !== this.renderSettingsKey)

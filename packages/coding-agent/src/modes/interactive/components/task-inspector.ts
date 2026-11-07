@@ -35,6 +35,15 @@ import {
 
 const DETAIL_WHEEL_ROWS = 4;
 
+/** The default physical Ctrl+T (a remap may reuse an editor key) and the tool-output key are the host's. */
+function isHostDisplayToggle(data: string): boolean {
+	const keybindings = getKeybindings();
+	return (
+		(matchesKey(data, "ctrl+t") && keybindings.matches(data, "app.thinking.toggle")) ||
+		keybindings.matches(data, "app.tools.expand")
+	);
+}
+
 /** Focused view only. The task source and original session remain the authorities. */
 export class TaskInspector implements Component {
 	readonly navigation: TaskNavigation;
@@ -241,7 +250,11 @@ export class TaskInspector implements Component {
 		}
 		if (current()) this.requestRender();
 	}
+	/** Every key belongs to the inspector except the host's thinking and tool-output toggles it leaves alone. */
 	handleInput(data: string): boolean {
+		return this.route(data) || !isHostDisplayToggle(data);
+	}
+	private route(data: string): boolean {
 		this.stopFailure = "";
 		if (this.confirmation) {
 			if (data === "y" || data === "n" || matchesKey(data, "escape")) {
