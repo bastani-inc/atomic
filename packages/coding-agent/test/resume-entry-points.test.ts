@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -641,17 +641,29 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
 	});
 
-	test("rehydrating a session whose checkout is here starts it there without preparing anything", async () => {
+	test("rehydrating a session whose checkout is here and matches starts it there without restoring anything", async () => {
 		const agentDir = sandbox.path("agent");
 		const { clone, sessionId } = await recordSessionWithSnapshot(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(agentDir, {});
-		setWorktreeSnapshotGit(async () => {
-			throw new Error("a session whose checkout is here needs no Git to wake");
-		});
 		const woken = await runtime.rehydrate(sessionId);
 		assert.equal(woken.sessionManager.getCwd(), clone);
 		assert.deepEqual(woken.sessionManager.getWorktreeRootMappings(), []);
 		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
+	});
+
+	test("rehydrating on a node where the recorded path holds another tree continues in a restored worktree, not there", async () => {
+		const agentDir = sandbox.path("agent");
+		const { clone, sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		cpSync(sandbox.path("node-a-offline"), clone, { recursive: true });
+		sandbox.write(join(clone, "README.md"), "another tree at the same path\n");
+		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: "true" } });
+
+		const woken = await runtime.rehydrate(sessionId);
+
+		const cwd = woken.sessionManager.getCwd();
+		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots")), cwd);
+		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
+		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "another tree at the same path\n");
 	});
 
 	/** A session that node B woke in a restored worktree, edited there and released again. */
