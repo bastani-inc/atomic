@@ -14,9 +14,9 @@ export interface FakeInstalledAtomic {
 /**
  * How the fake answers `intercom`: `with-upgrade` as this version does; `without-upgrade` as 0.9.42 to 0.9.71, whose
  * help has no `upgrade` and which reject it; `prompt` as 0.9.41 and older, which print their global help for
- * `--help` and read `intercom upgrade` as a prompt for the model.
+ * `--help` and read `intercom upgrade` as a prompt for the model; `failing-help` lists `upgrade` but exits 1.
  */
-export type FakeIntercomCommand = "with-upgrade" | "without-upgrade" | "prompt";
+export type FakeIntercomCommand = "with-upgrade" | "without-upgrade" | "prompt" | "failing-help";
 
 /**
  * Put a fake `atomic` first on PATH, so `atomic update` never runs the host's real Atomic. It prints `version` for
@@ -62,9 +62,9 @@ export function installFakeAtomicOnPath(
 				? ['\tconsole.log("Usage: atomic [options] [@files...] [messages...]");']
 				: [
 						'\tconsole.log("Usage:\\n  atomic intercom status\\n  atomic intercom restart");',
-						...(intercom === "with-upgrade" ? ['\tconsole.log("  atomic intercom upgrade");'] : []),
+						...(intercom === "without-upgrade" ? [] : ['\tconsole.log("  atomic intercom upgrade");']),
 					]),
-			"\tprocess.exit(0);",
+			`\tprocess.exit(${intercom === "failing-help" ? 1 : 0});`,
 			"}",
 			'if (args[0] === "intercom" && args[1] === "upgrade") {',
 			...(intercom === "prompt"

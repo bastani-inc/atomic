@@ -657,8 +657,8 @@ describe("replacing an older broker (#4538)", () => {
 			}
 			assert.ok(legacy.exitedAt() !== undefined);
 			assert.ok(
-				writtenAt.size >= 2,
-				`the lock was written again while the older broker exited: ${[...writtenAt].join(", ")}`,
+				writtenAt.size >= 2 && writtenAt.size <= 3,
+				`the lock was written again about every 10 s while the older broker exited, not on every poll: ${[...writtenAt].join(", ")}`,
 			);
 			assert.deepEqual([staleSeen, foreignOwner], [false, false]);
 			assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 2 });
@@ -685,7 +685,8 @@ describe("replacing an older broker (#4538)", () => {
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
 
-	test(
+	// The Windows launcher hides the broker's pid, so there a spawn never hands its lock to a starting broker.
+	test.skipIf(process.platform === "win32")(
 		"a successor still starting at the readiness bound keeps the spawn lock, so later spawners wait for it",
 		async () => {
 			const legacy = await startFakeLegacyBroker();

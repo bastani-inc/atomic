@@ -470,6 +470,7 @@ if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
 	for (const [release, intercom] of [
 		["0.9.42 to 0.9.71", "without-upgrade"],
 		["0.9.41 and older", "prompt"],
+		["a release whose help fails", "failing-help"],
 	] as const) {
 		it(`asks an installed Atomic of ${release} only for its help, never runs 'intercom upgrade' on it, and does not warn (#4538)`, async () => {
 			fakeAtomic = installFakeAtomicOnPath(tempDir, { intercom });
