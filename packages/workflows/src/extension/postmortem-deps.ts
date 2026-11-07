@@ -54,9 +54,8 @@ function resolveRunWorktreeRootMappings(runId: string, runStore: Store): readonl
 	const backend = availableStoreDurableBackend(runStore, runId);
 	if (backend === undefined) return undefined;
 	const owningHandle = backend.getWorkflow(runId);
-	const rootRunId = readGraphStoreRun(runStore, runId)?.rootRunId ?? owningHandle?.rootWorkflowId;
-	const rootHandle = rootRunId === undefined ? owningHandle : (backend.getWorkflow(rootRunId) ?? owningHandle);
-	return rootHandle?.worktreeRootMappings;
+	const rootRunId = readGraphStoreRun(runStore, runId)?.rootRunId ?? owningHandle?.rootWorkflowId ?? runId;
+	return (backend.getWorkflow(rootRunId) ?? owningHandle)?.worktreeRootMappings;
 }
 
 /** Resolver deps for a specific run, keyed so revived handles use the real run cwd. */

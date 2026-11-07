@@ -332,13 +332,18 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 					[...hosts.values()],
 				);
 
-				// Whatever host D recorded for the work it lost is a typed placement error, never a bare one.
+				// Whatever host D recorded for the work it lost is a typed placement error, or the journal refusing its writes
+				// because another holder took the lease (when the root finished first), never any other failure.
 				const healed = await readJson<{
-					lastPlacementFailure?: { code?: string };
-					lastDetach?: { code?: string };
+					lastPlacementFailure?: { name?: string; code?: string };
+					lastDetach?: { name?: string; code?: string };
 				}>(join(c.directory, "host-stats-D.json"));
 				for (const failure of [healed.lastPlacementFailure, healed.lastDetach])
-					if (failure !== undefined) assert.equal(typeof failure.code, "string", JSON.stringify(failure));
+					if (failure !== undefined)
+						assert.ok(
+							typeof failure.code === "string" || failure.name === "StaleLeaseError",
+							JSON.stringify(failure),
+						);
 
 				const outcome = await readJson<{ status: string; error: string | null; children: ChildOutcome[] }>(
 					join(c.directory, "outcome-start.json"),
