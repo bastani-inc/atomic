@@ -14,6 +14,7 @@ export const REMOTE_ROOT = "/opt/adt";
 export const NODE_BIN = `${REMOTE_ROOT}/node/bin/node`;
 export const AGENT = `${REMOTE_ROOT}/harness/agent.mjs`;
 export const RELEASED = `${REMOTE_ROOT}/harness/released.mjs`;
+export const RESUME_POOL = `${REMOTE_ROOT}/harness/resume-pool.mjs`;
 export const REF_DIR = `${REMOTE_ROOT}/atomic`;
 export const SECRETS = `${REMOTE_ROOT}/secrets`;
 
@@ -252,7 +253,7 @@ export async function stageBase(host, { nodeTarball, harnessDir }) {
  * @param {string} harnessDir
  */
 export async function stageHarness(host, harnessDir) {
-	for (const file of ["agent.mjs", "gateway.mjs", "released.mjs", "resume-check.mjs"])
+	for (const file of ["agent.mjs", "gateway.mjs", "released.mjs", "resume-check.mjs", "resume-pool.mjs"])
 		await host.upload(join(harnessDir, file), `${REMOTE_ROOT}/harness/${file}`, `upload ${file}`);
 }
 
