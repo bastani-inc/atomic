@@ -258,11 +258,23 @@ async function neededHook(options: EnsureResumeSetupOptions): Promise<ResolvedHo
 }
 
 /**
- * Checks, without running anything, that a restored worktree has the setup hook it needs: throws
- * {@link ResumePreconditionError} (`setup-hook-missing`) exactly when {@link ensureResumeSetup} would.
+ * Checks, before a restored worktree is recorded, that it has the setup hook it needs: throws
+ * {@link ResumePreconditionError} (`setup-hook-missing`) exactly when {@link ensureResumeSetup} would. When a hook
+ * will run, it is entered in the ledger as not run yet, so a hook that never finishes, because the process stopped or
+ * the resume was cancelled, runs again on the next resume.
  */
-export async function assertResumeSetupAvailable(options: EnsureResumeSetupOptions): Promise<void> {
-	await neededHook(options);
+export async function reserveResumeSetup(options: EnsureResumeSetupOptions): Promise<void> {
+	const hook = await neededHook(options);
+	if (hook === undefined) return;
+	await writeLedger(options.storeDir, {
+		worktree: resolve(options.worktree),
+		envHash: options.envHash,
+		hook: hook.name,
+		exitStatus: null,
+		signal: null,
+		ranAt: new Date().toISOString(),
+		logPath: "",
+	});
 }
 
 /**

@@ -667,6 +667,29 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "another tree at the same path\n");
 	});
 
+	test("rehydrating a session that worked outside its checkouts restores the one that is missing here", async () => {
+		const agentDir = sandbox.path("agent");
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		sandbox.write(join(clone, "README.md"), "edited on node A\n");
+		const store = await storeFor(sqliteSelection("shared"));
+		const manager = await SessionManager.create(store, sandbox.root);
+		await manager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
+		const capture = await captureWorktreeSnapshot(clone, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			blobs: store.snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+		renameSync(clone, sandbox.path("node-a-offline"));
+		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: "true" } });
+
+		const woken = await runtime.rehydrate(manager.getSessionId());
+
+		const [restore] = woken.sessionManager.getWorktreeRootMappings();
+		assert.equal(restore?.from, clone);
+		assert.equal(readFileSync(join(restore!.to, "README.md"), "utf8"), "edited on node A\n");
+	});
+
 	test("rehydrating a session in its own checkout here continues there after the checkout changed, with no setup hook", async () => {
 		const agentDir = sandbox.path("agent");
 		const { clone, sessionId } = await recordSessionWithSnapshot(sqliteSelection("shared"), {

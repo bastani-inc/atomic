@@ -1375,6 +1375,29 @@ describe("setup plan before restoring (#4329)", () => {
 		assert.ok(existsSync(restored));
 	});
 
+	test("a setup hook stopped before it finished runs again on the next resume", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		renameSync(clone, sandbox.path("gone"));
+		const controller = new AbortController();
+		const pending = prepareSessionResume(
+			manager,
+			options({ signal: controller.signal, setup: { command: SLEEPING_COMMAND, trusted: () => false } }),
+		);
+		const logs = sandbox.path("host", "setup-logs");
+		for (let waited = 0; !(existsSync(logs) && readdirSync(logs).length > 0); waited += 50) {
+			if (waited > 20_000) assert.fail("the setup hook never started");
+			await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+		}
+		controller.abort(new Error("stop"));
+		await assert.rejects(pending, /stop/);
+
+		const prepared = await prepareSessionResume(manager, options());
+
+		assert.ok(cwdOf(prepared)?.startsWith(sandbox.path("host", "worktrees")), cwdOf(prepared));
+		assert.equal(setupRuns(), 1);
+	});
+
 	test("a worktree restored without dependency inputs needs no hook after the session adds a lockfile", async () => {
 		const { clone } = await sandbox.remoteWithClone("plain", { "README.md": "plain\n" });
 		sandbox.write(join(clone, "README.md"), "edited\n");
