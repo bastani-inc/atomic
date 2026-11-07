@@ -212,12 +212,33 @@ function readVersionOnPath(): string | undefined {
 }
 
 /**
- * Ask the newly installed Atomic to retire an Intercom broker left running by the previous version. The update has
- * already succeeded, so a failure here only warns and never changes the exit code.
+ * Whether the Atomic on PATH lists `atomic intercom upgrade` in its Intercom help. A release from before the command
+ * reads `intercom upgrade` as a prompt for the model (0.9.41 and older) or rejects it (0.9.42 to 0.9.71); `--help` is
+ * harmless on every release.
+ */
+function installedListsIntercomUpgrade(): boolean {
+	const result = spawnProcessSync(APP_NAME, ["intercom", "--help"], {
+		encoding: "utf-8",
+		stdio: ["ignore", "pipe", "ignore"],
+		env: getInstalledAtomicEnv(),
+	});
+	return (
+		result.status === 0 && result.stdout.split("\n").some((line) => line.trim() === `${APP_NAME} intercom upgrade`)
+	);
+}
+
+/**
+ * Ask the newly installed Atomic to retire an Intercom broker left running by the previous version, when it has the
+ * command. It reads no input. The update has already succeeded, so a failure here only warns and never changes the
+ * exit code.
  */
 async function runIntercomUpgrade(): Promise<void> {
+	if (!installedListsIntercomUpgrade()) return;
 	const failure = await new Promise<string | undefined>((resolve) => {
-		const child = spawnProcess(APP_NAME, ["intercom", "upgrade"], { stdio: "inherit", env: getInstalledAtomicEnv() });
+		const child = spawnProcess(APP_NAME, ["intercom", "upgrade"], {
+			stdio: ["ignore", "inherit", "inherit"],
+			env: getInstalledAtomicEnv(),
+		});
 		child.on("error", (error) => resolve(error.message));
 		child.on("close", (code, signal) => {
 			if (code === 0) resolve(undefined);
@@ -599,7 +620,14 @@ export async function handlePackageCommand(
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
-					await runIntercomUpgrade();
+					const installedVersion = readVersionOnPath();
+					if (installedVersion === selfUpdatePlan.version) await runIntercomUpgrade();
+					else
+						console.log(
+							chalk.dim(
+								`\`${APP_NAME} --version\` on PATH reports ${installedVersion ?? "no version"}, not ${selfUpdatePlan.version}, so the Intercom broker was left as it is; run \`${APP_NAME} intercom upgrade\` with the new version.`,
+							),
+						);
 				}
 				return true;
 			}

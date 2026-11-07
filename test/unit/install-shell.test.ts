@@ -118,6 +118,8 @@ interface InstallerFixture {
 	binDir: string;
 	requestLog: string;
 	upgradeLog: string;
+	/** Every `intercom` invocation of a fixture launcher: `<version> <prompt|help|upgrade> ... stdin=<null|other>`. */
+	intercomLog: string;
 	tools: string;
 	releases: Map<string, FixtureRelease>;
 	cleanup(): void;
@@ -145,6 +147,8 @@ interface RunOptions {
 	environment?: Record<string, string | undefined>;
 	pathEntries?: readonly string[];
 	umask?: string;
+	/** Run the installer as `curl ... | sh` does: the script is the shell's standard input. */
+	piped?: boolean;
 }
 
 interface PreparedRun {
@@ -207,6 +211,52 @@ function writeExecutable(path: string, source: string): void {
 	chmodSync(path, 0o755);
 }
 
+/**
+ * The fixture `atomic`. `intercom` behaves by release: 0.9.41 predates the `intercom` command and reads any
+ * `intercom ...` invocation as a prompt; 0.9.71 has `intercom` without `upgrade`; later releases list
+ * `atomic intercom upgrade` in `intercom --help`. Every `intercom` call is logged with whether its standard input is
+ * /dev/null, and ATOMIC_FIXTURE_UPGRADE_DRAIN_STDIN makes the upgrade read its standard input to the end.
+ */
+function fixtureLauncher(tag: string): string {
+	return [
+		"#!/bin/sh",
+		`version='${tag}'`,
+		'case "$1" in --internal-*) echo "unknown option: $1" >&2; exit 64 ;; esac',
+		'if [ "$ATOMIC_FIXTURE_FAIL_STAGED_VERSION" = "$version" ]; then exit 17; fi',
+		'case "$0" in',
+		"  *atomic-install.*) ;;",
+		'  *) if [ "$ATOMIC_FIXTURE_FAIL_FINAL_VERSION" = "$version" ]; then exit 23; fi ;;',
+		"esac",
+		'if [ "$1" = --version ]; then printf \'%s\\n\' "$version"; exit 0; fi',
+		'if [ "$1" = intercom ]; then',
+		"  if [ /dev/stdin -ef /dev/null ]; then stdin=null; else stdin=other; fi",
+		'  case "$version" in',
+		"    0.9.41)",
+		'      printf \'%s prompt %s stdin=%s\\n\' "$version" "$*" "$stdin" >> "$ATOMIC_FIXTURE_INTERCOM_LOG"',
+		"      printf '%s\\n' 'No API key found for the selected model.' >&2",
+		"      exit 1 ;;",
+		"  esac",
+		'  if [ "$2" = --help ]; then',
+		'    printf \'%s help stdin=%s\\n\' "$version" "$stdin" >> "$ATOMIC_FIXTURE_INTERCOM_LOG"',
+		"    printf '%s\\n' 'Usage:' '  atomic intercom status' '  atomic intercom restart'",
+		"    if [ \"$version\" != 0.9.71 ]; then printf '%s\\n' '  atomic intercom upgrade'; fi",
+		"    printf '\\n%s\\n' 'Commands:'",
+		"    exit 0",
+		"  fi",
+		'  if [ "$2" = upgrade ]; then',
+		'    printf \'%s upgrade stdin=%s\\n\' "$version" "$stdin" >> "$ATOMIC_FIXTURE_INTERCOM_LOG"',
+		"    if [ \"$version\" = 0.9.71 ]; then printf '%s\\n' 'Unknown intercom command \"upgrade\".' >&2; exit 1; fi",
+		'    printf \'%s %s\\n\' "$version" "$0" >> "$ATOMIC_FIXTURE_UPGRADE_LOG"',
+		'    if [ "$ATOMIC_FIXTURE_UPGRADE_DRAIN_STDIN" = 1 ]; then cat >/dev/null; fi',
+		"    if [ \"$ATOMIC_FIXTURE_UPGRADE_FAIL\" = 1 ]; then printf '%s\\n' 'Error: fixture broker did not exit' >&2; exit 1; fi",
+		"    exit 0",
+		"  fi",
+		"fi",
+		"printf '%s\\n' \"$version:$*\"",
+		"",
+	].join("\n");
+}
+
 function createArchive(workspace: string, tag: string, asset: string): { path: string; checksum: string } {
 	const encodedTag = encodeURIComponent(tag);
 	const sourceRoot = join(workspace, `payload-${encodedTag}-${asset}`);
@@ -221,10 +271,7 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	mkdirSync(join(payload, "builtin"), { recursive: true });
 	mkdirSync(join(payload, "node_modules", "fixture"), { recursive: true });
 	for (const directory of directories) chmodSync(directory, 0o755);
-	writeExecutable(
-		join(payload, "atomic"),
-		`#!/bin/sh\nversion='${tag}'\ncase "\${1:-}" in --internal-*) echo "unknown option: $1" >&2; exit 64 ;; esac\nif [ "\${ATOMIC_FIXTURE_FAIL_STAGED_VERSION:-}" = "$version" ]; then exit 17; fi\ncase "$0" in\n  *atomic-install.*) ;;\n  *) if [ "\${ATOMIC_FIXTURE_FAIL_FINAL_VERSION:-}" = "$version" ]; then exit 23; fi ;;\nesac\nif [ "\${1:-}" = --version ]; then printf '%s\\n' "$version"; exit 0; fi\nif [ "\${1:-} \${2:-}" = "intercom upgrade" ]; then\n  printf '%s %s\\n' "$version" "$0" >> "$ATOMIC_FIXTURE_UPGRADE_LOG"\n  if [ "\${ATOMIC_FIXTURE_UPGRADE_FAIL:-}" = 1 ]; then printf '%s\\n' 'Error: fixture broker did not exit' >&2; exit 1; fi\n  exit 0\nfi\nprintf '%s\\n' "$version:$*"\n`,
-	);
+	writeExecutable(join(payload, "atomic"), fixtureLauncher(tag));
 	const regularFiles = [
 		[join(payload, "package.json"), JSON.stringify({ name: "@bastani/atomic", version: tag })],
 		[join(payload, "app.js"), `fixture-${tag}`],
@@ -424,6 +471,7 @@ function createFixture(): InstallerFixture {
 	const binDir = join(workspace, "bin root");
 	const requestLog = join(workspace, "requests.log");
 	const upgradeLog = join(workspace, "upgrade.log");
+	const intercomLog = join(workspace, "intercom.log");
 	const tools = join(workspace, "tools");
 	const releasesRoot = join(workspace, "releases");
 	mkdirSync(home);
@@ -510,6 +558,7 @@ function createFixture(): InstallerFixture {
 			GH_TOKEN: undefined,
 			ATOMIC_FIXTURE_LOG: requestLog,
 			ATOMIC_FIXTURE_UPGRADE_LOG: upgradeLog,
+			ATOMIC_FIXTURE_INTERCOM_LOG: intercomLog,
 			ATOMIC_FIXTURE_RELEASES: releasesRoot,
 			ATOMIC_FIXTURE_REAL_MV: resolveExecutable("mv"),
 			WGETRC: undefined,
@@ -526,8 +575,9 @@ function createFixture(): InstallerFixture {
 			...options.environment,
 		};
 		const installerArguments = [installerPath, ...(options.args ?? [])];
-		const command =
-			options.umask === undefined
+		const command = options.piped
+			? ["/bin/sh", "-s", "--", ...(options.args ?? [])]
+			: options.umask === undefined
 				? ["/bin/sh", ...installerArguments]
 				: ["/bin/sh", "-c", `umask ${options.umask}; exec /bin/sh "$0" "$@"`, ...installerArguments];
 		return { command, env };
@@ -573,12 +623,18 @@ function createFixture(): InstallerFixture {
 		binDir,
 		requestLog,
 		upgradeLog,
+		intercomLog,
 		tools,
 		releases,
 		cleanup: () => rmSync(workspace, { recursive: true, force: true }),
 		run: (options = {}) => {
 			const { command, env } = prepare(options);
-			return spawnSyncCollect(command, { cwd: workspace, env, timeout: 15_000 });
+			return spawnSyncCollect(command, {
+				cwd: workspace,
+				env,
+				timeout: 15_000,
+				...(options.piped ? { stdin: readFileSync(installerPath) } : {}),
+			});
 		},
 		runInTty: (options = {}, keystrokes) => {
 			const { command, env } = prepareTty(options, keystrokes);
@@ -1965,11 +2021,16 @@ function upgradeInvocations(fixture: InstallerFixture): string[] {
 	return existsSync(fixture.upgradeLog) ? readFileSync(fixture.upgradeLog, "utf8").split("\n").filter(Boolean) : [];
 }
 
+function intercomInvocations(fixture: InstallerFixture): string[] {
+	return existsSync(fixture.intercomLog) ? readFileSync(fixture.intercomLog, "utf8").split("\n").filter(Boolean) : [];
+}
+
 unixTest("shell installer runs 'intercom upgrade' once through the newly installed launcher (#4538)", () => {
 	const fixture = createFixture();
 	try {
 		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
 		assert.deepEqual(upgradeInvocations(fixture), [`1.0.0 ${join(fixture.binDir, "atomic")}`]);
+		assert.deepEqual(intercomInvocations(fixture), ["1.0.0 help stdin=null", "1.0.0 upgrade stdin=null"]);
 		rmSync(fixture.upgradeLog, { force: true });
 
 		const result = fixture.run({ args: ["--ref", "2.0.0"] });
@@ -1998,6 +2059,53 @@ unixTest("shell installer only warns when 'intercom upgrade' fails after a commi
 		fixture.cleanup();
 	}
 });
+
+unixTest(
+	"shell installer never runs 'intercom upgrade' on a release without it, and asks 0.9.41 nothing at all (#4538)",
+	() => {
+		const fixture = createFixture();
+		try {
+			addRelease(fixture, "0.9.41");
+			addRelease(fixture, "0.9.71");
+			const prompt = fixture.run({ args: ["--ref", "0.9.41"] });
+			assertSuccess(prompt);
+			assert.equal(currentVersion(fixture), "0.9.41");
+			assert.deepEqual(intercomInvocations(fixture), []);
+			assert.equal(prompt.stderr.toString(), "");
+			assert.match(prompt.stdout.toString(), /\nInstalled to [^\n]+\n/u);
+
+			const withoutUpgrade = fixture.run({ args: ["--ref", "0.9.71"] });
+			assertSuccess(withoutUpgrade);
+			assert.equal(currentVersion(fixture), "0.9.71");
+			assert.deepEqual(intercomInvocations(fixture), ["0.9.71 help stdin=null"]);
+			assert.deepEqual(upgradeInvocations(fixture), []);
+			assert.equal(withoutUpgrade.stderr.toString(), "");
+			assert.match(withoutUpgrade.stdout.toString(), /\nInstalled to [^\n]+\n/u);
+		} finally {
+			fixture.cleanup();
+		}
+	},
+);
+
+unixTest(
+	"shell installer piped into sh keeps the rest of its script from 'intercom upgrade', which reads no input (#4538)",
+	() => {
+		const fixture = createFixture();
+		try {
+			const result = fixture.run({
+				args: ["--ref", "2.0.0"],
+				piped: true,
+				environment: { ATOMIC_FIXTURE_UPGRADE_DRAIN_STDIN: "1" },
+			});
+			assertSuccess(result);
+			assert.deepEqual(intercomInvocations(fixture), ["2.0.0 help stdin=null", "2.0.0 upgrade stdin=null"]);
+			assert.match(result.stdout.toString(), /\nInstalled to [^\n]+\n/u);
+			assert.equal(currentVersion(fixture), "2.0.0");
+		} finally {
+			fixture.cleanup();
+		}
+	},
+);
 
 unixTest("shell installer does not run 'intercom upgrade' when nothing is installed (#4538)", () => {
 	const fixture = createFixture();

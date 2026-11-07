@@ -938,6 +938,28 @@ is_atomic_release_tag() {
     is_release_number "$1" && is_release_number "$2" && is_release_number "$3"
 }
 
+# 0.9.42 is the first release whose `atomic intercom` is a subcommand: an older one reads
+# `intercom upgrade` as a prompt for the model.
+release_has_intercom_command() {
+    release_core=${1%%-*}
+    release_ifs=$IFS
+    IFS=.
+    set -- $release_core
+    IFS=$release_ifs
+    [ "$1" -gt 0 ] || [ "$2" -gt 9 ] || { [ "$2" -eq 9 ] && [ "$3" -ge 42 ]; }
+}
+
+# Whether the installed launcher lists `atomic intercom upgrade` in its Intercom help. Both
+# the probe and the upgrade read no input: under `curl ... | sh` the rest of this script is
+# their standard input.
+installed_has_intercom_upgrade() {
+    intercom_help=$("$BIN_PATH" intercom --help </dev/null 2>/dev/null) || return 1
+    case "$NEWLINE$intercom_help$NEWLINE" in
+        *"${NEWLINE}  atomic intercom upgrade${NEWLINE}"*) return 0 ;;
+    esac
+    return 1
+}
+
 parse_release_tag() {
     release_json=$1
     case $release_json in
@@ -1331,9 +1353,11 @@ if [ "$VERSION_BACKED_UP" -eq 1 ]; then
 fi
 
 # Replace an Intercom broker the previous version left running, when that is safe (#4538).
-# The install is already committed, so a failure here only warns.
-if ! "$BIN_PATH" intercom upgrade; then
-    printf 'warning: installed atomic, but "atomic intercom upgrade" failed; run it manually if new sessions do not start.\n' >&2
+# A release without the command skips it; the install is already committed, so a failure only warns.
+if release_has_intercom_command "$RELEASE_TAG" 2>/dev/null && installed_has_intercom_upgrade; then
+    if ! "$BIN_PATH" intercom upgrade </dev/null; then
+        printf 'warning: installed atomic, but "atomic intercom upgrade" failed; run it manually if new sessions do not start.\n' >&2
+    fi
 fi
 
 print_install_summary

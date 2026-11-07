@@ -31,7 +31,7 @@ atomic list                        # List installed packages
 atomic config                      # Enable/disable package resources
 ```
 
-These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust. After it updates the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands); a failure there prints a warning and does not change the exit code.
+These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust. After it updates the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands) when the `atomic` on PATH reports the version just installed and lists the command; otherwise it prints a note and leaves the broker alone. A failure of the upgrade prints a warning and does not change the exit code.
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
@@ -138,7 +138,7 @@ atomic intercom upgrade                                              # Replace a
 
 `atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
 
-`atomic intercom upgrade` replaces a broker that an older Atomic started, when that is safe. With no session connected it stops the broker, and the next session starts this version's. With sessions connected it leaves the broker running, and the next session of this version hands it over without disconnecting them for longer than a reconnect. It does nothing when no broker runs or the broker is already this version's, leaves a broker too old to report its sessions running, and exits `1` only when stopping the broker fails. The installers and `atomic update` run it after a successful install. See [Upgrading Atomic with sessions running](/intercom/operations#upgrading-atomic-with-sessions-running).
+`atomic intercom upgrade` replaces a broker that an older Atomic started, when that is safe. With no session connected it stops the broker, and the next session starts this version's. With sessions connected it leaves the broker running, and the next session of this version hands it over without disconnecting them for longer than a reconnect. It does nothing when no broker runs or the broker is already this version's, leaves a broker too old to report its sessions running, and exits `1` only when stopping the broker fails. The installers and `atomic update` run it after a successful install when the installed version has the command, without passing it any input. See [Upgrading Atomic with sessions running](/intercom/operations#upgrading-atomic-with-sessions-running).
 
 See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) and [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 

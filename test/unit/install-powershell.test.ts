@@ -162,12 +162,27 @@ test("Windows installer runs 'intercom upgrade' through the new shim after the c
 	const definition = source.indexOf("function Invoke-AtomicIntercomUpgrade {");
 	const upgradeBlock = source.slice(definition, source.indexOf("\nfunction ", definition + 1));
 	assert.ok(definition >= 0 && definition < committed);
+	assert.match(upgradeBlock, /param\(\[string\]\$ShimPath, \[string\]\$ReleaseTag\)/u);
 	assert.match(
 		upgradeBlock,
-		/try \{[\s\S]*\$ShimPath \+ '" intercom upgrade'[\s\S]*\$env:ComSpec \/d \/c \$upgradeCommand/u,
+		/try \{\s+if \(-not \(Test-AtomicReleaseHasIntercomCommand \$ReleaseTag\) -or -not \(Test-AtomicShimHasIntercomUpgrade \$ShimPath\)\) \{\s+return\s+\}[\s\S]*\$ShimPath \+ '" intercom upgrade <NUL'[\s\S]*\$env:ComSpec \/d \/c \$upgradeCommand/u,
 	);
 	assert.match(upgradeBlock, /\$LASTEXITCODE[\s\S]*Write-Warning/u);
 	assert.match(upgradeBlock, /catch \{\s+Write-Warning /u);
+	assert.ok(
+		source.includes("    Invoke-AtomicIntercomUpgrade $shimPath $releaseTag\n") ||
+			source.includes("    Invoke-AtomicIntercomUpgrade $shimPath $releaseTag\r\n"),
+	);
+
+	const floor = source.slice(source.indexOf("function Test-AtomicReleaseHasIntercomCommand {"));
+	assert.match(
+		floor,
+		/^function Test-AtomicReleaseHasIntercomCommand \{\s+param\(\[string\]\$Tag\)\s+return \[version\]\(\$Tag -replace '-alpha\\\.\[0-9\]\+\$', ''\) -ge \[version\]'0\.9\.42'/u,
+	);
+	const probe = source.slice(source.indexOf("function Test-AtomicShimHasIntercomUpgrade {"), definition);
+	assert.match(probe, /\$env:ComSpec \/d \/c \('"' \+ \$ShimPath \+ '" intercom --help <NUL 2>NUL'\)/u);
+	assert.match(probe, /\.Trim\(\) -ceq 'atomic intercom upgrade'/u);
+	assert.doesNotMatch(probe, /\) 2>/u, "the probe redirects inside cmd, never at the PowerShell level");
 	assert.doesNotMatch(upgradeBlock, /\bthrow\b/u, "a failing 'intercom upgrade' must never fail the installer");
 });
 
@@ -1827,8 +1842,38 @@ public static class Program
         {
             return Int32.Parse(args[1]);
         }
+        if (args.Length == 2 && args[0] == "intercom" && args[1] == "--help")
+        {
+            AppendIntercomLog("help " + version);
+            if (version == "0.9.41")
+            {
+                Console.WriteLine("Usage: atomic [options] [@files...] [messages...]");
+                return 0;
+            }
+            Console.WriteLine("Usage:");
+            Console.WriteLine("  atomic intercom status");
+            Console.WriteLine("  atomic intercom restart");
+            if (version != "0.9.71")
+            {
+                Console.WriteLine("  atomic intercom upgrade");
+            }
+            return 0;
+        }
+        if (args.Length == 2 && args[0] == "intercom" && args[1] == "upgrade" && version == "0.9.41")
+        {
+            AppendIntercomLog("prompt " + version);
+            Console.Error.WriteLine("No API key found for the selected model.");
+            return 1;
+        }
+        if (args.Length == 2 && args[0] == "intercom" && args[1] == "upgrade" && version == "0.9.71")
+        {
+            AppendIntercomLog("unknown " + version);
+            Console.Error.WriteLine("Unknown intercom command \"upgrade\".");
+            return 1;
+        }
         if (args.Length == 2 && args[0] == "intercom" && args[1] == "upgrade")
         {
+            AppendIntercomLog("upgrade " + version + " redirected=" + Console.IsInputRedirected);
             string upgradeLog = Environment.GetEnvironmentVariable("ATOMIC_FIXTURE_UPGRADE_LOG");
             if (!String.IsNullOrEmpty(upgradeLog))
             {
@@ -1839,6 +1884,15 @@ public static class Program
         }
         Console.WriteLine(version + ":" + String.Join("|", args));
         return 0;
+    }
+
+    private static void AppendIntercomLog(string line)
+    {
+        string intercomLog = Environment.GetEnvironmentVariable("ATOMIC_FIXTURE_INTERCOM_LOG");
+        if (!String.IsNullOrEmpty(intercomLog))
+        {
+            File.AppendAllText(intercomLog, line + Environment.NewLine);
+        }
     }
 }
 '@
@@ -1892,6 +1946,10 @@ New-FixtureRelease "1.0.0"
 New-FixtureRelease "2.0.0"
 if ($Scenario -eq "tag-grammar") {
     New-FixtureRelease "1.0.0-alpha.1"
+}
+if ($Scenario -eq "install") {
+    New-FixtureRelease "0.9.41"
+    New-FixtureRelease "0.9.71"
 }
 
 $global:AtomicFixtureAssetRoot = $assetRoot
@@ -2204,7 +2262,7 @@ function global:Move-Item {
 $environmentNames = @(
     "ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN",
     "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP", "SystemTemp", "PATHEXT",
-    "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION", "ATOMIC_FORCE_INSTALL", "ATOMIC_FIXTURE_UPGRADE_LOG", "ATOMIC_FIXTURE_UPGRADE_EXIT"
+    "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION", "ATOMIC_FORCE_INSTALL", "ATOMIC_FIXTURE_UPGRADE_LOG", "ATOMIC_FIXTURE_UPGRADE_EXIT", "ATOMIC_FIXTURE_INTERCOM_LOG"
 )
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -2223,6 +2281,8 @@ try {
     $upgradeLog = Join-Path $workspace "upgrade.log"
     $env:ATOMIC_FIXTURE_UPGRADE_LOG = $upgradeLog
     $env:ATOMIC_FIXTURE_UPGRADE_EXIT = $null
+    $intercomLog = Join-Path $workspace "intercom.log"
+    $env:ATOMIC_FIXTURE_INTERCOM_LOG = $intercomLog
     $env:PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
     if ($Scenario -eq "hash-fallback") {
         function global:Get-Command {
@@ -2336,6 +2396,20 @@ try {
         Assert-Fixture ($warningOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "a failing 'intercom upgrade' stopped the installer before its summary"
         $upgradeFailureProbe = Invoke-FixtureShim $shim "--version"
         Assert-Fixture ($upgradeFailureProbe.ExitCode -eq 0 -and $upgradeFailureProbe.Output -eq "2.0.0") "a failing 'intercom upgrade' damaged the committed install"
+        Assert-Fixture (@(Get-Content -LiteralPath $intercomLog | Where-Object { $_ -like "upgrade *" -and $_ -notlike "* redirected=True" }).Count -eq 0) "'intercom upgrade' read the installer's input"
+
+        # A release without 'intercom upgrade' is asked at most for its help, never runs it, and the installer does not warn.
+        Remove-Item -LiteralPath $intercomLog -Force
+        $upgradeCallsBefore = @(Get-Content -LiteralPath $upgradeLog).Count
+        $withoutUpgradeOutput = & $InstallerPath -Ref 0.9.71 3>&1 | Out-String
+        Assert-Fixture ((@(Get-Content -LiteralPath $intercomLog) -join ",") -ceq "help 0.9.71") "0.9.71 was asked for more than its Intercom help: $(@(Get-Content -LiteralPath $intercomLog) -join ',')"
+        Assert-Fixture ($withoutUpgradeOutput -notmatch "intercom upgrade") "installing 0.9.71 warned about 'intercom upgrade': $withoutUpgradeOutput"
+        $promptOutput = & $InstallerPath -Ref 0.9.41 3>&1 | Out-String
+        Assert-Fixture ((@(Get-Content -LiteralPath $intercomLog) -join ",") -ceq "help 0.9.71") "0.9.41 was asked an Intercom command: $(@(Get-Content -LiteralPath $intercomLog) -join ',')"
+        Assert-Fixture ($promptOutput -notmatch "intercom upgrade") "installing 0.9.41 warned about 'intercom upgrade': $promptOutput"
+        Assert-Fixture (@(Get-Content -LiteralPath $upgradeLog).Count -eq $upgradeCallsBefore) "a release without 'intercom upgrade' ran it"
+        $oldReleaseProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($oldReleaseProbe.ExitCode -eq 0 -and $oldReleaseProbe.Output -eq "0.9.41") "the pinned 0.9.41 install did not complete"
     }
     elseif ($Scenario -eq "tag-grammar") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"

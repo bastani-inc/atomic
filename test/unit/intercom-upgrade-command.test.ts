@@ -112,6 +112,12 @@ describe("atomic intercom upgrade (#4538)", () => {
 		});
 	}
 
+	test("the help lists `  atomic intercom upgrade` on a line of its own, which installers and `atomic update` look for", async () => {
+		const result = await intercom(["--help"], control({ status: "not-running" }).control);
+		assert.equal(result.code, 0);
+		assert.ok(result.out.join("\n").split("\n").includes("  atomic intercom upgrade"), result.out.join("\n"));
+	});
+
 	test("a failed upgrade exits 1 with the typed error's message, which names the fix", async () => {
 		const failure = new IntercomBrokerUpgradeError({ phase: "stop", previousPid: 41, previousProtocolMax: 1 });
 		const result = await intercom(["upgrade"], control(failure).control);

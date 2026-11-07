@@ -7,7 +7,16 @@ export interface FakeInstalledAtomic {
 	upgradeCalls(): Array<{ args: string[]; packageDir: string | null }>;
 	/** The device and inode of each `intercom upgrade` invocation's standard output, to tell an inherited one apart. */
 	upgradeStdout(): Array<{ dev: number; ino: number }>;
+	/** Each `intercom` invocation in order: `help`, `upgrade` or `prompt`, and whether its standard input was the null device. */
+	intercomCalls(): Array<{ call: "help" | "upgrade" | "prompt"; stdinIsNull: boolean }>;
 }
+
+/**
+ * How the fake answers `intercom`: `with-upgrade` as this version does; `without-upgrade` as 0.9.42 to 0.9.71, whose
+ * help has no `upgrade` and which reject it; `prompt` as 0.9.41 and older, which print their global help for
+ * `--help` and read `intercom upgrade` as a prompt for the model.
+ */
+export type FakeIntercomCommand = "with-upgrade" | "without-upgrade" | "prompt";
 
 /**
  * Put a fake `atomic` first on PATH, so `atomic update` never runs the host's real Atomic. It prints `version` for
@@ -15,19 +24,59 @@ export interface FakeInstalledAtomic {
  */
 export function installFakeAtomicOnPath(
 	directory: string,
-	options: { version?: string; upgradeExitCode?: number; upgradeSignal?: NodeJS.Signals } = {},
+	options: {
+		version?: string;
+		upgradeExitCode?: number;
+		upgradeSignal?: NodeJS.Signals;
+		intercom?: FakeIntercomCommand;
+	} = {},
 ): FakeInstalledAtomic {
 	const binDir = join(directory, "fake-installed-atomic-bin");
 	const scriptPath = join(directory, "fake-installed-atomic.cjs");
 	const recordPath = join(directory, "fake-installed-atomic-upgrades.jsonl");
 	const stdoutRecordPath = join(directory, "fake-installed-atomic-upgrade-stdout.jsonl");
+	const intercomRecordPath = join(directory, "fake-installed-atomic-intercom.jsonl");
+	const intercom = options.intercom ?? "with-upgrade";
 	mkdirSync(binDir, { recursive: true });
 	writeFileSync(
 		scriptPath,
 		[
 			'const fs = require("node:fs");',
+			'const os = require("node:os");',
 			"const args = process.argv.slice(2);",
+			"function stdinIsNull() {",
+			"\ttry {",
+			"\t\tconst stdin = fs.fstatSync(0);",
+			"\t\tconst devNull = fs.statSync(os.devNull);",
+			"\t\treturn stdin.dev === devNull.dev && stdin.ino === devNull.ino;",
+			"\t} catch {",
+			"\t\treturn true;",
+			"\t}",
+			"}",
+			"function recordIntercom(call) {",
+			`\tfs.appendFileSync(${JSON.stringify(intercomRecordPath)}, JSON.stringify({ call, stdinIsNull: stdinIsNull() }) + "\\n");`,
+			"}",
+			'if (args[0] === "intercom" && args[1] === "--help") {',
+			'\trecordIntercom("help");',
+			...(intercom === "prompt"
+				? ['\tconsole.log("Usage: atomic [options] [@files...] [messages...]");']
+				: [
+						'\tconsole.log("Usage:\\n  atomic intercom status\\n  atomic intercom restart");',
+						...(intercom === "with-upgrade" ? ['\tconsole.log("  atomic intercom upgrade");'] : []),
+					]),
+			"\tprocess.exit(0);",
+			"}",
 			'if (args[0] === "intercom" && args[1] === "upgrade") {',
+			...(intercom === "prompt"
+				? [
+						'\trecordIntercom("prompt");',
+						'\tconsole.error("No API key found for the selected model.");',
+						"\tprocess.exit(1);",
+					]
+				: ['\trecordIntercom("upgrade");']),
+			...(intercom === "without-upgrade"
+				? ["\tconsole.error('Unknown intercom command \"upgrade\".');", "\tprocess.exit(1);"]
+				: []),
 			`\tfs.appendFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, packageDir: process.env.ATOMIC_PACKAGE_DIR ?? null }) + "\\n");`,
 			"\tconst stdout = fs.fstatSync(1);",
 			`\tfs.appendFileSync(${JSON.stringify(stdoutRecordPath)}, JSON.stringify({ dev: stdout.dev, ino: stdout.ino }) + "\\n");`,
@@ -56,6 +105,13 @@ export function installFakeAtomicOnPath(
 						.split("\n")
 						.filter(Boolean)
 						.map((line) => JSON.parse(line) as { args: string[]; packageDir: string | null })
+				: [],
+		intercomCalls: () =>
+			existsSync(intercomRecordPath)
+				? readFileSync(intercomRecordPath, "utf8")
+						.split("\n")
+						.filter(Boolean)
+						.map((line) => JSON.parse(line) as { call: "help" | "upgrade" | "prompt"; stdinIsNull: boolean })
 				: [],
 		upgradeStdout: () =>
 			existsSync(stdoutRecordPath)

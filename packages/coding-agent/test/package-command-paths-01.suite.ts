@@ -388,6 +388,10 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			// Its output reaches the user's terminal: the upgrade writes to this process's own standard output.
 			const ownStdout = fstatSync(1);
 			expect(fakeAtomic.upgradeStdout()).toEqual([{ dev: ownStdout.dev, ino: ownStdout.ino }]);
+			// It is asked whether it has the command first, and neither call reads this process's input.
+			const intercomCalls = fakeAtomic.intercomCalls();
+			expect(intercomCalls.map(({ call }) => call)).toEqual(["help", "upgrade"]);
+			if (process.platform !== "win32") expect(intercomCalls.every(({ stdinIsNull }) => stdinIsNull)).toBe(true);
 		} finally {
 			logSpy.mockRestore();
 			errorSpy.mockRestore();
@@ -436,25 +440,51 @@ if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
 		expect(warnings[0]).toContain("atomic intercom upgrade exited with code 2");
 	});
 
-	it("only warns when the post-update 'intercom upgrade' cannot be started, keeping the exit code (#4538)", async () => {
-		prepareSuccessfulNpmSelfUpdate();
-		const emptyBinDir = join(tempDir, "empty-bin");
-		mkdirSync(emptyBinDir);
-		vi.stubEnv("PATH", emptyBinDir);
-		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+	for (const [label, pathVersion] of [
+		["is missing from PATH", undefined],
+		["on PATH reports another version", "9.9.9"],
+	] as const) {
+		it(`leaves the Intercom broker alone with a note when \`atomic\` ${label} after the update (#4538)`, async () => {
+			if (pathVersion === undefined) {
+				const emptyBinDir = join(tempDir, "empty-bin");
+				mkdirSync(emptyBinDir);
+				vi.stubEnv("PATH", emptyBinDir);
+			} else fakeAtomic = installFakeAtomicOnPath(tempDir, { version: pathVersion });
+			prepareSuccessfulNpmSelfUpdate();
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-		await expect(main(["update", "--self", "--force"])).resolves.toBeUndefined();
+			await expect(main(["update", "--self", "--force"])).resolves.toBeUndefined();
 
-		expectSuccessfulExitCode();
-		expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
-			`Updated atomic from ${VERSION} to ${VERSION}`,
-		);
-		const warnings = errorSpy.mock.calls.map(([message]) => String(message));
-		expect(warnings).toHaveLength(1);
-		expect(warnings[0]).toContain("atomic intercom upgrade");
-		expect(warnings[0]).toMatch(/ENOENT/);
-	});
+			expectSuccessfulExitCode();
+			expect(errorSpy).not.toHaveBeenCalled();
+			const stdout = logSpy.mock.calls.map(([message]) => String(message)).join("\n");
+			expect(stdout).toContain(`Updated atomic from ${VERSION} to ${VERSION}`);
+			expect(stdout).toContain(
+				`\`atomic --version\` on PATH reports ${pathVersion ?? "no version"}, not ${VERSION}, so the Intercom broker was left as it is; run \`atomic intercom upgrade\` with the new version.`,
+			);
+			expect(fakeAtomic.intercomCalls()).toEqual([]);
+		});
+	}
+
+	for (const [release, intercom] of [
+		["0.9.42 to 0.9.71", "without-upgrade"],
+		["0.9.41 and older", "prompt"],
+	] as const) {
+		it(`asks an installed Atomic of ${release} only for its help, never runs 'intercom upgrade' on it, and does not warn (#4538)`, async () => {
+			fakeAtomic = installFakeAtomicOnPath(tempDir, { intercom });
+			prepareSuccessfulNpmSelfUpdate();
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await expect(main(["update", "--self", "--force"])).resolves.toBeUndefined();
+
+			expectSuccessfulExitCode();
+			expect(errorSpy).not.toHaveBeenCalled();
+			expect(fakeAtomic.intercomCalls().map(({ call }) => call)).toEqual(["help"]);
+			expect(fakeAtomic.upgradeCalls()).toEqual([]);
+		});
+	}
 
 	it.skipIf(process.platform === "win32")(
 		"only warns when the post-update 'intercom upgrade' is terminated by a signal, keeping the exit code (#4538)",
