@@ -4,8 +4,12 @@ import {
 	getKeybindings,
 	type KeybindingsManager,
 	matchesKey,
+	type ScrollViewScrollbar,
 	Spacer,
+	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
+import { WheelScrollAccelerator, type WheelScrollLines } from "@earendil-works/pi-tui/dist/wheel-scroll.js";
 
 /**
  * Roles that participate in pi's chat spacing contract.
@@ -260,7 +264,39 @@ function disposeComponent(component: Component | undefined): void {
 	(component as DisposableComponent | undefined)?.dispose?.();
 }
 
-const DEFAULT_SCROLL_STEP_ROWS = 4;
+/** Alt+wheel moves this many wheel steps at once, as the main transcript does. */
+export const ALT_WHEEL_SCROLL_MULTIPLIER = 5;
+/** How long an `"auto"` scrollbar stays visible after the last scroll. */
+export const SCROLLBAR_HIDE_DELAY_MS = 1000;
+const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
+const SCROLLBAR_THUMB = "┃";
+const SCROLLBAR_TRACK = "│";
+const SCROLLBAR_CELL_RESET = "\x1b[0m\x1b]8;;\x07";
+
+/** Settings and hooks of a {@link ScrollableComponentViewport}; every member is optional. */
+export interface ScrollableComponentViewportOptions {
+	/** Rows per wheel event, or `"auto"` to follow wheel velocity (`fullscreenWheelScrollLines`). Default `"auto"`. */
+	readonly wheelScrollLines?: () => WheelScrollLines | undefined;
+	/** Scrollbar display (`fullscreenScrollbar`). Default `"hidden"`. */
+	readonly scrollbar?: () => ScrollViewScrollbar | undefined;
+	/** Painted in the last row while the viewport is scrolled away from its live end. */
+	readonly followIndicator?: Pick<Component, "render">;
+	/** Asked to repaint when an `"auto"` scrollbar hides. */
+	readonly requestRender?: () => void;
+	/** Called after a render whose first row lies within one viewport of the top. */
+	readonly onNearTop?: () => void;
+	/** Milliseconds, for wheel velocity and the `"auto"` scrollbar. Default `performance.now()`. */
+	readonly now?: () => number;
+	/** Whether `"auto"` wheel scrolling accelerates; by default only where the terminal does not already. */
+	readonly accelerateWheel?: boolean;
+	readonly scrollbarThumbStyle?: (text: string) => string;
+	readonly scrollbarTrackStyle?: (text: string) => string;
+}
+
+export interface WheelReport {
+	readonly direction: -1 | 1;
+	readonly alt: boolean;
+}
 
 /**
  * Sticky-bottom, scrollable viewport for chat-like component stacks.
@@ -284,11 +320,18 @@ export class ScrollableComponentViewport implements Component {
 	 */
 	private pendingScrollRow: number | undefined;
 	private readonly keybindings: Pick<KeybindingsManager, "matches"> | undefined;
+	private readonly options: ScrollableComponentViewportOptions;
+	private readonly wheel: WheelScrollAccelerator;
+	private wheelLines: WheelScrollLines = "auto";
+	private lastScrollAt = Number.NEGATIVE_INFINITY;
+	private scrollbarHideTimer: ReturnType<typeof setTimeout> | undefined;
 
-	constructor(keybindings?: unknown) {
+	constructor(keybindings?: unknown, options: ScrollableComponentViewportOptions = {}) {
 		const candidate = keybindings as Partial<Pick<KeybindingsManager, "matches">> | undefined;
 		this.keybindings =
 			typeof candidate?.matches === "function" ? (candidate as Pick<KeybindingsManager, "matches">) : undefined;
+		this.options = options;
+		this.wheel = new WheelScrollAccelerator(this.wheelLines, options.accelerateWheel);
 	}
 
 	setComponents(components: readonly Component[]): void {
@@ -309,22 +352,26 @@ export class ScrollableComponentViewport implements Component {
 	}
 
 	scrollToBottom(): void {
+		const previous = this.scrollFromBottom;
 		this.pendingScrollRow = undefined;
 		this.scrollFromBottom = 0;
+		this.noteScroll(previous);
 	}
 
+	/** The first row, also of rows a render has not measured yet, such as earlier history that just loaded. */
 	scrollToTop(): void {
-		this.pendingScrollRow = undefined;
-		this.scrollFromBottom = this.maxScroll;
+		this.scrollTo(0);
 	}
 
 	scrollBy(deltaRows: number): void {
 		// Positive deltas move toward newer content; negative deltas move up
 		// into older history. Store the offset from the sticky bottom so new
 		// streaming output can keep following when the offset is zero.
+		const previous = this.scrollFromBottom;
 		this.pendingScrollRow = undefined;
 		this.scrollFromBottom -= deltaRows;
 		this.clampScroll();
+		this.noteScroll(previous);
 	}
 
 	/**
@@ -344,11 +391,13 @@ export class ScrollableComponentViewport implements Component {
 	 * actually paints; any other scroll before then withdraws the request.
 	 */
 	scrollTo(row: number): void {
+		const previous = this.scrollFromBottom;
 		const requestedRow = Number.isNaN(row) ? 0 : Math.max(0, Math.floor(row));
 		this.pendingScrollRow = requestedRow;
 		const target = Math.min(this.maxScroll, requestedRow);
 		this.scrollFromBottom = this.maxScroll - target;
 		this.clampScroll();
+		this.noteScroll(previous);
 	}
 
 	/**
@@ -358,7 +407,7 @@ export class ScrollableComponentViewport implements Component {
 	 * transcript instead of the window the reader happens to be parked on.
 	 */
 	rowCount(width: number): number {
-		return this.measureComponentRows(width).reduce((sum, rows) => sum + rows.rowCount, 0);
+		return this.measureComponentRows(this.contentWidth(width)).reduce((sum, rows) => sum + rows.rowCount, 0);
 	}
 
 	/**
@@ -369,13 +418,15 @@ export class ScrollableComponentViewport implements Component {
 	 * its visible height.
 	 */
 	renderRows(width: number, startRow: number, endRow: number): string[] {
-		return this.renderVisibleRows(this.measureComponentRows(width), width, startRow, endRow);
+		const contentWidth = this.contentWidth(width);
+		return this.renderVisibleRows(this.measureComponentRows(contentWidth), contentWidth, startRow, endRow);
 	}
 
 	handleInput(data: string): boolean {
-		const wheelDeltaRows = mouseWheelDeltaRows(data);
-		if (wheelDeltaRows !== 0) {
-			this.scrollBy(wheelDeltaRows);
+		const wheel = parseWheelReport(data);
+		if (wheel !== undefined) {
+			const lines = this.wheelStep(wheel.direction);
+			this.scrollBy(wheel.direction * (wheel.alt ? lines * ALT_WHEEL_SCROLL_MULTIPLIER : lines));
 			return true;
 		}
 		if (isMouseSequence(data)) return true;
@@ -387,11 +438,28 @@ export class ScrollableComponentViewport implements Component {
 			this.scrollBy(this.pageSize());
 			return true;
 		}
-		if ((this.keybindings ?? getKeybindings()).matches(data, "tui.altScreen.top")) {
+		const keybindings = this.keybindings ?? getKeybindings();
+		if (keybindings.matches(data, "tui.altScreen.halfPageUp")) {
+			this.scrollBy(-this.halfPageSize());
+			return true;
+		}
+		if (keybindings.matches(data, "tui.altScreen.halfPageDown")) {
+			this.scrollBy(this.halfPageSize());
+			return true;
+		}
+		if (keybindings.matches(data, "tui.altScreen.previousPrompt")) {
+			this.scrollToPrompt(-1);
+			return true;
+		}
+		if (keybindings.matches(data, "tui.altScreen.nextPrompt")) {
+			this.scrollToPrompt(1);
+			return true;
+		}
+		if (keybindings.matches(data, "tui.altScreen.top")) {
 			this.scrollToTop();
 			return true;
 		}
-		if ((this.keybindings ?? getKeybindings()).matches(data, "tui.altScreen.bottom")) {
+		if (keybindings.matches(data, "tui.altScreen.bottom")) {
 			this.scrollToBottom();
 			return true;
 		}
@@ -399,7 +467,9 @@ export class ScrollableComponentViewport implements Component {
 	}
 
 	render(width: number): string[] {
-		const componentRows = this.measureComponentRows(width);
+		const scrollbar = this.scrollbarMode();
+		const contentWidth = this.contentWidth(width, scrollbar);
+		const componentRows = this.measureComponentRows(contentWidth);
 		const rowCounts = componentRows.map((rows) => rows.rowCount);
 		const lineCount = rowCounts.reduce((sum, count) => sum + count, 0);
 		const maxScroll = Math.max(0, lineCount - this.visibleRows);
@@ -433,7 +503,7 @@ export class ScrollableComponentViewport implements Component {
 			// frame's rows and named one of them. Re-deriving the anchor here
 			// would answer with the previous frame's layout instead.
 			this.scrollFromBottom = maxScroll - Math.min(maxScroll, pendingScrollRow);
-		} else if (this.scrollFromBottom > 0 && this.lastWidth === width) {
+		} else if (this.scrollFromBottom > 0 && this.lastWidth === contentWidth) {
 			const previousMaxScroll = Math.max(0, this.lastLineCount - this.visibleRows);
 			const anchorRow = Math.max(0, previousMaxScroll - this.scrollFromBottom);
 			const shift = rowsShiftedAboveAnchor(
@@ -447,14 +517,29 @@ export class ScrollableComponentViewport implements Component {
 		this.lastLineCount = lineCount;
 		this.lastComponentRowCounts = rowCounts;
 		this.lastComponentSegments = segments;
-		this.lastWidth = width;
+		this.lastWidth = contentWidth;
 		this.maxScroll = maxScroll;
 		this.clampScroll();
 
 		const start = Math.max(0, maxScroll - this.scrollFromBottom);
-		const visible = this.renderVisibleRows(componentRows, width, start, start + this.visibleRows);
-		while (visible.length < this.visibleRows) visible.push(" ".repeat(width));
-		return visible;
+		const indicator =
+			this.scrollFromBottom > 0 && this.visibleRows > 1
+				? (this.options.followIndicator?.render(width).slice(0, 1) ?? [])
+				: [];
+		const contentRows = this.visibleRows - indicator.length;
+		const visible = this.renderVisibleRows(componentRows, contentWidth, start, start + contentRows).map(
+			withoutTerminalControl,
+		);
+		while (visible.length < contentRows) visible.push(" ".repeat(contentWidth));
+		const painted = this.paintScrollbar(visible, width, scrollbar, { lineCount, start, maxScroll });
+		if (start < this.visibleRows) this.options.onNearTop?.();
+		return [...painted, ...indicator];
+	}
+
+	/** Stops the timer that hides an `"auto"` scrollbar. */
+	dispose(): void {
+		clearTimeout(this.scrollbarHideTimer);
+		this.scrollbarHideTimer = undefined;
 	}
 
 	invalidate(): void {
@@ -515,8 +600,95 @@ export class ScrollableComponentViewport implements Component {
 		return Math.max(4, this.visibleRows - 2);
 	}
 
+	private halfPageSize(): number {
+		return Math.max(1, Math.floor(this.visibleRows / 2));
+	}
+
 	private clampScroll(): void {
 		this.scrollFromBottom = Math.max(0, Math.min(this.maxScroll, this.scrollFromBottom));
+	}
+
+	private now(): number {
+		return this.options.now?.() ?? performance.now();
+	}
+
+	private wheelStep(direction: -1 | 1): number {
+		const lines = this.options.wheelScrollLines?.() ?? "auto";
+		if (lines !== this.wheelLines) {
+			this.wheelLines = lines;
+			this.wheel.setLines(lines);
+		}
+		return this.wheel.next(direction, this.now());
+	}
+
+	private scrollbarMode(): ScrollViewScrollbar {
+		return this.options.scrollbar?.() ?? "hidden";
+	}
+
+	/** `"always"` keeps the rightmost column for the scrollbar; the other modes paint over content. */
+	private contentWidth(width: number, scrollbar = this.scrollbarMode()): number {
+		return scrollbar === "always" && width > 1 ? width - 1 : width;
+	}
+
+	/** Shows an `"auto"` scrollbar for {@link SCROLLBAR_HIDE_DELAY_MS} after the position actually changed. */
+	private noteScroll(previousScrollFromBottom: number): void {
+		if (this.scrollFromBottom === previousScrollFromBottom && this.pendingScrollRow === undefined) return;
+		this.lastScrollAt = this.now();
+		if (this.scrollbarMode() !== "auto" || this.options.requestRender === undefined) return;
+		clearTimeout(this.scrollbarHideTimer);
+		this.scrollbarHideTimer = setTimeout(() => {
+			this.scrollbarHideTimer = undefined;
+			this.options.requestRender?.();
+		}, SCROLLBAR_HIDE_DELAY_MS);
+		this.scrollbarHideTimer.unref?.();
+	}
+
+	private scrollbarVisible(scrollbar: ScrollViewScrollbar, lineCount: number, trackRows: number): boolean {
+		if (scrollbar === "always") return trackRows > 0;
+		return scrollbar === "auto" && lineCount > trackRows && this.now() - this.lastScrollAt < SCROLLBAR_HIDE_DELAY_MS;
+	}
+
+	/** The thumb geometry follows the main transcript's scrollbar: proportional, at least two rows. */
+	private paintScrollbar(
+		rows: readonly string[],
+		width: number,
+		scrollbar: ScrollViewScrollbar,
+		position: { readonly lineCount: number; readonly start: number; readonly maxScroll: number },
+	): string[] {
+		const track = rows.length;
+		if (width < 2 || !this.scrollbarVisible(scrollbar, position.lineCount, track)) return [...rows];
+		const thumbHeight = Math.max(
+			Math.min(2, track),
+			Math.min(track, Math.round((track * track) / Math.max(1, position.lineCount))),
+		);
+		const thumbTop =
+			position.maxScroll === 0 ? 0 : Math.round((position.start / position.maxScroll) * (track - thumbHeight));
+		const thumbStyle = this.options.scrollbarThumbStyle ?? ((text: string) => `\x1b[37m${text}\x1b[39m`);
+		const trackStyle = this.options.scrollbarTrackStyle ?? ((text: string) => `\x1b[90m${text}\x1b[39m`);
+		const cellWidth = width - 1;
+		return rows.map((row, index) => {
+			const cell = truncateToWidth(row, cellWidth, "");
+			const padding = " ".repeat(Math.max(0, cellWidth - visibleWidth(cell)));
+			const thumb = index >= thumbTop && index < thumbTop + thumbHeight;
+			return `${cell}${padding}${SCROLLBAR_CELL_RESET}${thumb ? thumbStyle(SCROLLBAR_THUMB) : trackStyle(SCROLLBAR_TRACK)}`;
+		});
+	}
+
+	/** Parks the nearest semantic prompt (an OSC 133 `A` mark) above or below the first visible row at the top. */
+	private scrollToPrompt(direction: -1 | 1): void {
+		if (this.lastWidth <= 0) return;
+		const rows = this.renderVisibleRows(
+			this.measureComponentRows(this.lastWidth),
+			this.lastWidth,
+			0,
+			this.lastLineCount,
+		);
+		const top = Math.max(0, this.maxScroll - this.scrollFromBottom);
+		for (let row = top + direction; row >= 0 && row < rows.length; row += direction) {
+			if (!OSC133_PROMPT_START.test(rows[row] ?? "")) continue;
+			this.scrollTo(row);
+			return;
+		}
 	}
 }
 
@@ -669,20 +841,37 @@ export class ScrollableChatTranscriptComponent<TEntry extends ChatTranscriptEntr
 }
 
 export function mouseWheelDeltaRows(data: string): number {
-	const sgr = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
-	if (sgr) return wheelDeltaForButtonCode(Number.parseInt(sgr[1]!, 10));
-	if (data.startsWith("\x1b[M") && data.length >= 6) {
-		return wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
-	}
-	return 0;
+	const wheel = parseWheelReport(data);
+	return wheel === undefined ? 0 : wheel.direction * 4;
 }
 
-function wheelDeltaForButtonCode(code: number): number {
-	if ((code & 64) === 0) return 0;
-	const direction = code & 3;
-	if (direction === 0) return -DEFAULT_SCROLL_STEP_ROWS;
-	if (direction === 1) return DEFAULT_SCROLL_STEP_ROWS;
-	return 0;
+/** A vertical wheel report (SGR or legacy X10 encoding), with its direction and whether Alt was held. */
+export function parseWheelReport(data: string): WheelReport | undefined {
+	const sgr = /^\x1b\[<(\d+);\d+;\d+M$/.exec(data);
+	const code =
+		sgr !== null
+			? Number.parseInt(sgr[1] ?? "", 10)
+			: data.startsWith("\x1b[M") && data.length >= 6
+				? data.charCodeAt(3) - 32
+				: undefined;
+	if (code === undefined || (code & 64) === 0) return undefined;
+	const button = code & 3;
+	if (button > 1) return undefined;
+	return { direction: button === 0 ? -1 : 1, alt: (code & 8) !== 0 };
+}
+
+const CONTROL_SEQUENCE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+const CONTROL_CHARACTER = /[\x00-\x06\x08-\x1a\x1c-\x1f\x7f]/g;
+
+/**
+ * A transcript row without the cursor movement, erasing and other control a message may carry: SGR styling,
+ * OSC links and prompt marks, and APC images stay. Rows a viewport paints sit inside a fixed rectangle, which
+ * anything else would break out of.
+ */
+function withoutTerminalControl(row: string): string {
+	return row
+		.replace(CONTROL_SEQUENCE, (sequence) => (sequence.endsWith("m") ? sequence : ""))
+		.replace(CONTROL_CHARACTER, " ");
 }
 
 function isMouseSequence(data: string): boolean {

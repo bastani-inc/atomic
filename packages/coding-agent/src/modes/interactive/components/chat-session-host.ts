@@ -57,6 +57,7 @@ export type {
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
 	ChatSessionSubmitMode,
+	ChatSessionViewportSettings,
 } from "./chat-session-host-types.ts";
 
 export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never> implements Component, Focusable {

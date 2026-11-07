@@ -19,6 +19,7 @@ export {
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
 	type ChatSessionSubmitMode,
+	type ChatSessionViewportSettings,
 } from "./chat-session-host.ts";
 export type { CompactionReason } from "./chat-session-host-events.ts";
 export {
@@ -31,6 +32,7 @@ export {
 	type RowWindowSegment,
 	ScrollableChatTranscriptComponent,
 	ScrollableComponentViewport,
+	type ScrollableComponentViewportOptions,
 } from "./chat-transcript.js";
 export { CompactionBoundaryMessageComponent } from "./compaction-boundary-message.ts";
 export { CustomEditor, type CustomEditorOptions } from "./custom-editor.ts";

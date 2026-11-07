@@ -1,4 +1,12 @@
-import type { Component, EditorComponent, EditorTheme, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
+import type {
+	Component,
+	EditorComponent,
+	EditorTheme,
+	MarkdownTheme,
+	ScrollViewScrollbar,
+	TUI,
+	WheelScrollLines,
+} from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -57,6 +65,14 @@ export interface ChatSessionHostCommands {
 	handleSlashCommand?: (text: string) => Promise<boolean> | boolean;
 }
 
+/** Body viewport settings a host inherits, named after the fullscreen settings they come from. */
+export interface ChatSessionViewportSettings {
+	/** Rows per mouse-wheel event, or `"auto"` to follow wheel velocity. */
+	readonly fullscreenWheelScrollLines?: WheelScrollLines;
+	/** `"auto"`, `"always"` or `"hidden"` scrollbar beside the body. */
+	readonly fullscreenScrollbar?: ScrollViewScrollbar;
+}
+
 export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike = never> {
 	style: ChatSessionHostStyle;
 	commands?: ChatSessionHostCommands;
@@ -88,7 +104,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	editorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
 	autocompleteProvider?: import("@earendil-works/pi-tui").AutocompleteProvider;
 	editorTheme: EditorTheme;
-	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	getChatRenderSettings?: () =>
+		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)
+		| undefined;
+	/** Called when the body shows rows within one viewport of its top, so earlier history can load. */
+	onNearTop?: () => void;
 	getCwd?: () => string;
 	footerData?: ReadonlyFooterDataProvider;
 	renderExtraEntry?: (entry: TExtraEntry) => Component;

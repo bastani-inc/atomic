@@ -6,7 +6,9 @@ import type {
 	OverlayHandle,
 	OverlayOptions,
 	ProgramStatus,
+	ScrollViewScrollbar,
 	TUI,
+	WheelScrollLines,
 } from "@earendil-works/pi-tui";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
@@ -139,6 +141,10 @@ export interface ChatRenderSettings {
 	imageWidthCells: number;
 	markdownTransformers: readonly MarkdownTransformer[];
 	renderLatex?: boolean;
+	/** `fullscreenScrollbar`, for a transcript an overlay scrolls itself. */
+	fullscreenScrollbar?: ScrollViewScrollbar;
+	/** `fullscreenWheelScrollLines`, for a transcript an overlay scrolls itself. */
+	fullscreenWheelScrollLines?: WheelScrollLines;
 	getToolDefinition(toolName: string): ToolRenderers | undefined;
 	getCustomMessageRenderer(customType: string): MessageRenderer | undefined;
 }
