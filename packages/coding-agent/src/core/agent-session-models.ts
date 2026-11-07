@@ -7,7 +7,7 @@ import { type ModelCycleResult, type ModelMutationOptions, THINKING_LEVELS } fro
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { requestedThinkingLevelForModelSwitch } from "./model-switch-thinking-level.ts";
 import { assertSessionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
-import type { ThinkingLevelChangeEntry } from "./session-manager-types.ts";
+import type { SessionEntry, ThinkingLevelChangeEntry } from "./session-manager-types.ts";
 import { serializeSessionMutation } from "./session-mutation-queue.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
@@ -420,9 +420,15 @@ export function _clampThinkingLevel(
  * already implies the live level, so a prompt that needs no write starts without yielding.
  */
 export function _recordThinkingLevel(this: AgentSession): Promise<string> | undefined {
-	const recorded = this.sessionManager
-		.getBranch()
-		.findLast((entry): entry is ThinkingLevelChangeEntry => entry.type === "thinking_level_change");
+	const branch = this.sessionManager.getBranch();
+	let recorded: ThinkingLevelChangeEntry | undefined;
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry: SessionEntry = branch[index];
+		if (entry.type === "thinking_level_change") {
+			recorded = entry;
+			break;
+		}
+	}
 	if (!recorded) return undefined;
 	const recordedLevel = recorded.thinkingLevel as ThinkingLevel;
 	const availableLevels = this.getAvailableThinkingLevels();
