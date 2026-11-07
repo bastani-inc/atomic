@@ -46,7 +46,6 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
-import { registerWorktreeRootMappings } from "./resume/path-mapping.ts";
 import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
@@ -339,7 +338,6 @@ async function constructAgentSession(
 		if (store !== options.sessionStore) acquisition.store = store;
 		sessionManager = await SessionManager.create(store, cwd);
 	}
-	registerWorktreeRootMappings(sessionManager.getWorktreeRootMappings());
 
 	if (workspace !== undefined && persistInitialState) await recordSessionWorkspace(sessionManager, workspace);
 

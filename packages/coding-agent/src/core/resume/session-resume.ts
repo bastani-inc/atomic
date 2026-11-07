@@ -16,7 +16,7 @@ import {
 } from "../worktree-snapshot/restore.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeSnapshotSettings } from "../worktree-snapshot/types.ts";
 import type { ResumeEntryPoint, ResumePreconditionProblem } from "./errors.ts";
-import { isInside, registerWorktreeRootMappings } from "./path-mapping.ts";
+import { isInside } from "./path-mapping.ts";
 import {
 	assertResumePreconditions,
 	defaultResumePreflightIo,
@@ -61,6 +61,11 @@ export interface PrepareSessionResumeOptions {
 	/** Session directory to reopen a moved session in, for stores that keep sessions per directory. */
 	readonly sessionDirectory?: string;
 	readonly signal?: AbortSignal;
+	/**
+	 * Checkouts the session continues in as they are, by the root its recorded restores put them at: never verified and
+	 * never restored, as for checkouts it worked in on this node and changed since.
+	 */
+	readonly keepInPlace?: ReadonlySet<string>;
 }
 
 export type PreparedSessionResume =
@@ -185,12 +190,12 @@ async function hasLocalChanges(root: string, signal: AbortSignal | undefined): P
  * Gets a resumed session's checkouts ready on this node before its runtime starts, and returns the session opened
  * where it continues. When the checkout the session works in is missing or changed here, a checkout of the same
  * repository the resume started in is used as-is if it matches (and, if it differs, only when the user chooses it).
- * Every other
- * checkout the session recorded that is gone or changed here is restored: every precondition of those restores is
- * checked in one pass first (Git, and a setup hook for each snapshot with dependency inputs), then #4245's
- * {@link openSessionInWorktree} restores them into fresh worktrees. A restored worktree that turns out to have no
- * setup hook it needs is removed again before its restore is recorded. Each worktree Atomic restored gets its setup
- * hook once per environment. Every restore registers its root mapping for tool path resolution.
+ * Every other checkout the session recorded that is gone or changed here, except those in `keepInPlace`, is restored:
+ * every precondition of those restores is checked in one pass first (Git, and a setup hook for each snapshot with
+ * dependency inputs), then #4245's {@link openSessionInWorktree} restores them into fresh worktrees. A restored
+ * worktree that turns out to have no setup hook it needs is removed again before its restore is recorded. Each
+ * worktree Atomic restored gets its setup hook once per environment. The session's tools resolve paths under every
+ * root it recorded into the place that root was restored.
  */
 export async function prepareSessionResume(
 	sessionManager: SessionManager,
@@ -198,7 +203,6 @@ export async function prepareSessionResume(
 ): Promise<PreparedSessionResume> {
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
-	registerWorktreeRootMappings(sessionManager.getWorktreeRootMappings());
 	if (!options.settings.enabled || sessionManager.getLatestWorktreeSnapshots().size === 0) {
 		return { status: "ready", sessionManager, notices: [] };
 	}
@@ -206,7 +210,11 @@ export async function prepareSessionResume(
 	const match = latestSessionSnapshot(sessionManager);
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
-	if (match !== undefined && (await worktreeNeedsRestore(match.snapshot, match.root, options))) {
+	if (
+		match !== undefined &&
+		!options.keepInPlace?.has(match.root) &&
+		(await worktreeNeedsRestore(match.snapshot, match.root, options))
+	) {
 		git = { unavailable: await io.probeGit(options.signal) };
 		const reuse = git.unavailable === undefined ? await reuseLaunchCheckout(match, options) : undefined;
 		if (reuse?.kind === "cancelled") return { status: "cancelled" };
@@ -233,9 +241,9 @@ export async function prepareSessionResume(
 		sessionDirectory: options.sessionDirectory,
 		beforeRecord: (restored) => reserveRestoredSetup(restored, snapshots, storeDir, options),
 		pendingMappings: reused === undefined ? [] : [reused],
+		keepInPlace: options.keepInPlace,
 	});
 	const mappings = opened.sessionManager.getWorktreeRootMappings();
-	registerWorktreeRootMappings(mappings);
 	notices.push(...opened.notices);
 	const restoredNow = new Set(mappings.slice(recordedBefore).map((mapping) => resolve(mapping.to)));
 	notices.push(...(await setUpRestoredCheckouts(opened.sessionManager, restoredNow, storeDir, options)));
@@ -278,7 +286,6 @@ interface RestoreTarget {
 /** Records that the session continues in a checkout already here, so paths follow it. */
 async function recordReuse(sessionManager: SessionManager, mapping: WorktreeRootMapping): Promise<void> {
 	await sessionManager.appendWorktreeSnapshot(mapping.to, mapping.snapshotId, undefined, mapping);
-	registerWorktreeRootMappings(sessionManager.getWorktreeRootMappings());
 }
 
 type SessionCheckouts = Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">;
@@ -293,14 +300,17 @@ function withMapping(sessionManager: SessionManager, mapping: WorktreeRootMappin
 	};
 }
 
-/** The recorded checkouts that are gone or changed here, which #4245's resume restores into fresh worktrees. */
+/**
+ * The recorded checkouts that are gone or changed here, which #4245's resume restores into fresh worktrees, except
+ * those the session continues in as they are.
+ */
 async function checkoutsToRestore(
 	sessionManager: SessionCheckouts,
 	options: PrepareSessionResumeOptions,
 ): Promise<RestoreTarget[]> {
 	const targets: RestoreTarget[] = [];
 	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
-		if (await worktreeNeedsRestore(snapshot, root, options)) {
+		if (!options.keepInPlace?.has(root) && (await worktreeNeedsRestore(snapshot, root, options))) {
 			targets.push({ root, snapshot, absent: !(await isDirectory(root)) });
 		}
 	}
@@ -364,10 +374,11 @@ async function setUpRestoredCheckouts(
 }
 
 /**
- * Whether the repository of the checkout at `root` holds the commit that records `snapshot`. That commit is written
- * only where the snapshot was taken, so it tells the checkout a session worked in, even after it changed, from another
- * checkout of the same repository at the same path on another node. A checkout that is not a repository, or a node
- * without Git, does not hold it.
+ * Whether the repository of the checkout at `root` holds the commit that records `snapshot`. That commit is
+ * content-addressed and written only where Atomic captured exactly that state, so it tells the checkout a session
+ * worked in, even after it changed, from another checkout of the same repository at the same path on another node,
+ * unless Atomic captured the same state there too. A checkout that is not a repository, or a node without Git, does
+ * not hold it.
  */
 export async function holdsSnapshotCommit(
 	snapshot: WorktreeSnapshot,

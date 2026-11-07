@@ -1,11 +1,11 @@
 import {
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
-	registerWorktreeRootMappings,
 	resolveWorktreeSnapshotSettings,
 	scheduleSnapshotCollection,
 	setUpRestoredRunWorktrees,
 	type WorktreeRootMapping,
+	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
@@ -277,7 +277,6 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				};
 			}
 		}
-		if (opts.worktreeRootMappings !== undefined) registerWorktreeRootMappings(opts.worktreeRootMappings);
 		const publicResources =
 			opts.parentRun === undefined &&
 			(opts.localWorkers ||
@@ -298,14 +297,16 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 			if (opts.parentRun === undefined && opts.journal === undefined && opts.durableBackend === undefined) {
 				bindStoreDurableBackend(activeStore, backend);
 			}
-			return await admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
-				executeUntilSettled(
-					def,
-					resolvedInputs,
-					{ ...admittedOpts, store: activeStore, runId, durableBackend: backend },
-					evictionPolicy,
-				),
-			);
+			const admitted = () =>
+				admitWorkflowSessions(backend, { ...opts, runId }, (admittedOpts) =>
+					executeUntilSettled(
+						def,
+						resolvedInputs,
+						{ ...admittedOpts, store: activeStore, runId, durableBackend: backend },
+						evictionPolicy,
+					),
+				);
+			return await withWorktreeRootMappings(opts.worktreeRootMappings ?? [], admitted);
 		} finally {
 			try {
 				await publicPool?.close();

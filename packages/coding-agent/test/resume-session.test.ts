@@ -16,7 +16,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { holdsSnapshotCommit } from "../src/core/resume/session-resume.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -49,6 +48,7 @@ import {
 	readResumeSetupLedger,
 	setWorktreeSnapshotGit,
 	WorkspaceDriftError,
+	withWorktreeRootMappings,
 } from "../src/index.ts";
 import { appendLineCommand, nodeCommand, SLEEPING_COMMAND, SUCCEEDING_COMMAND } from "./helpers/hook-commands.ts";
 import { missingGit } from "./helpers/missing-git.ts";
@@ -61,13 +61,16 @@ const cleanups: Array<() => Promise<void> | void> = [];
 
 beforeEach(() => {
 	sandbox = new GitSandbox();
-	clearWorktreeRootMappings();
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
-	clearWorktreeRootMappings();
 	sandbox.dispose();
 });
+
+/** `path` as the tools of the session `manager` resolve it for work in `cwd`. */
+function resolveForSession(manager: SessionManager, path: string, cwd: string): string {
+	return withWorktreeRootMappings(manager.getWorktreeRootMappings(), () => resolveToCwd(path, cwd));
+}
 
 async function sqlStore(name: string): Promise<SessionStore> {
 	const database = await openNodeSqliteDatabase(sandbox.path(`${name}.sqlite`));
@@ -175,7 +178,10 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 		const ledger = await readResumeSetupLedger(sandbox.path("host"), restoredRoot);
 		assert.equal(ledger?.exitStatus, 0);
 		assert.equal(ledger?.hook, RESUME_SETUP_COMMAND_SETTING);
-		assert.equal(resolveToCwd(join(clone, "README.md"), cwdOf(prepared)!), join(restoredRoot, "README.md"));
+		assert.equal(
+			resolveForSession(manager, join(clone, "README.md"), cwdOf(prepared)!),
+			join(restoredRoot, "README.md"),
+		);
 
 		const again = await prepareSessionResume(manager, options({ io }));
 		assert.equal(cwdOf(again), cwdOf(prepared));
@@ -373,7 +379,10 @@ describe("prepareSessionResume started in a checkout of the session's repository
 		);
 		assert.equal(existsSync(sandbox.path("host")), false);
 		assert.equal(setupRuns(), 0);
-		assert.equal(resolveToCwd(join(clone, "README.md"), join(checkout, "notes")), join(checkout, "README.md"));
+		assert.equal(
+			resolveForSession(manager, join(clone, "README.md"), join(checkout, "notes")),
+			join(checkout, "README.md"),
+		);
 	});
 
 	const dirtyCases: ReadonlyArray<[DirtyCheckoutChoice | "non-interactive", "use" | "restore" | "cancelled"]> = [
@@ -816,17 +825,6 @@ describe("prepareSessionResume details (#4329)", () => {
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout, settings: narrow }));
 		assert.equal(prepared.status === "ready" && prepared.notices[0]?.type, "info");
 		assert.equal(cwdOf(prepared), checkout);
-	});
-
-	test("recorded restores apply to tool paths even when snapshots are turned off", async () => {
-		const { clone } = await editedClone();
-		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
-		const first = await prepareSessionResume(manager, options());
-		const restored = cwdOf(first)!;
-		clearWorktreeRootMappings();
-		await prepareSessionResume(manager, options({ settings: { ...settings, enabled: false } }));
-		assert.equal(resolveToCwd(join(clone, "README.md"), restored), join(restored, "README.md"));
 	});
 
 	test("a user checkout verified in place never runs the setup hook", async () => {
@@ -1314,7 +1312,7 @@ describe("setup plan before restoring (#4329)", () => {
 		);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited\n");
 		assert.equal(setupRuns(), 1);
-		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
+		assert.equal(resolveForSession(manager, join(clone, "README.md"), cwd), join(cwd, "README.md"));
 	});
 
 	test("a blank setup command is no command; the predicted problem names the hook and the snapshot's inputs", async () => {
@@ -1538,6 +1536,35 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.equal(setupRuns(), 2);
 	});
 
+	test("a checkout kept in place is neither verified nor restored after it changed, while its missing sibling is (#4329)", async () => {
+		const { clone } = await editedClone();
+		const { second, manager } = await twoCheckoutSession(clone);
+		sandbox.write(join(clone, "README.md"), "changed after the release\n");
+		renameSync(second, sandbox.path("second-gone"));
+		const prompts: DirtyCheckoutPrompt[] = [];
+
+		const prepared = await prepareSessionResume(
+			manager,
+			options({
+				launchCwd: clone,
+				keepInPlace: new Set([clone]),
+				chooseDirtyCheckout: async (prompt) => {
+					prompts.push(prompt);
+					return "cancel";
+				},
+			}),
+		);
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(prompts, []);
+		assert.deepEqual(
+			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
+			[second],
+		);
+		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "changed after the release\n");
+		assert.equal(setupRuns(), 1);
+	});
+
 	test("a missing setup hook for any checkout to restore is reported before anything is restored", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "no lockfile here\n" });
 		const { second, manager } = await twoCheckoutSession(clone);
@@ -1681,7 +1708,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const restoredSecond = mappings[1]!.to;
 		assert.ok(restoredSecond.startsWith(sandbox.path("host")), restoredSecond);
 		assert.equal(
-			readFileSync(resolveToCwd(join(second, "README.md"), checkout), "utf8"),
+			readFileSync(resolveForSession(manager, join(second, "README.md"), checkout), "utf8"),
 			"edited in the second repository\n",
 		);
 		assert.equal(setupRuns(), 1);
