@@ -504,8 +504,8 @@ export class ScrollableComponentViewport implements Component {
 			// would answer with the previous frame's layout instead.
 			this.scrollFromBottom = maxScroll - Math.min(maxScroll, pendingScrollRow);
 		} else if (this.scrollFromBottom > 0 && this.lastWidth === contentWidth) {
-			const previousMaxScroll = Math.max(0, this.lastLineCount - this.visibleRows);
-			const anchorRow = Math.max(0, previousMaxScroll - this.scrollFromBottom);
+			// The row the reader had at the top in the last frame, so a change of height keeps it there.
+			const anchorRow = Math.max(0, this.maxScroll - this.scrollFromBottom);
 			const shift = rowsShiftedAboveAnchor(
 				{ rowCounts: this.lastComponentRowCounts, segments: this.lastComponentSegments },
 				{ rowCounts, segments },

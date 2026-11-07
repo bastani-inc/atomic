@@ -287,3 +287,21 @@ test("painted rows keep styling, links and prompt marks but drop cursor movement
 	assert.ok(!/[\r\x08]/.test(row));
 	assert.match(stripVTControlCharacters(row), /^red link clearmove ret /);
 });
+
+test("a reader scrolled up keeps the same top row when the viewport's height changes (#4521)", () => {
+	const { view, paint } = viewport(numbered(100), {}, 12);
+	view.handleInput(CTRL_HOME);
+	assert.equal(topRow(paint()), 0);
+	view.setVisibleRows(10);
+	assert.equal(topRow(paint()), 0, "a status row taking two rows of a live chat must not hide its first rows");
+	view.setVisibleRows(14);
+	assert.equal(topRow(paint()), 0);
+	view.scrollTo(30);
+	paint();
+	view.setVisibleRows(11);
+	assert.equal(topRow(paint()), 30);
+	view.handleInput(CTRL_END);
+	paint();
+	view.setVisibleRows(12);
+	assert.equal(topRow(paint()), 88, "a reader following the end keeps following it");
+});
