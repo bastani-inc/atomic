@@ -260,6 +260,7 @@ interface SourceState {
 	readonly source: IndexSource;
 	readonly installed: boolean;
 	readonly backfilled: boolean;
+	readonly deferred: boolean;
 }
 
 const CHECKPOINT_EVENT = "CheckpointRecorded";
@@ -558,13 +559,16 @@ async function createSnapshotIndexTables(
 	await transaction.exec(
 		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
 	);
-	if (!(await transaction.get("SELECT name FROM pragma_table_info(?) WHERE name = 'created_at'", t.blobs))) {
-		// ALTER requires a constant default. Give existing blobs a fresh grace window on the database clock.
+	const age = await transaction.get("SELECT dflt_value FROM pragma_table_info(?) WHERE name = 'created_at'", t.blobs);
+	if (!age) {
+		// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
 		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`);
-		await transaction.run(`UPDATE ${t.blobs} SET created_at = unixepoch()`);
+	}
+	// A constant zero default identifies an upgraded table. Its age index is also deferred to collection.
+	if (age && String(age.dflt_value) !== "0") {
+		await transaction.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`);
 	}
 	await transaction.exec(`
-		CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash);
 		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
 		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID;
@@ -593,10 +597,13 @@ async function createSnapshotIndexTables(
 		migrated = true;
 	}
 	if (migrated) {
-		// The old session triggers indexed only the latest snapshot per checkout. Rebuild the tree-aware index.
+		// Mark the tree-aware rebuild durably, but leave its old rows untouched until completeIndex runs.
 		const source = indexSources(prefix, t).find((source) => source.name === "session-entries")!;
 		for (const trigger of source.triggers) await transaction.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
-		await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, source.name);
+		await transaction.run(
+			`INSERT OR REPLACE INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1)`,
+			source.name,
+		);
 	}
 }
 
@@ -638,8 +645,13 @@ async function readSourceStates(
 			const row = progress.get(source.name);
 			return {
 				source,
-				installed: row !== undefined && source.triggers.every((name) => present.has(name)),
-				backfilled: row !== undefined && Number(row.backfilled_through) >= Number(row.watermark),
+				installed:
+					row !== undefined && Number(row.watermark) >= 0 && source.triggers.every((name) => present.has(name)),
+				backfilled:
+					row !== undefined &&
+					Number(row.watermark) >= 0 &&
+					Number(row.backfilled_through) >= Number(row.watermark),
+				deferred: row !== undefined && Number(row.watermark) === -1,
 			};
 		});
 }
@@ -697,8 +709,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	static async initialize(transaction: SqliteExecutor, prefix = ""): Promise<void> {
 		const t = snapshotIndexTables(prefix);
 		await createSnapshotIndexTables(transaction, t, prefix);
-		for (const { source, installed } of await readSourceStates(transaction, t, indexSources(prefix, t))) {
-			if (!installed) await installSource(transaction, t, source);
+		for (const { source, installed, deferred } of await readSourceStates(transaction, t, indexSources(prefix, t))) {
+			if (!installed && !deferred) await installSource(transaction, t, source);
 		}
 	}
 
@@ -741,13 +753,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * above it, indexed by the triggers. A table that has none yet, an empty one included, costs one watermark of 0.
 	 * Resolves with the state of every referencing table.
 	 */
-	private async installIndex(pace?: BackgroundCollectionPace): Promise<SourceState[]> {
+	private async installIndex(pace?: BackgroundCollectionPace, includeDeferred = false): Promise<SourceState[]> {
 		const states = await readSourceStates(this.database, this.tables, this.sources);
-		const missing = states.filter((state) => !state.installed);
+		const missing = states.filter((state) => !state.installed && (includeDeferred || !state.deferred));
 		for (const { source } of missing) {
 			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.tables, [source]);
-				if (current === undefined || current.installed) return;
+				if (current === undefined || current.installed || (current.deferred && !includeDeferred)) return;
 				await installSource(transaction, this.tables, source);
 			});
 		}
@@ -762,7 +774,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * with its reason.
 	 */
 	async completeIndex(options: SnapshotIndexOptions = {}): Promise<void> {
-		for (const { source, backfilled } of await this.installIndex(options.pace)) {
+		for (const { source, backfilled } of await this.installIndex(options.pace, true)) {
 			if (backfilled) continue;
 			for (;;) {
 				options.signal?.throwIfAborted();
@@ -826,6 +838,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 */
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
+		options.signal?.throwIfAborted();
+		if (!(await this.database.get("SELECT name FROM sqlite_schema WHERE name = ?", `${t.blobs}_age`))) {
+			await this.write(options.pace, (tx) =>
+				tx.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`),
+			);
+		}
 		const unreferenced = `NOT EXISTS (
 				SELECT 1 FROM ${t.runRefs} AS ref WHERE ref.hash = ${t.blobs}.hash
 				AND NOT EXISTS (SELECT 1 FROM ${t.runState} AS state WHERE state.run_id = ref.run_id AND state.retained = 0)
@@ -850,7 +868,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				const page = await this.page(transaction, minimumAge, unreferenced, after);
 				if (page.length === 0) return { page, deleted: [] };
 				const rows = await transaction.all<SqliteRow & { hash: string }>(
-					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM json_each(?)) AND created_at <= unixepoch() - ? AND ${unreferenced} RETURNING hash`,
+					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM json_each(?)) AND created_at > 0 AND created_at <= unixepoch() - ? AND ${unreferenced} RETURNING hash`,
 					JSON.stringify(page.map((row) => row.hash)),
 					minimumAge,
 				);
@@ -864,8 +882,30 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			}
 			deleted.push(...batch.deleted);
 			options.onBatch?.(batch.deleted);
-			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) return deleted;
+			if (batch.page.length < SNAPSHOT_COLLECTION_BATCH) {
+				// Stamp unknown ages after deletion finishes, so even graceSeconds: 0 never deletes a row just stamped.
+				await this.stampLegacyAges(options);
+				return deleted;
+			}
 			cursor = batch.page.at(-1);
+			await this.betweenBatches(options.pace);
+		}
+	}
+
+	private async stampLegacyAges(options: SnapshotIndexOptions): Promise<void> {
+		if (!(await this.database.get(`SELECT 1 FROM ${this.table} WHERE created_at = 0 LIMIT 1`))) return;
+		for (;;) {
+			options.signal?.throwIfAborted();
+			const stamped = await this.write(options.pace, async (transaction) => {
+				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
+				const { changes } = await transaction.run(
+					`UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN
+					(SELECT hash FROM ${this.table} WHERE created_at = 0 ORDER BY hash LIMIT ?) AND created_at = 0`,
+					SNAPSHOT_COLLECTION_BATCH,
+				);
+				return changes;
+			});
+			if (stamped < SNAPSHOT_COLLECTION_BATCH) return;
 			await this.betweenBatches(options.pace);
 		}
 	}
@@ -923,12 +963,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const t = this.tables;
 		return after === undefined
 			? transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= unixepoch() - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
 			: transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					after.created_at,
 					after.hash,

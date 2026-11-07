@@ -40,7 +40,7 @@ async function sessionStoreWithOrphans(count: number): Promise<SqlSessionStore> 
 		domain: "sessions",
 	})) as SqlSessionStore;
 	await store.snapshotBlobs.putBlobs(Array.from({ length: count }, (_, index) => textBlob(`orphan ${index}`)));
-	await databaseOf(store).run(`UPDATE ${store.snapshotBlobs.table} SET created_at = 0`);
+	await databaseOf(store).run(`UPDATE ${store.snapshotBlobs.table} SET created_at = 1`);
 	return store;
 }
 

@@ -377,7 +377,7 @@ describe("the backfill works in short transactions that resume where they stoppe
 		await stores.journal.append(lease, statusEvent("big", { status: "running" }, "RunStarted"));
 		await database.run(
 			`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO snapshot_blobs (hash, bytes, data, created_at) SELECT 'padded-' || i, 1, x'00', 0 FROM n`,
+			INSERT INTO snapshot_blobs (hash, bytes, data, created_at) SELECT 'padded-' || i, 1, x'00', 1 FROM n`,
 			EVENTS,
 		);
 		await database.run(
@@ -390,7 +390,7 @@ describe("the backfill works in short transactions that resume where they stoppe
 		);
 		await stores.journal.append(lease, statusEvent("big", { status: "failed" }));
 		await stores.blobs.putBlobs([textBlob("unreferenced a"), textBlob("unreferenced b")]);
-		await database.run("UPDATE snapshot_blobs SET created_at = 0");
+		await database.run("UPDATE snapshot_blobs SET created_at = 1");
 		await stores.close();
 		await dropSnapshotIndex(database);
 		return { database, lease };
@@ -568,7 +568,7 @@ describe("the backfill works in short transactions that resume where they stoppe
 		const upgraded = await openStores(counted.wrapped);
 		const extraOrphans = Array.from({ length: SNAPSHOT_COLLECTION_BATCH }, (_, index) => textBlob(`extra ${index}`));
 		await upgraded.blobs.putBlobs(extraOrphans);
-		await database.run("UPDATE snapshot_blobs SET created_at = 0");
+		await database.run("UPDATE snapshot_blobs SET created_at = 1");
 		counted.statements.length = 0;
 
 		const outcome = await scheduleSnapshotCollection(upgraded.blobs, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, {
@@ -641,7 +641,7 @@ describe("the backfill works in short transactions that resume where they stoppe
 		const events = (await sourceProgress(database)).find((row) => row.source === "journal-events")!;
 		assert.ok(events.backfilled_through > 0 && events.backfilled_through < events.watermark, "stopped part way");
 		await upgraded.blobs.putBlobs([textBlob("referenced after the upgrade")]);
-		await database.run("UPDATE snapshot_blobs SET created_at = 0");
+		await database.run("UPDATE snapshot_blobs SET created_at = 1");
 		await upgraded.journal.append(
 			lease,
 			checkpointEvent([syntheticSnapshot("late", [textBlob("referenced after the upgrade").hash])]),

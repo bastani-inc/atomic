@@ -118,6 +118,8 @@ async function queryPlan(shared: SharedSnapshotDatabase, statement: CountedState
  * inside each batch's own transaction.
  */
 const INDEX_CHECK = { statements: 2, rows: 15 } as const;
+/** One schema row for the age index, then an indexed probe for unknown legacy ages, once per collection. */
+const AGE_CHECK = { statements: 2, rows: 1 } as const;
 
 const summary = (measured: { statements: readonly CountedStatement[]; rows: number; transactions: number }) => ({
 	statements: measured.statements.length,
@@ -146,8 +148,8 @@ describe("collection cost follows the number of snapshots, never the number of j
 		// batch, at either length.
 		for (const { collection } of measured) {
 			assert.deepEqual(summary(collection), {
-				statements: 2 * INDEX_CHECK.statements + 2,
-				rows: 2 * INDEX_CHECK.rows + 7 + 7,
+				statements: 2 * INDEX_CHECK.statements + 2 + AGE_CHECK.statements,
+				rows: 2 * INDEX_CHECK.rows + 7 + 7 + AGE_CHECK.rows,
 				transactions: 1,
 			});
 			assert.equal(collection.result.deleted.length, 7);
@@ -207,14 +209,14 @@ describe("collection cost follows the number of snapshots, never the number of j
 		const large = await many.measure(() => collectSnapshotGarbage(many.shared.journal.snapshotBlobs));
 
 		assert.deepEqual(summary(small), {
-			statements: 2 * INDEX_CHECK.statements + 2,
-			rows: 2 * INDEX_CHECK.rows + 7 + 7,
+			statements: 2 * INDEX_CHECK.statements + 2 + AGE_CHECK.statements,
+			rows: 2 * INDEX_CHECK.rows + 7 + 7 + AGE_CHECK.rows,
 			transactions: 1,
 		});
 		assert.equal(large.result.deleted.length, 150 + 149);
 		assert.deepEqual(summary(large), {
-			statements: INDEX_CHECK.statements + 2 * (INDEX_CHECK.statements + 2),
-			rows: INDEX_CHECK.rows + 2 * INDEX_CHECK.rows + 299 + 299,
+			statements: INDEX_CHECK.statements + 2 * (INDEX_CHECK.statements + 2) + AGE_CHECK.statements,
+			rows: INDEX_CHECK.rows + 2 * INDEX_CHECK.rows + 299 + 299 + AGE_CHECK.rows,
 			transactions: 2,
 		});
 	});
@@ -228,8 +230,8 @@ describe("collection cost follows the number of snapshots, never the number of j
 		const fresh = await fixture.measure(() => collectSnapshotGarbage(fixture.shared.journal.snapshotBlobs));
 
 		assert.deepEqual(summary(fresh), {
-			statements: 2 * INDEX_CHECK.statements + 1,
-			rows: 2 * INDEX_CHECK.rows,
+			statements: 2 * INDEX_CHECK.statements + 1 + AGE_CHECK.statements,
+			rows: 2 * INDEX_CHECK.rows + AGE_CHECK.rows,
 			transactions: 1,
 		});
 		assert.deepEqual(fresh.result.deleted, []);

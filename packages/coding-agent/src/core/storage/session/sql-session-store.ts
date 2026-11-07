@@ -40,6 +40,8 @@ export const SESSION_SCHEMA_VERSION = 1;
  * this size. A different size needs different table names, because a blob's rows are addressed by their index.
  */
 export const SESSION_BLOB_CHUNK_BYTES = 1024 * 1024;
+/** Materialize one bounded slice once, rather than loading the entire legacy BLOB for every chunk. */
+const LEGACY_BLOB_BATCH_CHUNKS = 16;
 export const SESSION_TABLES = Object.freeze({
 	meta: "meta",
 	sessions: "sessions",
@@ -67,6 +69,54 @@ type ListingRow = HeaderRow & {
 };
 type SummaryRow = ListingRow & { search_texts_json: string };
 
+/** Each committed batch is its own durable checkpoint; the legacy bytes stay readable until publication. */
+async function migrateLegacyBlobBatch(
+	tx: SqliteExecutor,
+	tables: Tables,
+	sessionId: string,
+	hash: string,
+): Promise<boolean> {
+	const params = [sessionId, hash];
+	const row = await tx.get<SqliteRow & { bytes: number }>(
+		`SELECT bytes FROM ${tables.blobs} WHERE session_id = ? AND hash = ? AND chunks = -1`,
+		...params,
+	);
+	if (!row) return false;
+	const progress = await tx.get<SqliteRow & { next: number }>(
+		`SELECT COALESCE(max(idx) + 1, 0) AS next FROM ${tables.blobChunks} WHERE session_id = ? AND hash = ?`,
+		...params,
+	);
+	const next = Number(progress!.next);
+	const chunks = Math.ceil(Number(row.bytes) / SESSION_BLOB_CHUNK_BYTES);
+	const end = Math.min(next + LEGACY_BLOB_BATCH_CHUNKS, chunks);
+	if (next < end) {
+		await tx.run(
+			`WITH RECURSIVE source(data) AS MATERIALIZED (
+				SELECT substr(data, ?, ?) FROM ${tables.blobs} WHERE session_id = ? AND hash = ?
+			), indices(idx) AS (
+				SELECT 0 UNION ALL SELECT idx + 1 FROM indices WHERE idx + 1 < ?
+			)
+			INSERT INTO ${tables.blobChunks} (session_id, hash, idx, data)
+			SELECT ?, ?, idx + ?, substr(data, idx * ${SESSION_BLOB_CHUNK_BYTES} + 1, ${SESSION_BLOB_CHUNK_BYTES})
+			FROM source CROSS JOIN indices`,
+			next * SESSION_BLOB_CHUNK_BYTES + 1,
+			(end - next) * SESSION_BLOB_CHUNK_BYTES,
+			...params,
+			end - next,
+			...params,
+			next,
+		);
+	}
+	if (end === chunks) {
+		// Publish only complete chunks and release the old bytes atomically, including for empty blobs.
+		await tx.run(
+			`UPDATE ${tables.blobs} SET chunks = ?, data = X'' WHERE session_id = ? AND hash = ?`,
+			chunks,
+			...params,
+		);
+	}
+	return true;
+}
 /** Every listing column except search text, so an unchanged row keeps its cached summary. */
 const LISTING_COLUMNS =
 	"id, cwd, internal, header_json, last_seq, modified_at, message_count, first_message, name, has_name, summary, summarized_through_id, revision";
@@ -109,6 +159,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: Tables;
 	private readonly prefix: string;
+	private readonly legacyBlobData: boolean;
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
@@ -128,12 +179,14 @@ export class SqlSessionStore implements SessionStore {
 		prefix: string | undefined,
 		cwdMatcher: SessionCwdMatcher | undefined,
 		snapshotBlobs: SqlSnapshotBlobStore,
+		legacyBlobData: boolean,
 	) {
 		this.database = database;
 		this.tables = tables;
 		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
 		this.snapshotBlobs = snapshotBlobs;
+		this.legacyBlobData = legacyBlobData;
 	}
 
 	static async open(
@@ -141,7 +194,7 @@ export class SqlSessionStore implements SessionStore {
 		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},
 	): Promise<SqlSessionStore> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
-		await database.transaction(async (tx) => {
+		const legacyBlobData = await database.transaction(async (tx) => {
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version INTEGER NOT NULL) STRICT`);
 			const versions = await tx.all(`SELECT schema_version FROM ${tables.meta}`);
 			if (versions.length === 0) {
@@ -185,25 +238,16 @@ export class SqlSessionStore implements SessionStore {
 			if (!revision) {
 				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision TEXT NOT NULL DEFAULT ''`);
 			}
-			if (await tx.get("SELECT name FROM pragma_table_info(?) WHERE name = 'data'", tables.blobs)) {
-				// Split legacy blobs inside SQLite, so even a large blob never crosses a libSQL response limit.
-				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks INTEGER NOT NULL DEFAULT 0`);
-				await tx.exec(`
-					WITH RECURSIVE indices(idx) AS (
-						SELECT 0
-						UNION ALL SELECT idx + 1 FROM indices
-						WHERE (idx + 1) * ${SESSION_BLOB_CHUNK_BYTES} < (SELECT max(bytes) FROM ${tables.blobs})
-					)
-					INSERT INTO ${tables.blobChunks} (session_id, hash, idx, data)
-					SELECT session_id, hash, idx, substr(data, idx * ${SESSION_BLOB_CHUNK_BYTES} + 1, ${SESSION_BLOB_CHUNK_BYTES})
-					FROM ${tables.blobs} JOIN indices ON idx * ${SESSION_BLOB_CHUNK_BYTES} < bytes;
-					UPDATE ${tables.blobs} SET chunks = (bytes + ${SESSION_BLOB_CHUNK_BYTES} - 1) / ${SESSION_BLOB_CHUNK_BYTES};
-					ALTER TABLE ${tables.blobs} DROP COLUMN data;
-				`);
+			const legacy = Boolean(
+				await tx.get("SELECT name FROM pragma_table_info(?) WHERE name = 'data'", tables.blobs),
+			);
+			if (legacy && !(await tx.get("SELECT name FROM pragma_table_info(?) WHERE name = 'chunks'", tables.blobs))) {
+				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks INTEGER NOT NULL DEFAULT -1`);
 			}
+			return legacy;
 		});
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
-		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs);
+		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
 	}
 
 	get descriptor(): StorageDescriptor {
@@ -307,7 +351,19 @@ export class SqlSessionStore implements SessionStore {
 		validateSessionText("sessionId", sessionId);
 		const stored = Uint8Array.from(data);
 		const blob = { hash: await sha256Hex(stored), bytes: stored.byteLength };
-		if (await this.blobHeader(sessionId, blob.hash)) return blob;
+		const previous = await this.blobHeader(sessionId, blob.hash);
+		if (previous) {
+			// Legacy bytes are converted only when written again, never on an opener's or reader's critical path.
+			// Each batch releases the writer queue; a crash loses at most one batch and readers keep the old bytes.
+			if (previous.chunks === -1) {
+				while (
+					await this.database.transaction((tx) => migrateLegacyBlobBatch(tx, this.tables, sessionId, blob.hash))
+				) {
+					await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				}
+			}
+			return blob;
+		}
 		const chunks = Math.ceil(blob.bytes / SESSION_BLOB_CHUNK_BYTES);
 		const { sessions, blobs, blobChunks } = this.tables;
 		const sessionExists = `EXISTS (SELECT 1 FROM ${sessions} WHERE id = ?)`;
@@ -323,7 +379,8 @@ export class SqlSessionStore implements SessionStore {
 			);
 		}
 		const { changes } = await this.database.run(
-			`INSERT INTO ${blobs} (session_id, hash, bytes, chunks) SELECT ?, ?, ?, ?
+			`INSERT INTO ${blobs} (session_id, hash, bytes, chunks${this.legacyBlobData ? ", data" : ""})
+				SELECT ?, ?, ?, ?${this.legacyBlobData ? ", X''" : ""}
 				WHERE ${sessionExists} AND (SELECT count(*) FROM ${blobChunks} WHERE session_id = ? AND hash = ?) = ?
 				ON CONFLICT DO NOTHING`,
 			sessionId,
@@ -352,14 +409,19 @@ export class SqlSessionStore implements SessionStore {
 		if (header === undefined) return undefined;
 		const data = new Uint8Array(header.bytes);
 		let offset = 0;
-		for (let index = 0; index < header.chunks; index++) {
-			const row = await this.database.get<SqliteRow & { data: Uint8Array }>(
-				`SELECT data FROM ${this.tables.blobChunks} WHERE session_id = ? AND hash = ? AND idx = ?`,
+		const chunks = header.chunks < 0 ? Math.ceil(header.bytes / SESSION_BLOB_CHUNK_BYTES) : header.chunks;
+		for (let index = 0; index < chunks; index++) {
+			const row = await this.database.get<SqliteRow & { data: Uint8Array | null }>(
+				this.legacyBlobData
+					? `SELECT CASE WHEN chunks = -1 THEN substr(data, ${index * SESSION_BLOB_CHUNK_BYTES + 1}, ${SESSION_BLOB_CHUNK_BYTES})
+						ELSE (SELECT data FROM ${this.tables.blobChunks} WHERE session_id = b.session_id AND hash = b.hash AND idx = ?)
+						END AS data FROM ${this.tables.blobs} b WHERE session_id = ? AND hash = ?`
+					: `SELECT data FROM ${this.tables.blobChunks} WHERE idx = ? AND session_id = ? AND hash = ?`,
+				index,
 				sessionId,
 				hash,
-				index,
 			);
-			if (row === undefined || offset + row.data.byteLength > data.byteLength) break;
+			if (row?.data == null || offset + row.data.byteLength > data.byteLength) break;
 			data.set(row.data, offset);
 			offset += row.data.byteLength;
 		}

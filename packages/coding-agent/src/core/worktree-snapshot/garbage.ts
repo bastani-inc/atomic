@@ -30,7 +30,7 @@ import type { SnapshotBlobStore, WorktreeSnapshotSettings } from "./types.ts";
 export const DEFAULT_BLOB_GRACE_SECONDS: number = SETTINGS_DEFAULTS.snapshots.graceSeconds;
 
 export interface CollectSnapshotGarbageOptions {
-	/** Blobs stored or re-stored less than this many seconds ago are never deleted. A non-negative integer; 0 disables the protection. Default {@link DEFAULT_BLOB_GRACE_SECONDS}. */
+	/** Blobs stored or re-stored less than this many seconds ago are never deleted. A non-negative integer; 0 disables protection for known ages. Legacy unknown ages are stamped and retained on their first collection. Default {@link DEFAULT_BLOB_GRACE_SECONDS}. */
 	readonly graceSeconds?: number;
 	/** Checked before each batch; an aborted collection rejects with the signal's reason and keeps what it deleted. */
 	readonly signal?: AbortSignal;
@@ -44,6 +44,8 @@ export interface CollectSnapshotGarbageOptions {
  * and references, never the length of a journal. A database written before the index existed has its existing rows
  * indexed first, once, in short transactions, and nothing is deleted until that is done. Batches commit one at a
  * time; stopping part way leaves only garbage.
+ * Legacy blobs with unknown ages are stamped in short batches after sweeping and kept for a full grace window
+ * starting at that collection, even when upgrading and opening the journal happened much earlier.
  *
  * Rejects before reading anything: with {@link WorkspaceSnapshotError} (`blob-store-unsupported`) when `store` is not a
  * {@link SqlSnapshotBlobStore}, which has no reference index to collect by, or is missing, as for storage that holds
