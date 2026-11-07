@@ -274,6 +274,8 @@ export interface ResumeSessionWorktreeOptions {
 	 * restore, and recorded first, with the restores, only once every checkout is restored and `beforeRecord` passed.
 	 */
 	readonly pendingMappings?: readonly WorktreeRootMapping[];
+	/** Checkouts, by the root the session's restores put them at, to continue in as they are without verifying them. */
+	readonly keepInPlace?: ReadonlySet<string>;
 }
 
 /**
@@ -308,6 +310,7 @@ export async function resumeSessionWorktree(
 			options.signal?.throwIfAborted();
 			const root = mapRestoredPath(original, existing);
 			if (isInside(root, cwd) && (!selected || root.length > selected.root.length)) selected = { root, snapshot };
+			if (options.keepInPlace?.has(root)) continue;
 			let drift: WorkspaceDriftError;
 			try {
 				await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });

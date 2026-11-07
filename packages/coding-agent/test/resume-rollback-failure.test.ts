@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -31,12 +30,10 @@ let sandbox: GitSandbox;
 const cleanups: Array<() => Promise<void>> = [];
 beforeEach(() => {
 	sandbox = new GitSandbox();
-	clearWorktreeRootMappings();
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
 	removal.failure = undefined;
-	clearWorktreeRootMappings();
 	sandbox.dispose();
 });
 

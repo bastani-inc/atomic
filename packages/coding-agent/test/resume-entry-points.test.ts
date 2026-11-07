@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { parseArgs } from "../src/cli/args.js";
+import type { AgentSession } from "../src/core/agent-session.ts";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
@@ -15,7 +16,6 @@ import { createAgentSessionFromServices, createAgentSessionServices } from "../s
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { RESUME_CATALOG_TIMEOUT_MS } from "../src/core/resume/not-found.ts";
-import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { sessionResumeOptions } from "../src/core/resume/session-resume.ts";
 import type { CreateAgentSessionOptions } from "../src/core/sdk-types.ts";
 import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.ts";
@@ -31,7 +31,6 @@ import {
 import { resolveAdapterOptions, type StorageSelection } from "../src/core/storage/provider.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
-import { resolveToCwd } from "../src/core/tools/path-utils.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import {
@@ -61,11 +60,9 @@ let sandbox: GitSandbox;
 const cleanups: Array<() => Promise<void> | void> = [];
 beforeEach(() => {
 	sandbox = new GitSandbox();
-	clearWorktreeRootMappings();
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
-	clearWorktreeRootMappings();
 	sandbox.dispose();
 });
 
@@ -139,6 +136,14 @@ async function sessionRecordedElsewhere(
 
 const settings = (setupCommand?: string) =>
 	SettingsManager.inMemory(setupCommand === undefined ? {} : { resume: { setupCommand } });
+
+/** The text `session`'s own read tool returns for `path`. */
+async function readWithTools(session: AgentSession, path: string): Promise<string> {
+	const read = session.agent.state.tools.find((tool) => tool.name === "read");
+	assert.ok(read);
+	const result = await read.execute("read-recorded-path", { path });
+	return result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
+}
 
 describe("openCliSession (#4329)", () => {
 	test("a new session runs no resume preflight and prepares nothing", async () => {
@@ -495,10 +500,10 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(readFileSync(marker, "utf8"), "ran\n");
 		assert.equal(existsSync(clone), false);
 
-		clearWorktreeRootMappings();
+		assert.match(await readWithTools(runtime.session, join(clone, "README.md")), /edited on node A/);
 		const reopened = await createRuntime({ cwd, agentDir, sessionManager: runtime.session.sessionManager });
 		cleanups.push(() => reopened.session.dispose());
-		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
+		assert.match(await readWithTools(reopened.session, join(clone, "README.md")), /edited on node A/);
 	});
 
 	test("a trusted repository's .atomic/setup runs when the default trust is always", async () => {
@@ -639,7 +644,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 			woken.sessionManager.getWorktreeRootMappings().map((mapping) => mapping.from),
 			[clone],
 		);
-		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
+		assert.match(await readWithTools(woken, join(clone, "README.md")), /edited on node A/);
 	});
 
 	test("rehydrating a session whose checkout is here and matches starts it there without restoring anything", async () => {
@@ -703,6 +708,72 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(woken.sessionManager.getCwd(), clone);
 		assert.deepEqual(woken.sessionManager.getWorktreeRootMappings(), []);
 		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
+	});
+
+	/**
+	 * Sessions X and Y released on this node. X worked in `repo-b`. Y worked in `repo-a`, which has a lockfile so that
+	 * restoring it would need a setup hook, and edited `repo-b` after X, so `repo-b` now holds Y's edit.
+	 */
+	async function sessionsSharingACheckout() {
+		const store = await storeFor(sqliteSelection("shared"));
+		const { clone: repoA } = await sandbox.remoteWithClone("repo-a", {
+			"README.md": "a\n",
+			"package-lock.json": "{}\n",
+		});
+		const { clone: repoB } = await sandbox.remoteWithClone("repo-b", { "README.md": "b\n" });
+		const record = async (cwd: string, edits: ReadonlyArray<readonly [string, string]>) => {
+			const manager = await SessionManager.create(store, cwd);
+			await manager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
+			for (const [root, text] of edits) {
+				sandbox.write(join(root, "README.md"), text);
+				const capture = await captureWorktreeSnapshot(root, {
+					settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+					blobs: store.snapshotBlobs,
+				});
+				if (capture.status !== "captured") throw new Error(capture.status);
+				await manager.appendWorktreeSnapshot(root, capture.snapshot.id, capture.snapshot);
+			}
+			return manager.getSessionId();
+		};
+		const x = await record(repoB, [[repoB, "X's edit\n"]]);
+		const y = await record(repoA, [
+			[repoA, "Y's work in repo-a\n"],
+			[repoB, "Y's edit\n"],
+		]);
+		return { repoA, repoB, x, y };
+	}
+
+	test("rehydrating keeps the session's own changed checkout and restores only a sibling another clone holds here; its tools follow that restore (#4329)", async () => {
+		const agentDir = sandbox.path("agent");
+		const { repoA, repoB, y } = await sessionsSharingACheckout();
+		sandbox.write(join(repoA, "written-after-the-release.txt"), "later\n");
+		renameSync(repoB, sandbox.path("repo-b-offline"));
+		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo-b.git"), repoB);
+		sandbox.write(join(repoB, "README.md"), "this node's own work\n");
+		const { runtime } = await runtimeOn(agentDir, {});
+
+		const woken = await runtime.rehydrate(y);
+
+		assert.equal(woken.sessionManager.getCwd(), repoA);
+		const [restore, ...others] = woken.sessionManager.getWorktreeRootMappings();
+		assert.deepEqual([restore?.from, others], [repoB, []]);
+		assert.equal(readFileSync(join(restore!.to, "README.md"), "utf8"), "Y's edit\n");
+		assert.equal(readFileSync(join(repoB, "README.md"), "utf8"), "this node's own work\n");
+		assert.match(await readWithTools(woken, join(repoB, "README.md")), /Y's edit/);
+		assert.match(await readWithTools(woken, join(repoA, "written-after-the-release.txt")), /later/);
+	});
+
+	test("two sessions woken in one process each resolve a checkout both recorded into their own restore (#4329)", async () => {
+		const { repoB, x, y } = await sessionsSharingACheckout();
+		renameSync(repoB, sandbox.path("repo-b-offline"));
+		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
+
+		const wokenX = await runtime.rehydrate(x);
+		const wokenY = await runtime.rehydrate(y);
+
+		assert.match(await readWithTools(wokenX, join(repoB, "README.md")), /X's edit/);
+		assert.match(await readWithTools(wokenY, join(repoB, "README.md")), /Y's edit/);
+		await assert.rejects(readWithTools(runtime.session, join(repoB, "README.md")), /ENOENT|not found/i);
 	});
 
 	test("rehydrating again after a failed setup hook runs the hook again in the worktree it restored", async () => {
@@ -857,7 +928,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots", "worktrees")), cwd);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
 		assert.equal(readFileSync(marker, "utf8"), "ran\n");
-		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
+		assert.match(await readWithTools(session, join(clone, "README.md")), /edited on node A/);
 	});
 
 	test("fails typed before restoring when Git is missing", async () => {

@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { getBinDir } from "../src/config.ts";
 import { STORAGE_JOIN_COMMAND } from "../src/core/agent-rehydrate-errors.ts";
-import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { StorageAdapterLoadError, StorageTransientError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
 import { inMemorySecret, LIBSQL_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
@@ -28,12 +27,12 @@ import {
 	type ResumePreconditionProblem,
 	type ResumePreflightIo,
 	ResumeSetupHookError,
-	registerWorktreeRootMappings,
 	rehydrateResumeError,
 	resumeLookupError,
 	resumeNotFoundError,
 	serializeResumeError,
 	storagePreconditionProblems,
+	withWorktreeRootMappings,
 } from "../src/index.ts";
 import { GitProvisionTimeoutError } from "../src/utils/git-errors.ts";
 
@@ -557,10 +556,8 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 	let root: string;
 	beforeEach(() => {
 		root = mkdtempSync(join(tmpdir(), "atomic-path-mapping-"));
-		clearWorktreeRootMappings();
 	});
 	afterEach(() => {
-		clearWorktreeRootMappings();
 		rmSync(root, { recursive: true, force: true });
 	});
 
@@ -572,66 +569,97 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 		restoredAt: "2026-11-05T00:00:00.000Z",
 	});
 
-	test("an old-root absolute path resolves inside the restored worktree for work in it", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")]);
-		assert.equal(mapPathForCwd("/nodeA/repo/src/a.ts", "/nodeB/wt/src"), resolve("/nodeB/wt/src/a.ts"));
-		assert.equal(mapPathForCwd("/nodeA/repo", "/nodeB/wt"), resolve("/nodeB/wt"));
+	test("an old-root absolute path resolves inside the restored worktree for the work that restored it", () => {
+		withWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")], () => {
+			assert.equal(mapPathForCwd("/nodeA/repo/src/a.ts", "/nodeB/wt/src"), resolve("/nodeB/wt/src/a.ts"));
+			assert.equal(mapPathForCwd("/nodeA/repo", "/nodeB/wt"), resolve("/nodeB/wt"));
+		});
 	});
 
-	test("paths outside the old root, inside the new root, or for other cwds are unchanged", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")]);
-		assert.equal(mapPathForCwd("/nodeA/repository/x", "/nodeB/wt"), "/nodeA/repository/x");
-		assert.equal(mapPathForCwd("/etc/hosts", "/nodeB/wt"), "/etc/hosts");
-		assert.equal(mapPathForCwd("/nodeB/wt/x", "/nodeB/wt"), "/nodeB/wt/x");
+	test("paths outside the old root or inside the new root are unchanged", () => {
+		withWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")], () => {
+			assert.equal(mapPathForCwd("/nodeA/repository/x", "/nodeB/wt"), "/nodeA/repository/x");
+			assert.equal(mapPathForCwd("/etc/hosts", "/nodeB/wt"), "/etc/hosts");
+			assert.equal(mapPathForCwd("/nodeB/wt/x", "/nodeB/wt"), "/nodeB/wt/x");
+		});
 	});
 
-	test("from a cwd outside every restored root, a path follows the restore only when its old root is not here", () => {
+	test("outside the work of a session or run that restored something, no path is mapped", () => {
+		withWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")], () => undefined);
+		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/wt"), "/nodeA/repo/x");
+	});
+
+	test("a restore is followed from any cwd, whether or not its old root exists here", () => {
 		const here = join(root, "checkout-here");
 		mkdirSync(here);
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt"), mapping(here, join(root, "restored"))]);
+		withWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt"), mapping(here, join(root, "restored"))], () => {
+			assert.equal(mapPathForCwd("/nodeA/repo/x", "/elsewhere"), resolve("/nodeB/wt/x"));
+			assert.equal(mapPathForCwd(join(here, "x"), "/elsewhere"), join(root, "restored", "x"));
+			assert.equal(mapPathForCwd("/nodeA/repository/x", "/elsewhere"), "/nodeA/repository/x");
+		});
+	});
 
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/elsewhere"), resolve("/nodeB/wt/x"));
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/wtx"), resolve("/nodeB/wt/x"));
-		assert.equal(mapPathForCwd(join(here, "x"), "/elsewhere"), join(here, "x"));
-		assert.equal(mapPathForCwd("/nodeA/repository/x", "/elsewhere"), "/nodeA/repository/x");
+	test("paths in a recorded checkout the cwd is in are never redirected; its sibling's restore still applies", () => {
+		const repoA = join(root, "repo-a");
+		const repoB = join(root, "repo-b");
+		withWorktreeRootMappings([mapping(repoA, join(root, "wa")), mapping(repoB, join(root, "wb"))], () => {
+			assert.equal(mapPathForCwd(join(repoA, "x"), join(repoA, "src")), join(repoA, "x"));
+			assert.equal(mapPathForCwd(join(repoB, "x"), join(repoA, "src")), join(root, "wb", "x"));
+		});
 	});
 
 	test("a chain of restores maps every earlier root to the newest worktree", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt"), mapping("/nodeB/wt", "/nodeC/wt")]);
-		assert.equal(mapPathForCwd("/nodeA/repo/a", "/nodeC/wt"), resolve("/nodeC/wt/a"));
-		assert.equal(mapPathForCwd("/nodeB/wt/a", "/nodeC/wt"), resolve("/nodeC/wt/a"));
-		assert.equal(mapPathForCwd("/nodeA/repo/a", "/nodeB/wt"), resolve("/nodeC/wt/a"));
+		withWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt"), mapping("/nodeB/wt", "/nodeC/wt")], () => {
+			assert.equal(mapPathForCwd("/nodeA/repo/a", "/nodeC/wt"), resolve("/nodeC/wt/a"));
+			assert.equal(mapPathForCwd("/nodeB/wt/a", "/nodeC/wt"), resolve("/nodeC/wt/a"));
+			assert.equal(mapPathForCwd("/nodeA/repo/a", "/nodeB/wt"), resolve("/nodeB/wt/a"));
+		});
 	});
 
 	test("every root a session restored follows its own restore for work in any of them", () => {
-		registerWorktreeRootMappings([
-			mapping("/nodeA/repo", "/nodeB/repo"),
-			mapping("/nodeA/feature", "/nodeB/feature"),
-		]);
-		assert.equal(mapPathForCwd("/nodeA/feature/x", "/nodeB/repo"), resolve("/nodeB/feature/x"));
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/feature"), resolve("/nodeB/repo/x"));
+		withWorktreeRootMappings(
+			[mapping("/nodeA/repo", "/nodeB/repo"), mapping("/nodeA/feature", "/nodeB/feature")],
+			() => {
+				assert.equal(mapPathForCwd("/nodeA/feature/x", "/nodeB/repo"), resolve("/nodeB/feature/x"));
+				assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/feature"), resolve("/nodeB/repo/x"));
+			},
+		);
 	});
 
-	test("the innermost restored root containing the cwd decides, and registering twice is harmless", () => {
-		const outer = mapping("/old/outer", "/w");
-		const inner = mapping("/old/inner", "/w/nested");
-		registerWorktreeRootMappings([outer]);
-		registerWorktreeRootMappings([inner]);
-		registerWorktreeRootMappings([inner]);
-		assert.equal(mapPathForCwd("/old/inner/x", "/w/nested/y"), resolve("/w/nested/x"));
-		assert.equal(mapPathForCwd("/old/outer/x", "/w/nested/y"), "/old/outer/x");
-		assert.equal(mapPathForCwd("/old/outer/x", "/w/y"), resolve("/w/x"));
+	test("two sessions' restores of the same root never mix, even while both are working (#4329)", async () => {
+		const seen = async (to: string) =>
+			withWorktreeRootMappings([mapping("/nodeA/repo-b", to)], async () => {
+				await new Promise((settle) => setImmediate(settle));
+				return mapPathForCwd("/nodeA/repo-b/README.md", "/nodeB/repo-a");
+			});
+		assert.deepEqual(await Promise.all([seen("/nodeB/wx"), seen("/nodeB/wy")]), [
+			resolve("/nodeB/wx/README.md"),
+			resolve("/nodeB/wy/README.md"),
+		]);
+	});
+
+	test("work inside a run applies the run's restores first, then its own, and only while it runs", () => {
+		const run = mapping("/old/run", "/w/run");
+		const own = mapping("/w/run/stage", "/w/stage");
+		withWorktreeRootMappings([run], () => {
+			assert.equal(
+				withWorktreeRootMappings([own], () => mapPathForCwd("/old/run/stage/x", "/elsewhere")),
+				resolve("/w/stage/x"),
+			);
+			assert.equal(mapPathForCwd("/old/run/stage/x", "/elsewhere"), resolve("/w/run/stage/x"));
+		});
 	});
 
 	test("the read and write tools resolve an old-root path into the restored worktree", async () => {
 		const { resolveReadPath, resolveToCwd } = await import("../src/core/tools/path-utils.ts");
 		const worktree = join(root, "wt");
 		writeFileSync(join(root, "marker"), "");
-		registerWorktreeRootMappings([mapping("/nodeA/repo", worktree)]);
-		assert.equal(resolveToCwd("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
-		assert.equal(resolveToCwd("a.txt", worktree), join(worktree, "a.txt"));
-		assert.equal(resolveReadPath("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
-		assert.equal(resolveToCwd(join(dirname(worktree), "marker"), worktree), join(root, "marker"));
+		withWorktreeRootMappings([mapping("/nodeA/repo", worktree)], () => {
+			assert.equal(resolveToCwd("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
+			assert.equal(resolveToCwd("a.txt", worktree), join(worktree, "a.txt"));
+			assert.equal(resolveReadPath("/nodeA/repo/a.txt", worktree), join(worktree, "a.txt"));
+			assert.equal(resolveToCwd(join(dirname(worktree), "marker"), worktree), join(root, "marker"));
+		});
 	});
 });
 
@@ -719,36 +747,18 @@ describe("tool path mapping edge cases (#4329)", () => {
 		tree: "t".repeat(40),
 		restoredAt: "2026-11-05T00:00:00.000Z",
 	});
-	beforeEach(() => clearWorktreeRootMappings());
-	afterEach(() => clearWorktreeRootMappings());
 
-	test("clearing forgets every mapping", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")]);
-		clearWorktreeRootMappings();
-		assert.equal(mapPathForCwd("/nodeA/repo/x", "/nodeB/wt"), "/nodeA/repo/x");
-	});
-
-	test("a directory whose name starts with two dots is inside the root; the root's parent is not", () => {
-		const old = mkdtempSync(join(tmpdir(), "atomic-old-root-"));
-		try {
-			registerWorktreeRootMappings([mapping(old, "/nodeB/wt")]);
-			assert.equal(mapPathForCwd(join(old, "x"), "/nodeB/wt/..cache"), resolve("/nodeB/wt/x"));
-			assert.equal(mapPathForCwd(join(old, "x"), "/nodeB"), join(old, "x"));
-		} finally {
-			rmSync(old, { recursive: true, force: true });
-		}
-	});
-
-	test("the restored root that contains the cwd decides even when registered first", () => {
-		registerWorktreeRootMappings([mapping("/old/one", "/w1")]);
-		registerWorktreeRootMappings([mapping("/old/two", "/w2")]);
-		assert.equal(mapPathForCwd("/old/one/x", "/w1"), resolve("/w1/x"));
-		assert.equal(mapPathForCwd("/old/two/x", "/w1"), "/old/two/x");
+	test("a cwd in a directory of the old root whose name starts with two dots is in that root; its parent is not", () => {
+		withWorktreeRootMappings([mapping("/old/repo", "/nodeB/wt")], () => {
+			assert.equal(mapPathForCwd("/old/repo/x", "/old/repo/..cache"), "/old/repo/x");
+			assert.equal(mapPathForCwd("/old/repo/x", "/old"), resolve("/nodeB/wt/x"));
+		});
 	});
 
 	test("an unmapped path is returned exactly as given", () => {
-		registerWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")]);
-		assert.equal(mapPathForCwd("/etc//hosts", "/nodeB/wt"), "/etc//hosts");
+		withWorktreeRootMappings([mapping("/nodeA/repo", "/nodeB/wt")], () => {
+			assert.equal(mapPathForCwd("/etc//hosts", "/nodeB/wt"), "/etc//hosts");
+		});
 	});
 });
 
@@ -893,27 +903,15 @@ describe("resume glue: remaining edge cases (#4329)", () => {
 		tree: "t".repeat(40),
 		restoredAt: "2026-11-05T00:00:00.000Z",
 	});
-	beforeEach(() => clearWorktreeRootMappings());
-	afterEach(() => clearWorktreeRootMappings());
 
 	test("a guard does not accept a name that only stringifies to a resume class", () => {
 		assert.equal(isResumeError({ name: { toString: () => "ResumeNotFoundError" }, code: "not-found" }), false);
 	});
 
-	test("a sibling of the restored root is outside it", () => {
-		const old = mkdtempSync(join(tmpdir(), "atomic-old-root-"));
-		try {
-			registerWorktreeRootMappings([mapping(old, "/nodeB/wt")]);
-			assert.equal(mapPathForCwd(join(old, "x"), "/nodeB/other"), join(old, "x"));
-		} finally {
-			rmSync(old, { recursive: true, force: true });
-		}
-	});
-
-	test("the innermost restored root wins whatever order the roots were registered in", () => {
-		registerWorktreeRootMappings([mapping("/old/inner", "/w/nested")]);
-		registerWorktreeRootMappings([mapping("/old/outer", "/w")]);
-		assert.equal(mapPathForCwd("/old/inner/x", "/w/nested/y"), resolve("/w/nested/x"));
+	test("a cwd in a sibling of the old root whose name extends it is outside that root", () => {
+		withWorktreeRootMappings([mapping("/old/repo", "/nodeB/wt")], () => {
+			assert.equal(mapPathForCwd("/old/repo/x", "/old/repository"), resolve("/nodeB/wt/x"));
+		});
 	});
 
 	// Windows has no /bin/false to stand in for a Git that starts and fails.

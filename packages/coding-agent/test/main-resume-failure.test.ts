@@ -5,7 +5,6 @@ import type { Terminal } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
@@ -43,7 +42,6 @@ let sandbox: GitSandbox;
 const cleanups: Array<() => Promise<void> | void> = [];
 beforeEach(() => {
 	sandbox = new GitSandbox();
-	clearWorktreeRootMappings();
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
@@ -53,7 +51,6 @@ afterEach(async () => {
 	opening.prompts = [];
 	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
-	clearWorktreeRootMappings();
 	sandbox.dispose();
 });
 

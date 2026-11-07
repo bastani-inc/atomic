@@ -28,7 +28,6 @@ import {
 } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { clearWorktreeRootMappings } from "../../packages/coding-agent/src/core/resume/path-mapping.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { resolveToCwd } from "../../packages/coding-agent/src/core/tools/path-utils.ts";
 import {
@@ -65,13 +64,11 @@ beforeEach(() => {
 	sandbox = new GitSandbox();
 	priorAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
 	process.env.ATOMIC_CODING_AGENT_DIR = sandbox.path("agent");
-	clearWorktreeRootMappings();
 });
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
 	if (priorAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = priorAgentDir;
-	clearWorktreeRootMappings();
 	sandbox.dispose();
 });
 
@@ -151,6 +148,7 @@ test("a run restored on another node runs its setup hook once before live work, 
 	assert.equal(live!.hookRuns, 1);
 	assert.equal(live!.resolved, join(live!.cwd, "state.txt"));
 	assert.equal(readFileSync(live!.resolved, "utf8"), "written on node A\n");
+	assert.equal(resolveToCwd(join(recorded.clone, "state.txt"), live!.cwd), join(recorded.clone, "state.txt"));
 	assert.deepEqual(
 		recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings?.map((mapping) => mapping.to),
 		[live!.cwd],
