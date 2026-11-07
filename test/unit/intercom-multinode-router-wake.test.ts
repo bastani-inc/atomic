@@ -176,6 +176,8 @@ async function startNode(
 		readonly releaseClaimGate?: Promise<void>;
 		/** Held sends are written only once this settles, as when the database is slow to answer. */
 		readonly holdGate?: Promise<void>;
+		/** Outbox rows are written only once this settles, as when the database is slow to answer. */
+		readonly enqueueGate?: Promise<void>;
 	} = {},
 ): Promise<Node> {
 	const inner = await shared.connectState();
@@ -204,6 +206,10 @@ async function startNode(
 		},
 		outbox: {
 			...inner.outbox,
+			enqueue: async (row) => {
+				await options.enqueueGate;
+				return inner.outbox.enqueue(row);
+			},
 			releaseClaim: async (claim) => {
 				await options.releaseClaimGate;
 				return inner.outbox.releaseClaim(claim);
@@ -1541,5 +1547,250 @@ describe("released child sends queued across faults (#4401)", () => {
 		assert.equal(wakeFramesOf(owner).length, 2, "a new send after re-release must still wake");
 		await Promise.all(deliveries);
 		assert.equal(restores, 2, "the later send restores the re-released child");
+	});
+
+	/** A send its broker routed to the child's live presence; the broker writes its row only once `written` opens. */
+	function routeToPresence(senderNode: Node, sender: BrokerConnectedSession, target = CHILD): string {
+		const send = remoteSend(sender, target, true);
+		senderNode.router.routeSend(send.request);
+		return send.id;
+	}
+
+	/**
+	 * An owner and a sender on brokers of their own, and a live child its owner reserved as released on the owner's
+	 * broker: the sender's broker writes outbox rows only once `written` opens.
+	 */
+	async function liveReleasedChild(options: { readonly wake?: boolean; readonly aliases?: readonly string[] } = {}) {
+		const shared = await cluster();
+		const written = closedGate();
+		const ownerNode = await startNode(shared);
+		const senderNode = await startNode(shared, { enqueueGate: written.gate });
+		const owner = session("owner");
+		const sender = session("sender");
+		const child = session(CHILD);
+		await register(ownerNode, owner);
+		await register(senderNode, sender);
+		await register(ownerNode, child);
+		reserveReleased(ownerNode, owner, child, options);
+		await flush();
+		return { shared, written, ownerNode, senderNode, owner, sender, child };
+	}
+
+	test("a send routed to a released child's presence but written only after its departure looked for waiting sends wakes the child at once, not at the next backup poll, and reaches it once (#4512)", async () => {
+		useFakeClock();
+		const { written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild();
+		const id = routeToPresence(senderNode, sender);
+		await flush();
+		leave(ownerNode, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [], "the departure looked before the send was written");
+
+		written.open();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		assert.deepEqual(senderNode.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE], "the owner's backup poll does not wake it again");
+
+		const back = await wakeAndRegister(ownerNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), [id]);
+		await receiveAll(ownerNode, back, [id]);
+		assert.deepEqual(await rowStates(ownerNode, [id]), ["delivered"]);
+		assert.equal(framesOf(sender).at(-1)?.type, "delivered");
+		assert.equal(vi.mocked(console.error).mock.calls.length, 0);
+	});
+
+	test("a send written after a released child left another broker wakes it at once when the sender's broker is its owner's (#4512)", async () => {
+		useFakeClock();
+		const shared = await cluster();
+		const written = closedGate();
+		const ownerNode = await startNode(shared, { enqueueGate: written.gate });
+		const childNode = await startNode(shared);
+		const owner = session("owner");
+		const sender = session("sender");
+		const child = session(CHILD);
+		await register(ownerNode, owner);
+		await register(ownerNode, sender);
+		await register(childNode, child);
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		const id = routeToPresence(ownerNode, sender);
+		await flush();
+		leave(childNode, child);
+		await flush();
+		written.open();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		assert.deepEqual(ownerNode.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+
+		const back = await wakeAndRegister(childNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), [id]);
+	});
+
+	for (const [kind, aliasesOf] of [
+		["Intercom session id", (child: BrokerConnectedSession) => [child.info.id]],
+		["Atomic session id", (child: BrokerConnectedSession) => [child.registrationReturnAddress ?? ""]],
+	] as const) {
+		test(`a send written after its departure wakes a released child reserved under its ${kind} alone (#4512)`, async () => {
+			const { written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild();
+			reserveReleased(ownerNode, owner, child, { aliases: aliasesOf(child) });
+			await flush();
+			routeToPresence(senderNode, sender);
+			await flush();
+			leave(ownerNode, child);
+			await flush();
+			written.open();
+			await flush();
+			assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+			assert.deepEqual(senderNode.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		});
+	}
+
+	test("a send written after its departure wakes a released child that registered without a return address (#4512)", async () => {
+		const shared = await cluster();
+		const written = closedGate();
+		const ownerNode = await startNode(shared);
+		const senderNode = await startNode(shared, { enqueueGate: written.gate });
+		const owner = session("owner");
+		const sender = session("sender");
+		const child: BrokerConnectedSession = { ...session(CHILD), registrationReturnAddress: undefined };
+		await register(ownerNode, owner);
+		await register(senderNode, sender);
+		await register(ownerNode, child);
+		reserveReleased(ownerNode, owner, child, { aliases: [child.info.id] });
+		await flush();
+		routeToPresence(senderNode, sender);
+		await flush();
+		leave(ownerNode, child);
+		await flush();
+		written.open();
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	test("a send written after its departure does not wake a parked child; making it wakeable does, once (#4512)", async () => {
+		const { written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild({ wake: false });
+		routeToPresence(senderNode, sender);
+		await flush();
+		leave(ownerNode, child);
+		await flush();
+		written.open();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(senderNode.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+
+		reserveReleased(ownerNode, owner, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+	});
+
+	test("sends from two brokers written after the departure wake the child once, and reach it once each, in order (#4512)", async () => {
+		const { shared, written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild();
+		const secondWritten = closedGate();
+		const secondNode = await startNode(shared, { enqueueGate: secondWritten.gate });
+		const secondSender = session("second-sender");
+		await register(secondNode, secondSender);
+		const first = routeToPresence(senderNode, sender);
+		const second = routeToPresence(secondNode, secondSender);
+		await flush();
+		leave(ownerNode, child);
+		await flush();
+		written.open();
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+		secondWritten.open();
+		await flush();
+		assert.equal(framesOf(secondSender).at(-1)?.type, "queued");
+		assert.deepEqual(secondNode.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		assert.deepEqual(wakeFramesOf(owner), [WAKE], "the second sender's broker claims the send the first woke it for");
+
+		const back = await wakeAndRegister(ownerNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), [first, second]);
+		await receiveAll(ownerNode, back, [first, second]);
+		assert.deepEqual(await rowStates(ownerNode, [first, second]), ["delivered", "delivered"]);
+	});
+
+	test("a send written after its departure does not wake a child its owner's broker already woke, and matches it only by the ids its owner reserved (#4512)", async () => {
+		const { written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild();
+		const impostor = session("impostor");
+		impostor.info.id = CHILD;
+		await register(senderNode, impostor);
+		leave(senderNode, impostor);
+		await flush();
+		await enqueueFor(ownerNode, impostor);
+		const earlier = await enqueueFor(ownerNode, child);
+		const id = routeToPresence(senderNode, sender);
+		await flush();
+		leave(ownerNode, child);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE], "the departure found the message written to the child earlier");
+		written.open();
+		await flush();
+		assert.deepEqual(senderNode.spied.requestWakeCalls, [releasedReservationKey(CHILD)]);
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
+
+		const back = await wakeAndRegister(ownerNode, owner, child);
+		assert.deepEqual(messageIdsOf(back), [...earlier, id]);
+	});
+
+	test("a send to a session whose id is a released child's name, written after that session left, does not wake the child (#4512)", async () => {
+		const { written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild();
+		leave(ownerNode, child);
+		await flush();
+		const namesake = session("namesake");
+		namesake.info.id = CHILD;
+		await register(ownerNode, namesake);
+		routeToPresence(senderNode, sender, CHILD);
+		await flush();
+		leave(ownerNode, namesake);
+		await flush();
+		written.open();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(senderNode.spied.requestWakeCalls, []);
+		assert.deepEqual(wakeFramesOf(owner), []);
+	});
+
+	test("a send written after an unreserved recipient without a return address left is queued without asking for a wake (#4512)", async () => {
+		const shared = await cluster();
+		const written = closedGate();
+		const recipientNode = await startNode(shared);
+		const senderNode = await startNode(shared, { enqueueGate: written.gate });
+		const sender = session("sender");
+		const recipient: BrokerConnectedSession = { ...session(CHILD), registrationReturnAddress: undefined };
+		await register(senderNode, sender);
+		await register(recipientNode, recipient);
+		routeToPresence(senderNode, sender);
+		await flush();
+		leave(recipientNode, recipient);
+		await flush();
+		written.open();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(senderNode.spied.requestWakeCalls, []);
+		assert.equal(vi.mocked(console.error).mock.calls.length, 0);
+	});
+
+	test("a reservation read that fails on the sender's broker is reported, and the send stays queued for the owner's backup poll (#4512)", async () => {
+		useFakeClock();
+		const { written, ownerNode, senderNode, owner, sender, child } = await liveReleasedChild();
+		vi.spyOn(senderNode.state.reservations, "lookup").mockRejectedValueOnce(new Error("reservations unreadable"));
+		routeToPresence(senderNode, sender);
+		await flush();
+		leave(ownerNode, child);
+		await flush();
+		written.open();
+		await flush();
+		assert.equal(framesOf(sender).at(-1)?.type, "queued");
+		assert.deepEqual(wakeFramesOf(owner), []);
+		assert.deepEqual(vi.mocked(console.error).mock.calls, [["Intercom multi-node routing: reservations unreadable"]]);
+
+		await vi.advanceTimersByTimeAsync(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+		await flush();
+		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
 	});
 });
