@@ -713,6 +713,32 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		return { clone, sessionId, runtime, worktree };
 	}
 
+	test("rehydrating after a failed setup hook, with none configured now, fails as a rehydrate precondition", async () => {
+		const agentDir = sandbox.path("agent");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), { "package-lock.json": "{}\n" });
+		const failing = await runtimeOn(agentDir, { resume: { setupCommand: nodeCommand("process.exit(3)") } });
+		await assert.rejects(failing.runtime.rehydrate(sessionId), isResumeSetupHookError);
+
+		const { runtime } = await runtimeOn(agentDir, {});
+
+		await assert.rejects(
+			runtime.rehydrate(sessionId),
+			(error: unknown) =>
+				isResumePreconditionError(error) &&
+				error.entryPoint === "rehydrate" &&
+				error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
+		);
+	});
+
+	test("rehydrating a session in a worktree this node restored needs no Git", async () => {
+		const { sessionId, runtime, worktree } = await sessionEditedOnNodeB(sandbox.path("agent"));
+		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
+
+		const woken = await runtime.rehydrate(sessionId);
+
+		assert.equal(woken.sessionManager.getCwd(), worktree);
+	});
+
 	test("rehydrating a session again on the node that restored it continues in that worktree as it is", async () => {
 		const { sessionId, runtime, worktree } = await sessionEditedOnNodeB(sandbox.path("agent"));
 		sandbox.write(join(worktree, "notes.txt"), "written after the release\n");
