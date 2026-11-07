@@ -13,7 +13,7 @@ import { redact } from "./commands.mjs";
  * @typedef {import("./suites.mjs").FaultRecord} FaultRecord
  * @typedef {{ name: string, issue: string, status: "passed" | "failed" | "skipped" | "cancelled", reason?: SerializedError,
  *   invariants?: Invariant[], failures?: SerializedError[], faults?: FaultRecord[],
- *   metrics?: import("./suites.mjs").SmokeMetrics | import("./released-suite.mjs").ReleasedMetrics,
+ *   metrics?: import("./suites.mjs").SmokeMetrics | import("./released-suite.mjs").ReleasedMetrics | import("./resume-suite.mjs").ResumeMetrics,
  *   profiles?: Record<string, import("./chaos.mjs").ProfileSpec> }} SuiteResult
  * @typedef {"passed" | "failed" | "cancelled"} RunStatus
  * @typedef {{ ref: string, suite: string, chaos: string, nodes: number, regions: string[], seed: number, prng: string,
