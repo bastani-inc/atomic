@@ -10,21 +10,19 @@
  *                   path the releasing node wrote
  */
 import { existsSync, realpathSync } from "node:fs";
-import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { getAgentDir } from "../../packages/coding-agent/src/config.ts";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 } from "../../packages/coding-agent/src/core/agent-session-runtime.ts";
-import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
-import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.ts";
 import { selectProcessStorage } from "../../packages/coding-agent/src/core/storage/process-selection.ts";
 import { createHarness } from "../../packages/coding-agent/test/suite/harness.ts";
+import { emit, emitFailure, fauxNodeRuntime } from "./multinode-node-support.ts";
 
 interface ReleaseArgs {
 	readonly cwd: string;
@@ -40,10 +38,6 @@ interface WakeArgs {
 	readonly readPath: string;
 	/** The file whose appearance lets the wake begin, once the runtime is up. */
 	readonly goFile: string;
-}
-
-function emit(value: object): void {
-	process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
 async function release(args: ReleaseArgs): Promise<void> {
@@ -72,26 +66,7 @@ async function wake(args: WakeArgs): Promise<void> {
 	const agentDir = getAgentDir();
 	selectProcessStorage("sessions", agentDir, args.cwd);
 	const store = await resolveSessionStore(args.cwd, { agentDir, settings: {} });
-	const faux = registerFauxProvider();
-	const model = faux.getModel();
-	const authStorage = AuthStorage.inMemory();
-	await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "faux-key" }));
-	const modelRuntime = await ModelRuntime.create({ credentials: authStorage, modelsPath: join(agentDir, "models.json") });
-	modelRuntime.registerProvider(model.provider, {
-		baseUrl: model.baseUrl,
-		api: model.api,
-		models: faux.models.map((registered) => ({
-			id: registered.id,
-			name: registered.name,
-			api: registered.api,
-			reasoning: registered.reasoning,
-			input: registered.input,
-			cost: registered.cost,
-			contextWindow: registered.contextWindow,
-			maxTokens: registered.maxTokens,
-			baseUrl: registered.baseUrl,
-		})),
-	});
+	const { faux, model, modelRuntime } = await fauxNodeRuntime(agentDir);
 	const runtime = await createAgentSessionRuntime(
 		async (options) => {
 			const services =
@@ -145,15 +120,6 @@ try {
 	else throw new Error(`unknown command ${command}`);
 	process.exit(0);
 } catch (error) {
-	const typed = error as { name?: string; code?: string; message?: string; retryable?: boolean; cause?: { name?: string; code?: string } };
-	emit({
-		error: {
-			name: typed.name,
-			code: typed.code,
-			retryable: typed.retryable,
-			message: typed.message,
-			cause: typed.cause === undefined ? undefined : { name: typed.cause.name, code: typed.cause.code },
-		},
-	});
+	emitFailure(error);
 	process.exit(2);
 }

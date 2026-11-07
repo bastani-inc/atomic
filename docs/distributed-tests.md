@@ -200,6 +200,11 @@ n3 the git-less node.
    retry must restore the recorded tree (manifest equality) and commit, and n1's absolute path must resolve in it. For
    the second session, n2 first holds a different checkout of the same repository at exactly the recorded path: the
    woken session must continue in a restored worktree with the recorded tree, and leave that checkout as it was.
+   Last, n1 launches a real background subagent (forked, so its session is in the shared database) in a third
+   checkout: it writes a file there and waits on a call, so it is released, and n1 is SIGKILLed. n2 wakes it with
+   the result it waited for. The subagent must be restored, not reported unrestorable, and continue in a worktree n2
+   restored from its own snapshot with the recorded tree and commit, with n1's path mapped into it, and read n1's
+   file through that path.
 6. **Git-less node.** On n3 an unsuccessful provision must fail typed before restoration, and a lookup during a
    database partition must fail typed before anything is provisioned or restored. The suite then provisions Git from a
    synthetic archive of n1's Git and restores the session. The provision uses the same CI driver's fetch override, not

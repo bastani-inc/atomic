@@ -13,6 +13,7 @@ type Context = Parameters<typeof import("../distributed/harness/resume-suite.mjs
 type Fault = Context["faults"][number];
 
 const WRITTEN = "written by the model on node A";
+const SUBAGENT_WRITTEN = "written by the subagent on node A";
 /** A recorded tree as the node's manifest reports it: two files and their directory. */
 const tree = {
 	digest: "sha",
@@ -82,6 +83,18 @@ const woken = (path: string, source: typeof tree) => ({
 	clean: true,
 	setupRuns: 0,
 });
+const subagentSource = { ...tree, digest: "sha-subagent", head: "head-subagent" };
+const wokenSubagent = {
+	...subagentSource,
+	code: 0,
+	outcome: "restored",
+	cwd: "/b/subagent-wake/released-subagent",
+	restoreRoot: "/b/subagent-wake",
+	recordedPath: "/a/released-subagent",
+	mappings: [{ from: "/a/released-subagent", to: "/b/subagent-wake/released-subagent" }],
+	oldPathContent: SUBAGENT_WRITTEN,
+	clean: true,
+};
 const decoy = { before: { digest: "fresh-clone", head: "base" }, after: { digest: "fresh-clone", head: "base" } };
 
 /** Evidence of every scenario as a passing three-node run reports it. */
@@ -137,6 +150,8 @@ function passingEvidence(): ResumeEvidence {
 		},
 		woken: woken("released-away", releasedSource.away),
 		wokenAtSamePath: { ...woken("released-same-path", releasedSource.samePath), decoy },
+		releasedSubagent: subagentSource,
+		wokenSubagent,
 		forkKilled: { signal: "SIGKILL", marker: true, clean: true },
 		fork: {
 			status: "completed",
@@ -179,6 +194,13 @@ function fleet(overrides: Partial<ResumeRemote> = {}): { remote: ResumeRemote; c
 		partitionWake: record("partition-wake", () => evidence.wakePartition!),
 		wake: record("wake", () => evidence.woken!),
 		wakeAtSamePath: record("wake-at-same-path", () => evidence.wokenAtSamePath!),
+		releaseSubagent: record("release-subagent", () => ({
+			ownerSessionId: "owner",
+			childId: "released-subagent:0",
+			path: "/a/released-subagent",
+			source: subagentSource,
+		})),
+		wakeSubagent: record("wake-subagent", () => evidence.wokenSubagent!),
 		waitForLease: record("wait-lease", () => undefined),
 		partitionRun: record("partition-run", () => evidence.runPartition!),
 		resumeRun: record("resume-run", () => evidence.two!),
@@ -241,6 +263,8 @@ test("the suite drives all seven scenarios across three nodes, with chaos in eac
 		"partition-wake",
 		"wake",
 		"wake-at-same-path",
+		"release-subagent",
+		"wake-subagent",
 		"wait-lease",
 		"partition-run",
 		"resume-run",
@@ -451,6 +475,23 @@ test("a pooled child is accepted only when it was restored where it finished, se
 		...passing,
 		"pooled-bound-work-never-on-the-gitless-host": false,
 	});
+});
+
+test("a woken released subagent is refused unless it was restored and continued in a restored checkout (#4329)", () => {
+	const check = (wokenSubagent: ResumeEvidence["wokenSubagent"]) =>
+		checkResumeInvariants({ ...passingEvidence(), wokenSubagent }).find(
+			(item) => item.name === "released-subagent-wakes-restored-on-another-node",
+		)?.passed;
+	assert.equal(check(wokenSubagent), true);
+	// The wake ended as the typed unrestorable outcome the subagent had before its directory was mapped.
+	assert.equal(check({ ...wokenSubagent, outcome: "unrestorable" }), false);
+	// It continued where it was recorded, in a checkout that is not a restored worktree.
+	assert.equal(check({ ...wokenSubagent, cwd: wokenSubagent.recordedPath, mappings: [] }), false);
+	// A different tree, or the recording node's path not resolving in the restored checkout.
+	assert.equal(check({ ...wokenSubagent, digest: "other" }), false);
+	assert.equal(check({ ...wokenSubagent, oldPathContent: WRITTEN }), false);
+	assert.equal(check({ ...wokenSubagent, clean: false }), false);
+	assert.equal(check(undefined), false);
 });
 
 test("a woken session is refused when it continues in another checkout at its recorded path (#4329)", () => {

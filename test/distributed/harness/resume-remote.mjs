@@ -29,6 +29,7 @@ const POLL_MS = 1_000;
 const BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /** What the recording node's model writes, and the read tool returns through the recorded absolute path. */
 const WRITTEN = "written by the model on node A\n";
+const SUBAGENT_WRITTEN = "written by the subagent on node A\n";
 
 /** @param {string} phase @param {string} detail */
 function failure(phase, detail) {
@@ -89,6 +90,7 @@ export function resumeRemote(ctx) {
 	const sessionDriver = `${REF_DIR}/test/fixtures/multinode-resume-node.ts`;
 	const runDriver = `${REF_DIR}/test/fixtures/multinode-run-node.ts`;
 	const releasedDriver = `${REF_DIR}/test/fixtures/multinode-released-node.ts`;
+	const subagentDriver = `${REF_DIR}/test/fixtures/multinode-released-subagent-node.ts`;
 	const adapter = `${REF_DIR}/packages/storage-libsql/libsql.js`;
 	const url = `https://${ctx.primary.ip}:${ctx.gatewayPort}`;
 	const sessionPath = `${work}/node-a/home/session-repo`;
@@ -99,6 +101,8 @@ export function resumeRemote(ctx) {
 	const runAgent = `${work}/node-b/run-agent`;
 	const forkAgent = `${work}/node-c/fork-agent`;
 	const wakeAgent = `${work}/node-b/wake-agent`;
+	const subagentWakeAgent = `${work}/node-b/subagent-wake-agent`;
+	const subagentWakeRoot = `${subagentWakeAgent}/worktree-snapshots/worktrees`;
 	const runRoot = `${runAgent}/worktree-snapshots/worktrees`;
 	const sessionRoot = `${sessionAgent}/worktree-snapshots/worktrees`;
 	const gitlessRoot = `${gitlessAgent}/worktree-snapshots/worktrees`;
@@ -515,6 +519,11 @@ export function resumeRemote(ctx) {
 		away: `${work}/node-a/home/released-away`,
 		samePath: `${work}/node-a/home/released-same-path`,
 	};
+	/** The released-subagent leg of scenario 5: the owner's directory exists on both nodes, the checkout only on node A. */
+	const subagentPaths = {
+		ownerCwd: `${work}/subagent-owner`,
+		checkout: `${work}/node-a/home/released-subagent`,
+	};
 	/** @param {string} label @param {string} id @param {string} path */
 	const startWake = async (label, id, path) => {
 		const goFile = `${work}/node-b/${label}.go`;
@@ -901,6 +910,72 @@ export function resumeRemote(ctx) {
 			);
 		},
 		wake: (id, path) => wakeObservation("wake-away", id, path),
+		releaseSubagent: async () => {
+			const path = subagentPaths.checkout;
+			await a.run(
+				gitScript(
+					`mkdir -p ${shellQuote(subagentPaths.ownerCwd)}\n${dirtyCheckout(`${work}/remotes/released.git`, path)}`,
+				),
+				{ operation: "create the released subagent's checkout" },
+			);
+			const process = await start(
+				a,
+				"release-subagent",
+				bunCommand(subagentDriver, "release", {
+					ownerCwd: subagentPaths.ownerCwd,
+					cwd: path,
+					file: `${path}/notes/agent-wrote.txt`,
+					content: SUBAGENT_WRITTEN,
+				}),
+				env(a, `${work}/node-a/subagent-agent`, "node-a"),
+			);
+			const recorded = await reported(a, process, "subagent released", (output) => "ownerSessionId" in output);
+			if (
+				typeof recorded.ownerSessionId !== "string" ||
+				typeof recorded.childId !== "string" ||
+				recorded.childSessionRecordedInStore !== true ||
+				recorded.childSnapshots !== 1
+			)
+				throw failure("release subagent", `unexpected release ${JSON.stringify(recorded)}`);
+			await kill(a, process);
+			return {
+				ownerSessionId: recorded.ownerSessionId,
+				childId: recorded.childId,
+				path,
+				source: await observeTree(a, path, "/usr/bin/git", `${work}/unused`),
+			};
+		},
+		wakeSubagent: async (released) => {
+			const label = "wake-subagent";
+			const goFile = `${work}/node-b/${label}.go`;
+			const exitFile = `${work}/node-b/${label}.exit`;
+			await b.run(`mkdir -p ${shellQuote(subagentPaths.ownerCwd)}`, { operation: "create the owner's directory" });
+			const process = await start(
+				b,
+				label,
+				bunCommand(subagentDriver, "wake", {
+					ownerCwd: subagentPaths.ownerCwd,
+					workedIn: released.path,
+					ownerSessionId: released.ownerSessionId,
+					childId: released.childId,
+					readPath: `${released.path}/notes/agent-wrote.txt`,
+					goFile,
+				}),
+				env(b, subagentWakeAgent, "node-b"),
+				{ exitFile },
+			);
+			await reported(b, process, `${label} ready`, (output) => output.ready === true);
+			await b.run(`: > ${shellQuote(goFile)}`, { operation: `let ${label} begin` });
+			const result = await finished(b, process, exitFile, label);
+			if (result.code !== 0)
+				throw failure(label, `fixture exited ${result.code}: ${JSON.stringify(result.output.error ?? null)}`);
+			return {
+				...(await sessionObservation(b, result.output, `${work}/unused`, "/usr/bin/git", subagentWakeRoot)),
+				code: result.code,
+				recordedPath: released.path,
+				...(typeof result.output.outcome === "string" ? { outcome: result.output.outcome } : {}),
+			};
+		},
 		wakeAtSamePath: async (id, path) => {
 			// Another checkout of the same repository, at exactly the path the session recorded on node A.
 			await b.run(gitScript(`git clone -q ${shellQuote(`${work}/remotes/released.git`)} ${shellQuote(path)}`), {

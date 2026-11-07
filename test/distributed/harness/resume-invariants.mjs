@@ -29,7 +29,8 @@
  *   two?: { status?: string, children?: readonly ChildObservation[], restoreRoot?: string, clean?: boolean },
  *   poolKilled?: FailureObservation, pool?: PoolObservation,
  *   released?: { away?: SessionObservation, samePath?: SessionObservation }, wakePartition?: FailureObservation,
- *   woken?: WakeObservation, wokenAtSamePath?: WakeObservation, forkKilled?: FailureObservation,
+ *   woken?: WakeObservation, wokenAtSamePath?: WakeObservation, releasedSubagent?: SessionObservation,
+ *   wokenSubagent?: WakeObservation & { outcome?: string }, forkKilled?: FailureObservation,
  *   fork?: { status?: string, beforeOne?: string, beforeTwo?: string, cwd?: string, restoreRoot?: string,
  *     stateAfter?: string, gitless?: boolean, clean?: boolean },
  *   integrity?: readonly string[] }} ResumeEvidence
@@ -52,6 +53,8 @@ export const RESUME_SCENARIO_FAULTS = Object.freeze({
 
 /** The text the recording node's model wrote, as the read tool returns it through the recorded absolute path. */
 const WRITTEN = "written by the model on node A";
+/** The same, for the file a released background subagent wrote on node A. */
+const SUBAGENT_WRITTEN = "written by the subagent on node A";
 
 /** @param {ResumeError | undefined} error @param {string} subject */
 function timeout(error, subject) {
@@ -146,6 +149,25 @@ function wokenElsewhere(source, woken) {
 }
 
 /**
+ * A woken released background subagent: it was restored, and continued in a worktree this node restored from its own
+ * snapshot, with the recorded tree and commit, the recorded path mapped to it and the recording node's path resolving
+ * there for its tools.
+ * @param {SessionObservation | undefined} source @param {(WakeObservation & { outcome?: string }) | undefined} woken
+ */
+function subagentWokenElsewhere(source, woken) {
+	return (
+		woken?.code === 0 &&
+		woken.outcome === "restored" &&
+		sameTree(source, woken) &&
+		publishedUnder(woken.cwd, woken.restoreRoot) &&
+		woken.cwd !== woken.recordedPath &&
+		woken.mappings?.some((mapping) => mapping.from === woken.recordedPath && mapping.to === woken.cwd) === true &&
+		woken.oldPathContent === SUBAGENT_WRITTEN &&
+		woken.clean === true
+	);
+}
+
+/**
  * The scenario observations (including every requested fault). Each invariant carries only synthetic facts; no
  * credentials, storage selection or conversation content outside the fixture are reported.
  * @param {ResumeEvidence} evidence
@@ -169,6 +191,8 @@ export function checkResumeInvariants(evidence) {
 		wakePartition,
 		woken,
 		wokenAtSamePath,
+		releasedSubagent,
+		wokenSubagent,
 		forkKilled,
 		fork,
 	} = evidence;
@@ -378,6 +402,13 @@ export function checkResumeInvariants(evidence) {
 			expected:
 				"with another checkout of the repository at the recorded path, the session continued in a restored worktree and left that checkout as it was",
 			actual: { source: released?.samePath ?? null, woken: wokenAtSamePath ?? null },
+		},
+		{
+			name: "released-subagent-wakes-restored-on-another-node",
+			passed: subagentWokenElsewhere(releasedSubagent, wokenSubagent),
+			expected:
+				"a real released background subagent woke on n2: its checkout was restored from its own snapshot with the recorded tree and commit, n1's path was mapped into it, and the subagent read n1's file through that path",
+			actual: { source: releasedSubagent ?? null, woken: wokenSubagent ?? null },
 		},
 		{
 			name: "fork-restores-the-boundary-snapshot",

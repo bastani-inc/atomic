@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
@@ -24,6 +24,7 @@ const NODE_STEP_TIMEOUT_MS = 90_000;
 /** The wake of a node that is cut off waits out the product's lookup deadline (15 s) before it fails. */
 const PARTITIONED_WAKE_TIMEOUT_MS = 90_000;
 const driver = join(moduleDir(import.meta.url), "..", "fixtures", "multinode-released-node.ts");
+const subagentDriver = join(moduleDir(import.meta.url), "..", "fixtures", "multinode-released-subagent-node.ts");
 /** This checkout's libSQL adapter by path, so a node never resolves (or Bun auto-installs) a published copy. */
 const libsqlAdapter = join(moduleDir(import.meta.url), "..", "..", "packages", "storage-libsql", "libsql.js");
 const CLEARED_STORAGE_ENV = {
@@ -35,6 +36,14 @@ const CLEARED_STORAGE_ENV = {
 
 interface NodeOutput {
 	readonly ready?: boolean;
+	readonly ownerSessionId?: string;
+	readonly childId?: string;
+	readonly childSessionId?: string;
+	readonly childSessionRecordedInStore?: boolean;
+	readonly childSnapshots?: number;
+	readonly outcome?: string;
+	readonly reason?: string;
+	readonly status?: string;
 	readonly sessionId?: string;
 	readonly snapshots?: number;
 	readonly releasedCwd?: string;
@@ -42,7 +51,7 @@ interface NodeOutput {
 	readonly cwdExists?: boolean;
 	readonly mappings?: readonly { from: string; to: string }[];
 	readonly userMessages?: number;
-	readonly toolResult?: readonly { type: string; text?: string }[];
+	readonly toolResult?: string | readonly { type: string; text?: string }[];
 	readonly error?: { name?: string; code?: string; retryable?: boolean; message?: string };
 }
 
@@ -51,6 +60,16 @@ interface NodeRun {
 	readonly code: number | null;
 	readonly signal: NodeJS.Signals | null;
 	readonly stderr: string;
+}
+
+/** What a node restored under `directory`: every file and directory below it, none when it holds nothing. */
+function restoredEntries(directory: string): string[] {
+	return existsSync(directory) ? readdirSync(directory, { recursive: true }).map(String) : [];
+}
+
+function toolResultText(output: NodeOutput): string {
+	const result = output.toolResult;
+	return typeof result === "string" ? result : (result?.map((part) => part.text ?? "").join("") ?? "");
 }
 
 let root: string;
@@ -76,8 +95,9 @@ function startNode(
 	args: object,
 	env: NodeJS.ProcessEnv,
 	timeoutMs = NODE_STEP_TIMEOUT_MS,
+	script = driver,
 ): { child: ChildProcess; run: Promise<NodeRun> } {
-	const child = spawn(bunExecutable(), ["--no-install", driver, command, JSON.stringify(args)], {
+	const child = spawn(bunExecutable(), ["--no-install", script, command, JSON.stringify(args)], {
 		cwd: root,
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
@@ -249,10 +269,107 @@ describe("multi-node wake of a released session (#4329)", () => {
 			assert.equal(await sandbox.git(output.cwd!, "rev-parse", "HEAD"), head);
 			// The conversation continued, and the path node A wrote resolves in the restored worktree.
 			assert.equal(output.userMessages, 2);
-			assert.match(
-				output.toolResult?.map((part) => part.text ?? "").join("") ?? "",
-				/written by the model on node A/,
+			assert.match(toolResultText(output), /written by the model on node A/);
+		},
+		MULTINODE_RELEASED_TIMEOUT_MS,
+	);
+
+	test(
+		"scenario 5: a released background subagent wakes on a different node from the one that released it: its checkout is restored before it continues, and a partition during the wake ends in a retryable typed error before a retry succeeds",
+		async () => {
+			const ownerCwd = join(root, "owner-cwd");
+			mkdirSync(ownerCwd, { recursive: true });
+			const { clone } = await sandbox.remoteWithClone("agent-repo", {
+				"README.md": "hello\n",
+				"lib/util.txt": "util\n",
+			});
+			sandbox.write(join(clone, "README.md"), "uncommitted edit\n");
+			const written = join(clone, "notes", "subagent-wrote.txt");
+
+			// Node A launches a real background subagent in the checkout. It writes a file there and waits on a call, so it
+			// is released: its record says so, and its session, with the snapshot of what it changed, is in the shared store.
+			const nodeA = startNode(
+				"release",
+				{ ownerCwd, cwd: clone, file: written, content: "written by the subagent on node A\n" },
+				nodeEnv("subagent-node-a"),
+				NODE_STEP_TIMEOUT_MS,
+				subagentDriver,
 			);
+			const released = await firstOutput(nodeA);
+			assert.equal(released.error, undefined, JSON.stringify(released));
+			assert.equal(released.childSessionRecordedInStore, true, "the child's session is in the shared storage");
+			assert.equal(released.childSnapshots, 1, "the subagent recorded the checkout it changed");
+			nodeA.child.kill("SIGKILL");
+			assert.equal((await nodeA.run).signal, "SIGKILL");
+			const offline = join(root, "agent-repo-offline");
+			renameSync(clone, offline);
+			assert.equal(existsSync(clone), false);
+			const expected = treeDigest(offline);
+			const wakeArgs = {
+				ownerCwd,
+				workedIn: clone,
+				ownerSessionId: released.ownerSessionId,
+				childId: released.childId,
+				readPath: written,
+				goFile: join(root, "node-b-subagent-go"),
+			};
+
+			// A partition during the wake: the wake fails typed and retryable, and restores nothing.
+			const proxy = await partitionProxy(database.port);
+			const partitionedNode = startNode(
+				"wake",
+				wakeArgs,
+				nodeEnv("subagent-node-b", `http://127.0.0.1:${proxy.port}`),
+				PARTITIONED_WAKE_TIMEOUT_MS,
+				subagentDriver,
+			);
+			assert.equal((await firstOutput(partitionedNode)).ready, true);
+			proxy.partition();
+			writeFileSync(wakeArgs.goFile, "");
+			const partitioned = await partitionedNode.run;
+			assert.equal(partitioned.code, 2, partitioned.stderr);
+			assert.ok(
+				["ResumeCatalogTimeoutError", "ResumeCatalogUnavailableError"].includes(
+					partitioned.output?.error?.name ?? "",
+				),
+				JSON.stringify(partitioned.output),
+			);
+			assert.equal(partitioned.output?.error?.retryable, true);
+			assert.deepEqual(
+				restoredEntries(join(root, "subagent-node-b", "agent", "worktree-snapshots")),
+				[],
+				"nothing was restored",
+			);
+			proxy.heal();
+			await proxy.close();
+			rmSync(wakeArgs.goFile);
+
+			// The retry: node B wakes the subagent, which continues in its checkout restored on node B.
+			writeFileSync(wakeArgs.goFile, "");
+			const woken = await startNode(
+				"wake",
+				wakeArgs,
+				nodeEnv("subagent-node-b"),
+				NODE_STEP_TIMEOUT_MS,
+				subagentDriver,
+			).run;
+			assert.equal(woken.code, 0, `${woken.stderr}\n${JSON.stringify(woken.output)}`);
+			const output = woken.output!;
+			assert.equal(output.outcome, "restored", `${output.outcome}: ${output.reason}`);
+			const worktrees = join(root, "subagent-node-b", "agent", "worktree-snapshots", "worktrees");
+			assert.equal(
+				output.cwdExists,
+				true,
+				`the subagent continued in ${output.cwd}, which does not exist on node B`,
+			);
+			assert.ok(output.cwd?.startsWith(worktrees), output.cwd);
+			assert.deepEqual(
+				output.mappings?.map((mapping) => mapping.from),
+				[clone],
+			);
+			assert.deepEqual(treeDigest(output.cwd!), expected);
+			// The path node A's subagent wrote resolves in the restored checkout for its own tools.
+			assert.match(toolResultText(output), /written by the subagent on node A/);
 		},
 		MULTINODE_RELEASED_TIMEOUT_MS,
 	);

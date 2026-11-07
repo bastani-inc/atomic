@@ -37,6 +37,10 @@ An SDK `createAgentSession({ sessionManager })` call prepares a supplied session
 
 When the shared storage does not answer, `atomic --session`, `--resume`, `--continue` and `/resume` stop after 15 seconds with a retryable `ResumeCatalogTimeoutError` instead of waiting for the network to give up. Nothing was changed; resume again once `atomic storage status` reaches the database.
 
+## Wake a released subagent
+
+A background subagent that was released while it waited keeps its session in the shared storage when it was launched with `context: "fork"`, so it can be woken on another machine. The wake maps its recorded directory through the restores of the session that owns it. The subagent's own session is then prepared as a woken session is: each checkout it worked in on this machine stays as it is, and every other checkout is restored from its snapshots into a worktree on this machine, with the setup hook. Its tools resolve the earlier machine's absolute paths there, and follow the restores of the session or run it was launched in. A subagent started without `context: "fork"` keeps a session file on the machine that launched it, which another machine cannot reopen; it is reported as unrestorable.
+
 ## Resume a workflow run
 
 Resume a run with `/workflow resume <run>`, or from the SDK with `run(definition, inputs, { runId })`. A run restores its checkouts from the snapshots on its checkpoints, once, before it continues; see [Worktree snapshots](/worktree-snapshots):

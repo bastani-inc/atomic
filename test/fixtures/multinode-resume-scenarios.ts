@@ -7,7 +7,10 @@
 /** A public export a scenario drives, and the dependency issue that ships it. */
 export interface ScenarioPrerequisite {
 	/** Repository-relative source of the public entry point that exports it. */
-	readonly module: "packages/coding-agent/src/index.ts" | "packages/workflows/src/sdk-surface.ts";
+	readonly module:
+		| "packages/coding-agent/src/index.ts"
+		| "packages/workflows/src/sdk-surface.ts"
+		| "packages/subagents/src/runs/foreground/subagent-child-restore.ts";
 	readonly name: string;
 	/** A method the export must have, such as `rehydrate` on `AgentSessionRuntime.prototype`. */
 	readonly prototypeMember?: string;
@@ -28,6 +31,7 @@ export interface AcceptanceScenario {
 
 const ATOMIC = "packages/coding-agent/src/index.ts" as const;
 const WORKFLOWS = "packages/workflows/src/sdk-surface.ts" as const;
+const SUBAGENT_RESTORE = "packages/subagents/src/runs/foreground/subagent-child-restore.ts" as const;
 
 export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 	{
@@ -96,10 +100,11 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 		chaos: ["database partition during the wake"],
 		prerequisites: [
 			{ module: ATOMIC, name: "AgentSessionRuntime", prototypeMember: "rehydrate", dependency: "#4326 / #4309" },
+			{ module: SUBAGENT_RESTORE, name: "restoreSubagentChild", dependency: "#4326" },
 		],
 		implementedBy: {
 			file: "test/integration/multinode-resume-released.test.ts",
-			test: "scenario 5: a released session wakes on a different node from the one that released it: its worktree is restored before it continues, and a partition during the wake ends in a retryable typed error before a retry succeeds",
+			test: "scenario 5: a released background subagent wakes on a different node from the one that released it: its checkout is restored before it continues, and a partition during the wake ends in a retryable typed error before a retry succeeds",
 		},
 	},
 	{

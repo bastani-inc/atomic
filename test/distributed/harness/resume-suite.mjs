@@ -52,9 +52,13 @@ const RESUME_PROFILE_SPECS = {
  * @typedef {{ sessionId?: string, snapshots?: number, cwd?: string, userMessages?: number, status?: string,
  *   notices?: readonly { message?: string }[], toolResult?: readonly { text?: string }[],
  *   mappings?: readonly { from?: string, to?: string }[], ready?: boolean, releasedCwd?: string,
- *   result?: Readonly<Record<string, string>>, error?: import("./resume-invariants.mjs").ResumeError }} DriverOutput
+ *   ownerSessionId?: string, childId?: string, childSessionRecordedInStore?: boolean, childSnapshots?: number,
+ *   outcome?: string, result?: Readonly<Record<string, string>>,
+ *   error?: import("./resume-invariants.mjs").ResumeError }} DriverOutput
  * @typedef {{ code: number, signal: string | null, output: DriverOutput }} DriverResult
  * @typedef {{ away: RecordedSession & { path: string }, samePath: RecordedSession & { path: string } }} ReleasedSessions
+ * @typedef {{ ownerSessionId: string, childId: string, path: string,
+ *   source: NonNullable<ResumeEvidence["releasedSubagent"]> }} ReleasedSubagent
  * @typedef {{ prepare: () => Promise<void>, recordSession: () => Promise<RecordedSession>,
  *   partitionSession: (id: string) => Promise<NonNullable<ResumeEvidence["sessionPartition"]>>,
  *   killSessionRestore: (id: string) => Promise<NonNullable<ResumeEvidence["sessionKilled"]>>,
@@ -71,6 +75,8 @@ const RESUME_PROFILE_SPECS = {
  *   partitionWake: (id: string, path: string) => Promise<NonNullable<ResumeEvidence["wakePartition"]>>,
  *   wake: (id: string, path: string) => Promise<NonNullable<ResumeEvidence["woken"]>>,
  *   wakeAtSamePath: (id: string, path: string) => Promise<NonNullable<ResumeEvidence["wokenAtSamePath"]>>,
+ *   releaseSubagent: () => Promise<ReleasedSubagent>,
+ *   wakeSubagent: (released: ReleasedSubagent) => Promise<NonNullable<ResumeEvidence["wokenSubagent"]>>,
  *   recordFork: () => Promise<string>, killFork: (id: string) => Promise<NonNullable<ResumeEvidence["forkKilled"]>>,
  *   fork: (id: string) => Promise<NonNullable<ResumeEvidence["fork"]>>, integrity: () => Promise<readonly string[]>,
  *   undo: <T>(step: () => Promise<T>) => Promise<T>, close: () => Promise<void> }} ResumeRemote
@@ -280,6 +286,9 @@ export async function runMultiNodeResume(ctx, remote = resumeRemote(ctx)) {
 			evidence.wokenAtSamePath = await step("wake-at-same-path", () =>
 				remote.wakeAtSamePath(released.samePath.id, released.samePath.path),
 			);
+			const subagent = await step("release-subagent", remote.releaseSubagent);
+			evidence.releasedSubagent = subagent.source;
+			evidence.wokenSubagent = await step("wake-subagent", () => remote.wakeSubagent(subagent));
 		});
 		if (run !== undefined)
 			await scenario("2", async () => {
