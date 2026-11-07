@@ -3,7 +3,7 @@ import * as childProcess from "node:child_process";
 import * as fs from "node:fs";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, it, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
@@ -1157,6 +1157,26 @@ const filesUnder = (directory: string): string[] =>
 		.filter((entry) => entry.isFile())
 		.map((entry) => join(entry.parentPath, entry.name));
 
+/** Observe removal before starting a background sweep; completion, not a one-second polling budget, is the signal. */
+async function afterDirectoryRemoval<T>(path: string, start: () => T | Promise<T>): Promise<T> {
+	let watcher: fs.FSWatcher | undefined;
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	const removed = new Promise<void>((resolve, reject) => {
+		watcher = fs.watch(dirname(path), () => {
+			if (!existsSync(path)) resolve();
+		});
+		watcher.on("error", reject);
+		timeout = setTimeout(() => reject(new Error(`startup sweep did not remove ${path}`)), HOST_TIMEOUT_MS);
+	});
+	try {
+		const [result] = await Promise.all([start(), removed]);
+		return result;
+	} finally {
+		watcher?.close();
+		clearTimeout(timeout);
+	}
+}
+
 describe("released history outlives no process, except one killed, until the next sweep (#4502)", () => {
 	test("a sweep removes what processes that are gone left, and keeps what a process that may run holds", async () => {
 		const root = join(agentDir, "sweep");
@@ -1199,23 +1219,22 @@ describe("released history outlives no process, except one killed, until the nex
 		const opening = join(agentDir, "sweep-on-open");
 		const left = join(releasedHistoryUnder(opening), basename(host), `${gonePid}-1`);
 		mkdirSync(left, { recursive: true });
-		const memory = await new StorageProvider().openSessionStore(
-			{ kind: "memory" },
-			{ agentDir: opening, domain: "sessions" },
+		const memory = await afterDirectoryRemoval(left, () =>
+			new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir: opening, domain: "sessions" }),
 		);
-		await vi.waitFor(() => assert.equal(existsSync(left), false, "opening a store sweeps its agent directory"));
+		assert.equal(existsSync(left), false, "opening a store sweeps its agent directory");
 		await memory.close();
 
 		const resolving = join(agentDir, "sweep-on-resolve");
 		const leftThere = join(releasedHistoryUnder(resolving), basename(host), `${gonePid}-1`);
 		mkdirSync(leftThere, { recursive: true });
-		const sessions = await resolveSessionStore(resolving, {
-			agentDir: resolving,
-			sessionStore: { kind: "jsonl", dir: join(resolving, "sessions") },
-		});
-		await vi.waitFor(() =>
-			assert.equal(existsSync(leftThere), false, "resolving any session store at startup sweeps it too"),
+		const sessions = await afterDirectoryRemoval(leftThere, () =>
+			resolveSessionStore(resolving, {
+				agentDir: resolving,
+				sessionStore: { kind: "jsonl", dir: join(resolving, "sessions") },
+			}),
 		);
+		assert.equal(existsSync(leftThere), false, "resolving any session store at startup sweeps it too");
 		await sessions.close();
 	});
 
@@ -1231,8 +1250,8 @@ describe("released history outlives no process, except one killed, until the nex
 			assert.equal(filesUnder(left).length, 1, "nothing runs in a killed process");
 			assert.ok(filesUnder(left).every((file) => !file.endsWith(".partial")));
 
-			releasedHistoryFiles(root);
-			await vi.waitFor(() => assert.equal(existsSync(left), false));
+			await afterDirectoryRemoval(left, () => releasedHistoryFiles(root));
+			assert.equal(existsSync(left), false);
 		},
 		HOST_TIMEOUT_MS,
 	);
