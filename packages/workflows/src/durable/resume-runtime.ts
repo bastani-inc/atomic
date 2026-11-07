@@ -332,8 +332,8 @@ async function resumeDurableWorkflowClaimed(
 		};
 	}
 	const snapshotJournal = backend.snapshotJournal;
-	const hasSnapshots = snapshotJournal !== undefined && (await hasWorktreeSnapshots(backend, handle.workflowId));
-	const restoreFailure = hasSnapshots ? await restorePreconditionFailure(handle, snapshotJournal, deps) : undefined;
+	const restoreFailure =
+		snapshotJournal === undefined ? undefined : await restorePreconditionFailure(handle, snapshotJournal, deps);
 	if (restoreFailure !== undefined) return restoreFailure;
 	let toolContinuation: RunOpts["continuation"] = deps.baseRunOpts.continuation;
 	if (
@@ -448,7 +448,7 @@ async function resumeDurableWorkflowClaimed(
 		runId: resolved.workflowId,
 		durableBackend: backend,
 		...(toolContinuation === undefined ? {} : { continuation: toolContinuation }),
-		...(hasSnapshots ? { [restorePreconditionsChecked]: true as const } : {}),
+		...(snapshotJournal === undefined ? {} : { [restorePreconditionsChecked]: true as const }),
 	};
 
 	let launch: ReturnType<typeof launchDetachedUntilStartup>;

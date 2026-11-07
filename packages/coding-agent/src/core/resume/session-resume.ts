@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import type { GitUnavailableError } from "../../utils/git-errors.ts";
 import type { SessionManager } from "../session-manager.ts";
 import { currentWorktreeSnapshots, mapRestoredPath, openSessionInWorktree } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
@@ -197,8 +198,11 @@ export async function prepareSessionResume(
 	}
 	const notices: ResumeNotice[] = [];
 	const match = latestSessionSnapshot(sessionManager);
+	let git: GitProbe | undefined;
 	if (match !== undefined && (await worktreeNeedsRestore(match.snapshot, match.root, options))) {
-		const reuse = await reuseLaunchCheckout(sessionManager, match, options);
+		git = { unavailable: await io.probeGit(options.signal) };
+		const reuse =
+			git.unavailable === undefined ? await reuseLaunchCheckout(sessionManager, match, options) : undefined;
 		if (reuse?.kind === "cancelled") return { status: "cancelled" };
 		if (reuse?.kind === "reused") {
 			registerWorktreeRootMappings(sessionManager.getWorktreeRootMappings());
@@ -207,7 +211,10 @@ export async function prepareSessionResume(
 		}
 	}
 	const restoring = await checkoutsToRestore(sessionManager, options);
-	if (restoring.length > 0) await assertRestorePreconditions(sessionManager, restoring, storeDir, options, io);
+	if (restoring.length > 0) {
+		git ??= { unavailable: await io.probeGit(options.signal) };
+		await assertRestorePreconditions(sessionManager, restoring, storeDir, options, git.unavailable);
+	}
 	const restoresBefore = sessionManager.getWorktreeRootMappings().length;
 	const opened = await openSessionInWorktree(sessionManager, {
 		settings: options.settings,
@@ -324,7 +331,8 @@ async function removeRestoredNow(
 
 /**
  * Whether resuming in `root` restores `snapshot` into a fresh worktree: the checkout is gone, is not a repository of
- * the recorded tree, or no longer matches it. A checkout whose HEAD only moved forward over the recorded tree, as after
+ * the recorded tree, or no longer matches it. A path that cannot be read fails with its typed `unreadable-path` error
+ * instead, since restoring would hide it. A checkout whose HEAD only moved forward over the recorded tree, as after
  * committing the recorded edits, continues in place, as #4245's resume decides. Read-only.
  */
 export async function worktreeNeedsRestore(
@@ -337,24 +345,29 @@ export async function worktreeNeedsRestore(
 		return false;
 	} catch (error) {
 		if (isWorkspaceDriftError(error)) return !(await isHeadOnlyAdvance(error, options.signal));
-		if (isWorkspaceSnapshotError(error)) return true;
+		if (isWorkspaceSnapshotError(error) && error.code !== "unreadable-path") return true;
 		throw error;
 	}
 }
 
+/** The outcome of starting or provisioning Git once for a resume: the typed reason it cannot run, or undefined. */
+interface GitProbe {
+	readonly unavailable: GitUnavailableError | undefined;
+}
+
 /**
- * Every precondition of restoring `targets` on this node, checked before anything is written: Git can be started, and
- * a setup hook can run in each restored worktree whose snapshot has dependency inputs.
+ * Every precondition of restoring `targets` on this node, checked before anything is written: Git can be started or
+ * provisioned (`git`, the probe's typed failure), and a setup hook can run in each restored worktree whose snapshot has
+ * dependency inputs.
  */
 async function assertRestorePreconditions(
 	sessionManager: SessionManager,
 	targets: readonly RestoreTarget[],
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
-	io: ResumePreflightIo,
+	git: GitUnavailableError | undefined,
 ): Promise<void> {
 	const problems: ResumePreconditionProblem[] = [];
-	const git = await io.probeGit(options.signal);
 	if (git) {
 		const reasons = targets.map(
 			(target) =>

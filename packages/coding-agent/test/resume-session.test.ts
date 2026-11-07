@@ -29,7 +29,8 @@ import {
 	type DirtyCheckoutPrompt,
 	type EnsureResumeSetupOptions,
 	ensureResumeSetup,
-	type GitUnavailableError,
+	GitProvisionTimeoutError,
+	GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceDriftError,
 	isWorkspaceSnapshotError,
@@ -199,6 +200,35 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 		assert.equal(io.probes, 1);
 		assert.equal(existsSync(sandbox.path("host")), false);
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+	});
+
+	test("Git that cannot be provisioned is probed once, before the launch checkout is read, and causes the precondition error", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		renameSync(clone, sandbox.path("node-a-gone"));
+		const timeout = new GitProvisionTimeoutError({ phase: "download", timeoutMs: 600_000, elapsedMs: 600_004 });
+		const unavailable = new GitUnavailableError(
+			{ code: "not-installed", platform: "linux", arch: "x64", installDir: "/home/u/.atomic/agent/bin/git" },
+			{ cause: timeout },
+		);
+		const io = new CountingGitIo(unavailable);
+		const launchCwd = sandbox.path("launch");
+		mkdirSync(launchCwd);
+		setWorktreeSnapshotGit(async () => {
+			throw new Error("Git must not be resolved again after the probe failed");
+		});
+
+		await assert.rejects(prepareSessionResume(manager, options({ io, launchCwd })), (error: unknown) => {
+			assert.ok(error instanceof ResumePreconditionError);
+			assert.deepEqual(
+				error.problems.map((problem) => [problem.code, problem.subject]),
+				[["git-unavailable", "git (not-installed)"]],
+			);
+			assert.equal(error.cause, unavailable);
+			return true;
+		});
+		assert.equal(io.probes, 1);
+		assert.equal(existsSync(sandbox.path("host")), false);
 	});
 
 	test("propagates #4245's typed drift error when the snapshot cannot be restored", async () => {

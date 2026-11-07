@@ -87,7 +87,7 @@ async function openRunBackend(opts: RunOpts, resumedRunId: string | undefined): 
 			opts.journal === undefined ? SettingsManager.create(opts.cwd ?? process.cwd()).getSettings() : undefined,
 	});
 	const opening = initializeDurableBackend({ journal: opts.journal, cwd: opts.cwd });
-	if ("createRun" in selection || selection.kind !== "adapter") return opening;
+	if (!("kind" in selection) || selection.kind !== "adapter") return opening;
 	return withResumeLookupDeadline(
 		opening,
 		{ subject: "run", id: resumedRunId, storage: selection.module },
