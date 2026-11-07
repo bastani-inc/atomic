@@ -721,3 +721,29 @@ test("a worker host runs the setup hook of its own agent directory once in the w
 	assert.equal(readFileSync(marker, "utf8"), "ran\n");
 	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
 });
+
+test("a worker host restore without the snapshot's fingerprint reads it from the restored worktree before its hook (#4329)", async () => {
+	const hostAgentDir = sandbox.path("host-agent");
+	mkdirSync(hostAgentDir, { recursive: true });
+	writeFileSync(join(hostAgentDir, "settings.json"), "{}");
+	const worktree = join(hostAgentDir, "worktree-snapshots", "worktrees", "restored");
+	let restores = 0;
+
+	await assert.rejects(
+		restoreRunWorktree(
+			undefined,
+			async () => {
+				restores++;
+				mkdirSync(worktree, { recursive: true });
+				writeFileSync(join(worktree, "package-lock.json"), "{}\n");
+				return worktree;
+			},
+			{ agentDir: hostAgentDir },
+		),
+		(error: unknown) =>
+			isResumePreconditionError(error) &&
+			error.problems.map((problem) => problem.code).join() === "setup-hook-missing" &&
+			error.problems[0]!.subject === "setup hook",
+	);
+	assert.equal(restores, 1);
+});
