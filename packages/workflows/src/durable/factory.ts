@@ -39,6 +39,34 @@ export interface DurableBackendOptions {
 	 * shared process-wide until exit.
 	 */
 	holder?: object;
+	/**
+	 * Aborted once the caller stopped waiting for the selected journal, as when its lookup deadline passed. The pending
+	 * opening leaves the process cache, so the next call opens the journal again instead of waiting on it, and when no
+	 * other caller waits on it, a journal that opens later is closed.
+	 */
+	abandonSignal?: AbortSignal;
+}
+
+const callersOfOpening = new WeakMap<SelectedDurableBackend, number>();
+
+function abandonOpening(
+	selected: Map<string | object, SelectedDurableBackend>,
+	key: string | object,
+	entry: SelectedDurableBackend,
+): void {
+	if (selected.get(key) === entry) selected.delete(key);
+	const callers = callersOfOpening.get(entry)! - 1;
+	callersOfOpening.set(entry, callers);
+	if (callers > 0) return;
+	void entry.ready
+		.then(
+			() => entry.close?.(),
+			() => undefined,
+		)
+		.catch((error: Error) => {
+			console.error(error);
+			process.exitCode = 1;
+		});
 }
 
 export async function initializeDurableBackend(options: DurableBackendOptions = {}): Promise<DurableWorkflowBackend> {
@@ -94,5 +122,7 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	if (existing === undefined) selected.set(key, entry);
 	if (holder === undefined) entry.pinned = true;
 	else entry.holders.add(holder);
+	callersOfOpening.set(entry, (callersOfOpening.get(entry) ?? 0) + 1);
+	options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
 	return withRunJournalConfigSource(selection, () => entry.ready);
 }
