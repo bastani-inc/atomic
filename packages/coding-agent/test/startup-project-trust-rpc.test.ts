@@ -132,6 +132,8 @@ for (const scenario of [
 			});
 			const engineMessages: string[] = [];
 			client.onInteractiveEngineMessage((message) => engineMessages.push(message.type));
+			const events: Array<{ type: string }> = [];
+			client.onEvent((event) => events.push(event));
 			const entries = (): Array<{
 				type: string;
 				cwd?: string;
@@ -160,6 +162,8 @@ for (const scenario of [
 				assert.equal(observed.kind, kind);
 				assert.equal(before.filter((entry) => entry.type === "session_start").length, 1);
 				assert.equal(engineMessages.includes("engine_project_trust_resolved"), false);
+				const eventsBeforeRpcAnswer =
+					scenario === "extension-error" ? client.getAvailableModels().then(() => events.slice()) : undefined;
 				if (scenario === "cancel")
 					await client.respondExtensionUI({ type: "extension_ui_response", id: request.id, cancelled: true });
 				else if (scenario === "confirm")
@@ -180,10 +184,36 @@ for (const scenario of [
 					});
 				await endPromise;
 				if (scenario === "extension-error") {
-					await assert.rejects(client.waitForInteractiveEngineResources(), /startup fixture failure/);
-					assert.equal(entries().filter((entry) => entry.type === "project_start").length, 0);
-					rmSync(brokenExtension);
-					await client.requestInternal({ type: "reload" });
+					await assert.doesNotReject(client.waitForInteractiveEngineResources());
+					assert.deepEqual(
+						(await eventsBeforeRpcAnswer)?.filter((event) => event.type === "extension_error"),
+						[
+							{
+								type: "extension_error",
+								extensionPath: brokenExtension,
+								event: "startup",
+								error: "Failed to load extension: startup fixture failure",
+							},
+						],
+					);
+					assert.equal(entries().filter((entry) => entry.type === "project_start").length, 1);
+					const state = await client.getState();
+					assert.ok(
+						state.resourceExtensions?.some(
+							(extension) => extension.path === join(agentDir, "extensions", "reporter.ts"),
+						),
+					);
+					assert.ok(
+						state.resourceExtensions?.some(
+							(extension) => extension.path === join(resourceCwd, ".atomic", "extensions", "forbidden.ts"),
+						),
+					);
+					assert.equal(
+						state.resourceExtensions?.some((extension) => extension.path === brokenExtension),
+						false,
+					);
+					assert.equal(engineMessages.includes("engine_resources_failed"), false);
+					assert.ok(engineMessages.includes("engine_resources_ready"));
 				}
 				await client.waitForInteractiveEngineResources();
 				const trustResolvedIndex = engineMessages.indexOf("engine_project_trust_resolved");
