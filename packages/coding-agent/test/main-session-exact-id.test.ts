@@ -355,7 +355,7 @@ describe("resolving --session and --fork against a large legacy session director
 			);
 			assert.match(
 				message,
-				/\(not-found\)\. Join this node to the shared storage with `atomic team join <url> --token-file <path>`/,
+				/\(not-found\)\. Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>`/,
 			);
 		});
 

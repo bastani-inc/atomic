@@ -650,6 +650,47 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
 	});
 
+	/** A session that node B woke in a restored worktree, edited there and released again. */
+	async function sessionEditedOnNodeB(agentDir: string) {
+		const { clone, sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: "true" } });
+		const onB = await runtime.rehydrate(sessionId);
+		const worktree = onB.sessionManager.getCwd();
+		sandbox.write(join(worktree, "README.md"), "edited on node B\n");
+		const capture = await captureWorktreeSnapshot(worktree, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			blobs: onB.sessionManager.getSessionStore().snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await onB.sessionManager.appendWorktreeSnapshot(worktree, capture.snapshot.id, capture.snapshot);
+		await onB.release();
+		return { clone, sessionId, runtime, worktree };
+	}
+
+	test("rehydrating a session again on the node that restored it continues in that worktree as it is", async () => {
+		const { sessionId, runtime, worktree } = await sessionEditedOnNodeB(sandbox.path("agent"));
+		sandbox.write(join(worktree, "notes.txt"), "written after the release\n");
+
+		const woken = await runtime.rehydrate(sessionId);
+
+		assert.equal(woken.sessionManager.getCwd(), worktree);
+		assert.equal(woken.sessionManager.getWorktreeRootMappings().length, 1);
+		assert.equal(readFileSync(join(worktree, "notes.txt"), "utf8"), "written after the release\n");
+	});
+
+	test("rehydrating on the first node a session that worked on in node B's worktree continues from node B's work", async () => {
+		const { clone, sessionId, runtime, worktree } = await sessionEditedOnNodeB(sandbox.path("agent"));
+		renameSync(worktree, sandbox.path("node-b-offline"));
+		renameSync(sandbox.path("node-a-offline"), clone);
+
+		const woken = await runtime.rehydrate(sessionId);
+
+		const cwd = woken.sessionManager.getCwd();
+		assert.notEqual(cwd, clone);
+		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node B\n");
+		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "edited on node A\n");
+	});
+
 	test("rehydrating a session released on another node, on a node without Git, fails as a rehydrate precondition", async () => {
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(sandbox.path("agent"), {});

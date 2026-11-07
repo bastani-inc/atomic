@@ -1506,6 +1506,26 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
 	});
 
+	test("continuing in a matching checkout records nothing when the restore of another checkout cannot start", async () => {
+		const { clone } = await editedClone();
+		const { second, manager } = await twoCheckoutSession(clone);
+		const checkout = sandbox.path("node-b", "repo");
+		mkdirSync(sandbox.path("node-b"));
+		renameSync(clone, checkout);
+		renameSync(second, sandbox.path("second-gone"));
+
+		await assert.rejects(
+			prepareSessionResume(
+				manager,
+				options({ launchCwd: checkout, setup: { command: undefined, trusted: () => false } }),
+			),
+			(error: unknown) =>
+				error instanceof ResumePreconditionError && error.problems[0]?.code === "setup-hook-missing",
+		);
+
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+	});
+
 	test("a matching checkout of the first repository is used and the second repository is still restored", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);

@@ -1,11 +1,10 @@
+import { SESSION_STORAGE_JOIN } from "../agent-rehydrate-errors.ts";
 import {
 	findInCauseChain,
 	rehydrateErrorCause,
 	type SerializedErrorCause,
 	serializeErrorCause,
 } from "../error-contract.ts";
-
-const STORAGE_JOIN_COMMAND = "atomic storage join <url> --token-file <path>";
 
 export type ResumeErrorFieldValue =
 	| string
@@ -108,7 +107,7 @@ export class ResumeNotFoundError extends ResumeError {
 			fields.reason === "local-storage-not-joined"
 				? [
 						`${missing}: this node uses local-only storage (${fields.storage}) and is not joined to the shared storage where other nodes record their work`,
-						`Join this node's sessions to the shared storage with \`${STORAGE_JOIN_COMMAND}\` (\`atomic team join\` keeps sessions on each machine), then resume again.`,
+						`Join this node's sessions to the shared storage with ${SESSION_STORAGE_JOIN}, then resume again.`,
 					]
 				: [
 						`${missing} in the shared storage (${fields.storage})`,

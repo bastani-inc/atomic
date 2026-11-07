@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getBinDir } from "../../config.js";
 import { GitUnavailableError, isGitProvisionError, isGitUnavailableError } from "../../utils/git-errors.ts";
-import { TEAM_JOIN_COMMAND } from "../agent-rehydrate-errors.ts";
+import { STORAGE_JOIN_COMMAND } from "../agent-rehydrate-errors.ts";
 import { StorageAdapterLoadError } from "../storage/errors.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, secretFilePath } from "../storage/provider.js";
 import { gitInstallCommand } from "../workspace/errors.ts";
@@ -94,11 +94,11 @@ async function secretProblem(
 			code: "credential-missing",
 			subject: `environment variable ${ref.env}`,
 			why: `${why}, and it is ${value === undefined ? "not set" : "empty"}`,
-			fix: `Set ${ref.env} for this process, or join with \`${TEAM_JOIN_COMMAND}\` to keep the token in a file.`,
+			fix: `Set ${ref.env} for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
 		};
 	}
 	const path = secretFilePath(ref.file, agentDir);
-	const fix = `Write the token to ${path} (mode 600, readable by this user), or join again with \`${TEAM_JOIN_COMMAND}\`.`;
+	const fix = `Write the token to ${path} (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`;
 	let text: string;
 	try {
 		text = await io.readText(path);

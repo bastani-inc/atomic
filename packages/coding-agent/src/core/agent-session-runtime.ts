@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { type AuthInteraction, drainPendingOAuthRotations, OAUTH_SHUTDOWN_DRAIN_MS } from "@bastani/pi-ai";
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -22,6 +22,7 @@ import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";
 import type { ResumeEntryPoint } from "./resume/errors.ts";
 import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline } from "./resume/not-found.ts";
+import { registerWorktreeRootMappings } from "./resume/path-mapping.ts";
 import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
@@ -35,6 +36,7 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
+import { mapRestoredPath } from "./session-worktree-snapshots.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -805,6 +807,20 @@ export class AgentSessionRuntime {
 		});
 	}
 
+	/**
+	 * Where a rehydrated session continues. When the directory it last worked in, after the restores it recorded, is on
+	 * this node, it continues there as it is, since work done there after the release belongs to it; otherwise its
+	 * checkouts are prepared as `/resume` prepares them.
+	 */
+	private async continueWhereItWorked(opened: SessionManager): Promise<SessionManager> {
+		const mappings = opened.getWorktreeRootMappings();
+		const cwd = mapRestoredPath(opened.getCwd(), mappings);
+		if (!existsSync(cwd)) return this.resumeWorktree(opened, undefined, "rehydrate");
+		registerWorktreeRootMappings(mappings);
+		if (cwd === resolve(opened.getCwd())) return opened;
+		return this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId());
+	}
+
 	private async rehydrateFromStore(sessionId: string): Promise<AgentSession> {
 		const store = this.session.sessionManager.getSessionStore();
 		if ((await this.boundedSessionLookup(store.readHeader(sessionId), sessionId)) === undefined) {
@@ -816,9 +832,7 @@ export class AgentSessionRuntime {
 			});
 		}
 		const opened = await this.boundedSessionLookup(this.session.sessionManager.openSessionById(sessionId), sessionId);
-		const sessionManager = existsSync(opened.getCwd())
-			? opened
-			: await this.resumeWorktree(opened, undefined, "rehydrate");
+		const sessionManager = await this.continueWhereItWorked(opened);
 		const cwd = sessionManager.getCwd();
 		const result = await sessionLifecycleCreation.run({ scope: {} }, () =>
 			this.sessionFactory({
