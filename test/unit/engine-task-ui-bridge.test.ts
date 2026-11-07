@@ -5,7 +5,9 @@ import { test } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import type { TaskMessageDelivery } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { EngineHostRenderSettings } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
@@ -18,6 +20,7 @@ import {
 	bindEngineTaskWidget,
 	engineTaskInspectorUi,
 	showEngineTaskInspector,
+	showTaskInspector,
 } from "../../packages/coding-agent/src/modes/rpc/task-ui-bridge.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -221,4 +224,61 @@ test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O the
 		{ custom },
 	);
 	assert.deepEqual(withoutHost.getChatRenderSettings?.(), { hideThinkingBlock: false, toolOutputExpanded: true });
+});
+
+test("a task message that fails after /tasks closed is reported once through the host's notice (#4521)", async () => {
+	initTheme("dark");
+	const previousKeys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	const delivery = Promise.withResolvers<TaskMessageDelivery>();
+	const transcript = SessionManager.inMemory();
+	await transcript.appendMessage({ role: "user", content: "Waiting for guidance", timestamp: 0 });
+	const notices: Array<{ message: string; type: string | undefined }> = [];
+	let component: Component | undefined;
+	const custom = ((factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
+		new Promise<void>((resolve) => {
+			const tui = { terminal: { rows: 24, columns: 80 }, requestRender: () => {} };
+			component = factory(tui as never, theme, new KeybindingsManager(), () => resolve()) as Component;
+		})) as ExtensionUIContext["custom"];
+	const flush = async () => {
+		for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+	};
+	const input = async (data: string) => {
+		component?.handleInput?.(data);
+		await flush();
+		component?.render(80);
+	};
+	try {
+		await fixture.start("Message target");
+		fixture.runners[0]!.context.bindTranscript({
+			getSessionId: () => transcript.getSessionId(),
+			getEntries: () => transcript.getEntries(),
+			completionSource: { runId: "run-1", intercomTarget: "worker-1" },
+			sendMessage: () => delivery.promise,
+		});
+		const shown = showTaskInspector(
+			{ custom, notify: (message, type) => notices.push({ message, type }) },
+			fixture.store,
+		);
+		await flush();
+		await input("\r");
+		await input("\r");
+		for (const ch of "late note") await input(ch);
+		await input("\r");
+		await input("\x03");
+		await shown;
+		assert.equal(notices.length, 0, "nothing is reported before the answer");
+		delivery.resolve({ delivered: false, reason: "refused", detail: "gone" });
+		await flush();
+		assert.equal(notices.length, 1);
+		assert.equal(notices[0]?.type, "warning");
+		assert.match(
+			notices[0]?.message ?? "",
+			/Intercom did not deliver the message: worker-1 \(delivery-refused\): gone/,
+		);
+	} finally {
+		await fixture.dispose();
+		setKeybindings(previousKeys);
+	}
 });

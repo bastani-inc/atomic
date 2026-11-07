@@ -339,7 +339,7 @@ test("shell output reads the retained tail at and around the 8 KiB boundary (#45
 			count,
 		);
 		assert.equal(host.page.status, "Loading output…");
-		assert.doesNotMatch(plain(host.page.render(40, 3)), /Stryker was here!/);
+		assert.equal(plain(host.page.render(40, 3)).trim(), "", "nothing is shown before the output loads");
 		await host.page.load();
 		assert.deepEqual(calls, [{ task: id, start, maximumBytes: 8192 }]);
 		assert.equal(host.page.status, status);

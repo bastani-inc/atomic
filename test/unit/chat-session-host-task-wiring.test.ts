@@ -4,6 +4,8 @@ import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.ts";
@@ -158,5 +160,38 @@ test("an auto scrollbar hides again through the host's repaint hook (#4521)", ()
 		assert.equal(renders, before + 1, "the hide timer asks the host to repaint");
 	} finally {
 		host.dispose();
+	}
+});
+
+test("a task message that fails after the chat closed /tasks shows its reason in the chat (#4521)", async () => {
+	initTheme("dark");
+	const previous = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	const transcript = SessionManager.inMemory();
+	await transcript.appendMessage({ role: "user", content: "Waiting for guidance", timestamp: 0 });
+	const answer = Promise.withResolvers<void>();
+	const owner = ownerTaskViewSource(fixture.store);
+	const source = Object.assign(Object.create(owner) as typeof owner, { sendTaskMessage: () => answer.promise });
+	const host = new ChatSessionHost(hostOptions({ getTaskSource: () => source }));
+	try {
+		await fixture.start("Wired transcript");
+		fixture.runners[0]!.context.bindTranscript(transcript);
+		host.openTasks();
+		host.handleTaskInput("\r");
+		await flush();
+		host.handleTaskInput("\r");
+		await flush();
+		for (const ch of "late note") host.handleTaskInput(ch);
+		host.handleTaskInput("\r");
+		await flush();
+		host.closeTasks();
+		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
+		await flush();
+		assert.match(host.statusText(), /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+	} finally {
+		host.dispose();
+		await fixture.dispose();
+		setKeybindings(previous);
 	}
 });

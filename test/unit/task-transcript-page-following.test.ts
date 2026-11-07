@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import type {
 	TaskTranscriptView,
@@ -131,5 +132,67 @@ test("a re-read transcript waits for the reader to reach the end, not for any ke
 		assert.match(text(), /M-60/);
 	} finally {
 		page.dispose();
+	}
+});
+
+function messagingPage(source: TaskViewSource, notices: string[] = []) {
+	initTheme("dark");
+	const page = new TaskAgentTranscriptPage(
+		source,
+		TASK,
+		taskTranscriptEnvironment({ keybindings: new KeybindingsManager(), notify: (message) => notices.push(message) }),
+		() => {},
+	);
+	const send = async (text: string) => {
+		for (const ch of text) page.handleInput(ch);
+		page.handleInput("\r");
+		await flush();
+	};
+	return { page, send };
+}
+
+test("a page built without a reporter tells the host about a message that failed after it closed (#4521)", async () => {
+	const answer = Promise.withResolvers<void>();
+	const notices: string[] = [];
+	const source = {
+		readTaskTranscript: () => latestPage(1),
+		followTaskTranscript: () => undefined,
+		sendTaskMessage: () => answer.promise,
+	} as Partial<TaskViewSource> as TaskViewSource;
+	const { page, send } = messagingPage(source, notices);
+	await page.load();
+	await send("late note");
+	page.dispose();
+	answer.reject(new TaskMessageError("delivery-refused", { taskId: TASK, target: "worker-1" }));
+	await flush();
+	assert.equal(notices.length, 1);
+	assert.match(notices[0] ?? "", /Intercom did not deliver the message: worker-1 \(delivery-refused\)/);
+});
+
+test("two messages that failed after their pages closed both come back, in order, on reopening (#4521)", async () => {
+	const answers = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+	let sends = 0;
+	const source = {
+		readTaskTranscript: () => latestPage(1),
+		followTaskTranscript: () => undefined,
+		sendTaskMessage: () => answers[sends++]!.promise,
+	} as Partial<TaskViewSource> as TaskViewSource;
+	const first = messagingPage(source);
+	await first.page.load();
+	await first.send("first note");
+	first.page.dispose();
+	const second = messagingPage(source);
+	await second.page.load();
+	await second.send("second note");
+	second.page.dispose();
+	for (const answer of answers) answer.reject(new TaskMessageError("delivery-refused", { taskId: TASK }));
+	await flush();
+	const reopened = messagingPage(source);
+	try {
+		await reopened.page.load();
+		const text = stripVTControlCharacters(reopened.page.render(80, 20).join("\n"));
+		assert.match(text, /first note[\s\S]*second note/);
+	} finally {
+		reopened.page.dispose();
 	}
 });
