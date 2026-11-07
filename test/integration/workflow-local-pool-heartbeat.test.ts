@@ -93,8 +93,8 @@ test(
 				const [held] = await queue.inspect("root");
 				const [pid] = f.pool.workerPids;
 				assert.ok(pid !== undefined && held !== undefined);
-				await suspender.suspend(pid);
-				await sleep(SHORT_STOP_MS);
+				// Start the pause budget before suspend: waiting for ps/the controller to acknowledge it consumes the lease too.
+				await Promise.all([sleep(SHORT_STOP_MS), suspender.suspend(pid)]);
 				await suspender.resume(pid);
 				await sleep(2 * HEARTBEAT_MS);
 				const [kept] = await queue.inspect("root");
