@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -11,10 +11,12 @@ import {
 	RESUME_CATALOG_TIMEOUT_MS,
 } from "../../packages/coding-agent/src/index.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
-useTemporaryAgentDir();
+const agentDir = useTemporaryAgentDir();
 
 /** Callbacks a test adapter module reaches through the global object, since it is loaded apart from this file. */
 interface JournalProbe {
@@ -108,6 +110,32 @@ test("a run without an id to resume waits for its shared journal without a deadl
 	void run(empty, {}, { journal: { adapter } }).catch(() => undefined);
 	await opened;
 	assert.equal(vi.getTimerCount(), 0);
+});
+
+test("a resume whose shared journal comes from the global settings is bounded by the same deadline (#4329)", async () => {
+	const adapter = journalAdapter("settings-journal.mjs");
+	mkdirSync(agentDir, { recursive: true });
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ workflows: { journal: { adapter } } }));
+	const owner = getDurableBackendProcessOwner();
+	const injected = owner.injectedBackend;
+	owner.injectedBackend = undefined;
+	try {
+		const runId = randomUUID();
+		const opened = nextOpen();
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const pending = run(empty, {}, { runId, cwd: directory, store: createStore() }).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		await opened;
+		await vi.advanceTimersByTimeAsync(RESUME_CATALOG_TIMEOUT_MS);
+		const error = await pending;
+		assert.ok(isResumeCatalogTimeoutError(error), String(error));
+		assert.deepEqual([error.subject, error.id, error.storage], ["run", runId, adapter]);
+	} finally {
+		owner.injectedBackend = injected;
+		rmSync(join(agentDir, "settings.json"), { force: true });
+	}
 });
 
 test("a resume whose shared journal cannot be reached fails as a retryable lookup error that keeps the cause (#4329)", async () => {

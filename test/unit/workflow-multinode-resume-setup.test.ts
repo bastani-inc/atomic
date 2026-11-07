@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	type GitUnavailableError,
@@ -8,6 +9,7 @@ import {
 	ProjectTrustStore,
 	runRestorePreconditionError,
 	setUpRestoredRunWorktrees,
+	setWorktreeSnapshotGit,
 } from "@bastani/atomic";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
@@ -261,6 +263,29 @@ test("a direct run() judges its own checkout under the snapshot settings the run
 	assert.equal(liveRuns, 1);
 	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
 });
+
+test.skipIf(process.platform === "win32")(
+	"a run's resume checks its restore preconditions once: run() trusts the check made before the claim (#4329)",
+	async () => {
+		writeSettings({ resume: { setupCommand: "true" } });
+		const recorded = await runRecordedElsewhere();
+		const calls = sandbox.path("git-calls.log");
+		const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+		const shim = sandbox.path("counting-git");
+		writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexec "${realGit}" "$@"\n`);
+		chmodSync(shim, 0o755);
+		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+
+		const { result, finished } = await recorded.resume();
+		assert.equal(result.ok, true, result.message);
+		await finished;
+
+		const probes = readFileSync(calls, "utf8")
+			.split("\n")
+			.filter((line) => line.endsWith("--version"));
+		assert.equal(probes.length, 1);
+	},
+);
 
 test("run() does not check the restore preconditions again when the resume that launched it already did (#4329)", async () => {
 	writeSettings({});
