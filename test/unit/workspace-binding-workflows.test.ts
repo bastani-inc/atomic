@@ -2547,7 +2547,9 @@ describe("unbound children and binding failures (#3109)", () => {
 			outputs: { cwd: Type.String(), notes: Type.String() },
 			run: async (ctx) => {
 				const result = await ctx.workflow(child, { workspace: workspace({ repo, branch: "snapshot-bound" }) });
-				return result.status === "completed" ? result.outputs : { cwd: "", notes: "" };
+				return result.status === "completed"
+					? { cwd: String(result.outputs.cwd), notes: String(result.outputs.notes) }
+					: { cwd: "", notes: "" };
 			},
 		});
 		const firstBackend = await JournalDurableBackend.open(await openSqlRunJournal(journalPath));
