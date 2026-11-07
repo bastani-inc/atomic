@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
+import { holdsSnapshotCommit } from "../src/core/resume/session-resume.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -1420,6 +1421,22 @@ describe("setup plan before restoring (#4329)", () => {
 		const prepared = await prepareSessionResume(manager, options());
 		assert.equal(cwdOf(prepared), clone);
 		assert.equal(setupRuns(), 0);
+	});
+});
+
+describe("whether a checkout holds a snapshot's commit (#4329)", () => {
+	test("the recorded checkout does; a node without Git does not; a cancelled check rejects", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const snapshot = manager.getLatestWorktreeSnapshots().get(clone)!;
+		assert.equal(await holdsSnapshotCommit(snapshot, clone), true);
+		const cancelled = new AbortController();
+		cancelled.abort(new Error("cancelled"));
+		await assert.rejects(holdsSnapshotCommit(snapshot, clone, cancelled.signal), /cancelled/);
+
+		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
+
+		assert.equal(await holdsSnapshotCommit(snapshot, clone), false);
 	});
 });
 
