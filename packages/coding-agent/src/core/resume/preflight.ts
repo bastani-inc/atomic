@@ -1,9 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { type GitProvisionError, isGitProvisionError } from "../../utils/git-errors.ts";
+import { join } from "node:path";
+import { getBinDir } from "../../config.js";
+import { GitUnavailableError, isGitProvisionError, isGitUnavailableError } from "../../utils/git-errors.ts";
 import { TEAM_JOIN_COMMAND } from "../agent-rehydrate-errors.ts";
 import { StorageAdapterLoadError } from "../storage/errors.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, secretFilePath } from "../storage/provider.js";
+import { gitInstallCommand } from "../workspace/errors.ts";
 import { gitText } from "../worktree-snapshot/git.ts";
 import { type ResumeEntryPoint, ResumePreconditionError, type ResumePreconditionProblem } from "./errors.ts";
 
@@ -14,10 +17,10 @@ export interface ResumePreflightIo {
 	readText(path: string): Promise<string>;
 	env(name: string): string | undefined;
 	/**
-	 * The typed reason Git can neither be started nor provisioned (`GitUnavailableError`, or the `GitProvisionError`
-	 * of a failed download), or undefined when it can. Provisions Git when this machine has none.
+	 * The typed reason Git can neither be started nor provisioned, or undefined when it can. Provisions Git when this
+	 * machine has none.
 	 */
-	probeGit(signal?: AbortSignal): Promise<GitProvisionError | undefined>;
+	probeGit(signal?: AbortSignal): Promise<GitUnavailableError | undefined>;
 }
 
 export type StorageDomainName = "sessions" | "journal";
@@ -33,11 +36,28 @@ export const defaultResumePreflightIo: ResumePreflightIo = {
 			await gitText(["--version"], { cwd: tmpdir(), signal });
 			return undefined;
 		} catch (error) {
-			if (!signal?.aborted && isGitProvisionError(error)) return error;
-			throw error;
+			if (signal?.aborted || !isGitProvisionError(error)) throw error;
+			return isGitUnavailableError(error) ? error : notProvisioned(error);
 		}
 	},
 };
+
+/**
+ * No Git is installed after a provisioning attempt failed another way, such as timing out: Git is unavailable here, with
+ * that failure as the cause, as the snapshot Git resolver reports it.
+ */
+function notProvisioned(cause: Error): GitUnavailableError {
+	return new GitUnavailableError(
+		{
+			code: "not-installed",
+			platform: process.platform,
+			arch: process.arch,
+			installDir: join(getBinDir(), "git"),
+			installCommand: gitInstallCommand(process.platform),
+		},
+		{ cause },
+	);
+}
 
 /** A storage selection this resume reads through, and the domain it serves. */
 export interface ResumeStorageTarget {
@@ -139,7 +159,7 @@ export async function storagePreconditionProblems(
 }
 
 /** The precondition problem for a restore that needs Git on a node where it can neither be started nor provisioned. */
-export function gitUnavailableProblem(error: GitProvisionError, why: string): ResumePreconditionProblem {
+export function gitUnavailableProblem(error: GitUnavailableError, why: string): ResumePreconditionProblem {
 	return { code: "git-unavailable", subject: `git (${error.code})`, why, fix: error.hint };
 }
 

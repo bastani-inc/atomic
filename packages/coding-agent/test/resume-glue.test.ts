@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
+import { getBinDir } from "../src/config.ts";
 import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { StorageAdapterLoadError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
@@ -34,6 +35,7 @@ import {
 	storagePreconditionProblems,
 	TEAM_JOIN_COMMAND,
 } from "../src/index.ts";
+import { GitProvisionTimeoutError } from "../src/utils/git-errors.ts";
 
 useTemporaryAgentDir();
 
@@ -771,6 +773,20 @@ describe("resume storage precondition messages (#4329)", () => {
 		});
 		try {
 			assert.equal(await defaultResumePreflightIo.probeGit(), provisionFailure);
+			const timeout = new GitProvisionTimeoutError({ phase: "download", timeoutMs: 600_000, elapsedMs: 600_002 });
+			setWorktreeSnapshotGit(async () => {
+				throw timeout;
+			});
+			const timedOut = await defaultResumePreflightIo.probeGit();
+			assert.ok(isGitUnavailableError(timedOut));
+			assert.deepEqual(
+				[timedOut.code, timedOut.platform, timedOut.cause],
+				["not-installed", process.platform, timeout],
+			);
+			assert.equal(timedOut.fields.installDir, join(getBinDir(), "git"));
+			setWorktreeSnapshotGit(async () => {
+				throw provisionFailure;
+			});
 			const aborted = new AbortController();
 			const reason = new Error("stopped");
 			aborted.abort(reason);
