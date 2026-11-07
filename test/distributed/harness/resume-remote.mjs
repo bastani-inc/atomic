@@ -819,13 +819,12 @@ export function resumeRemote(ctx) {
 			);
 			const gitless = await readPoolStats("C");
 			const heldOnGitless = (await heldMarkers(c)).length;
-			const journal =
-				/** @type {{ work: { state: string, generation: number, worker: string }[], repeatedCheckpoints: number }} */ (
-					await a.json(
-						`NODE_EXTRA_CA_CERTS=${shellQuote(`${SECRETS}/ca.pem`)} ${[NODE_BIN, RESUME_POOL, "work", "--ref-dir", REF_DIR, "--root", poolRootId, ...poolJournal].map(shellQuote).join(" ")}`,
-						{ operation: "read the campaign's work rows" },
-					)
-				);
+			const journal = /** @type {{ work: { state: string, generation: number, worker: string }[] }} */ (
+				await a.json(
+					`NODE_EXTRA_CA_CERTS=${shellQuote(`${SECRETS}/ca.pem`)} ${[NODE_BIN, RESUME_POOL, "work", "--ref-dir", REF_DIR, "--root", poolRootId, ...poolJournal].map(shellQuote).join(" ")}`,
+					{ operation: "read the campaign's work rows" },
+				)
+			);
 			const setup = { A: await setupLog("A"), B: await setupLog("B"), C: await setupLog("C") };
 			for (const name of /** @type {const} */ (["A", "C"])) {
 				const process = poolUnits[name];
@@ -848,7 +847,6 @@ export function resumeRemote(ctx) {
 				setup,
 				heldOnGitless,
 				work: journal.work,
-				repeatedCheckpoints: journal.repeatedCheckpoints,
 			};
 		},
 		releaseSessions: async () => {

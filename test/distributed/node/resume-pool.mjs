@@ -18,7 +18,7 @@
  *       Runs root R with `workers: { placement: "shared" }`, bound to the worktree P, with N children. Writes
  *       `W/outcome-start.json` when the root ends.
  *   work --ref-dir D --root R <journal>
- *       Prints the root's work rows and the number of checkpoint keys its runs recorded more than once.
+ *       Prints the root's work rows.
  *
  * <journal> is `--url U --prefix P [--namespace N --token-file F]`, opened through the ref's libSQL adapter.
  */
@@ -243,16 +243,12 @@ async function work() {
 			`SELECT state, generation, worker FROM ${prefix}wf_runs_work WHERE root = ? ORDER BY generation`,
 			flag("root"),
 		);
-		const repeated = await database.all(
-			`SELECT key, COUNT(*) AS n FROM ${prefix}wf_events WHERE key IS NOT NULL GROUP BY run_id, key HAVING COUNT(*) > 1`,
-		);
 		print({
 			work: rows.map((/** @type {Record<string, unknown>} */ row) => ({
 				state: String(row.state),
 				generation: Number(row.generation),
 				worker: String(row.worker),
 			})),
-			repeatedCheckpoints: repeated.length,
 		});
 	} finally {
 		await database.close();
