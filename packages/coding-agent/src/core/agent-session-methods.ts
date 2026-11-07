@@ -83,6 +83,7 @@ import type { NormalizedBuildSystemPromptOptions } from "./system-prompt.ts";
 import type { ToolStatusReport } from "./tool-status.js";
 import type { BashOperations } from "./tools/bash.js";
 import type { ToolExecutionScheduler } from "./tools/tool-concurrency.ts";
+import type { WorktreeRootMapping } from "./worktree-snapshot/types.ts";
 
 export interface SessionCompactOptions extends Partial<VerbatimCompactionParameters> {
 	/** Exact `provider/model` ID for this run only; overrides the `compactionModel` setting without saving it. */
@@ -705,6 +706,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_extensionProviderIds: Set<string>;
 	_toolRegistry: Map<string, AgentTool>;
 	_toolExecutionScheduler: ToolExecutionScheduler;
+	_outerWorktreeRootMappings: readonly WorktreeRootMapping[];
 	_toolDefinitions: Map<string, ToolDefinitionEntry>;
 	_toolPromptSnippets: Map<string, string>;
 	_toolPromptGuidelines: Map<string, string[]>;
