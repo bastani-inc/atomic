@@ -1374,6 +1374,26 @@ describe("setup plan before restoring (#4329)", () => {
 		assert.ok(existsSync(restored));
 	});
 
+	test("a worktree restored without dependency inputs needs no hook after the session adds a lockfile", async () => {
+		const { clone } = await sandbox.remoteWithClone("plain", { "README.md": "plain\n" });
+		sandbox.write(join(clone, "README.md"), "edited\n");
+		const manager = await recordSession(clone);
+		renameSync(clone, sandbox.path("gone"));
+		const restored = cwdOf(await prepareSessionResume(manager, options({ setup: noSetup() })))!;
+		sandbox.write(join(restored, "package-lock.json"), "{}\n");
+		const capture = await captureWorktreeSnapshot(restored, {
+			settings,
+			blobs: manager.getSessionStore().snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(restored, capture.snapshot.id, capture.snapshot);
+
+		const prepared = await prepareSessionResume(manager, options({ setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), restored);
+		assert.equal(setupRuns(), 0);
+	});
+
 	test("a worktree an earlier resume restored and set up needs no hook again after the session changes its lockfile", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);

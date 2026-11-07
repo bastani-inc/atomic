@@ -255,7 +255,10 @@ test("a direct run() of a run another node still holds is refused before anythin
 
 	await assert.rejects(
 		recorded.rerun(),
-		(error: unknown) => error instanceof JournalOwnershipError && error.runId === recorded.runId,
+		(error: unknown) =>
+			error instanceof JournalOwnershipError &&
+			error.runId === recorded.runId &&
+			error.holderId === "node-a-still-running",
 	);
 
 	assert.deepEqual(restoredWorktrees(), []);

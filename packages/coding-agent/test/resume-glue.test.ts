@@ -269,6 +269,18 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		assert.doesNotMatch(error.message, /authToken/);
 	});
 
+	test("a network that cannot reach the storage is a retryable lookup failure even when the adapter does not call it transient", () => {
+		const route = Object.assign(new Error("connect ENETUNREACH"), { code: "ENETUNREACH" });
+		const unreachable = new StorageUnavailableError(
+			{ adapter: "libsql", location: "remote" },
+			new Error("fetch failed", { cause: route }),
+		);
+		const error = resumeLookupError(unreachable, "run", "r");
+		assert.ok(error instanceof ResumeCatalogUnavailableError);
+		assert.equal(error.cause, unreachable);
+		assert.equal(error.retryable, true);
+	});
+
 	test("a picker lookup has no id, and other failures pass through unchanged", () => {
 		const cause = new StorageTransientError(
 			{ adapter: "node-sqlite", location: "/x" },

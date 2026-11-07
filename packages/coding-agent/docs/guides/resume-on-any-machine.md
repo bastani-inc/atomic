@@ -49,7 +49,7 @@ Resume a run with `/workflow resume <run>`, or from the SDK with `run(definition
 
 Each checkout the run restores gets the setup hook below before the run continues, and absolute paths from the earlier machine resolve in the restored worktrees for the run's tools. A missing Git or setup hook is reported before anything is restored or claimed. If a hook fails, or turns out to be missing only in the restored repository, the run does not continue and the worktrees restored for it are removed, so the next resume starts clean.
 
-`run()` with the id of a run in shared storage stops after 15 seconds with a retryable `ResumeCatalogTimeoutError` when the storage does not answer; once it answers, listing the journal's runs is not bounded, and a retry opens the journal again. A run id this machine cannot find fails with the journal's `run-not-found` error, which tells a machine on local storage only to join the shared storage. If the machine that ran it stopped without releasing it, another machine can take the run over two minutes after its last heartbeat; until then the resume reports that another execution owns it before it restores or sets up anything, and resuming again later continues it.
+`run()` with the id of a run in shared storage stops after 15 seconds with a retryable `ResumeCatalogTimeoutError` when the storage does not answer; once it answers, listing the journal's runs is not bounded, and a retry opens the journal again. `/workflow resume` with a run id this machine cannot find fails with the journal's `run-not-found` error, which tells a machine on local storage only to join the shared storage. `run()` with a run id its journal does not hold starts a new run under that id, so check with `atomic storage status` that the machine uses the shared storage before resuming a run from the SDK. If the machine that ran it stopped without releasing it, another machine can take the run over two minutes after its last heartbeat; until then the resume reports that another execution owns it before it restores or sets up anything, and resuming again later continues it.
 
 ## Install dependencies with a setup hook
 
@@ -64,7 +64,7 @@ A restored worktree contains the repository's files but not installed dependenci
 }
 ```
 
-This applies to sessions and to workflow runs. The hook runs in each worktree a resume restores, once per lockfile state. In a worktree an earlier resume of the session restored, it runs again only until it has succeeded there, since later lockfile changes are the session's own work. It receives `ATOMIC_RESUME_WORKTREE` and `ATOMIC_ENV_HASH` in its environment, may run for up to 15 minutes, and its output goes to a log file under `~/.atomic/agent/worktree-snapshots/setup-logs`. Keep its output in ignored paths such as `node_modules`; files it leaves in the worktree count as changes the next time the session resumes.
+This applies to sessions and to workflow runs. The hook runs in each worktree a resume restores, once per lockfile state. In a worktree an earlier resume of the session restored, it runs again only when its last run there failed, since later lockfile changes are the session's own work. It receives `ATOMIC_RESUME_WORKTREE` and `ATOMIC_ENV_HASH` in its environment, may run for up to 15 minutes, and its output goes to a log file under `~/.atomic/agent/worktree-snapshots/setup-logs`. Keep its output in ignored paths such as `node_modules`; files it leaves in the worktree count as changes the next time the session resumes.
 
 ## What can stop a resume
 

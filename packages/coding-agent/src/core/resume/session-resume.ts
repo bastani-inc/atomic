@@ -225,7 +225,7 @@ export async function prepareSessionResume(
 		await assertRestorePreconditions(sessionManager, restoring, storeDir, options, git.unavailable);
 	}
 	const snapshots = sessionManager.getWorktreeSnapshotRecords();
-	const restoredBefore = new Set(sessionManager.getWorktreeRootMappings().map((mapping) => resolve(mapping.to)));
+	const recordedBefore = sessionManager.getWorktreeRootMappings().length;
 	const opened = await openSessionInWorktree(sessionManager, {
 		settings: options.settings,
 		storeDir,
@@ -237,7 +237,8 @@ export async function prepareSessionResume(
 	const mappings = opened.sessionManager.getWorktreeRootMappings();
 	registerWorktreeRootMappings(mappings);
 	notices.push(...opened.notices);
-	notices.push(...(await setUpRestoredCheckouts(opened.sessionManager, restoredBefore, storeDir, options)));
+	const restoredNow = new Set(mappings.slice(recordedBefore).map((mapping) => resolve(mapping.to)));
+	notices.push(...(await setUpRestoredCheckouts(opened.sessionManager, restoredNow, storeDir, options)));
 	return { status: "ready", sessionManager: opened.sessionManager, notices };
 }
 
@@ -329,20 +330,23 @@ async function assertRestoredSetupAvailable(
 }
 
 /**
- * Runs the setup hook of every worktree Atomic restored for the session: once per environment in a worktree this resume
- * restored, and in one an earlier resume restored only until a hook has succeeded there, since later changes to its
- * lockfiles are the session's own work.
+ * Runs the setup hook of the worktrees Atomic restored for the session: once per environment in each worktree this
+ * resume restored (`restoredNow`), and again in a worktree restored earlier only when its last hook failed. Later
+ * changes to an earlier worktree's lockfiles are the session's own work.
  */
 async function setUpRestoredCheckouts(
 	sessionManager: SessionManager,
-	restoredBefore: ReadonlySet<string>,
+	restoredNow: ReadonlySet<string>,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
 ): Promise<ResumeNotice[]> {
 	const notices: ResumeNotice[] = [];
 	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
 		if (!isInside(storeDir, root)) continue;
-		if (restoredBefore.has(root) && (await readResumeSetupLedger(storeDir, root))?.exitStatus === 0) continue;
+		if (!restoredNow.has(root)) {
+			const last = await readResumeSetupLedger(storeDir, root);
+			if (last === undefined || last.exitStatus === 0) continue;
+		}
 		const setup = await ensureResumeSetup({
 			entryPoint: options.entryPoint,
 			worktree: root,

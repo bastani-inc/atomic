@@ -216,7 +216,8 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		if (previous !== undefined && journal !== undefined) {
 			const mappings = previous.worktreeRootMappings ?? [];
 			if (opts[restorePreconditionsChecked] !== true) {
-				if ((await backend.workflowOwnership(runId)) === "foreign") throw new JournalOwnershipError(runId, null);
+				if ((await backend.workflowOwnership(runId)) === "foreign")
+					throw new JournalOwnershipError(runId, (await journal.leaseState(runId))?.holderId ?? null);
 				const precondition = await runRestorePreconditionFailure(
 					journal,
 					runId,
