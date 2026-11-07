@@ -5,6 +5,7 @@ import { afterEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import {
 	ALT_WHEEL_SCROLL_MULTIPLIER,
+	parseWheelReport,
 	SCROLLBAR_HIDE_DELAY_MS,
 	ScrollableComponentViewport,
 	type ScrollableComponentViewportOptions,
@@ -328,4 +329,32 @@ test("Ctrl+Home keeps the first row on top as rows arrive, also across a resize,
 		grow(label.replaceAll(" ", "_"));
 		assert.notEqual(paint(30)[0], `${label.replaceAll(" ", "_")}-0`, `${label} ends the hold on the top`);
 	}
+});
+
+test("a legacy X10 wheel report needs all six bytes (#4521)", () => {
+	const wheelUp = `\x1b[M${String.fromCharCode(64 + 32)}!!`;
+	assert.deepEqual(parseWheelReport(wheelUp), { direction: -1, alt: false });
+	for (const truncated of [wheelUp.slice(0, 4), wheelUp.slice(0, 5)])
+		assert.equal(parseWheelReport(truncated), undefined, JSON.stringify(truncated));
+});
+
+test("a reader scrolled up keeps their distance from the end when the width changes (#4521)", () => {
+	const wrapping: Component = {
+		render: (width) =>
+			Array.from({ length: 30 }, (_, i) => `line-${i} ${"x".repeat(50)}`).flatMap((line) => {
+				const rows: string[] = [];
+				for (let at = 0; at < line.length; at += width) rows.push(line.slice(at, at + width));
+				return rows;
+			}),
+		invalidate: () => {},
+	};
+	const view = new ScrollableComponentViewport(new KeybindingsManager(), {});
+	view.setComponents([wrapping]);
+	view.setVisibleRows(10);
+	view.render(40);
+	view.scrollBy(-7);
+	view.render(40);
+	const wide = view.render(60);
+	assert.equal(view.getScrollFromBottom(), 7, "the reader stays seven rows above the end");
+	assert.equal(wide.length, 10);
 });
