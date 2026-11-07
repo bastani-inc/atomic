@@ -762,6 +762,11 @@ export class InteractiveModeBase {
 			{
 				isFullscreen: () => this.renderer.mode === "fullscreen",
 				onRendererReplaced: (listener) => this.onTuiRendererChange(listener),
+				chatRenderSettings: () => ({
+					hideThinkingBlock: this.hideThinkingBlock,
+					fullscreenScrollbar: this.settingsManager.getFullscreenScrollbar(),
+					fullscreenWheelScrollLines: this.settingsManager.getFullscreenWheelScrollLines(),
+				}),
 			},
 			(handler) => {
 				this.interactiveEngineShortcutHandler = handler;
