@@ -94,24 +94,34 @@ async function mountEngineOverlay(
 const renderRequests = (commands: readonly InteractiveEngineCommand[]) =>
 	commands.filter((command) => command.type === "engine_custom_render");
 
-test("an engine overlay follows the host's thinking display and scroll settings (#4521)", async () => {
+/** The host settings the engine received with its latest frame request. */
+const latestSettings = (commands: readonly InteractiveEngineCommand[]) => {
+	const latest = renderRequests(commands).at(-1);
+	return latest?.type === "engine_custom_render" ? latest.renderSettings : undefined;
+};
+
+test("an engine overlay follows the host's thinking display, tool output and scroll settings (#4521)", async () => {
 	const host = { hideThinkingBlock: false, toolOutputExpanded: false, wheel: 7 as number | "auto" };
 	const engine = await mountEngineOverlay(host);
+	const expected = () => ({
+		hideThinkingBlock: host.hideThinkingBlock,
+		toolOutputExpanded: host.toolOutputExpanded,
+		fullscreenScrollbar: "always",
+		fullscreenWheelScrollLines: host.wheel,
+	});
 	try {
 		assert.equal(await engine.paint(), "hide=false bar=always wheel=7");
-		const requests = renderRequests(engine.commands).length;
-		await engine.paint();
-		assert.equal(renderRequests(engine.commands).length, requests, "unchanged settings request no new frame");
+		assert.deepEqual(latestSettings(engine.commands), expected());
 		host.hideThinkingBlock = true;
 		assert.equal(await engine.paint(), "hide=true bar=always wheel=7", "Ctrl+T in the host reaches the engine");
-		assert.equal(renderRequests(engine.commands).length, requests + 1);
+		assert.deepEqual(latestSettings(engine.commands), expected());
 		host.wheel = "auto";
 		assert.equal(await engine.paint(), "hide=true bar=always wheel=auto");
-		assert.equal(engine.service.getHostRenderSettings()?.fullscreenWheelScrollLines, "auto");
+		assert.deepEqual(latestSettings(engine.commands), expected());
 		host.toolOutputExpanded = true;
 		await engine.paint();
-		assert.equal(renderRequests(engine.commands).length, requests + 3, "Ctrl+O in the host requests a new frame");
-		assert.equal(engine.service.getHostRenderSettings()?.toolOutputExpanded, true);
+		assert.deepEqual(latestSettings(engine.commands), expected(), "Ctrl+O in the host reaches the engine");
+		assert.deepEqual(engine.service.getHostRenderSettings(), expected());
 	} finally {
 		engine.controller.dispose();
 		engine.service.dispose();
