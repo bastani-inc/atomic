@@ -1491,7 +1491,7 @@ test("a journal storage failure is a ForkJournalUnavailableError that says wheth
 	assert.equal(isRetryableForkError(hydrate), false);
 	assert.ok(hydrate.forkRunId !== undefined);
 	assert.equal((await backend.journal.getRun(hydrate.forkRunId))?.runId, hydrate.forkRunId);
-	assert.match(hydrate.hint, new RegExp(`/workflow resume ${hydrate.forkRunId}`));
+	assert.ok(hydrate.hint.includes(`/workflow resume ${hydrate.forkRunId}`), hydrate.hint);
 
 	const bug = new TypeError("not a storage failure");
 	vi.spyOn(backend.journal, "getRun").mockRejectedValueOnce(bug);
