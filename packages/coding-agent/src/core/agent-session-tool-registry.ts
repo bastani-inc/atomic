@@ -109,7 +109,11 @@ export function _refreshToolRegistry(
 		const scoped: AgentTool = {
 			...tool,
 			execute: (...args) =>
-				withWorktreeRootMappings(this.sessionManager.getWorktreeRootMappings(), () => tool.execute(...args)),
+				withWorktreeRootMappings(
+					this.sessionManager.getWorktreeRootMappings(),
+					() => tool.execute(...args),
+					this._outerWorktreeRootMappings,
+				),
 		};
 		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
 		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);

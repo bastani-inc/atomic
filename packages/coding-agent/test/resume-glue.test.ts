@@ -650,6 +650,26 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 		});
 	});
 
+	test("a checkout that work restored itself follows its own restore, not the one of the session or run it runs in (#4329)", () => {
+		const sessionRestores = [mapping("/old/repo-b", "/w/session-b"), mapping("/old/repo-c", "/w/session-c")];
+		withWorktreeRootMappings(sessionRestores, () =>
+			withWorktreeRootMappings([mapping("/old/repo-b", "/w/run-b")], () => {
+				assert.equal(mapPathForCwd("/old/repo-b/state.txt", "/w/run-b"), resolve("/w/run-b/state.txt"));
+				assert.equal(mapPathForCwd("/old/repo-c/state.txt", "/w/run-b"), resolve("/w/session-c/state.txt"));
+			}),
+		);
+	});
+
+	test("work given the scope it belongs to follows that scope instead of the one it was started in (#4329)", () => {
+		const opened = mapping("/old/repo", "/w/run");
+		withWorktreeRootMappings([mapping("/old/repo", "/w/other"), mapping("/old/other", "/w/x")], () =>
+			withWorktreeRootMappings([], () => {
+				assert.equal(mapPathForCwd("/old/repo/a", "/elsewhere"), resolve("/w/run/a"));
+				assert.equal(mapPathForCwd("/old/other/a", "/elsewhere"), "/old/other/a");
+			}, [opened]),
+		);
+	});
+
 	test("the read and write tools resolve an old-root path into the restored worktree", async () => {
 		const { resolveReadPath, resolveToCwd } = await import("../src/core/tools/path-utils.ts");
 		const worktree = join(root, "wt");

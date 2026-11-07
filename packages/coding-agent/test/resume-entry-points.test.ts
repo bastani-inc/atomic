@@ -44,6 +44,7 @@ import {
 	type ResumePreflightIo,
 	resolveWorkspace,
 	setWorktreeSnapshotGit,
+	withWorktreeRootMappings,
 	workspace,
 } from "../src/index.ts";
 import {
@@ -939,6 +940,34 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
 		assert.equal(readFileSync(marker, "utf8"), "ran\n");
 		assert.match(await readWithTools(session, join(clone, "README.md")), /edited on node A/);
+	});
+
+	test("a session opened inside a run's restores follows them in turns started outside the run (#4329)", async () => {
+		const recorded = sandbox.path("recorded-on-node-a");
+		const restored = sandbox.path("restored-for-the-run");
+		sandbox.write(join(restored, "state.txt"), "in the run's restored worktree\n");
+		const { createAgentSession } = await import("../src/core/sdk.ts");
+		const { getModel } = await import("@bastani/pi-ai/compat");
+		const restore = {
+			from: recorded,
+			to: restored,
+			snapshotId: "s".repeat(64),
+			tree: "t".repeat(40),
+			restoredAt: "2026-11-07T00:00:00.000Z",
+		};
+
+		const { session } = await withWorktreeRootMappings([restore], () =>
+			createAgentSession({
+				agentDir: sandbox.path("agent"),
+				cwd: restored,
+				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				settingsManager: settings(),
+				sessionManager: SessionManager.inMemory(restored),
+			}),
+		);
+		cleanups.push(() => session.dispose());
+
+		assert.match(await readWithTools(session, join(recorded, "state.txt")), /in the run's restored worktree/);
 	});
 
 	test("fails typed before restoring when Git is missing", async () => {

@@ -12,12 +12,27 @@ export function isInside(parent: string, child: string): boolean {
 	return !path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path);
 }
 
+/** The restores that apply to work started here: those of the sessions and runs it runs in, outermost first. */
+export function currentWorktreeRootMappings(): readonly WorktreeRootMapping[] {
+	return scopedMappings.getStore() ?? [];
+}
+
 /**
  * Runs `work` with `mappings` (one session's or run's restores, oldest first) applying to the paths its tools resolve,
- * after the restores of the session or run it runs in. The restores of other sessions and runs never apply.
+ * after `outer`: the restores of the sessions and runs the work belongs to, by default those of the work it runs in. A
+ * checkout that `mappings` restores follows its own restore, never an outer one. The restores of other sessions and
+ * runs never apply.
  */
-export function withWorktreeRootMappings<T>(mappings: readonly WorktreeRootMapping[], work: () => T): T {
-	return scopedMappings.run([...(scopedMappings.getStore() ?? []), ...mappings], work);
+export function withWorktreeRootMappings<T>(
+	mappings: readonly WorktreeRootMapping[],
+	work: () => T,
+	outer: readonly WorktreeRootMapping[] = currentWorktreeRootMappings(),
+): T {
+	const restoredHere = new Set(mappings.map((mapping) => resolve(mapping.from)));
+	return scopedMappings.run(
+		[...outer.filter((mapping) => !restoredHere.has(resolve(mapping.from))), ...mappings],
+		work,
+	);
 }
 
 /**
@@ -30,7 +45,7 @@ export function mapPathForCwd(path: string, cwd: string): string {
 	const base = resolve(cwd);
 	const mapped = mapRestoredPath(
 		path,
-		(scopedMappings.getStore() ?? []).filter((mapping) => !isInside(resolve(mapping.from), base)),
+		currentWorktreeRootMappings().filter((mapping) => !isInside(resolve(mapping.from), base)),
 	);
 	return mapped === resolve(path) ? path : mapped;
 }
