@@ -14,6 +14,7 @@ import {
 	isSerializedBackgroundCompactionError,
 	LlamaServerError,
 	parseSerializedDecisionError,
+	ResumeError,
 	rehydrateAgentRehydrateError,
 	rehydrateBackgroundCompactionError,
 	rehydrateDebugError,
@@ -22,6 +23,7 @@ import {
 	rehydrateGitProvisionError,
 	rehydrateIntercomBrokerError,
 	rehydrateLlamaServerError,
+	rehydrateResumeError,
 	rehydrateSessionStartError,
 	rehydrateShellToolError,
 	rehydrateStartupBenchmarkError,
@@ -37,6 +39,7 @@ import {
 	type SerializedGitHubCopilotError,
 	type SerializedGitProvisionError,
 	type SerializedIntercomBrokerError,
+	type SerializedResumeError,
 	type SerializedSessionStartError,
 	type SerializedSubscriptionError,
 	type SerializedTaskToolError,
@@ -54,6 +57,7 @@ import {
 	serializeFileToolError,
 	serializeGitHubCopilotError,
 	serializeIntercomBrokerError,
+	serializeResumeError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
 	serializeWorkspaceError,
@@ -275,6 +279,14 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 		is: instanceOf(IntercomBrokerError),
 		serialize: serializeIntercomBrokerError,
 		rehydrate: rehydrateIntercomBrokerError,
+	}),
+	resume: family<ResumeError, SerializedResumeError>({
+		is: instanceOf(ResumeError),
+		serialize: (error) => {
+			const { cause: _cause, ...form } = serializeResumeError(error);
+			return form;
+		},
+		rehydrate: rehydrateResumeError,
 	}),
 } as const satisfies Readonly<Record<string, SerializableErrorFamily>>;
 

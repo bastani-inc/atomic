@@ -163,6 +163,15 @@ const SnapshotSettingsSchema = Type.Object({
 	),
 });
 
+const ResumeSettingsSchema = Type.Object({
+	setupCommand: Type.Optional(
+		Type.String({
+			description:
+				"Command run in a worktree restored on resume when its dependencies were never installed on this machine. A repository's trusted .atomic/setup runs instead when present.",
+		}),
+	),
+});
+
 const ProviderRetrySettingsSchema = Type.Object({
 	timeoutMs: Type.Optional(Type.Number({ description: "SDK or provider request timeout in milliseconds." })),
 	maxRetries: Type.Optional(Type.Number({ description: "SDK or provider retry attempts." })),
@@ -659,6 +668,7 @@ export const SettingsSchema = Type.Object(
 		branchSummary: Type.Optional(BranchSummarySettingsSchema),
 		sessionSummary: Type.Optional(SessionSummarySettingsSchema),
 		snapshots: Type.Optional(SnapshotSettingsSchema),
+		resume: Type.Optional(ResumeSettingsSchema),
 		retry: Type.Optional(RetrySettingsSchema),
 		hideThinkingBlock: Type.Optional(Type.Boolean({ default: SETTINGS_DEFAULTS.hideThinkingBlock })),
 		externalEditor: Type.Optional(
@@ -880,6 +890,7 @@ export interface CompactionSettings extends Static<typeof CompactionSettingsSche
 export interface BranchSummarySettings extends Static<typeof BranchSummarySettingsSchema> {}
 export interface SessionSummarySettings extends Static<typeof SessionSummarySettingsSchema> {}
 export interface SnapshotSettings extends Static<typeof SnapshotSettingsSchema> {}
+export interface ResumeSettings extends Static<typeof ResumeSettingsSchema> {}
 export interface ProviderRetrySettings extends Static<typeof ProviderRetrySettingsSchema> {}
 export interface RetrySettings extends Omit<Static<typeof RetrySettingsSchema>, "maxDelayMs"> {}
 export interface TerminalSettings extends Static<typeof TerminalSettingsSchema> {}

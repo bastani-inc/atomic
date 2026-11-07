@@ -251,6 +251,21 @@ describe("resolving --session and --fork against a large legacy session director
 			assert.match(access.bodyReads[0]!, new RegExp(`${source}\\.jsonl$`));
 		});
 
+		it("opens a session recorded at a path that does not exist on this node without asking to fork (#4329)", async () => {
+			const id = "5a5a5a5a-0000-7000-8000-0000000000aa";
+			const nodeACwd = join(root, "node-a-only", "repo");
+			await createStored(id, "recorded on node A", nodeACwd);
+
+			const opened = await resolveAndClose(["--session", id], (manager) => ({
+				id: manager.getSessionId(),
+				parent: manager.getHeader()?.parentSessionId,
+				cwd: manager.getCwd(),
+			}));
+
+			assert.deepEqual(opened, { id, parent: undefined, cwd: nodeACwd });
+			assert.equal(prompt.questions.length, 0);
+		});
+
 		it("still asks to fork a session that belongs to another project", async () => {
 			const id = "5a5a5a5a-0000-7000-8000-000000000001";
 			await createStored(id, "elsewhere", otherCwd);
@@ -329,6 +344,19 @@ describe("resolving --session and --fork against a large legacy session director
 			assert.equal(await exitCodeOf(["--session", "no-such-session"]), 1);
 			assert.match(errors.join("\n"), /No session found matching 'no-such-session'/);
 			assert.deepEqual(convertedIds(), []);
+		});
+
+		it("says a node on local-only storage is not joined to shared storage, with the join command (#4329)", async () => {
+			assert.equal(await exitCodeOf(["--session", "recorded-on-node-a"]), 1);
+			const message = errors.join("\n");
+			assert.match(
+				message,
+				/No session found matching 'recorded-on-node-a': this node uses local-only storage \(node-sqlite at /,
+			);
+			assert.match(
+				message,
+				/\(not-found\)\. Join this node to the shared storage with `atomic team join <url> --token-file <path>`/,
+			);
 		});
 
 		it("reports an unknown session id for --fork", async () => {

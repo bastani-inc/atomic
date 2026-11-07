@@ -73,6 +73,8 @@ export interface HarnessOptions {
 	provider?: string;
 	fauxProvider?: Omit<RegisterFauxProviderOptions, "models">;
 	sessionManager?: SessionManager;
+	/** Working directory of the session's tools. Default: a fresh temporary directory. */
+	cwd?: string;
 	settings?: Partial<Settings>;
 	systemPrompt?: string;
 	tools?: AgentTool[];
@@ -208,7 +210,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		agent,
 		sessionManager,
 		settingsManager,
-		cwd: tempDir,
+		cwd: options.cwd ?? tempDir,
 		modelRuntime,
 		resourceLoader,
 		baseToolsOverride: toolMap,

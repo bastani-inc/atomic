@@ -20,6 +20,7 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";
+import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
@@ -32,7 +33,6 @@ import {
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
 import { SessionEntryError, SessionManager } from "./session-manager.ts";
-import { openSessionInWorktree } from "./session-worktree-snapshots.ts";
 import { type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -579,12 +579,23 @@ export class AgentSessionRuntime {
 	}
 
 	/**
-	 * Resumes a session's worktree: verifies its checkout against the last recorded snapshot and, when it drifted or
-	 * is missing, restores it into a fresh worktree under Atomic home. Returns the session opened where it continues.
+	 * Prepares a resumed session's checkout on this host (see {@link prepareSessionResume}) and returns the session
+	 * opened where it continues. Without a UI here, a dirty checkout of the session's repository is never used; the
+	 * snapshot is restored into a fresh worktree instead.
 	 */
 	private async resumeWorktree(sessionManager: SessionManager, sessionDirectory?: string): Promise<SessionManager> {
-		const settings = this.services.settingsManager.getWorktreeSnapshotSettings();
-		return (await openSessionInWorktree(sessionManager, { settings, sessionDirectory })).sessionManager;
+		const settings = this.services.settingsManager;
+		const prepared = await prepareSessionResume(sessionManager, {
+			...sessionResumeOptions(
+				"switch-session",
+				this.cwd,
+				this.services.agentDir,
+				settings,
+				savedProjectTrust(this.services.agentDir, settings),
+			),
+			sessionDirectory,
+		});
+		return prepared.status === "ready" ? prepared.sessionManager : sessionManager;
 	}
 
 	async switchSession(

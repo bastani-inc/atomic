@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -5,15 +6,31 @@ import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { getAgentDir } from "./config.js";
 import { KeybindingsManager } from "./core/keybindings.ts";
+import {
+	RESUME_CATALOG_TIMEOUT_MS,
+	resumeLookupError,
+	resumeNotFoundError,
+	withResumeLookupDeadline,
+} from "./core/resume/not-found.ts";
+import { checkResumeStoragePreconditions, type ResumePreflightIo } from "./core/resume/preflight.ts";
+import {
+	type DirtyCheckoutChoice,
+	type DirtyCheckoutPrompt,
+	prepareSessionResume,
+	type ResumeNotice,
+	sessionResumeOptions,
+} from "./core/resume/session-resume.ts";
 import { formatMissingSessionCwdPrompt, type SessionCwdIssue } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
 import { resolveSessionStore, selectSessionStorage } from "./core/session-storage.js";
 import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/session-worktree-snapshots.ts";
-import type { SettingsManager } from "./core/settings-manager.ts";
+import type { DefaultProjectTrust, SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
 import type { SessionStore } from "./core/storage/session/types.js";
+import type { ProjectTrustStore } from "./core/trust-manager.ts";
+import type { AppMode } from "./main-app-mode.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
@@ -282,7 +299,9 @@ async function createSessionManagerWithStore(
 				throw new Error("unreachable");
 
 			case "not_found":
-				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
+				console.error(
+					chalk.red(`Error: ${resumeNotFoundError("session", resolved.arg, store.descriptor).message}`),
+				);
 				process.exit(1);
 		}
 	}
@@ -295,7 +314,9 @@ async function createSessionManagerWithStore(
 				return openSessionOrExit(resolved.id, store);
 
 			case "global": {
+				const recordedOnAnotherNode = !existsSync(resolved.cwd);
 				if (
+					recordedOnAnotherNode ||
 					(await sessionContinuesIn(store, resolved.id, cwd)) ||
 					(settingsManager.getWorktreeSnapshotSettings().enabled &&
 						(await sessionRunsInRecordedCheckout(store, resolved.id)))
@@ -316,7 +337,9 @@ async function createSessionManagerWithStore(
 				throw new Error("unreachable");
 
 			case "not_found":
-				console.error(chalk.red(`No session found matching '${resolved.arg}'`));
+				console.error(
+					chalk.red(`Error: ${resumeNotFoundError("session", resolved.arg, store.descriptor).message}`),
+				);
 				process.exit(1);
 		}
 	}
@@ -356,8 +379,9 @@ async function createSessionManagerWithStore(
 	return createProvisionalSession(store, cwd, parsed.sessionId);
 }
 
-export async function promptForMissingSessionCwd(
-	issue: SessionCwdIssue,
+function promptStartupSelector(
+	title: string,
+	options: readonly string[],
 	settingsManager: SettingsManager,
 ): Promise<string | undefined> {
 	setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
@@ -379,9 +403,9 @@ export async function promptForMissingSessionCwd(
 		};
 
 		const selector = new ExtensionSelectorComponent(
-			formatMissingSessionCwdPrompt(issue),
-			["Continue", "Cancel"],
-			(option) => finish(option === "Continue" ? issue.fallbackCwd : undefined),
+			title,
+			[...options],
+			(option) => finish(option),
 			() => finish(undefined),
 			{ tui: ui },
 		);
@@ -389,4 +413,176 @@ export async function promptForMissingSessionCwd(
 		ui.setFocus(selector);
 		ui.start();
 	});
+}
+
+export async function promptForMissingSessionCwd(
+	issue: SessionCwdIssue,
+	settingsManager: SettingsManager,
+): Promise<string | undefined> {
+	const option = await promptStartupSelector(
+		formatMissingSessionCwdPrompt(issue),
+		["Continue", "Cancel"],
+		settingsManager,
+	);
+	return option === "Continue" ? issue.fallbackCwd : undefined;
+}
+
+const DIRTY_CHECKOUT_OPTIONS: readonly (readonly [string, DirtyCheckoutChoice])[] = [
+	["Restore the snapshot into a fresh worktree", "restore"],
+	["Continue in this checkout as it is", "use"],
+	["Cancel", "cancel"],
+];
+
+/** Asks what to do when a resume started in a checkout of the session's repository that differs from its snapshot. */
+export async function promptForDirtyCheckout(
+	prompt: DirtyCheckoutPrompt,
+	settingsManager: SettingsManager,
+): Promise<DirtyCheckoutChoice> {
+	const option = await promptStartupSelector(
+		`This checkout differs from the session's snapshot ${prompt.snapshotId.slice(0, 12)}\n${prompt.checkout}\n\nrecorded in\n${prompt.recordedRoot}`,
+		DIRTY_CHECKOUT_OPTIONS.map(([label]) => label),
+		settingsManager,
+	);
+	return DIRTY_CHECKOUT_OPTIONS.find(([label]) => label === option)?.[1] ?? "cancel";
+}
+
+/** The storage selection a CLI resume reads sessions from, or undefined when an SDK store instance was given. */
+export function cliSessionStorageSelection(
+	parsed: Args,
+	cwd: string,
+	settingsManager: SettingsManager,
+	sessionStore?: SessionStore | StorageSelection,
+): StorageSelection | undefined {
+	const selection = selectSessionStorage(cwd, {
+		sessionStore,
+		settings: settingsManager.getSettings(),
+		noSession: parsed.noSession,
+		sessionDir: parsed.sessionDir,
+		sessionStorePath: parsed.sessionStorePath,
+		sessionPrefix: parsed.sessionPrefix,
+	});
+	return "load" in selection ? undefined : selection;
+}
+
+/** An id no session has, for probing storage when the resume names none. */
+const PROBE_SESSION_ID = "00000000-0000-7000-8000-000000000000";
+
+/** One point read through `selection`, proving the shared storage answers before the real lookup starts. */
+async function probeSessionStorage(
+	cwd: string,
+	selection: StorageSelection,
+	agentDir: string,
+	sessionId: string | undefined,
+): Promise<void> {
+	const store = await resolveSessionStore(cwd, { agentDir, sessionStore: selection });
+	try {
+		await store.readHeader(sessionId ?? PROBE_SESSION_ID);
+	} finally {
+		await store.close();
+	}
+}
+
+export interface OpenCliSessionOptions {
+	readonly agentDir: string;
+	/** How long the lookup waits for shared storage to answer. Default {@link RESUME_CATALOG_TIMEOUT_MS}. */
+	readonly catalogTimeoutMs?: number;
+	readonly sessionStorage?: SessionStore | StorageSelection;
+	/** Whether the project at a restored worktree is trusted, which its `.atomic/setup` hook requires. */
+	readonly trusted: (worktree: string) => boolean;
+	readonly chooseDirtyCheckout?: (prompt: DirtyCheckoutPrompt) => Promise<DirtyCheckoutChoice>;
+	readonly io?: ResumePreflightIo;
+}
+
+export interface OpenedCliSession {
+	readonly sessionManager: SessionManager;
+	readonly notices: readonly ResumeNotice[];
+}
+
+/**
+ * Opens the session the CLI flags select and, for a resume, prepares its checkout on this machine. A resume
+ * (`--session`, `--resume`, `--continue`) first checks its storage preconditions, and a lookup that cannot reach the
+ * storage fails as {@link ResumeCatalogUnavailableError}. Returns "cancelled" when the user cancels at a prompt. When it
+ * fails or is cancelled after opening the session store it selected, that store is closed again.
+ */
+export async function openCliSession(
+	parsed: Args,
+	cwd: string,
+	settingsManager: SettingsManager,
+	options: OpenCliSessionOptions,
+): Promise<OpenedCliSession | "cancelled"> {
+	const resuming = parsed.session !== undefined || parsed.resume === true || parsed.continue === true;
+	const selection = resuming
+		? cliSessionStorageSelection(parsed, cwd, settingsManager, options.sessionStorage)
+		: undefined;
+	if (selection !== undefined) {
+		await checkResumeStoragePreconditions("cli", [{ domain: "sessions", selection }], options.agentDir, options.io);
+	}
+	if (selection?.kind === "adapter") {
+		await withResumeLookupDeadline(
+			probeSessionStorage(cwd, selection, options.agentDir, parsed.session),
+			{ subject: "session", id: parsed.session ?? null, storage: selection.module },
+			options.catalogTimeoutMs ?? RESUME_CATALOG_TIMEOUT_MS,
+		).catch((error: unknown) => {
+			throw resumeLookupError(error, "session", parsed.session ?? null);
+		});
+	}
+	const sessionManager = await createSessionManager(
+		parsed,
+		cwd,
+		undefined,
+		settingsManager,
+		options.sessionStorage,
+	).catch((error: unknown) => {
+		throw resuming ? resumeLookupError(error, "session", parsed.session ?? null) : error;
+	});
+	const owned = options.sessionStorage === undefined || !("load" in options.sessionStorage);
+	const release = (failure?: unknown) =>
+		owned ? closeStoreAfter(sessionManager.getSessionStore(), failure) : undefined;
+	const prepared = await prepareSessionResume(sessionManager, {
+		...sessionResumeOptions("cli", cwd, options.agentDir, settingsManager, options.trusted),
+		chooseDirtyCheckout: options.chooseDirtyCheckout,
+		io: options.io,
+	}).catch(async (error: unknown) => {
+		await release(error);
+		throw error;
+	});
+	if (prepared.status === "cancelled") {
+		await release();
+		return "cancelled";
+	}
+	return { sessionManager: prepared.sessionManager, notices: prepared.notices };
+}
+
+/**
+ * The resume notices print-like modes report with the startup diagnostics. Interactive mode shows them in the TUI
+ * instead, so they are not reported twice.
+ */
+export function startupResumeDiagnostics(appMode: AppMode, notices: readonly ResumeNotice[]): readonly ResumeNotice[] {
+	return appMode === "interactive" ? [] : notices;
+}
+
+/**
+ * Closes `store` once the work that opened it ended. After `failure`, a close failure is kept as the failure's
+ * `cleanupCause` instead of replacing it; without one, it is thrown.
+ */
+export async function closeStoreAfter(store: Pick<SessionStore, "close">, failure?: unknown): Promise<void> {
+	try {
+		await store.close();
+	} catch (cleanup) {
+		if (failure === undefined) throw cleanup;
+		if (failure instanceof Error)
+			Object.defineProperty(failure, "cleanupCause", { value: cleanup, enumerable: false });
+	}
+}
+
+/**
+ * Whether the CLI trusts the project at a restored worktree, which its `.atomic/setup` hook requires: the
+ * `--approve`/`--deny` override, else the saved decision for that path, else the default trust setting.
+ */
+export function cliResumeTrust(
+	override: boolean | undefined,
+	trustStore: Pick<ProjectTrustStore, "get">,
+	defaultTrust: DefaultProjectTrust,
+): (worktree: string) => boolean {
+	return (worktree) => override ?? trustStore.get(worktree) ?? defaultTrust === "always";
 }

@@ -1,8 +1,11 @@
 import {
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
+	registerWorktreeRootMappings,
 	resolveWorktreeSnapshotSettings,
 	scheduleSnapshotCollection,
+	setUpRestoredRunWorktrees,
+	type WorktreeRootMapping,
 } from "@bastani/atomic";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
@@ -11,6 +14,7 @@ import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
+import { restorePreconditionsChecked, runRestorePreconditionFailure } from "../durable/run-restore-preconditions.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
@@ -30,7 +34,11 @@ import {
 	createWorkflowSnapshotRecorder,
 	releaseWorkflowSnapshotAncestry,
 } from "../durable/worktree-snapshot-recorder.js";
-import { mapWorkflowWorktreePath, resolveWorkflowSnapshotFrontier } from "../durable/worktree-snapshots.js";
+import {
+	listWorkflowSnapshotBoundaries,
+	mapWorkflowWorktreePath,
+	resolveWorkflowSnapshotFrontier,
+} from "../durable/worktree-snapshots.js";
 import {
 	findWorkflowExitSignal,
 	parentWorkflowExitAbortReason,
@@ -207,6 +215,16 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const journal = backend.snapshotJournal;
 		if (previous !== undefined && journal !== undefined) {
 			const mappings = previous.worktreeRootMappings ?? [];
+			if (opts[restorePreconditionsChecked] !== true) {
+				const precondition = await runRestorePreconditionFailure(
+					journal,
+					runId,
+					mappings,
+					previous.snapshots ?? opts.snapshots,
+					opts.signal,
+				);
+				if (precondition !== undefined) throw precondition;
+			}
 			let warningCount = 0;
 			const restored = await resolveWorkflowSnapshotFrontier(journal, runId, {
 				mappings,
@@ -229,6 +247,21 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						createdAt: Date.now(),
 					}),
 			});
+			if (restored.length > 0) {
+				const snapshots = new Map(
+					(await listWorkflowSnapshotBoundaries(journal, runId)).map((boundary) => [
+						boundary.snapshot.id,
+						boundary.snapshot,
+					]),
+				);
+				await setUpRestoredRunWorktrees(
+					restored.map((mapping) => ({
+						root: mapping.to,
+						envHash: snapshots.get(mapping.snapshotId)!.envHash,
+					})),
+					{ signal: opts.signal },
+				);
+			}
 			const allMappings = [...mappings, ...restored];
 			if (restored.length > 0) {
 				await backend.commitWorkflowRegistration({ ...previous, worktreeRootMappings: allMappings });
@@ -242,6 +275,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				};
 			}
 		}
+		if (opts.worktreeRootMappings !== undefined) registerWorktreeRootMappings(opts.worktreeRootMappings);
 		const publicResources =
 			opts.parentRun === undefined &&
 			(opts.localWorkers ||
@@ -345,6 +379,16 @@ async function executeUntilSettled(
 			cancellation: opts.cancellation,
 		});
 	}
+}
+
+/** The input-bound worktree of a run resumed on this node, at the worktree its restore mapped it to. */
+function mapInputWorktree(
+	defaults: Partial<StageOptions>,
+	mappings: readonly WorktreeRootMapping[],
+): Partial<StageOptions> {
+	return defaults.gitWorktreeDir === undefined
+		? defaults
+		: { ...defaults, gitWorktreeDir: mapWorkflowWorktreePath(defaults.gitWorktreeDir, mappings) };
 }
 
 async function executeRun(
@@ -562,7 +606,10 @@ async function executeRun(
 	const ownsCancellationRegistration = opts.signal === undefined && opts.cancellation !== undefined;
 	const tracker = new GraphFrontierTracker();
 	const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-	const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
+	const inputRuntimeDefaults = mapInputWorktree(
+			resolveInputRuntimeDefaults(def, resolvedInputs, opts.workspace),
+			opts.worktreeRootMappings ?? [],
+		),
 		gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache, runId);
 	const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
 	const workflowInvocationCwd = opts.cwd ?? process.cwd();

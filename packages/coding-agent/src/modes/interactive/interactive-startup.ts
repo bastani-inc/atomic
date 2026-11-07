@@ -364,6 +364,23 @@ InteractiveModeBase.prototype.updateTerminalTitle = function (this: InteractiveM
 	this.ui.terminal.setTitle(replaceControlCharacters(title));
 };
 
+/**
+ * Shows how a resumed session's checkout was prepared with the startup notices, which survive the chat rebuild that
+ * follows deferred startup.
+ */
+export function showResumeNotices(
+	mode: Pick<InteractiveModeBase, "startupNoticesContainer" | "showWarning">,
+	notices: readonly { readonly type: "info" | "warning"; readonly message: string }[] | undefined,
+): void {
+	for (const notice of notices ?? []) {
+		if (notice.type === "warning") mode.showWarning(notice.message, mode.startupNoticesContainer);
+		else {
+			mode.startupNoticesContainer.addChild(new Spacer(1));
+			mode.startupNoticesContainer.addChild(new Text(theme.fg("dim", notice.message), 1, 0));
+		}
+	}
+}
+
 InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): Promise<void> {
 	await this.init();
 	if (this.isShuttingDown) return;
@@ -392,9 +409,11 @@ InteractiveModeBase.prototype.run = async function (this: InteractiveModeBase): 
 	}, 500);
 
 	// Show startup warnings
-	const { migratedProviders, startupDiagnostics, initialMessage, initialImages, initialMessages } = this.options;
+	const { migratedProviders, startupDiagnostics, resumeNotices, initialMessage, initialImages, initialMessages } =
+		this.options;
 
 	showSessionNotices(this, startupDiagnostics);
+	showResumeNotices(this, resumeNotices);
 
 	if (migratedProviders && migratedProviders.length > 0) {
 		this.showWarning(`Migrated credentials to auth.json: ${migratedProviders.join(", ")}`);

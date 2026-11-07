@@ -1,4 +1,5 @@
 import type { AgentSessionEvent } from "@bastani/atomic";
+import type { restorePreconditionsChecked } from "../../durable/run-restore-preconditions.js";
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import type * as AuthoringContract from "../../shared/authoring-contract.js";
@@ -66,6 +67,7 @@ export interface RunOpts
 	adapters?: StageAdapters;
 	effectiveResources?: import("../../workers/public-options.js").WorkflowExecutionResources;
 	[hostWorkerBindings]?: true;
+	[restorePreconditionsChecked]?: true;
 	/**
 	 * Send this root run tree's console output to the workflow log instead of stderr (#4175). Its owner sets it when a
 	 * terminal UI shows that stderr in the chat; child runs inherit their root's decision.
