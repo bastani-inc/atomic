@@ -188,6 +188,8 @@ try {
 		name?: string;
 		code?: string;
 		message?: string;
+		retryable?: boolean;
+		subject?: string;
 		problems?: readonly { code: string; subject: string }[];
 		cause?: { name?: string; code?: string };
 	};
@@ -196,6 +198,8 @@ try {
 			name: typed.name,
 			code: typed.code,
 			message: typed.message,
+			retryable: typed.retryable,
+			subject: typed.subject,
 			rendered: resumeFailureMessage(error),
 			problems: typed.problems?.map((problem) => ({ code: problem.code, subject: problem.subject })),
 			...(typed.cause === undefined ? {} : { cause: { name: typed.cause.name, code: typed.cause.code } }),
