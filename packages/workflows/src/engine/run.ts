@@ -11,7 +11,7 @@ import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { initializeDurableBackend } from "../durable/factory.js";
-import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
 import { restorePreconditionsChecked, runRestorePreconditionFailure } from "../durable/run-restore-preconditions.js";
@@ -216,6 +216,7 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		if (previous !== undefined && journal !== undefined) {
 			const mappings = previous.worktreeRootMappings ?? [];
 			if (opts[restorePreconditionsChecked] !== true) {
+				if ((await backend.workflowOwnership(runId)) === "foreign") throw new JournalOwnershipError(runId, null);
 				const precondition = await runRestorePreconditionFailure(
 					journal,
 					runId,

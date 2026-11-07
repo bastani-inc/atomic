@@ -23,6 +23,7 @@ import {
 } from "../../packages/coding-agent/test/helpers/hook-commands.ts";
 import { missingGit } from "../../packages/coding-agent/test/helpers/missing-git.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { JournalOwnershipError } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import { restorePreconditionsChecked } from "../../packages/workflows/src/durable/run-restore-preconditions.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -243,6 +244,22 @@ test("a direct run() of a run recorded elsewhere checks its restore precondition
 	assert.equal(liveRuns, 0);
 	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
 	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
+});
+
+test("a direct run() of a run another node still holds is refused before anything is restored or set up (#4329)", async () => {
+	const marker = sandbox.path("setup-runs");
+	writeSettings({ resume: { setupCommand: appendLineCommand(marker, "ran") } });
+	const recorded = await runRecordedElsewhere();
+	const held = await recorded.backend.snapshotJournal.acquire(recorded.runId, "node-a-still-running");
+	assert.equal(held.status, "acquired");
+
+	await assert.rejects(
+		recorded.rerun(),
+		(error: unknown) => error instanceof JournalOwnershipError && error.runId === recorded.runId,
+	);
+
+	assert.deepEqual(restoredWorktrees(), []);
+	assert.equal(existsSync(marker), false);
 });
 
 test("a direct run() judges its own checkout under the snapshot settings the run recorded with (#4329)", async () => {

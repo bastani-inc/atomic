@@ -189,6 +189,8 @@ interface GatedJournal {
 	opens: number;
 	closes: number;
 	closeFailure?: Error;
+	listing?: () => void;
+	slowList?: Promise<void>;
 	opened: () => void;
 	firstOpen: Promise<void>;
 }
@@ -272,4 +274,30 @@ test("a failure to close an opening that answered after its resume timed out is 
 		process.exitCode = exitCode;
 		reported.mockRestore();
 	}
+});
+
+test("a resume whose shared journal answers in time is not bounded by how long its runs take to list (#4329)", async () => {
+	const { gate, journal, runId, releaseFirstOpen } = gatedJournal();
+	releaseFirstOpen();
+	let finishListing = () => {};
+	gate.slowList = new Promise<void>((finish) => {
+		finishListing = finish;
+	});
+	const listing = new Promise<void>((started) => {
+		gate.listing = () => started();
+	});
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	const resumed = run(empty, {}, { runId, journal, store: createStore() }).then(
+		(result) => result,
+		(error: unknown) => error,
+	);
+	await listing;
+	await vi.advanceTimersByTimeAsync(RESUME_CATALOG_TIMEOUT_MS * 2);
+	vi.useRealTimers();
+	finishListing();
+
+	const result = await resumed;
+
+	assert.ok(!(result instanceof Error), String(result));
+	assert.equal((result as Awaited<ReturnType<typeof run>>).status, "completed");
 });

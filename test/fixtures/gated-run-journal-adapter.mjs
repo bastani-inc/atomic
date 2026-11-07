@@ -1,6 +1,8 @@
 // A run-journal storage adapter whose first open waits for `globalThis.__gatedJournal.firstOpen`, as a database that
 // stops answering and comes back would. Each open calls `opened()` and counts in `opens`; each journal it hands out is
-// a SQLite file at `options.path` whose close counts in `closes` and fails with `closeFailure` when one is set.
+// a SQLite file at `options.path` whose close counts in `closes` and fails with `closeFailure` when one is set, and
+// whose `runVersions`, which lists its runs, calls `listing()` and then waits for `slowList`, as a large journal on a
+// slow database would.
 import { openSqlRunJournal } from "@bastani/atomic/workflows";
 
 export default {
@@ -11,6 +13,12 @@ export default {
 		gate.opened();
 		if (gate.opens === 1) await gate.firstOpen;
 		const journal = await openSqlRunJournal(String(options.path));
+		const runVersions = journal.runVersions.bind(journal);
+		journal.runVersions = async (...args) => {
+			gate.listing?.();
+			await gate.slowList;
+			return runVersions(...args);
+		};
 		const close = journal.close.bind(journal);
 		journal.close = async () => {
 			gate.closes += 1;
