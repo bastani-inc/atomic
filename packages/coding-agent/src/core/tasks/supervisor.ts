@@ -97,6 +97,8 @@ export type TrustedTaskHost = {
 	authorizeCommandLaunch?(intent: C.CommandIntent): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
 	resourceAdmission?: ResourceAdmission;
+	/** Internal host/test configuration only; never tool input or user settings. */
+	commandResources?: Pick<native.CommandResourceOptions, "terminationGraceMs">;
 	onTaskSettled?(ref: C.NativeTaskRef, receipt: C.SettlementReceipt): void;
 	/** Once per task whose result settled before its process cleanup was confirmed; that cleanup continues. */
 	onTaskCleanupQuarantined?(ref: C.NativeTaskRef, resources: readonly C.ResourceFailure[]): void;
@@ -1026,7 +1028,12 @@ export class TaskSupervisor {
 			provisional = rememberLaunchHeartbeat(state.launches, operation, cadence);
 			let started: Awaited<ReturnType<native.TaskSupervisor["startCommandTask"]>>;
 			try {
-				started = await this.#native.startCommandTask(state.native, nativeIntent, operation);
+				started = await this.#native.startCommandTask(
+					state.native,
+					nativeIntent,
+					operation,
+					state.host.binding.commandResources,
+				);
 			} catch (error) {
 				held = undefined;
 				throw new Error(`Command cleanup unconfirmed; process permit retained: ${rejectionMessage(error)}`, {

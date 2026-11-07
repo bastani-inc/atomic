@@ -11,11 +11,12 @@ function value<T, E>(result: Result<T, E>): T {
 	assert.equal(result.ok, true, result.ok ? "accepted" : JSON.stringify(result.error));
 	return result.value;
 }
-function setup() {
+function setup(terminationGraceMs?: number) {
 	const supervisor = new TaskSupervisor();
 	const scope = { kind: "session" as const, sessionId: crypto.randomUUID() };
 	const host = supervisor.bindHostSession({
 		scope,
+		commandResources: terminationGraceMs === undefined ? undefined : { terminationGraceMs },
 		authorizeLaunch() {},
 		createRunner() {
 			throw new Error("Command must not dispatch an agent");
@@ -193,13 +194,33 @@ test.runIf(process.platform !== "win32")(
 	},
 );
 
+test("command admission refuses an invalid internal termination grace (#4540)", async () => {
+	for (const grace of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 60_001]) {
+		const { supervisor, owner } = setup(grace);
+		try {
+			const result = await supervisor.startCommandTask(
+				owner,
+				{ kind: "command", command: "exit 0", terminal: { kind: "pipe" } },
+				crypto.randomUUID() as OperationId,
+			);
+			assert.equal(result.ok, false, `accepted termination grace ${grace}`);
+			if (!result.ok) assert.equal(result.error.code, "SpawnFailed");
+		} finally {
+			value(await supervisor.closeTaskOwner(owner, "session-close"));
+		}
+	}
+});
+
 const terminals = [
 	["pipe", { kind: "pipe" }],
 	["pty", { kind: "pty", columns: 80, rows: 24 }],
 ] as const;
+// Separate process/pipe teardown from a real grace wait by several seconds, even on a loaded runner.
+const TERM_GRACE_MS = 15_000;
+const PROMPT_SETTLEMENT_MS = TERM_GRACE_MS / 3;
 /** Milliseconds from launch to settlement, and the settled result. */
 async function settle(command: string, terminal: (typeof terminals)[number][1]) {
-	const { supervisor, owner } = setup();
+	const { supervisor, owner } = setup(TERM_GRACE_MS);
 	try {
 		const started = performance.now();
 		const task = value(
@@ -209,7 +230,7 @@ async function settle(command: string, terminal: (typeof terminals)[number][1]) 
 				crypto.randomUUID() as OperationId,
 			),
 		);
-		const outcome = value(await supervisor.waitForTask(task, 5000));
+		const outcome = value(await supervisor.waitForTask(task, TERM_GRACE_MS + PROMPT_SETTLEMENT_MS));
 		const elapsed = performance.now() - started;
 		assert.ok(outcome.kind === "settled", JSON.stringify(outcome));
 		return { elapsed, result: outcome.result };
@@ -217,25 +238,19 @@ async function settle(command: string, terminal: (typeof terminals)[number][1]) 
 		value(await supervisor.closeTaskOwner(owner, "session-close"));
 	}
 }
-// The supervisor's TERM-to-KILL grace for members left in a command's process group.
-const TERM_GRACE_MS = 250;
 
 test.each(terminals)(
-	"a command whose group is empty settles without the termination grace (%s) (#4268)",
+	"a command whose group is empty settles without the termination grace (%s) (#4268, #4540)",
 	async (_, terminal) => {
-		const timings: number[] = [];
-		for (let index = 0; index < 5; index++) {
-			const { elapsed, result } = await settle("exit 0", terminal);
-			assert.deepEqual(result, { ...result, kind: "completed", exitCode: 0 });
-			timings.push(elapsed);
-		}
-		timings.sort((a, b) => a - b);
-		assert.ok(timings[2] < TERM_GRACE_MS / 2, `settled in ${timings.map((ms) => ms.toFixed(1)).join(", ")} ms`);
+		// Windows terminates its Job immediately, without a TERM grace; Unix must bypass the configured grace.
+		const { elapsed, result } = await settle("exit 0", terminal);
+		assert.deepEqual(result, { ...result, kind: "completed", exitCode: 0 });
+		assert.ok(elapsed < PROMPT_SETTLEMENT_MS, `settled after ${elapsed.toFixed(1)} ms, waited for the grace`);
 	},
 );
 
 test.runIf(process.platform !== "win32").each(terminals)(
-	"a member left behind ends on TERM at once, or on KILL after the grace, and never outlives settlement (%s) (#4268)",
+	"a member left behind ends on TERM at once, or on KILL after the grace, and never outlives settlement (%s) (#4268, #4540)",
 	async (_, terminal) => {
 		const directory = await mkdtemp(join(tmpdir(), "task-straggler-"));
 		try {
@@ -254,7 +269,11 @@ test.runIf(process.platform !== "win32").each(terminals)(
 				assert.equal(alive(straggler), false, `straggler ${straggler} outlived settlement`);
 				if (ignores)
 					assert.ok(elapsed >= TERM_GRACE_MS, `settled after ${elapsed.toFixed(1)} ms, before the grace`);
-				else assert.ok(elapsed < TERM_GRACE_MS, `settled after ${elapsed.toFixed(1)} ms, after the grace`);
+				else
+					assert.ok(
+						elapsed < PROMPT_SETTLEMENT_MS,
+						`settled after ${elapsed.toFixed(1)} ms, waited for the grace`,
+					);
 			}
 		} finally {
 			await rm(directory, { recursive: true, force: true });

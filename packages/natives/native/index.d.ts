@@ -240,6 +240,11 @@ export interface CommandResourceOptions {
   livePreviewBytes?: number
   foregroundSpillBytes?: number
   background?: boolean
+  /**
+   * Internal host/test seam for distinguishing a real TERM wait from teardown latency (1..=60000 ms).
+   * Ignored on Windows, whose Job containment terminates immediately rather than sending TERM.
+   */
+  terminationGraceMs?: number
 }
 
 /** Execute this program directly, appending command as one final argument. */
