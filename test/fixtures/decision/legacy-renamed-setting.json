@@ -1,0 +1,12 @@
+{
+	"name": "DecisionConfigError",
+	"code": "renamed-setting",
+	"message": "Renamed setting: \"routerModel\" in project settings.json (renamed-setting). Rename \"routerModel\" to \"decisionModel\" in your project settings.json.",
+	"hint": "Rename \"routerModel\" to \"decisionModel\" in your project settings.json.",
+	"retryable": false,
+	"fields": {
+		"source": "settings",
+		"field": "routerModel",
+		"scope": "project"
+	}
+}

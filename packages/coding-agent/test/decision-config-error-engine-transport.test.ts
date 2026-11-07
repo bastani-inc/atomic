@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { DecisionConfigError, findDecisionError, isDecisionConfigError } from "../src/core/decision/errors.js";
+import legacyRenamedSetting from "../../../test/fixtures/decision/legacy-renamed-setting.json";
+import {
+	DecisionConfigError,
+	findDecisionError,
+	isDecisionConfigError,
+	serializeDecisionError,
+} from "../src/core/decision/errors.js";
 import { startInteractiveEngineLiveness } from "../src/modes/interactive-engine/engine-child-liveness.js";
 import { InteractiveEngineMonitor } from "../src/modes/interactive-engine/engine-monitor.js";
 
@@ -28,9 +34,9 @@ async function hostFailureFor(failure: Error): Promise<unknown> {
 
 test("a refused decision setting in the engine child reaches the host as a typed error (#4358)", async () => {
 	const refused = new DecisionConfigError({
-		code: "renamed-setting",
+		code: "invalid-setting",
 		source: "settings",
-		field: "routerModel",
+		field: "decisionModel",
 		scope: "project",
 	});
 	const error = await hostFailureFor(new Error("startup reload failed", { cause: refused }));
@@ -40,6 +46,24 @@ test("a refused decision setting in the engine child reaches the host as a typed
 	assert.ok(isDecisionConfigError(found));
 	assert.deepEqual(found.fields(), refused.fields());
 	assert.equal(found.message, refused.message);
+});
+
+test("an older engine's renamed-setting failure reaches the host with its original typed advice", async () => {
+	const monitor = new InteractiveEngineMonitor(vi.fn(), vi.fn());
+	const readiness = monitor.waitUntilResourcesReady();
+	monitor.handleLine(
+		JSON.stringify({
+			type: "engine_resources_failed",
+			message: legacyRenamedSetting.message,
+			decisionError: legacyRenamedSetting,
+		}),
+	);
+	await assert.rejects(readiness, (error: unknown) => {
+		const found = findDecisionError(error);
+		assert.ok(found instanceof DecisionConfigError);
+		assert.deepEqual(serializeDecisionError(found), legacyRenamedSetting);
+		return true;
+	});
 });
 
 test("an engine resource failure without a decision error stays a plain failure", async () => {

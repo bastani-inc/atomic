@@ -3,8 +3,8 @@
  * setting, and of the decision model's resolution. Catch the family or a concrete class and branch on `code`.
  */
 
-/** `renamed-setting`: a settings file still uses a removed key. `invalid-setting`: `decisionModel` has an invalid value. */
-export type DecisionConfigErrorCode = "renamed-setting" | "invalid-setting";
+/** `invalid-setting`: invalid `decisionModel`. `renamed-setting`: legacy, decode-only compatibility for older builds. */
+export type DecisionConfigErrorCode = "invalid-setting" | "renamed-setting";
 
 /** Every code of the {@link DecisionError} family. Codes are public API and never change meaning. */
 export type DecisionErrorCode =
@@ -53,7 +53,7 @@ export type DecisionProviderFailureCode = "rate_limit_exceeded" | "insufficient_
 export type DecisionErrorFieldValue = string | number | boolean;
 
 const DECISION_ERROR_CODES = new Set<string>([
-	"renamed-setting",
+	"renamed-setting", // Legacy, decode-only; current settings loading migrates routerModel instead.
 	"invalid-setting",
 	"invalid-request",
 	"model-unavailable",
@@ -99,7 +99,7 @@ export class DecisionError extends Error {
 export interface DecisionConfigErrorFields {
 	readonly code: DecisionConfigErrorCode;
 	readonly source: DecisionConfigSource;
-	/** The refused key: `routerModel` for `renamed-setting`, `decisionModel` for `invalid-setting`. */
+	/** The refused key: `decisionModel`, or legacy `routerModel` in a decoded `renamed-setting` error. */
 	readonly field: string;
 	/** The settings file that holds the key; absent for an SDK caller's settings. */
 	readonly scope?: DecisionSettingsScope;
@@ -112,14 +112,11 @@ const CONFIG_PLACES: Readonly<Record<DecisionConfigSource, { readonly subject: s
 
 function configHint(fields: DecisionConfigErrorFields): string {
 	const where = fields.scope ? `your ${fields.scope} settings.json` : CONFIG_PLACES[fields.source].hint;
-	return fields.code === "renamed-setting"
-		? `Rename "routerModel" to "decisionModel" in ${where}.`
-		: `Set "decisionModel" in ${where} to an exact provider/model ID, "auto", or an empty string.`;
+	return `Set "decisionModel" in ${where} to an exact provider/model ID, "auto", or an empty string.`;
 }
 
 /**
- * The `decisionModel` configuration is refused. Thrown when settings load, before Atomic starts, so nothing ran.
- * Not retryable: correct the setting.
+ * The `decisionModel` configuration is refused. Not retryable: correct the setting.
  */
 export class DecisionConfigError extends DecisionError {
 	override readonly name = "DecisionConfigError" as const;
@@ -133,12 +130,7 @@ export class DecisionConfigError extends DecisionError {
 		const where = fields.scope ? `${fields.scope} settings.json` : CONFIG_PLACES[fields.source].subject;
 		super(
 			fields.code,
-			message(
-				fields.code === "renamed-setting" ? "Renamed setting" : "Invalid decision model setting",
-				`"${fields.field}" in ${where}`,
-				fields.code,
-				hint,
-			),
+			message("Invalid decision model setting", `"${fields.field}" in ${where}`, fields.code, hint),
 			hint,
 			options,
 		);
@@ -417,7 +409,7 @@ const CONCRETE: Readonly<
 	>
 > = {
 	DecisionConfigError: {
-		codes: new Set(["renamed-setting", "invalid-setting"]),
+		codes: new Set(["invalid-setting", "renamed-setting"]),
 		validFields: (fields) =>
 			typeof fields.source === "string" &&
 			Object.hasOwn(CONFIG_PLACES, fields.source) &&
@@ -640,7 +632,15 @@ function rehydrateCause(cause: SerializedDecisionError["cause"]): Error | undefi
 export function rehydrateDecisionError(serialized: SerializedDecisionError): DecisionError {
 	const options = { cause: rehydrateCause(serialized.cause) };
 	const member = concrete(serialized.name);
-	if (member) return member.rebuild(serialized.code, serialized.fields, options);
+	if (member) {
+		const error = member.rebuild(serialized.code, serialized.fields, options);
+		if (serialized.name === "DecisionConfigError" && serialized.code === "renamed-setting") {
+			// Decode-only: retain the older build's advice without restoring the retired settings-load error.
+			error.message = serialized.message;
+			Object.defineProperty(error, "hint", { value: serialized.hint });
+		}
+		return error;
+	}
 	const error = new DecisionError(serialized.code as DecisionErrorCode, serialized.message, serialized.hint, options);
 	Object.defineProperty(error, "name", { value: serialized.name, enumerable: false });
 	return error;

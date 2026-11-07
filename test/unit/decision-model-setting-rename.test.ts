@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test, vi } from "vitest";
 import { exitOnDecisionConfigError } from "../../packages/coding-agent/src/cli/settings-startup.js";
-import { DecisionConfigError, isDecisionConfigError } from "../../packages/coding-agent/src/core/decision/errors.js";
+import { DecisionConfigError } from "../../packages/coding-agent/src/core/decision/errors.js";
 import { InMemorySettingsStorage, SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
-import type { SettingsScope, SettingsStorage } from "../../packages/coding-agent/src/core/settings-types.js";
+import { clearDeprecationWarningsForTests } from "../../packages/coding-agent/src/utils/deprecation.js";
 
 const directories: string[] = [];
 
@@ -22,84 +22,95 @@ function workspace(global?: object, project?: object): { cwd: string; agentDir: 
 	return { cwd, agentDir };
 }
 
-function renamed(scope: SettingsScope | undefined, source: "settings" | "sdk") {
-	return (error: unknown): boolean => {
-		assert.ok(isDecisionConfigError(error));
-		assert.ok(error instanceof DecisionConfigError);
-		assert.equal(error.code, "renamed-setting");
-		assert.equal(error.field, "routerModel");
-		assert.equal(error.source, source);
-		assert.equal(error.scope, scope);
-		assert.equal(error.retryable, false);
-		assert.match(error.hint, /Rename "routerModel" to "decisionModel"/);
-		return true;
-	};
-}
-
 afterEach(() => {
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+	vi.restoreAllMocks();
+	clearDeprecationWarningsForTests();
 });
 
-test("a global settings file with routerModel fails fast with a typed config error (#4358)", () => {
+test("a global routerModel migrates without blocking startup or rewriting the file (#4526)", () => {
 	const { cwd, agentDir } = workspace({ routerModel: "typesafe/jev-latest", theme: "dark" });
 	const before = readFileSync(join(agentDir, "settings.json"), "utf8");
-	assert.throws(() => SettingsManager.create(cwd, agentDir), renamed("global", "settings"));
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const manager = SettingsManager.create(cwd, agentDir);
+	assert.equal(manager.getDecisionModel(), "typesafe/jev-latest");
+	assert.equal(Object.hasOwn(manager.getSettings(), "routerModel"), false);
 	assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
+	assert.equal(warning.mock.calls.length, 0);
 });
 
-test("a trusted project's routerModel fails fast; an untrusted project's settings are never read", () => {
-	const { cwd, agentDir } = workspace({}, { routerModel: "" });
-	assert.throws(() => SettingsManager.create(cwd, agentDir, { projectTrusted: true }), renamed("project", "settings"));
-	const untrusted = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-	assert.equal(untrusted.getDecisionModel(), "");
-	assert.throws(() => untrusted.setProjectTrusted(true), renamed("project", "settings"));
-	assert.equal(untrusted.isProjectTrusted(), false);
-	assert.deepEqual(untrusted.getProjectSettings(), {});
-});
-
-test("trusting a project later reads its decisionModel, and distrusting it drops the value", () => {
-	const { cwd, agentDir } = workspace({ decisionModel: "global/model" }, { decisionModel: "project/model" });
+test("a project's routerModel migrates only after trust, and distrusting drops it (#4526)", () => {
+	const { cwd, agentDir } = workspace({ decisionModel: "global/model" }, { routerModel: "project/model" });
 	const settings = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	assert.equal(settings.getDecisionModel(), "global/model");
+	assert.deepEqual(settings.getProjectSettings(), {});
 	settings.setProjectTrusted(true);
 	assert.equal(settings.isProjectTrusted(), true);
 	assert.equal(settings.getDecisionModel(), "project/model");
+	assert.deepEqual(settings.getProjectSettings(), { decisionModel: "project/model" });
+	assert.equal(SettingsManager.create(cwd, agentDir).getDecisionModel(), "project/model");
 	settings.setProjectTrusted(false);
 	assert.equal(settings.getDecisionModel(), "global/model");
 	assert.deepEqual(settings.getProjectSettings(), {});
 });
 
-test("the check stops loading at the first settings file, before any other read or write", () => {
-	const calls: SettingsScope[] = [];
-	const storage: SettingsStorage = {
-		withLock(scope, fn) {
-			calls.push(scope);
-			fn(scope === "global" ? JSON.stringify({ routerModel: "auto" }) : JSON.stringify({ routerModel: "auto" }));
-		},
-	};
-	assert.throws(() => SettingsManager.fromStorage(storage), renamed("global", "settings"));
-	assert.deepEqual(calls, ["global"]);
-});
-
-test("SDK settings with routerModel fail fast, in memory and as overrides", () => {
-	assert.throws(
-		() => SettingsManager.inMemory({ routerModel: "auto" } as Parameters<typeof SettingsManager.inMemory>[0]),
-		renamed(undefined, "sdk"),
-	);
-	const manager = SettingsManager.inMemory({ decisionModel: "auto" });
-	assert.throws(
-		() => manager.applyOverrides({ routerModel: "x/y" } as Parameters<typeof manager.applyOverrides>[0]),
-		renamed(undefined, "sdk"),
-	);
+test("SDK routerModel settings migrate in memory and as overrides without mutating input (#4526)", () => {
+	const input = { routerModel: "auto" };
+	const manager = SettingsManager.inMemory(input as Parameters<typeof SettingsManager.inMemory>[0]);
 	assert.equal(manager.getDecisionModel(), "auto");
+	const overrides = { routerModel: "x/y" };
+	manager.applyOverrides(overrides as Parameters<typeof manager.applyOverrides>[0]);
+	assert.equal(manager.getDecisionModel(), "x/y");
+	assert.equal(Object.hasOwn(manager.getSettings(), "routerModel"), false);
+	assert.deepEqual(input, { routerModel: "auto" });
+	assert.deepEqual(overrides, { routerModel: "x/y" });
 });
 
-test("a reload that finds routerModel fails instead of silently ignoring it", async () => {
+test("reload migrates routerModel like other legacy settings (#4526)", async () => {
 	const storage = new InMemorySettingsStorage();
 	storage.withLock("global", () => JSON.stringify({ decisionModel: "auto" }));
 	const manager = SettingsManager.fromStorage(storage);
-	storage.withLock("global", () => JSON.stringify({ routerModel: "auto" }));
-	await assert.rejects(manager.reload(), renamed("global", "settings"));
+	storage.withLock("global", () => JSON.stringify({ routerModel: "x/y" }));
+	await manager.reload();
+	assert.equal(manager.getDecisionModel(), "x/y");
+	assert.equal(Object.hasOwn(manager.getSettings(), "routerModel"), false);
+});
+
+test("decisionModel wins over routerModel with a one-time warning in every settings scope (#4526)", async () => {
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	const input = { routerModel: "old/model", decisionModel: "new/model" };
+	const { cwd, agentDir } = workspace(input, input);
+	const manager = SettingsManager.create(cwd, agentDir);
+	assert.deepEqual(manager.getGlobalSettings(), { decisionModel: "new/model" });
+	assert.deepEqual(manager.getProjectSettings(), { decisionModel: "new/model" });
+	await manager.reload();
+	const sdk = SettingsManager.inMemory(input);
+	sdk.applyOverrides(input);
+	assert.equal(sdk.getDecisionModel(), "new/model");
+	assert.equal(Object.hasOwn(sdk.getSettings(), "routerModel"), false);
+	assert.equal(warning.mock.calls.length, 1);
+	assert.match(warning.mock.calls[0]![0], /routerModel.*decisionModel/);
+});
+
+test("invalid routerModel values are dropped with a one-time warning, not a startup error (#4526)", async () => {
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	for (const routerModel of [null, 42, false, {}, [], " padded/model", "model/id "]) {
+		const input = { routerModel };
+		const { cwd, agentDir } = workspace(input, input);
+		const manager = SettingsManager.create(cwd, agentDir);
+		assert.equal(manager.getDecisionModel(), "");
+		assert.deepEqual(manager.getGlobalSettings(), {});
+		assert.deepEqual(manager.getProjectSettings(), {});
+		await manager.reload();
+		const sdk = SettingsManager.inMemory(input as Parameters<typeof SettingsManager.inMemory>[0]);
+		assert.equal(sdk.getDecisionModel(), "");
+		sdk.setDecisionModel("keep/model");
+		sdk.applyOverrides(input as Parameters<typeof sdk.applyOverrides>[0]);
+		assert.equal(sdk.getDecisionModel(), "keep/model");
+		assert.equal(Object.hasOwn(sdk.getSettings(), "routerModel"), false);
+	}
+	assert.equal(warning.mock.calls.length, 1);
+	assert.match(warning.mock.calls[0]![0], /invalid.*routerModel/i);
 });
 
 test("decisionModel loads, and other load failures stay recorded warnings", () => {
@@ -110,8 +121,7 @@ test("decisionModel loads, and other load failures stay recorded warnings", () =
 	assert.equal(broken.drainErrors().length, 1);
 });
 
-test("CLI startup prints the message, which ends with the hint, once and exits 1 without a stack", () => {
-	const { cwd, agentDir } = workspace({ routerModel: "typesafe/jev-latest" });
+test("CLI startup prints an invalid-setting message and hint once and exits 1 without a stack", () => {
 	const printed: string[] = [];
 	const exits: number[] = [];
 	const io = {
@@ -121,45 +131,34 @@ test("CLI startup prints the message, which ends with the hint, once and exits 1
 			throw new Error(`exit ${code}`);
 		},
 	};
-	const failure = (() => {
-		try {
-			SettingsManager.create(cwd, agentDir, { projectTrusted: false });
-		} catch (error) {
-			return error;
-		}
-		return undefined;
-	})();
+	const failure = new DecisionConfigError({
+		code: "invalid-setting",
+		source: "settings",
+		field: "decisionModel",
+		scope: "global",
+	});
 	assert.throws(() => exitOnDecisionConfigError(failure, io), /exit 1/);
 	assert.deepEqual(exits, [1]);
 	assert.equal(printed.length, 1);
-	assert.match(printed[0]!, /Error: Renamed setting: "routerModel" in global settings\.json \(renamed-setting\)\./);
-	assert.match(printed[0]!, /Rename "routerModel" to "decisionModel" in your global settings\.json\./);
+	assert.ok(printed[0]!.endsWith(failure.message));
 	assert.doesNotMatch(printed[0]!, /\n\s+at /);
 });
 
 test("CLI startup writes to stderr and exits the process by default", () => {
-	const printed: string[] = [];
-	const errorSpy = vi.spyOn(console, "error").mockImplementation((text: string) => {
-		printed.push(text);
-	});
+	const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 	const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: number | string | null) => {
 		throw new Error(`process exit ${code}`);
 	});
-	try {
-		assert.throws(
-			() =>
-				exitOnDecisionConfigError(
-					new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }),
-				),
-			/process exit 1/,
-		);
-		assert.equal(printed.length, 1);
-		assert.match(printed[0]!, /Renamed setting/);
-		assert.deepEqual(exitSpy.mock.calls, [[1]]);
-	} finally {
-		errorSpy.mockRestore();
-		exitSpy.mockRestore();
-	}
+	assert.throws(
+		() =>
+			exitOnDecisionConfigError(
+				new DecisionConfigError({ code: "invalid-setting", source: "settings", field: "decisionModel" }),
+			),
+		/process exit 1/,
+	);
+	assert.equal(errorSpy.mock.calls.length, 1);
+	assert.match(errorSpy.mock.calls[0]![0], /Invalid decision model setting/);
+	assert.deepEqual(exitSpy.mock.calls, [[1]]);
 });
 
 test("CLI startup rethrows any other failure untouched", () => {

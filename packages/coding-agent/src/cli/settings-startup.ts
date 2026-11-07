@@ -12,8 +12,9 @@ const PROCESS_IO: StartupFailureIo = {
 };
 
 /**
- * Handles a failed CLI startup. A refused decision-model setting, such as the renamed `routerModel` key, prints its
- * message, which ends with its hint, once and without a stack, and exits with status 1. Anything else is rethrown.
+ * Handles a failed CLI startup. An invalid `decisionModel` prints its message, which ends with its hint,
+ * once and without a stack, and exits with status 1. Migrated legacy settings do not reach this path.
+ * Anything else is rethrown.
  */
 export function exitOnDecisionConfigError(error: unknown, io: StartupFailureIo = PROCESS_IO): never {
 	if (!isDecisionConfigError(error)) throw error;

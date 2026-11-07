@@ -787,7 +787,6 @@ test("an unknown decisionModel and a missing chat model are unavailable, and an 
 });
 
 const ERRORS: readonly DecisionError[] = [
-	new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel", scope: "project" }),
 	new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel" }),
 	new DecisionRequestError({ field: "questions.pick", reason: "invalid-question" }),
 	new DecisionModelUnavailableError({ reason: "not-in-catalog", model: "a/b" }),
@@ -825,7 +824,6 @@ for (const error of ERRORS) {
 
 test("guards recognize plain structural errors from another realm and reject other shapes", () => {
 	const structural = (name: string, code: string) => ({ name, code, message: "m" });
-	assert.equal(isDecisionConfigError(structural("DecisionConfigError", "renamed-setting")), true);
 	assert.equal(isDecisionConfigError(structural("DecisionConfigError", "invalid-setting")), true);
 	assert.equal(isDecisionConfigError(structural("DecisionConfigError", "timeout")), false);
 	assert.equal(isDecisionRequestError(structural("DecisionRequestError", "invalid-request")), true);
@@ -870,20 +868,6 @@ test("findDecisionError walks a bounded cause chain", () => {
 	assert.equal(findDecisionError(deep), undefined);
 	assert.equal(findDecisionError(undefined), undefined);
 	assert.equal(isRetryableDecisionError(new Error("plain")), false);
-});
-
-test("the renamed-setting error renders its message and hint once (UX contract)", () => {
-	const error = new DecisionConfigError({
-		code: "renamed-setting",
-		source: "settings",
-		field: "routerModel",
-		scope: "global",
-	});
-	assert.equal(
-		error.message,
-		'Renamed setting: "routerModel" in global settings.json (renamed-setting). Rename "routerModel" to "decisionModel" in your global settings.json.',
-	);
-	assert.equal(error.hint, 'Rename "routerModel" to "decisionModel" in your global settings.json.');
 });
 
 test("serialization cannot introduce unchecked credentials or hide a snapshot failure (#4358)", async () => {
