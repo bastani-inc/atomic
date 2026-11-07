@@ -271,6 +271,11 @@ async function startCurrentSession(name: string): Promise<{
 	return { run, delivered, notices };
 }
 
+/** The warnings a session shows when it uses a broker it could not replace on this machine only. */
+function singleMachineWarnings(notices: readonly string[]): string[] {
+	return notices.filter((notice) => notice.includes("cannot verify how it routes"));
+}
+
 async function sessionNamed(client: PreviousClient, name: string): Promise<SessionInfo> {
 	let found: SessionInfo | undefined;
 	await vi.waitFor(async () => {
@@ -302,7 +307,11 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 			assert.equal(isAlive(before.pid), false, "the 0.9.71 broker exited");
 			await previous.reconnected(2);
 			assert.deepEqual(previous.registrations, [previousId, previousId]);
-			assert.deepEqual(current.notices, [], "a replaced broker needs no single-machine warning");
+			assert.deepEqual(
+				singleMachineWarnings(current.notices),
+				[],
+				"a replaced broker needs no single-machine warning",
+			);
 			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
 			const settled = await runningBroker();
 			assert.equal(settled.pid, after.pid, "the 0.9.71 session did not start its own broker again");
@@ -359,7 +368,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 			assert.equal(isAlive(before.pid), false);
 			assert.equal(after.sessions, 4);
 			assert.deepEqual(
-				sessions.map((current) => current.notices),
+				sessions.map((current) => singleMachineWarnings(current.notices)),
 				[[], [], []],
 			);
 			const sent = await sessions[2]?.run({ action: "send", to: "previous-crowded", message: "crowded hello" });
@@ -595,18 +604,65 @@ describe("replacing an older broker (#4538)", () => {
 	);
 
 	test(
-		"an older broker that does not exit in time fails the replacement at the stop, typed, and nothing is started",
+		"an older broker still running past the stop bound fails the replacement at the stop, typed, and the spawn lock follows its process",
 		async () => {
 			const legacy = await startFakeLegacyBroker({ shutdown: "ignored" });
-			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
-			const error = await upgradeBroker("bun", [], 30_000).catch((caught: unknown) => caught);
+			const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
+			const { isSpawnLockStale, upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const error = await upgradeBroker("bun", [], 30_000, undefined, BROKER_PROTOCOL, 2_000).catch(
+				(caught: unknown) => caught,
+			);
 			const { isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
 			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
 			assert.deepEqual([error.phase, error.previousPid, error.previousProtocolMax], ["stop", legacy.pid, 1]);
 			assert.ok(isIntercomBrokerStopTimeoutError(error.cause), String(error.cause));
-			assert.equal(error.cause.pid, legacy.pid);
+			assert.deepEqual([error.cause.pid, error.cause.timeoutMs], [legacy.pid, 2_000]);
 			assert.equal(legacy.shutdownRequests(), 1);
-			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
+			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
+			assert.equal(readFileSync(lockPath, "utf8").trim().split("\n")[2], String(legacy.pid));
+			assert.equal(
+				isSpawnLockStale(lockPath),
+				false,
+				"no spawner starts a broker while the older one is still running",
+			);
+			process.kill(legacy.pid, "SIGKILL");
+			await vi.waitFor(() => assert.equal(isAlive(legacy.pid), false), WAIT);
+			assert.equal(isSpawnLockStale(lockPath), true, "once it has gone, the next spawner takes the lock");
+			rmSync(lockPath, { force: true });
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"the spawn lock stays held, and fresh, while an older broker takes longer than a lock's age bound allows to exit",
+		async () => {
+			const legacy = await startFakeLegacyBroker({ exitDelayMs: 12_000 });
+			const { isSpawnLockStale, upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
+			const writtenAt = new Set<string>();
+			let staleSeen = false;
+			let foreignOwner = false;
+			const sampler = setInterval(() => {
+				if (!existsSync(lockPath)) return;
+				const [owner, time] = readFileSync(lockPath, "utf8").split("\n");
+				if (time === undefined || time === "") return;
+				writtenAt.add(time);
+				if (owner !== String(process.pid)) foreignOwner = true;
+				if (legacy.exitedAt() === undefined && isSpawnLockStale(lockPath)) staleSeen = true;
+			}, 250);
+			try {
+				assert.equal(await upgradeBroker("bun", [], 30_000), "upgraded");
+			} finally {
+				clearInterval(sampler);
+			}
+			assert.ok(legacy.exitedAt() !== undefined);
+			assert.ok(
+				writtenAt.size >= 2,
+				`the lock was written again while the older broker exited: ${[...writtenAt].join(", ")}`,
+			);
+			assert.deepEqual([staleSeen, foreignOwner], [false, false]);
+			assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 2 });
+			assert.equal(existsSync(lockPath), false);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
@@ -667,10 +723,11 @@ describe("replacing an older broker (#4538)", () => {
 			writeFileSync(lockPath, `${process.pid}\n${Date.now()}\n`, { flag: "wx" });
 			try {
 				const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
-				const { BROKER_STOP_TIMEOUT_MS } = await import("../../packages/intercom/broker/broker-stop.js");
+				const { BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
+				const stopBoundMs = 3_000;
 				const startedAt = Date.now();
-				assert.equal(await upgradeBroker("bun", [], 1), "busy");
-				assert.ok(Date.now() - startedAt >= BROKER_STOP_TIMEOUT_MS, "it waited the stop bound for the lock");
+				assert.equal(await upgradeBroker("bun", [], 1, undefined, BROKER_PROTOCOL, stopBoundMs), "busy");
+				assert.ok(Date.now() - startedAt >= stopBoundMs, "it waited the stop bound for the lock");
 				assert.deepEqual([legacy.statusRequests(), legacy.shutdownRequests()], [0, 0]);
 				assert.equal(existsSync(lockPath), true, "another process's lock is left as it is");
 			} finally {

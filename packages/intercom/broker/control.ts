@@ -3,7 +3,13 @@ import { IntercomBrokerUpgradeError, isIntercomBrokerStopTimeoutError } from "@b
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerStatusReport } from "../types.js";
 import { describeMultiNodeStatus, isBrokerStatusReport } from "./broker-status.js";
-import { BROKER_STOP_TIMEOUT_MS, isProcessAlive, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
+import {
+	BROKER_STOP_TIMEOUT_MS,
+	BROKER_UPGRADE_STOP_TIMEOUT_MS,
+	isProcessAlive,
+	requestBrokerShutdown,
+	waitForBrokerExit,
+} from "./broker-stop.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 import { BROKER_LEASE_STALE_AFTER_MS } from "./multinode-state-store.js";
 import { getBrokerPidPath, getBrokerSocketPath } from "./paths.js";
@@ -210,7 +216,7 @@ export async function upgradeIntercomBroker(agentDir: string, options: UpgradeOp
 	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir));
 	if (answer === "unanswered") throw failed();
 	try {
-		await waitForBrokerExit(pid, options.stopTimeoutMs ?? BROKER_STOP_TIMEOUT_MS);
+		await waitForBrokerExit(pid, options.stopTimeoutMs ?? BROKER_UPGRADE_STOP_TIMEOUT_MS);
 	} catch (error) {
 		if (isIntercomBrokerStopTimeoutError(error)) throw failed(error);
 		throw error;

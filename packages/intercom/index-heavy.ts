@@ -31,7 +31,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -391,6 +391,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await upgradeBroker(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
     } catch (error) {
       if (!isIntercomBrokerUpgradeError(error)) throw error;
+      // An older broker that shut down but is still exiting serves no session; the lock follows its process, and the
+      // next attempt starts its successor once it has gone.
+      if (isIntercomBrokerStopTimeoutError(error.cause)) throw error;
       upgradeFailure = error;
     }
     await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);

@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { type ExtensionContext, IntercomBrokerUpgradeError } from "@bastani/atomic";
+import {
+	type ExtensionContext,
+	IntercomBrokerStopTimeoutError,
+	IntercomBrokerUpgradeError,
+	isIntercomBrokerUpgradeError,
+} from "@bastani/atomic";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { queryBrokerRouting } from "../../packages/intercom/broker/broker-routing.js";
@@ -141,4 +146,24 @@ test("an unexpected failure while replacing the broker fails the connection inst
 	assert.match(result.content[0]?.text ?? "", /spawn lock unreadable/);
 	assert.deepEqual(connects, []);
 	assert.deepEqual(session.notices, []);
+});
+
+test("an older broker still exiting past the stop bound fails the connection with the typed error, and no broker is started meanwhile (#4538)", async () => {
+	const stillExiting = new IntercomBrokerUpgradeError(
+		{ phase: "stop", previousPid: 7, previousProtocolMax: 1 },
+		{ cause: new IntercomBrokerStopTimeoutError({ pid: 7, timeoutMs: 60_000, elapsedMs: 60_010 }) },
+	);
+	vi.mocked(queryBrokerRouting).mockResolvedValue(routing(LEGACY));
+	vi.mocked(upgradeBroker).mockRejectedValue(stillExiting);
+	const session = await startSession();
+
+	const result = await session.status();
+
+	assert.equal(result.isError, true);
+	assert.ok(result.content[0]?.text.includes(stillExiting.message), result.content[0]?.text);
+	assert.equal(isIntercomBrokerUpgradeError(stillExiting), true);
+	assert.deepEqual(connects, []);
+	assert.deepEqual(session.notices, []);
+	assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 1, "only the spawn check before the routing query");
+	assert.equal(vi.mocked(queryBrokerRouting).mock.calls.length, 1);
 });
