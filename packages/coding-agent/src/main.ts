@@ -137,6 +137,7 @@ import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
+import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import {
 	readInteractiveEngineBootstrap,
@@ -149,10 +150,13 @@ export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
 
-function collectExtensionLoadDiagnostics(extensions: LoadExtensionsResult): AgentSessionRuntimeDiagnostic[] {
+function collectExtensionLoadDiagnostics(
+	extensions: LoadExtensionsResult,
+	interactive = false,
+): AgentSessionRuntimeDiagnostic[] {
 	return [
 		...extensions.errors.map(({ path, error }) => ({
-			type: "error" as const,
+			type: interactive ? ("warning" as const) : ("error" as const),
 			message: `Failed to load extension "${path}": ${error}`,
 		})),
 		...(extensions.warnings ?? []).map(({ path, warning }) => ({
@@ -892,7 +896,10 @@ export async function main(argv: string[], options?: MainOptions) {
 			const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 				...services.diagnostics,
 				...collectSettingsDiagnostics(settingsManager, "runtime creation"),
-				...collectExtensionLoadDiagnostics(resourceLoader.getExtensions()),
+				...collectExtensionLoadDiagnostics(
+					resourceLoader.getExtensions(),
+					appMode === "interactive" || engineEnv.child === "1",
+				),
 			];
 			const modelPatterns = isolateInteractiveHost
 				? undefined
@@ -961,13 +968,16 @@ export async function main(argv: string[], options?: MainOptions) {
 						if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
 						const finalServices = await completeServices();
 						const extensionErrors = finalServices.resourceLoader.getExtensions().errors;
-						if (extensionErrors.length > 0) {
+						if (extensionErrors.length > 0 && appMode !== "interactive" && engineEnv.child !== "1") {
 							throw new Error(
 								`Failed to load extensions: ${extensionErrors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,
 							);
 						}
 						services.resourceLoader = finalServices.resourceLoader;
 						services.diagnostics = finalServices.diagnostics;
+						finalServices.diagnostics.push(
+							...collectExtensionLoadDiagnostics(finalServices.resourceLoader.getExtensions(), true),
+						);
 						const patterns = parsed.models ?? settingsManager.getEnabledModels();
 						const finalScope = patterns?.length ? await resolveModelScope(patterns, modelRuntime) : [];
 						const finalSelection = buildSessionOptions(
@@ -1156,20 +1166,31 @@ export async function main(argv: string[], options?: MainOptions) {
 			terminal: options?.internalInteractiveHarness?.terminal,
 		});
 		options?.internalInteractiveHarness?.onMode?.(interactiveMode);
-		if (startupBenchmark) {
-			await measureInteractiveStartup(interactiveMode, runtime);
-			stopThemeWatcher();
-			if (process.stdout.writableLength > 0) {
-				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+		try {
+			if (startupBenchmark) {
+				await measureInteractiveStartup(interactiveMode, runtime);
+				stopThemeWatcher();
+				if (process.stdout.writableLength > 0) {
+					await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+				}
+				if (process.stderr.writableLength > 0) {
+					await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
+				}
+				return;
 			}
-			if (process.stderr.writableLength > 0) {
-				await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
-			}
-			return;
-		}
 
-		printTimings();
-		await interactiveMode.run();
+			printTimings();
+			await interactiveMode.run();
+		} catch (error) {
+			if (isRpcTransportFailure(error)) {
+				stopThemeWatcher();
+				// The TUI starts before engine binding marks the mode initialized, so
+				// mode.stop() can skip it here. Restore before the CLI prints the error;
+				// TUI.stop() also unregisters the last-resort process exit restore.
+				interactiveMode.stopInteractiveTui("resume-hint");
+			}
+			throw error;
+		}
 	} else {
 		printTimings();
 		const exitCode = await runPrintMode(runtime, {

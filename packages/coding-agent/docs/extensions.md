@@ -8,6 +8,10 @@ Extensions are TypeScript modules that extend Atomic's behavior. They can subscr
 
 If `/reload` reports `Reload retiring cleanup failed`, its error includes the extension cleanup cause. The replacement extensions and updated settings remain active, and running workflows and joined Intercom groups stay available. Fix the reported extension cleanup error before reloading again.
 
+If an optional extension fails to import or initialize during interactive startup, Atomic skips it and shows its path and the reason while keeping the session available. Fix the extension or its dependencies, then use `/reload`. Print mode (`-p`) and standalone RPC mode (`--mode rpc`) instead report the named failure and exit with status 1, so scripts do not silently run without a requested extension. Required built-in failures and failed cleanup still stop startup.
+
+Legacy extensions can import the running host API from either `@mariozechner/pi-coding-agent` or `@earendil-works/pi-coding-agent`, including in release-archive installs; a separate pi installation is not required.
+
 **Key capabilities:**
 - **Custom tools** - Register tools the LLM can call via `pi.registerTool()`
 - **Event interception** - Block or modify tool calls, inject context, observe/cancel deletion-only compaction, and customize branch summaries

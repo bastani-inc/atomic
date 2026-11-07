@@ -419,7 +419,7 @@ describe("interactive engine resource readiness", () => {
 		}
 	});
 
-	it("fails deferred readiness when any extension did not load", async () => {
+	it("propagates unexpected deferred reload failures with the named extension diagnostics", async () => {
 		const harness = await createHarness();
 		const output = vi.fn();
 		const runtime = new AgentSessionRuntime(
@@ -445,7 +445,7 @@ describe("interactive engine resource readiness", () => {
 
 		try {
 			await expect(binding.loadDeferredResources()).rejects.toThrow("workflow load failed");
-			expect(reload).toHaveBeenCalledWith({ reason: "startup", failOnExtensionErrors: true });
+			expect(reload).toHaveBeenCalledWith({ reason: "startup" });
 			expect(output).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "extension_error", extensionPath: "builtin/workflows" }),
 			);
