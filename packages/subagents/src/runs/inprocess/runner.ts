@@ -1656,6 +1656,8 @@ export class SubagentControlRuntime {
 				getEntries: () => sessionManager.getEntries(),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
+				getCompactionReason: () =>
+					transcriptSession.isCompacting ? transcriptSession.compactionReason : undefined,
 			});
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;

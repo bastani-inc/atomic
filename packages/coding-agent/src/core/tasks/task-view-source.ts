@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { CompactionReason } from "../agent-session.js";
+import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
@@ -28,6 +30,8 @@ export interface TaskTranscriptView {
 	readonly messages: readonly AgentMessage[];
 	/** Cursor of the page before this one, when earlier messages are retained. */
 	readonly nextCursor?: string;
+	/** On the latest page: why the task's session is compacting at the time of the read. */
+	readonly compactionReason?: CompactionReason;
 }
 
 /** How an open transcript of a task follows it: through its live session, or by reading it again. */
@@ -174,31 +178,29 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const bound = taskTranscriptSource(task.value);
 			if (!bound.ok || (!page.ok && !bound.value.session.subscribe))
 				return { ok: false, error: { message: "Transcript unavailable" } };
-			const ids = new Set(page.ok ? page.value.items.map((item) => item.source.entryId) : []);
+			const items = page.ok ? page.value.items : [];
+			const entryIds = new Set(items.map((item) => item.source.entryId));
+			const itemIds = new Set(items.map((item) => item.id));
 			const messages = bound.value.session.getEntries().flatMap<AgentMessage>((entry) => {
-				if (entry.type !== "message" || !ids.has(entry.id)) return [];
+				if (!entryIds.has(entry.id)) return [];
+				if (entry.type !== "message") return sessionEntryToContextMessages(entry);
 				const message = entry.message;
 				if (message.role === "assistant")
 					return [
 						{
 							...message,
-							content: message.content.filter(
-								(block, index) =>
-									block.type !== "thinking" &&
-									page.ok &&
-									page.value.items.some(
-										(item) => item.source.entryId === entry.id && item.source.contentIndex === index,
-									),
-							),
+							content: message.content.filter((_, index) => itemIds.has(`${entry.id}:${index}`)),
 						},
 					];
 				return message.role === "user" || message.role === "toolResult" ? [message] : [];
 			});
+			const compactionReason = cursor === undefined ? bound.value.session.getCompactionReason?.() : undefined;
 			return {
 				ok: true,
 				value: {
 					messages,
 					...(page.ok && page.value.nextCursor !== undefined ? { nextCursor: page.value.nextCursor } : {}),
+					...(compactionReason === undefined ? {} : { compactionReason }),
 				},
 			};
 		},

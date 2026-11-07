@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type * as native from "@bastani/atomic-natives";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
-import type { AgentSessionEvent } from "../agent-session.js";
+import type { AgentSessionEvent, CompactionReason } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -18,6 +18,8 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 	/** Viewer-only subscription; updates never publish task lifecycle events. */
 	subscribe?(listener: (event: AgentSessionEvent) => void): () => void;
 	getStreamingMessage?(): AgentMessage | undefined;
+	/** Why the task's session is compacting now, for a viewer that missed `compaction_start`. */
+	getCompactionReason?(): CompactionReason | undefined;
 };
 
 export const DEFAULT_AGENT_WAIT_BUDGET_MS = 30000;

@@ -193,6 +193,21 @@ test("a task's transcript is the session it bound, answering through it, with In
 	assert.equal(Object.hasOwn(bare, "getStreamingMessage"), false);
 });
 
+test("a child's transcript reports the compaction its session is running (#4521)", async () => {
+	let compactions = 0;
+	const session = fakeSession({
+		getCompactionReason() {
+			compactions++;
+			return this === session ? "threshold" : undefined;
+		},
+	});
+	const named = await launch({ runId: "transcript-compaction", session });
+	assert.equal(named.transcript()?.getCompactionReason?.(), "threshold");
+	assert.equal(compactions, 1);
+	const plain = await launch({ runId: "transcript-no-compaction", session: fakeSession() });
+	assert.equal(Object.hasOwn(plain.transcript() ?? {}, "getCompactionReason"), false);
+});
+
 test("a released child is recorded released with what it waits on and the Intercom id it had, and none when it had none (#4326)", async () => {
 	const withId = await launch({
 		runId: "rel-id",

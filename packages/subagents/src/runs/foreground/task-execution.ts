@@ -314,6 +314,7 @@ function taskTranscriptSource(
 		getEntries: () => session.getEntries(),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
+		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),
 		...(intercomTarget === undefined ? {} : { completionSource: { runId, intercomTarget } }),
 	};
 }
