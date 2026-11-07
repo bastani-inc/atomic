@@ -2,6 +2,7 @@ import type { Component, EditorComponent, MarkdownTheme, TUI } from "@earendil-w
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import { theme } from "../theme/theme.js";
 import { LiveChatEntriesController } from "./chat-message-renderer.ts";
 import type {
 	ChatSessionHostCommands,
@@ -16,6 +17,8 @@ import {
 	ScrollableComponentViewport,
 } from "./chat-transcript.js";
 import type { FooterComponent } from "./footer.ts";
+import { keyText } from "./keybinding-hints.js";
+import { TranscriptFollowIndicator } from "./transcript-follow-indicator.ts";
 
 export interface ChatSessionHostStateCallbacks<TExtraEntry extends ChatTranscriptEntryLike> {
 	renderEntry: (state: ChatSessionHostState<TExtraEntry>, entry: ChatSessionHostEntry<TExtraEntry>) => Component;
@@ -103,7 +106,17 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>, callbacks: ChatSessionHostStateCallbacks<TExtraEntry>) {
 		this.style = opts.style;
 		this.commands = opts.commands ?? {};
-		this.bodyViewport = new ScrollableComponentViewport(opts.keybindings);
+		this.bodyViewport = new ScrollableComponentViewport(opts.keybindings, {
+			wheelScrollLines: () => this.getChatRenderSettings?.()?.fullscreenWheelScrollLines,
+			scrollbar: () => this.getChatRenderSettings?.()?.fullscreenScrollbar,
+			scrollbarThumbStyle: (text) => theme.bg("scrollbarThumb", text),
+			followIndicator: new TranscriptFollowIndicator({
+				isFollowing: () => false,
+				keyLabel: () => followIndicatorKeyLabel(opts.keybindings),
+			}),
+			requestRender: () => this.requestRender?.(),
+			onNearTop: () => opts.onNearTop?.(),
+		});
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
 		this.getSessionMessages = opts.getSessionMessages;
@@ -130,4 +143,13 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 			(entry, index) => callbacks.transcriptCacheKey(this, entry, index),
 		);
 	}
+}
+
+/** The jump-to-latest label names the host's own `tui.altScreen.bottom` keys, falling back to the global ones. */
+function followIndicatorKeyLabel(keybindings: unknown): string {
+	const getKeys = (keybindings as { getKeys?: (action: "tui.altScreen.bottom") => readonly string[] } | undefined)
+		?.getKeys;
+	return typeof getKeys === "function"
+		? getKeys.call(keybindings, "tui.altScreen.bottom").join("/")
+		: keyText("tui.altScreen.bottom");
 }

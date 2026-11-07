@@ -18,6 +18,7 @@ import { theme } from "../interactive/theme/theme.js";
 import { BackgroundRenderLane, BackgroundRenderTui } from "./background-render-lane.ts";
 import {
 	type EngineBlockedStatus,
+	type EngineHostRenderSettings,
 	type EngineTerminalControl,
 	type InteractiveEngineMessage,
 	isJsonValue,
@@ -154,6 +155,12 @@ export class EngineCustomUiService {
 	private readonly widgetReleaseListeners = new Map<string, Set<() => void>>();
 	/** Widget renders and repaint checks; keyboard input and custom UI frames never wait in it. */
 	private readonly backgroundRenders = new BackgroundRenderLane();
+	private hostRenderSettings: EngineHostRenderSettings | undefined;
+
+	/** The host chat settings the latest render request carried; undefined before the host sent any. */
+	getHostRenderSettings(): EngineHostRenderSettings | undefined {
+		return this.hostRenderSettings;
+	}
 
 	setWidget(
 		key: string,
@@ -341,6 +348,7 @@ export class EngineCustomUiService {
 				(record.component as ScrollableWidgetComponent).onScroll?.(command.state);
 				break;
 			case "engine_custom_render": {
+				if (command.renderSettings !== undefined) this.hostRenderSettings = command.renderSettings;
 				record.terminal.columns = Math.max(1, command.width);
 				record.terminal.rows = Math.max(1, command.rows);
 				const { componentId, requestId } = command;

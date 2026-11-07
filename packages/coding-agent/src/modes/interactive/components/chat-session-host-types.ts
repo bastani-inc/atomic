@@ -1,4 +1,12 @@
-import type { Component, EditorComponent, EditorTheme, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
+import type {
+	Component,
+	EditorComponent,
+	EditorTheme,
+	MarkdownTheme,
+	ScrollViewScrollbar,
+	TUI,
+	WheelScrollLines,
+} from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
@@ -55,6 +63,20 @@ export interface ChatSessionHostCommands {
 	abortBash?: () => void | Promise<void>;
 	abortCompaction?: () => void | Promise<void>;
 	handleSlashCommand?: (text: string) => Promise<boolean> | boolean;
+	/**
+	 * Delivers every submission through a channel whose recipient records the message itself, such as a task's
+	 * Intercom target. Set, it replaces prompt, steering, follow-up, compaction queueing and `!` commands: the text is
+	 * sent as typed, the chat shows no optimistic copy, and a rejection restores the draft and shows its message.
+	 */
+	send?: (text: string, mode: ChatSessionSubmitMode) => Promise<void>;
+}
+
+/** Body viewport settings a host inherits, named after the fullscreen settings they come from. */
+export interface ChatSessionViewportSettings {
+	/** Rows per mouse-wheel event, or `"auto"` to follow wheel velocity. */
+	readonly fullscreenWheelScrollLines?: WheelScrollLines;
+	/** `"auto"`, `"always"` or `"hidden"` scrollbar beside the body. */
+	readonly fullscreenScrollbar?: ScrollViewScrollbar;
 }
 
 export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike = never> {
@@ -88,7 +110,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	editorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
 	autocompleteProvider?: import("@earendil-works/pi-tui").AutocompleteProvider;
 	editorTheme: EditorTheme;
-	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	getChatRenderSettings?: () =>
+		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)
+		| undefined;
+	/** Called when the body shows rows within one viewport of its top, so earlier history can load. */
+	onNearTop?: () => void;
 	getCwd?: () => string;
 	footerData?: ReadonlyFooterDataProvider;
 	renderExtraEntry?: (entry: TExtraEntry) => Component;

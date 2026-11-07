@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type * as native from "@bastani/atomic-natives";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
-import type { AgentSessionEvent } from "../agent-session.js";
+import type { AgentSessionEvent, CompactionReason } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -13,11 +13,28 @@ import type { TaskCompletionSource } from "./completion-ordering.js";
 import type * as C from "./contracts.js";
 import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 
+/** What a task's message channel reported for one message. */
+export type TaskMessageDelivery =
+	| { readonly delivered: true }
+	| { readonly delivered: false; readonly reason: "refused"; readonly detail?: string }
+	/** The channel failed after the message may have left, so it may still arrive. */
+	| { readonly delivered: false; readonly reason: "lost"; readonly detail?: string }
+	| {
+			readonly delivered: false;
+			readonly reason: "unconfirmed";
+			readonly timeoutMs: number;
+			readonly elapsedMs: number;
+	  };
+
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
 	readonly completionSource?: TaskCompletionSource;
 	/** Viewer-only subscription; updates never publish task lifecycle events. */
 	subscribe?(listener: (event: AgentSessionEvent) => void): () => void;
 	getStreamingMessage?(): AgentMessage | undefined;
+	/** Why the task's session is compacting now, for a viewer that missed `compaction_start`. */
+	getCompactionReason?(): CompactionReason | undefined;
+	/** Delivers `text` to the task through its Intercom target, as a message typed into its transcript. */
+	sendMessage?(text: string): Promise<TaskMessageDelivery>;
 };
 
 export const DEFAULT_AGENT_WAIT_BUDGET_MS = 30000;

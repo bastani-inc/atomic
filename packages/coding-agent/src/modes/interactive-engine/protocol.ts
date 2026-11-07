@@ -148,10 +148,46 @@ export interface EngineExplicitQuitCommand {
 	type: "engine_explicit_quit";
 }
 
+/**
+ * The host's chat settings that a transcript inside an engine overlay follows, as the host's own chat does. Every
+ * render request carries them, so a toggle in the host reaches the next frame the engine paints.
+ */
+export interface EngineHostRenderSettings {
+	hideThinkingBlock: boolean;
+	toolOutputExpanded: boolean;
+	fullscreenScrollbar: "auto" | "always" | "hidden";
+	fullscreenWheelScrollLines: number | "auto";
+}
+
+function parseEngineHostRenderSettings(value: unknown): EngineHostRenderSettings | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const { hideThinkingBlock, toolOutputExpanded, fullscreenScrollbar, fullscreenWheelScrollLines } = value as Record<
+		string,
+		unknown
+	>;
+	if (typeof hideThinkingBlock !== "boolean" || typeof toolOutputExpanded !== "boolean") return undefined;
+	if (fullscreenScrollbar !== "auto" && fullscreenScrollbar !== "always" && fullscreenScrollbar !== "hidden")
+		return undefined;
+	const wheelLinesValid =
+		fullscreenWheelScrollLines === "auto" ||
+		(typeof fullscreenWheelScrollLines === "number" &&
+			Number.isFinite(fullscreenWheelScrollLines) &&
+			fullscreenWheelScrollLines >= 1);
+	if (!wheelLinesValid) return undefined;
+	return { hideThinkingBlock, toolOutputExpanded, fullscreenScrollbar, fullscreenWheelScrollLines };
+}
+
 export type InteractiveEngineCommand =
 	| { type: "engine_project_trust_start"; componentId: string; kind: "select" | "confirm" | "input"; title: string }
 	| { type: "engine_project_trust_end"; componentId: string }
-	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
+	| {
+			type: "engine_custom_render";
+			componentId: string;
+			requestId: number;
+			width: number;
+			rows: number;
+			renderSettings?: EngineHostRenderSettings;
+	  }
 	| { type: "engine_custom_input"; componentId: string; requestId: number; data: string }
 	| { type: "engine_custom_copy_result"; componentId: string; requestId: number; error?: string }
 	| { type: "engine_custom_scroll"; componentId: string; state: WidgetScrollState }
@@ -705,12 +741,14 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 		typeof value.width === "number" &&
 		typeof value.rows === "number"
 	) {
+		const renderSettings = parseEngineHostRenderSettings(value.renderSettings);
 		return {
 			type: value.type,
 			componentId: value.componentId,
 			requestId: value.requestId,
 			width: value.width,
 			rows: value.rows,
+			...(renderSettings === undefined ? {} : { renderSettings }),
 		};
 	}
 	if (value.type === "engine_custom_input" && typeof value.requestId === "number" && typeof value.data === "string")

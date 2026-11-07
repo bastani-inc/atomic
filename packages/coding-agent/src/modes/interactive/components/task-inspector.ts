@@ -13,10 +13,9 @@ import type { PromptRoute, TaskId } from "../../../core/tasks/contracts.js";
 import { OwnerTaskStore } from "../../../core/tasks/owner-store.js";
 import { ownerTaskViewSource, type TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
-import { chatEntriesFromAgentMessages, renderChatMessageEntry } from "./chat-message-renderer.ts";
-import { mouseWheelDeltaRows } from "./chat-transcript.js";
+import { parseWheelReport } from "./chat-transcript.js";
 import { renderExtensionStatusRow } from "./footer.ts";
-import { keyHintIfBound } from "./keybinding-hints.js";
+import { keyHintIfBound, keyText } from "./keybinding-hints.js";
 import {
 	TaskDetail,
 	type TaskDetailContent,
@@ -25,26 +24,33 @@ import {
 	taskDetailSummary,
 } from "./task-detail.js";
 import { type TaskListSection, taskListSections } from "./task-list.js";
-import { TaskLiveTranscript } from "./task-live-transcript.js";
 import { TaskNavigation } from "./task-navigation.js";
 import { taskDisplayText, taskLabel, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
+import {
+	TaskAgentTranscriptPage,
+	TaskCommandOutputPage,
+	type TaskTranscriptEnvironment,
+	type TaskTranscriptPage,
+} from "./task-transcript-page.ts";
+
+const DETAIL_WHEEL_ROWS = 4;
+
+/** The host owns thinking display; only its default physical key, as a remap may reuse an editor key. */
+function isHostThinkingToggle(data: string): boolean {
+	return matchesKey(data, "ctrl+t") && getKeybindings().matches(data, "app.thinking.toggle");
+}
 
 /** Focused view only. The task source and original session remain the authorities. */
 export class TaskInspector implements Component {
 	readonly navigation: TaskNavigation;
 	private actionIndex = 0;
 	private confirmation?: (answer: boolean) => void;
-	private transcript?: Component[];
-	private liveTranscript?: TaskLiveTranscript;
-	private transcriptRefreshPending = false;
-	private transcriptRequested = false;
-	private transcriptLoading = false;
-	private transcriptHistorical = false;
-	private transcriptPageRows = 5;
-	private cursor?: string;
+	/** The open transcript of the selected task, on the shared chat stack. */
+	private transcript?: TaskTranscriptPage;
 	private status = "";
 	/** Why the last stop did not reach its task; shown under the list until the next key. */
-	private stopFailure = "";
+	/** A failure shown once on the task pages, until the next key. */
+	private failureNotice = "";
 	private scroll = 0;
 	private detailContent: Omit<TaskDetailContent, "stdinAvailable"> = {};
 	private detailTaskId?: TaskId;
@@ -53,30 +59,28 @@ export class TaskInspector implements Component {
 	private statusWatch?: { taskId: TaskId; release: () => void };
 	private readonly input = new Input();
 	private readonly unsubscribe: () => void;
+	private readonly transcriptEnvironment: () => TaskTranscriptEnvironment | undefined;
 	constructor(
 		privateStore: OwnerTaskStore | TaskViewSource,
 		privateRender: () => void,
 		privateClose: () => void,
 		openQuestion?: (route: PromptRoute) => void,
+		transcriptEnvironment: () => TaskTranscriptEnvironment | undefined = () => undefined,
 	) {
 		this.store = privateStore instanceof OwnerTaskStore ? ownerTaskViewSource(privateStore) : privateStore;
 		this.requestRender = privateRender;
 		this.close = privateClose;
+		this.transcriptEnvironment = transcriptEnvironment;
 		this.navigation = new TaskNavigation(getKeybindings() as KeybindingsManager, {
 			inspect: () => {
-				this.releaseLiveTranscript();
+				this.closeTranscript();
 				this.actionIndex = 0;
 				this.scroll = 0;
-				this.transcript = undefined;
-				this.transcriptRequested = false;
-				this.transcriptLoading = false;
-				this.transcriptHistorical = false;
 				void this.loadDetail();
 			},
 			transcript: () => {
 				this.detailGeneration++;
-				this.scroll = 0;
-				void this.loadTranscript();
+				this.openTranscript();
 			},
 			foreground: (task) => {
 				void this.store.foregroundTask(task.ref.taskId).then((result) => {
@@ -92,7 +96,7 @@ export class TaskInspector implements Component {
 			cancel: (task) => {
 				void this.store.cancelTask(task.ref.taskId).then((result) => {
 					// A stop that did not reach the task says so, instead of leaving it looking untouched.
-					this.stopFailure = result.ok ? "" : `Could not stop the task: ${result.error.message}`;
+					this.failureNotice = result.ok ? "" : `Could not stop the task: ${result.error.message}`;
 					this.requestRender();
 				});
 			},
@@ -109,9 +113,8 @@ export class TaskInspector implements Component {
 		});
 		this.unsubscribe = this.store.subscribe(() => {
 			this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
-			if (this.transcriptRequested) {
-				this.refreshTranscript();
-			} else if (this.navigation.focus.kind === "detail") void this.loadDetail();
+			if (this.transcript) this.transcript.refresh();
+			else if (this.navigation.focus.kind === "detail") void this.loadDetail();
 			this.requestRender();
 		});
 		this.navigation.update(this.orderedSections().flatMap((section) => section.tasks));
@@ -132,12 +135,12 @@ export class TaskInspector implements Component {
 	dispose(): void {
 		this.disposed = true;
 		this.releaseStatusWatch();
-		this.releaseLiveTranscript();
+		this.closeTranscript();
 		this.confirmation?.(false);
 		this.unsubscribe();
 	}
 	invalidate(): void {
-		for (const component of this.transcript ?? []) component.invalidate();
+		this.transcript?.invalidate();
 	}
 	private selected() {
 		return this.store.backgroundTasks.find((task) => task.ref.taskId === this.navigation.selectedTaskId);
@@ -179,102 +182,44 @@ export class TaskInspector implements Component {
 		const row = renderExtensionStatusRow(this.store.extensionStatuses(task.ref.taskId), width);
 		return row === undefined ? [] : [row];
 	}
-	private releaseLiveTranscript(): void {
-		this.liveTranscript?.dispose();
-		this.liveTranscript = undefined;
-		this.transcriptRefreshPending = false;
-	}
-	private refreshTranscript(): void {
-		if (this.disposed || !this.transcriptRequested) return;
-		const task = this.selected();
-		const follow = task && this.store.followTaskTranscript(task.ref.taskId);
-		if (follow?.session !== undefined && this.liveTranscript?.source === follow.session) return;
-		// History-only sources have no live tail; keep their retained page anchored.
-		if (follow?.historyOnly === true && this.transcriptHistorical) return;
-		if (this.transcriptLoading) this.transcriptRefreshPending = true;
-		else void this.loadTranscript();
-	}
-	private async loadTranscript(earlier = false): Promise<void> {
+	/** Opens the selected task's transcript: an agent's chat or a shell's retained output, on the shared stack. */
+	private openTranscript(): void {
+		this.closeTranscript();
 		const task = this.selected();
 		if (!task) return;
-		const generation = ++this.detailGeneration;
-		const focus = this.navigation.focus;
-		this.transcriptRequested = true;
-		this.transcriptLoading = true;
-		if (earlier) this.transcriptHistorical = true;
-		this.requestRender();
-		try {
-			if (task.kind === "command") {
-				const count = BigInt(task.output.byteCount);
-				const page = await this.store.readTaskOutput(task.ref.taskId, {
-					start: String(count > 8192n ? count - 8192n : 0n),
-					maximumBytes: 8192,
-				});
-				if (
-					this.disposed ||
-					generation !== this.detailGeneration ||
-					focus !== this.navigation.focus ||
-					task.ref.taskId !== this.navigation.selectedTaskId
-				)
-					return;
-				const text = page.ok ? page.value.text : page.error.message;
-				this.transcript = [
-					new Text(text.split("\n").map(taskDisplayText).join("\n") || "No output available", 0, 0),
-				];
-				this.cursor = undefined;
-				this.status =
-					count > 8192n ? "Earlier output omitted · showing retained 8 KiB tail" : "Retained shell output";
-				this.requestRender();
-				return;
-			}
-			const read = this.store.readTaskTranscript(task.ref.taskId, earlier ? this.cursor : undefined);
-			const page = read instanceof Promise ? await read : read;
-			if (
-				this.disposed ||
-				generation !== this.detailGeneration ||
-				focus !== this.navigation.focus ||
-				task.ref.taskId !== this.navigation.selectedTaskId
-			)
-				return;
-			if (!page.ok) {
-				this.status = page.error.message;
-				this.requestRender();
-				return;
-			}
-			const messages = [...page.value.messages];
-			const follow = this.store.followTaskTranscript(task.ref.taskId);
-			const components = chatEntriesFromAgentMessages(messages).map((entry) =>
-				renderChatMessageEntry(entry, {
-					ui: { requestRender: this.requestRender },
-					cwd: process.cwd(),
-					hideThinkingBlock: true,
-					toolOutputExpanded: true,
-					showImages: false,
-				}),
-			);
-			if (!earlier && follow?.session?.subscribe) {
-				this.releaseLiveTranscript();
-				this.liveTranscript = new TaskLiveTranscript(follow.session, messages, this.requestRender);
-				this.transcript = [this.liveTranscript];
-			} else this.transcript = earlier ? [...components, ...(this.transcript ?? [])] : components;
-			this.cursor = page.value.nextCursor;
-			this.status = this.cursor ? "PageUp: earlier retained messages" : "";
+		const environment = this.transcriptEnvironment();
+		if (task.kind === "command") {
+			const taskId = task.ref.taskId;
+			const byteCount = () =>
+				BigInt(this.store.tasks.find((candidate) => candidate.ref.taskId === taskId)?.output.byteCount ?? "0");
+			this.transcript = new TaskCommandOutputPage(this.store, taskId, byteCount, environment, this.requestRender);
+		} else if (environment === undefined) {
+			this.status = "Transcript inspection is unavailable in this host.";
 			this.requestRender();
-		} catch {
-			if (!this.disposed && generation === this.detailGeneration && focus === this.navigation.focus) {
-				this.transcript = [];
-				this.status = "Task output unavailable";
-				this.requestRender();
-			}
-		} finally {
-			if (generation === this.detailGeneration) {
-				this.transcriptLoading = false;
-				if (this.transcriptRefreshPending) {
-					this.transcriptRefreshPending = false;
-					this.refreshTranscript();
-				}
-			}
+			return;
+		} else
+			this.transcript = new TaskAgentTranscriptPage(
+				this.store,
+				task.ref.taskId,
+				environment,
+				this.requestRender,
+				(reason) => this.reportLate(reason, environment),
+			);
+		this.requestRender();
+		void this.transcript.load();
+	}
+	/** A transcript's message failed after the reader left it: on the task pages if they are open, else through the host. */
+	private reportLate(reason: string, environment: TaskTranscriptEnvironment): void {
+		if (this.disposed) {
+			environment.notify?.(reason);
+			return;
 		}
+		this.failureNotice = reason;
+		this.requestRender();
+	}
+	private closeTranscript(): void {
+		this.transcript?.dispose();
+		this.transcript = undefined;
 	}
 	private async loadDetail(): Promise<void> {
 		const selectedId = this.selected()?.ref.taskId;
@@ -317,8 +262,12 @@ export class TaskInspector implements Component {
 		}
 		if (current()) this.requestRender();
 	}
+	/** Every key belongs to the inspector except the host's thinking toggle when it leaves that alone. */
 	handleInput(data: string): boolean {
-		this.stopFailure = "";
+		return this.route(data) || !isHostThinkingToggle(data);
+	}
+	private route(data: string): boolean {
+		this.failureNotice = "";
 		if (this.confirmation) {
 			if (data === "y" || data === "n" || matchesKey(data, "escape")) {
 				const answer = this.confirmation;
@@ -328,14 +277,12 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
-		const wheel = mouseWheelDeltaRows(data);
-		if (wheel !== 0) {
-			if (this.navigation.focus.kind === "tasks") this.navigation.moveSelection(Math.sign(wheel));
-			else if (this.navigation.focus.kind === "detail") {
-				if (this.transcriptRequested && wheel < 0 && this.scroll === 0 && this.cursor && !this.transcriptLoading)
-					void this.loadTranscript(true);
-				else this.scroll = Math.max(0, this.scroll + wheel);
-			}
+		if (this.transcript) return this.handleTranscriptInput(data, this.transcript);
+		const wheel = parseWheelReport(data);
+		if (wheel !== undefined) {
+			if (this.navigation.focus.kind === "tasks") this.navigation.moveSelection(wheel.direction);
+			else if (this.navigation.focus.kind === "detail")
+				this.scroll = Math.max(0, this.scroll + wheel.direction * DETAIL_WHEEL_ROWS);
 			this.requestRender();
 			return true;
 		}
@@ -345,19 +292,8 @@ export class TaskInspector implements Component {
 			matchesKey(data, "escape") ||
 			(matchesKey(data, "left") && this.navigation.focus.kind !== "stdin" && !this.configuredTaskKey(data))
 		) {
-			if (this.transcriptRequested) {
-				this.releaseLiveTranscript();
-				this.detailGeneration++;
-				this.transcript = undefined;
-				this.transcriptRequested = false;
-				this.transcriptLoading = false;
-				this.transcriptHistorical = false;
-				this.scroll = 0;
-				void this.loadDetail();
-			} else {
-				this.navigation.handleInput("\x1b", "tasks");
-				if (this.navigation.focus.kind === "composer") this.close();
-			}
+			this.navigation.handleInput("\x1b", "tasks");
+			if (this.navigation.focus.kind === "composer") this.close();
 			this.requestRender();
 			return true;
 		}
@@ -366,21 +302,8 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
-		if (data === "x" && !this.configuredTaskKey(data)) {
+		if (data === "x" && this.navigation.focus.kind === "detail" && !this.configuredTaskKey(data)) {
 			void this.navigation.activate("cancel");
-			return true;
-		}
-		if (this.transcriptRequested) {
-			if (this.configuredTaskKey(data)) this.navigation.handleInput(data, "tasks");
-			else if (matchesKey(data, "up")) this.scroll = Math.max(0, this.scroll - 1);
-			else if (matchesKey(data, "down")) this.scroll++;
-			else if (matchesKey(data, "pageUp")) {
-				if (this.scroll === 0 && this.cursor && !this.transcriptLoading) void this.loadTranscript(true);
-				else this.scroll = Math.max(0, this.scroll - this.transcriptPageRows);
-			} else if (matchesKey(data, "pageDown")) this.scroll += this.transcriptPageRows;
-			else if (matchesKey(data, "home")) this.scroll = 0;
-			else if (matchesKey(data, "end")) this.scroll = Number.MAX_SAFE_INTEGER;
-			this.requestRender();
 			return true;
 		}
 		const task = this.selected();
@@ -407,6 +330,18 @@ export class TaskInspector implements Component {
 		this.requestRender();
 		return true;
 	}
+	/** A transcript is a chat: Escape, or Left with nothing typed, goes back; every other key belongs to it. */
+	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
+		if (matchesKey(data, "escape") || (matchesKey(data, "left") && !transcript.hasDraft())) {
+			this.closeTranscript();
+			this.detailGeneration++;
+			this.scroll = 0;
+			void this.loadDetail();
+			this.requestRender();
+			return true;
+		}
+		return transcript.handleInput(data);
+	}
 	private configuredTaskKey(data: string): boolean {
 		return (["app.tasks.inspect", "app.tasks.foreground", "app.tasks.cancel", "app.tasks.input"] as const).some(
 			(key) => getKeybindings().matches(data, key),
@@ -426,52 +361,44 @@ export class TaskInspector implements Component {
 	render(width: number): string[] {
 		return this.renderViewport(width, Math.max(3, (process.stdout.rows || 24) - 5));
 	}
-	private renderTranscriptViewport(width: number, budget: number): string[] {
+	private renderTranscriptPage(width: number, budget: number, transcript: TaskTranscriptPage): string[] {
 		const task = this.selected();
-		const statusRows = this.taskStatusRows(width);
-		const failure = this.stopFailure ? [theme.fg("warning", this.stopFailure)] : [];
-		const room = Math.max(1, budget - 5 - statusRows.length - failure.length);
-		this.transcriptPageRows = room;
-		const rows = this.transcript?.flatMap((component) => component.render(width)) ?? [
-			this.transcriptLoading ? "Loading transcript…" : this.status,
-		];
-		this.scroll = Math.min(this.scroll, Math.max(0, rows.length - room));
-		const visible = rows.slice(this.scroll, this.scroll + room);
-		// Transcript tools own their backgrounds. Keep them out of a nested box,
-		// strip terminal movement, and reset styles at every viewport row boundary.
-		const safeLine = (line: string) =>
-			line
-				.split(/(\x1b\[[0-9;:]*m)/g)
-				.map((part, index) =>
-					index % 2 ? part : stripVTControlCharacters(part).replace(/[\x00-\x1f\x7f-\x9f]/g, " "),
-				)
-				.join("");
-		const fit = (line: string) => truncateToWidth(safeLine(line), Math.max(1, width)) + "\x1b[0m";
-		return [
+		const fitWidth = (line: string) => truncateToWidth(line, Math.max(1, width));
+		const header = [
 			theme.bold(`Transcript · ${task ? taskDisplayText(taskLabel(task)) : "Task"}`),
 			task ? taskDetailSummary(task) : "",
 			theme.fg("borderMuted", "─".repeat(Math.max(0, width))),
-			...visible,
-			...Array.from({ length: Math.max(0, room - visible.length) }, () => ""),
-			theme.fg(
-				"dim",
-				`Lines ${rows.length ? this.scroll + 1 : 0}–${Math.min(rows.length, this.scroll + room)} of ${rows.length}${this.cursor ? " · PgUp at top: earlier history" : ""}${this.status ? ` · ${this.status}` : ""}`,
-			),
-			theme.fg("dim", "↑↓ scroll · PgUp/PgDn page · Home/End · ←/Esc back"),
+		].map(fitWidth);
+		const notes = [transcript.status, this.status].filter(Boolean).join(" · ");
+		const hints = [
+			"Esc back",
+			task?.kind === "agent" && this.store.sendTaskMessage !== undefined ? "Enter messages the agent" : "",
+			`${keyText("tui.altScreen.top")}/${keyText("tui.altScreen.bottom")} top/latest`,
+		]
+			.filter(Boolean)
+			.join(" · ");
+		const footer = [...(notes ? [notes] : []), hints].map((line) => fitWidth(theme.fg("dim", line)));
+		const failure = this.failureNotice ? [fitWidth(theme.fg("warning", this.failureNotice))] : [];
+		const statusRows = this.taskStatusRows(width);
+		const room = Math.max(1, budget - header.length - footer.length - failure.length - statusRows.length);
+		const body = transcript.render(width, room);
+		return [
+			...header,
+			...body,
+			...Array.from({ length: Math.max(0, room - body.length) }, () => ""),
+			...footer,
 			...failure,
 			...statusRows,
-		]
-			.map(fit)
-			.slice(0, Math.max(1, budget));
+		].slice(0, Math.max(1, budget));
 	}
 	renderViewport(width: number, budget: number): string[] {
-		if (this.transcriptRequested && !this.confirmation && this.navigation.focus.kind === "detail")
-			return this.renderTranscriptViewport(width, budget);
+		if (this.transcript && !this.confirmation && this.navigation.focus.kind === "detail")
+			return this.renderTranscriptPage(width, budget, this.transcript);
 		const framed = width >= 20 && budget >= 7;
 		const inner = Math.max(1, width - (framed ? 4 : 0));
 		const current = this.selected();
 		const detail = this.navigation.focus.kind === "detail";
-		const selectingAction = current && detail && !this.transcriptRequested && !this.confirmation;
+		const selectingAction = current && detail && !this.transcript && !this.confirmation;
 		const actions = selectingAction
 			? taskDetailActions(current.execution, current.attention, this.stdinAvailable())
 			: [];
@@ -495,20 +422,19 @@ export class TaskInspector implements Component {
 			? "y confirm · n/Esc keep running"
 			: this.navigation.focus.kind === "stdin"
 				? "Enter send · Esc back"
-				: this.transcriptRequested
-					? "↑↓ scroll · PgUp/PgDn page · ←/Esc back"
-					: [
-							detail ? "PgUp/PgDn scroll · ↑↓ actions" : "↑↓ select",
-							inspect,
-							current && current.execution.kind !== "settled"
-								? keyHintIfBound("app.tasks.cancel", "stop") || (!this.configuredTaskKey("x") ? "x stop" : "")
-								: "",
-							"Esc back",
-						]
-							.filter(Boolean)
-							.join(" · ");
+				: [
+						detail ? "PgUp/PgDn scroll · ↑↓ actions" : "↑↓ select",
+						inspect,
+						current && current.execution.kind !== "settled"
+							? keyHintIfBound("app.tasks.cancel", "stop") ||
+								(detail && !this.configuredTaskKey("x") ? "x stop" : "")
+							: "",
+						"Esc back",
+					]
+						.filter(Boolean)
+						.join(" · ");
 		const footer = theme.fg("dim", truncateToWidth(`/tasks · ${hints}`, width));
-		const failure = this.stopFailure ? [theme.fg("warning", truncateToWidth(this.stopFailure, width))] : [];
+		const failure = this.failureNotice ? [theme.fg("warning", truncateToWidth(this.failureNotice, width))] : [];
 		if (!framed)
 			return [...compactSummary, ...view, ...actionRow, footer, ...failure, ...statusRows]
 				.map((line) => truncateToWidth(line, width))
@@ -549,9 +475,6 @@ export class TaskInspector implements Component {
 			).render(width);
 		if (this.navigation.focus.kind === "stdin")
 			return [`Input to ${task?.title} · Escape: tasks`, ...this.input.render(width), this.status];
-		if (this.transcript) return [...this.transcript.flatMap((component) => component.render(width)), this.status];
-		if (this.transcriptRequested)
-			return [this.transcriptLoading ? "Loading transcript…" : this.status || "Transcript unavailable"];
 		if (task && this.navigation.focus.kind === "detail") {
 			return [
 				...new TaskDetail(task, {

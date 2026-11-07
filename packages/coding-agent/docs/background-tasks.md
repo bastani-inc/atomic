@@ -207,22 +207,28 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 | --- | --- |
 | Task list | Up/Down selects; Enter opens detail; Escape returns to chat. |
 | Task detail | Up/Down selects an action; Enter activates it; PageUp/PageDown scrolls the body. |
-| Transcript | Up/Down scrolls; PageUp/PageDown moves one viewport; PageUp at the top loads earlier history; Home/End jumps within loaded history. |
-| Go back | Left or Escape returns from transcript to detail, then from detail to the list. |
-| Stop | `x` requests cancellation; confirm with `y`, or keep running with `n` or Escape. |
+| Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
+| Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |
+| Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. Up/Down, Home/End and Left/Right edit the prompt. |
+| Go back | Escape returns from transcript to detail, then from detail to the list. Left does the same when the prompt is empty. |
+| Stop | On a task's detail page, `x` requests cancellation; confirm with `y`, or keep running with `n` or Escape. A bound `app.tasks.cancel` key also works from the list. |
 | Shell input | Select Input when offered; Enter sends the text plus a newline; Escape leaves input mode. |
 
-Configured task bindings take precedence over the default Left, page, and `x` shortcuts. Input mode receives ordinary typing, including `x`, without stopping the task. The footer shows the applicable controls.
+Configured task bindings take precedence over the default Left, page, and `x` shortcuts. A transcript's prompt and input mode receive ordinary typing, including `x`, without stopping the task. The footer shows the applicable controls.
+
+Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row offers **↓ Jump to latest message**; click it or press Ctrl+End to follow the output again.
 
 The list groups **Agents** and **Shells**, with counts and status symbols. Detail views pin identity, state, available metrics, and the selected action while their body scrolls. Missing metrics are omitted rather than displayed as zero. Recorded zero values remain visible.
 
 Agent rows and completion cards show the resolved model and reasoning setting, for example `openai-codex/gpt-6-astra · thinking medium`. These settings update on fallback and remain after completion. Foreground results retain the same metadata. Missing settings are not inferred from token counts; early launch receipts may not yet have a resolved model.
 
-Agent details include recent retained tool activity, the prompt, a latest-response preview, and error or attention information. Transcript inspection uses a dedicated scrolling view with a pinned title, line position, and controls, rather than nesting full chat components inside a detail box. It renders retained messages and tool results without hidden reasoning or inline images. Earlier pages do not jump back to the latest page when background activity arrives.
+Agent details include recent retained tool activity, the prompt, a latest-response preview, and error or attention information. Transcript inspection shows the agent's conversation as a chat: retained messages, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and extension notices, with a compaction status while the agent compacts. Earlier pages do not jump back to the latest page when background activity arrives.
+
+Messages you send from a transcript reach the agent the way an Intercom message does, and appear in its transcript once the agent receives them. An agent without an Intercom target cannot receive messages; the transcript says so when you press Enter. If Intercom does not deliver or confirm a message, the transcript shows why and keeps your text in the prompt. If you already left the transcript, the task pages show why (or, once you closed them, the chat you opened them from, while it stays open), and the text is back in the prompt when you open that transcript again from the same chat.
 
 An agent's detail and transcript pages end with a status row for that task's own extension status lines, such as a tokens-per-second counter set by an extension the subagent loaded. It updates live, is separate from the chat's own status row, and disappears when the task ends. The compact picker and shell pages show none.
 
-An open live transcript updates directly from the child's session events, including streaming assistant text and partial/final tool results. Shell output refreshes on task state updates, including updates received during an earlier output read. You do not need to leave and reopen the transcript. Reading earlier retained pages keeps your position while the live tail continues updating.
+An open live transcript updates directly from the child's session events, including streaming assistant text, partial/final tool results, and compaction. Shell output refreshes on task state updates, including updates received during an earlier output read. You do not need to leave and reopen the transcript. Reading earlier retained pages keeps your position while the live tail continues updating. A transcript that is read again rather than streamed, such as an agent's in a workflow stage on a local worker, holds still while you read above its end and catches up when you return to the latest message.
 
 Shell details show the command, available exit information, and a bounded output tail. The preview shows up to ten wrapped lines from the retained 8 KiB tail. Output gaps and omitted earlier content are labelled. An empty output stream says **No output available**. Shell transcript inspection exposes the retained tail, not an invented agent conversation or an unlimited log viewer.
 

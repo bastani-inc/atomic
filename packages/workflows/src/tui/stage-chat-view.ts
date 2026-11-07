@@ -18,9 +18,7 @@
  *  - https://pi.dev/docs/latest/tui (canonical Pi-tui component contract)
  */
 
-import { keyText, TranscriptFollowIndicator } from "@bastani/atomic";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
-import { isKeybindingsLike, TUI_ACTION } from "./keybindings-adapter.js";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
 	renderBlockedBody,
@@ -171,14 +169,6 @@ export class StageChatView implements Component, Focusable {
 		if (blocked) this.chatHost.scrollToBottom();
 
 		let bodyLines: string[];
-		let transcriptBodyActive = false;
-		let reservedIndicatorLines: readonly string[] = [];
-		const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-		const indicator = new TranscriptFollowIndicator({
-			isFollowing: () => this.chatHost.bodyScrollFromBottom() === 0,
-			keyLabel: () =>
-				keybindings?.getKeys?.(TUI_ACTION.altScreenBottom)?.join("/") ?? keyText("tui.altScreen.bottom"),
-		});
 		const renderTranscript = (rows: number): string[] => this.chatHost.renderBody(w, rows);
 		const waitingNotice = pooledStageWaitingNotice(ctx, stage);
 		if (bodyBudget <= 0) {
@@ -188,54 +178,19 @@ export class StageChatView implements Component, Focusable {
 		} else if (blocked) {
 			bodyLines = renderBlockedBody(ctx, w, bodyBudget, stage);
 		} else if (!readOnlyArchive && isPaused(ctx, stage)) {
-			reservedIndicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
-			bodyLines = renderPausedBody(
-				ctx,
-				w,
-				bodyBudget,
-				reservedIndicatorLines,
-				() => indicator.render(w),
-				renderTranscript,
-			);
+			bodyLines = renderPausedBody(ctx, w, bodyBudget, renderTranscript);
 		} else if (waitingNotice !== undefined) {
 			bodyLines = renderStartingBody(ctx, w, bodyBudget, waitingNotice, renderTranscript);
 		} else if (readOnlyArchive) {
-			reservedIndicatorLines = bodyBudget > 1 ? indicator.render(w) : [];
-			bodyLines = renderReadOnlyArchiveBody(
-				ctx,
-				w,
-				bodyBudget,
-				stage,
-				reservedIndicatorLines,
-				() => indicator.render(w),
-				renderTranscript,
-			);
+			bodyLines = renderReadOnlyArchiveBody(ctx, w, bodyBudget, stage, renderTranscript);
 		} else {
-			transcriptBodyActive = true;
 			bodyLines = renderTranscript(bodyBudget);
 		}
-		const indicatorLines = transcriptBodyActive && bodyBudget > 1 ? indicator.render(w) : [];
-		const indicatorVisible = indicatorLines.length > 0;
-		const dropBodyRow = transcriptBodyActive && indicatorVisible && bodyLines.length >= bodyBudget;
-		// The indicator's row comes out of the body, and the end it comes from
-		// decides which rows the reader can reach at all. Taken off the top, the
-		// first transcript row is unpaintable: the reader is already parked as
-		// high as the viewport goes and the row is still clipped. A body already
-		// parked at row zero therefore gives up its last row instead. Either way
-		// the body is rendered at the full budget, which is what keeps the
-		// viewport size — and the page arithmetic that reads it — stable while
-		// the indicator is visible.
-		const parkedAtTop = this.chatHost.bodyMaxScroll() - this.chatHost.bodyScrollFromBottom() <= 0;
-		const visibleBodyLines = dropBodyRow
-			? parkedAtTop
-				? bodyLines.slice(0, bodyBudget - 1)
-				: bodyLines.slice(1, bodyBudget)
-			: bodyLines.slice(0, bodyBudget);
+		const visibleBodyLines = bodyLines.slice(0, bodyBudget);
 		const lines = [
 			...headerLines,
 			...sepLines,
 			...visibleBodyLines,
-			...indicatorLines,
 			...visiblePendingLines,
 			...visibleWorkingLines,
 			...visibleUsageLines,

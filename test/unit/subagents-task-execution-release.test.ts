@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { type AgentWake, AgentWakeDispatcher, type DetachedToolCall, type DetachedToolResult } from "@bastani/atomic";
 import { afterEach, test } from "vitest";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
@@ -24,7 +25,12 @@ import {
 	runAgentTask,
 	subagentTaskRegistrySizes,
 } from "../../packages/subagents/src/runs/foreground/task-execution.js";
-import type { RunSyncOptions, SingleResult } from "../../packages/subagents/src/shared/types.js";
+import {
+	type RunSyncOptions,
+	type SingleResult,
+	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
+	SUBAGENT_RESULT_INTERCOM_EVENT,
+} from "../../packages/subagents/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const agent: AgentConfig = {
@@ -191,6 +197,48 @@ test("a task's transcript is the session it bound, answering through it, with In
 	assert.equal(Object.hasOwn(bare, "completionSource"), false);
 	assert.equal(Object.hasOwn(bare, "subscribe"), false);
 	assert.equal(Object.hasOwn(bare, "getStreamingMessage"), false);
+});
+
+test("a named child's transcript reports compaction and takes messages through the parent's Intercom relay (#4521)", async () => {
+	const events = createEventBus();
+	const relayed: Array<{ to: string; message: string }> = [];
+	events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
+		const request = payload as { to: string; message: string; requestId: string };
+		relayed.push({ to: request.to, message: request.message });
+		events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, { requestId: request.requestId, delivered: true });
+	});
+	let compactions = 0;
+	const session = fakeSession({
+		getCompactionReason() {
+			compactions++;
+			return this === session ? "threshold" : undefined;
+		},
+	});
+	const named = await launch({
+		runId: "transcript-messages",
+		session,
+		options: { intercomSessionName: "worker-messages", intercomEvents: events },
+	});
+	const source = named.transcript();
+	assert.ok(source?.sendMessage);
+	assert.equal(source.getCompactionReason?.(), "threshold");
+	assert.equal(compactions, 1);
+	assert.deepEqual(await source.sendMessage("steer this way"), { delivered: true });
+	assert.deepEqual(relayed, [{ to: "worker-messages", message: "steer this way" }]);
+
+	const unrelayed = await launch({
+		runId: "transcript-no-relay",
+		session: fakeSession(),
+		options: { intercomSessionName: "worker-quiet" },
+	});
+	assert.equal(Object.hasOwn(unrelayed.transcript() ?? {}, "sendMessage"), false);
+	assert.equal(Object.hasOwn(unrelayed.transcript() ?? {}, "getCompactionReason"), false);
+	const unnamed = await launch({
+		runId: "transcript-unnamed",
+		session: fakeSession(),
+		options: { intercomEvents: events },
+	});
+	assert.equal(Object.hasOwn(unnamed.transcript() ?? {}, "sendMessage"), false);
 });
 
 test("a released child is recorded released with what it waits on and the Intercom id it had, and none when it had none (#4326)", async () => {

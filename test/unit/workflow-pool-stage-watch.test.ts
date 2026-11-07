@@ -1252,7 +1252,10 @@ test("an agent task's reply still streaming reaches a stage chat in another proc
 		assert.ok(read.task?.kind === "transcript" && read.task.result.ok);
 		assert.deepEqual(read.task.result.value.messages.at(-1), {
 			role: "assistant",
-			content: [{ type: "text", text: "half a reply" }],
+			content: [
+				{ type: "thinking", thinking: "private" },
+				{ type: "text", text: "half a reply" },
+			],
 		});
 	} finally {
 		watches.clear();

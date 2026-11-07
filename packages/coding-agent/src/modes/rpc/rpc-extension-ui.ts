@@ -372,8 +372,15 @@ export function createRpcExtensionUIContext({
 		},
 
 		getChatRenderSettings() {
+			const host = customUi?.getHostRenderSettings();
 			return {
-				hideThinkingBlock: false,
+				hideThinkingBlock: host?.hideThinkingBlock ?? false,
+				...(host === undefined
+					? {}
+					: {
+							fullscreenScrollbar: host.fullscreenScrollbar,
+							fullscreenWheelScrollLines: host.fullscreenWheelScrollLines,
+						}),
 				hiddenThinkingLabel: "Thinking...",
 				toolOutputExpanded: toolsExpanded,
 				showImages: false,

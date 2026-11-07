@@ -252,6 +252,14 @@ export class LiveChatEntriesController {
 		this.entries.push(...chatEntriesFromAgentMessages(messages));
 		this.reindexPendingTools();
 	}
+	/** Adds earlier history ahead of every entry, keeping a stream in progress and its pending tools in place. */
+	prependMessages(messages: readonly AgentMessage[]): void {
+		const entries = chatEntriesFromAgentMessages(messages);
+		if (entries.length === 0) return;
+		this.entries.unshift(...entries);
+		if (this.streamingAssistantIndex !== undefined) this.streamingAssistantIndex += entries.length;
+		this.reindexPendingTools();
+	}
 	replaceMessages(messages: readonly AgentMessage[], preservedEntries: readonly { role: string }[] = []): void {
 		this.entries.splice(0, this.entries.length, ...chatEntriesFromAgentMessages(messages), ...preservedEntries);
 		this.streamingAssistantIndex = undefined;

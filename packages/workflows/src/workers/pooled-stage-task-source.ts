@@ -1,13 +1,15 @@
-import type {
-	TaskActivity,
-	TaskDetailText,
-	TaskId,
-	TaskOutputView,
-	TaskRecord,
-	TaskTranscriptFollow,
-	TaskTranscriptView,
-	TaskViewResult,
-	TaskViewSource,
+import {
+	rehydrateTaskMessageError,
+	type TaskActivity,
+	type TaskDetailText,
+	type TaskId,
+	TaskMessageError,
+	type TaskOutputView,
+	type TaskRecord,
+	type TaskTranscriptFollow,
+	type TaskTranscriptView,
+	type TaskViewResult,
+	type TaskViewSource,
 } from "@bastani/atomic";
 import type { PooledStageTasks, PooledTaskAction, PooledTaskReply } from "./stage-watch-types.js";
 
@@ -34,6 +36,8 @@ export class PooledStageTaskSource implements TaskViewSource {
 
 	constructor(
 		private readonly run: (taskId: TaskId, action: PooledTaskAction) => Promise<PooledTaskReply | undefined>,
+		/** Whether a failure of `run` is the worker refusing the action before it ran. */
+		private readonly refusedBeforeRunning: (error: unknown) => boolean = () => false,
 	) {}
 
 	/** Adopts the state the worker sent. */
@@ -117,6 +121,36 @@ export class PooledStageTaskSource implements TaskViewSource {
 	}
 	watchExtensionStatuses(_id: TaskId, listener: () => void): () => void {
 		return this.subscribe(listener);
+	}
+	/**
+	 * Runs on the worker, whose session owns the task's Intercom relay; its typed failure comes back as data. Only
+	 * a refusal before the worker ran the action is `delivery-refused`: after a lost or unreadable answer the message
+	 * may have arrived, so it is `delivery-unconfirmed` and not retryable.
+	 */
+	async sendTaskMessage(id: TaskId, text: string): Promise<void> {
+		let reply: PooledTaskReply | undefined;
+		try {
+			reply = await this.run(id, { kind: "message", text });
+		} catch (cause) {
+			if (this.refusedBeforeRunning(cause))
+				throw new TaskMessageError("delivery-refused", { taskId: id }, { cause });
+			throw new TaskMessageError(
+				"delivery-unconfirmed",
+				{ taskId: id, detail: "the local worker did not answer" },
+				{ cause },
+			);
+		}
+		if (reply === undefined) throw new TaskMessageError("task-unavailable", { taskId: id });
+		if (reply.kind !== "message")
+			throw new TaskMessageError("delivery-unconfirmed", {
+				taskId: id,
+				detail: "unexpected reply from the local worker",
+			});
+		if (reply.error === undefined) return;
+		throw (
+			rehydrateTaskMessageError(reply.error) ??
+			new TaskMessageError("delivery-unconfirmed", { taskId: id, detail: "unreadable reply from the local worker" })
+		);
 	}
 
 	private async request(id: TaskId, action: PooledTaskAction): Promise<TaskViewResult<PooledTaskReply>> {

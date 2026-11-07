@@ -21,8 +21,9 @@ import type {
 } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../../../coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../agents/agents.js";
+import { sendTaskTranscriptMessage } from "../../intercom/task-message.js";
 import { taskRecordModel } from "../../shared/model-info.js";
-import type { RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
+import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult } from "../../shared/types.js";
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
@@ -302,19 +303,25 @@ export function takeStoppedQueuedSubagentChild(taskId: string): QueuedSubagentCh
 
 /**
  * The transcript a task keeps. It is built here, outside `runAgentTask`: a closure made inside it would keep the
- * whole launch input reachable for as long as the task exists, a released child's session manager included.
+ * whole launch input reachable for as long as the task exists, a released child's session manager included. A child
+ * with an Intercom target accepts messages typed into its transcript through the parent's Intercom relay.
  */
 function taskTranscriptSource(
 	session: TaskTranscriptSource,
 	runId: string,
 	intercomTarget: string | undefined,
+	intercomEvents: IntercomEventBus | undefined,
 ): TaskTranscriptSource {
 	return {
 		getSessionId: () => session.getSessionId(),
 		getEntries: () => session.getEntries(),
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
+		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),
 		...(intercomTarget === undefined ? {} : { completionSource: { runId, intercomTarget } }),
+		...(intercomTarget === undefined || intercomEvents === undefined
+			? {}
+			: { sendMessage: (text: string) => sendTaskTranscriptMessage(intercomEvents, intercomTarget, text) }),
 	};
 }
 
@@ -597,7 +604,12 @@ export async function runAgentTask(input: {
 							reportActivity: context.reportActivity,
 							bindTranscript: (session) =>
 								context.bindTranscript(
-									taskTranscriptSource(session, input.options.runId, input.options.intercomSessionName),
+									taskTranscriptSource(
+										session,
+										input.options.runId,
+										input.options.intercomSessionName,
+										input.options.intercomEvents,
+									),
 								),
 							setExtensionStatus: context.setExtensionStatus,
 							clearExtensionStatuses: context.clearExtensionStatuses,

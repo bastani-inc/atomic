@@ -185,6 +185,7 @@ export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
 	state.compacting = false;
 	stopChatSessionWorkingLifecycle(state, false);
 	state.transcriptComponent.invalidate();
+	state.bodyViewport.dispose();
 	state.editor = undefined;
 }
 

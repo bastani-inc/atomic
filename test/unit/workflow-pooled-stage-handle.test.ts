@@ -5,6 +5,8 @@
 import assert from "node:assert/strict";
 import type { AgentSessionEvent } from "@bastani/atomic";
 import { test } from "vitest";
+import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
 import {
 	type OutboundEntry,
 	openPooledStageHandle,
@@ -667,6 +669,44 @@ test("a session command on a stage that finished is refused with the post-mortem
 	assert.ok(opened.ok);
 	await assert.rejects(opened.handle.compact(), /finished first; open it again to continue in post-mortem chat/);
 	opened.handle.dispose();
+});
+
+test("a task message the worker refused can be sent again, and one whose answer was lost is unconfirmed (#4521)", async () => {
+	let answer: () => Promise<{ ok: false; refusal: "PoolPausedOrQuitting" | "StageNotLive" | "StaleAttempt" }> =
+		async () => ({ ok: false, refusal: "PoolPausedOrQuitting" });
+	const fake = singleWatch({ ...snapshot(), isStreaming: false });
+	const transport: PooledStageTransport = { ...fake.transport, session: () => answer() };
+	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
+	assert.ok(opened.ok);
+	const send = () =>
+		opened.handle.taskSource().sendTaskMessage!("task-1" as TaskId, "hello").then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+	try {
+		for (const refusal of ["PoolPausedOrQuitting", "StageNotLive"] as const) {
+			answer = async () => ({ ok: false, refusal });
+			const refused = await send();
+			assert.ok(refused instanceof TaskMessageError);
+			assert.equal(refused.code, "delivery-refused", refusal);
+			assert.equal(refused.retryable, true);
+		}
+		// A worker that exits mid-command answers its pending commands as a stale attempt, after it may have relayed.
+		answer = async () => ({ ok: false, refusal: "StaleAttempt" });
+		const stale = await send();
+		assert.ok(stale instanceof TaskMessageError);
+		assert.equal(stale.code, "delivery-unconfirmed");
+		assert.equal(stale.retryable, false);
+		answer = async () => {
+			throw new Error("worker connection closed");
+		};
+		const lost = await send();
+		assert.ok(lost instanceof TaskMessageError);
+		assert.equal(lost.code, "delivery-unconfirmed");
+		assert.equal(lost.retryable, false);
+	} finally {
+		opened.handle.dispose();
+	}
 });
 
 test("the root handle lists the background tasks its worker reports and runs task actions there (#3996)", async () => {

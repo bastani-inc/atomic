@@ -1047,6 +1047,14 @@ function safeArgsPreview(args: unknown): string {
  */
 export type ProgressEmission = "force" | "throttled" | "none";
 
+/** A child transcript's compaction status: the session's reason while it compacts, and none otherwise. */
+export function compactionReasonReader<Reason>(session: {
+	readonly isCompacting: boolean;
+	readonly compactionReason?: Reason;
+}): () => Reason | undefined {
+	return () => (session.isCompacting ? session.compactionReason : undefined);
+}
+
 export function progressEmissionFor(eventType: AgentSessionEvent["type"]): ProgressEmission {
 	switch (eventType) {
 		case "agent_start":
@@ -1656,6 +1664,7 @@ export class SubagentControlRuntime {
 				getEntries: () => sessionManager.getEntries(),
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
+				getCompactionReason: compactionReasonReader(transcriptSession),
 			});
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;

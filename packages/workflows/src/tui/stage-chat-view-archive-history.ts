@@ -48,8 +48,6 @@ export function renderReadOnlyArchiveBody(
 	width: number,
 	budget: number,
 	stage: StageSnapshot | undefined,
-	indicatorLines: readonly string[] = [],
-	renderIndicator: () => readonly string[] = () => indicatorLines,
 	renderTranscript: (rows: number) => string[] = (rows) => ctx.chatHost.renderBody(width, rows),
 ): string[] {
 	if (stage?.promptFootprint) {
@@ -81,15 +79,9 @@ export function renderReadOnlyArchiveBody(
 			0,
 		).render(width),
 	);
-	const transcriptBudget = Math.max(0, budget - callout.length);
-	const reservedIndicatorRows =
-		indicatorLines.length > 0 && transcriptBudget > indicatorLines.length ? indicatorLines.length : 0;
-	const transcriptRows = transcriptBudget - reservedIndicatorRows;
+	const transcriptRows = Math.max(0, budget - callout.length);
 	const lines = transcriptRows > 0 ? renderTranscript(transcriptRows) : [];
-	const visibleIndicatorLines =
-		reservedIndicatorRows > 0 ? [...renderIndicator().slice(0, reservedIndicatorRows)] : [];
-	while (visibleIndicatorLines.length < reservedIndicatorRows) visibleIndicatorLines.push(blankLine(width));
-	lines.push(...visibleIndicatorLines, ...callout);
+	lines.push(...callout);
 	while (lines.length < budget) lines.push(blankLine(width));
 	if (lines.length > budget) lines.length = budget;
 	return lines;
@@ -187,8 +179,6 @@ export function renderPausedBody(
 	ctx: StageChatViewContext,
 	width: number,
 	budget: number,
-	indicatorLines: readonly string[] = [],
-	renderIndicator: () => readonly string[] = () => indicatorLines,
 	renderTranscript: (rows: number) => string[] = (rows) => ctx.chatHost.renderBody(width, rows),
 ): string[] {
 	const t = ctx.theme;
@@ -203,15 +193,9 @@ export function renderPausedBody(
 		).render(width),
 	);
 	const calloutRows = Math.min(callout.length, Math.max(0, budget));
-	const transcriptBudget = Math.max(0, budget - calloutRows);
-	const reservedIndicatorRows =
-		indicatorLines.length > 0 && transcriptBudget > indicatorLines.length ? indicatorLines.length : 0;
-	const transcriptRows = transcriptBudget - reservedIndicatorRows;
+	const transcriptRows = Math.max(0, budget - calloutRows);
 	const lines = transcriptRows > 0 ? renderTranscript(transcriptRows) : [];
-	const visibleIndicatorLines =
-		reservedIndicatorRows > 0 ? [...renderIndicator().slice(0, reservedIndicatorRows)] : [];
-	while (visibleIndicatorLines.length < reservedIndicatorRows) visibleIndicatorLines.push(blankLine(width));
-	lines.push(...visibleIndicatorLines, ...callout.slice(0, calloutRows));
+	lines.push(...callout.slice(0, calloutRows));
 	while (lines.length < budget) lines.push(blankLine(width));
 	if (lines.length > budget) lines.length = budget;
 	return lines;

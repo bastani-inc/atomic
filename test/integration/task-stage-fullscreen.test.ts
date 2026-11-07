@@ -45,6 +45,7 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 		workflowName: "PARENT_CHROME",
 		handle,
 		piTui: makeTestTui(() => rows),
+		piKeybindings: getKeybindings(),
 		onDetach() {
 			closes++;
 		},
@@ -76,10 +77,12 @@ test("workflow /tasks owns the full viewport and input until returning to stage 
 			assert.doesNotMatch(stripAnsi(frame.join("\n")), /PARENT_CHROME|Workflow draft|ctrl\+x.*graph/i);
 		}
 		const parentScroll = stage._bodyScrollFromBottom;
-		for (const key of ["z", "\x1b[<65;8;8M", "\x1b[6~", "\x1b[F"]) assert.equal(stage.handleInput(key), true);
+		assert.match(stripAnsi(stage.render(100).join("\n")), /CHILD_MESSAGE_39/, "opens at the latest message (#4521)");
+		for (const key of ["z", "\x1b[<65;8;8M", "\x1b[6~", "\x1b[F", "\x0f"]) assert.equal(stage.handleInput(key), true);
 		assert.equal(stage._inputBuffer, "");
 		assert.equal(stage._bodyScrollFromBottom, parentScroll);
-		assert.match(stripAnsi(stage.render(100).join("\n")), /CHILD_MESSAGE_39/);
+		assert.match(stripAnsi(stage.render(100).join("\n")), /❯ z/, "typed text goes to the task transcript's composer");
+		assert.equal(stage.handleInput("\x14"), false, "Ctrl+T reaches the host thinking toggle (#4521)");
 		stage.handleInput("\x1b"); // transcript -> detail
 		assert.match(stripAnsi(stage.render(100).join("\n")), /Inspect transcript/);
 		stage.handleInput("\x1b"); // detail -> list
