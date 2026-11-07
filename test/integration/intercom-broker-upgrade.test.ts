@@ -765,6 +765,51 @@ describe("atomic intercom upgrade against a 0.9.71 broker (#4538)", () => {
 	);
 
 	test(
+		"drops a registration whose protocol range is malformed before it registers",
+		async () => {
+			const { spawnBrokerIfNeeded } = await import("../../packages/intercom/broker/spawn.js");
+			const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
+			const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
+			await spawnBrokerIfNeeded("bun", [], 30_000);
+			for (const protocol of [{ min: 2, max: 1 }, { min: 0, max: 2 }, "1-2"]) {
+				const frames: string[] = [];
+				await new Promise<void>((closed, failed) => {
+					const socket = net.connect(getBrokerSocketPath(process.platform, agentDir));
+					socket.on("error", failed);
+					socket.on(
+						"data",
+						createMessageReader(
+							(frame) => {
+								if (
+									typeof frame === "object" &&
+									frame !== null &&
+									!Array.isArray(frame) &&
+									typeof frame.type === "string"
+								) {
+									frames.push(frame.type);
+									socket.destroy();
+								}
+							},
+							() => {},
+						),
+					);
+					socket.on("close", () => closed());
+					socket.once("connect", () =>
+						writeMessage(socket, {
+							type: "register",
+							session: session("malformed-protocol", repoRoot),
+							protocol,
+						}),
+					);
+				});
+				assert.deepEqual(frames, [], JSON.stringify(protocol));
+			}
+			assert.equal((await runningBroker()).sessions, 0);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
 		"reports a broker of this version as current",
 		async () => {
 			const { upgradeIntercomBroker } = await control();

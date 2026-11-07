@@ -450,7 +450,26 @@ if(args.includes("root")) console.log(path.join(prefix,"lib","node_modules"));
 		const warnings = errorSpy.mock.calls.map(([message]) => String(message));
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain("atomic intercom upgrade");
+		expect(warnings[0]).toMatch(/ENOENT/);
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"only warns when the post-update 'intercom upgrade' is terminated by a signal, keeping the exit code (#4538)",
+		async () => {
+			fakeAtomic = installFakeAtomicOnPath(tempDir, { upgradeSignal: "SIGKILL" });
+			prepareSuccessfulNpmSelfUpdate();
+			vi.spyOn(console, "log").mockImplementation(() => {});
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			await expect(main(["update", "--self", "--force"])).resolves.toBeUndefined();
+
+			expectSuccessfulExitCode();
+			expect(fakeAtomic.upgradeCalls()).toHaveLength(1);
+			const warnings = errorSpy.mock.calls.map(([message]) => String(message));
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain("atomic intercom upgrade terminated by signal SIGKILL");
+		},
+	);
 
 	it("does not run 'intercom upgrade' when the self update fails (#4538)", async () => {
 		prepareSuccessfulNpmSelfUpdate();

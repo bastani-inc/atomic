@@ -13,7 +13,7 @@ export interface FakeInstalledAtomic {
  */
 export function installFakeAtomicOnPath(
 	directory: string,
-	options: { version?: string; upgradeExitCode?: number } = {},
+	options: { version?: string; upgradeExitCode?: number; upgradeSignal?: NodeJS.Signals } = {},
 ): FakeInstalledAtomic {
 	const binDir = join(directory, "fake-installed-atomic-bin");
 	const scriptPath = join(directory, "fake-installed-atomic.cjs");
@@ -26,6 +26,9 @@ export function installFakeAtomicOnPath(
 			"const args = process.argv.slice(2);",
 			'if (args[0] === "intercom" && args[1] === "upgrade") {',
 			`\tfs.appendFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ args, packageDir: process.env.ATOMIC_PACKAGE_DIR ?? null }) + "\\n");`,
+			...(options.upgradeSignal === undefined
+				? []
+				: [`\tprocess.kill(process.pid, ${JSON.stringify(options.upgradeSignal)});`]),
 			`\tprocess.exit(${options.upgradeExitCode ?? 0});`,
 			"}",
 			`console.log(${JSON.stringify(options.version ?? "0.0.0")});`,
