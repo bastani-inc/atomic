@@ -19,6 +19,7 @@ import {
 	isGitUnavailableError,
 	isIntercomBrokerSuccessorTimeoutError,
 	isLlamaServerUnreachableError,
+	isResumePreconditionError,
 	isSessionStartTimeoutError,
 	isShellTimeoutError,
 	isStartupBenchmarkConfigError,
@@ -29,6 +30,7 @@ import {
 	isWorkspaceBindingError,
 	isWriteSelectorError,
 	LlamaServerUnreachableError,
+	ResumePreconditionError,
 	SessionStartTimeoutError,
 	ShellTimeoutError,
 	StartupBenchmarkConfigError,
@@ -39,6 +41,7 @@ import {
 	serializeFileToolError,
 	serializeGitHubCopilotError,
 	serializeIntercomBrokerError,
+	serializeResumeError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
 	serializeWorkspaceError,
@@ -347,6 +350,27 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: IntercomBrokerSuccessorTimeoutError,
 		guard: isIntercomBrokerSuccessorTimeoutError,
 		facts: ownFacts(serializeIntercomBrokerError),
+	},
+	{
+		family: "resume",
+		make: () =>
+			new ResumePreconditionError(
+				{
+					entryPoint: "workflow-resume",
+					problems: [
+						{
+							code: "git-unavailable",
+							subject: "git (offline)",
+							why: "workflow run r1 must restore /repo, which this node does not have",
+							fix: "Install Git, then resume again.",
+						},
+					],
+				},
+				gitUnavailable(),
+			),
+		type: ResumePreconditionError,
+		guard: isResumePreconditionError,
+		facts: ownFacts(serializeResumeError),
 	},
 ];
 

@@ -105,6 +105,42 @@ describe("--session <id> from another checkout (#4245)", () => {
 		assert.deepEqual(resumed.notices, []);
 	});
 
+	test("a missing restored checkout opens the same session even when its original checkout still exists (#4329)", async () => {
+		const { clone, other, sessionId } = await recordedElsewhere();
+		const manager = await SessionManager.open(store, sessionId);
+		const snapshot = [...manager.getWorktreeSnapshotRecords().values()][0];
+		assert.ok(snapshot);
+		const restored = sandbox.path("missing-restored-checkout");
+		await manager.appendWorktreeSnapshot(restored, snapshot.id, undefined, {
+			from: clone,
+			to: restored,
+			snapshotId: snapshot.id,
+		});
+		const opened = await openBySessionId(sessionId, other);
+		assert.deepEqual(prompts.asked, []);
+		assert.equal(opened.getSessionId(), sessionId);
+
+		const forked = await createSessionManager(
+			parseArgs(["--session", sessionId]),
+			other,
+			undefined,
+			SettingsManager.inMemory({ snapshots: { enabled: false } }),
+			store,
+		);
+		assert.deepEqual(prompts.asked, ["Fork this session into current directory? [y/N] "]);
+		assert.notEqual(forked.getSessionId(), sessionId);
+		assert.equal(forked.getCwd(), other);
+	});
+
+	test("a missing session cwd without snapshots still opens without a fork prompt (#4329)", async () => {
+		const { other } = await recordedElsewhere();
+		const manager = await SessionManager.create(store, sandbox.path("absent-session-cwd"));
+		await manager.appendSessionInfo("no snapshots");
+		const opened = await openBySessionId(manager.getSessionId(), other);
+		assert.deepEqual(prompts.asked, []);
+		assert.equal(opened.getSessionId(), manager.getSessionId());
+	});
+
 	test("a session without snapshots is still offered as a fork into the current directory", async () => {
 		const elsewhere = sandbox.path("elsewhere");
 		mkdirSync(elsewhere);

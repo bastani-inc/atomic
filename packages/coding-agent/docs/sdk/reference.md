@@ -782,6 +782,18 @@ await sm.createBranchedSession(leafId);       // Extract path to new file
 
 > See [examples/sdk/11-sessions.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/11-sessions.ts) and [Session Format](/session-format)
 
+**Resuming on another machine:** `runtime.switchSession()` prepares a session recorded on another machine before it opens it: a matching checkout is used as-is, otherwise the session's worktree snapshot is restored into a fresh worktree and the session continues there (see [Resume on any machine](/guides/resume-on-any-machine)). `createAgentSession({ sessionManager })` does the same for a supplied session that recorded worktree snapshots, unless you pass `cwd`. It starts in the recorded checkout when that still matches the snapshot, compared under the `snapshots` option you pass; a recorded path that exists here with a different tree, for example on a runner built from the same image, is restored like a missing one. A session without snapshots, or created with `snapshots: { enabled: false }`, starts as supplied. `prepareSessionResume(sessionManager, options)` runs the step for a `SessionManager` you opened yourself and returns the session opened where it continues. Failures are typed, exported from `@bastani/atomic`, and carry `code`, `hint` and JSON `fields`; `serializeResumeError` and `rehydrateResumeError` carry them across processes. `isResumeFailure(error)` tells a failure the user can fix from a bug. A run id missing from a local-only journal reaches `session.workflows.resume()` as `WorkflowRunNotFoundError` with the `ResumeNotFoundError` as its `cause`.
+
+| Class | Code | When | Fields | Guard |
+|---|---|---|---|---|
+| `ResumeNotFoundError` | `not-found` | The id matches nothing in the selected storage. `reason` is `local-storage-not-joined` (storage only this machine reads; the hint is `atomic team join <url> --token-file <path>`) or `shared-miss`. | `subject`, `id`, `reason`, `storage` | `isResumeNotFoundError` |
+| `ResumePreconditionError` | `preconditions-unmet` | Checked before anything is opened or written; lists every unmet piece in one pass. | `entryPoint` (`cli`, `switch-session`, `create-agent-session` or `workflow-resume`), `problems[]` of `{ code, subject, why, fix }` with codes `adapter-not-installed`, `credential-missing`, `credential-unreadable`, `git-unavailable`, `setup-hook-missing` | `isResumePreconditionError` |
+| `ResumeCatalogUnavailableError` | `catalog-unavailable` | The storage could not be reached during the lookup. `retryable: true`; nothing was changed. | `subject`, `id`, `storage`, `phase` | `isResumeCatalogUnavailableError`, `isRetryableResumeError` |
+| `ResumeCatalogTimeoutError` | `catalog-timeout` | The storage did not answer the lookup's first read within 15 seconds. `retryable: true`; nothing was changed. | `subject`, `id`, `storage`, `phase`, `timeoutMs`, `elapsedMs` | `isResumeCatalogTimeoutError`, `isRetryableResumeError` |
+| `ResumeSetupHookError` | `setup-hook-failed`, `setup-hook-timed-out` | The setup hook of a restored worktree failed, was stopped, or ran past its timeout. | `hook`, `worktree`, `envHash`, `exitStatus`, `signal`, `logPath`, `timeoutMs`, `elapsedMs` | `isResumeSetupHookError` |
+
+All of them extend `ResumeError` (`isResumeError`, `findResumeError`). A snapshot that cannot be restored stays a `WorkspaceDriftError` with the restore failure as its `cause`. Cancelling a resume through its `AbortSignal` rejects with the signal's reason, never with one of these errors.
+
 ### Settings Management
 
 ```typescript

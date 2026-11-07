@@ -23,6 +23,8 @@ export interface InteractiveModeOptions {
 	migratedProviders?: string[];
 	/** Diagnostics collected before the interactive transcript was initialized. */
 	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
+	/** Lines about how a resumed session's checkout was prepared, kept with the startup notices across chat rebuilds. */
+	resumeNotices?: readonly { readonly type: "info" | "warning"; readonly message: string }[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
 	/** Cwd to persist as trusted after reload/shutdown if it gains trust inputs during an implicitly trusted session. */

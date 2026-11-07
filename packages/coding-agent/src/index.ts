@@ -32,6 +32,7 @@ export type {
 	ToolRenderers,
 } from "./core/extensions/tool-types.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
+export * from "./core/resume/index.ts";
 export type { UsageEntry } from "./core/session-manager.ts";
 export { resolveSessionStore } from "./core/session-storage.js";
 export {

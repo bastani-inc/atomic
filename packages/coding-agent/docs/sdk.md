@@ -334,19 +334,16 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 ### Worktree snapshots
 
-A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI and TUI restore a missing or drifted checkout into a fresh worktree when they resume such a session. `createAgentSession()` uses the session manager you pass as it is and does not check the checkouts, so pass a reopened session through `openSessionInWorktree()` first:
+A session saved to SQLite or a database adapter records the repository state of each checkout a turn changed. The CLI, TUI and `createAgentSession({ sessionManager })` restore missing or drifted checkouts into fresh worktrees before continuing. Pass the stored session directly unless you want to choose its working directory explicitly with `cwd`:
 
 ```typescript
-import { createAgentSession, openSessionInWorktree, SessionManager, SettingsManager } from "@bastani/atomic";
+import { createAgentSession, SessionManager } from "@bastani/atomic";
 
-const stored = await SessionManager.open(store, sessionId);
-const settings = SettingsManager.create(stored.getCwd()).getWorktreeSnapshotSettings();
-const { sessionManager, notices } = await openSessionInWorktree(stored, { settings });
-for (const notice of notices) console.log(notice.message); // one line per restored checkout, then any warnings
+const sessionManager = await SessionManager.open(store, sessionId);
 const { session } = await createAgentSession({ sessionManager });
 ```
 
-It verifies every checkout the session recorded, restores the drifted ones, and returns the session reopened in the restored worktree; it rejects with `WorkspaceDriftError` when a checkout cannot be restored. `createAgentSession({ snapshots: { enabled: false } })` turns this off for one session; the other fields (`includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, `fullEvery`) override `snapshots.*` settings. `captureWorktreeSnapshot()`, `restoreWorktreeSnapshot()`, `verifyWorktree()` and the `WorkspaceBinding` type are exported for hosts and schedulers that move work between machines; `session.sessionManager.getWorktreeRootMappings()` returns the restores a session went through. `session.exportToJsonl()` returns a promise and carries snapshot content inline. See [Worktree snapshots](/worktree-snapshots) for the guarantee, the API and the error table.
+The session is reopened in its restored worktree; restoration rejects with `WorkspaceDriftError` when a checkout cannot be rebuilt. Missing Git or setup hooks fail before restoration with typed errors and remediation hints. `createAgentSession({ snapshots: { enabled: false } })` turns snapshots off for one session; the other fields (`includeUntracked`, `maxFileBytes`, `maxSnapshotBytes`, `fullEvery`) override `snapshots.*` settings. `captureWorktreeSnapshot()`, `restoreWorktreeSnapshot()`, `verifyWorktree()` and the `WorkspaceBinding` type are exported for hosts and schedulers that move work between machines; `session.sessionManager.getWorktreeRootMappings()` returns the restores a session went through. `session.exportToJsonl()` returns a promise and carries snapshot content inline. See [Resume on any machine](/guides/resume-on-any-machine) for setup hooks and [Worktree snapshots](/worktree-snapshots) for the API and error table.
 
 ### Workflow journal selection
 

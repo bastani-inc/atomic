@@ -1,4 +1,12 @@
-import { findWorkspaceError, isWorkspaceDriftError, resolveWorktreeSnapshotSettings } from "@bastani/atomic";
+import {
+	findResumeError,
+	findWorkspaceError,
+	isWorkspaceDriftError,
+	type ResumeError,
+	resolveWorktreeSnapshotSettings,
+	type WorktreeRootMapping,
+	type WorktreeSnapshotSettingsInput,
+} from "@bastani/atomic";
 import type { JournalCatalogError } from "@bastani/atomic/storage";
 import { raceAbort } from "../shared/abort.js";
 import { currentWorkflowStore } from "../shared/store-factory.js";
@@ -22,10 +30,12 @@ import { durableWorkflowRunSnapshots } from "./completed-catalog.js";
 import { type ForkError, isForkError } from "./fork-errors.js";
 import { forkDurableRun } from "./fork-run.js";
 import { JournalDurableBackend } from "./journal/journal-backend.js";
+import type { RunJournal } from "./journal/types.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { claimsOf, hasActiveLiveRun, hasForkClaim, pendingResumes, unsettledResumeClaims } from "./run-claims.js";
 import { durableRunNotFoundError, formatRunNotFound } from "./run-not-found.js";
 import { availableRunDurableBackend } from "./run-owner-backend.js";
+import { restorePreconditionsChecked, runRestorePreconditionFailure } from "./run-restore-preconditions.js";
 import { foreignInstanceMessage } from "./sdk-owner-release.js";
 import { canonicalDirectory, isSdkRunAdoptable } from "./sdk-recovery-scope.js";
 import { durableWaitingStages } from "./stage-primitive.js";
@@ -51,9 +61,10 @@ export type ResumeDurableResult =
 			message: string;
 			/**
 			 * The typed failure: `run-not-found` naming the storage searched, when this machine's storage does not hold the
-			 * run, or the cross-project fork's failure (`reason: "fork_failed"`).
+			 * run, the cross-project fork's failure (`reason: "fork_failed"`), or the resume failure (`reason:
+			 * "startup_failed"`) when restoring the run's checkouts could not start here.
 			 */
-			error?: JournalCatalogError | ForkError;
+			error?: JournalCatalogError | ForkError | ResumeError;
 	  };
 
 export interface ResumeDurableDeps {
@@ -128,6 +139,30 @@ async function hasWorktreeSnapshots(backend: DurableWorkflowBackend, workflowId:
 
 export function crossProjectResumeMessage(workflowId: string, cwd: string): string {
 	return `Workflow run found in different project: ${cwd}. Run /workflow resume ${workflowId} in an interactive session to fork it into the current directory, or open the original project to resume it.`;
+}
+
+/**
+ * The typed failure of resuming `handle` on this node when restoring the checkouts its latest snapshots recorded, and
+ * that are gone or changed here, could not complete: Git is unavailable, or a snapshot has dependency inputs and no
+ * setup hook could run. Checked before the run is claimed, so nothing is restored or committed.
+ */
+async function restorePreconditionFailure(
+	handle: {
+		readonly workflowId: string;
+		readonly worktreeRootMappings?: readonly WorktreeRootMapping[];
+		readonly snapshots?: WorktreeSnapshotSettingsInput;
+	},
+	journal: RunJournal,
+	deps: Pick<ResumeDurableDeps, "signal">,
+): Promise<ResumeDurableResult | undefined> {
+	const error = await runRestorePreconditionFailure(
+		journal,
+		handle.workflowId,
+		handle.worktreeRootMappings ?? [],
+		handle.snapshots,
+		deps.signal,
+	);
+	return error === undefined ? undefined : { ok: false, reason: "startup_failed", message: error.message, error };
 }
 
 /** Serialize admission per durable identity, including callers from different runtime views. */
@@ -296,6 +331,10 @@ async function resumeDurableWorkflowClaimed(
 			message: `invalid_inputs: ${err instanceof Error ? err.message : String(err)}`,
 		};
 	}
+	const snapshotJournal = backend.snapshotJournal;
+	const hasSnapshots = snapshotJournal !== undefined && (await hasWorktreeSnapshots(backend, handle.workflowId));
+	const restoreFailure = hasSnapshots ? await restorePreconditionFailure(handle, snapshotJournal, deps) : undefined;
+	if (restoreFailure !== undefined) return restoreFailure;
 	let toolContinuation: RunOpts["continuation"] = deps.baseRunOpts.continuation;
 	if (
 		handle.status === "failed" &&
@@ -409,6 +448,7 @@ async function resumeDurableWorkflowClaimed(
 		runId: resolved.workflowId,
 		durableBackend: backend,
 		...(toolContinuation === undefined ? {} : { continuation: toolContinuation }),
+		...(hasSnapshots ? { [restorePreconditionsChecked]: true as const } : {}),
 	};
 
 	let launch: ReturnType<typeof launchDetachedUntilStartup>;
@@ -472,10 +512,12 @@ async function resumeDurableWorkflowClaimed(
 		});
 		const drift = findWorkspaceError(admission.error, isWorkspaceDriftError);
 		if (drift !== undefined) throw drift;
+		const resumeFailure = findResumeError(admission.error);
 		return {
 			ok: false,
 			reason: "startup_failed",
-			message: `Failed to resume durable workflow ${resolved.workflowId}: ${error}`,
+			message: `Failed to resume durable workflow ${resolved.workflowId}: ${resumeFailure?.message ?? error}`,
+			...(resumeFailure === undefined ? {} : { error: resumeFailure }),
 		};
 	}
 
