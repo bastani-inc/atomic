@@ -110,7 +110,7 @@ pub struct CommandResourceOptions {
 	pub live_preview_bytes: Option<u32>,
 	pub foreground_spill_bytes: Option<u32>,
 	pub background: Option<bool>,
-	/// Internal host/test seam for distinguishing a real TERM wait from teardown latency (1..=60000 ms).
+	/// Internal host/test seam for distinguishing a real TERM wait from teardown latency (integer 1..=60000 ms).
 	/// Ignored on Windows, whose Job containment terminates immediately rather than sending TERM.
 	pub termination_grace_ms: Option<f64>,
 }
@@ -281,11 +281,11 @@ impl Actor {
 	) -> Door<TaskLease> {
 		if options
 			.termination_grace_ms
-			.is_some_and(|ms| !ms.is_finite() || !(1.0..=60_000.0).contains(&ms))
+			.is_some_and(|ms| !ms.is_finite() || ms.fract() != 0.0 || !(1.0..=60_000.0).contains(&ms))
 		{
 			return Err(TaskFailure {
 				code: "SpawnFailed".into(),
-				message: "terminationGraceMs must be finite and between 1 and 60000 ms".into(),
+				message: "terminationGraceMs must be an integer between 1 and 60000 ms".into(),
 			});
 		}
 		poll_failed_processes();

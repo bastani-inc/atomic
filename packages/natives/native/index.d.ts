@@ -241,7 +241,7 @@ export interface CommandResourceOptions {
   foregroundSpillBytes?: number
   background?: boolean
   /**
-   * Internal host/test seam for distinguishing a real TERM wait from teardown latency (1..=60000 ms).
+   * Internal host/test seam for distinguishing a real TERM wait from teardown latency (integer 1..=60000 ms).
    * Ignored on Windows, whose Job containment terminates immediately rather than sending TERM.
    */
   terminationGraceMs?: number

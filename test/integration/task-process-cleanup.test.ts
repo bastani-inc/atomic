@@ -195,7 +195,7 @@ test.runIf(process.platform !== "win32")(
 );
 
 test("command admission refuses an invalid internal termination grace (#4540)", async () => {
-	for (const grace of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 60_001]) {
+	for (const grace of [1.5, 0.1, 59_999.5, Number.NaN, Number.POSITIVE_INFINITY, -1, -0, 0, 60_001]) {
 		const { supervisor, owner } = setup(grace);
 		try {
 			const result = await supervisor.startCommandTask(
