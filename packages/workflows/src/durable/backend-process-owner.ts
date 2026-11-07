@@ -6,6 +6,8 @@ const DURABLE_BACKEND_PROCESS_OWNER_KEY = Symbol.for("atomic-workflows/durable-b
 
 export interface SelectedDurableBackend {
 	readonly ready: Promise<DurableWorkflowBackend>;
+	/** Settles once the selected journal has opened, before its runs are listed: when its storage answered. */
+	readonly answered?: Promise<unknown>;
 	close?: () => Promise<void>;
 	/** Sessions holding this backend; it is closed when the last of them releases it. */
 	readonly holders: Set<object>;

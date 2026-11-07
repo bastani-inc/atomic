@@ -53,7 +53,6 @@ export interface DurableBackendOptions {
 }
 
 const callersOfOpening = new WeakMap<SelectedDurableBackend, number>();
-const journalAnswers = new WeakMap<SelectedDurableBackend, Promise<unknown>>();
 
 function abandonOpening(
 	selected: Map<string | object, SelectedDurableBackend>,
@@ -103,10 +102,11 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	owner.selectedBackends ??= new Map();
 	const selected = owner.selectedBackends;
 	const existing = selected.get(key);
-	const journal = existing === undefined ? openSelectedRunJournal(selection, agentDir) : undefined;
+	const opening = existing === undefined ? openSelectedRunJournal(selection, agentDir) : undefined;
 	const entry: SelectedDurableBackend = existing ?? {
-		ready: journal!
-			.then((opened) => JournalDurableBackend.open(opened, { ownsJournal, runs: [] }))
+		answered: opening,
+		ready: opening!
+			.then((journal) => JournalDurableBackend.open(journal, { ownsJournal, runs: [] }))
 			.then(async (opened) => {
 				// Every run is listed from its latest snapshot; a run's history is folded only when it is needed (#3892).
 				try {
@@ -126,7 +126,6 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 		holders: new Set(),
 		pinned: false,
 	};
-	if (journal !== undefined) journalAnswers.set(entry, journal);
 	if (existing === undefined) selected.set(key, entry);
 	if (holder === undefined) entry.pinned = true;
 	else entry.holders.add(holder);
@@ -134,7 +133,7 @@ export async function initializeDurableBackend(options: DurableBackendOptions = 
 	options.abandonSignal?.addEventListener("abort", () => abandonOpening(selected, key, entry), { once: true });
 	const answered = options.onJournalAnswered;
 	if (answered !== undefined) {
-		void (journalAnswers.get(entry) ?? entry.ready).then(
+		void (entry.answered ?? entry.ready).then(
 			() => answered(),
 			() => undefined,
 		);
