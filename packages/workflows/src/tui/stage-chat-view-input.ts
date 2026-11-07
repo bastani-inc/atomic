@@ -21,20 +21,17 @@ import { Key, matchesKey } from "./text-helpers.js";
 
 export function handleStageChatInput(ctx: StageChatViewContext, data: string): boolean {
 	// Task inspection is modal: neither parent transcript scrolling nor the
-	// stage composer may receive input hidden behind the inspector.
+	// stage composer may receive input hidden behind the inspector. The thinking
+	// and tool-output toggles stay the stage's, so a task transcript follows them.
 	if (ctx.chatHost.hasTaskInspector) {
 		if (matchesKey(data, Key.ctrl("c"))) ctx.chatHost.closeTasks();
 		else if (matchesKey(data, Key.ctrl("x"))) ctx.onDetach();
-		else ctx.chatHost.handleTaskInput(data);
+		else if (!handleToolsExpandInput(ctx, data) && !ctx.chatHost.handleTaskInput(data))
+			return !isHostThinkingToggle(ctx, data);
 		return true;
 	}
 	if (data === TRANSCRIPT_JUMP_TO_END_URL) return handleStageChatJumpToBottom(ctx, data);
-	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
-	// Only the default physical Ctrl+T belongs to the host thinking action. A
-	// user remap may reuse an editor key, so let that key reach the composer.
-	if (matchesKey(data, Key.ctrl("t")) && matchesAction(keybindings, data, APP_ACTION.thinkingToggle)) {
-		return false;
-	}
+	if (isHostThinkingToggle(ctx, data)) return false;
 	if (matchesKey(data, Key.ctrl("x"))) {
 		if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
 		else {
@@ -90,6 +87,12 @@ export function handleStageChatInput(ctx: StageChatViewContext, data: string): b
 	}
 	if (blocked) return true;
 	return ctx.chatHost.handleInput(data);
+}
+
+/** Only the default physical Ctrl+T belongs to the host thinking action; a remap may reuse an editor key. */
+function isHostThinkingToggle(ctx: StageChatViewContext, data: string): boolean {
+	const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+	return matchesKey(data, Key.ctrl("t")) && matchesAction(keybindings, data, APP_ACTION.thinkingToggle);
 }
 
 function handleStageChatJumpToBottom(ctx: StageChatViewContext, data: string): boolean {

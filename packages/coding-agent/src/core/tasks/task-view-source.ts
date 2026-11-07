@@ -4,8 +4,10 @@ import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
+import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
 import type { OwnerTaskStore, TaskActivity } from "./owner-store.js";
 import {
+	type TaskMessageDelivery,
 	type TaskTranscriptSource,
 	taskExtensionStatuses,
 	taskOwnTranscriptEntries,
@@ -78,6 +80,12 @@ export interface TaskViewSource {
 	followTaskTranscript(id: TaskId): TaskTranscriptFollow | undefined;
 	extensionStatuses(id: TaskId): ReadonlyMap<string, string>;
 	watchExtensionStatuses(id: TaskId, listener: () => void): () => void;
+	/**
+	 * Sends `text` to an agent task through its Intercom target, as a message typed into its transcript. Resolves
+	 * once the channel confirmed delivery; rejects with a {@link TaskMessageError}. Absent where tasks cannot be
+	 * messaged.
+	 */
+	sendTaskMessage?(id: TaskId, text: string): Promise<void>;
 }
 
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
@@ -217,6 +225,34 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 		watchExtensionStatuses(id, listener) {
 			const task = lease(id);
 			return task.ok ? watchTaskExtensionStatuses(task.value, listener) : () => {};
+		},
+		async sendTaskMessage(id, text) {
+			const task = lease(id);
+			if (!task.ok) throw new TaskMessageError("task-unavailable", { taskId: id });
+			const bound = taskTranscriptSource(task.value);
+			const session = bound.ok ? bound.value.session : undefined;
+			const target = session?.completionSource?.intercomTarget;
+			if (session?.sendMessage === undefined || target === undefined)
+				throw new TaskMessageError("messages-unsupported", { taskId: id });
+			let delivery: TaskMessageDelivery;
+			try {
+				delivery = await session.sendMessage(text);
+			} catch (cause) {
+				throw new TaskMessageError("delivery-refused", { taskId: id, target }, { cause });
+			}
+			if (delivery.delivered) return;
+			if (delivery.reason === "unconfirmed")
+				throw new TaskMessageTimeoutError({
+					taskId: id,
+					target,
+					timeoutMs: delivery.timeoutMs,
+					elapsedMs: delivery.elapsedMs,
+				});
+			throw new TaskMessageError("delivery-refused", {
+				taskId: id,
+				target,
+				...(delivery.detail === undefined ? {} : { detail: delivery.detail }),
+			});
 		},
 	};
 	sources.set(store, source);

@@ -840,11 +840,6 @@ export class ScrollableChatTranscriptComponent<TEntry extends ChatTranscriptEntr
 	}
 }
 
-export function mouseWheelDeltaRows(data: string): number {
-	const wheel = parseWheelReport(data);
-	return wheel === undefined ? 0 : wheel.direction * 4;
-}
-
 /** A vertical wheel report (SGR or legacy X10 encoding), with its direction and whether Alt was held. */
 export function parseWheelReport(data: string): WheelReport | undefined {
 	const sgr = /^\x1b\[<(\d+);\d+;\d+M$/.exec(data);

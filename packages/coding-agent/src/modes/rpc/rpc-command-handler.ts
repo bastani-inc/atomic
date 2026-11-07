@@ -117,9 +117,17 @@ export function createRpcCommandHandler({
 			case "open_task_inspector": {
 				if (!keybindings || !taskInspectorUi)
 					return createRpcErrorResponse(id, command.type, "Task inspection requires an interactive host");
-				void showEngineTaskInspector(session, taskInspectorUi, command.taskId).catch((error: Error) =>
-					session.extensionRunner.getUIContext().notify(error.message, "error"),
-				);
+				const ui = session.extensionRunner.getUIContext();
+				void showEngineTaskInspector(
+					session,
+					{
+						...taskInspectorUi,
+						getChatRenderSettings: () => ui.getChatRenderSettings(),
+						getToolsExpanded: () => ui.getToolsExpanded(),
+						setToolsExpanded: (expanded) => ui.setToolsExpanded(expanded),
+					},
+					command.taskId,
+				).catch((error: Error) => ui.notify(error.message, "error"));
 				return createRpcSuccessResponse(id, command.type);
 			}
 			case "prompt": {

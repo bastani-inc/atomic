@@ -1,8 +1,10 @@
 import {
+	findTaskMessageError,
 	getOwnerTaskStore,
 	type OwnerTaskStore,
 	ownerTaskViewSource,
 	type TaskId,
+	TaskMessageError,
 	type TaskViewSource,
 	watchOwnerTaskStoreBinding,
 } from "@bastani/atomic";
@@ -56,6 +58,8 @@ export async function runStageTaskAction(
 			};
 		case "detail":
 			return { kind: "detail", detail: await source.taskDetailText(taskId) };
+		case "message":
+			return sendStageTaskMessage(source, taskId, action.text);
 		case "transcript": {
 			const result = await source.readTaskTranscript(taskId, action.cursor);
 			// A viewer in another process cannot follow the task's session live; the latest page carries the
@@ -71,6 +75,20 @@ export async function runStageTaskAction(
 				result: { ok: true, value: { ...result.value, messages: [...result.value.messages, streaming] } },
 			};
 		}
+	}
+}
+
+/** Sends a message typed into a task's transcript in the root, replying with its typed failure as data. */
+async function sendStageTaskMessage(source: TaskViewSource, taskId: TaskId, text: string): Promise<PooledTaskReply> {
+	if (source.sendTaskMessage === undefined)
+		return { kind: "message", error: new TaskMessageError("messages-unsupported", { taskId }).toJSON() };
+	try {
+		await source.sendTaskMessage(taskId, text);
+		return { kind: "message" };
+	} catch (error) {
+		const failure =
+			findTaskMessageError(error) ?? new TaskMessageError("delivery-refused", { taskId }, { cause: error });
+		return { kind: "message", error: failure.toJSON() };
 	}
 }
 

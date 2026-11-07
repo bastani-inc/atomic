@@ -98,6 +98,19 @@ export {
 	validateTaskHeartbeatMs,
 } from "./core/tasks/heartbeat-notice.js";
 export {
+	findTaskMessageError,
+	isTaskMessageError,
+	isTaskMessageTimeoutError,
+	rehydrateTaskMessageError,
+	type SerializedTaskMessageError,
+	TaskMessageError,
+	type TaskMessageErrorCode,
+	type TaskMessageErrorFields,
+	TaskMessageTimeoutError,
+	type TaskMessageTimeoutErrorFields,
+	type TaskMessageTimeoutPhase,
+} from "./core/tasks/message-error.js";
+export {
 	bindOwnerTaskStore,
 	getOwnerTaskStore,
 	OwnerTaskStore,

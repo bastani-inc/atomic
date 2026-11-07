@@ -63,6 +63,12 @@ export interface ChatSessionHostCommands {
 	abortBash?: () => void | Promise<void>;
 	abortCompaction?: () => void | Promise<void>;
 	handleSlashCommand?: (text: string) => Promise<boolean> | boolean;
+	/**
+	 * Delivers every submission through a channel whose recipient records the message itself, such as a task's
+	 * Intercom target. Set, it replaces prompt, steering, follow-up, compaction queueing and `!` commands: the text is
+	 * sent as typed, the chat shows no optimistic copy, and a rejection restores the draft and shows its message.
+	 */
+	send?: (text: string, mode: ChatSessionSubmitMode) => Promise<void>;
 }
 
 /** Body viewport settings a host inherits, named after the fullscreen settings they come from. */

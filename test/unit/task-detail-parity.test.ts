@@ -10,6 +10,7 @@ import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 import { taskRecord } from "../helpers/task-record.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 
 const plain = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
 
@@ -104,10 +105,13 @@ test("earlier transcript pages remain selected when background activity arrives"
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
+	const environment = taskTranscriptEnvironment();
 	const inspector = new TaskInspector(
 		fixture.store,
 		() => {},
 		() => {},
+		undefined,
+		() => environment,
 	);
 	try {
 		await fixture.start("Read history");
@@ -123,17 +127,20 @@ test("earlier transcript pages remain selected when background activity arrives"
 		});
 		fixture.store.drain();
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.match(plain(inspector.renderViewport(80, 1000)), /entry-119/);
-		inspector.handleInput("\x1b[5~");
+		assert.match(plain(inspector.renderViewport(80, 24)), /entry-119/);
+		// The retained page loads earlier history once the reader nears its top (#4521).
+		inspector.handleInput("\x1b[1;5H");
+		inspector.renderViewport(80, 24);
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.match(plain(inspector.renderViewport(80, 1000)), /entry-000/);
+		inspector.handleInput("\x1b[1;5H");
+		assert.match(plain(inspector.renderViewport(80, 24)), /entry-000/);
 		fixture.runners[0].context.reportActivity({
 			reportId: "activity",
 			change: { kind: "action", tool: "read", text: "new work" },
 		});
 		fixture.store.drain();
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.match(plain(inspector.renderViewport(80, 1000)), /entry-000/);
+		assert.match(plain(inspector.renderViewport(80, 24)), /entry-000/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();
@@ -150,10 +157,13 @@ for (const [binding, input] of [
 		const previous = getKeybindings();
 		setKeybindings(new KeybindingsManager({ "app.tasks.inspect": binding }));
 		const fixture = taskFixture();
+		const environment = taskTranscriptEnvironment();
 		const inspector = new TaskInspector(
 			fixture.store,
 			() => {},
 			() => {},
+			undefined,
+			() => environment,
 		);
 		try {
 			await fixture.start("Inspect selected");
@@ -207,15 +217,18 @@ test("tasks inspector excludes foreground work and retains previously background
 	}
 });
 
-test("transcript has stable chrome, bounded rows and Home/End navigation at narrow sizes", async () => {
+test("transcript has stable chrome, bounded rows and top/latest navigation at narrow sizes", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
+	const environment = taskTranscriptEnvironment();
 	const inspector = new TaskInspector(
 		fixture.store,
 		() => {},
 		() => {},
+		undefined,
+		() => environment,
 	);
 	try {
 		await fixture.start("Long transcript");
@@ -234,10 +247,10 @@ test("transcript has stable chrome, bounded rows and Home/End navigation at narr
 			assert.doesNotMatch(rows.join("\n"), /\u001b\[2J/);
 			assert.doesNotMatch(plain(rows), /╭|╰/);
 		}
-		inspector.handleInput("\x1b[F");
+		inspector.handleInput("\x1b[1;5F");
 		assert.match(plain(inspector.renderViewport(100, 12)), /MESSAGE-11/);
-		inspector.handleInput("\x1b[H");
-		assert.match(plain(inspector.renderViewport(100, 12)), /MESSAGE-0/);
+		inspector.handleInput("\x1b[1;5H");
+		assert.match(plain(inspector.renderViewport(100, 12)), /MESSAGE-0\b/);
 	} finally {
 		inspector.dispose();
 		await fixture.dispose();

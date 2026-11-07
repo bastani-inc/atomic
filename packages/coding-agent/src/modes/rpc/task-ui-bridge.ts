@@ -3,9 +3,16 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
+import { ChatSessionHost } from "../interactive/components/chat-session-host.js";
 import { TaskInspector } from "../interactive/components/task-inspector.js";
 import { isActiveBackgroundTask, renderTaskFooter } from "../interactive/components/task-list.js";
+import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
+import { getEditorTheme } from "../interactive/theme/theme.js";
+
+/** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
+export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
+	Partial<Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "setToolsExpanded">>;
 
 const widgetVisibility = new WeakMap<AgentSession, (visible: boolean) => void>();
 
@@ -67,7 +74,7 @@ export function bindEngineTaskWidget(session: AgentSession, ui: ExtensionUIConte
 
 export async function showEngineTaskInspector(
 	session: AgentSession,
-	ui: Pick<ExtensionUIContext, "custom">,
+	ui: TaskInspectorUi,
 	taskId?: string,
 ): Promise<void> {
 	session.getAgentTaskHost();
@@ -82,15 +89,12 @@ export async function showEngineTaskInspector(
 }
 
 /** Main CLI mount, shared by the local host and its isolated engine. */
-export async function showTaskInspector(
-	ui: Pick<ExtensionUIContext, "custom">,
-	store: OwnerTaskStore,
-	taskId?: string,
-): Promise<void> {
+export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskStore, taskId?: string): Promise<void> {
 	let requestRender = () => {};
 	let finishView = () => {};
 	let closed = false;
 	let fullscreen = false;
+	let environment: TaskTranscriptEnvironment | undefined;
 	const inspector = new TaskInspector(
 		store,
 		() => {
@@ -101,15 +105,29 @@ export async function showTaskInspector(
 			closed = true;
 			finishView();
 		},
+		undefined,
+		() => environment,
 	);
 	inspector.open(taskId as TaskId | undefined);
 	try {
 		while (!closed) {
 			fullscreen = inspector.fullscreen;
 			await ui.custom<void>(
-				(tui, _theme, _keys, done) => {
+				(tui, _theme, keybindings, done) => {
 					requestRender = () => tui.requestRender();
 					finishView = () => done();
+					environment = {
+						createChat: (opts) => new ChatSessionHost(opts),
+						tui,
+						keybindings,
+						editorTheme: getEditorTheme(),
+						style: themedChatHostStyle(),
+						...(ui.getChatRenderSettings ? { getChatRenderSettings: () => ui.getChatRenderSettings?.() } : {}),
+						...(ui.getToolsExpanded ? { getToolsExpanded: () => ui.getToolsExpanded?.() === true } : {}),
+						...(ui.setToolsExpanded
+							? { setToolsExpanded: (expanded: boolean) => ui.setToolsExpanded?.(expanded) }
+							: {}),
+					};
 					return {
 						invalidate: () => inspector.invalidate(),
 						render: (width: number) => {
@@ -123,10 +141,9 @@ export async function showTaskInspector(
 							});
 						},
 						handleInput: (data: string) => {
-							if (isPhysicalCtrlC(data)) {
-								closed = true;
-								done();
-							} else inspector.handleInput(data);
+							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
+							closed = true;
+							done();
 							return true;
 						},
 					};

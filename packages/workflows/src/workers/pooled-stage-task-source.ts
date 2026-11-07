@@ -1,13 +1,15 @@
-import type {
-	TaskActivity,
-	TaskDetailText,
-	TaskId,
-	TaskOutputView,
-	TaskRecord,
-	TaskTranscriptFollow,
-	TaskTranscriptView,
-	TaskViewResult,
-	TaskViewSource,
+import {
+	rehydrateTaskMessageError,
+	type TaskActivity,
+	type TaskDetailText,
+	type TaskId,
+	TaskMessageError,
+	type TaskOutputView,
+	type TaskRecord,
+	type TaskTranscriptFollow,
+	type TaskTranscriptView,
+	type TaskViewResult,
+	type TaskViewSource,
 } from "@bastani/atomic";
 import type { PooledStageTasks, PooledTaskAction, PooledTaskReply } from "./stage-watch-types.js";
 
@@ -117,6 +119,23 @@ export class PooledStageTaskSource implements TaskViewSource {
 	}
 	watchExtensionStatuses(_id: TaskId, listener: () => void): () => void {
 		return this.subscribe(listener);
+	}
+	/** Runs on the worker, whose session owns the task's Intercom relay; its typed failure comes back as data. */
+	async sendTaskMessage(id: TaskId, text: string): Promise<void> {
+		let reply: PooledTaskReply | undefined;
+		try {
+			reply = await this.run(id, { kind: "message", text });
+		} catch (cause) {
+			throw new TaskMessageError("delivery-refused", { taskId: id }, { cause });
+		}
+		if (reply === undefined) throw new TaskMessageError("task-unavailable", { taskId: id });
+		if (reply.kind !== "message")
+			throw new TaskMessageError("delivery-refused", {
+				taskId: id,
+				detail: "unexpected reply from the local worker",
+			});
+		if (reply.error === undefined) return;
+		throw rehydrateTaskMessageError(reply.error) ?? new TaskMessageError("delivery-refused", { taskId: id });
 	}
 
 	private async request(id: TaskId, action: PooledTaskAction): Promise<TaskViewResult<PooledTaskReply>> {

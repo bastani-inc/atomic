@@ -16,6 +16,7 @@ import type { AgentSession } from "../../packages/coding-agent/src/core/agent-se
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import {
 	createAskUserQuestionToolDefinition,
@@ -128,8 +129,13 @@ async function mountMainInspector(isolated: boolean, populated = true) {
 	let service: EngineCustomUiService | undefined;
 	const session = {
 		...fakeFooterAgentSession(),
+		settingsManager: SettingsManager.inMemory(),
 		getAgentTaskHost() {},
-		extensionRunner: { getUIContext: () => ({ custom: service!.custom.bind(service!) }) },
+		extensionRunner: {
+			getUIContext: () => ({ custom: service!.custom.bind(service!) }),
+			getMarkdownTransformers: () => [],
+			getMessageRenderer: () => undefined,
+		},
 	} as unknown as AgentSession;
 	session.state.model!.id = "gpt-6-astra";
 	session.state.thinkingLevel = "medium";
@@ -157,6 +163,12 @@ async function mountMainInspector(isolated: boolean, populated = true) {
 		documentContainer: document,
 		transcriptScrollView: scroll,
 		keybindings: keys,
+		chatContainer: document,
+		pendingMessagesContainer: new Container(),
+		hideThinkingBlock: false,
+		hiddenThinkingLabel: "Thinking...",
+		toolOutputExpanded: false,
+		outputPad: 1,
 		firstSubmitRecorded: true,
 		blockingInlineCustomUiDepth: 0,
 		deferredInlineCustomUiFocusDepth: 0,
@@ -278,7 +290,6 @@ for (const isolated of [false, true]) {
 					"\x1b[F",
 					"\x1b[A",
 					"\x1b[B",
-					"\x14",
 					"\x0f",
 					"\x06",
 					"\x15",
@@ -294,17 +305,50 @@ for (const isolated of [false, true]) {
 					assert.equal(host.hostFallbacks, 0, `main action received ${JSON.stringify(key)}`);
 				}
 			};
+			// A task transcript is a chat (#4521): its keys belong to its own composer and viewport. The thinking
+			// toggle alone goes to the host action, as it does from a stage chat; the main chat never scrolls.
+			const assertTranscriptKeysOwned = async () => {
+				const fallbacks = host.hostFallbacks;
+				for (const key of [
+					"\x1b[5~",
+					"\x1b[6~",
+					"\x1b[H",
+					"\x1b[F",
+					"\x1b[A",
+					"\x1b[B",
+					"\x0f",
+					"\x06",
+					"\x15",
+					"\x1b[1;2A",
+					"\x1b[1;2B",
+					"\x1b[<64;10;5M",
+					"\x1b[<72;10;5M",
+					"ordinary text",
+				]) {
+					await host.input(key);
+					assert.equal(host.scroll.scrollTop, scrollTop, `main chat scrolled for ${JSON.stringify(key)}`);
+					assert.equal(host.editor.getText(), "");
+					assert.equal(host.hostFallbacks, fallbacks, `main action received ${JSON.stringify(key)}`);
+				}
+				assert.match(await assertFrame(), /ordinary text/, "typed text lands in the transcript's composer");
+				await host.input("\x14");
+				assert.equal(host.hostFallbacks, fallbacks + 1, "Ctrl+T reaches the host thinking toggle");
+				assert.equal(host.scroll.scrollTop, scrollTop);
+			};
 			await assertKeysOwned();
+			await host.input("\x14");
+			assert.equal(host.hostFallbacks, 1, "the task pages no longer swallow the host's Ctrl+T (#4521)");
 			// Restore the first detail action after the arrow-key checks.
 			await host.input("\x1b");
 			await host.input("\x05");
 			await host.input("\x05");
 			assert.match(await assertFrame(), /^Transcript/);
-			await assertKeysOwned();
-			await host.input("\x1b[F");
+			assert.match(await assertFrame(), /CHILD-MESSAGE-49/, "the transcript opens at its latest message (#4521)");
+			await assertTranscriptKeysOwned();
+			await host.input("\x1b[1;5F");
 			assert.match(await assertFrame(), /CHILD-MESSAGE-49/);
-			await host.input("\x1b[H");
-			assert.match(await assertFrame(), /CHILD-MESSAGE-0/);
+			await host.input("\x1b[1;5H");
+			assert.match(await assertFrame(), /CHILD-MESSAGE-0\b/);
 			for (const [width, rows] of [
 				[31, 9],
 				[100, 40],
@@ -335,7 +379,7 @@ for (const isolated of [false, true]) {
 			await reopened;
 			assert.equal(host.tui.getFocusedComponent(), host.editor);
 			assert.equal(host.fixture.runners[0].context.signal.aborted, false);
-			assert.equal(host.hostFallbacks, 0);
+			assert.equal(host.hostFallbacks, 2, "only the two Ctrl+T presses reached a host action");
 			const beforeChatScroll = host.scroll.scrollTop;
 			await host.input("\x1b[5~");
 			assert.ok(host.scroll.scrollTop < beforeChatScroll, "main chat paging resumes after closing");

@@ -152,7 +152,7 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 	}
 });
 
-test("a stop that does not reach the worker says so in an open task transcript too (#3996)", async () => {
+test("a stop from a task's detail page that does not reach the worker says so, and x in its transcript stops nothing (#3996, #4521)", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -179,6 +179,10 @@ test("a stop that does not reach the worker says so in an open task transcript t
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("\r");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Transcript ·/));
+		view.handleInput("x");
+		assert.doesNotMatch(view.render(120).join("\n"), /y: confirm/);
+		view.handleInput("\x1b");
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /Inspect transcript/));
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /y: confirm/));
 		view.handleInput("y");

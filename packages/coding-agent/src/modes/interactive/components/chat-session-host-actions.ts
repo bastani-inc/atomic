@@ -120,6 +120,11 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 		}
 		return;
 	}
+	const send = state.commands.send;
+	if (send !== undefined) {
+		await sendChatSessionText(state, send, text, mode);
+		return;
+	}
 	const interruptSettlement = state.interruptSettlement;
 	if (interruptSettlement !== undefined) {
 		await submitAfterInterruptSettlement(state, interruptSettlement, text, mode);
@@ -497,4 +502,21 @@ async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryL
 		return;
 	}
 	await requiredChatSessionCommand(state, "followUp")(text);
+}
+
+async function sendChatSessionText<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	send: NonNullable<ChatSessionHostState<TExtraEntry>["commands"]["send"]>,
+	text: string,
+	mode: ChatSessionSubmitMode,
+): Promise<void> {
+	setChatSessionEditorText(state, "");
+	state.requestRender?.();
+	try {
+		await send(text, mode);
+	} catch (err) {
+		if (state.disposed) return;
+		if (state.inputBuffer.length === 0) setChatSessionEditorText(state, text);
+		notifyChatSessionWarning(state, errorMessage(err));
+	}
 }
