@@ -46,6 +46,7 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
+import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult, ResourceAdmission } from "./sdk-types.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
@@ -252,6 +253,34 @@ async function acquireSessionPermit(
 	}
 }
 
+/**
+ * A supplied session that recorded worktree snapshots, prepared the way `atomic --session` prepares it: continued in
+ * its recorded checkout when that still matches, in a matching checkout, or in a worktree restored from its snapshot,
+ * with the setup hook. The checkout is compared under the `snapshots` the session itself records with. A session
+ * without snapshots is returned unchanged, so creating it costs no Git call.
+ */
+async function sessionResumedOnThisNode(
+	sessionManager: SessionManager | undefined,
+	agentDir: string,
+	settingsManager: SettingsManager | undefined,
+	snapshots: CreateAgentSessionOptions["snapshots"],
+): Promise<SessionManager | undefined> {
+	if (sessionManager === undefined || !sessionManager.isPersisted()) return sessionManager;
+	if (sessionManager.getLatestWorktreeSnapshots().size === 0) return sessionManager;
+	const settings = settingsManager ?? SettingsManager.create(process.cwd(), agentDir);
+	const prepared = await prepareSessionResume(sessionManager, {
+		...sessionResumeOptions(
+			"create-agent-session",
+			process.cwd(),
+			agentDir,
+			settings,
+			savedProjectTrust(agentDir, settings),
+		),
+		settings: resolveWorktreeSnapshotSettings(snapshots, "sdk", "snapshots", settings.getWorktreeSnapshotSettings()),
+	});
+	return prepared.status === "ready" ? prepared.sessionManager : sessionManager;
+}
+
 async function constructAgentSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
@@ -264,10 +293,6 @@ async function constructAgentSession(
 			? undefined
 			: await bindSessionWorkspace(options.workspace, options.sessionManager, options.resourceAdmissionSignal);
 	if (workspace !== undefined) assertSessionManagerInWorktree(workspace, options.sessionManager);
-	const cwd =
-		workspace === undefined
-			? resolvePath(options.cwd ?? options.sessionManager?.getCwd() ?? process.cwd())
-			: workspaceSessionCwd(workspace, options.cwd);
 	const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
 	validateProcessStorage(agentDir);
 	// `storage` backs the sessions only without `sessionManager` and `sessionStore`, and the journal only without
@@ -275,6 +300,14 @@ async function constructAgentSession(
 	const storageUsed =
 		(options.sessionManager === undefined && options.sessionStore === undefined) || options.journal === undefined;
 	await assertTeamAdapterInstalled(agentDir, storageUsed ? options.storage : undefined);
+	const suppliedSession =
+		options.cwd === undefined && workspace === undefined
+			? await sessionResumedOnThisNode(options.sessionManager, agentDir, options.settingsManager, options.snapshots)
+			: options.sessionManager;
+	const cwd =
+		workspace === undefined
+			? resolvePath(options.cwd ?? suppliedSession?.getCwd() ?? process.cwd())
+			: workspaceSessionCwd(workspace, options.cwd);
 	let resourceLoader = options.resourceLoader;
 	// The concrete default can rediscover into private storage (including deferred
 	// CLI configuration). Custom discovery stays delegated; composition instantiates
@@ -290,7 +323,7 @@ async function constructAgentSession(
 	await modelRuntime.refresh({ allowNetwork: false });
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-	let sessionManager = options.sessionManager;
+	let sessionManager = suppliedSession;
 	if (!sessionManager) {
 		const sessionStore =
 			options.sessionStore ??

@@ -157,6 +157,11 @@ interface SettingsManagerBasicAccessors {
 	getSessionSummarySettings(): { enabled: boolean };
 	/** Merged `snapshots.*` settings; throws WorkspaceConfigError (source "settings") for an invalid value. */
 	getWorktreeSnapshotSettings(): WorktreeSnapshotSettings;
+	/**
+	 * `resume.setupCommand` from the global settings, trimmed; undefined when unset or blank. A project's own value is
+	 * ignored: it would run a repository-chosen command on a machine that never trusted the repository.
+	 */
+	getResumeSetupCommand(): string | undefined;
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): {
@@ -614,6 +619,11 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getWorktreeSnapshotSettings() {
 		return resolveWorktreeSnapshotSettings(settingsInternals(this).settings.snapshots, "settings", "snapshots");
+	},
+
+	getResumeSetupCommand() {
+		const command = settingsInternals(this).globalSettings.resume?.setupCommand?.trim();
+		return command ? command : undefined;
 	},
 
 	getRetryEnabled() {

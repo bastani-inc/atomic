@@ -368,4 +368,5 @@ export type ReadonlySessionManager = Pick<
 	| "getTree"
 	| "getSessionName"
 	| "getSessionNameState"
+	| "getWorktreeRootMappings"
 >;

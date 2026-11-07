@@ -8,6 +8,7 @@ import { ExtensionRunner, type ToolDefinition, wrapRegisteredTools } from "./ext
 import { isMandatoryRuntimeTool, isTrustedMandatoryRuntimeTool } from "./mandatory-runtime-tools.ts";
 import { isSelectedNativeMcpTool } from "./mcp-child-policy.ts";
 import { ModelRegistry } from "./model-registry.ts";
+import { withWorktreeRootMappings } from "./resume/path-mapping.ts";
 import { createSyntheticSourceInfo } from "./source-info.ts";
 import { isRegisteredToolAllowed, activatesOnRegistration as toolActivatesOnRegistration } from "./tool-selection.ts";
 import { createLocalBashOperations } from "./tools/bash.js";
@@ -105,7 +106,16 @@ export function _refreshToolRegistry(
 						? hostInputError("HumanInputCancelled")
 						: new Error("Operation aborted")
 			: undefined;
-		const guarded = rejectMalformedToolArguments(tool, () => this.agent.state.messages);
+		const scoped: AgentTool = {
+			...tool,
+			execute: (...args) =>
+				withWorktreeRootMappings(
+					this.sessionManager.getWorktreeRootMappings(),
+					() => tool.execute(...args),
+					this._outerWorktreeRootMappings,
+				),
+		};
+		const guarded = rejectMalformedToolArguments(scoped, () => this.agent.state.messages);
 		const scheduled = scheduleToolExecution(guarded, this._toolExecutionScheduler, abortError);
 		const definition = definitionRegistry.get(tool.name)?.definition;
 		const detachable = builtInQuestion && !questionsDetach ? undefined : definition?.detachable;

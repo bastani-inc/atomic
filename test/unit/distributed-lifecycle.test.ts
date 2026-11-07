@@ -396,7 +396,7 @@ test("feature suites skip with a typed reason when the ref lacks their interface
 	);
 	assert.equal(featureSkip("smoke", capabilities()), undefined);
 	for (const [suite, probe] of Object.entries(FEATURE_PROBES))
-		assert.equal(probe.implemented, suite === "idle-density", suite);
+		assert.equal(probe.implemented, suite === "idle-density" || suite === "multi-node-resume", suite);
 });
 
 test("a malformed capabilities document is a broken deployment, not a missing feature (#4331)", () => {

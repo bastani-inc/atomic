@@ -60,10 +60,16 @@ import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/mode
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
-import { getMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
+import { resumeFailureMessage } from "./core/resume/failure.ts";
+import type { ResumeNotice } from "./core/resume/session-resume.ts";
+import {
+	getMissingSessionCwdIssue,
+	getMissingStoredSessionCwdIssue,
+	MissingSessionCwdError,
+} from "./core/session-cwd.ts";
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
+import type { SessionManager } from "./core/session-manager.ts";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
-import { openSessionInWorktree } from "./core/session-worktree-snapshots.ts";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
@@ -75,7 +81,6 @@ import {
 } from "./core/storage/process-selection.js";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
-import { isGitUnavailableError, isWorkspaceError } from "./core/worktree-snapshot/errors.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import {
 	type AppMode,
@@ -100,10 +105,13 @@ import { runFirstTimeSetup } from "./main-first-time-setup.ts";
 import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
 	applyInheritedWorkflowSessionClassification,
-	createSessionManager,
+	cliResumeTrust,
+	openCliSession,
+	promptForDirtyCheckout,
 	promptForMissingSessionCwd,
 	refreshSessionStorage,
 	SessionSelectorConflictError,
+	startupResumeDiagnostics,
 	validateForkFlags,
 	validateImportFlags,
 	validateSessionIdFlags,
@@ -630,19 +638,34 @@ export async function main(argv: string[], options?: MainOptions) {
 	// settings, resources, provider registrations, and models must be resolved only after
 	// the target session cwd is known. The startup-cwd settings manager is used only for
 	// storage selection before loading the selected session's resources.
-	let sessionManager = await createSessionManager(parsed, cwd, undefined, startupSettingsManager, sessionStorage);
-	let worktreeRestoreDiagnostics: { readonly type: "info" | "warning"; readonly message: string }[];
+	let sessionManager: SessionManager;
+	let worktreeRestoreDiagnostics: readonly ResumeNotice[] = [];
 	try {
-		({ sessionManager, notices: worktreeRestoreDiagnostics } = await openSessionInWorktree(sessionManager, {
-			settings: startupSettingsManager.getWorktreeSnapshotSettings(),
-		}));
+		const opened = await openCliSession(parsed, cwd, startupSettingsManager, {
+			agentDir,
+			sessionStorage,
+			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
+			chooseDirtyCheckout:
+				appMode === "interactive"
+					? (prompt) => {
+							startupEarlyInputCapture?.consume();
+							startupEarlyInputCapture = undefined;
+							return promptForDirtyCheckout(prompt, startupSettingsManager);
+						}
+					: undefined,
+		});
+		if (opened === "cancelled") process.exit(0);
+		sessionManager = opened.sessionManager;
+		worktreeRestoreDiagnostics = opened.notices;
 	} catch (error) {
-		if (!isWorkspaceError(error) && !isGitUnavailableError(error)) throw error;
+		const message = resumeFailureMessage(error);
+		if (message === undefined) throw error;
 		startupEarlyInputCapture?.consume();
-		console.error(chalk.red(`Error: ${error.message}`));
+		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
-	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
+	const missingSessionCwdIssue =
+		getMissingSessionCwdIssue(sessionManager, cwd) ?? getMissingStoredSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		startupEarlyInputCapture?.consume();
 		startupEarlyInputCapture = undefined;
@@ -1065,7 +1088,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const storageWarning = await sharedStorageWarning;
 	const startupDiagnostics = deduplicateDiagnostics([
 		...startupSettingsDiagnostics,
-		...worktreeRestoreDiagnostics,
+		...startupResumeDiagnostics(appMode, worktreeRestoreDiagnostics),
 		...runtime.diagnostics,
 		...(storageWarning === undefined ? [] : [{ type: "warning" as const, message: storageWarning }]),
 	]);
@@ -1107,6 +1130,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			startupDiagnostics,
+			resumeNotices: worktreeRestoreDiagnostics,
 			modelFallbackMessage,
 			autoTrustOnReloadCwd,
 			holdTuiForStartupTrust:

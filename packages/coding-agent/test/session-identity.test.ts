@@ -367,7 +367,12 @@ test(
 		);
 		assert.equal(result.timedOut, false);
 		assert.equal(result.code, 1);
-		assert.equal(result.stderr.trim(), `No session found matching '${path}'`);
+		assert.ok(
+			result.stderr
+				.trim()
+				.startsWith(`Error: No session found matching '${path}': this node uses local-only storage`),
+			result.stderr,
+		);
 		assert.deepEqual(
 			(await SessionManager.list(cwd, directory)).map((session) => session.id),
 			[source.getSessionId()],

@@ -263,6 +263,19 @@ export interface ResumeSessionWorktreeOptions {
 	/** Host directory for shared object stores and restored worktrees. Default ~/.atomic/agent/worktree-snapshots. */
 	readonly storeDir?: string;
 	readonly signal?: AbortSignal;
+	/**
+	 * Called with the new mappings, none when nothing needed restoring, once every checkout is restored and before any
+	 * of them is recorded. When it throws, nothing is recorded and the restored worktrees are removed, as for a failed
+	 * restore.
+	 */
+	readonly beforeRecord?: (mappings: readonly WorktreeRootMapping[]) => Promise<void>;
+	/**
+	 * Mappings to checkouts already here that the session continues in, applied as if recorded while deciding what to
+	 * restore, and recorded first, with the restores, only once every checkout is restored and `beforeRecord` passed.
+	 */
+	readonly pendingMappings?: readonly WorktreeRootMapping[];
+	/** Checkouts, by the root the session's restores put them at, to continue in as they are without verifying them. */
+	readonly keepInPlace?: ReadonlySet<string>;
 }
 
 /**
@@ -275,7 +288,8 @@ export async function resumeSessionWorktree(
 	options: ResumeSessionWorktreeOptions,
 ): Promise<SessionWorktreeResume> {
 	if (!options.settings.enabled) return { status: "none" };
-	const existing = sessionManager.getWorktreeRootMappings();
+	const pending = options.pendingMappings ?? [];
+	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	const latestIds = latestSnapshotIdsByCheckout(sessionManager, existing);
 	const latest = new Map<string, WorktreeSnapshot>();
@@ -296,6 +310,7 @@ export async function resumeSessionWorktree(
 			options.signal?.throwIfAborted();
 			const root = mapRestoredPath(original, existing);
 			if (isInside(root, cwd) && (!selected || root.length > selected.root.length)) selected = { root, snapshot };
+			if (options.keepInPlace?.has(root)) continue;
 			let drift: WorkspaceDriftError;
 			try {
 				await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });
@@ -361,7 +376,8 @@ export async function resumeSessionWorktree(
 				}),
 			);
 		}
-		for (const mapping of mappings) {
+		await options.beforeRecord?.(mappings);
+		for (const mapping of [...pending, ...mappings]) {
 			options.signal?.throwIfAborted();
 			await sessionManager.appendWorktreeSnapshot(
 				mapping.to,

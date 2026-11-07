@@ -13,7 +13,7 @@ import { redact } from "./commands.mjs";
  * @typedef {import("./suites.mjs").FaultRecord} FaultRecord
  * @typedef {{ name: string, issue: string, status: "passed" | "failed" | "skipped" | "cancelled", reason?: SerializedError,
  *   invariants?: Invariant[], failures?: SerializedError[], faults?: FaultRecord[],
- *   metrics?: import("./suites.mjs").SmokeMetrics | import("./released-suite.mjs").ReleasedMetrics,
+ *   metrics?: import("./suites.mjs").SmokeMetrics | import("./released-suite.mjs").ReleasedMetrics | import("./resume-suite.mjs").ResumeMetrics,
  *   profiles?: Record<string, import("./chaos.mjs").ProfileSpec> }} SuiteResult
  * @typedef {"passed" | "failed" | "cancelled"} RunStatus
  * @typedef {{ ref: string, suite: string, chaos: string, nodes: number, regions: string[], seed: number, prng: string,
@@ -128,14 +128,16 @@ export function renderMarkdown(report) {
 		"| Suite | Profile | Status | Target | Effect observed | Recovered | Observed |",
 		"| --- | --- | --- | --- | --- | --- | --- |",
 	);
+	// One row per fault record, so a profile a suite applied to several targets (or scenarios) shows each of them.
 	for (const item of report.coverage) {
-		const fault = report.suites
+		const faults = report.suites
 			.filter((suite) => item.suite === undefined || suite.name === item.suite)
 			.flatMap((suite) => suite.faults ?? [])
-			.find((entry) => entry.profile === item.profile);
-		lines.push(
-			`| ${item.suite ?? ""} | ${item.profile} | ${item.status} | ${fault?.target ?? ""} | ${fault?.effectObserved ?? ""} | ${fault?.recovered ?? ""} | ${cell(fault?.error?.message ?? fault?.observed ?? "")} |`,
-		);
+			.filter((entry) => entry.profile === item.profile);
+		for (const fault of faults.length === 0 ? [undefined] : faults)
+			lines.push(
+				`| ${item.suite ?? ""} | ${item.profile} | ${item.status} | ${fault?.target ?? ""} | ${fault?.effectObserved ?? ""} | ${fault?.recovered ?? ""} | ${cell(fault?.error?.message ?? fault?.observed ?? "")} |`,
+			);
 	}
 	lines.push("", "## Invariants", "", "| Invariant | Passed | Expected | Actual |", "| --- | --- | --- | --- |");
 	for (const suite of report.suites)

@@ -57,3 +57,24 @@ export function assertSessionCwdExists(sessionManager: SessionCwdSource, fallbac
 		throw new MissingSessionCwdError(issue);
 	}
 }
+
+interface StoredSessionCwdSource extends SessionCwdSource {
+	isPersisted(): boolean;
+	getEntries(): readonly object[];
+}
+
+/**
+ * The missing-cwd issue for a resumed session kept in database storage, which has no session file: its recorded cwd
+ * may be another machine's path. New sessions and in-memory sessions have none.
+ */
+export function getMissingStoredSessionCwdIssue(
+	sessionManager: StoredSessionCwdSource,
+	fallbackCwd: string,
+): SessionCwdIssue | undefined {
+	if (sessionManager.getSessionFile() || !sessionManager.isPersisted() || sessionManager.getEntries().length === 0) {
+		return undefined;
+	}
+	const sessionCwd = sessionManager.getCwd();
+	if (!sessionCwd || existsSync(sessionCwd)) return undefined;
+	return { sessionCwd, fallbackCwd };
+}

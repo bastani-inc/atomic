@@ -1,13 +1,17 @@
+import { existsSync } from "node:fs";
 import {
 	acquireWorkspaceWriterLease,
 	type BoundWorkspace,
 	isBoundWorkspace,
+	isWorkspaceRestoreError,
 	resolveWorkspace,
 	restoreWorkspace,
 	type Workspace,
+	type WorktreeRootMapping,
 	workspaceChangeSet,
 } from "@bastani/atomic";
 import type { DurableChildInvocation } from "../../durable/boundary-topology.js";
+import { mapWorkflowWorktreePath } from "../../durable/worktree-snapshots.js";
 import {
 	findWorkflowExitSignal,
 	isWorkflowExitStatus,
@@ -97,6 +101,7 @@ export function createChildWorkflowRunner(input: {
 					durableInvocation,
 					runtime.signal,
 					`${runtime.runId}/${boundaryName}`,
+					runtime.childRunOptions.worktreeRootMappings ?? [],
 				);
 			} catch (err) {
 				// The boundary has no durable start yet: settle it in memory only, as the catch below does once started.
@@ -290,23 +295,35 @@ export function createChildWorkflowRunner(input: {
 /**
  * Bind a boundary's workspace before its durable start: restore the binding an earlier attempt recorded, or resolve
  * the workspace, then take the writer lease for a writable one. The parent releases the lease when the child settles.
+ * When the recorded worktree is not on this machine, this machine lacks the history the binding needs (its repository,
+ * branch or step commits, as on another machine), and the run's resume restored the worktree from its snapshots
+ * (`restored`, the run's root mappings), the child is bound in that restored worktree instead. A worktree that is here
+ * keeps failing closed when its history is gone. The recorded binding itself is never rewritten.
  */
 async function bindChildWorkspace(
 	workspace: Workspace,
 	invocation: DurableChildInvocation,
 	signal: AbortSignal,
 	owner: string,
+	restored: readonly WorktreeRootMapping[],
 ): Promise<void> {
 	const recorded = invocation.recordedWorkspace;
 	let binding: BoundWorkspace;
 	if (recorded === undefined) binding = await resolveWorkspace(workspace, { signal });
 	else {
-		await restoreWorkspace(recorded, {
-			signal,
-			recreateMissingBranch: !invocation.recordedChildProgress(),
-			recordedHeads: invocation.recordedChildHeads(recorded),
-		});
-		binding = recorded;
+		try {
+			await restoreWorkspace(recorded, {
+				signal,
+				recreateMissingBranch: !invocation.recordedChildProgress(),
+				recordedHeads: invocation.recordedChildHeads(recorded),
+			});
+			binding = recorded;
+		} catch (error) {
+			const worktree = mapWorkflowWorktreePath(recorded.worktree, restored);
+			if (!isWorkspaceRestoreError(error) || worktree === recorded.worktree || existsSync(recorded.worktree))
+				throw error;
+			binding = { ...recorded, worktree };
+		}
 	}
 	const lease =
 		binding.sandbox === "workspace-write" ? await acquireWorkspaceWriterLease(binding, { owner, signal }) : undefined;

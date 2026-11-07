@@ -16,11 +16,12 @@ Looking to extend or embed Atomic? Go to [Build with Atomic](/build). Looking up
 1. [Interactive use](/usage) — the interactive loop, slash commands, and context files.
 2. [Configure Atomic](/guides/configuration) — write a settings file and override it per project.
 3. [Sessions](/sessions) — save, resume, name, and branch sessions.
-4. [Context and compaction](/compaction) — keep long sessions inside the context window.
-5. [Providers](/providers) — subscription logins, API keys, and provider-specific setup.
-6. [Local models](/llama-cpp) — run models locally with llama.cpp.
-7. [Security](/security) — project trust and sandbox boundaries.
-8. [Containerization](/containerization) — run Atomic inside a container.
+4. [Resume on any machine](/guides/resume-on-any-machine) — continue a session or workflow run on another machine that shares your storage.
+5. [Context and compaction](/compaction) — keep long sessions inside the context window.
+6. [Providers](/providers) — subscription logins, API keys, and provider-specific setup.
+7. [Local models](/llama-cpp) — run models locally with llama.cpp.
+8. [Security](/security) — project trust and sandbox boundaries.
+9. [Containerization](/containerization) — run Atomic inside a container.
 
 For work that continues while you chat, follow [Background tasks](/background-tasks) to launch, inspect, and stop agents or shells. If you use Herdr panes, [Herdr](/herdr) explains Atomic's status indicators and troubleshooting.
 

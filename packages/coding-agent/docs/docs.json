@@ -43,6 +43,7 @@
               "guides/non-interactive",
               "sessions",
               "worktree-snapshots",
+              "guides/resume-on-any-machine",
               "compaction",
               "guides/configuration"
             ]

@@ -18,6 +18,7 @@ export type {
 	PackageSource,
 	ProviderRetrySettings,
 	QuietStartup,
+	ResumeSettings,
 	RetrySettings,
 	SearchSettings,
 	SessionSummarySettings,

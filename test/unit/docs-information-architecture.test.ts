@@ -388,7 +388,7 @@ const issueNavigationOrder: Record<string, readonly string[]> = {
  */
 const generatedNavigationInsertions: Record<string, readonly string[]> = {
 	"/usage": ["/guides/non-interactive"],
-	"/sessions": ["/worktree-snapshots"],
+	"/sessions": ["/worktree-snapshots", "/guides/resume-on-any-machine"],
 	"/compaction": [
 		"/guides/configuration",
 		"/guides/workflows",
@@ -643,7 +643,7 @@ describe("docs information architecture (#2847)", () => {
 		const expectedGenerated = Object.values(generatedNavigationInsertions).flat().sort();
 		assert.equal(
 			expectedGenerated.length,
-			40,
+			41,
 			"migration routes, additions, and the storage API have insertion points",
 		);
 		assert.deepEqual(generated, expectedGenerated, "no generated page may fall outside the insertion contract");

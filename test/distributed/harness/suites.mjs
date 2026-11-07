@@ -59,7 +59,7 @@ export const FEATURE_PROBES = Object.freeze({
 		issue: "#4329",
 		capability: "export ResumeError",
 		present: exported("ResumeError"),
-		implemented: false,
+		implemented: true,
 	},
 	"cross-host-pools": {
 		issue: "#4310",
