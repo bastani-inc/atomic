@@ -22,8 +22,13 @@ import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";
 import type { ResumeEntryPoint } from "./resume/errors.ts";
 import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline } from "./resume/not-found.ts";
-import { registerWorktreeRootMappings } from "./resume/path-mapping.ts";
-import { prepareSessionResume, savedProjectTrust, sessionResumeOptions } from "./resume/session-resume.ts";
+import { isInside, registerWorktreeRootMappings } from "./resume/path-mapping.ts";
+import {
+	prepareSessionResume,
+	resumeStoreDir,
+	savedProjectTrust,
+	sessionResumeOptions,
+} from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
 import { assertSessionCwdExists } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
@@ -808,14 +813,18 @@ export class AgentSessionRuntime {
 	}
 
 	/**
-	 * Where a rehydrated session continues. When the directory it last worked in, after the restores it recorded, is on
-	 * this node, it continues there as it is, since work done there after the release belongs to it; otherwise its
-	 * checkouts are prepared as `/resume` prepares them.
+	 * Where a rehydrated session continues. When the directory it last worked in, after the restores it recorded, is in a
+	 * worktree this node restored, it continues there as it is, since work done there after the release belongs to it.
+	 * Any other directory, such as the checkout it was recorded in or one at the same path on another node, is checked
+	 * against the session's snapshot as `/resume` checks it: the session continues there when the tree matches and in a
+	 * restored worktree otherwise.
 	 */
 	private async continueWhereItWorked(opened: SessionManager): Promise<SessionManager> {
 		const mappings = opened.getWorktreeRootMappings();
 		const cwd = mapRestoredPath(opened.getCwd(), mappings);
-		if (!existsSync(cwd)) return this.resumeWorktree(opened, undefined, "rehydrate");
+		if (!existsSync(cwd) || !isInside(resumeStoreDir(this.services.agentDir), cwd)) {
+			return this.resumeWorktree(opened, undefined, "rehydrate");
+		}
 		registerWorktreeRootMappings(mappings);
 		if (cwd === resolve(opened.getCwd())) return opened;
 		return this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId());
