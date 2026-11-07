@@ -138,6 +138,32 @@ test("a resume whose shared journal comes from the global settings is bounded by
 	}
 });
 
+test("a resume whose shared journal comes from the settings of the project it runs in is bounded too (#4329)", async () => {
+	const adapter = journalAdapter("project-journal.mjs");
+	const project = join(directory, "project");
+	mkdirSync(join(project, ".atomic"), { recursive: true });
+	writeFileSync(join(project, ".atomic", "settings.json"), JSON.stringify({ workflows: { journal: { adapter } } }));
+	const owner = getDurableBackendProcessOwner();
+	const injected = owner.injectedBackend;
+	owner.injectedBackend = undefined;
+	try {
+		const runId = randomUUID();
+		const opened = nextOpen();
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const pending = run(empty, {}, { runId, cwd: project, store: createStore() }).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		await opened;
+		await vi.advanceTimersByTimeAsync(RESUME_CATALOG_TIMEOUT_MS);
+		const error = await pending;
+		assert.ok(isResumeCatalogTimeoutError(error), String(error));
+		assert.deepEqual([error.subject, error.id, error.storage], ["run", runId, adapter]);
+	} finally {
+		owner.injectedBackend = injected;
+	}
+});
+
 test("a resume whose shared journal cannot be reached fails as a retryable lookup error that keeps the cause (#4329)", async () => {
 	const adapter = journalAdapter("unreachable-journal.mjs");
 	const runId = randomUUID();
