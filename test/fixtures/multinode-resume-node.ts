@@ -191,7 +191,7 @@ try {
 		retryable?: boolean;
 		subject?: string;
 		problems?: readonly { code: string; subject: string }[];
-		cause?: { name?: string; code?: string };
+		cause?: { name?: string; code?: string; cause?: { name?: string; code?: string } };
 	};
 	emit({
 		error: {
@@ -202,7 +202,17 @@ try {
 			subject: typed.subject,
 			rendered: resumeFailureMessage(error),
 			problems: typed.problems?.map((problem) => ({ code: problem.code, subject: problem.subject })),
-			...(typed.cause === undefined ? {} : { cause: { name: typed.cause.name, code: typed.cause.code } }),
+			...(typed.cause === undefined
+				? {}
+				: {
+						cause: {
+							name: typed.cause.name,
+							code: typed.cause.code,
+							...(typed.cause.cause === undefined
+								? {}
+								: { cause: { name: typed.cause.cause.name, code: typed.cause.cause.code } }),
+						},
+					}),
 		},
 	});
 	process.exit(2);
