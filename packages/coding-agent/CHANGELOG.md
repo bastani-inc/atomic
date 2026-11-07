@@ -170,6 +170,7 @@
 - A `/tasks` transcript shows compaction boundaries, branch summaries and extension notices, also after it is reopened, and shows the compaction status while the agent compacts ([#4521](https://github.com/bastani-inc/atomic/issues/4521))
 - Ctrl+T in an attached workflow stage chat or a `/tasks` transcript changes their thinking display in the default isolated CLI; it used to change only the main chat behind them. A `/tasks` transcript there now opens with the chat's tool-output setting, and Ctrl+O in it changes the transcript's. The task pages opened from the main chat leave only Ctrl+T to it and keep every other key, so keys such as Ctrl+Home on the list or detail page no longer scroll the chat behind them ([#4521](https://github.com/bastani-inc/atomic/issues/4521))
 - An old `routerModel` setting is now migrated to `decisionModel` instead of stopping startup ([#4526](https://github.com/bastani-inc/atomic/issues/4526))
+- Extensions importing legacy `@mariozechner/pi-coding-agent` resolve against Atomic again. Interactive startup skips a broken extension with a warning naming its path and cause; print and standalone RPC modes exit with a named error. Unexpected engine exits restore the terminal before reporting their diagnostic, keeping the reason visible after exit ([#4524](https://github.com/bastani-inc/atomic/issues/4524))
 
 ## [0.9.71] - 2026-11-03
 

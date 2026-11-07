@@ -174,3 +174,64 @@ it("completes deferred interactive startup with a named diagnostic for a broken 
 	expect(response, result.stderr).toMatchObject({ success: true });
 	expect(result.stderr).not.toContain("missing sourcemaps");
 });
+
+const tmuxAvailable = spawnSync("tmux", ["-V"]).status === 0;
+
+it.skipIf(!tmuxAvailable)(
+	"keeps an unexpected engine exit visible after restoring the fullscreen terminal (#4524)",
+	async () => {
+		const home = path.join(root, "terminal-crash");
+		const agentDir = path.join(home, "agent");
+		const extensions = path.join(agentDir, "extensions");
+		fs.mkdirSync(extensions, { recursive: true });
+		fs.writeFileSync(
+			path.join(extensions, "crash.ts"),
+			'export default function() { console.error("REVIEW_UNEXPECTED_ENGINE_EXIT"); process.exit(43); }',
+		);
+		const socket = path.join(home, "tmux.sock");
+		const config = path.join(home, "tmux.conf");
+		const modes = path.join(home, "terminal-modes.txt");
+		fs.writeFileSync(config, "set -g remain-on-exit on\n");
+		const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
+		const env = {
+			HOME: home,
+			USERPROFILE: home,
+			PATH: process.env.PATH ?? "",
+			TERM: "xterm-256color",
+			NO_COLOR: "1",
+			ATOMIC_CODING_AGENT_DIR: agentDir,
+			ATOMIC_PACKAGE_DIR: packageDir,
+			ATOMIC_SKIP_VERSION_CHECK: "1",
+		};
+		const command = [
+			"env -i",
+			...Object.entries(env).map(([key, value]) => `${key}=${quote(value)}`),
+			`bun ${quote(app)} --offline --approve --no-session`,
+			`; status=$?; stty -a > ${quote(modes)}; echo REVIEW_STATUS=$status; exit "$status"`,
+		].join(" ");
+		const tmux = (...args: string[]) => {
+			const result = spawnSync("tmux", ["-S", socket, "-f", config, ...args], { encoding: "utf8" });
+			expect(result.status, result.stderr).toBe(0);
+			return result.stdout;
+		};
+		try {
+			tmux("new-session", "-d", "-s", "crash", "-x", "140", "-y", "45", "-c", home, "sh", "-c", command);
+			const deadline = Date.now() + 25_000;
+			let pane = "";
+			do {
+				pane = tmux("capture-pane", "-p", "-J", "-S", "-", "-t", "crash");
+				if (pane.includes("REVIEW_STATUS=")) break;
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			} while (Date.now() < deadline);
+			expect(pane).toContain("REVIEW_STATUS=1");
+			expect(pane).toContain("Error: Agent process exited (code=43 signal=null).");
+			expect(pane).toContain("REVIEW_UNEXPECTED_ENGINE_EXIT");
+			expect(pane).not.toContain("missing sourcemaps");
+			const terminalModes = fs.readFileSync(modes, "utf8");
+			expect(terminalModes).toMatch(/\sicanon(?:\s|;)/);
+			expect(terminalModes).toMatch(/\secho(?:\s|;)/);
+		} finally {
+			spawnSync("tmux", ["-S", socket, "kill-server"]);
+		}
+	},
+);

@@ -137,6 +137,7 @@ import { shouldUseFullscreenTui } from "./modes/interactive/interactive-tui.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
+import { isRpcTransportFailure } from "./modes/rpc/rpc-transport-error.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import {
 	readInteractiveEngineBootstrap,
@@ -1165,20 +1166,31 @@ export async function main(argv: string[], options?: MainOptions) {
 			terminal: options?.internalInteractiveHarness?.terminal,
 		});
 		options?.internalInteractiveHarness?.onMode?.(interactiveMode);
-		if (startupBenchmark) {
-			await measureInteractiveStartup(interactiveMode, runtime);
-			stopThemeWatcher();
-			if (process.stdout.writableLength > 0) {
-				await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+		try {
+			if (startupBenchmark) {
+				await measureInteractiveStartup(interactiveMode, runtime);
+				stopThemeWatcher();
+				if (process.stdout.writableLength > 0) {
+					await new Promise<void>((resolve) => process.stdout.once("drain", resolve));
+				}
+				if (process.stderr.writableLength > 0) {
+					await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
+				}
+				return;
 			}
-			if (process.stderr.writableLength > 0) {
-				await new Promise<void>((resolve) => process.stderr.once("drain", resolve));
-			}
-			return;
-		}
 
-		printTimings();
-		await interactiveMode.run();
+			printTimings();
+			await interactiveMode.run();
+		} catch (error) {
+			if (isRpcTransportFailure(error)) {
+				stopThemeWatcher();
+				// The TUI starts before engine binding marks the mode initialized, so
+				// mode.stop() can skip it here. Restore before the CLI prints the error;
+				// TUI.stop() also unregisters the last-resort process exit restore.
+				interactiveMode.stopInteractiveTui("resume-hint");
+			}
+			throw error;
+		}
 	} else {
 		printTimings();
 		const exitCode = await runPrintMode(runtime, {
