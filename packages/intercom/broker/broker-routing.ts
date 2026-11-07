@@ -6,10 +6,13 @@ import { IntercomBrokerRetiringError } from "../recoverable-disconnect.js";
 import { isBrokerStatusReport } from "./broker-status.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 import { getBrokerSocketPath } from "./paths.js";
+import { type BrokerProtocolRange, protocolRangeOf } from "./protocol-version.js";
 
 export interface BrokerRouting {
 	readonly acrossMachines: boolean;
 	readonly hasSharedStorage: boolean;
+	/** #4538: the protocol versions the broker accepts; a broker that advertises none speaks protocol 1. */
+	readonly protocol: BrokerProtocolRange;
 }
 
 export async function queryBrokerRouting(agentDir: string): Promise<BrokerRouting> {
@@ -33,5 +36,9 @@ export async function queryBrokerRouting(agentDir: string): Promise<BrokerRoutin
 	if (typeof reply !== "object" || reply === null || Array.isArray(reply) || !isBrokerStatusReport(reply.report)) {
 		throw new IntercomRoutingUnavailableError("malformed", "broker_status");
 	}
-	return { acrossMachines: reply.report.multiNode.status !== "off", hasSharedStorage: reply.report.storage !== undefined };
+	return {
+		acrossMachines: reply.report.multiNode.status !== "off",
+		hasSharedStorage: reply.report.storage !== undefined,
+		protocol: protocolRangeOf(reply.report.protocol),
+	};
 }

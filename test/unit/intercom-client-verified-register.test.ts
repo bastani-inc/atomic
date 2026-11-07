@@ -17,8 +17,13 @@ const { IntercomClient } = await import("../../packages/intercom/broker/client.j
 const { BROKER_ROUTING_CHANGED_CODE, BROKER_ROUTING_CHANGED_REASON } = await import(
 	"../../packages/intercom/recoverable-disconnect.js"
 );
-const { isIntercomRoutingChangedError, isIntercomRoutingUnavailableError, isRetryableIntercomRoutingError } =
-	await import("@bastani/atomic");
+const {
+	isIntercomBrokerProtocolError,
+	isIntercomRoutingChangedError,
+	isIntercomRoutingUnavailableError,
+	isRetryableIntercomRoutingError,
+} = await import("@bastani/atomic");
+const { BROKER_PROTOCOL, LEGACY_BROKER_PROTOCOL } = await import("../../packages/intercom/broker/protocol-version.js");
 
 const servers: net.Server[] = [];
 
@@ -62,7 +67,7 @@ async function fakeBroker(onRegister: (socket: net.Socket, frame: Frame) => void
 
 const SESSION = { cwd: "/client", model: "client-model", pid: process.pid, startedAt: 1, lastActivity: 1 };
 
-async function connectFailure(expectedAcrossMachines: boolean | undefined): Promise<unknown> {
+async function connectFailure(expectedAcrossMachines: boolean | undefined, verify = true): Promise<unknown> {
 	const client = new IntercomClient("client-under-test", { connectTimeoutMs: 2_000 });
 	try {
 		await client.connect(
@@ -71,7 +76,7 @@ async function connectFailure(expectedAcrossMachines: boolean | undefined): Prom
 			undefined,
 			undefined,
 			undefined,
-			expectedAcrossMachines === undefined ? undefined : { acrossMachines: expectedAcrossMachines },
+			expectedAcrossMachines === undefined ? undefined : { acrossMachines: expectedAcrossMachines, verify },
 		);
 	} catch (error) {
 		return error;
@@ -94,7 +99,7 @@ describe("registering with the routing a session verified (#4320)", () => {
 				undefined,
 				undefined,
 				undefined,
-				expected === undefined ? undefined : { acrossMachines: expected },
+				expected === undefined ? undefined : { acrossMachines: expected, verify: true },
 			);
 			await client.disconnect();
 		}
@@ -106,6 +111,10 @@ describe("registering with the routing a session verified (#4320)", () => {
 				["register_verified", { acrossMachines: false }],
 				["register", undefined],
 			],
+		);
+		assert.deepEqual(
+			registrations.map((frame) => frame.protocol),
+			[BROKER_PROTOCOL, BROKER_PROTOCOL, BROKER_PROTOCOL],
 		);
 	});
 
@@ -169,4 +178,159 @@ describe("registering with the routing a session verified (#4320)", () => {
 	test("the refusal code is the wire contract an older or newer broker also speaks", () => {
 		assert.equal(BROKER_ROUTING_CHANGED_CODE, "broker_routing_changed");
 	});
+
+	test("a broker that closes an unverified registration without answering keeps the plain closed-connection error (#4538)", async () => {
+		const received = await fakeBroker((socket) => socket.destroy());
+
+		const error = await connectFailure(false, false);
+
+		assert.ok(error instanceof Error);
+		assert.equal(isIntercomRoutingUnavailableError(error), false);
+		assert.deepEqual(
+			received.map((frame) => [frame.type, frame.expectedRouting]),
+			[["register", undefined]],
+		);
+	});
+});
+
+describe("registering unverified with a broker of protocol 1 (#4538)", () => {
+	for (const expected of [false, true]) {
+		test(`a session that expects ${expected ? "multi-node" : "single-machine"} routing is refused when the broker reports the other routing in registered`, async () => {
+			await fakeBroker((socket) =>
+				writeMessage(socket, {
+					type: "registered",
+					sessionId: "fake-session",
+					multiNodeRouting: expected ? "off" : "on",
+				}),
+			);
+
+			const error = await connectFailure(expected, false);
+
+			assert.ok(isIntercomRoutingChangedError(error), String(error));
+			assert.equal(error.expectedAcrossMachines, expected);
+		});
+	}
+
+	test("a broker that reports the routing the session expected, or none, registers it", async () => {
+		let registrations = 0;
+		const received = await fakeBroker((socket) => {
+			registrations += 1;
+			writeMessage(socket, {
+				type: "registered",
+				sessionId: "fake-session",
+				...(registrations === 1 ? {} : { multiNodeRouting: "off" }),
+			});
+		});
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const client = new IntercomClient("client-under-test", { connectTimeoutMs: 2_000 });
+			await client.connect(SESSION, undefined, undefined, undefined, undefined, {
+				acrossMachines: false,
+				verify: false,
+			});
+			assert.equal(client.isConnected(), true);
+			await client.disconnect();
+		}
+		assert.deepEqual(
+			received.map((frame) => frame.type),
+			["register", "unregister", "register", "unregister"],
+		);
+	});
+
+	test("a request of protocol 2 is refused with the typed protocol error before anything is sent to a broker that advertises no range", async () => {
+		const received = await fakeBroker((socket) =>
+			writeMessage(socket, { type: "registered", sessionId: "fake-session" }),
+		);
+		const client = new IntercomClient("client-under-test", { connectTimeoutMs: 2_000 });
+		await client.connect(SESSION, undefined, undefined, undefined, undefined, {
+			acrossMachines: false,
+			verify: false,
+		});
+		try {
+			assert.deepEqual(client.brokerProtocol, LEGACY_BROKER_PROTOCOL);
+			const attempts: ReadonlyArray<readonly [string, () => Promise<void> | boolean]> = [
+				["reserve_released_children", () => client.reserveReleasedChildren([{ childName: "worker", wake: false }])],
+				["drop_released_children", () => client.dropReleasedChildren(["worker"])],
+				["acknowledge_released_child_wake", () => client.acknowledgeReleasedChildWake("worker")],
+				[
+					"released_child_reply_ack",
+					() =>
+						client.acknowledgeReleasedChildReply(
+							{
+								childName: "worker",
+								handoffId: "handoff",
+								replyTo: "question",
+								from: { ...SESSION, id: "peer" },
+								message: { id: "reply", timestamp: 1, content: { text: "done" } },
+							},
+							true,
+						),
+				],
+			];
+			for (const [feature, attempt] of attempts) {
+				const error = await (async () => {
+					try {
+						await attempt();
+					} catch (caught) {
+						return caught;
+					}
+					throw new Error(`${feature} was sent`);
+				})();
+				assert.ok(isIntercomBrokerProtocolError(error), String(error));
+				assert.deepEqual(
+					[
+						error.code,
+						error.feature,
+						error.brokerProtocolMin,
+						error.brokerProtocolMax,
+						error.requiredProtocol,
+						error.retryable,
+					],
+					["broker-protocol-unsupported", feature, 1, 1, 2, false],
+				);
+			}
+			assert.equal(client.isConnected(), true);
+			assert.deepEqual(
+				received.map((frame) => frame.type),
+				["register"],
+			);
+		} finally {
+			await client.disconnect();
+		}
+	});
+
+	test("a broker that advertises protocol 2 receives the request, and its range is the client's", async () => {
+		const received = await fakeBroker((socket) =>
+			writeMessage(socket, { type: "registered", sessionId: "fake-session", protocol: { min: 1, max: 2 } }),
+		);
+		const client = new IntercomClient("client-under-test", { connectTimeoutMs: 2_000 });
+		await client.connect(SESSION, undefined, undefined, undefined, undefined, {
+			acrossMachines: false,
+			verify: true,
+		});
+		try {
+			assert.deepEqual(client.brokerProtocol, { min: 1, max: 2 });
+			void client.dropReleasedChildren(["worker"]).catch(() => {});
+			await new Promise((settle) => setTimeout(settle, 50));
+			assert.deepEqual(
+				received.map((frame) => frame.type),
+				["register_verified", "drop_released_children"],
+			);
+		} finally {
+			await client.disconnect();
+		}
+		assert.deepEqual(client.brokerProtocol, LEGACY_BROKER_PROTOCOL);
+	});
+
+	for (const protocol of [{ min: 2, max: 1 }, { min: 0, max: 2 }, { min: 1 }, "2"]) {
+		test(`a registered frame with the malformed protocol ${JSON.stringify(protocol)} fails the connection`, async () => {
+			await fakeBroker((socket) =>
+				writeMessage(socket, { type: "registered", sessionId: "fake-session", protocol }),
+			);
+
+			const error = await connectFailure(false, true);
+
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /Invalid registered message/);
+		});
+	}
 });

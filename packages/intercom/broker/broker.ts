@@ -14,10 +14,12 @@ import {
   type HeldWrite,
   holdWrites,
   isHoldingWrites,
+  recordClientProtocol,
   releaseHeldWrites,
   writeMessageIfOpen,
   writeMessageWithOutcome,
 } from "./socket-writes.js";
+import { BROKER_PROTOCOL, isBrokerProtocolRange, protocolRangeOf } from "./protocol-version.js";
 import { boundWorkflowPossibleStageRow } from "../workflow-delivery-states.js";
 import {
 	isWorkflowFutureStagePredictionFields,
@@ -1737,10 +1739,19 @@ class IntercomBroker {
 		if (clientMessage.acknowledgesReceipt !== undefined && clientMessage.acknowledgesReceipt !== true) {
 			throw new Error("Invalid receipt acknowledgement capability");
 		}
+		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
+			throw new Error("Invalid protocol range");
+		}
 
         if (currentId) {
           throw new Error("Received duplicate register message");
         }
+        // #4538: a client that names no range is a 0.9.71-or-older client, which drops its connection over a frame
+        // type it does not know; such frames are never written to it.
+        recordClientProtocol(
+          socket,
+          protocolRangeOf(isBrokerProtocolRange(clientMessage.protocol) ? clientMessage.protocol : undefined),
+        );
 
         let supervisorId: string | undefined;
         if (clientMessage.supervisor !== undefined) {
@@ -1809,6 +1820,7 @@ class IntercomBroker {
             claimsWorkflowInvocations: true as const,
             extendsSaves: true as const,
             multiNodeRouting: this.multiNodeStatus,
+            protocol: { ...BROKER_PROTOCOL },
           });
           if (isAgentRecipient(info)) this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
           // #3761: messages written to this recipient's previous connection that it never confirmed saving go out again.
@@ -2572,6 +2584,7 @@ class IntercomBroker {
         ...(setting === undefined ? {} : describeSharedStorage(setting)),
         ...(peers === undefined ? {} : { peers }),
       },
+      protocol: { ...BROKER_PROTOCOL },
     };
   }
 

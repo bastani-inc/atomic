@@ -22,6 +22,14 @@ export interface BrokerStatusReport {
 	readonly sessions: number;
 	readonly storage?: { readonly digest: string; readonly source: "env" | "settings" };
 	readonly multiNode: BrokerMultiNodeStatus;
+	/** The wire protocol versions the broker accepts; absent from a broker of protocol 1 (0.9.71 and earlier). */
+	readonly protocol?: BrokerProtocolRange;
+}
+
+/** Wire protocol versions, inclusive at both ends. */
+export interface BrokerProtocolRange {
+	readonly min: number;
+	readonly max: number;
 }
 
 export type BrokerQuery =
@@ -45,7 +53,29 @@ export type RestartOutcome =
 			readonly current: Exclude<BrokerQuery, { state: "stopped" }>;
 	  };
 
+export type UpgradeOutcome =
+	| { readonly status: "not-running" }
+	| { readonly status: "unreported"; readonly pid?: number }
+	| {
+			readonly status: "current";
+			readonly pid: number;
+			readonly protocol: BrokerProtocolRange;
+			readonly decision: "compatible" | "incompatible";
+	  }
+	| {
+			readonly status: "deferred";
+			readonly pid: number;
+			readonly sessions: number;
+			readonly protocol: BrokerProtocolRange;
+	  }
+	| {
+			readonly status: "stopped";
+			readonly previous: { readonly pid: number; readonly protocol: BrokerProtocolRange };
+	  };
+
 export interface IntercomBrokerControl {
+	/** The protocol versions this version's broker accepts. */
+	readonly BROKER_PROTOCOL: BrokerProtocolRange;
 	queryIntercomBroker(agentDir: string): Promise<BrokerQuery>;
 	expectedBrokerStorage(agentDir: string, env?: NodeJS.ProcessEnv): ExpectedBrokerStorage | undefined;
 	readLiveBrokers(database: SqliteExecutor, prefix: string | undefined): Promise<string[] | undefined>;
@@ -53,6 +83,11 @@ export interface IntercomBrokerControl {
 		agentDir: string,
 		options?: { readonly onProgress?: (line: string) => void },
 	): Promise<RestartOutcome>;
+	/** #4538: replace an older broker when that is safe; see `atomic intercom upgrade`. */
+	upgradeIntercomBroker(
+		agentDir: string,
+		options?: { readonly onProgress?: (line: string) => void },
+	): Promise<UpgradeOutcome>;
 	describeMultiNodeStatus(multiNode: BrokerMultiNodeStatus): string;
 	/**
 	 * The group a session in `cwd` joins when no policy, workflow, `ATOMIC_INTERCOM_GROUP` or Intercom `config.json`
@@ -77,11 +112,12 @@ export async function loadIntercomBrokerControl(): Promise<IntercomBrokerControl
 		import("./extensions/loader-host-modules.js"),
 	]);
 	const hostModules = await getStorageAdapterHostModules();
-	// From the package root, the control's module graph uses only `ProjectGroupError` (`project-group.ts`). Outside a
-	// bundled build, where the host modules hold no package root, map the root to the host's own module of that error,
-	// so loading the control does not load the whole package root again, and the error stays the host's class.
+	// From the package root, the control's module graph uses only `ProjectGroupError` (`project-group.ts`) and the
+	// broker stop and upgrade errors (`broker-stop.ts`, `control.ts`). Outside a bundled build, where the host modules
+	// hold no package root, map the root to the host's own module of those errors, so loading the control does not load
+	// the whole package root again, and the errors stay the host's classes.
 	if (!("@bastani/atomic" in hostModules))
-		hostModules["@bastani/atomic"] = await import("./intercom-project-group-error.ts");
+		hostModules["@bastani/atomic"] = await import("./intercom-broker-control-host.ts");
 	const loader = await createHostModuleJiti(pathToFileURL(modulePath).href, hostModules);
 	return loader.import<IntercomBrokerControl>(modulePath);
 }

@@ -1,10 +1,19 @@
 import { readFileSync } from "node:fs";
+import { IntercomBrokerUpgradeError, isIntercomBrokerStopTimeoutError } from "@bastani/atomic";
 import type { SqliteExecutor } from "@bastani/atomic/storage";
 import type { BrokerStatusReport } from "../types.js";
 import { describeMultiNodeStatus, isBrokerStatusReport } from "./broker-status.js";
+import { BROKER_STOP_TIMEOUT_MS, isProcessAlive, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
 import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
 import { BROKER_LEASE_STALE_AFTER_MS } from "./multinode-state-store.js";
 import { getBrokerPidPath, getBrokerSocketPath } from "./paths.js";
+import {
+	BROKER_PROTOCOL,
+	type BrokerProtocolDecision,
+	type BrokerProtocolRange,
+	decideBrokerProtocol,
+	protocolRangeOf,
+} from "./protocol-version.js";
 import {
 	describeSharedStorage,
 	readSharedStorageSetting,
@@ -22,9 +31,9 @@ import { readLiveBrokerNodes } from "./sql-lease-store.js";
 export { describeMultiNodeStatus };
 export { projectHomeGroup } from "../project-group.js";
 
-export { BROKER_CONTROL_TIMEOUT_MS };
-/** How long `restartIntercomBroker` waits for the old broker to exit; its multi-node close is bounded at 2 s. */
-export const BROKER_STOP_TIMEOUT_MS = 10_000;
+export { BROKER_CONTROL_TIMEOUT_MS, BROKER_STOP_TIMEOUT_MS };
+/** The protocol versions this version's broker accepts. */
+export { BROKER_PROTOCOL };
 /** How long `restartIntercomBroker` waits for a reconnecting session to start a new broker (first retry after 1 s). */
 export const BROKER_RECONNECT_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 100;
@@ -63,15 +72,6 @@ function readBrokerPid(agentDir: string): number | undefined {
 		return Number.isFinite(pid) ? pid : undefined;
 	} catch {
 		return undefined;
-	}
-}
-
-function isProcessAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 
@@ -154,13 +154,7 @@ export async function restartIntercomBroker(agentDir: string, options: RestartOp
 			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 		}
 	}
-	const stopDeadline = Date.now() + stopTimeoutMs;
-	while (isProcessAlive(pid)) {
-		if (Date.now() >= stopDeadline) {
-			throw new Error(`The Intercom broker (pid ${pid}) did not exit within ${Math.round(stopTimeoutMs / 1000)} s.`);
-		}
-		await sleep(POLL_INTERVAL_MS);
-	}
+	await waitForBrokerExit(pid, stopTimeoutMs);
 	if (sessions === 0) return { status: "stopped", previous };
 	options.onProgress?.("Stopped. Waiting for its sessions to reconnect and start a new broker.");
 	const reconnectDeadline = Date.now() + reconnectTimeoutMs;
@@ -173,4 +167,53 @@ export async function restartIntercomBroker(agentDir: string, options: RestartOp
 		await sleep(POLL_INTERVAL_MS * 2);
 	}
 	return current.state === "stopped" ? { status: "stopped", previous } : { status: "restarted", previous, current };
+}
+
+export type UpgradeOutcome =
+	| { readonly status: "not-running" }
+	/** A broker older than `broker_status`: it cannot report its sessions, so stopping it is never known to be safe. */
+	| { readonly status: "unreported"; readonly pid?: number }
+	/** The running broker is this version's, newer, or shares no protocol version with it: it is left alone. */
+	| {
+			readonly status: "current";
+			readonly pid: number;
+			readonly protocol: BrokerProtocolRange;
+			readonly decision: Exclude<BrokerProtocolDecision, "upgrade">;
+	  }
+	/** An older broker with sessions connected: the next session of this version hands it over to a new broker. */
+	| { readonly status: "deferred"; readonly pid: number; readonly sessions: number; readonly protocol: BrokerProtocolRange }
+	/** An older broker with no session connected was stopped; the next session starts this version's broker. */
+	| { readonly status: "stopped"; readonly previous: { readonly pid: number; readonly protocol: BrokerProtocolRange } };
+
+export interface UpgradeOptions {
+	readonly stopTimeoutMs?: number;
+	readonly onProgress?: (line: string) => void;
+}
+
+/**
+ * #4538: after an install or update, replace an older broker when that is safe. An older broker with no session
+ * connected is stopped, so the next session starts this version's broker; with sessions connected it is left to the
+ * next session of this version, which hands it over without disconnecting them. Anything else is left alone.
+ */
+export async function upgradeIntercomBroker(agentDir: string, options: UpgradeOptions = {}): Promise<UpgradeOutcome> {
+	const query = await queryIntercomBroker(agentDir);
+	if (query.state === "stopped") return { status: "not-running" };
+	if (query.state === "legacy") return query.pid === undefined ? { status: "unreported" } : { status: "unreported", pid: query.pid };
+	const { pid, sessions } = query.report;
+	const protocol = protocolRangeOf(query.report.protocol);
+	const decision = decideBrokerProtocol(BROKER_PROTOCOL, protocol);
+	if (decision !== "upgrade") return { status: "current", pid, protocol, decision };
+	if (sessions > 0) return { status: "deferred", pid, sessions, protocol };
+	options.onProgress?.(`Stopping the older Intercom broker (pid ${pid}); no session is connected.`);
+	const failed = (cause?: Error): IntercomBrokerUpgradeError =>
+		new IntercomBrokerUpgradeError({ phase: "stop", previousPid: pid, previousProtocolMax: protocol.max }, { cause });
+	const answer = await requestBrokerShutdown(getBrokerSocketPath(process.platform, agentDir));
+	if (answer === "unanswered") throw failed();
+	try {
+		await waitForBrokerExit(pid, options.stopTimeoutMs ?? BROKER_STOP_TIMEOUT_MS);
+	} catch (error) {
+		if (isIntercomBrokerStopTimeoutError(error)) throw failed(error);
+		throw error;
+	}
+	return { status: "stopped", previous: { pid, protocol } };
 }

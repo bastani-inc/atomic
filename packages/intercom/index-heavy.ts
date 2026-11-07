@@ -31,7 +31,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -42,10 +42,18 @@ import {
 	type PendingStageMessageRequest,
 	type PendingStageMessageResult,
 	type PendingStageNotificationRequest,
+	type ExpectedRouting,
 	type ReleasedChildReply,
 	type StickyLiveDeliveredNotice,
 } from "./broker/client.js";
-import { spawnBrokerIfNeeded } from "./broker/spawn.js";
+import { spawnBrokerIfNeeded, upgradeBroker } from "./broker/spawn.js";
+import {
+  agreedProtocol,
+  BROKER_PROTOCOL,
+  decideBrokerProtocol,
+  VERIFIED_REGISTRATION_PROTOCOL,
+} from "./broker/protocol-version.js";
+import { localOnlyBrokerWarning, warnLocalOnlyBrokerWithoutUi } from "./local-only-broker.js";
 import { RECIPIENT_SAVING_REPORT_INTERVAL_MS } from "./retry-policy.js";
 import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
@@ -95,7 +103,7 @@ import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message
 import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
 import { DEFAULT_GROUP, explicitHomeGroup, normalizeGroup, normalizeGroups, resolveHomeGroup } from "./group.js";
 import { getIntercomDirPath } from "./broker/paths.js";
-import { queryBrokerRouting } from "./broker/broker-routing.js";
+import { type BrokerRouting, queryBrokerRouting } from "./broker/broker-routing.js";
 import { DEFAULT_GROUP_WARNING, multiNodeSelected, projectGroup, warnDefaultGroupWithoutUi } from "./project-group.js";
 import { clearRuntimeIntercomGroup, setRuntimeIntercomGroup } from "./runtime-group.js";
 import {
@@ -245,6 +253,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let brokerRouting: boolean | null = null;
   let homeRoutedAcrossMachines: boolean | null = null;
   let defaultGroupWarned = false;
+  /** #4538: this session already warned that it uses a broker it cannot verify on this machine only. */
+  let localOnlyWarned = false;
   let terminalHomeGroupError: Error | null = null;
   let joinedGroups: Set<string> | null = null;
   const sessionMemberships = sessionScopedExtensionState<Map<string, readonly string[]>>(
@@ -362,18 +372,73 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   function projectGroupOf(ctx: ExtensionContext | null): () => string | undefined {
     return () => (multiNodeRouting() ? projectGroup(ctx?.cwd ?? process.cwd(), createGitEnvironment()) : undefined);
   }
-  async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<boolean> {
-    const agentDir = dirname(getIntercomDirPath());
+  function warnLocalOnly(ctx: ExtensionContext, reason: IntercomRoutingUnavailableError): void {
+    if (localOnlyWarned) return;
+    const liveContext = getLiveContext(ctx);
+    if (liveContext === null) return;
+    localOnlyWarned = true;
+    if (liveContext.hasUI) notifyIfLive(liveContext, localOnlyBrokerWarning(reason), "warning");
+    else warnLocalOnlyBrokerWithoutUi(reason);
+  }
+  /**
+   * #4538: a broker older than this version is replaced by this version's (`upgradeBroker`); the routing is then read
+   * from whichever broker answers. A failed replacement leaves the older broker, which the caller verifies as such.
+   */
+  async function upgradeOlderBroker(agentDir: string): Promise<{ routing: BrokerRouting; upgradeFailure?: Error }> {
+    let upgradeFailure: Error | undefined;
+    try {
+      await upgradeBroker(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
+    } catch (error) {
+      if (!isIntercomBrokerUpgradeError(error)) throw error;
+      upgradeFailure = error;
+    }
+    await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
     const routing = await queryBrokerRouting(agentDir);
-    if (!getLiveContext(ctx, generation)) throw new IntercomRuntimeInactiveError();
-    const actual = routing.acrossMachines;
-    brokerRouting = actual;
-    const explicit = explicitHomeGroup(config, ctx);
+    return upgradeFailure === undefined ? { routing } : { routing, upgradeFailure };
+  }
+  /**
+   * The routing this session registers with. #4538: a broker that cannot verify it (no `broker_status`, or a protocol
+   * without `register_verified`) is used on this machine only, with one warning, unless multi-node routing is
+   * configured here or reported by the broker; then the session is refused with `broker-routing-unavailable`.
+   */
+  async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<ExpectedRouting> {
+    const agentDir = dirname(getIntercomDirPath());
     const selectedShared = multiNodeSelected(agentDir, processStorageEnvironment());
+    let routing: BrokerRouting | undefined;
+    let unverified: IntercomRoutingUnavailableError | undefined;
+    try {
+      routing = await queryBrokerRouting(agentDir);
+      let upgradeFailure: Error | undefined;
+      if (decideBrokerProtocol(BROKER_PROTOCOL, routing.protocol) === "upgrade") {
+        ({ routing, upgradeFailure } = await upgradeOlderBroker(agentDir));
+      }
+      const agreed = agreedProtocol(BROKER_PROTOCOL, routing.protocol);
+      if (agreed === undefined || agreed < VERIFIED_REGISTRATION_PROTOCOL) {
+        unverified = new IntercomRoutingUnavailableError(
+          "unsupported",
+          "register",
+          upgradeFailure === undefined ? {} : { cause: upgradeFailure },
+        );
+      }
+    } catch (error) {
+      if (!isIntercomRoutingUnavailableError(error)) throw error;
+      unverified = error;
+    }
+    if (!getLiveContext(ctx, generation)) throw new IntercomRuntimeInactiveError();
+    const actual = routing?.acrossMachines ?? false;
+    const explicit = explicitHomeGroup(config, ctx);
     const strictSharedProfile = selectedShared && (process.env.ATOMIC_PROFILE ?? "").trim() === "ci";
-    const brokerLacksSelectedStorage = !routing.hasSharedStorage && selectedShared;
-    if (brokerLacksSelectedStorage || (strictSharedProfile && !actual)) {
-      throw new IntercomRoutingMismatchError("shared-storage-not-on-broker", resolveSessionHomeGroup());
+    if (routing !== undefined) {
+      brokerRouting = actual;
+      const brokerLacksSelectedStorage = !routing.hasSharedStorage && selectedShared;
+      if (brokerLacksSelectedStorage || (strictSharedProfile && !actual)) {
+        throw new IntercomRoutingMismatchError("shared-storage-not-on-broker", resolveSessionHomeGroup());
+      }
+    }
+    if (unverified !== undefined) {
+      if (selectedShared || actual) throw unverified;
+      warnLocalOnly(ctx, unverified);
+      brokerRouting = false;
     }
     if (homeRoutedAcrossMachines === null) {
       homeRoutedAcrossMachines = actual;
@@ -388,7 +453,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       throw new IntercomRoutingMismatchError("implicit-default-on-remote-broker", resolveSessionHomeGroup());
     }
     if (actual && explicit === DEFAULT_GROUP) warnExplicitDefaultGroup(ctx);
-    return actual;
+    return { acrossMachines: actual, verify: unverified === undefined };
   }
   function resolveSessionHomeGroup(): string {
     if (sessionHomeGroup !== null) return sessionHomeGroup;
@@ -1419,7 +1484,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
             await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
-            const verifiedRouting = await settleBrokerRouting(contextAtStart, generationAtStart);
+            const expectedRouting = await settleBrokerRouting(contextAtStart, generationAtStart);
             const childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
@@ -1430,7 +1495,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               readSubagentMessageSource(runtimeContext?.subagentPolicy),
               // Origin controls workflow authority, not membership or child inheritance.
               resolveSessionHomeGroup(),
-              { acrossMachines: verifiedRouting },
+              expectedRouting,
             );
             clientRegistrationGroup = resolveSessionHomeGroup();
             // Termination may have won while registration was in flight.
