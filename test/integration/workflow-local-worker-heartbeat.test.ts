@@ -19,10 +19,10 @@ const HEARTBEAT_OBSERVATION_TIMEOUT_MS = 12_000;
 const RELEASE_OBSERVATION_TIMEOUT_MS = 10_000;
 const LOCAL_WORKER_HEARTBEAT_TEST_TIMEOUT_MS = 60_000;
 const TOOL_CALLS_WHILE_ACTIVITY_IS_HELD = 40;
-const COALESCED_ACTIVITY_REQUESTS_AFTER_RELEASE = 3;
+const COALESCED_CATCHUP_ACTIVITY_REQUESTS = 1;
 
 test(
-	"a held activity acknowledgement does not stop coalesced heartbeats and coalesces later activity (#3869, #4313)",
+	"a held activity acknowledgement does not stop coalesced heartbeats and coalesces later activity (#3869, #4313, #4537)",
 	async () => {
 		// Exercise the shipped worker, not a cold jiti transpilation of the entire source graph.
 		const workerEntry = fileURLToPath(
@@ -135,15 +135,28 @@ test(
 			);
 			assert.equal(held.length, 1, "repeated invalidations leave one unacknowledged activity request");
 			const activityBeforeRelease = count("activity");
+			// Release only the acknowledgement: the fixture stays running, and the catch-up snapshot is held too.
+			// Completion invalidations and the independent activity timer are not part of this coalesced batch.
+			for (const id of held.splice(0)) reply(id);
+			await until(() => held.length > 0, RELEASE_OBSERVATION_TIMEOUT_MS);
+			assert.equal(
+				count("activity") - activityBeforeRelease,
+				COALESCED_CATCHUP_ACTIVITY_REQUESTS,
+				"the held invalidations produce one catch-up activity request",
+			);
+			const catchupActivity = requests.filter((request) => request.kind === "activity").at(-1);
+			assert.equal(
+				catchupActivity?.kind === "activity"
+					? catchupActivity.runs.find((run) => run.id === "child")?.toolNodes.length
+					: undefined,
+				TOOL_CALLS_WHILE_ACTIVITY_IS_HELD,
+				"the coalesced snapshot carries every held tool call before the fixture finishes",
+			);
 			released = true;
 			writeTextSync(releasePath, "");
 			for (const id of held) reply(id);
 			await until(() => count("complete") > 0, RELEASE_OBSERVATION_TIMEOUT_MS);
 			assert.ok(count("complete") > 0, "the worker completes its attempt once the held activity is acknowledged");
-			assert.ok(
-				count("activity") - activityBeforeRelease <= COALESCED_ACTIVITY_REQUESTS_AFTER_RELEASE,
-				`${count("activity") - activityBeforeRelease} activity requests followed the release`,
-			);
 			const finalActivity = requests.filter((request) => request.kind === "activity").at(-1);
 			assert.equal(
 				finalActivity?.kind === "activity"
