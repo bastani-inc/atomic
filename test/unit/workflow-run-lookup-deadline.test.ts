@@ -13,6 +13,8 @@ import {
 } from "../../packages/coding-agent/src/index.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { getDurableBackendProcessOwner } from "../../packages/workflows/src/durable/backend-process-owner.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
+import { requireStoreDurableBackend } from "../../packages/workflows/src/durable/store-backend.js";
 import { run } from "../../packages/workflows/src/runs/foreground/sdk-run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -62,8 +64,13 @@ beforeEach(() => {
 	directory = mkdtempSync(join(tmpdir(), "atomic-run-lookup-"));
 });
 
-afterEach(() => {
+afterEach(async () => {
 	vi.useRealTimers();
+	const owner = getDurableBackendProcessOwner();
+	// Close opened journals before removing their files (Windows cannot unlink an open SQLite database).
+	// Do not await `ready`: the silent adapters intentionally leave their openings pending forever.
+	for (const selected of owner.selectedBackends?.values() ?? []) await selected.close?.();
+	owner.selectedBackends = undefined;
 	rmSync(directory, { recursive: true, force: true });
 });
 
@@ -244,14 +251,22 @@ test("a retry after a run lookup timed out opens the journal again, and the open
 test("a run still waiting on an opening whose resume timed out keeps it open and runs on it (#4329)", async () => {
 	const { gate, journal, releaseFirstOpen, timedOutResume } = gatedJournal();
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-	const waiting = run(empty, {}, { journal, store: createStore() });
+	const store = createStore();
+	const waiting = run(empty, {}, { journal, store });
 	vi.useRealTimers();
 	await timedOutResume();
 
 	releaseFirstOpen();
 	const result = await waiting;
 
-	assert.deepEqual([result.status, gate.opens, gate.closes], ["completed", 1, 0]);
+	try {
+		assert.deepEqual([result.status, gate.opens, gate.closes], ["completed", 1, 0]);
+	} finally {
+		// The timed-out resume removed this opening from the process cache, but this run kept it alive.
+		const backend = requireStoreDurableBackend(store, result.runId);
+		assert.ok(backend instanceof JournalDurableBackend);
+		await backend.close();
+	}
 });
 
 test("a failure to close an opening that answered after its resume timed out is reported, not dropped (#4329)", async () => {
