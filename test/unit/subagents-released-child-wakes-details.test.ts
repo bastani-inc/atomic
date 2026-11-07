@@ -21,6 +21,7 @@ import type {
 	SubagentChildRestoreDeps,
 	SubagentChildRestoreOutcome,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
+import { drained } from "../helpers/wake-completion.js";
 
 const restoreState = vi.hoisted(() => ({
 	calls: [] as Array<{ childId: string; prompt: string | undefined; promptless: boolean | undefined }>,
@@ -126,7 +127,8 @@ test("a broker notice delivers an intercom wake with a fresh id for the named ch
 	}
 	restoreState.outcome = { kind: "terminal", record: record(ownerSessionId) };
 	const events = bus();
-	const stop = bindReleasedChildWakes(deps, ctx, events, new Spy());
+	const dispatcher = new Spy();
+	const stop = bindReleasedChildWakes(deps, ctx, events, dispatcher);
 	const listener = events.listeners.get(SUBAGENT_RELEASED_CHILD_WAKE_EVENT)?.[0];
 	assert.ok(listener);
 	listener({ childName: "named-child" });
@@ -136,8 +138,7 @@ test("a broker notice delivers an intercom wake with a fresh id for the named ch
 	assert.equal(delivered[0]?.wake.kind, "intercom");
 	assert.match(delivered[0]?.wake.id ?? "", /^intercom:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 	assert.notEqual(delivered[0]?.wake.id, delivered[1]?.wake.id);
-	for (let turn = 0; turn < 20 && restoreState.calls.length < 2; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(await drained(dispatcher), 0);
 	assert.deepEqual(
 		restoreState.calls.map((call) => [call.childId, call.promptless]),
 		[

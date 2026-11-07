@@ -8,10 +8,7 @@ import {
 	subagentWakeNamespace,
 	wakeReleasedChildWithHeldResults,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
-
-async function settle(): Promise<void> {
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
-}
+import { drained } from "../helpers/wake-completion.js";
 
 test("the end of one run hands what its child holds over as one wake that carries no result of its own (#4326)", async () => {
 	const dispatcher = new AgentWakeDispatcher();
@@ -22,7 +19,7 @@ test("the end of one run hands what its child holds over as one wake that carrie
 
 	wakeReleasedChildWithHeldResults(dispatcher, subagentWakeKey("owner", "run:0"), "task-1");
 	wakeReleasedChildWithHeldResults(dispatcher, subagentWakeKey("owner", "run:0"), "task-1");
-	await settle();
+	assert.equal(await drained(dispatcher), 0);
 
 	assert.deepEqual(seen, ["subagents/owner:run:0|tool-result|held-results:task-1|true"]);
 });
@@ -32,7 +29,7 @@ test("a held wake nobody handles is reported (#4326)", async () => {
 	const dispatcher = new AgentWakeDispatcher({ onUnobservedFailure: (error) => failures.push(error) });
 
 	wakeReleasedChildWithHeldResults(dispatcher, "subagents/gone:run:0", "task-9");
-	await settle();
+	assert.equal(await drained(dispatcher), 0);
 	assert.equal(failures.length, 1);
 	assert.equal(failures[0]?.code, "no-wake-handler");
 });
