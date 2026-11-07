@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { join, resolve } from "node:path";
 import type { ExtensionContext } from "@bastani/atomic";
@@ -625,6 +625,36 @@ describe("replacing an older broker (#4538)", () => {
 			assert.ok(error.cause instanceof Error);
 			assert.equal(legacy.shutdownRequests(), 1);
 			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
+		},
+		UPGRADE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a successor still starting at the readiness bound keeps the spawn lock, so later spawners wait for it",
+		async () => {
+			const legacy = await startFakeLegacyBroker();
+			const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
+			const lockPath = join(agentDir, "intercom", "broker.spawn.lock");
+			cleanups.push(() => {
+				const named = existsSync(lockPath)
+					? Number.parseInt(readFileSync(lockPath, "utf8").split("\n")[2] ?? "", 10)
+					: Number.NaN;
+				if (Number.isSafeInteger(named) && isAlive(named)) process.kill(named, "SIGKILL");
+				rmSync(lockPath, { force: true });
+			});
+			const error = await upgradeBroker(process.execPath, ["-e", "setInterval(() => {}, 1000)"], 1_500).catch(
+				(caught: unknown) => caught,
+			);
+			const { isIntercomBrokerUpgradeError } = await import("@bastani/atomic");
+			assert.ok(isIntercomBrokerUpgradeError(error), String(error));
+			assert.equal(error.phase, "start");
+			assert.equal(legacy.shutdownRequests(), 1);
+			const [, , startingPid = ""] = readFileSync(lockPath, "utf8").trim().split("\n");
+			const pid = Number.parseInt(startingPid, 10);
+			assert.ok(
+				Number.isSafeInteger(pid) && isAlive(pid),
+				`the lock names the still-starting successor: ${startingPid}`,
+			);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
 	);
