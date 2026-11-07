@@ -545,9 +545,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 	);
 
 	test("#4245 crash recovery: a restore SIGKILLed in `git worktree add` leaves nothing at a worktree path, only staging that a later restore sweeps", () => {
-		assert.deepEqual(
-			killedAttempt.filter((path) => !basename(path).startsWith(".staging-")),
-			[],
-		);
+		assert.equal(killedAttempt.length, 1, "scenario 1 records what its killed restore left behind");
+		assert.ok(basename(killedAttempt[0]!).startsWith(".staging-"), killedAttempt[0]);
 	});
 });
