@@ -75,7 +75,7 @@ A broker retires after five seconds without sessions, or when it is restarted or
 
 It belongs to the `IntercomBrokerError` family. Both classes are exported from `@bastani/atomic` with `isIntercomBrokerError()`, `isIntercomBrokerSuccessorTimeoutError()`, `isRetryableIntercomBrokerError()`, `serializeIntercomBrokerError()` and `rehydrateIntercomBrokerError()`. A member of the family that this version does not know arrives from another process as `IntercomBrokerError`, with its own `name` and `code`.
 
-## Upgrading Atomic with sessions running
+### Upgrading Atomic with sessions running
 
 Sessions on one machine share one broker, and it keeps running after the Atomic that started it is replaced. Each broker reports the range of Intercom protocol versions it accepts (`atomic intercom status` shows it as `Protocol:`); a broker from Atomic 0.9.71 or earlier reports none and speaks protocol 1. This version speaks protocols 1 to 2.
 
