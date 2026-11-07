@@ -5,6 +5,7 @@ import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, PACKAGE_NAME, VERSION } from "../src/config.ts";
 import { main } from "../src/main.ts";
+import { type FakeInstalledAtomic, installFakeAtomicOnPath } from "./helpers/fake-installed-atomic.ts";
 
 describe("package commands", () => {
 	let tempDir: string;
@@ -16,6 +17,7 @@ describe("package commands", () => {
 	let originalAtomicPackageDir: string | undefined;
 	let originalExitCode: typeof process.exitCode;
 	let originalExecPath: string;
+	let fakeAtomic: FakeInstalledAtomic;
 
 	type WriteCallback = (error?: Error | null) => void;
 	type WriteEncodingOrCallback = BufferEncoding | WriteCallback;
@@ -78,6 +80,8 @@ describe("package commands", () => {
 		originalExitCode = process.exitCode;
 		originalExecPath = process.execPath;
 		process.exitCode = 0;
+		// `atomic update` runs the installed `atomic intercom upgrade`; never let a test reach the host's real Atomic.
+		fakeAtomic = installFakeAtomicOnPath(tempDir);
 		vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
 			if (code === undefined || code === null || Number(code) === 0) {
 				process.exitCode = 0;
@@ -92,6 +96,7 @@ describe("package commands", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 		process.chdir(originalCwd);
 		process.exitCode = originalExitCode ?? 0;
 		if (originalAgentDir === undefined) {
@@ -238,19 +243,21 @@ if(args.includes("install")) process.exit(23);
 	}
 
 	/** Put an `atomic-wrapper` update command that records its arguments and exits `exitCode`, and an `atomic` that prints `atomicVersion`, first on PATH. */
-	function prepareSelfUpdateCommand(atomicVersion: string, exitCode = 0): { scriptPath: string; recordPath: string } {
+	function prepareSelfUpdateCommand(
+		atomicVersion: string,
+		exitCode = 0,
+		upgradeExitCode = 0,
+	): { scriptPath: string; recordPath: string } {
 		const binDir = join(tempDir, "self-update-bin");
 		const scriptPath = join(tempDir, "self-update.cjs");
-		const atomicScriptPath = join(tempDir, "fake-atomic.cjs");
 		const recordPath = join(tempDir, "self-update-record.json");
 		mkdirSync(binDir, { recursive: true });
 		writeFileSync(
 			scriptPath,
 			`require("node:fs").writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(process.argv.slice(2)));\nprocess.exit(${exitCode});\n`,
 		);
-		writeFileSync(atomicScriptPath, `console.log(${JSON.stringify(atomicVersion)});\n`);
+		fakeAtomic = installFakeAtomicOnPath(tempDir, { version: atomicVersion, upgradeExitCode });
 		writeNodeShim(binDir, "atomic-wrapper", scriptPath);
-		writeNodeShim(binDir, "atomic", atomicScriptPath);
 		vi.stubEnv("PATH", `${binDir}${delimiter}${process.env.PATH ?? ""}`);
 		return { scriptPath, recordPath };
 	}
@@ -284,6 +291,7 @@ if(args.includes("install")) process.exit(23);
 			// A wrapper leaves this installation untouched; the atomic on PATH reports the new version.
 			expect(stdout).toContain(`Updated atomic from ${VERSION} to ${targetVersion}`);
 			expect(errorSpy).not.toHaveBeenCalled();
+			expect(fakeAtomic.upgradeCalls()).toEqual([{ args: ["intercom", "upgrade"], packageDir: null }]);
 			expectSuccessfulExitCode();
 		} finally {
 			vi.unstubAllEnvs();
@@ -362,6 +370,38 @@ if(args.includes("install")) process.exit(23);
 		} finally {
 			vi.unstubAllEnvs();
 		}
+	});
+
+	it("only warns when the post-update 'intercom upgrade' fails after a configured update, keeping the exit code (#4538)", async () => {
+		const targetVersion = getNewerPatchVersion();
+		prepareSelfUpdateCommand(targetVersion, 0, 3);
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "atomic-wrapper upgrade");
+		vi.spyOn(globalThis, "fetch").mockImplementation(vi.fn(async () => Response.json({ version: targetVersion })));
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+		expectSuccessfulExitCode();
+		expect(fakeAtomic.upgradeCalls()).toHaveLength(1);
+		expect(logSpy.mock.calls.map(([message]) => String(message)).join("\n")).toContain(
+			`Updated atomic from ${VERSION} to ${targetVersion}`,
+		);
+		const warnings = errorSpy.mock.calls.map(([message]) => String(message));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("atomic intercom upgrade exited with code 3");
+	});
+
+	it("does not run 'intercom upgrade' when the configured update did not install the new version (#4538)", async () => {
+		const targetVersion = getNewerPatchVersion();
+		prepareSelfUpdateCommand(VERSION);
+		vi.stubEnv("ATOMIC_SELF_UPDATE_COMMAND", "atomic-wrapper upgrade");
+		vi.spyOn(globalThis, "fetch").mockImplementation(vi.fn(async () => Response.json({ version: targetVersion })));
+		vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await expect(main(["update", "--self"])).resolves.toBeUndefined();
+
+		expect(fakeAtomic.upgradeCalls()).toEqual([]);
 	});
 
 	it("fails when the configured self-update command fails", async () => {

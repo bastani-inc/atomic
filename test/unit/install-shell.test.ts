@@ -117,6 +117,7 @@ interface InstallerFixture {
 	installRoot: string;
 	binDir: string;
 	requestLog: string;
+	upgradeLog: string;
 	tools: string;
 	releases: Map<string, FixtureRelease>;
 	cleanup(): void;
@@ -222,7 +223,7 @@ function createArchive(workspace: string, tag: string, asset: string): { path: s
 	for (const directory of directories) chmodSync(directory, 0o755);
 	writeExecutable(
 		join(payload, "atomic"),
-		`#!/bin/sh\nversion='${tag}'\ncase "\${1:-}" in --internal-*) echo "unknown option: $1" >&2; exit 64 ;; esac\nif [ "\${ATOMIC_FIXTURE_FAIL_STAGED_VERSION:-}" = "$version" ]; then exit 17; fi\ncase "$0" in\n  *atomic-install.*) ;;\n  *) if [ "\${ATOMIC_FIXTURE_FAIL_FINAL_VERSION:-}" = "$version" ]; then exit 23; fi ;;\nesac\nif [ "\${1:-}" = --version ]; then printf '%s\\n' "$version"; exit 0; fi\nprintf '%s\\n' "$version:$*"\n`,
+		`#!/bin/sh\nversion='${tag}'\ncase "\${1:-}" in --internal-*) echo "unknown option: $1" >&2; exit 64 ;; esac\nif [ "\${ATOMIC_FIXTURE_FAIL_STAGED_VERSION:-}" = "$version" ]; then exit 17; fi\ncase "$0" in\n  *atomic-install.*) ;;\n  *) if [ "\${ATOMIC_FIXTURE_FAIL_FINAL_VERSION:-}" = "$version" ]; then exit 23; fi ;;\nesac\nif [ "\${1:-}" = --version ]; then printf '%s\\n' "$version"; exit 0; fi\nif [ "\${1:-} \${2:-}" = "intercom upgrade" ]; then\n  printf '%s %s\\n' "$version" "$0" >> "$ATOMIC_FIXTURE_UPGRADE_LOG"\n  if [ "\${ATOMIC_FIXTURE_UPGRADE_FAIL:-}" = 1 ]; then printf '%s\\n' 'Error: fixture broker did not exit' >&2; exit 1; fi\n  exit 0\nfi\nprintf '%s\\n' "$version:$*"\n`,
 	);
 	const regularFiles = [
 		[join(payload, "package.json"), JSON.stringify({ name: "@bastani/atomic", version: tag })],
@@ -422,6 +423,7 @@ function createFixture(): InstallerFixture {
 	const installRoot = join(workspace, "install root");
 	const binDir = join(workspace, "bin root");
 	const requestLog = join(workspace, "requests.log");
+	const upgradeLog = join(workspace, "upgrade.log");
 	const tools = join(workspace, "tools");
 	const releasesRoot = join(workspace, "releases");
 	mkdirSync(home);
@@ -507,6 +509,7 @@ function createFixture(): InstallerFixture {
 			GITHUB_TOKEN: undefined,
 			GH_TOKEN: undefined,
 			ATOMIC_FIXTURE_LOG: requestLog,
+			ATOMIC_FIXTURE_UPGRADE_LOG: upgradeLog,
 			ATOMIC_FIXTURE_RELEASES: releasesRoot,
 			ATOMIC_FIXTURE_REAL_MV: resolveExecutable("mv"),
 			WGETRC: undefined,
@@ -569,6 +572,7 @@ function createFixture(): InstallerFixture {
 		installRoot,
 		binDir,
 		requestLog,
+		upgradeLog,
 		tools,
 		releases,
 		cleanup: () => rmSync(workspace, { recursive: true, force: true }),
@@ -1956,6 +1960,67 @@ unixTest(
 		}
 	},
 );
+
+function upgradeInvocations(fixture: InstallerFixture): string[] {
+	return existsSync(fixture.upgradeLog) ? readFileSync(fixture.upgradeLog, "utf8").split("\n").filter(Boolean) : [];
+}
+
+unixTest("shell installer runs 'intercom upgrade' once through the newly installed launcher (#4538)", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "1.0.0"] }));
+		assert.deepEqual(upgradeInvocations(fixture), [`1.0.0 ${join(fixture.binDir, "atomic")}`]);
+		rmSync(fixture.upgradeLog, { force: true });
+
+		const result = fixture.run({ args: ["--ref", "2.0.0"] });
+		assertSuccess(result);
+		assert.deepEqual(upgradeInvocations(fixture), [`2.0.0 ${join(fixture.binDir, "atomic")}`]);
+		assert.equal(result.stderr.toString(), "");
+		assert.match(result.stdout.toString(), /\nInstalled to [^\n]+\n/u);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer only warns when 'intercom upgrade' fails after a committed install (#4538)", () => {
+	const fixture = createFixture();
+	try {
+		const result = fixture.run({ args: ["--ref", "2.0.0"], environment: { ATOMIC_FIXTURE_UPGRADE_FAIL: "1" } });
+		assertSuccess(result);
+		assert.equal(upgradeInvocations(fixture).length, 1);
+		assert.equal(currentVersion(fixture), "2.0.0");
+		assert.match(result.stderr.toString(), /Error: fixture broker did not exit\n/u);
+		assert.match(result.stderr.toString(), /^warning: installed atomic, but "atomic intercom upgrade" failed/mu);
+		assert.match(result.stdout.toString(), /\nInstalled to [^\n]+\n/u);
+		assertNoTemporaryState(fixture);
+	} finally {
+		fixture.cleanup();
+	}
+});
+
+unixTest("shell installer does not run 'intercom upgrade' when nothing is installed (#4538)", () => {
+	const fixture = createFixture();
+	try {
+		assertSuccess(fixture.run({ args: ["--ref", "2.0.0"] }));
+		rmSync(fixture.upgradeLog, { force: true });
+
+		const skipped = fixture.run({ args: ["--ref", "2.0.0"] });
+		assertSuccess(skipped);
+		assert.match(skipped.stdout.toString(), /already installed; skipping download/u);
+		assert.deepEqual(upgradeInvocations(fixture), []);
+
+		const failed = fixture.run({
+			args: ["--ref", "1.0.0"],
+			environment: { ATOMIC_FIXTURE_FAIL_FINAL_VERSION: "1.0.0" },
+		});
+		assert.notEqual(failed.exitCode, 0);
+		assert.deepEqual(upgradeInvocations(fixture), []);
+		assert.equal(currentVersion(fixture), "2.0.0");
+	} finally {
+		fixture.cleanup();
+	}
+});
 
 unixTest("POSIX rollback retries launcher restores and reports retained recovery backups", () => {
 	const retryFixture = createFixture();

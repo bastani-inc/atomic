@@ -169,6 +169,12 @@ cd /path/to/project
 atomic
 ```
 
+### Updating while Intercom is running
+
+Atomic sessions on one machine share an Intercom broker that keeps running after the version that started it is replaced. Installing with the release-archive installers, or running `atomic update`, finishes by running `atomic intercom upgrade` with the new version. If the older broker has no sessions connected, it is stopped and the next session starts the new one. If sessions are still connected, nothing is interrupted: the next session you start on the new version takes the broker over.
+
+If that final step fails, the install or update still succeeds and prints a warning. Run `atomic intercom upgrade` yourself at any time; it is safe to repeat. It is also the command to run after updating with a package manager such as `npm install -g` rather than `atomic update`.
+
 ## Uninstall
 
 On macOS or Linux, for a default archive install, remove `~/.local/share/atomic` and the `~/.local/bin/atomic` link.

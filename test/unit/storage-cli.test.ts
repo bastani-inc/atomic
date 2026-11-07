@@ -145,10 +145,14 @@ describe("atomic storage and atomic intercom arguments", () => {
 		});
 	});
 
-	test("intercom accepts only status and restart (#3857)", async () => {
+	test("intercom accepts only status, restart and upgrade (#3857, #4538)", async () => {
 		const help = await run((log, error) => runIntercomCommand(["--help"], { agentDir, log, error }));
 		assert.equal(help.code, 0);
 		assert.match(help.out, /intercom restart/);
+		assert.match(help.out, /intercom upgrade/);
+		const extraUpgrade = await run((log, error) => runIntercomCommand(["upgrade", "now"], { agentDir, log, error }));
+		assert.equal(extraUpgrade.code, 1);
+		assert.equal(extraUpgrade.err, "Usage: atomic intercom upgrade");
 		const unknown = await run((log, error) => runIntercomCommand(["stop"], { agentDir, log, error }));
 		assert.equal(unknown.code, 1);
 		assert.match(unknown.err, /Unknown intercom command "stop"/);
@@ -355,6 +359,12 @@ describe("storage status checks", () => {
 		const restart = await run((log, error) => runIntercomCommand(["restart"], { agentDir, log, error }));
 		assert.equal(restart.code, 0, restart.err);
 		assert.match(restart.out, /No Intercom broker is running/);
+		const upgrade = await run((log, error) => runIntercomCommand(["upgrade"], { agentDir, log, error }));
+		assert.equal(upgrade.code, 0, upgrade.err);
+		assert.equal(
+			upgrade.out,
+			"No Intercom broker is running. The next session that uses Intercom starts this version's broker.",
+		);
 	});
 });
 

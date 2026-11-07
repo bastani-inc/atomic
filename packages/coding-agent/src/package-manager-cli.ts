@@ -183,6 +183,7 @@ async function runConfiguredSelfUpdate(argv: string[], plan: SelfUpdatePlan): Pr
 		change?.kind === "updated" && change.version === plan.version ? change.version : readVersionOnPath();
 	if (installedVersion === plan.version) {
 		console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${plan.version}`));
+		await runIntercomUpgrade();
 		return;
 	}
 	console.log(
@@ -192,17 +193,44 @@ async function runConfiguredSelfUpdate(argv: string[], plan: SelfUpdatePlan): Pr
 	);
 }
 
-/** Version printed by `atomic --version` as resolved from PATH, the Atomic the user runs next. */
-function readVersionOnPath(): string | undefined {
-	// The package directory override points at this installation and would make the new Atomic report the old version.
+/** The environment for running the Atomic on PATH, the Atomic the user runs next. */
+function getInstalledAtomicEnv(): NodeJS.ProcessEnv {
+	// The package directory override points at this installation and would make the new Atomic act as the old one.
 	const env = { ...process.env };
 	for (const name of getEnvNames(ENV_PACKAGE_DIR)) delete env[name];
+	return env;
+}
+
+/** Version printed by `atomic --version` as resolved from PATH, the Atomic the user runs next. */
+function readVersionOnPath(): string | undefined {
 	const result = spawnProcessSync(APP_NAME, ["--version"], {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
-		env,
+		env: getInstalledAtomicEnv(),
 	});
 	return result.status === 0 ? result.stdout.trim() || undefined : undefined;
+}
+
+/**
+ * Ask the newly installed Atomic to retire an Intercom broker left running by the previous version. The update has
+ * already succeeded, so a failure here only warns and never changes the exit code.
+ */
+async function runIntercomUpgrade(): Promise<void> {
+	const failure = await new Promise<string | undefined>((resolve) => {
+		const child = spawnProcess(APP_NAME, ["intercom", "upgrade"], { stdio: "inherit", env: getInstalledAtomicEnv() });
+		child.on("error", (error) => resolve(error.message));
+		child.on("close", (code, signal) => {
+			if (code === 0) resolve(undefined);
+			else resolve(signal ? `terminated by signal ${signal}` : `exited with code ${code ?? "unknown"}`);
+		});
+	});
+	if (failure) {
+		console.error(
+			chalk.yellow(
+				`${APP_NAME} intercom upgrade ${failure}. Run \`${APP_NAME} intercom upgrade\` yourself if new sessions do not start.`,
+			),
+		);
+	}
 }
 
 function prepareWindowsNpmSelfUpdate(): void {
@@ -571,6 +599,7 @@ export async function handlePackageCommand(
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
+					await runIntercomUpgrade();
 				}
 				return true;
 			}

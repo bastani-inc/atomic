@@ -149,6 +149,26 @@ test("Windows installer skips a healthy install before any download and keeps th
 	assert.doesNotMatch(health, /&\s+\$|Invoke-WebRequest|Move-Item|Remove-Item/u, "the health check must be read-only");
 });
 
+test("Windows installer runs 'intercom upgrade' through the new shim after the commit and only warns on failure (#4538)", () => {
+	const source = installerSource();
+	const committed = source.indexOf("$transactionCommitted = $true");
+	const backupCleanup = source.indexOf("Remove-AtomicTransactionBackups $transaction", committed);
+	const upgrade = source.indexOf("intercom upgrade", backupCleanup);
+	const summary = source.indexOf("Write-AtomicInstallSummary $transaction.UserPathChangeIntended", upgrade);
+	assert.ok(committed >= 0 && backupCleanup > committed, "the commit must be recorded before backups are removed");
+	assert.ok(upgrade > backupCleanup, "'intercom upgrade' must run after the install is committed");
+	assert.ok(summary > upgrade, "'intercom upgrade' must run before the install summary");
+
+	const upgradeBlock = source.slice(source.lastIndexOf("try {", upgrade), summary);
+	assert.match(
+		upgradeBlock,
+		/^try \{[\s\S]*\$shimPath \+ '" intercom upgrade'[\s\S]*\$env:ComSpec \/d \/c \$upgradeCommand/u,
+	);
+	assert.match(upgradeBlock, /\$LASTEXITCODE[\s\S]*Write-Warning/u);
+	assert.match(upgradeBlock, /catch \{ Write-Warning /u);
+	assert.doesNotMatch(upgradeBlock, /\bthrow\b/u, "a failing 'intercom upgrade' must never fail the installer");
+});
+
 test("Windows installer streams the archive with a progress bar and keeps smoke-check output off the console", () => {
 	const source = installerSource();
 	const bytes = readFileSync(installerPath);
@@ -1805,6 +1825,16 @@ public static class Program
         {
             return Int32.Parse(args[1]);
         }
+        if (args.Length == 2 && args[0] == "intercom" && args[1] == "upgrade")
+        {
+            string upgradeLog = Environment.GetEnvironmentVariable("ATOMIC_FIXTURE_UPGRADE_LOG");
+            if (!String.IsNullOrEmpty(upgradeLog))
+            {
+                File.AppendAllText(upgradeLog, version + Environment.NewLine);
+            }
+            string upgradeExit = Environment.GetEnvironmentVariable("ATOMIC_FIXTURE_UPGRADE_EXIT");
+            return String.IsNullOrEmpty(upgradeExit) ? 0 : Int32.Parse(upgradeExit);
+        }
         Console.WriteLine(version + ":" + String.Join("|", args));
         return 0;
     }
@@ -2172,7 +2202,7 @@ function global:Move-Item {
 $environmentNames = @(
     "ATOMIC_INSTALL_DIR", "ATOMIC_BIN_DIR", "ATOMIC_VERSION", "GITHUB_TOKEN", "GH_TOKEN",
     "PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE", "TEMP", "TMP", "SystemTemp", "PATHEXT",
-    "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION", "ATOMIC_FORCE_INSTALL"
+    "ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION", "ATOMIC_FORCE_INSTALL", "ATOMIC_FIXTURE_UPGRADE_LOG", "ATOMIC_FIXTURE_UPGRADE_EXIT"
 )
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
@@ -2188,6 +2218,9 @@ try {
     $env:GITHUB_TOKEN = "github-token"
     $env:GH_TOKEN = "gh-token"
     $env:ATOMIC_FIXTURE_FAIL_INSTALLED_VERSION = $null
+    $upgradeLog = Join-Path $workspace "upgrade.log"
+    $env:ATOMIC_FIXTURE_UPGRADE_LOG = $upgradeLog
+    $env:ATOMIC_FIXTURE_UPGRADE_EXIT = $null
     $env:PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
     if ($Scenario -eq "hash-fallback") {
         function global:Get-Command {
@@ -2233,6 +2266,7 @@ try {
         Assert-Fixture ($firstInstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "first install did not report the installed launcher path"
         Assert-Fixture ($firstInstallOutput -match ('(?m)^Added ' + [regex]::Escape($binDir) + ' to your User PATH; open a new terminal to use atomic\.\s*$')) "first install did not report the User PATH update"
         Assert-Fixture ($global:AtomicFixtureHttpAssemblyRefusals -ge 1) "the archive download did not attempt the HttpClient stream before falling back"
+        Assert-Fixture ((@(Get-Content -LiteralPath $upgradeLog) -join ",") -ceq "1.0.0") "the first install did not run 'intercom upgrade' once through the new shim"
 
         $firstApiRequest = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })[0]
         Assert-Fixture ($null -ne $firstApiRequest) "explicit -Ref did not use the exact tag endpoint"
@@ -2250,6 +2284,7 @@ try {
         Assert-Fixture (Test-Path -LiteralPath (Join-Path $versionOne "stale.txt")) "a healthy same-version rerun was not skipped"
         Assert-Fixture ($reinstallOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "same-version rerun did not report the installed launcher path"
         Assert-Fixture ($reinstallOutput -notmatch 'to your User PATH') "same-version rerun claimed a User PATH update although the entry already existed"
+        Assert-Fixture (@(Get-Content -LiteralPath $upgradeLog).Count -eq 1) "a skipped same-version rerun ran 'intercom upgrade'"
         Assert-Fixture (@($global:AtomicFixtureRequests | Select-Object -Skip $skipRequestStart | Where-Object { $_.Uri -match '/releases/download/' }).Count -eq 0) "a healthy same-version rerun still downloaded release assets"
         $fallbackApiRequests = @($global:AtomicFixtureRequests | Where-Object { $_.Uri -match '/releases/tags/1\.0\.0$' })
         Assert-Fixture ($fallbackApiRequests[$fallbackApiRequests.Count - 1].Authorization -eq "Bearer gh-token") "GH_TOKEN was not used when GITHUB_TOKEN was unset"
@@ -2288,6 +2323,17 @@ try {
         Assert-Fixture (@(Get-ChildItem -LiteralPath (Join-Path $installRoot "versions") -Force | Where-Object { $_.Name -like ".stage-*" -or $_.Name -like ".backup-*" }).Count -eq 0) "version transaction artifacts were not cleaned"
         Assert-Fixture (@(Get-ChildItem -LiteralPath $installRoot -Force | Where-Object { $_.Name -like ".current-*" }).Count -eq 0) "current transaction artifacts were not cleaned"
         Assert-Fixture (@(Get-ChildItem -LiteralPath $binDir -Force | Where-Object { $_.Name -like ".atomic-*" }).Count -eq 0) "shim transaction artifacts were not cleaned"
+
+        # A failing 'intercom upgrade' after the commit only warns: the install stays and the installer succeeds.
+        $env:ATOMIC_FIXTURE_UPGRADE_EXIT = "1"
+        $upgradeCallsBefore = @(Get-Content -LiteralPath $upgradeLog).Count
+        $warningOutput = & $InstallerPath -Force 3>&1 | Out-String
+        $env:ATOMIC_FIXTURE_UPGRADE_EXIT = $null
+        Assert-Fixture (@(Get-Content -LiteralPath $upgradeLog).Count -eq ($upgradeCallsBefore + 1)) "the forced reinstall did not run 'intercom upgrade' once"
+        Assert-Fixture ($warningOutput -match "intercom upgrade' exited with code 1") "a failing 'intercom upgrade' was not reported as a warning: $warningOutput"
+        Assert-Fixture ($warningOutput -match ('(?m)^Installed to ' + [regex]::Escape($shim) + '\s*$')) "a failing 'intercom upgrade' stopped the installer before its summary"
+        $upgradeFailureProbe = Invoke-FixtureShim $shim "--version"
+        Assert-Fixture ($upgradeFailureProbe.ExitCode -eq 0 -and $upgradeFailureProbe.Output -eq "2.0.0") "a failing 'intercom upgrade' damaged the committed install"
     }
     elseif ($Scenario -eq "tag-grammar") {
         $env:PROCESSOR_ARCHITEW6432 = "AMD64"

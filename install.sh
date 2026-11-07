@@ -1330,4 +1330,10 @@ if [ "$VERSION_BACKED_UP" -eq 1 ]; then
     VERSION_BACKED_UP=0
 fi
 
+# Replace an Intercom broker the previous version left running, when that is safe (#4538).
+# The install is already committed, so a failure here only warns.
+if ! "$BIN_PATH" intercom upgrade; then
+    printf 'warning: installed atomic, but "atomic intercom upgrade" failed; run it manually if new sessions do not start.\n' >&2
+fi
+
 print_install_summary
