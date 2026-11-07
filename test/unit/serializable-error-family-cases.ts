@@ -23,6 +23,7 @@ import {
 	isShellTimeoutError,
 	isStartupBenchmarkConfigError,
 	isTaskEvictedError,
+	isTaskMessageTimeoutError,
 	isTaskToolError,
 	isToolDetachmentError,
 	isWorkspaceBindingError,
@@ -42,6 +43,7 @@ import {
 	serializeSubscriptionError,
 	serializeWorkspaceError,
 	TaskEvictedError,
+	TaskMessageTimeoutError,
 	TaskToolError,
 	ToolDetachmentError,
 	WorkspaceBindingError,
@@ -322,6 +324,17 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		make: () => new TaskToolError({ code: "TaskEvicted", message: "task-1 was evicted" }, "task-1"),
 		type: TaskToolError,
 		guard: isTaskToolError,
+		facts: ownFacts(toJSON),
+	},
+	{
+		family: "task-message",
+		make: () =>
+			new TaskMessageTimeoutError(
+				{ taskId: "task-1", target: "worker-1", timeoutMs: 10_000, elapsedMs: 10_004 },
+				{ cause: new Error("Intercom did not acknowledge") },
+			),
+		type: TaskMessageTimeoutError,
+		guard: isTaskMessageTimeoutError,
 		facts: ownFacts(toJSON),
 	},
 	{
