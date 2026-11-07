@@ -23,6 +23,7 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.t
 import type { SessionStore } from "../src/core/storage/session/types.ts";
 import { resolveToCwd } from "../src/core/tools/path-utils.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
+import { computeEnvironmentHash } from "../src/core/worktree-snapshot/env-hash.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
 import {
@@ -1325,6 +1326,26 @@ describe("setup plan before restoring (#4329)", () => {
 			problem?.why,
 			`the snapshot has dependency inputs (envHash ${"e".repeat(12)}) that a restored worktree must install, no resume.setupCommand is configured, and a restored worktree is not trusted to run .atomic/setup`,
 		);
+	});
+
+	test("a snapshot without dependency inputs needs no setup hook, whatever the temporary directory holds", async () => {
+		const empty = sandbox.path("no-inputs");
+		mkdirSync(empty);
+		const noInputs = await computeEnvironmentHash(empty);
+		const temporary = sandbox.path("temporary");
+		mkdirSync(temporary);
+		writeFileSync(join(temporary, "package-lock.json"), "{}\n");
+		for (const name of ["TMPDIR", "TMP", "TEMP"]) vi.stubEnv(name, temporary);
+		vi.resetModules();
+		try {
+			const { predictedSetupProblem } = await import("../src/core/resume/setup-hook.ts");
+			const problem = await predictedSetupProblem(noInputs, sandbox.path("host", "worktrees"), {
+				trusted: () => false,
+			});
+			assert.equal(problem, undefined);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	test("a failed hook keeps its fresh worktree, and a later missing hook never removes a worktree restored earlier", async () => {
