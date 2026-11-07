@@ -10,6 +10,7 @@
 
 import {
 	type ChatMessageRenderOptions,
+	type ChatSessionViewportSettings,
 	type ReadonlyFooterDataProvider,
 	TRANSCRIPT_JUMP_TO_END_URL,
 } from "@bastani/atomic";
@@ -52,7 +53,9 @@ export class WorkflowAttachPane implements Component {
 	private piTheme?: unknown;
 	private piKeybindings?: unknown;
 	private piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
-	private getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	private getChatRenderSettings?: () =>
+		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)
+		| undefined;
 	private getToolsExpanded?: () => boolean;
 	private setToolsExpanded?: (expanded: boolean) => void;
 	private footerData?: ReadonlyFooterDataProvider;

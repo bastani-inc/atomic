@@ -98,6 +98,20 @@ export {
 	validateTaskHeartbeatMs,
 } from "./core/tasks/heartbeat-notice.js";
 export {
+	findTaskMessageError,
+	isRetryableTaskMessageError,
+	isTaskMessageError,
+	isTaskMessageTimeoutError,
+	rehydrateTaskMessageError,
+	type SerializedTaskMessageError,
+	TaskMessageError,
+	type TaskMessageErrorCode,
+	type TaskMessageErrorFields,
+	TaskMessageTimeoutError,
+	type TaskMessageTimeoutErrorFields,
+	type TaskMessageTimeoutPhase,
+} from "./core/tasks/message-error.js";
+export {
 	bindOwnerTaskStore,
 	getOwnerTaskStore,
 	OwnerTaskStore,
@@ -1054,6 +1068,7 @@ export {
 	type ChatSessionHostOpts,
 	type ChatSessionHostStyle,
 	type ChatSessionSubmitMode,
+	type ChatSessionViewportSettings,
 	ChatTranscriptComponent,
 	type ChatTranscriptEntryLike,
 	type ChatTranscriptRenderer,
@@ -1081,6 +1096,7 @@ export {
 	renderDiff,
 	ScrollableChatTranscriptComponent,
 	ScrollableComponentViewport,
+	type ScrollableComponentViewportOptions,
 	SessionSelectorComponent,
 	type SettingsCallbacks,
 	type SettingsConfig,

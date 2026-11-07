@@ -3,6 +3,7 @@ import type {
 	AgentSessionEvent,
 	BashResult,
 	QuestionParams,
+	SerializedTaskMessageError,
 	SessionCommandCatalog,
 	TaskActivity,
 	TaskDetailText,
@@ -159,7 +160,8 @@ export type PooledTaskAction =
 	| { readonly kind: "input"; readonly text: string }
 	| { readonly kind: "output"; readonly start: string; readonly maximumBytes: number }
 	| { readonly kind: "detail" }
-	| { readonly kind: "transcript"; readonly cursor?: string };
+	| { readonly kind: "transcript"; readonly cursor?: string }
+	| { readonly kind: "message"; readonly text: string };
 
 /** The answer to a {@link PooledTaskAction}. */
 export type PooledTaskReply =
@@ -168,7 +170,9 @@ export type PooledTaskReply =
 	| { readonly kind: "input"; readonly result: TaskViewResult<{ readonly acceptedBytes: number }> }
 	| { readonly kind: "output"; readonly result: TaskViewResult<TaskOutputView> }
 	| { readonly kind: "detail"; readonly detail: TaskDetailText }
-	| { readonly kind: "transcript"; readonly result: TaskViewResult<TaskTranscriptView> };
+	| { readonly kind: "transcript"; readonly result: TaskViewResult<TaskTranscriptView> }
+	/** `error` is the serialized `TaskMessageError` when the message did not reach the task. */
+	| { readonly kind: "message"; readonly error?: SerializedTaskMessageError };
 
 /**
  * A session command the stage chat runs on a pooled stage's session (#3996): `/compact`, a `!`

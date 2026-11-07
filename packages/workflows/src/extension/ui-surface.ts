@@ -1,4 +1,4 @@
-import type { ChatMessageRenderOptions } from "@bastani/atomic";
+import type { ChatMessageRenderOptions, ChatSessionViewportSettings } from "@bastani/atomic";
 
 // ---------------------------------------------------------------------------
 // UI adapter — maps pi ctx.ui dialog surface to WorkflowUIAdapter
@@ -361,7 +361,9 @@ export interface PiUISurface {
 	setTheme?: (theme: string | unknown) => { success: boolean; error?: string };
 	getToolsExpanded?: () => boolean;
 	setToolsExpanded?: (expanded: boolean) => void;
-	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	getChatRenderSettings?: () =>
+		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)
+		| undefined;
 }
 
 /**

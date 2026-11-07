@@ -10,6 +10,7 @@ import {
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 
 const plain = (lines: string[]) => stripVTControlCharacters(lines.join("\n"));
 
@@ -87,12 +88,15 @@ for (const page of ["detail", "transcript"] as const) {
 		setKeybindings(new KeybindingsManager());
 		const fixture = taskFixture();
 		let repaints = 0;
+		const environment = taskTranscriptEnvironment();
 		const inspector = new TaskInspector(
 			fixture.store,
 			() => {
 				repaints++;
 			},
 			() => {},
+			undefined,
+			() => environment,
 		);
 		try {
 			await fixture.start("first");

@@ -1,10 +1,10 @@
-import type { ChatMessageRenderOptions, ChatSessionHostStyle } from "@bastani/atomic";
+import type { ChatMessageRenderOptions, ChatSessionHostStyle, ChatSessionViewportSettings } from "@bastani/atomic";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import { editorRuleColor } from "./stage-chat-view-footer-status.js";
 import { blankLine, cursorBlock, paint, workingIndicatorPalette } from "./stage-chat-view-render-helpers.js";
 import type { StageChatViewContext, StageChatViewOpts } from "./stage-chat-view-types.js";
 
-type StageChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">>;
+type StageChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings;
 
 type MessageRendererHost = {
 	extensionRunner?: {

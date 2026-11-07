@@ -15,7 +15,11 @@
  *   - @bastani/atomic docs/tui.md (overlay primitives)
  */
 
-import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
+import type {
+	ChatMessageRenderOptions,
+	ChatSessionViewportSettings,
+	ReadonlyFooterDataProvider,
+} from "@bastani/atomic";
 import type {
 	PiCustomComponent,
 	PiCustomOverlayFactoryTui,
@@ -42,7 +46,8 @@ import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import type { PostMortemHandleResolution } from "./workflow-attach-pane-types.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 
-export type OverlayChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">>;
+export type OverlayChatRenderSettings = Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> &
+	ChatSessionViewportSettings;
 
 export type { OverlayTerminalOutput } from "./overlay-terminal-modes.js";
 

@@ -1,4 +1,8 @@
-import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
+import type {
+	ChatMessageRenderOptions,
+	ChatSessionViewportSettings,
+	ReadonlyFooterDataProvider,
+} from "@bastani/atomic";
 import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { EnsurePostMortemStageHandleResult } from "../runs/foreground/postmortem-stage-chat.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
@@ -43,7 +47,9 @@ export interface WorkflowAttachPaneOpts {
 	/** Host custom editor factory installed by extensions via ctx.ui.setEditorComponent(). */
 	piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
 	/** Parent chat rendering settings and extension renderers, inherited from the host UI. */
-	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	getChatRenderSettings?: () =>
+		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)
+		| undefined;
 	/** Parent host tool-output/live-detail expansion state, inherited from the host UI. */
 	getToolsExpanded?: () => boolean;
 	/** Parent host tool-output/live-detail expansion setter, inherited from the host UI. */

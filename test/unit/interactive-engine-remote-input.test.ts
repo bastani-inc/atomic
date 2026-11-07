@@ -240,6 +240,11 @@ test("fullscreen viewport ownership keeps Ctrl+T with its focused host owner", (
 		true,
 		"inline tree selectors must keep their own Ctrl+T binding",
 	);
+	assert.equal(
+		shouldHandleFullscreenViewportInput(overlay, editor, "\x0f", false, true, keybindings),
+		true,
+		"Ctrl+O is no viewport action: a focused overlay keeps it (#4521)",
+	);
 	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, "a", false, true, keybindings), true);
 	assert.equal(shouldHandleFullscreenViewportInput(overlay, editor, mouse, true, true, keybindings), false);
 	assert.equal(shouldHandleFullscreenViewportInput(inline, editor, mouse, true, false, keybindings), true);
@@ -898,6 +903,47 @@ test("fullscreen workflow overlay Ctrl+T invokes the production host thinking ac
 		assert.deepEqual(inputs, ["\x14"], "the focused workflow overlay must see Ctrl+T first");
 		assert.equal(thinking.mode.hideThinkingBlock, true, "Ctrl+T must flip the production thinking state");
 		assert.deepEqual(thinking.settingWrites, [true], "the production thinking action must persist its new state");
+	} finally {
+		overlay.hide();
+		tui.stop();
+	}
+});
+test("a focused overlay that declines Ctrl+O does not change the host's tool output (#4521)", async () => {
+	const inputs: string[] = [];
+	const hostKeybindings = new KeybindingsManager();
+	const host = makeProductionThinkingHandler(hostKeybindings);
+	Object.assign(host.mode, { toolOutputExpanded: false, pendingMessagesContainer: { children: [] } });
+	const bridge = makeBridge({ fullscreen: true, keybindings: hostKeybindings, onOverlayUnhandledInput: host.handler });
+	void bridge.child.custom(
+		() => ({
+			render: () => ["task transcript"],
+			handleInput: (data: string) => {
+				inputs.push(data);
+				return false;
+			},
+			invalidate: () => {},
+		}),
+		{ overlay: true },
+	);
+	await flush();
+	const tui = bridge.tui;
+	const terminal = bridge.terminal;
+	assert.ok(bridge.hostComponent && tui && terminal);
+	tui.setLayoutRoot(new Text("transcript", 0, 0));
+	const overlay = tui.showOverlay(bridge.hostComponent, {
+		anchor: "center",
+		width: "100%",
+		maxHeight: "100%",
+		margin: 0,
+	});
+	tui.start();
+	tui.renderNow();
+	try {
+		terminal.input("\x0f");
+		await flush();
+		assert.deepEqual(inputs, ["\x0f"], "the focused overlay sees Ctrl+O");
+		assert.equal(host.mode.toolOutputExpanded, false, "a mounted overlay keeps Ctrl+O from the chat behind it");
+		assert.equal(host.handler("\x0f"), false, "a declined Ctrl+O is no host action");
 	} finally {
 		overlay.hide();
 		tui.stop();

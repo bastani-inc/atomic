@@ -5,6 +5,7 @@ import { copyToClipboard } from "../../utils/clipboard.js";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.js";
 import type {
 	EngineBlockedStatus,
+	EngineHostRenderSettings,
 	InteractiveEngineMessage,
 	JsonValue,
 	SerializableOverlayOptions,
@@ -69,6 +70,8 @@ class RemoteComponent implements Component {
 	private readonly runtime: RemoteComponentRuntime;
 	private readonly requestRender: () => void;
 	private readonly getRows: () => number;
+	private readonly getRenderSettings: () => EngineHostRenderSettings | undefined;
+	private renderSettingsKey = "";
 
 	constructor(
 		componentId: string,
@@ -76,19 +79,30 @@ class RemoteComponent implements Component {
 		requestRender: () => void,
 		getRows: () => number,
 		handlesInternalUiAction = false,
+		getRenderSettings: () => EngineHostRenderSettings | undefined = () => undefined,
 	) {
 		this.componentId = componentId;
 		this.runtime = runtime;
 		this.requestRender = requestRender;
 		this.getRows = getRows;
 		this.handlesInternalUiAction = handlesInternalUiAction;
+		this.getRenderSettings = getRenderSettings;
 	}
 
 	render(width: number): string[] {
 		const rows = this.getRows();
-		if (!this.disposed && (this.dirty || width !== this.width || rows !== this.rows)) {
+		const renderSettings = this.getRenderSettings();
+		const renderSettingsKey =
+			renderSettings === undefined
+				? ""
+				: `${renderSettings.hideThinkingBlock}|${renderSettings.toolOutputExpanded}|${renderSettings.fullscreenScrollbar}|${renderSettings.fullscreenWheelScrollLines}`;
+		if (
+			!this.disposed &&
+			(this.dirty || width !== this.width || rows !== this.rows || renderSettingsKey !== this.renderSettingsKey)
+		) {
 			this.width = width;
 			this.rows = rows;
+			this.renderSettingsKey = renderSettingsKey;
 			this.dirty = false;
 			this.runtime.sendEngineCommand({
 				type: "engine_custom_render",
@@ -96,6 +110,7 @@ class RemoteComponent implements Component {
 				requestId: ++this.requestId,
 				width,
 				rows,
+				...(renderSettings === undefined ? {} : { renderSettings }),
 			});
 		}
 		// The engine child re-renders asynchronously; until the fresh frame
@@ -191,6 +206,8 @@ function hostTerminal(tui: TUI): { write(data: string): void } {
 export interface TuiRendererLifecycle {
 	isFullscreen(): boolean;
 	onRendererReplaced(listener: () => void): () => void;
+	/** What the host's own chat shows; transcripts the engine paints in its overlays and widgets follow it. */
+	chatRenderSettings?(): EngineHostRenderSettings;
 }
 
 export class RemoteComponentController {
@@ -203,6 +220,7 @@ export class RemoteComponentController {
 	private readonly runtime: RemoteComponentRuntime;
 	private readonly ui: RemoteComponentUI;
 	private readonly copyText: (text: string) => Promise<void>;
+	private readonly tuiRendererLifecycle: TuiRendererLifecycle;
 
 	constructor(
 		runtime: RemoteComponentRuntime,
@@ -213,6 +231,7 @@ export class RemoteComponentController {
 		this.runtime = runtime;
 		this.ui = ui;
 		this.copyText = copyText;
+		this.tuiRendererLifecycle = tuiRendererLifecycle;
 		this.terminalModes = new TerminalModeController(() => tuiRendererLifecycle.isFullscreen());
 		this.unsubscribeTuiRendererReplaced = tuiRendererLifecycle.onRendererReplaced(() =>
 			this.terminalModes.rebindTui(),
@@ -414,6 +433,7 @@ export class RemoteComponentController {
 				() => this.ui.requestRender(),
 				() => getRows(),
 				handlesInternalUiAction,
+				() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 			);
 			const unsubscribeWidgetRelease = this.ui.onWidgetRelease?.(widgetKey, () => this.releaseWidget(widgetKey));
 			this.mounted.set(componentId, {
@@ -445,6 +465,7 @@ export class RemoteComponentController {
 						() => this.ui.requestRender(),
 						() => tui.terminal.rows,
 						handlesInternalUiAction,
+						() => this.tuiRendererLifecycle.chatRenderSettings?.(),
 					);
 					mounted = { component, done, engineDone: false, handlesCtrlC, handlesInternalUiAction };
 					this.mounted.set(componentId, mounted);

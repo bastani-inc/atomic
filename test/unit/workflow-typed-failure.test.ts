@@ -108,6 +108,7 @@ const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	rehydrateStartupBenchmarkError: "startup-benchmark",
 	deserializeSubscriptionError: "subscription",
 	rehydrateTaskToolError: "task-tool",
+	rehydrateTaskMessageError: "task-message",
 	rehydrateIntercomBrokerError: "intercom-broker",
 	// Team profile errors are storage errors, and cross with the storage family.
 	rehydrateStorageError: "storage",

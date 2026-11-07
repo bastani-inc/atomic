@@ -2,6 +2,7 @@ import type {
 	ChatMessageEntry,
 	ChatMessageRenderOptions,
 	ChatSessionHost,
+	ChatSessionViewportSettings,
 	ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
 import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
@@ -60,7 +61,9 @@ export interface StageChatViewOpts {
 	/** Currently installed host editor factory, inherited from extension `ctx.ui.setEditorComponent()`. */
 	piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
 	/** Parent chat rendering settings and extension renderers inherited from the host UI. */
-	getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+	getChatRenderSettings?: () =>
+		| (Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> & ChatSessionViewportSettings)
+		| undefined;
 	/** Parent host expansion state for tool-output/live-detail widgets. */
 	getToolsExpanded?: () => boolean;
 	/** Toggle parent host expansion state for tool-output/live-detail widgets. */

@@ -1191,6 +1191,11 @@ TaskEvictedError, isTaskEvictedError, findTaskEvictedError, rehydrateTaskEvicted
 type TaskEvictedErrorCode, type TaskEvictedErrorFields
 TaskToolError, isTaskToolError, rehydrateTaskToolError
 type TaskToolFailureCode, type TaskToolErrorFields, type SerializedTaskToolError
+// Messages typed into a task's transcript (see "Task transcript references")
+TaskMessageError, TaskMessageTimeoutError, isTaskMessageError, isTaskMessageTimeoutError
+findTaskMessageError, isRetryableTaskMessageError, rehydrateTaskMessageError
+type TaskMessageErrorCode, type TaskMessageErrorFields, type TaskMessageTimeoutErrorFields
+type TaskMessageTimeoutPhase, type SerializedTaskMessageError
 // Detached tool call failures (see "Detachable tool calls")
 type DetachedCallFailure, type DetachedCallFailureCause
 // Git resolution (see "Resolving git")
@@ -1307,4 +1312,16 @@ Without a supported owner, explicit background execution is refused. Native Wind
 
 ### Task transcript references
 
-Task inspectors show references to the bound child conversation, excluding thinking and non-conversation entries. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
+Task inspectors show references to the bound child conversation: prompts, responses, thinking blocks, tool calls and results, compaction boundaries, branch summaries, and displayed extension messages. Model-only custom messages and entries a chat does not render are left out. An unbound or empty history reports `Transcript unavailable`. Saved history is not authority to restart or control a task.
+
+`TaskViewSource.sendTaskMessage(id, text)` sends text typed into an agent task's transcript to that task through its Intercom target and resolves once Intercom confirms delivery. A task view that cannot message tasks omits the method. A failure rejects with a `TaskMessageError`:
+
+| Class | `code` | When | Fields | What to do |
+| --- | --- | --- | --- | --- |
+| `TaskMessageError` | `task-unavailable` | The id names no task the view keeps. `retryable` is `false`. | `taskId`, `hint` | Run `/tasks` to see the current tasks. |
+| `TaskMessageError` | `messages-unsupported` | The task has no Intercom target, such as a shell or an agent launched without Intercom. `retryable` is `false`. | `taskId`, `hint` | Message agents that have an Intercom target. |
+| `TaskMessageError` | `delivery-refused` | Intercom reported the message undelivered, for example because the agent's session is gone, or a workflow stage's local worker refused the action before running it. `retryable` is `true`: the message did not arrive. | `taskId` and `hint`; `target` and `detail` (the channel's reason) when Intercom refused, `cause` when the worker refused | Check that the agent is still available, then send again. |
+| `TaskMessageTimeoutError` | `delivery-unconfirmed` | Intercom did not confirm the message within `timeoutMs`. It may still arrive, so `retryable` is `false`. | `taskId`, `target`, `timeoutMs`, `elapsedMs`, `phase` (`delivery-acknowledgement`), `hint` | Check the transcript before sending the message again. |
+| `TaskMessageError` | `delivery-unconfirmed` | The delivery channel failed without an answer: it threw, Intercom's connection dropped after the message was sent, or a local worker went away or answered something unexpected or unreadable. The message may have arrived, so `retryable` is `false`. | `taskId`, `target` when known, `detail`, `hint`; `cause` when the channel threw | Check the transcript before sending the message again. |
+
+`isTaskMessageError(value)` and `isTaskMessageTimeoutError(value)` check the class first and then `name` and `code`. `findTaskMessageError(error)` returns the `TaskMessageError` in an error's `cause` chain, and `isRetryableTaskMessageError(error)` is `true` when a `TaskMessageError` there is `retryable`. `toJSON()` gives the serialized form (`name`, `code`, `message`, `hint`, `retryable`, `fields`, `cause`) that a workflow stage on a local worker sends back, and `rehydrateTaskMessageError(value)` rebuilds the class from it; a copy without a known `code` or a string `fields.taskId` gives `undefined`.

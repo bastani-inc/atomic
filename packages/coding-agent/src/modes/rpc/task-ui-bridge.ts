@@ -3,9 +3,44 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { ExtensionUIContext } from "../../core/extensions/index.js";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
+import { ChatSessionHost } from "../interactive/components/chat-session-host.ts";
 import { TaskInspector } from "../interactive/components/task-inspector.js";
 import { isActiveBackgroundTask, renderTaskFooter } from "../interactive/components/task-list.js";
+import { type TaskTranscriptEnvironment, themedChatHostStyle } from "../interactive/components/task-transcript-page.ts";
 import { isPhysicalCtrlC } from "../interactive/interactive-key-identity.ts";
+import { getEditorTheme } from "../interactive/theme/theme.js";
+import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts";
+
+/** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
+export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
+	Partial<Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "setToolsExpanded" | "notify">>;
+
+/** The engine's custom UI, with the render settings of the host chat that opened the inspector. */
+export type EngineTaskInspectorMount = Pick<ExtensionUIContext, "custom"> & {
+	getHostRenderSettings?(): EngineHostRenderSettings | undefined;
+};
+
+/**
+ * The isolated engine's `/tasks`, opened from the host's chat. Its transcripts show tool output as the host chat does
+ * (the engine's own state stands in until a render request carries the host's), and Ctrl+O there changes it for this
+ * inspector only, as an attached stage chat keeps its own.
+ */
+export function engineTaskInspectorUi(
+	ui: Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "notify">,
+	mount: EngineTaskInspectorMount,
+): TaskInspectorUi {
+	let toggled: boolean | undefined;
+	const toolsExpanded = () => toggled ?? mount.getHostRenderSettings?.()?.toolOutputExpanded ?? ui.getToolsExpanded();
+	return {
+		custom: mount.custom,
+		getChatRenderSettings: () => ({ ...ui.getChatRenderSettings(), toolOutputExpanded: toolsExpanded() }),
+		getToolsExpanded: toolsExpanded,
+		setToolsExpanded: (expanded) => {
+			toggled = expanded;
+		},
+		notify: (message, type) => ui.notify(message, type),
+	};
+}
 
 const widgetVisibility = new WeakMap<AgentSession, (visible: boolean) => void>();
 
@@ -67,7 +102,7 @@ export function bindEngineTaskWidget(session: AgentSession, ui: ExtensionUIConte
 
 export async function showEngineTaskInspector(
 	session: AgentSession,
-	ui: Pick<ExtensionUIContext, "custom">,
+	ui: TaskInspectorUi,
 	taskId?: string,
 ): Promise<void> {
 	session.getAgentTaskHost();
@@ -82,15 +117,12 @@ export async function showEngineTaskInspector(
 }
 
 /** Main CLI mount, shared by the local host and its isolated engine. */
-export async function showTaskInspector(
-	ui: Pick<ExtensionUIContext, "custom">,
-	store: OwnerTaskStore,
-	taskId?: string,
-): Promise<void> {
+export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskStore, taskId?: string): Promise<void> {
 	let requestRender = () => {};
 	let finishView = () => {};
 	let closed = false;
 	let fullscreen = false;
+	let environment: TaskTranscriptEnvironment | undefined;
 	const inspector = new TaskInspector(
 		store,
 		() => {
@@ -101,15 +133,30 @@ export async function showTaskInspector(
 			closed = true;
 			finishView();
 		},
+		undefined,
+		() => environment,
 	);
 	inspector.open(taskId as TaskId | undefined);
 	try {
 		while (!closed) {
 			fullscreen = inspector.fullscreen;
 			await ui.custom<void>(
-				(tui, _theme, _keys, done) => {
+				(tui, _theme, keybindings, done) => {
 					requestRender = () => tui.requestRender();
 					finishView = () => done();
+					environment = {
+						createChat: (opts) => new ChatSessionHost(opts),
+						tui,
+						keybindings,
+						editorTheme: getEditorTheme(),
+						style: themedChatHostStyle(),
+						...(ui.getChatRenderSettings ? { getChatRenderSettings: () => ui.getChatRenderSettings?.() } : {}),
+						...(ui.getToolsExpanded ? { getToolsExpanded: () => ui.getToolsExpanded?.() === true } : {}),
+						...(ui.setToolsExpanded
+							? { setToolsExpanded: (expanded: boolean) => ui.setToolsExpanded?.(expanded) }
+							: {}),
+						...(ui.notify ? { notify: (message: string) => ui.notify?.(message, "warning") } : {}),
+					};
 					return {
 						invalidate: () => inspector.invalidate(),
 						render: (width: number) => {
@@ -123,10 +170,9 @@ export async function showTaskInspector(
 							});
 						},
 						handleInput: (data: string) => {
-							if (isPhysicalCtrlC(data)) {
-								closed = true;
-								done();
-							} else inspector.handleInput(data);
+							if (!isPhysicalCtrlC(data)) return inspector.handleInput(data);
+							closed = true;
+							done();
 							return true;
 						},
 					};

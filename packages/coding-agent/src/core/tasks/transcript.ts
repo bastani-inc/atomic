@@ -1,10 +1,20 @@
 import { Buffer } from "node:buffer";
+import { sessionEntryToContextMessages } from "../session-manager-history.ts";
 import type { Failure, Result } from "./contracts.js";
 import { type TaskLease, taskTranscriptSource } from "./supervisor.js";
 
 export type TaskTranscriptItem = {
 	id: string;
-	kind: "prompt" | "assistant" | "tool-call" | "tool-result" | "response";
+	kind:
+		| "prompt"
+		| "assistant"
+		| "thinking"
+		| "tool-call"
+		| "tool-result"
+		| "response"
+		| "compaction"
+		| "branch-summary"
+		| "custom-message";
 	source: { sessionId: string; entryId: string; contentIndex?: number };
 	toolCallId?: string;
 };
@@ -53,9 +63,18 @@ export function readTaskTranscriptSnapshot(
 		items.push(item);
 	};
 	for (const entry of session.getEntries()) {
+		const source = { sessionId, entryId: entry.id };
+		if (entry.type === "compaction" || entry.type === "branch_summary") {
+			if (sessionEntryToContextMessages(entry).length > 0)
+				add({ id: entry.id, kind: entry.type === "compaction" ? "compaction" : "branch-summary", source });
+			continue;
+		}
+		if (entry.type === "custom_message") {
+			if (entry.display) add({ id: entry.id, kind: "custom-message", source });
+			continue;
+		}
 		if (entry.type !== "message") continue;
 		const message = entry.message;
-		const source = { sessionId, entryId: entry.id };
 		if (message.role === "user") {
 			add({ id: entry.id, kind: "prompt", source });
 		} else if (message.role === "toolResult") {
@@ -67,6 +86,8 @@ export function readTaskTranscriptSnapshot(
 					add({ ...identity, kind: "tool-call", toolCallId: block.id });
 				} else if (block.type === "text") {
 					add({ ...identity, kind: message.stopReason === "stop" ? "response" : "assistant" });
+				} else if (block.type === "thinking") {
+					add({ ...identity, kind: "thinking" });
 				}
 			}
 		}

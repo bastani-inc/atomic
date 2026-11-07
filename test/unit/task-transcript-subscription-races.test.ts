@@ -16,14 +16,17 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
+import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import type { TaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { readTaskTranscript } from "../../packages/coding-agent/src/core/tasks/transcript.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { TaskLiveTranscript } from "../../packages/coding-agent/src/modes/interactive/components/task-live-transcript.js";
+import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 
 // Only replace SDK discovery/construction: each run below uses the actual Agent,
 // AgentSession event queue, extension dispatch, persistence and subagent runner.
@@ -63,10 +66,13 @@ test("opening a transcript receives the final message queued during its history 
 	let finalDuringRead: string | undefined;
 	let listenersAtFinal = -1;
 	let finalId: string | undefined;
+	const environment = taskTranscriptEnvironment();
 	const inspector = new TaskInspector(
 		fixture.store,
 		() => {},
 		() => {},
+		undefined,
+		() => environment,
 	);
 	try {
 		const lease = await fixture.start();
@@ -130,7 +136,18 @@ const messageText = (message: AgentMessage | undefined) => {
 				.map((block) => block.text)
 				.join("");
 };
-const liveText = (viewer: TaskLiveTranscript) => stripVTControlCharacters(viewer.render(100).join("\n"));
+const liveText = (viewer: TaskAgentTranscriptPage) => stripVTControlCharacters(viewer.render(100, 40).join("\n"));
+
+/** A transcript page that follows `session` from an empty history, as a live task's first page reads. */
+async function followingPage(session: TaskTranscriptSource): Promise<TaskAgentTranscriptPage> {
+	const source = {
+		readTaskTranscript: () => ({ ok: true as const, value: { messages: [] } }),
+		followTaskTranscript: () => ({ session, historyOnly: false }),
+	} as unknown as TaskViewSource;
+	const page = new TaskAgentTranscriptPage(source, "task" as TaskId, taskTranscriptEnvironment(), () => {});
+	await page.load();
+	return page;
+}
 
 async function queuedRunner() {
 	const root = mkdtempSync(join(tmpdir(), "atomic-transcript-races-"));
@@ -255,7 +272,7 @@ async function queuedRunner() {
 test("late subscribers hydrate only public deltas while the real AgentSession queue is blocked", async () => {
 	initTheme("dark");
 	const run = await queuedRunner();
-	const viewers: TaskLiveTranscript[] = [];
+	const viewers: TaskAgentTranscriptPage[] = [];
 	try {
 		const partial = assistant("");
 		const started = run.once((event) => event.type === "message_start" && event.message.role === "assistant");
@@ -280,7 +297,7 @@ test("late subscribers hydrate only public deltas while the real AgentSession qu
 			"alpha",
 			"snapshot must stop at the public boundary",
 		);
-		for (let i = 0; i < 2; i++) viewers.push(new TaskLiveTranscript(run.source, [], () => {}));
+		for (let i = 0; i < 2; i++) viewers.push(await followingPage(run.source));
 		for (const viewer of viewers) {
 			assert.match(liveText(viewer), /alpha/);
 			assert.doesNotMatch(liveText(viewer), /beta/);

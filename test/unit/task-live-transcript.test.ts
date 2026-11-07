@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import { test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
+import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import type { TaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { AssistantMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/assistant-message.js";
-import {
-	chatEntriesFromAgentMessages,
-	LiveChatEntriesController,
-	renderChatMessageEntry,
-} from "../../packages/coding-agent/src/modes/interactive/components/chat-message-renderer.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
-import { TaskLiveTranscript } from "../../packages/coding-agent/src/modes/interactive/components/task-live-transcript.js";
+import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 
 const assistant = (text: string): AssistantMessage => ({
 	role: "assistant",
@@ -48,12 +48,15 @@ test("open agent transcript streams text and tool results without task activity 
 		for (const listener of listeners) listener(event);
 	};
 	let renders = 0;
+	const environment = taskTranscriptEnvironment();
 	const inspector = new TaskInspector(
 		fixture.store,
 		() => {
 			renders++;
 		},
 		() => {},
+		undefined,
+		() => environment,
 	);
 	const text = () => stripVTControlCharacters(inspector.renderViewport(100, 100).join("\n"));
 	try {
@@ -126,12 +129,15 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 	for (let i = 0; i < 120; i++)
 		await session.appendMessage({ role: "user", content: `HISTORY-${String(i).padStart(3, "0")}`, timestamp: i });
 	let listener: ((event: AgentSessionEvent) => void) | undefined;
+	const environment = taskTranscriptEnvironment();
 	const inspector = new TaskInspector(
 		fixture.store,
 		() => {},
 		() => {},
+		undefined,
+		() => environment,
 	);
-	const text = () => stripVTControlCharacters(inspector.renderViewport(80, 12).join("\n"));
+	const text = () => stripVTControlCharacters(inspector.renderViewport(80, 24).join("\n"));
 	try {
 		await fixture.start();
 		fixture.runners[0].context.bindTranscript({
@@ -148,14 +154,17 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 		await flush();
 		inspector.handleInput("\r");
 		await flush();
-		inspector.handleInput("\x1b[5~");
+		// Nearing the top loads the earlier page; the reader then reaches its first row (#4521).
+		inspector.handleInput("\x1b[1;5H");
+		text();
 		await flush();
+		inspector.handleInput("\x1b[1;5H");
 		assert.match(text(), /HISTORY-000/);
 		const before = text();
 		listener?.({ type: "message_start", message: assistant("New live response") });
 		assert.match(text(), /HISTORY-000/);
-		assert.equal(text().split("Lines ")[0], before.split("Lines ")[0]);
-		inspector.handleInput("\x1b[F");
+		assert.equal(text(), before, "live output below a reader who scrolled up leaves their rows still");
+		inspector.handleInput("\x1b[1;5F");
 		assert.match(text(), /New live response/);
 		inspector.dispose();
 		assert.equal(listener, undefined);
@@ -166,13 +175,20 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 	}
 });
 
-test("streaming rebuilds only changed message components and invalidation refreshes history", () => {
+function followedPage(session: TaskTranscriptSource, messages: AgentMessage[] = []) {
+	const source = {
+		readTaskTranscript: () => ({ ok: true as const, value: { messages } }),
+		followTaskTranscript: () => ({ session, historyOnly: false }),
+	} as unknown as TaskViewSource;
+	return new TaskAgentTranscriptPage(source, "task" as TaskId, taskTranscriptEnvironment(), () => {});
+}
+
+test("streaming rebuilds only the streaming message on the shared chat host (#4521)", async () => {
 	initTheme("dark");
 	let listener: ((event: AgentSessionEvent) => void) | undefined;
-	let requests = 0;
 	const history = Array.from({ length: 100 }, (_, index) => assistant(`HISTORY-${index} **retained**`));
 	const updates = vi.spyOn(AssistantMessageComponent.prototype, "updateContent");
-	const transcript = new TaskLiveTranscript(
+	const page = followedPage(
 		{
 			getSessionId: () => "retention-test",
 			getEntries: () => [],
@@ -185,13 +201,12 @@ test("streaming rebuilds only changed message components and invalidation refres
 			},
 		},
 		history,
-		() => {
-			requests++;
-		},
 	);
 	try {
-		const initial = transcript.render(80);
-		assert.equal(updates.mock.calls.length, 101);
+		await page.load();
+		page.render(80, 30);
+		const initial = updates.mock.calls.length;
+		assert.equal(initial, 101, "every retained message renders once");
 		for (let index = 0; index < 30; index++) {
 			listener?.({
 				type: "message_update",
@@ -203,124 +218,13 @@ test("streaming rebuilds only changed message components and invalidation refres
 					partial: assistant(""),
 				},
 			});
-			transcript.render(80);
+			page.render(80, 30);
 		}
-		assert.equal(requests, 30);
-		assert.equal(updates.mock.calls.length, 131, "historical Markdown must not be reconstructed per delta");
-		const final = transcript.render(80);
-		assert.deepEqual(final.slice(0, initial.length - 2), initial.slice(0, initial.length - 2));
-		for (const width of [40, 100, 80]) {
-			const text = stripVTControlCharacters(transcript.render(width).join("\n"));
-			for (let index = 0; index < 100; index++) assert.equal(text.split(`HISTORY-${index} `).length - 1, 1);
-		}
-		assert.equal(updates.mock.calls.length, 131, "resize reuses components and their width-aware renderers");
-		listener?.({ type: "agent_end", messages: [] });
-		transcript.render(80);
-		assert.equal(updates.mock.calls.length, 131);
-		transcript.invalidate();
-		assert.deepEqual(transcript.render(80), final);
-		assert.equal(updates.mock.calls.length, 232);
+		assert.equal(updates.mock.calls.length, initial + 30, "historical Markdown must not be reconstructed per delta");
+		assert.match(stripVTControlCharacters(page.render(80, 30).join("\n")), /delta-29/);
 	} finally {
-		transcript.dispose();
+		page.dispose();
 		updates.mockRestore();
-	}
-	assert.equal(listener, undefined);
-});
-
-test("retained components match fresh rendering through tools, thinking, errors and theme changes", () => {
-	initTheme("dark");
-	const messages = [assistant("Duplicate"), assistant("Duplicate"), assistant("Unicode 界 👩‍💻 and **Markdown**")];
-	const entries = chatEntriesFromAgentMessages(messages);
-	const controller = new LiveChatEntriesController(entries);
-	let listener: ((event: AgentSessionEvent) => void) | undefined;
-	const transcript = new TaskLiveTranscript(
-		{
-			getSessionId: () => "parity",
-			getEntries: () => [],
-			subscribe: (callback) => {
-				listener = callback;
-				return () => {
-					listener = undefined;
-				};
-			},
-		},
-		messages,
-		() => {},
-	);
-	const compare = () => {
-		for (const width of [80, 37, 100, 80]) {
-			const expected = entries.flatMap((entry) =>
-				renderChatMessageEntry(entry, {
-					ui: { requestRender: () => {} },
-					cwd: process.cwd(),
-					hideThinkingBlock: true,
-					toolOutputExpanded: true,
-					showImages: false,
-				}).render(width),
-			);
-			assert.deepEqual(transcript.render(width), expected);
-		}
-	};
-	const emit = (event: AgentSessionEvent) => {
-		// Separate controller state: text deltas mutate the streaming message in place.
-		controller.applyEvent(structuredClone(event));
-		listener?.(structuredClone(event));
-		compare();
-	};
-	try {
-		compare();
-		emit({ type: "message_start", message: assistant("") });
-		emit({
-			type: "message_update",
-			message: assistant(""),
-			assistantMessageEvent: {
-				type: "text_delta",
-				contentIndex: 0,
-				delta: "  live\n\n**raw** 界  ",
-				partial: assistant(""),
-			},
-		});
-		emit({
-			type: "message_end",
-			message: {
-				...assistant("finished"),
-				content: [
-					{ type: "thinking", thinking: "hidden reasoning" },
-					{ type: "text", text: "finished" },
-					{ type: "toolCall", id: "call", name: "bash", arguments: { command: "echo first" } },
-				],
-			},
-		});
-		emit({ type: "tool_execution_start", toolCallId: "call", toolName: "bash", args: { command: "echo final" } });
-		emit({
-			type: "tool_execution_update",
-			toolCallId: "call",
-			toolName: "bash",
-			args: {},
-			partialResult: {
-				content: [{ type: "text", text: "partial\noutput" }],
-			},
-		});
-		emit({
-			type: "tool_execution_end",
-			toolCallId: "call",
-			toolName: "bash",
-			isError: false,
-			result: {
-				content: [{ type: "text", text: "complete\noutput" }],
-			},
-		});
-		for (const stopReason of ["aborted", "error"] as const) {
-			emit({ type: "message_start", message: assistant("") });
-			emit({ type: "tool_execution_start", toolCallId: stopReason, toolName: "read", args: { path: "a.ts" } });
-			emit({ type: "message_end", message: { ...assistant(""), stopReason, errorMessage: `test ${stopReason}` } });
-		}
-		initTheme("light");
-		transcript.invalidate();
-		compare();
-	} finally {
-		transcript.dispose();
-		initTheme("dark");
 	}
 	assert.equal(listener, undefined);
 });

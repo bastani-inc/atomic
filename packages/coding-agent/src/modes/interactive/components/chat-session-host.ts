@@ -49,6 +49,7 @@ import type {
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
 import { TaskInspector } from "./task-inspector.js";
 import { renderTaskFooter } from "./task-list.js";
+import type { TaskTranscriptEnvironment } from "./task-transcript-page.ts";
 
 export type {
 	ChatSessionHostBashRequest,
@@ -57,6 +58,7 @@ export type {
 	ChatSessionHostOpts,
 	ChatSessionHostStyle,
 	ChatSessionSubmitMode,
+	ChatSessionViewportSettings,
 } from "./chat-session-host-types.ts";
 
 export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never> implements Component, Focusable {
@@ -72,12 +74,24 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 	private unsubscribeTaskBinding?: () => void;
 	private taskInspector?: TaskInspector;
 	private historyHydrated = false;
+	private readonly taskTranscriptEnvironment: () => TaskTranscriptEnvironment;
 
 	constructor(opts: ChatSessionHostOpts<TExtraEntry>) {
 		// `/tasks` stays a local action owned by the host's `commands.handleSlashCommand`
 		// (see submitChatSession). Hosts that mount the inspector call `openTasks` from
 		// that callback; the host must not intercept it ahead of the owner.
 		this.taskRowsInChat = opts.taskRowsInChat ?? true;
+		// A task transcript opened from this chat is a chat of its own on the same terminal and settings.
+		this.taskTranscriptEnvironment = () => ({
+			createChat: (transcriptOpts) => new ChatSessionHost(transcriptOpts),
+			tui: opts.tui,
+			keybindings: opts.keybindings,
+			editorTheme: opts.editorTheme,
+			editorFactory: opts.editorFactory,
+			style: opts.style,
+			getChatRenderSettings: opts.getChatRenderSettings,
+			notify: (message) => this.showWarning(message),
+		});
 		this.state = new ChatSessionHostState(opts, {
 			renderEntry: (state, entry) => renderChatSessionEntry(state, entry),
 			transcriptCacheKey: (state, entry, index) => transcriptCacheKey(state, entry, index),
@@ -108,6 +122,8 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			this.taskSource,
 			() => this.state.requestRender?.(),
 			() => this.closeTasks(),
+			undefined,
+			() => this.taskTranscriptEnvironment(),
 		);
 		this.taskInspector.open(id as TaskId | undefined);
 		this.state.requestRender?.();
@@ -124,15 +140,25 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.taskInspector = undefined;
 		this.state.requestRender?.();
 	}
+	/** Offers input to the open task inspector; false when none is open or it declined the input. */
 	handleTaskInput(data: string): boolean {
-		if (!this.taskInspector) return false;
-		this.taskInspector.handleInput(data);
-		return true;
+		return this.taskInspector?.handleInput(data) === true;
 	}
 	appendMessages(messages: readonly AgentSnapshotMessage[]): void {
 		this.state.liveChat.appendMessages(messages);
 	}
 
+	/** Earlier history, shown above every entry while a reader scrolled away from the end keeps their place. */
+	prependMessages(messages: readonly AgentSnapshotMessage[]): void {
+		this.state.liveChat.prependMessages(messages);
+		this.state.requestRender?.();
+	}
+
+	/** Replaces the conversation with `messages`, keeping the host's own extra entries. */
+	replaceMessages(messages: readonly AgentSnapshotMessage[]): void {
+		this.state.liveChat.replaceMessages(messages, this.state.extraEntries);
+		this.state.requestRender?.();
+	}
 	/**
 	 * Adopt the assistant message a live session is part-way through streaming.
 	 *

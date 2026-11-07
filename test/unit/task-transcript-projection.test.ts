@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "vitest";
+import {
+	VERBATIM_COMPACTION_PROMPT_VERSION,
+	type VerbatimCompactionDetails,
+} from "../../packages/coding-agent/src/core/compaction/compaction-types.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { OperationId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import {
@@ -8,8 +12,10 @@ import {
 	TaskSupervisor,
 	type TaskTranscriptSource,
 } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { readTaskTranscript } from "../../packages/coding-agent/src/core/tasks/transcript.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { taskFixture } from "../helpers/task-projection.js";
 
 async function withTranscript(source: TaskTranscriptSource | undefined, check: (task: TaskLease) => Promise<void>) {
 	const supervisor = new TaskSupervisor();
@@ -114,8 +120,9 @@ test("transcript pages have opaque task scoped cursors and omit duplicate source
 	});
 });
 
-// RFC #2884: tool references keep original toolCallId and never disclose reasoning.
-test("assistant tool calls and results correlate while hidden reasoning is absent", async () => {
+// RFC #2884: tool references keep original toolCallId. Thinking blocks are referenced by position, so a task
+// transcript follows the reader's thinking display like the other chats do (#4521).
+test("assistant thinking, tool calls and results are referenced by position (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	const entryId = await session.appendMessage({
 		role: "assistant",
@@ -150,6 +157,11 @@ test("assistant tool calls and results correlate while hidden reasoning is absen
 		const page = await readTaskTranscript(task);
 		assert.ok(page.ok);
 		assert.deepEqual(page.value.items, [
+			{
+				id: `${entryId}:0`,
+				kind: "thinking",
+				source: { sessionId: session.getSessionId(), entryId, contentIndex: 0 },
+			},
 			{
 				id: `${entryId}:1`,
 				kind: "tool-call",
@@ -208,5 +220,124 @@ test("persisted transcript references agree with live source and expose recorded
 		});
 	} finally {
 		removeTempDirectory(directory);
+	}
+});
+
+const verbatimDetails: VerbatimCompactionDetails = {
+	strategy: "verbatim-lines",
+	promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
+	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+	stats: {
+		linesBefore: 2,
+		linesDeleted: 1,
+		linesKept: 1,
+		rangeCount: 1,
+		tokensBefore: 100,
+		tokensAfter: 50,
+		percentReduction: 50,
+	},
+	rung: "planned",
+};
+
+test("compaction boundaries, branch summaries and displayed custom messages enter the transcript index (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	const prompt = await session.appendMessage({ role: "user", content: "start", timestamp: 1 });
+	const notice = await session.appendCustomMessageEntry("extension-notice", "shown to the reader", true);
+	await session.appendCustomMessageEntry("hidden-context", "model only", false);
+	const boundary = await session.appendCompaction("kept line", prompt, 100, verbatimDetails);
+	const summary = await session.branchWithSummary(prompt, "what the abandoned branch did");
+	await session.branchWithSummary(prompt, "");
+	await withTranscript(session, async (task) => {
+		const page = await readTaskTranscript(task);
+		assert.ok(page.ok);
+		const source = (entryId: string) => ({ sessionId: session.getSessionId(), entryId });
+		assert.deepEqual(page.value.items, [
+			{ id: prompt, kind: "prompt", source: source(prompt) },
+			{ id: notice, kind: "custom-message", source: source(notice) },
+			{ id: boundary, kind: "compaction", source: source(boundary) },
+			{ id: summary, kind: "branch-summary", source: source(summary) },
+		]);
+	});
+});
+
+test("a summary-only or legacy compaction without a renderable boundary takes no place in the page (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	const prompt = await session.appendMessage({ role: "user", content: "start", timestamp: 1 });
+	await session.appendCompaction("summary", prompt, 100, {
+		...verbatimDetails,
+		strategy: "summary",
+	} as unknown as VerbatimCompactionDetails);
+	await withTranscript(session, async (task) => {
+		const page = await readTaskTranscript(task);
+		assert.ok(page.ok);
+		assert.deepEqual(
+			page.value.items.map((item) => item.kind),
+			["prompt"],
+		);
+	});
+});
+
+test("the task view reads informational entries and thinking as chats render them, with compaction on the latest page (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 101; i++) await session.appendMessage({ role: "user", content: `early-${i}`, timestamp: i });
+	const prompt = await session.appendMessage({ role: "user", content: "start", timestamp: 200 });
+	await session.appendMessage({
+		role: "assistant",
+		content: [
+			{ type: "thinking", thinking: "visible reasoning" },
+			{ type: "text", text: "done" },
+		],
+		api: "openai-completions",
+		provider: "openai",
+		model: "fixture",
+		stopReason: "stop",
+		timestamp: 201,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+	});
+	await session.appendCustomMessageEntry("extension-notice", "notice text", true);
+	await session.appendCompaction("kept line", prompt, 100, verbatimDetails);
+	await session.branchWithSummary(prompt, "summary text");
+	const fixture = taskFixture();
+	try {
+		await fixture.start("Read informational entries");
+		fixture.runners[0].context.bindTranscript({
+			getSessionId: () => session.getSessionId(),
+			getEntries: () => session.getEntries(),
+			getCompactionReason: () => "threshold",
+		});
+		const view = ownerTaskViewSource(fixture.store);
+		const taskId = fixture.store.tasks[0]!.ref.taskId;
+		const latest = view.readTaskTranscript(taskId);
+		assert.ok(!(latest instanceof Promise) && latest.ok);
+		assert.equal(latest.value.compactionReason, "threshold");
+		const tail = latest.value.messages.slice(-5);
+		assert.deepEqual(
+			tail.map((message) => message.role),
+			["user", "assistant", "custom", "custom", "branchSummary"],
+		);
+		const reply = tail[1];
+		assert.ok(reply?.role === "assistant");
+		assert.deepEqual(
+			reply.content.map((block) => block.type),
+			["thinking", "text"],
+		);
+		assert.deepEqual(
+			tail.slice(2, 4).map((message) => (message.role === "custom" ? message.customType : undefined)),
+			["extension-notice", "compaction"],
+		);
+		assert.ok(latest.value.nextCursor);
+		const earlier = view.readTaskTranscript(taskId, latest.value.nextCursor);
+		assert.ok(!(earlier instanceof Promise) && earlier.ok);
+		assert.equal(earlier.value.compactionReason, undefined, "only the latest page describes the session now");
+		assert.equal(earlier.value.messages.length, 7, "107 items leave seven before the latest hundred");
+	} finally {
+		await fixture.dispose();
 	}
 });

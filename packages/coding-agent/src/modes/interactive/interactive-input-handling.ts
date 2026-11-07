@@ -241,8 +241,15 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					this.showStatus("Launched agents and shells will appear here.");
 					return;
 				}
+				const ui = this.createExtensionUIContext();
 				await showTaskInspector(
-					{ custom: (factory, options) => this.showExtensionCustom(factory, options) },
+					{
+						custom: (factory, options) => this.showExtensionCustom(factory, options),
+						getChatRenderSettings: ui.getChatRenderSettings,
+						getToolsExpanded: ui.getToolsExpanded,
+						setToolsExpanded: ui.setToolsExpanded,
+						notify: ui.notify,
+					},
 					store,
 					text.slice(6).trim() || undefined,
 				);

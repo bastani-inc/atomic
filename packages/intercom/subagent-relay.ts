@@ -126,21 +126,23 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       if (!reportOwnedIntercomDiagnostic()) console.error("Failed to record local subagent relay error:", recordError);
     }
   }
-  function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown): void {
+  function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown, unconfirmed = false): void {
     if (!requestId) return;
     try {
       pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
         requestId,
         delivered,
         ...(error ? { error: getErrorMessage(error) } : {}),
+        ...(unconfirmed ? { unconfirmed: true } : {}),
       });
     } catch (emitError) {
       if (!isStaleExtensionContextError(emitError)) throw emitError;
       // Delivery acknowledgements are best effort after a runtime replacement.
     }
   }
-  function acknowledgeResult(options: { acknowledge?: boolean }, requestId: string | undefined, delivered: boolean, error?: unknown): void {
-    if (options.acknowledge) emitResultDelivery(requestId, delivered, error);
+  /** `unconfirmed` marks a failure after the message may have reached the broker, so it may still arrive. */
+  function acknowledgeResult(options: { acknowledge?: boolean }, requestId: string | undefined, delivered: boolean, error?: unknown, unconfirmed = false): void {
+    if (options.acknowledge) emitResultDelivery(requestId, delivered, error, unconfirmed);
   }
   async function deliverLocal(
     parsed: ReturnType<typeof parseSubagentIntercomPayload> & {},
@@ -280,11 +282,11 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         acknowledgeResult(options, parsed.requestId, true);
       } catch (error) {
         if (!relayStillLive()) {
-          acknowledgeResult(options, parsed.requestId, false, error);
+          acknowledgeResult(options, parsed.requestId, false, error, true);
           return;
         }
         await recordSubagentDeliveryErrorSafely(options.errorEntryType, parsed.to, parsed.message, error);
-        acknowledgeResult(options, parsed.requestId, false, error);
+        acknowledgeResult(options, parsed.requestId, false, error, true);
       }
     })().catch((error) => {
       if (!isStaleExtensionContextError(error)) {
