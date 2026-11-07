@@ -149,10 +149,13 @@ export type { AppMode } from "./main-app-mode.ts";
 export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 export type { MainOptions } from "./main-types.ts";
 
-function collectExtensionLoadDiagnostics(extensions: LoadExtensionsResult): AgentSessionRuntimeDiagnostic[] {
+function collectExtensionLoadDiagnostics(
+	extensions: LoadExtensionsResult,
+	interactive = false,
+): AgentSessionRuntimeDiagnostic[] {
 	return [
 		...extensions.errors.map(({ path, error }) => ({
-			type: "error" as const,
+			type: interactive ? ("warning" as const) : ("error" as const),
 			message: `Failed to load extension "${path}": ${error}`,
 		})),
 		...(extensions.warnings ?? []).map(({ path, warning }) => ({
@@ -892,7 +895,10 @@ export async function main(argv: string[], options?: MainOptions) {
 			const diagnostics: AgentSessionRuntimeDiagnostic[] = [
 				...services.diagnostics,
 				...collectSettingsDiagnostics(settingsManager, "runtime creation"),
-				...collectExtensionLoadDiagnostics(resourceLoader.getExtensions()),
+				...collectExtensionLoadDiagnostics(
+					resourceLoader.getExtensions(),
+					appMode === "interactive" || engineEnv.child === "1",
+				),
 			];
 			const modelPatterns = isolateInteractiveHost
 				? undefined
@@ -961,13 +967,16 @@ export async function main(argv: string[], options?: MainOptions) {
 						if (migrateAfterTrust) runMigrations(cwd, { projectTrusted: true });
 						const finalServices = await completeServices();
 						const extensionErrors = finalServices.resourceLoader.getExtensions().errors;
-						if (extensionErrors.length > 0) {
+						if (extensionErrors.length > 0 && appMode !== "interactive" && engineEnv.child !== "1") {
 							throw new Error(
 								`Failed to load extensions: ${extensionErrors.map(({ path, error }) => `${path}: ${error}`).join("; ")}`,
 							);
 						}
 						services.resourceLoader = finalServices.resourceLoader;
 						services.diagnostics = finalServices.diagnostics;
+						finalServices.diagnostics.push(
+							...collectExtensionLoadDiagnostics(finalServices.resourceLoader.getExtensions(), true),
+						);
 						const patterns = parsed.models ?? settingsManager.getEnabledModels();
 						const finalScope = patterns?.length ? await resolveModelScope(patterns, modelRuntime) : [];
 						const finalSelection = buildSessionOptions(

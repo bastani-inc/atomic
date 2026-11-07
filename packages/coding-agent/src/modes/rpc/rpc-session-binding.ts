@@ -219,9 +219,9 @@ export class RpcSessionBinding {
 		const session = this.session;
 		try {
 			if (!(await this.runtimeHost.completeStartup?.())) {
-				await session.reload({ reason: "startup", failOnExtensionErrors: true });
+				await session.reload({ reason: "startup" });
 			}
-		} catch (error) {
+		} finally {
 			for (const extensionError of session.resourceLoader.getExtensions().errors) {
 				this.output({
 					type: "extension_error",
@@ -230,7 +230,6 @@ export class RpcSessionBinding {
 					error: extensionError.error,
 				});
 			}
-			throw error;
 		}
 		if (session !== this.session) return;
 		this.reloadCoordinator?.publishCurrentState(session);

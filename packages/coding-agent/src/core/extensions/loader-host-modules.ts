@@ -99,6 +99,7 @@ export async function loadVirtualModules(): Promise<Record<string, object>> {
 		"@bastani/atomic": piCodingAgent,
 		"@bastani/atomic/storage": storage,
 		"@earendil-works/pi-coding-agent": piCodingAgent,
+		"@mariozechner/pi-coding-agent": piCodingAgent,
 		"@mariozechner/pi-agent-core": piAgentCore,
 		"@mariozechner/pi-tui": piTui,
 		"@mariozechner/pi-tui/dist/layout.js": piTuiLayout,
