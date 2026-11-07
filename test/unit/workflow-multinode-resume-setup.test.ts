@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	captureWorktreeSnapshot,
@@ -8,15 +17,17 @@ import {
 	type GitUnavailableError,
 	isResumePreconditionError,
 	isResumeSetupHookError,
+	isWorkspaceSnapshotError,
 	ProjectTrustStore,
 	restoreRunWorktree,
 	restoreWorktree,
 	runRestorePreconditionError,
 	setUpRestoredRunWorktrees,
 	setWorktreeSnapshotGit,
+	type WorktreeSnapshot,
 } from "@bastani/atomic";
 import { Type } from "typebox";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, describe, test } from "vitest";
 import { clearWorktreeRootMappings } from "../../packages/coding-agent/src/core/resume/path-mapping.ts";
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
 import { resolveToCwd } from "../../packages/coding-agent/src/core/tools/path-utils.ts";
@@ -35,6 +46,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
+import { hostRestorePort } from "../../packages/workflows/src/workers/worker-host.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { testRunId } from "../helpers/run-id.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
@@ -807,4 +819,76 @@ test("a worker host whose hook fails removes the worktree it restored from its o
 	);
 	assert.ok(restored.startsWith(join(hostAgentDir, "worktree-snapshots")), restored);
 	assert.equal(existsSync(restored), false);
+});
+
+test.skipIf(process.platform === "win32")(
+	"a worker host removes a restored worktree whose environment cannot be read (#4329)",
+	async () => {
+		const hostAgentDir = sandbox.path("host-agent");
+		mkdirSync(hostAgentDir, { recursive: true });
+		writeFileSync(join(hostAgentDir, "settings.json"), "{}");
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
+		const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
+		cleanups.push(() => fixture.close());
+		const capture = await captureWorktreeSnapshot(clone, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			blobs: fixture.journal.snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		let restored = "";
+
+		const error = await restoreRunWorktree(
+			undefined,
+			async () => {
+				restored = (
+					await restoreWorktree(capture.snapshot, {
+						blobs: fixture.journal.snapshotBlobs,
+						storeDir: join(hostAgentDir, "worktree-snapshots"),
+					})
+				).path;
+				const lockfile = join(restored, "package-lock.json");
+				rmSync(lockfile);
+				symlinkSync(lockfile, lockfile);
+				return restored;
+			},
+			{ agentDir: hostAgentDir },
+		).then(
+			() => assert.fail("the environment cannot be read"),
+			(failure: unknown) => failure,
+		);
+
+		assert.ok(isWorkspaceSnapshotError(error), String(error));
+		assert.equal(error.code, "unreadable-path");
+		assert.equal((error as { cleanupCause?: unknown }).cleanupCause, undefined);
+		assert.equal(existsSync(restored), false);
+	},
+);
+
+describe("the restore port of a worker host (#4329)", () => {
+	const git = { path: "git", env: {} };
+	const shared = { recordedSnapshots: async () => [] } as unknown as Parameters<typeof hostRestorePort>[2];
+	const journal = { snapshotBlobs: undefined } as unknown as Parameters<typeof hostRestorePort>[3];
+	const binding = { remotes: [], head: "h", tree: "t", envHash: "e".repeat(64) };
+
+	test("a host given its own restore function runs it as it is, without the setup hook", () => {
+		const custom = async () => sandbox.path("custom");
+		const options = { restore: custom } as unknown as Parameters<typeof hostRestorePort>[0];
+		assert.equal(hostRestorePort(options, git, shared, journal, sandbox.path("host-agent")), custom);
+	});
+
+	test("the default port checks the setup hook of the host's own agent directory before restoring", async () => {
+		writeSettings({ resume: { setupCommand: SUCCEEDING_COMMAND } });
+		const hostAgentDir = sandbox.path("host-agent");
+		mkdirSync(hostAgentDir, { recursive: true });
+		writeFileSync(join(hostAgentDir, "settings.json"), "{}");
+		const port = hostRestorePort({} as Parameters<typeof hostRestorePort>[0], git, shared, journal, hostAgentDir)!;
+		const snapshot = { envHash: "e".repeat(64) } as unknown as WorktreeSnapshot;
+
+		await assert.rejects(
+			port(binding as unknown as Parameters<typeof port>[0], { signal: new AbortController().signal, snapshot }),
+			(error: unknown) =>
+				isResumePreconditionError(error) &&
+				error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
+		);
+	});
 });
