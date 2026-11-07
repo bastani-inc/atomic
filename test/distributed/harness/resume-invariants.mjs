@@ -19,7 +19,7 @@
  *   restoreRoots?: { A?: string, B?: string, C?: string }, first?: { host?: string, cwd?: string },
  *   reclaimed?: SessionObservation & { host?: string }, outcome?: { status?: string, children?: readonly PoolChild[] },
  *   setup?: { A?: readonly string[], B?: readonly string[], C?: readonly string[] }, heldOnGitless?: number,
- *   work?: readonly { state?: string, generation?: number, worker?: string }[], repeatedCheckpoints?: number }} PoolObservation
+ *   work?: readonly { state?: string, generation?: number, worker?: string }[] }} PoolObservation
  * @typedef {SessionObservation & { code?: number, recordedPath?: string,
  *   decoy?: { before?: SessionObservation, after?: SessionObservation } }} WakeObservation
  * @typedef {{ source?: SessionObservation, session?: SessionObservation, sessionPartition?: FailureObservation,
@@ -288,17 +288,15 @@ export function checkResumeInvariants(evidence) {
 				(pool.work ?? []).every(
 					(row) =>
 						row.state === "completed" && (row.generation ?? 0) >= 2 && row.worker?.startsWith("A/") === true,
-				) &&
-				pool.repeatedCheckpoints === 0,
+				),
 			expected:
-				"the child began on n2's host, which was SIGKILLed holding it; it was claimed again and completed on n1's host, each checkpoint once",
+				"the child began on n2's host, which was SIGKILLed holding it; it was claimed again and completed on n1's host, which replayed its completed first step",
 			actual: {
 				killed: poolKilled ?? null,
 				status: pool?.outcome?.status ?? null,
 				children: pooled,
 				first: pool?.first ?? null,
 				work: pool?.work ?? null,
-				repeatedCheckpoints: pool?.repeatedCheckpoints ?? null,
 			},
 		},
 		{

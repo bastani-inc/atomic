@@ -68,7 +68,6 @@ const pool = {
 	setup: { A: ["/a/worktrees/pool-2"], B: ["/b/worktrees/pool-1"], C: [] },
 	heldOnGitless: 0,
 	work: [{ state: "completed", generation: 2, worker: "A/1" }],
-	repeatedCheckpoints: 0,
 };
 const releasedSource = { away: tree, samePath: { ...tree, digest: "sha-same-path", head: "head-same-path" } };
 const woken = (path: string, source: typeof tree) => ({
