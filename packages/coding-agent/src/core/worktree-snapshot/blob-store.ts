@@ -550,9 +550,20 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 }
 
 /** Creates the blob table and the tables of its reference index that are missing. */
-async function createSnapshotIndexTables(transaction: SqliteExecutor, t: SnapshotIndexTables): Promise<void> {
+async function createSnapshotIndexTables(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	prefix: string,
+): Promise<void> {
+	await transaction.exec(
+		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
+	);
+	if (!(await transaction.get("SELECT name FROM pragma_table_info(?) WHERE name = 'created_at'", t.blobs))) {
+		// ALTER requires a constant default. Give existing blobs a fresh grace window on the database clock.
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`);
+		await transaction.run(`UPDATE ${t.blobs} SET created_at = unixepoch()`);
+	}
 	await transaction.exec(`
-		CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT;
 		CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash);
 		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
@@ -570,6 +581,23 @@ async function createSnapshotIndexTables(transaction: SqliteExecutor, t: Snapsho
 		INSERT OR IGNORE INTO ${t.collection} (id) VALUES (1);
 		CREATE TABLE IF NOT EXISTS ${t.sources} (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID;
 	`);
+	const columns = await transaction.all<{ name: string }>(`PRAGMA table_info(${t.sessionRefs})`);
+	let migrated = false;
+	for (const [name, type] of [
+		["prev_seq", "INTEGER"],
+		["restore_from", "TEXT"],
+		["restore_to", "TEXT"],
+	]) {
+		if (columns.some((column) => column.name === name)) continue;
+		await transaction.exec(`ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${type}`);
+		migrated = true;
+	}
+	if (migrated) {
+		// The old session triggers indexed only the latest snapshot per checkout. Rebuild the tree-aware index.
+		const source = indexSources(prefix, t).find((source) => source.name === "session-entries")!;
+		for (const trigger of source.triggers) await transaction.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+		await transaction.run(`DELETE FROM ${t.sources} WHERE source = ?`, source.name);
+	}
 }
 
 /** Installs `source`'s index triggers and records that rows above its current last row are indexed by them. */
@@ -647,8 +675,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
 			...tables,
 		);
-		if (present.length < tables.length)
-			await database.transaction((transaction) => createSnapshotIndexTables(transaction, t));
+		const current =
+			present.length === tables.length &&
+			(await database.get(
+				`SELECT 1 AS current WHERE EXISTS (SELECT 1 FROM pragma_table_info(?) WHERE name = 'created_at')
+			AND (SELECT count(*) FROM pragma_table_info(?) WHERE name IN ('prev_seq', 'restore_from', 'restore_to')) = 3`,
+				t.blobs,
+				t.sessionRefs,
+			));
+		if (!current) await database.transaction((transaction) => createSnapshotIndexTables(transaction, t, prefix));
 		const store = new SqlSnapshotBlobStore(database, t, indexSources(prefix, t));
 		await store.installIndex();
 		return store;
@@ -661,7 +696,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 */
 	static async initialize(transaction: SqliteExecutor, prefix = ""): Promise<void> {
 		const t = snapshotIndexTables(prefix);
-		await createSnapshotIndexTables(transaction, t);
+		await createSnapshotIndexTables(transaction, t, prefix);
 		for (const { source, installed } of await readSourceStates(transaction, t, indexSources(prefix, t))) {
 			if (!installed) await installSource(transaction, t, source);
 		}
@@ -669,7 +704,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
-		const sql = `INSERT INTO ${this.table} (hash, bytes, data) VALUES (?, ?, ?) ON CONFLICT(hash) DO UPDATE SET created_at = unixepoch()`;
+		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, unixepoch()) ON CONFLICT(hash) DO UPDATE SET created_at = unixepoch()`;
 		const statements = blobs.map((blob) => ({ sql, params: [blob.hash, blob.data.byteLength, blob.data] }));
 		if (this.database.batch) {
 			await this.database.batch(statements);

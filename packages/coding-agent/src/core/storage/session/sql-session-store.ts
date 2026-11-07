@@ -185,6 +185,22 @@ export class SqlSessionStore implements SessionStore {
 			if (!revision) {
 				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision TEXT NOT NULL DEFAULT ''`);
 			}
+			if (await tx.get("SELECT name FROM pragma_table_info(?) WHERE name = 'data'", tables.blobs)) {
+				// Split legacy blobs inside SQLite, so even a large blob never crosses a libSQL response limit.
+				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks INTEGER NOT NULL DEFAULT 0`);
+				await tx.exec(`
+					WITH RECURSIVE indices(idx) AS (
+						SELECT 0
+						UNION ALL SELECT idx + 1 FROM indices
+						WHERE (idx + 1) * ${SESSION_BLOB_CHUNK_BYTES} < (SELECT max(bytes) FROM ${tables.blobs})
+					)
+					INSERT INTO ${tables.blobChunks} (session_id, hash, idx, data)
+					SELECT session_id, hash, idx, substr(data, idx * ${SESSION_BLOB_CHUNK_BYTES} + 1, ${SESSION_BLOB_CHUNK_BYTES})
+					FROM ${tables.blobs} JOIN indices ON idx * ${SESSION_BLOB_CHUNK_BYTES} < bytes;
+					UPDATE ${tables.blobs} SET chunks = (bytes + ${SESSION_BLOB_CHUNK_BYTES} - 1) / ${SESSION_BLOB_CHUNK_BYTES};
+					ALTER TABLE ${tables.blobs} DROP COLUMN data;
+				`);
+			}
 		});
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs);
