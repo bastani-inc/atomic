@@ -2506,6 +2506,7 @@
 		"test/unit/workflow-shared-pool-coordinator-dispatch-snapshot.test.ts": 33280,
 		"test/unit/workflow-shared-pool-coordinator-lifecycle.test.ts": 53546,
 		"test/unit/workflow-shared-pool-coordinator-restore-lease.test.ts": 90104,
+		"test/unit/workflow-shared-pool-coordinator-restore-setup.test.ts": 42426,
 		"test/unit/workflow-shared-pool-coordinator-root-lease.test.ts": 58818,
 		"test/unit/workflow-shared-pool-coordinator-sharing.test.ts": 74396,
 		"test/unit/workflow-shared-pool-coordinator.test.ts": 57688,
