@@ -290,7 +290,7 @@ export class TaskInspector implements Component {
 			this.requestRender();
 			return true;
 		}
-		if (data === "x" && !this.configuredTaskKey(data)) {
+		if (data === "x" && this.navigation.focus.kind === "detail" && !this.configuredTaskKey(data)) {
 			void this.navigation.activate("cancel");
 			return true;
 		}
@@ -414,7 +414,8 @@ export class TaskInspector implements Component {
 						detail ? "PgUp/PgDn scroll · ↑↓ actions" : "↑↓ select",
 						inspect,
 						current && current.execution.kind !== "settled"
-							? keyHintIfBound("app.tasks.cancel", "stop") || (!this.configuredTaskKey("x") ? "x stop" : "")
+							? keyHintIfBound("app.tasks.cancel", "stop") ||
+								(detail && !this.configuredTaskKey("x") ? "x stop" : "")
 							: "",
 						"Esc back",
 					]

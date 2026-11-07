@@ -211,10 +211,10 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 | Transcript display | Ctrl+T toggles thinking blocks and Ctrl+O toggles tool output, the same settings the chat uses. |
 | Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. Up/Down, Home/End and Left/Right edit the prompt. |
 | Go back | Escape returns from transcript to detail, then from detail to the list. Left does the same when the prompt is empty. |
-| Stop | On the task list or detail page, `x` requests cancellation; confirm with `y`, or keep running with `n` or Escape. |
+| Stop | On a task's detail page, `x` requests cancellation; confirm with `y`, or keep running with `n` or Escape. A bound `app.tasks.cancel` key also works from the list. |
 | Shell input | Select Input when offered; Enter sends the text plus a newline; Escape leaves input mode. |
 
-Configured task bindings take precedence over the default Left, page, and `x` shortcuts on the list and detail pages. A transcript's prompt and input mode receive ordinary typing, including `x`, without stopping the task. The footer shows the applicable controls.
+Configured task bindings take precedence over the default Left, page, and `x` shortcuts. A transcript's prompt and input mode receive ordinary typing, including `x`, without stopping the task. The footer shows the applicable controls.
 
 Scrolling settings apply to transcripts as they do to the chat: `fullscreenWheelScrollLines` sets the wheel step and `fullscreenScrollbar` shows the scrollbar. When you scroll away from the latest message, the last row offers **↓ Jump to latest message**; click it or press Ctrl+End to follow the output again.
 

@@ -332,7 +332,7 @@ Type in a transcript's prompt and press Enter to message the child through its I
 
 Live transcripts refresh streaming text, tool results, and compaction status without reopening. Earlier pages remain anchored, and leaving the view does not affect execution.
 
-Detail views pin task identity, state, available metrics, and the selected action while PageUp/PageDown scrolls the body. Recent activity shows up to five retained tool actions; errors and input requests appear explicitly. Left returns to the previous view. On the list and detail pages, `x` requests cancellation without bypassing confirmation or configured task bindings; in a transcript, `x` is ordinary typing. Shell inspection shows a bounded output tail with omission markers.
+Detail views pin task identity, state, available metrics, and the selected action while PageUp/PageDown scrolls the body. Recent activity shows up to five retained tool actions; errors and input requests appear explicitly. Left returns to the previous view. On the detail page, `x` requests cancellation without bypassing confirmation or configured task bindings; on the list it does nothing, and in a transcript it is ordinary typing. Shell inspection shows a bounded output tail with omission markers.
 
 After a confirmed `x` stop settles, the owning chat receives a visible **stopped** notification and the parent model receives the stop context, even if the child returns no final message. Repeated stops do not duplicate notifications or replace an already-recorded terminal result. Closing the owner still suppresses late completion delivery.
 

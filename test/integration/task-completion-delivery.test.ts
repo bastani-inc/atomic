@@ -289,6 +289,7 @@ test("confirmed inspector x stop notifies the parent once after cleanup, without
 		assert.ok((await host.observeAgentLaunch(started.value.taskId)).ok);
 		store.drain();
 		inspector.open(started.value.taskId);
+		inspector.handleInput("\r"); // x stops from the task's detail page (#4521)
 		inspector.handleInput("x");
 		assert.match(stripVTControlCharacters(inspector.render(100).join("\n")), /Review the stop path/);
 		assert.equal(signal?.aborted, false, "x alone must not cancel");

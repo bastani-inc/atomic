@@ -120,7 +120,7 @@ test("/tasks in the chat of a stage on a local worker lists that stage's tasks f
 	}
 });
 
-test("a stop of a worker stage's task that does not reach the worker says so in /tasks (#3996)", async () => {
+test("a stop of a worker stage's task that does not reach the worker says so in /tasks, where x stops only from the detail page (#3996, #4521)", async () => {
 	initTheme("dark");
 	const previous = getKeybindings();
 	setKeybindings(new KeybindingsManager());
@@ -142,6 +142,11 @@ test("a stop of a worker stage's task that does not reach the worker says so in 
 	try {
 		submitStageChatText(view, "/tasks");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /npm run build/));
+		assert.doesNotMatch(view.render(120).join("\n"), /x stop/, "the task list offers no x");
+		view.handleInput("x");
+		assert.doesNotMatch(view.render(120).join("\n"), /y: confirm/, "x on the task list stops nothing");
+		view.handleInput("\r");
+		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /x stop/));
 		view.handleInput("x");
 		await vi.waitFor(() => assert.match(view.render(120).join("\n"), /y: confirm/));
 		view.handleInput("y");
