@@ -241,6 +241,46 @@ test("a transcript read again on each change holds still while the reader is abo
 	}
 });
 
+test("a re-read that answers after the reader moved above the end leaves their rows until they return (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	for (let i = 0; i < 250; i++)
+		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
+	let slow: PromiseWithResolvers<void> | undefined;
+	let taskChanged = () => {};
+	const host = await openTranscript(session, {
+		source: (owner) =>
+			Object.assign(Object.create(owner) as TaskViewSource, {
+				readTaskTranscript: async (id: TaskId, cursor?: string) => {
+					const read = owner.readTaskTranscript(id, cursor);
+					await slow?.promise;
+					return read;
+				},
+				subscribe: (listener: () => void) => {
+					taskChanged = listener;
+					return owner.subscribe(listener);
+				},
+			}),
+	});
+	try {
+		assert.match(host.text(), /M-249/);
+		await session.appendMessage({ role: "user", content: "M-250", timestamp: 250 });
+		slow = Promise.withResolvers<void>();
+		taskChanged();
+		host.inspector.handleInput(PAGE_UP);
+		const above = firstMessage(host.frame());
+		slow.resolve();
+		await flush();
+		assert.equal(firstMessage(host.frame()), above, "the answer does not move the rows under the reader");
+		assert.doesNotMatch(host.text(), /M-250/);
+		slow = undefined;
+		host.inspector.handleInput(CTRL_END);
+		await flush();
+		assert.match(host.text(), /M-250/, "returning to the end reads the latest page");
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("Home, End, Up, Down and x are composer keys in a task transcript, and x stops only from the detail page (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	for (let i = 0; i < 40; i++)

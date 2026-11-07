@@ -202,6 +202,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			return;
 		}
 		const follow = this.source.followTaskTranscript(this.taskId);
+		// A reader who moved above the end while this read was on its way keeps their rows until they return.
+		if (follow?.historyOnly === true && this.chat.bodyScrollFromBottom() > 0) {
+			this.behind = true;
+			return;
+		}
 		const session = follow?.session?.subscribe === undefined ? undefined : follow.session;
 		this.chat.replaceMessages(page.value.messages);
 		this.chat.hydrateCompactionStatus(page.value.compactionReason);
