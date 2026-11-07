@@ -70,6 +70,10 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 		],
 		chaos: ["SIGKILL of a worker host", "database partition of one host"],
 		prerequisites: [{ module: WORKFLOWS, name: "startWorkflowWorkerHost", dependency: "#4310" }],
+		implementedBy: {
+			file: "test/integration/multinode-resume-pool.test.ts",
+			test: "scenario 3: a pooled campaign over three nodes loses one node: its child is reclaimed and restored elsewhere, and bound work never runs on a host that cannot restore",
+		},
 	},
 	{
 		id: 4,
@@ -93,6 +97,10 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 		prerequisites: [
 			{ module: ATOMIC, name: "AgentSessionRuntime", prototypeMember: "rehydrate", dependency: "#4326 / #4309" },
 		],
+		implementedBy: {
+			file: "test/integration/multinode-resume-released.test.ts",
+			test: "scenario 5: a released session wakes on a different node from the one that released it: its worktree is restored before it continues, and a partition during the wake ends in a retryable typed error before a retry succeeds",
+		},
 	},
 	{
 		id: 6,

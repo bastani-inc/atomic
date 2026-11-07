@@ -299,9 +299,7 @@ async function createSessionManagerWithStore(
 				throw new Error("unreachable");
 
 			case "not_found":
-				console.error(
-					chalk.red(`Error: ${resumeNotFoundError(resolved.arg, store.descriptor).message}`),
-				);
+				console.error(chalk.red(`Error: ${resumeNotFoundError(resolved.arg, store.descriptor).message}`));
 				process.exit(1);
 		}
 	}
@@ -337,9 +335,7 @@ async function createSessionManagerWithStore(
 				throw new Error("unreachable");
 
 			case "not_found":
-				console.error(
-					chalk.red(`Error: ${resumeNotFoundError(resolved.arg, store.descriptor).message}`),
-				);
+				console.error(chalk.red(`Error: ${resumeNotFoundError(resolved.arg, store.descriptor).message}`));
 				process.exit(1);
 		}
 	}

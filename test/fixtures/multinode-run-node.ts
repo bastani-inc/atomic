@@ -1,7 +1,8 @@
 /**
  * One "node" of the reduced multi-node workflow scenarios (#4329), run as its own process with its own agent
  * directory, HOME and Atomic home, sharing only the run journal selected by MULTINODE_JOURNAL_URL through this
- * checkout's libSQL adapter (MULTINODE_LIBSQL). Every command prints JSON lines; a failure prints `{ error }`.
+ * checkout's libSQL adapter (MULTINODE_LIBSQL), in the namespace MULTINODE_JOURNAL_NAMESPACE and with the token in MULTINODE_JOURNAL_TOKEN_FILE when set.
+ * Every command prints JSON lines; a failure prints `{ error }`.
  *
  *   two-repos <json>  runs a workflow whose two children are bound to two repositories with `workspace()`. Each child
  *                     records a `ctx.tool` effect in its worktree, then, when HOLD_DIR is set, writes
@@ -41,9 +42,16 @@ function emit(value: object): void {
 }
 
 function journal(): RunJournalOption {
+	const tokenFile = process.env.MULTINODE_JOURNAL_TOKEN_FILE;
 	return {
 		adapter: process.env.MULTINODE_LIBSQL ?? "",
-		options: { url: process.env.MULTINODE_JOURNAL_URL ?? "" },
+		options: {
+			url: process.env.MULTINODE_JOURNAL_URL ?? "",
+			...(process.env.MULTINODE_JOURNAL_NAMESPACE === undefined
+				? {}
+				: { namespace: process.env.MULTINODE_JOURNAL_NAMESPACE }),
+		},
+		...(tokenFile === undefined ? {} : { secrets: { authToken: { file: tokenFile } } }),
 	};
 }
 

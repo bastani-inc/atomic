@@ -7,7 +7,8 @@
  *   sdk-open <json> opens the session through SDK `createAgentSession({ sessionManager })` and prints where it starts
  *
  * With PROVISION_ARCHIVE set, a node without Git provisions it from that archive (PROVISION_SHA256, PROVISION_VERSION)
- * as Atomic provisions its portable Git, through a fetch that serves the archive, or answers 503 when PROVISION_FAIL=1.
+ * as Atomic provisions its portable Git, through a fetch that serves the archive for the release host, or answers 503
+ * when PROVISION_FAIL=1; every other request, such as one to the shared database, goes out as usual.
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -155,10 +156,14 @@ async function withProvisioning(action: () => Promise<void>): Promise<void> {
 	if (archive === undefined) return action();
 	const bytes = new Uint8Array(readFileSync(archive));
 	const fail = process.env.PROVISION_FAIL === "1";
-	globalThis.fetch = Object.assign(
-		async () => (fail ? new Response("unavailable", { status: 503 }) : new Response(bytes)),
-		globalThis.fetch,
-	);
+	const realFetch = globalThis.fetch;
+	const releaseHost = (input: Parameters<typeof fetch>[0]) =>
+		new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).hostname ===
+		"github.com";
+	globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+		if (!releaseHost(input)) return realFetch(input, init);
+		return fail ? new Response("unavailable", { status: 503 }) : new Response(bytes);
+	}, realFetch);
 	const asset = { name: "portable-git.tar.gz", sha256: process.env.PROVISION_SHA256 ?? "" };
 	const release: GitRelease = {
 		repo: "example/portable-git",
