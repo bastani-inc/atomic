@@ -111,6 +111,7 @@ import {
 } from "../../packages/workflows/src/runs/foreground/stage-runner-controller.js";
 import { createStore as createWorkflowStore } from "../../packages/workflows/src/shared/store.js";
 import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 
 const ORIGINAL_TASK = "original task";
@@ -179,6 +180,7 @@ interface Harness {
 	releasedPendingMessages?: string[];
 	disposeGate?: PromiseWithResolvers<void>;
 	readonly notices: Array<Record<string, string | number>>;
+	readonly firstNotice: Promise<void>;
 	redispatchCalls: DetachedToolCall[];
 	redispatchGate?: PromiseWithResolvers<void>;
 	readonly redispatching: { active: number; most: number };
@@ -228,6 +230,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 	const holds: Harness["holds"] = [];
 	const releasedChildRequests: Harness["releasedChildRequests"] = [];
 	const notices: Harness["notices"] = [];
+	const firstNotice = Promise.withResolvers<void>();
 	const events = {
 		on: () => () => {},
 		emit(channel: string, data: object) {
@@ -267,7 +270,10 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 			}
 			if (channel === SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT)
 				releasedChildRequests.push({ acknowledge: (data as { childName: string }).childName });
-			if (channel === SUBAGENT_COMPLETE_EVENT) notices.push(data as Record<string, string | number>);
+			if (channel === SUBAGENT_COMPLETE_EVENT) {
+				notices.push(data as Record<string, string | number>);
+				firstNotice.resolve();
+			}
 			if (channel === SUBAGENT_RELEASE_RESTORING_CHILD_EVENT) {
 				const request = data as SubagentReleaseRestoringChildRequest;
 				holds.push({ release: request.capability, ...(request.gone === undefined ? {} : { gone: request.gone }) });
@@ -342,6 +348,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		releaseOriginal: false,
 		releasedCalls: [],
 		notices,
+		firstNotice: firstNotice.promise,
 		redispatchCalls: [],
 		redispatching: { active: 0, most: 0 },
 		agentDefined: true,
@@ -3348,13 +3355,18 @@ function settledCall(result: ReturnType<typeof waitResult>): DetachedToolCall {
 	return { toolCallId: result.toolCallId, toolName: result.toolName, result: Promise.resolve(result), abort() {} };
 }
 
-const DRAIN_TURNS = 1_000;
-
-async function drained(dispatcher: AgentWakeDispatcher): Promise<number> {
-	for (let turn = 0; turn < DRAIN_TURNS && dispatcher.stats().keys > 0; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
-	return dispatcher.stats().keys;
-}
+test("waiting for a dispatcher to drain outlasts 1,000 event-loop turns (#4535)", async () => {
+	const dispatcher = new AgentWakeDispatcher();
+	const finish = Promise.withResolvers<void>();
+	dispatcher.handle("slow", () => finish.promise);
+	const delivery = dispatcher.deliver("slow:child", { id: "wake", kind: "intercom" });
+	const draining = drained(dispatcher);
+	// Keep a real wake pending beyond the old polling budget, without relying on CPU speed.
+	for (let turn = 0; turn < 1_001; turn++) await new Promise((resolve) => setImmediate(resolve));
+	finish.resolve();
+	await delivery;
+	assert.equal(await draining, 0, "wait for completion, not a fixed number of turns");
+});
 
 test("a result already settled when its child is released wakes it once, after the released record, with nothing left held (#4326)", async () => {
 	const h = harness();
@@ -3581,18 +3593,22 @@ test("a wake waits until the child's previous run has closed its session before 
 		kind: "tool-result",
 		toolResult: waitResult("CI green"),
 	});
-	for (let turn = 0; turn < DRAIN_TURNS && h.runs.length === runsBeforeWake; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
-	h.disposeGate.resolve();
-	await wake;
-
+	try {
+		await h.waitForLatest("closing1:0", (record) =>
+			(record.heldToolResults ?? []).some((held) => held.toolCallId === "ci-1"),
+		);
+	} finally {
+		h.disposeGate.resolve();
+	}
+	await waitForWakeCompletion(wake, "the wake after the previous session closes");
 	assert.equal(runsWhenClosed, runsBeforeWake, "no wake ran before the previous run's session closed");
 	assert.equal(h.runs.length, runsBeforeWake + 1);
 });
 
 async function untilNotices(h: Harness, count: number): Promise<number> {
-	for (let turn = 0; turn < DRAIN_TURNS && h.notices.length < count; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
+	const NOTICE_DELIVERY_SETTLE_MS = 250;
+	const deadline = Date.now() + NOTICE_DELIVERY_SETTLE_MS;
+	while (h.notices.length < count && Date.now() < deadline) await sleep(10);
 	return h.notices.length;
 }
 
@@ -3615,7 +3631,8 @@ test("a wake that cannot restore its child keeps what it carried in the child's 
 	assert.deepEqual([failed.wakeFailure?.code, failed.wakeFailure?.taskId], ["child-unrestorable", failed.taskId]);
 	assert.match(failed.wakeFailure?.reason ?? "", /worker/);
 	assert.match(failed.wakeFailure?.hint ?? "", /"resume"/);
-	assert.equal(await untilNotices(h, 1), 1);
+	await waitForWakeCompletion(h.firstNotice, "the owner's wake-failure notice");
+	assert.equal(h.notices.length, 1);
 	assert.deepEqual(
 		[h.notices[0]?.noticeLabel, h.notices[0]?.status, h.notices[0]?.agent],
 		[RELEASED_CHILD_WAKE_FAILURE_LABEL, "error", "worker"],
@@ -3627,6 +3644,7 @@ test("a wake that cannot restore its child keeps what it carried in the child's 
 		.catch((error) => dispatcher.reportUnobservedFailure(error));
 	assert.equal(await drained(dispatcher), 0);
 	await subagentChildRecordsAppended(h.sessionManager.getSessionId());
+	// Failure reporting emits notices after dispatcher/record completion. Give a duplicate time to arrive.
 	assert.equal(await untilNotices(h, 2), 1, "the owner is told once, however often the wake fails");
 	const status = await h.call({ action: "status", id: "wakefail1:0" });
 	assert.match(

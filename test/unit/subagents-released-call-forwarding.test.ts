@@ -16,6 +16,7 @@ import {
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import type { SubagentChildWaitingCall } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import { collectEverythingTracked, trackCollection } from "../helpers/collect-garbage.js";
+import { drained } from "../helpers/wake-completion.js";
 
 const ASK: SubagentChildWaitingCall = {
 	toolCallId: "ask-1",
@@ -60,9 +61,8 @@ test("a released child's forwarding keeps the call's result and reply question, 
 	assert.deepEqual(tracked.uncollected(), [], "nothing but the result's own promise is held for the call");
 
 	finish(answer);
-	for (let turn = 0; turn < 20 && delivered.length === 0; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
-	await dispatcher.whenIdle();
+	await result;
+	assert.equal(await drained(dispatcher), 0);
 	assert.deepEqual(delivered, [{ id: "tool-result:ask-1", kind: "tool-result", toolResult: answer }]);
 	assert.equal(dispatcher.stats().scheduled, 0, "the answer cancels the reply's deadline");
 });
@@ -85,9 +85,8 @@ test("the result of a call that asked nothing leaves the reply deadline of the c
 	};
 
 	forwardDetachedResults(dispatcher, wakeKey, [call], waitingOn);
-	for (let turn = 0; turn < 20 && delivered.length === 0; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
-	await dispatcher.whenIdle();
+	await call.result;
+	assert.equal(await drained(dispatcher), 0);
 
 	assert.deepEqual(delivered, [{ id: "tool-result:ci-2", kind: "tool-result", toolResult: ci }]);
 	assert.equal(dispatcher.stats().scheduled, 1, "the ask's deadline still waits");

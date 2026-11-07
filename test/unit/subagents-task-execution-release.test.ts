@@ -32,6 +32,7 @@ import {
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 } from "../../packages/subagents/src/shared/types.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { drained } from "../helpers/wake-completion.js";
 
 const agent: AgentConfig = {
 	name: "worker",
@@ -149,10 +150,6 @@ async function launch(options: {
 	};
 }
 
-async function settleWakes(): Promise<void> {
-	for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
-}
-
 function fakeSession(extra: Partial<TaskTranscriptSource> = {}): TaskTranscriptSource {
 	return { getSessionId: () => "child-session-1", getEntries: () => [], ...extra };
 }
@@ -263,7 +260,7 @@ test("a released child's detached results wake it under its owner's key, and a c
 		runId: "rel-wake",
 		released: { waitingOn: [WAIT], calls: [detached(toolResult("ci-1"))] },
 	});
-	await settleWakes();
+	assert.equal(await drained(owned.dispatcher), 0);
 	assert.deepEqual(
 		owned.wakes.map((entry) => [entry.key, entry.wake.id, entry.wake.toolResult?.toolCallId]),
 		[[subagentWakeKey(OWNER, "rel-wake:0"), "tool-result:ci-1", "ci-1"]],
@@ -274,7 +271,7 @@ test("a released child's detached results wake it under its owner's key, and a c
 		sink: "none",
 		released: { waitingOn: [WAIT], calls: [detached(toolResult("ci-2"))] },
 	});
-	await settleWakes();
+	assert.equal(await drained(ownerless.dispatcher), 0);
 	assert.deepEqual(ownerless.wakes, []);
 	assert.equal(ownerless.dispatcher.stats().unobservedFailures, 0);
 });
@@ -286,7 +283,7 @@ test("a released child's wake is not sent when its sink does not know the child'
 		sink: { ownerSessionId: OWNER, record: (input) => void records.push(input) },
 		released: { waitingOn: [WAIT], calls: [] },
 	});
-	await settleWakes();
+	assert.equal(await drained(launched.dispatcher), 0);
 	assert.equal(launched.records.length, 0);
 	assert.equal(records.filter((record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS).length, 1);
 	assert.equal(records.filter((record) => record.terminalStatus === "error").length, 0);

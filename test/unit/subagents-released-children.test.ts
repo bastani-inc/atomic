@@ -43,6 +43,7 @@ import {
 	type SubagentChildRecord,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import type { SubagentChildRestoreDeps } from "../../packages/subagents/src/runs/foreground/subagent-child-restore.js";
+import { drained, waitForWakeCompletion } from "../helpers/wake-completion.js";
 
 function result(toolCallId: string, text = `${toolCallId} done`, isError = false): DetachedToolResult {
 	return {
@@ -278,14 +279,23 @@ test("each detached call's result is delivered once as a tool-result wake; a fai
 	dispatcher.handle(subagentWakeNamespace("owner"), async (key, wakes) => {
 		delivered.push([key, ...wakes.map((wake) => `${wake.kind}:${wake.id}:${wake.toolResult?.toolCallId}`)]);
 	});
-	forwardDetachedResults(dispatcher, subagentWakeKey("owner", "run:0"), [detachedCall(result("ci-1"))]);
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	const call = detachedCall(result("ci-1"));
+	forwardDetachedResults(dispatcher, subagentWakeKey("owner", "run:0"), [call]);
+	await call.result;
+	assert.equal(await drained(dispatcher), 0);
 	assert.deepEqual(delivered, [["subagents/owner:run:0", "tool-result:tool-result:ci-1:ci-1"]]);
 
 	const failures: AgentRehydrateError[] = [];
-	const orphaned = new AgentWakeDispatcher({ onUnobservedFailure: (error) => failures.push(error) });
+	const failed = Promise.withResolvers<void>();
+	const orphaned = new AgentWakeDispatcher({
+		onUnobservedFailure: (error) => {
+			failures.push(error);
+			failed.resolve();
+		},
+	});
 	forwardDetachedResults(orphaned, "subagents/gone:run:0", [detachedCall(result("ci-9"))]);
-	for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+	await waitForWakeCompletion(failed.promise, "the orphaned delivery's failure report");
+	assert.equal(await drained(orphaned), 0);
 	assert.equal(failures.length, 1);
 	assert.equal(failures[0]?.code, "no-wake-handler");
 	assert.equal(orphaned.stats().unobservedFailures, 1);
@@ -484,7 +494,7 @@ test("a broker notice for a released child becomes an intercom wake on its key (
 	assert.equal(dispatcher.stats().keys, 0);
 	listener({ childName: "child-1" });
 	assert.equal(dispatcher.stats().keys, 1, "the notice is queued on the child's key");
-	for (let turn = 0; turn < 10; turn++) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(await drained(dispatcher), 0);
 	assert.equal(dispatcher.stats().keys, 0, "a paused child ignores the message wake");
 	stop();
 	assert.equal(events.listeners.has(SUBAGENT_RELEASED_CHILD_WAKE_EVENT), false);
@@ -526,8 +536,7 @@ test("a broker notice whose wake fails is counted as an unobserved failure, not 
 	} as unknown as SubagentChildRestoreDeps;
 	const stop = bindReleasedChildWakes(deps, ctx, events, dispatcher);
 	events.listeners.get(SUBAGENT_RELEASED_CHILD_WAKE_EVENT)?.({ childName: "child-1" });
-	for (let turn = 0; turn < 10 && dispatcher.stats().unobservedFailures === 0; turn++)
-		await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(await drained(dispatcher), 0);
 	assert.equal(dispatcher.stats().unobservedFailures, 1);
 	assert.equal(dispatcher.lastFailure?.code, "wake-failed");
 	stop();
