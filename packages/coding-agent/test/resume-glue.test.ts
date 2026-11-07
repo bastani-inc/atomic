@@ -281,6 +281,17 @@ describe("resume catalog lookups that cannot reach storage (#4329)", () => {
 		assert.equal(error.retryable, true);
 	});
 
+	test("a network code is looked for eight causes deep below the storage failure and no deeper", () => {
+		const failureWithCodeAt = (depth: number) => {
+			let cause: Error = Object.assign(new Error("connect EHOSTUNREACH"), { code: "EHOSTUNREACH" });
+			for (let level = 1; level < depth; level++) cause = new Error(`wrapped ${level}`, { cause });
+			return new StorageUnavailableError({ adapter: "libsql", location: "remote" }, cause);
+		};
+		assert.ok(resumeLookupError(failureWithCodeAt(8), "run", "r") instanceof ResumeCatalogUnavailableError);
+		const tooDeep = failureWithCodeAt(9);
+		assert.equal(resumeLookupError(tooDeep, "run", "r"), tooDeep);
+	});
+
 	test("a picker lookup has no id, and other failures pass through unchanged", () => {
 		const cause = new StorageTransientError(
 			{ adapter: "node-sqlite", location: "/x" },

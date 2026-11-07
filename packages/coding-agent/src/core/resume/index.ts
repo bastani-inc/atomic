@@ -54,6 +54,7 @@ export {
 export {
 	type RunResumeSetupOptions,
 	type RunWorktreeTarget,
+	restoreRunWorktree,
 	runRestorePreconditionError,
 	setUpRestoredRunWorktrees,
 } from "./run-setup.ts";

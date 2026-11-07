@@ -16,14 +16,15 @@ export interface RunWorktreeTarget {
 export interface RunResumeSetupOptions {
 	readonly signal?: AbortSignal;
 	readonly io?: ResumePreflightIo;
+	/** The agent directory whose worktree store, setup ledger and global settings apply; defaults to Atomic's. */
+	readonly agentDir?: string;
 }
 
 /**
- * The worktree store and setup hook configuration of Atomic's agent directory. `resume.setupCommand` and the default
+ * The worktree store and setup hook configuration of an agent directory. `resume.setupCommand` and the default
  * project trust are global settings, so no project's settings are read.
  */
-function runSetupConfig(): { readonly storeDir: string; readonly setup: ResumeSetupConfig } {
-	const agentDir = getAgentDir();
+function runSetupConfig(agentDir = getAgentDir()): { readonly storeDir: string; readonly setup: ResumeSetupConfig } {
 	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
 	return {
 		storeDir: resumeStoreDir(agentDir),
@@ -43,7 +44,7 @@ export async function runRestorePreconditionError(
 ): Promise<ResumePreconditionError | undefined> {
 	if (missing.length === 0) return undefined;
 	const io = options.io ?? defaultResumePreflightIo;
-	const { storeDir, setup } = runSetupConfig();
+	const { storeDir, setup } = runSetupConfig(options.agentDir);
 	const problems: ResumePreconditionProblem[] = [];
 	const git = await io.probeGit(options.signal);
 	if (git) {
@@ -75,7 +76,7 @@ export async function setUpRestoredRunWorktrees(
 	restored: readonly RunWorktreeTarget[],
 	options: RunResumeSetupOptions = {},
 ): Promise<void> {
-	const { storeDir, setup } = runSetupConfig();
+	const { storeDir, setup } = runSetupConfig(options.agentDir);
 	try {
 		for (const target of restored) {
 			await ensureResumeSetup({
@@ -90,7 +91,7 @@ export async function setUpRestoredRunWorktrees(
 	} catch (error) {
 		const failures: unknown[] = [];
 		for (const target of restored) {
-			await removeRestoredWorktree(target.root).catch((cleanup: unknown) => {
+			await removeRestoredWorktree(target.root, { storeDir }).catch((cleanup: unknown) => {
 				failures.push(cleanup);
 			});
 		}
@@ -102,4 +103,23 @@ export async function setUpRestoredRunWorktrees(
 		}
 		throw error;
 	}
+}
+
+/**
+ * Restores a workflow worktree with `restore` and runs the setup hook in it, as a run's own resume does for the
+ * checkouts it restores: a hook that cannot run for a snapshot with dependency inputs (`envHash`) is reported as a
+ * {@link ResumePreconditionError} before `restore` runs, and a hook that fails removes the restored worktree again.
+ * Resolves the restored worktree's path.
+ */
+export async function restoreRunWorktree(
+	envHash: string,
+	restore: () => Promise<string>,
+	options: RunResumeSetupOptions = {},
+): Promise<string> {
+	const { storeDir, setup } = runSetupConfig(options.agentDir);
+	const problem = await predictedSetupProblem(envHash, join(storeDir, "worktrees"), setup);
+	if (problem) throw new ResumePreconditionError({ entryPoint: "workflow-resume", problems: [problem] });
+	const root = await restore();
+	await setUpRestoredRunWorktrees([{ root, envHash }], options);
+	return root;
 }

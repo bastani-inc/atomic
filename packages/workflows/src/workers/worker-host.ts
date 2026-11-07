@@ -1,7 +1,14 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { type GitProvisionError, getAgentDir, isGitProvisionError, resolveGit, resolveGitSync } from "@bastani/atomic";
+import {
+	type GitProvisionError,
+	getAgentDir,
+	isGitProvisionError,
+	resolveGit,
+	resolveGitSync,
+	restoreRunWorktree,
+} from "@bastani/atomic";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
@@ -495,8 +502,8 @@ function withCleanupFailures(primary: unknown, cleanup: readonly unknown[]): unk
 /**
  * The restore port a worker host runs (#4416): the function it was given, or else #4245's worktree snapshot restore
  * from the snapshots recorded in `shared`'s journal, with the host's own `git`, into worktrees under this host's agent
- * directory. None for a host started with `restore: false` or without git: it takes bound work only when its tree is
- * warm.
+ * directory, followed by the resume setup hook of this host's agent directory in the restored worktree (#4329). None
+ * for a host started with `restore: false` or without git: it takes bound work only when its tree is warm.
  */
 function hostRestorePort(
 	options: WorkflowWorkerHostOptions,
@@ -506,15 +513,18 @@ function hostRestorePort(
 	agentDir: string,
 ): WorkspaceRestore | undefined {
 	if (options.restore === false || git === undefined) return undefined;
-	return (
-		options.restore ??
-		snapshotRestore({
-			recorded: (binding) => shared.recordedSnapshots(binding),
-			blobs: journal.snapshotBlobs,
-			storeDir: join(agentDir, "worktree-snapshots"),
-			git,
-		})
-	);
+	if (options.restore !== undefined) return options.restore;
+	const restore = snapshotRestore({
+		recorded: (binding) => shared.recordedSnapshots(binding),
+		blobs: journal.snapshotBlobs,
+		storeDir: join(agentDir, "worktree-snapshots"),
+		git,
+	});
+	return (binding, hook) =>
+		restoreRunWorktree(hook.snapshot?.envHash ?? binding.envHash, () => restore(binding, hook), {
+			signal: hook.signal,
+			agentDir,
+		});
 }
 
 /**

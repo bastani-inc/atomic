@@ -7,6 +7,7 @@ import {
 	isResumePreconditionError,
 	isResumeSetupHookError,
 	ProjectTrustStore,
+	restoreRunWorktree,
 	runRestorePreconditionError,
 	setUpRestoredRunWorktrees,
 	setWorktreeSnapshotGit,
@@ -672,4 +673,51 @@ test("a project's own resume.setupCommand never runs: only the global setting co
 		}),
 		undefined,
 	);
+});
+
+test("a worker host's restore that needs a setup hook none can run is refused before anything is restored (#4329)", async () => {
+	const hostAgentDir = sandbox.path("host-agent");
+	mkdirSync(hostAgentDir, { recursive: true });
+	writeFileSync(join(hostAgentDir, "settings.json"), "{}");
+	let restores = 0;
+
+	await assert.rejects(
+		restoreRunWorktree(
+			"e".repeat(64),
+			async () => {
+				restores++;
+				return sandbox.path("never");
+			},
+			{ agentDir: hostAgentDir },
+		),
+		(error: unknown) =>
+			isResumePreconditionError(error) &&
+			error.entryPoint === "workflow-resume" &&
+			error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
+	);
+	assert.equal(restores, 0);
+});
+
+test("a worker host runs the setup hook of its own agent directory once in the worktree it restored (#4329)", async () => {
+	const hostAgentDir = sandbox.path("host-agent");
+	const marker = sandbox.path("host-hook-runs");
+	mkdirSync(hostAgentDir, { recursive: true });
+	writeFileSync(
+		join(hostAgentDir, "settings.json"),
+		JSON.stringify({ resume: { setupCommand: appendLineCommand(marker, "ran") } }),
+	);
+	writeSettings({});
+	const worktree = join(hostAgentDir, "worktree-snapshots", "worktrees", "restored");
+	const restore = async () => {
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, "package-lock.json"), "{}\n");
+		return worktree;
+	};
+
+	const restored = await restoreRunWorktree("e".repeat(64), restore, { agentDir: hostAgentDir });
+	await restoreRunWorktree("e".repeat(64), async () => worktree, { agentDir: hostAgentDir });
+
+	assert.equal(restored, worktree);
+	assert.equal(readFileSync(marker, "utf8"), "ran\n");
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
 });
