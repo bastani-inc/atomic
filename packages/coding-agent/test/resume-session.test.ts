@@ -1270,7 +1270,7 @@ describe("setup plan before restoring (#4329)", () => {
 		assert.ok(cwdOf(prepared)?.startsWith(sandbox.path("host")));
 	});
 
-	test("a trusted restore whose repository turns out to have no hook is rolled back", async () => {
+	test("a trusted restore whose repository turns out to have no hook is rolled back before it is recorded", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("gone"));
@@ -1289,8 +1289,7 @@ describe("setup plan before restoring (#4329)", () => {
 				error instanceof ResumePreconditionError && error.problems[0]?.code === "setup-hook-missing",
 		);
 		assert.equal(trustedPaths[0], sandbox.path("host", "worktrees"));
-		const restored = manager.getWorktreeRootMappings().at(-1)!.to;
-		assert.equal(existsSync(restored), false);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
 	});
 
@@ -1302,13 +1301,16 @@ describe("setup plan before restoring (#4329)", () => {
 			prepareSessionResume(manager, options({ setup: noSetup(() => true) })),
 			ResumePreconditionError,
 		);
-		const removed = manager.getWorktreeRootMappings().at(-1)!.to;
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 
 		const prepared = await prepareSessionResume(manager, options());
 
 		const cwd = cwdOf(prepared)!;
 		assert.ok(cwd.startsWith(sandbox.path("host", "worktrees")), cwd);
-		assert.notEqual(cwd, removed);
+		assert.deepEqual(
+			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
+			[clone],
+		);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited\n");
 		assert.equal(setupRuns(), 1);
 		assert.equal(resolveToCwd(join(clone, "README.md"), cwd), join(cwd, "README.md"));
@@ -1500,7 +1502,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 			prepareSessionResume(manager, options({ setup: { command: undefined, trusted: () => true } })),
 			ResumePreconditionError,
 		);
-		assert.equal(manager.getWorktreeRootMappings().length, 2);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
 	});
 

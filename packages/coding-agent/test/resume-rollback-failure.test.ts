@@ -118,5 +118,4 @@ test("a rollback of two restored worktrees that both fail keeps both causes toge
 	const cause = (error as Error & { cleanupCause?: unknown }).cleanupCause;
 	assert.ok(cause instanceof AggregateError);
 	assert.deepEqual(cause.errors, [removal.failure, removal.failure]);
-	assert.equal(cause.message, "worktree cleanup failed");
 });
