@@ -217,6 +217,8 @@ type_line "launch-child"
 await "MAIN-LAUNCHED" 60
 await "CHILD-TOOL-060" 1
 sleep 6
+# Expand tool output in the chat first: the transcript opens with the chat's Ctrl+O setting.
+key C-o
 type_line "/tasks"
 await "Background tasks" 30
 key Enter
@@ -249,12 +251,17 @@ raw "$ALT_WHEEL_UP"
 after="$(number_of "$(first_line CHILD-LINE)")"
 check "subtask: alt+wheel scrolls further than the wheel" test $((before - after)) -ge 4
 check "subtask: scrollbar column" has_scrollbar
-key C-o
 for _ in $(seq 1 60); do
 	shows '$ seq -f "CHILD-TOOL' && break
 	key PageDown
 done
 shows "CHILD-TOOL-001" || key PageDown
+save "subtask-inherits-ctrl-o"
+check "subtask: tool output follows the chat's ctrl+o" shows "CHILD-TOOL-001"
+key C-o
+save "subtask-ctrl-o-collapse"
+check "subtask: ctrl+o collapses tool output" hides "CHILD-TOOL-001"
+key C-o
 save "subtask-ctrl-o"
 check "subtask: ctrl+o expands tool output" shows "CHILD-TOOL-001"
 key C-o
@@ -268,6 +275,22 @@ save "subtask-message"
 key Escape
 key Escape
 key Escape
+
+# 4. Keys pressed on the task pages stay there: the chat behind them keeps its place.
+key C-End
+type_line "/tasks"
+await "Background tasks" 30
+key C-Home
+key C-Up
+key Enter
+await "Inspect transcript" 30
+key C-Home
+key C-Up
+key PageUp
+key Escape
+key Escape
+save "main-after-task-pages"
+check "main: task pages leave the chat at its latest output" hides "Jump to latest"
 
 {
 	echo "size ${COLUMNS_}x${ROWS_}"
