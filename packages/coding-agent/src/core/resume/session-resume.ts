@@ -108,6 +108,8 @@ type CheckoutReuse =
 			/** Whether the checkout matched the snapshot, rather than being used as it is by the user's choice. */
 			readonly matches: boolean;
 			readonly notice: ResumeNotice;
+			/** The recorded root mapped onto the checkout, recorded once nothing else stops the resume. */
+			readonly mapping: WorktreeRootMapping;
 	  }
 	| { readonly kind: "cancelled" }
 	| undefined;
@@ -115,11 +117,10 @@ type CheckoutReuse =
 /**
  * Continues in the checkout the resume started in when it is a checkout of the session's repository: as-is when its
  * tree matches the snapshot (or only its HEAD moved forward over it); when it differs and has local changes, only if
- * the user says so. A clean checkout that differs is left alone and a fresh worktree is restored instead. Records the
- * mapping so paths follow.
+ * the user says so. A clean checkout that differs is left alone and a fresh worktree is restored instead. Returns the
+ * mapping that makes paths follow, for the caller to record.
  */
 async function reuseLaunchCheckout(
-	sessionManager: SessionManager,
 	match: SessionSnapshotMatch,
 	options: PrepareSessionResumeOptions,
 ): Promise<CheckoutReuse> {
@@ -157,11 +158,11 @@ async function reuseLaunchCheckout(
 		tree: match.snapshot.tree,
 		restoredAt: new Date().toISOString(),
 	};
-	await sessionManager.appendWorktreeSnapshot(root, match.snapshot.id, undefined, mapping);
 	return {
 		kind: "reused",
 		cwd: resolve(root, relative(match.root, match.cwd)),
 		matches,
+		mapping,
 		notice: matches
 			? {
 					type: "info",
@@ -203,22 +204,26 @@ export async function prepareSessionResume(
 	const notices: ResumeNotice[] = [];
 	const match = latestSessionSnapshot(sessionManager);
 	let git: GitProbe | undefined;
+	let reused: WorktreeRootMapping | undefined;
 	if (match !== undefined && (await worktreeNeedsRestore(match.snapshot, match.root, options))) {
 		git = { unavailable: await io.probeGit(options.signal) };
-		const reuse =
-			git.unavailable === undefined ? await reuseLaunchCheckout(sessionManager, match, options) : undefined;
+		const reuse = git.unavailable === undefined ? await reuseLaunchCheckout(match, options) : undefined;
 		if (reuse?.kind === "cancelled") return { status: "cancelled" };
+		if (reuse?.kind === "reused" && !reuse.matches) {
+			await recordReuse(sessionManager, reuse.mapping);
+			return continueInChosenCheckout(sessionManager, reuse, options);
+		}
 		if (reuse?.kind === "reused") {
-			registerWorktreeRootMappings(sessionManager.getWorktreeRootMappings());
-			if (!reuse.matches) return continueInChosenCheckout(sessionManager, reuse, options);
+			reused = reuse.mapping;
 			notices.push(reuse.notice);
 		}
 	}
-	const restoring = await checkoutsToRestore(sessionManager, options);
+	const restoring = await checkoutsToRestore(withMapping(sessionManager, reused), options);
 	if (restoring.length > 0) {
 		git ??= { unavailable: await io.probeGit(options.signal) };
 		await assertRestorePreconditions(sessionManager, restoring, storeDir, options, git.unavailable);
 	}
+	if (reused !== undefined) await recordReuse(sessionManager, reused);
 	const snapshots = sessionManager.getWorktreeSnapshotRecords();
 	const opened = await openSessionInWorktree(sessionManager, {
 		settings: options.settings,
@@ -267,9 +272,27 @@ interface RestoreTarget {
 	readonly absent: boolean;
 }
 
+/** Records that the session continues in a checkout already here, so paths follow it. */
+async function recordReuse(sessionManager: SessionManager, mapping: WorktreeRootMapping): Promise<void> {
+	await sessionManager.appendWorktreeSnapshot(mapping.to, mapping.snapshotId, undefined, mapping);
+	registerWorktreeRootMappings(sessionManager.getWorktreeRootMappings());
+}
+
+type SessionCheckouts = Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">;
+
+/** The session's checkouts as they are once `mapping`, not yet recorded, is. */
+function withMapping(sessionManager: SessionManager, mapping: WorktreeRootMapping | undefined): SessionCheckouts {
+	if (mapping === undefined) return sessionManager;
+	return {
+		getBranch: () => sessionManager.getBranch(),
+		getWorktreeSnapshotRecords: () => sessionManager.getWorktreeSnapshotRecords(),
+		getWorktreeRootMappings: () => [...sessionManager.getWorktreeRootMappings(), mapping],
+	};
+}
+
 /** The recorded checkouts that are gone or changed here, which #4245's resume restores into fresh worktrees. */
 async function checkoutsToRestore(
-	sessionManager: SessionManager,
+	sessionManager: SessionCheckouts,
 	options: PrepareSessionResumeOptions,
 ): Promise<RestoreTarget[]> {
 	const targets: RestoreTarget[] = [];

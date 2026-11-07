@@ -8,9 +8,9 @@ import {
 	isLocalOnlySessionStorage,
 	isRetryableAgentRehydrateError,
 	rehydrateAgentRehydrateError,
+	SESSION_STORAGE_JOIN,
 	type SerializedAgentRehydrateError,
 	serializeAgentRehydrateError,
-	TEAM_JOIN_COMMAND,
 } from "../src/core/agent-rehydrate-errors.ts";
 import {
 	type AgentWake,
@@ -344,7 +344,7 @@ describe("AgentWakeDispatcher (#4326)", () => {
 });
 
 describe("AgentRehydrateError (#4326)", () => {
-	test("session-not-found on local-only storage names the team join command", () => {
+	test("session-not-found on local-only storage names the command that shares sessions (#4329)", () => {
 		const error = new AgentRehydrateError("session-not-found", {
 			sessionId: "s-1",
 			storage: "node-sqlite",
@@ -352,9 +352,9 @@ describe("AgentRehydrateError (#4326)", () => {
 		});
 		assert.equal(
 			error.message,
-			`Session s-1 is not in this node's node-sqlite storage (session-not-found). This node keeps sessions in local-only storage (node-sqlite) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with \`${TEAM_JOIN_COMMAND}\`, or pass the id of a session saved on this node.`,
+			`Session s-1 is not in this node's node-sqlite storage (session-not-found). This node keeps sessions in local-only storage (node-sqlite) and is not joined to shared storage, so a session saved on another node is not here. Join shared storage with ${SESSION_STORAGE_JOIN}, or pass the id of a session saved on this node.`,
 		);
-		assert.ok(error.hint.includes("atomic team join <url> --token-file <path>"));
+		assert.ok(error.hint.includes("atomic storage join <url> --token-file <path>"));
 		const shared = new AgentRehydrateError("session-not-found", {
 			sessionId: "s-1",
 			storage: "libsql",

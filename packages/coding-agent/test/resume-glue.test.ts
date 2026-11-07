@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { getBinDir } from "../src/config.ts";
+import { STORAGE_JOIN_COMMAND } from "../src/core/agent-rehydrate-errors.ts";
 import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { StorageAdapterLoadError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
@@ -33,7 +34,6 @@ import {
 	resumeNotFoundError,
 	serializeResumeError,
 	storagePreconditionProblems,
-	TEAM_JOIN_COMMAND,
 } from "../src/index.ts";
 import { GitProvisionTimeoutError } from "../src/utils/git-errors.ts";
 
@@ -99,11 +99,11 @@ describe("resume error family (#4329)", () => {
 		});
 		assert.equal(
 			error.message,
-			"No session found matching 'abc': this node uses local-only storage (node-sqlite at /home/u/.atomic/workflows/journal.sqlite) and is not joined to the shared storage where other nodes record their work (not-found). Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (`atomic team join` keeps sessions on each machine), then resume again.",
+			"No session found matching 'abc': this node uses local-only storage (node-sqlite at /home/u/.atomic/workflows/journal.sqlite) and is not joined to the shared storage where other nodes record their work (not-found). Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (after `atomic team leave` on a machine joined with `atomic team join`, which keeps sessions on each machine), then resume again.",
 		);
 		assert.equal(
 			error.hint,
-			"Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (`atomic team join` keeps sessions on each machine), then resume again.",
+			"Join this node's sessions to the shared storage with `atomic storage join <url> --token-file <path>` (after `atomic team leave` on a machine joined with `atomic team join`, which keeps sessions on each machine), then resume again.",
 		);
 		assert.deepEqual(error.fields, {
 			subject: "session",
@@ -409,7 +409,7 @@ describe("resume storage preconditions (#4329)", () => {
 					],
 				);
 				assert.match(error.hint, /atomic install npm:@bastani\/atomic-storage-libsql/);
-				assert.match(error.hint, /atomic team join <url> --token-file <path>/);
+				assert.match(error.hint, /atomic storage join <url> --token-file <path>/);
 				return true;
 			},
 		);
@@ -746,25 +746,25 @@ describe("resume storage precondition messages (#4329)", () => {
 				code: "credential-missing",
 				subject: "environment variable UNSET",
 				why: `storage secret a of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is not set`,
-				fix: `Set UNSET for this process, or join with \`${TEAM_JOIN_COMMAND}\` to keep the token in a file.`,
+				fix: `Set UNSET for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
 			},
 			{
 				code: "credential-missing",
 				subject: "environment variable EMPTY",
 				why: `storage secret b of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it is empty`,
-				fix: `Set EMPTY for this process, or join with \`${TEAM_JOIN_COMMAND}\` to keep the token in a file.`,
+				fix: `Set EMPTY for this process, or join with \`${STORAGE_JOIN_COMMAND}\` to keep the token in a file.`,
 			},
 			{
 				code: "credential-missing",
 				subject: "token file /notdir/token",
 				why: `storage secret c of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it does not exist`,
-				fix: `Write the token to /notdir/token (mode 600, readable by this user), or join again with \`${TEAM_JOIN_COMMAND}\`.`,
+				fix: `Write the token to /notdir/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
 			},
 			{
 				code: "credential-unreadable",
 				subject: "token file /odd/token",
 				why: `storage secret d of ${LIBSQL_ADAPTER_PACKAGE} reads it to authenticate to the shared storage, and it cannot be read (read failed)`,
-				fix: `Write the token to /odd/token (mode 600, readable by this user), or join again with \`${TEAM_JOIN_COMMAND}\`.`,
+				fix: `Write the token to /odd/token (mode 600, readable by this user), or join again with \`${STORAGE_JOIN_COMMAND}\`.`,
 			},
 		]);
 	});

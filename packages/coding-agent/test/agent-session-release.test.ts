@@ -12,7 +12,7 @@ import {
 	isAgentRehydrateError,
 	isAgentReleaseConfigError,
 	isRetryableAgentRehydrateError,
-	TEAM_JOIN_COMMAND,
+	STORAGE_JOIN_COMMAND,
 } from "../src/core/agent-rehydrate-errors.ts";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
@@ -580,7 +580,7 @@ describe("AgentSessionRuntime.rehydrate (#4326)", () => {
 			assert.ok(error instanceof AgentRehydrateError);
 			assert.equal(error.code, "session-not-found");
 			assert.deepEqual(error.fields, { sessionId: "missing-session", storage: "node-sqlite", localOnly: true });
-			assert.ok(error.hint.includes(TEAM_JOIN_COMMAND));
+			assert.ok(error.hint.includes(STORAGE_JOIN_COMMAND));
 			assert.equal(error.retryable, false);
 			return true;
 		});
@@ -1157,7 +1157,7 @@ describe("a session whose history could not be reopened is not released (#4326)"
 			localOnly: true,
 		});
 		assert.match(error.hint, /MemorySessionStore/);
-		assert.ok(!error.hint.includes(TEAM_JOIN_COMMAND));
+		assert.ok(!error.hint.includes(STORAGE_JOIN_COMMAND));
 	});
 });
 

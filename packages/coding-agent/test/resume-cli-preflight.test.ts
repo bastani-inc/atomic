@@ -50,7 +50,7 @@ test(
 			stderr,
 			/\(preconditions-unmet\)\. Install it with `atomic install npm:@acme\/atomic-storage-not-installed`\./,
 		);
-		assert.match(stderr, /atomic team join <url> --token-file <path>/);
+		assert.match(stderr, /atomic storage join <url> --token-file <path>/);
 		assert.doesNotMatch(stderr, /127\.0\.0\.1:9/);
 	},
 	REAL_CLI_PREFLIGHT_TIMEOUT_MS,
