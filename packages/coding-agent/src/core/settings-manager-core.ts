@@ -1,9 +1,10 @@
 import { join } from "path";
 import { getAgentConfigPaths, getAgentDir, getProjectConfigPaths } from "../config.js";
+import { warnDeprecation } from "../utils/deprecation.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { backgroundCompactionSettingErrors } from "./compaction/background-compaction.ts";
-import { DecisionConfigError, type DecisionConfigSource, isDecisionConfigError } from "./decision/errors.js";
+import { isDecisionConfigError } from "./decision/errors.js";
 import { deepMergeSettings } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
@@ -111,7 +112,6 @@ export class SettingsManager {
 
 	/** Create an in-memory SettingsManager (no file I/O) */
 	static inMemory(settings: Partial<Settings> = {}): SettingsManager {
-		SettingsManager.refuseRenamedSettings(settings, "sdk");
 		const storage = new InMemorySettingsStorage();
 		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
 		storage.withLock("global", () => JSON.stringify(initialSettings, null, 2));
@@ -133,14 +133,7 @@ export class SettingsManager {
 			return {};
 		}
 		const settings = parseJsonFileContent(content) as Record<string, unknown>;
-		SettingsManager.refuseRenamedSettings(settings, "settings", scope);
 		return SettingsManager.migrateSettings(settings);
-	}
-
-	/** A removed key fails fast: `routerModel` was renamed to `decisionModel`, and nothing reads it any more. */
-	private static refuseRenamedSettings(settings: object, source: DecisionConfigSource, scope?: SettingsScope): void {
-		if (Object.hasOwn(Object(settings), "routerModel"))
-			throw new DecisionConfigError({ code: "renamed-setting", source, field: "routerModel", scope });
 	}
 
 	private static tryLoadFromStorage(
@@ -162,6 +155,19 @@ export class SettingsManager {
 
 	/** Migrate old settings format to new format */
 	private static migrateSettings(settings: Record<string, unknown>): Settings {
+		// Migrate routerModel -> decisionModel before normalizing provider IDs.
+		if ("routerModel" in settings) {
+			if ("decisionModel" in settings) {
+				warnDeprecation('Ignored legacy "routerModel" because "decisionModel" is already set.');
+			} else if (typeof settings.routerModel === "string" && settings.routerModel.trim() === settings.routerModel) {
+				settings.decisionModel = settings.routerModel;
+			} else {
+				warnDeprecation(
+					'Ignored invalid legacy "routerModel"; set "decisionModel" to an exact provider/model ID, "auto", or an empty string.',
+				);
+			}
+			delete settings.routerModel;
+		}
 		settings = normalizeAzureSettings(settings as Settings) as Record<string, unknown>;
 		// Migrate queueMode -> steeringMode
 		if ("queueMode" in settings && !("steeringMode" in settings)) {
@@ -336,8 +342,8 @@ export class SettingsManager {
 
 	/** Apply additional overrides on top of current settings */
 	applyOverrides(overrides: Partial<Settings>): void {
-		SettingsManager.refuseRenamedSettings(overrides, "sdk");
-		this.settings = deepMergeSettings(this.settings, overrides);
+		const migrated = SettingsManager.migrateSettings(structuredClone(overrides) as Record<string, unknown>);
+		this.settings = deepMergeSettings(this.settings, migrated);
 	}
 
 	/** Mark a global field as modified during this session */

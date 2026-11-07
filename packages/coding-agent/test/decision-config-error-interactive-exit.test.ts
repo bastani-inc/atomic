@@ -10,9 +10,9 @@ import * as refusedSetting from "../src/modes/interactive/refused-decision-setti
 class ExitCalled extends Error {}
 
 const refused = new DecisionConfigError({
-	code: "renamed-setting",
+	code: "invalid-setting",
 	source: "settings",
-	field: "routerModel",
+	field: "decisionModel",
 	scope: "project",
 });
 

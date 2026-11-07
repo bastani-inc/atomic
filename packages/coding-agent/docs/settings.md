@@ -82,7 +82,7 @@ Normal automatic selection of an available authenticated model remains enabled i
 { "decisionModel": "" }
 ```
 
-`decisionModel` replaces the former `routerModel` setting, which has no alias. A `settings.json` that still contains `routerModel` stops Atomic at startup with `DecisionConfigError` (code `renamed-setting`), naming the file's scope; rename the key to `decisionModel`. A project's file is read once you trust the project, so trusting it at the startup prompt stops Atomic the same way. An SDK settings object with `routerModel` fails the same way.
+`decisionModel` replaces the former `routerModel` setting. Global and trusted project settings files and SDK settings automatically migrate a valid legacy value when `decisionModel` is absent, without stopping startup. If both keys are present, `decisionModel` wins and Atomic warns once. Invalid legacy values (not a string, or with surrounding whitespace) are ignored with a one-time warning. Loading settings does not rewrite the file; use `decisionModel` in new configuration.
 
 The decision model is used by:
 

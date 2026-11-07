@@ -58,9 +58,10 @@ Every failure rejects with a `DecisionError`; branch on the class or `code`, nev
 
 For untrusted error data received from another process, call `parseSerializedDecisionError()` before rehydrating it. It returns `undefined` when a known error's code or fields are malformed.
 
+Legacy `routerModel` settings migrate to `decisionModel` automatically; they do not cause a configuration error. An existing `decisionModel` takes precedence, and invalid legacy values are ignored with a one-time warning. See [decisionModel](/settings#decisionmodel).
+
 | Class | Code | When | Fields | What to do |
 | --- | --- | --- | --- | --- |
-| `DecisionConfigError` | `renamed-setting` | A settings file or SDK settings still has `routerModel`, at startup | `source`, `field`, `scope` | Rename `routerModel` to `decisionModel`. |
 | `DecisionConfigError` | `invalid-setting` | `decisionModel` is not a string or has surrounding whitespace | `source`, `field` | Set an exact `provider/model`, `auto` or `""`. |
 | `DecisionRequestError` | `invalid-request` | Empty or non-JSON `state`, credential in `state`, no questions, a malformed question, blank `instructions`, a bad `deadline` or `model` | `field`, `reason` | Fix the request; nothing was sent. |
 | `DecisionModelUnavailableError` | `model-unavailable` | `decisionModel` is not a registered chat or classifier model (`not-in-catalog`), no chat model is selected (`no-chat-model`), probabilities are required from a chat model (`no-probabilities`), or the extension or workflow host provides no decision model or model registry (`host-unsupported`) | `reason`, `model` | Choose another decision model or select a chat model; for `host-unsupported`, run in an Atomic session. |

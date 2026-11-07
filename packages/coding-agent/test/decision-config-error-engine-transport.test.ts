@@ -28,9 +28,9 @@ async function hostFailureFor(failure: Error): Promise<unknown> {
 
 test("a refused decision setting in the engine child reaches the host as a typed error (#4358)", async () => {
 	const refused = new DecisionConfigError({
-		code: "renamed-setting",
+		code: "invalid-setting",
 		source: "settings",
-		field: "routerModel",
+		field: "decisionModel",
 		scope: "project",
 	});
 	const error = await hostFailureFor(new Error("startup reload failed", { cause: refused }));

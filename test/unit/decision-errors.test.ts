@@ -47,14 +47,6 @@ test("each class renders its message and hint once, as a UX contract (#4358)", (
 			'Invalid decision model setting: "decisionModel" in the SDK settings (invalid-setting). Set "decisionModel" in the settings you pass to an exact provider/model ID, "auto", or an empty string.',
 		hint: 'Set "decisionModel" in the settings you pass to an exact provider/model ID, "auto", or an empty string.',
 	});
-	assert.deepEqual(
-		rendered(new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" })),
-		{
-			message:
-				'Renamed setting: "routerModel" in settings.json (renamed-setting). Rename "routerModel" to "decisionModel" in settings.json.',
-			hint: 'Rename "routerModel" to "decisionModel" in settings.json.',
-		},
-	);
 	assert.deepEqual(rendered(ERRORS.request), {
 		message:
 			"Invalid decision request: state is invalid-state (invalid-request). Pass state as a nonempty object of finite, acyclic JSON values.",
@@ -160,7 +152,7 @@ test("each class carries its code, retry semantics and only the fields that are 
 	assert.equal(new DecisionError("timeout", "m", "h").retryable, false);
 	assert.equal(new DecisionError("timeout", "m", "h").name, "DecisionError");
 	assert.equal(
-		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }).scope,
+		new DecisionConfigError({ code: "invalid-setting", source: "settings", field: "decisionModel" }).scope,
 		undefined,
 	);
 	assert.equal(new DecisionOutputError({ model: "a/b", detail: "" }).detail, undefined);
@@ -240,7 +232,6 @@ test("finding a decision error walks causes, stops at eight, and reports retryab
 
 test("a structural decision error is recognized for every family code, and a plain cause stays a plain error", () => {
 	for (const code of [
-		"renamed-setting",
 		"invalid-setting",
 		"invalid-request",
 		"model-unavailable",
@@ -273,7 +264,7 @@ test("a serialized error received across a process boundary is validated before 
 		{ model: "a/b", providerStatus: 429 },
 		{
 			cause: new DecisionConfigError(
-				{ code: "renamed-setting", source: "settings", field: "routerModel", scope: "project" },
+				{ code: "invalid-setting", source: "settings", field: "decisionModel", scope: "project" },
 				{ cause: new RangeError("inner") },
 			),
 		},
@@ -339,7 +330,7 @@ test("a host without decision support is a model-unavailable error that keeps it
 
 test("malformed concrete decision errors are rejected before host rehydration (#4358)", () => {
 	const wire = serializeDecisionError(
-		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel" }),
+		new DecisionConfigError({ code: "invalid-setting", source: "settings", field: "decisionModel" }),
 	);
 	assert.equal(parseSerializedDecisionError({ ...wire, fields: {} }), undefined);
 	for (const error of Object.values(ERRORS)) {
@@ -413,7 +404,7 @@ test("concrete error fields reject invalid enum values, types and timing data (#
 
 test("valid concrete error variants and future names retain their transport fields (#4358)", () => {
 	for (const error of [
-		new DecisionConfigError({ code: "renamed-setting", source: "settings", field: "routerModel", scope: "global" }),
+		new DecisionConfigError({ code: "invalid-setting", source: "settings", field: "decisionModel", scope: "global" }),
 		new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel", scope: "project" }),
 		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 0, phase: "classifier", attempts: "one attempt" }),
 		new DecisionTimeoutError({ timeoutMs: 1, elapsedMs: 1, phase: "chat" }),
