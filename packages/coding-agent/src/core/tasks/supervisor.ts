@@ -17,6 +17,8 @@ import { FINISHED_TASK_RETENTION, TaskEvictedError } from "./eviction-error.js";
 export type TaskMessageDelivery =
 	| { readonly delivered: true }
 	| { readonly delivered: false; readonly reason: "refused"; readonly detail?: string }
+	/** The channel failed after the message may have left, so it may still arrive. */
+	| { readonly delivered: false; readonly reason: "lost"; readonly detail?: string }
 	| {
 			readonly delivered: false;
 			readonly reason: "unconfirmed";

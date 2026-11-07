@@ -268,6 +268,33 @@ test("the Intercom relay reports a refusal with its reason (#4521)", async () =>
 	});
 });
 
+test("a relay failure after the message may have left is lost, and the task view reports it unconfirmed (#4521)", async () => {
+	const events = createEventBus();
+	events.on(SUBAGENT_RESULT_INTERCOM_EVENT, (payload) => {
+		const { requestId } = payload as { requestId: string };
+		events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
+			requestId,
+			delivered: false,
+			error: "connection closed",
+			unconfirmed: true,
+		});
+	});
+	assert.deepEqual(await sendTaskTranscriptMessage(events, "worker-1", "hello"), {
+		delivered: false,
+		reason: "lost",
+		detail: "connection closed",
+	});
+	const { error } = await sendThroughOwner(
+		intercomTranscript(async () => ({ delivered: false, reason: "lost", detail: "connection closed" })),
+	);
+	assert.ok(error instanceof TaskMessageError);
+	assert.ok(!(error instanceof TaskMessageTimeoutError));
+	assert.equal(error.code, "delivery-unconfirmed");
+	assert.equal(error.retryable, false);
+	assert.equal(error.target, "worker-1");
+	assert.equal(error.detail, "connection closed");
+});
+
 test("an Intercom relay that never answers is unconfirmed after the acknowledgement bound (#4521)", async () => {
 	vi.useFakeTimers();
 	const events = createEventBus();

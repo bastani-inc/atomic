@@ -248,7 +248,7 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 					timeoutMs: delivery.timeoutMs,
 					elapsedMs: delivery.elapsedMs,
 				});
-			throw new TaskMessageError("delivery-refused", {
+			throw new TaskMessageError(delivery.reason === "lost" ? "delivery-unconfirmed" : "delivery-refused", {
 				taskId: id,
 				target,
 				...(delivery.detail === undefined ? {} : { detail: delivery.detail }),

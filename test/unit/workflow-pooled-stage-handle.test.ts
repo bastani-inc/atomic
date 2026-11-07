@@ -672,10 +672,8 @@ test("a session command on a stage that finished is refused with the post-mortem
 });
 
 test("a task message the worker refused can be sent again, and one whose answer was lost is unconfirmed (#4521)", async () => {
-	let answer: () => Promise<{ ok: false; refusal: "PoolPausedOrQuitting" }> = async () => ({
-		ok: false,
-		refusal: "PoolPausedOrQuitting",
-	});
+	let answer: () => Promise<{ ok: false; refusal: "PoolPausedOrQuitting" | "StageNotLive" | "StaleAttempt" }> =
+		async () => ({ ok: false, refusal: "PoolPausedOrQuitting" });
 	const fake = singleWatch({ ...snapshot(), isStreaming: false });
 	const transport: PooledStageTransport = { ...fake.transport, session: () => answer() };
 	const opened = await openPooledStageHandle(transport, { runId: "child", stageId: "agent" }, "agent");
@@ -686,10 +684,19 @@ test("a task message the worker refused can be sent again, and one whose answer 
 			(error: unknown) => error,
 		);
 	try {
-		const refused = await send();
-		assert.ok(refused instanceof TaskMessageError);
-		assert.equal(refused.code, "delivery-refused");
-		assert.equal(refused.retryable, true);
+		for (const refusal of ["PoolPausedOrQuitting", "StageNotLive"] as const) {
+			answer = async () => ({ ok: false, refusal });
+			const refused = await send();
+			assert.ok(refused instanceof TaskMessageError);
+			assert.equal(refused.code, "delivery-refused", refusal);
+			assert.equal(refused.retryable, true);
+		}
+		// A worker that exits mid-command answers its pending commands as a stale attempt, after it may have relayed.
+		answer = async () => ({ ok: false, refusal: "StaleAttempt" });
+		const stale = await send();
+		assert.ok(stale instanceof TaskMessageError);
+		assert.equal(stale.code, "delivery-unconfirmed");
+		assert.equal(stale.retryable, false);
 		answer = async () => {
 			throw new Error("worker connection closed");
 		};

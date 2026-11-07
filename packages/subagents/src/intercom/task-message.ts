@@ -42,14 +42,19 @@ export function sendTaskTranscriptMessage(
 		};
 		unsubscribe = events.on(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, (data) => {
 			if (typeof data !== "object" || data === null) return;
-			const ack = data as { readonly requestId?: unknown; readonly delivered?: unknown; readonly error?: unknown };
+			const ack = data as {
+				readonly requestId?: unknown;
+				readonly delivered?: unknown;
+				readonly error?: unknown;
+				readonly unconfirmed?: unknown;
+			};
 			if (ack.requestId !== requestId || !release()) return;
 			resolve(
 				ack.delivered === true
 					? { delivered: true }
 					: {
 							delivered: false,
-							reason: "refused",
+							reason: ack.unconfirmed === true ? "lost" : "refused",
 							...(typeof ack.error === "string" ? { detail: ack.error } : {}),
 						},
 			);

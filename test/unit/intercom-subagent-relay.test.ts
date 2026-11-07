@@ -29,11 +29,13 @@ interface RelayHarnessOptions {
 	localDeliveryAuthority?: DeliveredMessageCache;
 	afterLocalDelivery?(): void;
 	appendCommit?: Promise<void>;
+	/** The broker client's send rejects with this, as after its connection dropped. */
+	sendFailure?: Error;
 }
 
 function createRelayHarness(options: RelayHarnessOptions) {
 	const listeners = new Map<string, Array<(payload: unknown) => void>>();
-	const deliveries: Array<{ requestId?: string; delivered?: boolean; error?: string }> = [];
+	const deliveries: Array<{ requestId?: string; delivered?: boolean; error?: string; unconfirmed?: boolean }> = [];
 	const errorEntries: Array<{ type: string; error?: string }> = [];
 	let ensureConnectedCalls = 0;
 	let sendCalls = 0;
@@ -46,6 +48,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
 		async send(_target: string, input: { messageId?: string }) {
 			sendCalls += 1;
 			sentMessageIds.push(input.messageId);
+			if (options.sendFailure) throw options.sendFailure;
 			return { delivered: true };
 		},
 	} as never;
@@ -222,6 +225,28 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 
 		assert.deepEqual(harness.deliveries, [{ requestId: "request-1", delivered: false }]);
 		assert.deepEqual(harness.counts(), { ensureConnectedCalls: 0, sendCalls: 0, localDeliveries: 0 });
+	});
+
+	test("a broker send that fails after it started is acknowledged as unconfirmed, not refused (#4521)", async () => {
+		const harness = createRelayHarness({
+			liveChecks: [true, true, true],
+			sendFailure: new Error("connection closed"),
+		});
+		harness.emitResult();
+		await settleRelay();
+		assert.equal(harness.counts().sendCalls, 1);
+		assert.deepEqual(harness.deliveries, [
+			{ requestId: "request-1", delivered: false, error: "connection closed", unconfirmed: true },
+		]);
+		const retired = createRelayHarness({
+			liveChecks: [true, true, false],
+			sendFailure: new Error("connection closed"),
+		});
+		retired.emitResult();
+		await settleRelay();
+		assert.deepEqual(retired.deliveries, [
+			{ requestId: "request-1", delivered: false, error: "connection closed", unconfirmed: true },
+		]);
 	});
 
 	test("negatively acknowledges once when the relay retires while connecting", async () => {
