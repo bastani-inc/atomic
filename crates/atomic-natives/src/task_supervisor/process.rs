@@ -110,6 +110,9 @@ pub struct CommandResourceOptions {
 	pub live_preview_bytes: Option<u32>,
 	pub foreground_spill_bytes: Option<u32>,
 	pub background: Option<bool>,
+	/// Internal host/test seam for distinguishing a real TERM wait from teardown latency (integer 1..=60000 ms).
+	/// Ignored on Windows, whose Job containment terminates immediately rather than sending TERM.
+	pub termination_grace_ms: Option<f64>,
 }
 
 pub(super) struct CommandTask {
@@ -147,6 +150,13 @@ pub(super) struct CommandTask {
 	loop_iterations: std::sync::atomic::AtomicUsize,
 }
 impl CommandTask {
+	#[cfg(unix)]
+	fn termination_grace(&self) -> Duration {
+		self
+			.options
+			.termination_grace_ms
+			.map_or(PROCESS_TERM_GRACE, |ms| Duration::from_secs_f64(ms / 1000.0))
+	}
 	#[cfg(unix)]
 	fn quarantine_grace(&self) -> Duration {
 		#[cfg(test)]
@@ -269,6 +279,15 @@ impl Actor {
 		operation: JsString,
 		options: CommandResourceOptions,
 	) -> Door<TaskLease> {
+		if options
+			.termination_grace_ms
+			.is_some_and(|ms| !ms.is_finite() || ms.fract() != 0.0 || !(1.0..=60_000.0).contains(&ms))
+		{
+			return Err(TaskFailure {
+				code: "SpawnFailed".into(),
+				message: "terminationGraceMs must be an integer between 1 and 60000 ms".into(),
+			});
+		}
 		poll_failed_processes();
 		spool::sweep_orphaned_spools_once();
 		let mut state = self.state.lock().unwrap();
@@ -676,7 +695,7 @@ impl Actor {
 							// ESRCH is still required, and persistent refusal stays a failure.
 							#[cfg(target_os = "macos")]
 							if error.raw_os_error() == Some(libc::EPERM)
-								&& stop.elapsed() < PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE
+								&& stop.elapsed() < command.termination_grace() + PROCESS_DRAIN_GRACE
 							{
 								std::thread::sleep(PROCESS_POLL);
 								continue;
@@ -692,7 +711,7 @@ impl Actor {
 					cleanup_failure = None;
 					break;
 				}
-				if !killed && !gone && stop.elapsed() >= PROCESS_TERM_GRACE {
+				if !killed && !gone && stop.elapsed() >= command.termination_grace() {
 					// Members outlived the grace, or the leader is still running. Either the leader is
 					// unreaped, or the probe just above found the group alive: see ProcessGroup for why
 					// that keeps this KILL on this command's group. A successful escalation can resolve
@@ -704,7 +723,7 @@ impl Actor {
 						break;
 					}
 				}
-				if !quarantined && stop.elapsed() >= PROCESS_TERM_GRACE + PROCESS_DRAIN_GRACE {
+				if !quarantined && stop.elapsed() >= command.termination_grace() + PROCESS_DRAIN_GRACE {
 					if setup_failure.is_some() || (status.is_none() && !cancelling) {
 						cleanup_failure = Some(unconfirmed_cleanup(gone));
 						break;
