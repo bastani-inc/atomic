@@ -8,7 +8,7 @@ import { getBinDir } from "../src/config.ts";
 import { clearWorktreeRootMappings } from "../src/core/resume/path-mapping.ts";
 import { StorageAdapterLoadError, StorageUnavailableError } from "../src/core/storage/errors.js";
 import type { StorageSelection } from "../src/core/storage/provider.js";
-import { LIBSQL_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
+import { inMemorySecret, LIBSQL_ADAPTER_PACKAGE } from "../src/core/storage/selection.js";
 import { GitUnavailableError, isGitUnavailableError } from "../src/core/worktree-snapshot/errors.ts";
 import {
 	checkResumeStoragePreconditions,
@@ -317,6 +317,7 @@ describe("resume not-found classification (#4329)", () => {
 		});
 		assert.equal(error.reason, "shared-miss");
 		assert.equal(error.storage, "libsql");
+		assert.equal(error.subject, "session");
 		assert.doesNotMatch(error.message, /authToken|db\.example/);
 	});
 });
@@ -361,6 +362,17 @@ describe("resume storage preconditions (#4329)", () => {
 		module: LIBSQL_ADAPTER_PACKAGE,
 		options: { url: "https://db" },
 		...(secrets ? { secrets } : {}),
+	});
+
+	test("a secret held in this process's memory needs no check and costs no I/O", async () => {
+		const io = new CountingIo();
+		const problems = await storagePreconditionProblems(
+			[{ domain: "sessions", selection: libsql({ authToken: inMemorySecret("in-memory-token") }) }],
+			agentDir,
+			io,
+		);
+		assert.deepEqual(problems, []);
+		assert.deepEqual(io.calls, [`load:${LIBSQL_ADAPTER_PACKAGE}`]);
 	});
 
 	test("local selections need nothing and cost no I/O", async () => {
@@ -583,6 +595,25 @@ describe("tool path mapping for restored worktrees (#4329)", () => {
 });
 
 describe("resume error family edge cases (#4329)", () => {
+	test("a serialized error without a cause has no cause key, and a rebuilt one keeps Error's property shape", () => {
+		const bare = new ResumePreconditionError({ entryPoint: "cli", problems: [PROBLEM] });
+		assert.equal("cause" in serializeResumeError(bare), false);
+		const form = {
+			name: "ResumeFutureError",
+			code: "future-code",
+			message: "m",
+			hint: "h",
+			retryable: false,
+			fields: {},
+			cause: { name: "Error", message: "inner" },
+		};
+		const copy = rehydrateResumeError(form);
+		for (const key of ["name", "message", "cause"] as const) {
+			const descriptor = Object.getOwnPropertyDescriptor(copy, key);
+			assert.deepEqual([descriptor?.enumerable, descriptor?.configurable], [false, true], key);
+		}
+	});
+
 	test("the base class names itself and adds no cause unless given one", () => {
 		const bare = new ResumeError("not-found", "Summary", "Do this.", { a: 1 });
 		assert.equal(bare.name, "ResumeError");
