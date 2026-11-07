@@ -21,6 +21,8 @@ import {
 	rehydrateDecisionError,
 	serializeDecisionError,
 } from "../../packages/coding-agent/src/core/decision/errors.js";
+import { rehydrateError } from "../../packages/workflows/src/shared/error-codec.js";
+import legacyRenamedSetting from "../fixtures/decision/legacy-renamed-setting.json";
 
 const ERRORS = {
 	config: new DecisionConfigError({ code: "invalid-setting", source: "sdk", field: "decisionModel" }),
@@ -232,6 +234,7 @@ test("finding a decision error walks causes, stops at eight, and reports retryab
 
 test("a structural decision error is recognized for every family code, and a plain cause stays a plain error", () => {
 	for (const code of [
+		"renamed-setting",
 		"invalid-setting",
 		"invalid-request",
 		"model-unavailable",
@@ -326,6 +329,14 @@ test("a host without decision support is a model-unavailable error that keeps it
 	assert.ok(isDecisionModelUnavailableError(restored));
 	assert.equal(restored.reason, "host-unsupported");
 	assert.equal(restored.hint, error.hint);
+});
+
+// Captured with origin/main's DecisionConfigError and serializer before the routerModel migration.
+test("the pool decodes an older build's renamed-setting error without losing its class or advice", () => {
+	const restored = rehydrateError({ ...legacyRenamedSetting, family: "decision" });
+	assert.ok(restored instanceof DecisionConfigError);
+	assert.ok(isDecisionConfigError(legacyRenamedSetting));
+	assert.deepEqual(serializeDecisionError(restored), legacyRenamedSetting);
 });
 
 test("malformed concrete decision errors are rejected before host rehydration (#4358)", () => {

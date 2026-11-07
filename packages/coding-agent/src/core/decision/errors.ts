@@ -3,8 +3,8 @@
  * setting, and of the decision model's resolution. Catch the family or a concrete class and branch on `code`.
  */
 
-/** `decisionModel` has an invalid value. */
-export type DecisionConfigErrorCode = "invalid-setting";
+/** `invalid-setting`: invalid `decisionModel`. `renamed-setting`: legacy, decode-only compatibility for older builds. */
+export type DecisionConfigErrorCode = "invalid-setting" | "renamed-setting";
 
 /** Every code of the {@link DecisionError} family. Codes are public API and never change meaning. */
 export type DecisionErrorCode =
@@ -53,6 +53,7 @@ export type DecisionProviderFailureCode = "rate_limit_exceeded" | "insufficient_
 export type DecisionErrorFieldValue = string | number | boolean;
 
 const DECISION_ERROR_CODES = new Set<string>([
+	"renamed-setting", // Legacy, decode-only; current settings loading migrates routerModel instead.
 	"invalid-setting",
 	"invalid-request",
 	"model-unavailable",
@@ -98,7 +99,7 @@ export class DecisionError extends Error {
 export interface DecisionConfigErrorFields {
 	readonly code: DecisionConfigErrorCode;
 	readonly source: DecisionConfigSource;
-	/** The refused key: `decisionModel`. */
+	/** The refused key: `decisionModel`, or legacy `routerModel` in a decoded `renamed-setting` error. */
 	readonly field: string;
 	/** The settings file that holds the key; absent for an SDK caller's settings. */
 	readonly scope?: DecisionSettingsScope;
@@ -408,7 +409,7 @@ const CONCRETE: Readonly<
 	>
 > = {
 	DecisionConfigError: {
-		codes: new Set(["invalid-setting"]),
+		codes: new Set(["invalid-setting", "renamed-setting"]),
 		validFields: (fields) =>
 			typeof fields.source === "string" &&
 			Object.hasOwn(CONFIG_PLACES, fields.source) &&
@@ -631,7 +632,15 @@ function rehydrateCause(cause: SerializedDecisionError["cause"]): Error | undefi
 export function rehydrateDecisionError(serialized: SerializedDecisionError): DecisionError {
 	const options = { cause: rehydrateCause(serialized.cause) };
 	const member = concrete(serialized.name);
-	if (member) return member.rebuild(serialized.code, serialized.fields, options);
+	if (member) {
+		const error = member.rebuild(serialized.code, serialized.fields, options);
+		if (serialized.name === "DecisionConfigError" && serialized.code === "renamed-setting") {
+			// Decode-only: retain the older build's advice without restoring the retired settings-load error.
+			error.message = serialized.message;
+			Object.defineProperty(error, "hint", { value: serialized.hint });
+		}
+		return error;
+	}
 	const error = new DecisionError(serialized.code as DecisionErrorCode, serialized.message, serialized.hint, options);
 	Object.defineProperty(error, "name", { value: serialized.name, enumerable: false });
 	return error;
