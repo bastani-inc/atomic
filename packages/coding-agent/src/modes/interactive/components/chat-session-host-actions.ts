@@ -516,7 +516,8 @@ async function sendChatSessionText<TExtraEntry extends ChatTranscriptEntryLike>(
 		await send(text, mode);
 	} catch (err) {
 		if (state.disposed) return;
-		if (state.inputBuffer.length === 0) setChatSessionEditorText(state, text);
+		const typedSince = state.inputBuffer;
+		setChatSessionEditorText(state, typedSince.length === 0 ? text : `${text}\n${typedSince}`);
 		notifyChatSessionWarning(state, errorMessage(err));
 	}
 }

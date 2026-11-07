@@ -449,6 +449,32 @@ test("Enter sends the composer text to the task, and a refusal keeps the draft a
 	}
 });
 
+test("a refused message comes back above what the reader typed while it was on its way (#4521)", async () => {
+	const session = SessionManager.inMemory();
+	await session.appendMessage({ role: "user", content: "Waiting for guidance", timestamp: 0 });
+	const answer = Promise.withResolvers<void>();
+	const host = await openTranscript(session, {
+		source: (owner) =>
+			Object.assign(Object.create(owner) as TaskViewSource, {
+				sendTaskMessage: () => answer.promise,
+			}),
+	});
+	try {
+		await host.type("first note");
+		host.inspector.handleInput("\r");
+		await flush();
+		await host.type("next idea");
+		answer.reject(new TaskMessageError("delivery-refused", { taskId: "task" as TaskId, target: "worker-1" }));
+		await flush();
+		const text = host.text();
+		assert.match(text, /first note/, "the refused text is not lost");
+		assert.match(text, /next idea/, "what the reader typed meanwhile stays");
+		assert.ok(text.indexOf("first note") < text.indexOf("next idea"));
+	} finally {
+		await host.dispose();
+	}
+});
+
 test("a transcript whose source cannot message tasks is read-only (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	await session.appendMessage({ role: "user", content: "Read only", timestamp: 0 });
