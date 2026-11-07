@@ -1526,6 +1526,33 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 	});
 
+	test("continuing in a matching checkout records nothing when the restore of another checkout fails", async () => {
+		const { clone } = await editedClone();
+		const { clone: keyed } = await sandbox.remoteWithClone("keyed", { "README.md": "keyed\n" });
+		sandbox.write(join(keyed, "deploy.key"), "PRIVATE\n");
+		await sandbox.commitAll(keyed, "unpushed key");
+		const manager = await recordSession(clone);
+		const capture = await captureWorktreeSnapshot(keyed, {
+			settings,
+			blobs: manager.getSessionStore().snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(keyed, capture.snapshot.id, capture.snapshot);
+		const checkout = sandbox.path("node-b", "repo");
+		mkdirSync(sandbox.path("node-b"));
+		renameSync(clone, checkout);
+		renameSync(keyed, sandbox.path("keyed-gone"));
+
+		const error = await prepareSessionResume(manager, options({ launchCwd: checkout })).then(
+			() => assert.fail("the second restore must fail"),
+			(failure: Error) => failure,
+		);
+
+		assert.ok(isWorkspaceDriftError(error));
+		assert.equal(error.restoreCode, "commits-unavailable");
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+	});
+
 	test("a matching checkout needs no setup hook of its own while another checkout without dependency inputs is restored", async () => {
 		const { clone } = await editedClone();
 		const { clone: plain } = await sandbox.remoteWithClone("plain", { "README.md": "plain\n" });

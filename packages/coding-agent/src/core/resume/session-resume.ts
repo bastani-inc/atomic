@@ -223,7 +223,6 @@ export async function prepareSessionResume(
 		git ??= { unavailable: await io.probeGit(options.signal) };
 		await assertRestorePreconditions(sessionManager, restoring, storeDir, options, git.unavailable);
 	}
-	if (reused !== undefined) await recordReuse(sessionManager, reused);
 	const snapshots = sessionManager.getWorktreeSnapshotRecords();
 	const opened = await openSessionInWorktree(sessionManager, {
 		settings: options.settings,
@@ -231,6 +230,7 @@ export async function prepareSessionResume(
 		signal: options.signal,
 		sessionDirectory: options.sessionDirectory,
 		beforeRecord: (restored) => assertRestoredSetupAvailable(restored, snapshots, storeDir, options),
+		pendingMappings: reused === undefined ? [] : [reused],
 	});
 	const mappings = opened.sessionManager.getWorktreeRootMappings();
 	registerWorktreeRootMappings(mappings);

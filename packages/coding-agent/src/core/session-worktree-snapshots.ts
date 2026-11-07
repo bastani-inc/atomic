@@ -269,6 +269,11 @@ export interface ResumeSessionWorktreeOptions {
 	 * restore.
 	 */
 	readonly beforeRecord?: (mappings: readonly WorktreeRootMapping[]) => Promise<void>;
+	/**
+	 * Mappings to checkouts already here that the session continues in, applied as if recorded while deciding what to
+	 * restore, and recorded first, with the restores, only once every checkout is restored and `beforeRecord` passed.
+	 */
+	readonly pendingMappings?: readonly WorktreeRootMapping[];
 }
 
 /**
@@ -281,7 +286,8 @@ export async function resumeSessionWorktree(
 	options: ResumeSessionWorktreeOptions,
 ): Promise<SessionWorktreeResume> {
 	if (!options.settings.enabled) return { status: "none" };
-	const existing = sessionManager.getWorktreeRootMappings();
+	const pending = options.pendingMappings ?? [];
+	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
 	const records = sessionManager.getWorktreeSnapshotRecords();
 	const latestIds = latestSnapshotIdsByCheckout(sessionManager, existing);
 	const latest = new Map<string, WorktreeSnapshot>();
@@ -368,7 +374,7 @@ export async function resumeSessionWorktree(
 			);
 		}
 		await options.beforeRecord?.(mappings);
-		for (const mapping of mappings) {
+		for (const mapping of [...pending, ...mappings]) {
 			options.signal?.throwIfAborted();
 			await sessionManager.appendWorktreeSnapshot(
 				mapping.to,
