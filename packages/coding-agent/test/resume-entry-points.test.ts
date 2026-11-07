@@ -650,6 +650,19 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
 	});
 
+	test("rehydrating a session released on another node, on a node without Git, fails as a rehydrate precondition", async () => {
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
+		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
+		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
+		await assert.rejects(runtime.rehydrate(sessionId), (error: unknown) => {
+			assert.ok(isResumePreconditionError(error));
+			assert.equal(error.entryPoint, "rehydrate");
+			assert.equal(error.problems[0]?.code, "git-unavailable");
+			return true;
+		});
+		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+	});
+
 	test("a rehydration whose shared storage does not answer fails at the lookup deadline", async () => {
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
