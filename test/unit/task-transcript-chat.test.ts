@@ -136,7 +136,7 @@ const firstMessage = (rows: readonly string[]) =>
 		.map((row) => /M-\d{3}/.exec(row)?.[0])
 		.find((name) => name !== undefined);
 
-test("PageUp is a plain scroll and earlier history loads once near the top, holding the reader's place (#4521)", async () => {
+test("PageUp is a plain scroll and earlier history loads near the top under the reader, and one Ctrl+Home reaches the first message (#4521)", async () => {
 	const session = SessionManager.inMemory();
 	for (let i = 0; i < 250; i++)
 		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
@@ -160,21 +160,23 @@ test("PageUp is a plain scroll and earlier history loads once near the top, hold
 		assert.ok(Number(paged?.slice(2)) < Number(latestTop?.slice(2)));
 		assert.equal(reads.length, 1, "PageUp itself reads nothing");
 
-		host.inspector.handleInput(CTRL_HOME);
+		for (let i = 0; i < 40 && reads.length === 1; i++) {
+			host.inspector.handleInput("\x1b[5~");
+			host.frame();
+		}
 		const parked = host.frame();
 		host.frame();
 		assert.equal(reads.length, 2, "nearing the top asks for the earlier page once");
 		assert.ok(reads[1] !== undefined);
 		await flush();
 		assert.equal(firstMessage(host.frame()), firstMessage(parked), "the earlier page loads above the reader");
+
 		host.inspector.handleInput(CTRL_HOME);
-		assert.equal(firstMessage(host.frame()), "M-050");
-		host.frame();
-		await flush();
-		host.inspector.handleInput(CTRL_HOME);
-		assert.equal(firstMessage(host.frame()), "M-000");
-		host.frame();
-		await flush();
+		for (let i = 0; i < 5; i++) {
+			host.frame();
+			await flush();
+		}
+		assert.equal(firstMessage(host.frame()), "M-000", "one Ctrl+Home reaches the first retained message");
 		assert.equal(reads.length, 3, "nothing is left to load before the first retained message");
 	} finally {
 		await host.dispose();

@@ -16,6 +16,7 @@ const ALT_WHEEL_UP = "\x1b[<72;10;5M";
 const LEGACY_WHEEL_UP = `\x1b[M${String.fromCharCode(64 + 32)}!!`;
 const CTRL_HOME = "\x1b[1;5H";
 const CTRL_END = "\x1b[1;5F";
+const PAGE_DOWN = "\x1b[6~";
 const CTRL_UP = "\x1b[1;5A";
 const CTRL_DOWN = "\x1b[1;5B";
 const PROMPT_MARK = "\x1b]133;A\x07";
@@ -304,4 +305,27 @@ test("a reader scrolled up keeps the same top row when the viewport's height cha
 	paint();
 	view.setVisibleRows(12);
 	assert.equal(topRow(paint()), 88, "a reader following the end keeps following it");
+});
+
+test("Ctrl+Home keeps the first row on top as rows arrive, also across a resize, until another scroll (#4521)", () => {
+	const { view, content, paint } = viewport(numbered(50), {}, 10);
+	const grow = (prefix: string) => {
+		content.lines = [...numbered(20, prefix), ...content.lines];
+	};
+	view.handleInput(CTRL_HOME);
+	assert.equal(paint(40)[0], "row-0");
+	grow("early");
+	assert.equal(paint(30)[0], "early-0", "the first row stays on top while the width changes");
+	for (const [leave, label] of [
+		[() => view.handleInput(PAGE_DOWN), "a relative scroll"],
+		[() => view.scrollTo(5), "an absolute scroll"],
+		[() => view.handleInput(CTRL_END), "Ctrl+End"],
+	] as const) {
+		view.handleInput(CTRL_HOME);
+		paint(40);
+		leave();
+		paint(40);
+		grow(label.replaceAll(" ", "_"));
+		assert.notEqual(paint(30)[0], `${label.replaceAll(" ", "_")}-0`, `${label} ends the hold on the top`);
+	}
 });

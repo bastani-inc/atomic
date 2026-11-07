@@ -320,6 +320,8 @@ export class ScrollableComponentViewport implements Component {
 	 * honour it. See `scrollTo` for why the request has to outlive the call.
 	 */
 	private pendingScrollRow: number | undefined;
+	/** Ctrl+Home holds the first row, also while earlier history loads above it, until another scroll. */
+	private pinnedToTop = false;
 	private readonly keybindings: Pick<KeybindingsManager, "matches"> | undefined;
 	private readonly options: ScrollableComponentViewportOptions;
 	private readonly wheel: WheelScrollAccelerator;
@@ -354,14 +356,16 @@ export class ScrollableComponentViewport implements Component {
 
 	scrollToBottom(): void {
 		const previous = this.scrollFromBottom;
+		this.pinnedToTop = false;
 		this.pendingScrollRow = undefined;
 		this.scrollFromBottom = 0;
 		this.noteScroll(previous);
 	}
 
-	/** The first row, also of rows a render has not measured yet, such as earlier history that just loaded. */
+	/** The first row, also of rows a render has not measured yet, such as earlier history that loads later. */
 	scrollToTop(): void {
 		this.scrollTo(0);
+		this.pinnedToTop = true;
 	}
 
 	scrollBy(deltaRows: number): void {
@@ -369,6 +373,7 @@ export class ScrollableComponentViewport implements Component {
 		// into older history. Store the offset from the sticky bottom so new
 		// streaming output can keep following when the offset is zero.
 		const previous = this.scrollFromBottom;
+		this.pinnedToTop = false;
 		this.pendingScrollRow = undefined;
 		this.scrollFromBottom -= deltaRows;
 		this.clampScroll();
@@ -394,6 +399,7 @@ export class ScrollableComponentViewport implements Component {
 	scrollTo(row: number): void {
 		const previous = this.scrollFromBottom;
 		const requestedRow = Number.isNaN(row) ? 0 : Math.max(0, Math.floor(row));
+		this.pinnedToTop = false;
 		this.pendingScrollRow = requestedRow;
 		const target = Math.min(this.maxScroll, requestedRow);
 		this.scrollFromBottom = this.maxScroll - target;
@@ -497,7 +503,7 @@ export class ScrollableComponentViewport implements Component {
 		// transcript built without a cache key is not windowed, but it is still
 		// one component spanning the anchor and still knows its own rows.
 		const segments = componentRows.map((rows) => rows.segments);
-		const pendingScrollRow = this.pendingScrollRow;
+		const pendingScrollRow = this.pinnedToTop ? 0 : this.pendingScrollRow;
 		this.pendingScrollRow = undefined;
 		if (pendingScrollRow !== undefined) {
 			// An absolute request outranks the anchor: the caller measured this

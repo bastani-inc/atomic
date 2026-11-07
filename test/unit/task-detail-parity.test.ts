@@ -128,11 +128,10 @@ test("earlier transcript pages remain selected when background activity arrives"
 		fixture.store.drain();
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.match(plain(inspector.renderViewport(80, 24)), /entry-119/);
-		// The retained page loads earlier history once the reader nears its top (#4521).
+		// Ctrl+Home loads the earlier retained history and lands on its first entry (#4521).
 		inspector.handleInput("\x1b[1;5H");
 		inspector.renderViewport(80, 24);
 		await new Promise<void>((resolve) => setImmediate(resolve));
-		inspector.handleInput("\x1b[1;5H");
 		assert.match(plain(inspector.renderViewport(80, 24)), /entry-000/);
 		fixture.runners[0].context.reportActivity({
 			reportId: "activity",
