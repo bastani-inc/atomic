@@ -520,17 +520,8 @@ async function realClientOn(node: Node, name: string) {
 		);
 	});
 	await new Promise<void>((resolveListen) => server.listen(socketPath, resolveListen));
-	const original = process.env.ATOMIC_CODING_AGENT_DIR;
-	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
-	let clientModule: typeof import("../../packages/intercom/broker/client.js");
-	try {
-		vi.resetModules();
-		clientModule = await import("../../packages/intercom/broker/client.js");
-	} finally {
-		if (original === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-		else process.env.ATOMIC_CODING_AGENT_DIR = original;
-	}
-	const client = new clientModule.IntercomClient(undefined, { acknowledgesReceipt: true });
+	const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+	const client = new IntercomClient(undefined, { acknowledgesReceipt: true, brokerSocketPath: socketPath });
 	client.on("error", () => {});
 	cleanups.push(async () => {
 		await client.disconnect().catch(() => undefined);

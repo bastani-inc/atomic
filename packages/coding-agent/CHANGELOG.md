@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Intercom never connecting when one process starts a second session with a different agent directory (`ATOMIC_CODING_AGENT_DIR`): the session now starts and connects to the broker for its own directory instead of finding the first directory's broker and then querying a directory with none ([#4561](https://github.com/bastani-inc/atomic/issues/4561))
+
 ## [0.9.72] - 2026-11-08
 
 Waiting agents let go of their sessions, work resumes on any machine, and teams share storage with one command.

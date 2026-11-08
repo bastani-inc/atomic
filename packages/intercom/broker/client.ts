@@ -66,7 +66,6 @@ import {
 	workflowSendPredictionFields,
 } from "../workflow-prediction-fields.js";
 
-const BROKER_SOCKET = getBrokerSocketPath();
 /** How long `connect()` waits for the broker to answer `register`. */
 export const BROKER_CONNECT_TIMEOUT_MS = 10_000;
 /** How long an acknowledged pending-stage route registration waits for the broker's answer. */
@@ -128,8 +127,8 @@ function isLostBrokerSignature(error: Error): boolean {
  * that still answers closed the connection for its own reasons (a refused or malformed registration), so the failure
  * stays what it was.
  */
-async function classifyRegistrationFailure(error: Error): Promise<Error> {
-	if (!isLostBrokerSignature(error) || (await isSocketAnswering(BROKER_SOCKET))) return error;
+async function classifyRegistrationFailure(error: Error, socketPath: string): Promise<Error> {
+	if (!isLostBrokerSignature(error) || (await isSocketAnswering(socketPath))) return error;
 	return new IntercomBrokerRetiringError(`Intercom broker went away before it registered this session: ${error.message}`, {
     cause: error,
   });
@@ -177,6 +176,8 @@ export interface IntercomClientOptions {
 	 * refuse one run's route on its own and keep the connection open for the others.
 	 */
 	readonly multiplexesPendingStageRoutes?: true;
+	/** Broker socket this client connects to; defaults to the one for the agent directory current when it is created (#4561). */
+	readonly brokerSocketPath?: string;
 }
 
 export interface ReleasedChildReply {
@@ -372,6 +373,7 @@ export class IntercomClient extends EventEmitter {
 	private readonly preferredSessionId: string | undefined;
 	private readonly acknowledgesReceipt: boolean;
 	private readonly connectTimeoutMs: number;
+	private readonly brokerSocketPath: string;
 	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
 	private brokerAcknowledgesReceipt = false;
 	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
@@ -465,6 +467,7 @@ export class IntercomClient extends EventEmitter {
 		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
 		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
 		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
+		this.brokerSocketPath = options.brokerSocketPath ?? getBrokerSocketPath();
 	}
 
   private failPending(error: Error): void {
@@ -563,7 +566,7 @@ export class IntercomClient extends EventEmitter {
           if (attempt.signal.aborted) throw connectAborted();
           if (!(error instanceof Error)) throw error;
           if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
-            const classified = await classifyRegistrationFailure(error);
+            const classified = await classifyRegistrationFailure(error, this.brokerSocketPath);
             if (attempt.signal.aborted) throw connectAborted();
             if (expectedRouting?.verify === true && classified instanceof ConnectionClosedBeforeRegistrationError) {
               throw new IntercomRoutingUnavailableError("unsupported", "register");
@@ -596,7 +599,7 @@ export class IntercomClient extends EventEmitter {
     this.registrationExpectedRouting = expectedRouting;
 
     return new Promise((resolve, reject) => {
-      const socket = net.connect(BROKER_SOCKET);
+      const socket = net.connect(this.brokerSocketPath);
       this.socket = socket;
       this.disconnectError = null;
       let settled = false;

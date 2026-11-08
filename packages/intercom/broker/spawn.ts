@@ -51,13 +51,7 @@ export function resolveBrokerEntrypoint(packageRoot: string): string {
 }
 
 
-const INTERCOM_DIR = getIntercomDirPath();
 const EXTENSION_DIR = resolveIntercomPackageRoot(import.meta.url);
-const BROKER_SOCKET = getBrokerSocketPath();
-const BROKER_PID = getBrokerPidPath();
-const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
-const BROKER_LOG = getBrokerLogPath();
-const BROKER_START_ANNOUNCEMENT = getBrokerStartAnnouncementPath();
 
 function ensurePrivateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -155,7 +149,7 @@ function quoteWindowsArg(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-export function getWindowsHiddenLauncherPath(intercomDir: string = INTERCOM_DIR): string {
+export function getWindowsHiddenLauncherPath(intercomDir: string = getIntercomDirPath()): string {
   return join(intercomDir, "broker-launch.vbs");
 }
 
@@ -231,10 +225,10 @@ export function getBrokerLaunchSpec(
   brokerArgs: string[],
   extensionDir: string = EXTENSION_DIR,
   platform: NodeJS.Platform = process.platform,
-  intercomDir: string = INTERCOM_DIR,
+  intercomDir: string = getIntercomDirPath(),
   nodePath: string = process.execPath,
   runtime: BrokerRuntime = getCurrentBrokerRuntime(),
-  logPath: string = BROKER_LOG,
+  logPath: string = getBrokerLogPath(),
 ): BrokerLaunchSpec {
   if (platform === "win32") {
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
@@ -312,7 +306,7 @@ export const BROKER_LOG_RELEASE_WAIT_MS = 1_000;
  * Preserve a bounded previous log across truncation. Returns false when a
  * Windows launcher holds the log through its stderr redirect.
  */
-function resetBrokerLog(logPath: string = BROKER_LOG): boolean {
+function resetBrokerLog(logPath: string = getBrokerLogPath()): boolean {
   ensurePrivateDirectory(dirname(logPath));
   try {
     const previous = readBrokerLogTail(logPath);
@@ -347,7 +341,7 @@ async function resetBrokerLogOnceReleased(): Promise<boolean> {
 }
 
 /** Read at most {@link BROKER_LOG_TAIL_BYTES} trailing bytes of the broker log. */
-export function readBrokerLogTail(logPath: string = BROKER_LOG, maxBytes: number = BROKER_LOG_TAIL_BYTES): string {
+export function readBrokerLogTail(logPath: string = getBrokerLogPath(), maxBytes: number = BROKER_LOG_TAIL_BYTES): string {
   let fd: number | undefined;
   try {
     fd = openSync(logPath, "r");
@@ -372,7 +366,7 @@ export function readBrokerLogTail(logPath: string = BROKER_LOG, maxBytes: number
 }
 
 /** Path plus bounded stderr tail, appended to every broker startup failure. */
-export function describeBrokerLog(logPath: string = BROKER_LOG): string {
+export function describeBrokerLog(logPath: string = getBrokerLogPath()): string {
   const tail = readBrokerLogTail(logPath);
   if (tail.length === 0) return `Broker log: ${logPath} (empty)`;
   return `Broker log: ${logPath}\n--- broker stderr (last ${Buffer.byteLength(tail)} bytes) ---\n${tail}`;
@@ -388,7 +382,7 @@ export async function spawnBrokerIfNeeded(
   readyTimeoutMs: number = BROKER_READY_TIMEOUT_MS,
   extensionDir: string = EXTENSION_DIR,
 ): Promise<void> {
-  ensurePrivateDirectory(INTERCOM_DIR);
+  ensurePrivateDirectory(getIntercomDirPath());
 
   if (await isBrokerRunning()) {
     return;
@@ -425,7 +419,7 @@ async function spawnBrokerHoldingLock(
     // The Windows launcher hides the broker's pid and exit, so there the broker announces its pid, which this watches.
     // Elsewhere the child is the broker and its exit event says how it ended.
     const announcement: BrokerStartAnnouncement | undefined =
-      launch.kind === "windows-launcher" ? { path: BROKER_START_ANNOUNCEMENT, token: randomUUID() } : undefined;
+      launch.kind === "windows-launcher" ? { path: getBrokerStartAnnouncementPath(), token: randomUUID() } : undefined;
     if (announcement !== undefined) {
       try {
         unlinkSync(announcement.path);
@@ -444,7 +438,7 @@ async function spawnBrokerHoldingLock(
     // The Windows launcher redirects the broker's own stderr, so only the direct spawn
     // needs the descriptor. Node duplicates it during spawn, so the parent copy is closed
     // immediately afterwards rather than being held open for the broker's lifetime.
-    const logFd = launch.kind === "direct" ? openSync(BROKER_LOG, "a") : undefined;
+    const logFd = launch.kind === "direct" ? openSync(getBrokerLogPath(), "a") : undefined;
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(launch.command, launch.args, getBrokerSpawnOptions(extensionDir, logFd ?? "ignore", announcement));
@@ -554,7 +548,7 @@ export async function upgradeBroker(
   own: BrokerProtocolRange = BROKER_PROTOCOL,
   stopTimeoutMs: number = BROKER_UPGRADE_STOP_TIMEOUT_MS,
 ): Promise<BrokerUpgradeOutcome> {
-  ensurePrivateDirectory(INTERCOM_DIR);
+  ensurePrivateDirectory(getIntercomDirPath());
   const acquired = await acquireSpawnLockWithin(readyTimeoutMs + stopTimeoutMs);
   if (acquired === undefined) return "busy";
   let lockOwner = acquired;
@@ -564,7 +558,7 @@ export async function upgradeBroker(
     return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false);
   };
   try {
-    const answer = await controlRequest(BROKER_SOCKET, "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
+    const answer = await controlRequest(getBrokerSocketPath(), "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
     if (!answer.connected) {
       await spawnHoldingLock();
       return "started";
@@ -580,7 +574,7 @@ export async function upgradeBroker(
     if (report.storage?.digest !== successorStorageDigest()) return "storage-differs";
     const failed = (phase: "stop" | "start", cause?: Error): IntercomBrokerUpgradeError =>
       new IntercomBrokerUpgradeError({ phase, previousPid: report.pid, previousProtocolMax: running.max }, { cause });
-    if ((await requestBrokerShutdown(BROKER_SOCKET)) === "unanswered") throw failed("stop");
+    if ((await requestBrokerShutdown(getBrokerSocketPath())) === "unanswered") throw failed("stop");
     try {
       await waitForBrokerExit(report.pid, stopTimeoutMs, () => {
         lockOwner = renewSpawnLock(lockOwner);
@@ -605,7 +599,7 @@ export async function upgradeBroker(
 
 /** The digest of the shared storage selection a broker started from this process reads, as its `broker_status` reports it. */
 function successorStorageDigest(): string | undefined {
-  const setting = readSharedStorageSetting(dirname(INTERCOM_DIR), {
+  const setting = readSharedStorageSetting(dirname(getIntercomDirPath()), {
     [BROKER_STORAGE_ENV]: processSharedStorageSelection() ?? "",
   });
   return setting === undefined ? undefined : sharedStorageDigest(setting);
@@ -626,10 +620,10 @@ async function isBrokerRunning(): Promise<boolean> {
     return true;
   }
 
-  if (!existsSync(BROKER_PID)) return false;
+  if (!existsSync(getBrokerPidPath())) return false;
 
   try {
-    const pid = parseInt(readFileSync(BROKER_PID, "utf-8").trim(), 10);
+    const pid = parseInt(readFileSync(getBrokerPidPath(), "utf-8").trim(), 10);
     if (!Number.isFinite(pid)) return false;
     process.kill(pid, 0);
     return checkSocketConnectable();
@@ -640,14 +634,14 @@ async function isBrokerRunning(): Promise<boolean> {
 }
 
 function checkSocketConnectable(): Promise<boolean> {
-  return isSocketAnswering(BROKER_SOCKET);
+  return isSocketAnswering(getBrokerSocketPath());
 }
 
 /** Records the still-starting broker on the lock so staleness follows that process instead of the spawner. */
 function handSpawnLockToBroker(pid: number | undefined, owner: string): boolean {
   if (pid === undefined || !ownsSpawnLock(owner)) return false;
   try {
-    appendFileSync(BROKER_SPAWN_LOCK, `${pid}\n`);
+    appendFileSync(getBrokerSpawnLockPath(), `${pid}\n`);
     return true;
   } catch {
     // The startup error must still reach the caller; an unrecorded lock is released like any other.
@@ -667,17 +661,17 @@ function renewSpawnLock(owner: string, nowMs: number = Date.now()): string {
   const writtenAt = Number.parseInt(owner.split("\n")[1] ?? "", 10);
   if (nowMs - writtenAt < SPAWN_LOCK_RENEW_AFTER_MS || !ownsSpawnLock(owner)) return owner;
   const renewed = `${process.pid}\n${nowMs}\n`;
-  const staged = `${BROKER_SPAWN_LOCK}.${process.pid}.renew`;
+  const staged = `${getBrokerSpawnLockPath()}.${process.pid}.renew`;
   try {
     writeFileSync(staged, renewed);
-    renameSync(staged, BROKER_SPAWN_LOCK);
+    renameSync(staged, getBrokerSpawnLockPath());
     return renewed;
   } catch {
     return owner;
   }
 }
 
-function ownsSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_LOCK): boolean {
+function ownsSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): boolean {
   try {
     return readFileSync(lockPath, "utf-8").startsWith(owner);
   } catch {
@@ -691,7 +685,7 @@ function acquireSpawnLock(): string | undefined {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const owner = `${process.pid}\n${Date.now()}\n`;
     try {
-      writeFileSync(BROKER_SPAWN_LOCK, owner, { flag: "wx" });
+      writeFileSync(getBrokerSpawnLockPath(), owner, { flag: "wx" });
       return owner;
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -699,7 +693,7 @@ function acquireSpawnLock(): string | undefined {
       }
       if (isSpawnLockStale()) {
         try {
-          unlinkSync(BROKER_SPAWN_LOCK);
+          unlinkSync(getBrokerSpawnLockPath());
         } catch {
           // If we can't delete the stale lock, retry a few times before giving up
         }
@@ -724,7 +718,7 @@ function isProcessAlive(pid: number): boolean {
  * A lock is stale once the broker it recorded is gone, or, while no broker is recorded, once its
  * spawner is gone. A live broker keeps the lock even if its spawner died, until the age backstop.
  */
-export function isSpawnLockStale(lockPath: string = BROKER_SPAWN_LOCK, nowMs: number = Date.now()): boolean {
+export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), nowMs: number = Date.now()): boolean {
   if (!existsSync(lockPath)) {
     return false;
   }
@@ -745,7 +739,7 @@ export function isSpawnLockStale(lockPath: string = BROKER_SPAWN_LOCK, nowMs: nu
 }
 
 /** Removes the lock only while it is still the one `owner` wrote; a spawner that replaced a stale lock keeps its own. */
-export function releaseSpawnLock(owner: string, lockPath: string = BROKER_SPAWN_LOCK): void {
+export function releaseSpawnLock(owner: string, lockPath: string = getBrokerSpawnLockPath()): void {
   if (!ownsSpawnLock(owner, lockPath)) return;
   try {
     unlinkSync(lockPath);
