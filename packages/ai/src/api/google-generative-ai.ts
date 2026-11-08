@@ -94,7 +94,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const client = createClient(model, apiKey, options?.headers, options?.identity);
-			recordGoogleThinkingOffFallback(model, options, output);
+			recordGoogleThinkingOffFallback(model, options, output, (level) => getGoogleBudget(model, level));
 			let params = buildParams(model, normalizedContext, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -408,7 +408,7 @@ function buildParams(
 		}
 		config.thinkingConfig = thinkingConfig;
 	} else if (model.reasoning && options.thinking && !options.thinking.enabled) {
-		config.thinkingConfig = getDisabledGoogleThinkingConfig(model);
+		config.thinkingConfig = getDisabledGoogleThinkingConfig(model, (level) => getGoogleBudget(model, level));
 	}
 
 	if (options.signal) {

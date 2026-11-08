@@ -1385,9 +1385,10 @@ function getGoogleThinkingLevelMap(
 
 /**
  * Azure serves the same OpenAI models, but its copies are made before the OpenAI thinking maps are
- * complete. Copy the efforts the OpenAI map lists, except `xhigh` and `max`: an entry naming a level the
- * copy already offers changes no request, while `null` masks, `xhigh` and `max` would change which levels
- * Azure offers. This is what lets thinking `off` send `none`, or fall back to a listed effort, on Azure.
+ * complete. Copy the OpenAI map's `off` entry and the efforts it lists, except `xhigh` and `max`: an entry
+ * naming a level the copy already offers changes no request, and `off` changes only thinking `off`, while
+ * other `null` masks, `xhigh` and `max` would change which levels Azure offers. This is what lets thinking
+ * `off` send `none`, or fall back to a listed effort, on Azure.
  */
 function applyAzureOpenAIListedEfforts(models: readonly Model<any>[]): void {
 	const openAIThinkingLevelMaps = new Map(
@@ -1397,10 +1398,10 @@ function applyAzureOpenAIListedEfforts(models: readonly Model<any>[]): void {
 	);
 	for (const model of models) {
 		if (model.provider !== "azure" || model.api !== "azure-openai-responses") continue;
-		const listed = Object.entries(openAIThinkingLevelMaps.get(model.id) ?? {}).filter(
-			([level, value]) => typeof value === "string" && level !== "xhigh" && level !== "max",
+		const copied = Object.entries(openAIThinkingLevelMaps.get(model.id) ?? {}).filter(
+			([level, value]) => level === "off" || (typeof value === "string" && level !== "xhigh" && level !== "max"),
 		);
-		if (listed.length > 0) mergeThinkingLevelMap(model, Object.fromEntries(listed));
+		if (copied.length > 0) mergeThinkingLevelMap(model, Object.fromEntries(copied));
 	}
 }
 
@@ -1532,6 +1533,11 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	// https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash
 	if ((model.api === "google-generative-ai" || model.api === "google-vertex") && /gemini-3\.8-flash/.test(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: null });
+	}
+	// Gemini 2.5 Pro cannot turn thinking off: its smallest thinking budget is 128 tokens and it rejects a zero
+	// budget. Deny `off` so thinking `off` runs at the smallest budget instead.
+	if ((model.api === "google-generative-ai" || model.api === "google-vertex") && /gemini-2\.5-pro/.test(model.id)) {
+		mergeThinkingLevelMap(model, { off: null });
 	}
 	if (model.provider === "groq" && model.id === "qwen/qwen3.6-27b") {
 		mergeThinkingLevelMap(model, { minimal: null, low: null, medium: null, high: "default" });

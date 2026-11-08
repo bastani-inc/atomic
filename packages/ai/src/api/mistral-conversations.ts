@@ -25,6 +25,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
+import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { getCurrentTools, resolveTranscript } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { buildBaseOptions } from "./simple-options.ts";
@@ -149,7 +150,12 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 				normalizeMistralToolCallId(id),
 			);
 
-			let payload = buildChatPayload(model, normalizedContext, transformedMessages, options);
+			let payload = buildChatPayload(
+				model,
+				normalizedContext,
+				transformedMessages,
+				resolveThinkingOffOptions(model, options, output),
+			);
 			const nextPayload = await options?.onPayload?.(payload, model);
 			if (nextPayload !== undefined) {
 				payload = nextPayload as MistralChatPayload;
@@ -190,6 +196,20 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 
 	return stream;
 };
+
+/**
+ * A request without a reasoning setting is thinking `off`. On a model whose thinking map denies `off`, it runs
+ * at the lowest level the map lists an effort for, the same request as selecting that level.
+ */
+function resolveThinkingOffOptions(
+	model: Model<"mistral-conversations">,
+	options: MistralOptions | undefined,
+	output: AssistantMessage,
+): MistralOptions | undefined {
+	if (options?.reasoningEffort || options?.promptMode) return options;
+	const level = recordThinkingOffFallback(model, output);
+	return level ? { ...options, reasoningEffort: model.thinkingLevelMap?.[level] as MistralReasoningEffort } : options;
+}
 
 /**
  * Maps provider-agnostic `SimpleStreamOptions` to Mistral options.
