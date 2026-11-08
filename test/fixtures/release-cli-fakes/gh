@@ -17,6 +17,9 @@
 #   dropped-connection    fails the way gh reports a connection closed without a response
 #                         (Go's `<Method> "<url>": EOF`), changing nothing
 #   partial-upload        (create only) leaves a draft with three assets, then fails with HTTP 502
+#
+# `gh release create` keeps its --notes-file body in release.body and, like GitHub,
+# rejects a body longer than 125000 characters.
 set -euo pipefail
 state=${RELEASE_FAKE_STATE:?RELEASE_FAKE_STATE is required}
 printf 'gh %s\n' "$*" >>"$state/calls.log"
@@ -95,9 +98,14 @@ create)
     exit 1
   fi
   assets=()
+  notes_file=
   while (($#)); do
     case $1 in
-    --title | --notes-file | --notes | --target)
+    --notes-file)
+      notes_file=$2
+      shift 2
+      ;;
+    --title | --notes | --target)
       shift 2
       ;;
     --*) shift ;;
@@ -107,6 +115,12 @@ create)
       ;;
     esac
   done
+  if [[ -n "$notes_file" ]] && (($(LC_ALL=C.UTF-8 wc -m <"$notes_file") > 125000)); then
+    echo "HTTP 422: Validation Failed ($api)" >&2
+    echo "body is too long (maximum is 125000 characters)" >&2
+    exit 1
+  fi
+  [[ -z "$notes_file" ]] || cp "$notes_file" "$state/release.body"
   echo draft >"$state/release.state"
   if [[ "$outcome" == partial-upload ]]; then
     printf '%s\n' "${assets[@]:0:3}" >"$state/release.assets"

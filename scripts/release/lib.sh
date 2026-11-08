@@ -108,3 +108,30 @@ delete_release() {
   [[ "$(release_state "$1")" != missing ]] || return 0
   return "$status"
 }
+
+GITHUB_RELEASE_BODY_LIMIT=125000
+
+# fit_release_notes FILE TAG REPO: shorten FILE in place when it is longer than
+# GitHub accepts for a release body. The summary that opens the notes (the text
+# before the collapsed `<details>` block) stays, and the merged sections are
+# replaced by a link to each package's CHANGELOG.md at TAG. Fails when even
+# that is too long.
+fit_release_notes() {
+  local file=$1 tag=$2 repo=$3 summary pointer
+  (($(LC_ALL=C.UTF-8 wc -m <"$file") > GITHUB_RELEASE_BODY_LIMIT)) || return 0
+  summary=
+  if grep -qx '<details>' "$file"; then
+    summary=$(sed '/^<details>$/,$d' "$file")
+  fi
+  pointer="The full changelog is longer than a GitHub Release allows. Each package's changes for $tag are in its CHANGELOG.md under [packages/](https://github.com/$repo/tree/$tag/packages)."
+  if [[ -n "${summary//[[:space:]]/}" ]]; then
+    printf '%s\n\n%s\n' "$summary" "$pointer" >"$file"
+  else
+    printf '%s\n' "$pointer" >"$file"
+  fi
+  if (($(LC_ALL=C.UTF-8 wc -m <"$file") > GITHUB_RELEASE_BODY_LIMIT)); then
+    echo "The release notes summary for $tag is longer than the $GITHUB_RELEASE_BODY_LIMIT characters GitHub allows." >&2
+    return 1
+  fi
+  echo "::warning::The release notes for $tag exceed GitHub's $GITHUB_RELEASE_BODY_LIMIT-character limit; the release body keeps the summary and links to the package changelogs."
+}
