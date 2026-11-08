@@ -2,6 +2,7 @@ import type { ProviderHeaders } from "@bastani/pi-ai";
 import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionSettings } from "./compaction.ts";
+import type { DroppedProtectedSpans } from "./protected-overflow.js";
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 6 as const;
 /** First prompt version whose durable transcripts carry no `[Assistant thinking]: ` sections. */
@@ -140,6 +141,8 @@ export interface VerbatimCompactionDetails {
 	plannerModel?: CompactionPlannerModel;
 	/** Present only on a fresh rung reached after planning failed, e.g. `Compaction planning timed out after 300000 ms`. */
 	freshReason?: string;
+	/** Present only when the fresh rung dropped protected spans because they alone exceeded the hard input limit. */
+	droppedProtected?: DroppedProtectedSpans;
 	backupPath?: string;
 }
 
@@ -169,6 +172,8 @@ export interface VerbatimCompactionResult {
 	plannerModel?: CompactionPlannerModel;
 	/** Present only on a fresh rung reached after planning failed: why no planner could rank the lines. */
 	freshReason?: string;
+	/** Present only when the fresh rung dropped protected spans because they alone exceeded the hard input limit. */
+	droppedProtected?: DroppedProtectedSpans;
 	/** Aggregate usage across every planner request and retry in this compaction. */
 	usage?: Usage;
 	backupPath?: string;

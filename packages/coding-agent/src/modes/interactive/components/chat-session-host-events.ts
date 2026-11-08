@@ -2,6 +2,7 @@ import type { AgentSession, AgentSessionEvent } from "../../../core/agent-sessio
 import type { CompactionReason } from "../../../core/agent-session-types.js";
 import {
 	type CompactionRung,
+	droppedProtectedWarning,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
@@ -17,6 +18,7 @@ import { flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts"
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
+	notifyChatSessionWarning,
 	startChatSessionWorkingLifecycle,
 	stopChatSessionWorkingLifecycle,
 } from "./chat-session-host-runtime.ts";
@@ -268,6 +270,9 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			// destruction behind an error line. Show the boundary, then the status.
 			if (!compaction.aborted && compaction.result) {
 				refreshCompactedTranscript(state, compaction.result);
+				if (compaction.result.droppedProtected) {
+					notifyChatSessionWarning(state, droppedProtectedWarning(compaction.result.droppedProtected));
+				}
 			}
 			if (!manualTakeoverPending && state.compactionQueuedMessages.length > 0) {
 				void flushChatSessionCompactionQueue(state);

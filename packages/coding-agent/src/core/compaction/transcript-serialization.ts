@@ -190,7 +190,7 @@ export function omitLegacyThinkingSections(text: string): string {
  * matching, and the remainder must be the whole line — prose that mentions a tag mid-sentence is
  * payload, not syntax.
  */
-function keepContextMarker(line: string): "open" | "close" | undefined {
+export function keepContextMarker(line: string): "open" | "close" | undefined {
 	const body = line.replace(ROLE_HEADER_RE, "").trim();
 	if (KEEP_CONTEXT_OPEN_LINE_RE.test(body)) return "open";
 	if (KEEP_CONTEXT_CLOSE_LINE_RE.test(body)) return "close";

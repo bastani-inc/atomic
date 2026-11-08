@@ -26,6 +26,8 @@ import {
 	withRecalledContext,
 } from "./compaction/index.ts";
 import { resolveCompactionModel } from "./compaction/model-resolver.js";
+import type { DroppedProtectedSpans } from "./compaction/protected-overflow.js";
+import { reportDebug } from "./debug.ts";
 import type {
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
@@ -207,6 +209,7 @@ export async function planVerbatimCompaction(
 	const plan: CompactionPlanOptions = {
 		streamFn: this.agent.streamFunction,
 		sessionFilePath: this.sessionManager.getSessionFile(),
+		sessionId: this.sessionManager.getSessionId(),
 		retry: this.settingsManager.getRetrySettings(),
 		callbacks: createSummarizationRetryCallbacks(this, { source: "compaction", reason: options.reason }),
 	};
@@ -225,6 +228,7 @@ export async function planVerbatimCompaction(
 				summaryFirstKeptEntryId?: string;
 				summaryTokensBefore?: number;
 				freshReason?: string;
+				droppedProtected?: DroppedProtectedSpans;
 		  }
 		| undefined;
 
@@ -312,6 +316,7 @@ export async function planVerbatimCompaction(
 			...(run.summaryFirstKeptEntryId ? { summaryFirstKeptEntryId: run.summaryFirstKeptEntryId } : {}),
 			...(run.summaryTokensBefore !== undefined ? { summaryTokensBefore: run.summaryTokensBefore } : {}),
 			...(run.freshReason ? { freshReason: run.freshReason } : {}),
+			...(run.droppedProtected ? { droppedProtected: run.droppedProtected } : {}),
 		};
 	}
 	assertCompactionOpen(this);
@@ -334,6 +339,15 @@ export async function planVerbatimCompaction(
 		if (recalled) compacted = { ...compacted, ...recalled };
 	}
 
+	if (compacted.droppedProtected) {
+		reportDebug("compaction", "protected-spans-dropped", {
+			sessionId: this.sessionManager.getSessionId(),
+			rung: compacted.rung,
+			count: compacted.droppedProtected.count,
+			lines: compacted.droppedProtected.lines,
+		});
+	}
+
 	// A fresh rung that had to drop the protected tail persists no tail boundary.
 	const firstKeptEntryId =
 		compacted.summaryFirstKeptEntryId ?? (compacted.keptTail ? preparation.firstKeptEntryId : null);
@@ -352,6 +366,7 @@ export async function planVerbatimCompaction(
 			...(compacted.model ? { model: compacted.model } : {}),
 			...(compacted.summary ? { summary: compacted.summary } : {}),
 			...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
+			...(compacted.droppedProtected ? { droppedProtected: compacted.droppedProtected } : {}),
 		},
 		...(compacted.usage ? { usage: compacted.usage } : {}),
 		fromExtension,
@@ -412,6 +427,7 @@ export async function finishVerbatimCommit(
 		...(details.model ? { model: details.model } : {}),
 		...(details.summary ? { summary: details.summary } : {}),
 		...(details.freshReason ? { freshReason: details.freshReason } : {}),
+		...(details.droppedProtected ? { droppedProtected: details.droppedProtected } : {}),
 		...(planned.usage ? { usage: planned.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};

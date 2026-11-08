@@ -1,5 +1,6 @@
 import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
 import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
+import { droppedProtectedWarning } from "../../core/compaction/index.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
@@ -471,6 +472,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
 				this.addCompactionBoundaryToChat(event.result);
 				if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
+				if (event.result.droppedProtected) this.showWarning(droppedProtectedWarning(event.result.droppedProtected));
 				if (event.cacheMiss && this.settingsManager.getShowCacheMissNotices()) {
 					this.chatContainer.addChild(
 						new Text(

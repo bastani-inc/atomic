@@ -33,6 +33,7 @@ import type { CompactionModelSelection } from "./model-resolver.js";
 import { planMorphRanges } from "./morph-compaction.js";
 import { runPiSummaryFallback } from "./pi-summary-fallback.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
+import { type DroppedProtectedSpans, dropProtectedSpansToFit } from "./protected-overflow.js";
 import {
 	MALFORMED_OUTPUT_MESSAGE,
 	NO_USABLE_RANGES_MESSAGE,
@@ -48,6 +49,8 @@ export interface CompactionPlanOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
 	sessionFilePath?: string;
+	/** Id of the session being compacted; names where a dropped protected block can be recalled. */
+	sessionId?: string;
 	retry?: RetryPolicy;
 	callbacks?: RetryCallbacks;
 }
@@ -98,12 +101,15 @@ export type CompactionRungResult = CompactedTranscript & {
 	summaryTokensBefore?: number;
 	/** Present only on the fresh rung after planning failed: why no planner could rank the lines. */
 	freshReason?: string;
+	/** Present only when protected spans alone exceeded the hard input limit and the fresh rung dropped some. */
+	droppedProtected?: DroppedProtectedSpans;
 };
 
 /** Runner-internal fresh-window build: the transcript plus the tail decision. */
 interface FreshWindowBuild {
 	transcript: CompactedTranscript;
 	keptTail: boolean;
+	droppedProtected?: DroppedProtectedSpans;
 }
 
 function addUsage(total: Usage | undefined, usage: Usage): Usage {
@@ -188,7 +194,11 @@ function buildFreshTranscript(preparation: VerbatimCompactionPreparation): Compa
 	return reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
 }
 
-function buildFreshContextWindow(preparation: VerbatimCompactionPreparation, hardInputLimit: number): FreshWindowBuild {
+function buildFreshContextWindow(
+	preparation: VerbatimCompactionPreparation,
+	hardInputLimit: number,
+	sessionId: string | undefined,
+): FreshWindowBuild {
 	const limit = Number.isFinite(hardInputLimit) && hardInputLimit > 0 ? hardInputLimit : Number.POSITIVE_INFINITY;
 	// The rule is "tail under the limit ⇒ tail kept", so the comparison is the
 	// tail alone. Explicit protected lines are a hard floor that survives either
@@ -200,7 +210,17 @@ function buildFreshContextWindow(preparation: VerbatimCompactionPreparation, har
 	const keptTail =
 		preparation.keptTailMessageCount === 0 ||
 		(hasKeptTailTokenEstimate(preparation) && getKeptTailTokenEstimate(preparation) <= limit);
-	return { transcript: buildFreshTranscript(preparation), keptTail };
+	const transcript = buildFreshTranscript(preparation);
+	// Every unprotected line is gone here, so protected spans are the only thing left to remove.
+	// The tail decision above is final; the tail only counts against what the spans may occupy.
+	const fit = dropProtectedSpansToFit({
+		region: preparation.region,
+		fresh: transcript,
+		hardInputLimit: limit,
+		keptTailTokens: keptTail ? getKeptTailTokenEstimate(preparation) : 0,
+		...(sessionId === undefined ? {} : { sessionId }),
+	});
+	return fit ? { transcript: fit.transcript, keptTail, droppedProtected: fit.dropped } : { transcript, keptTail };
 }
 
 /**
@@ -387,16 +407,18 @@ function terminalMessage(outcome: TerminalPlannerOutcome | undefined): string | 
 function freshResult(
 	preparation: VerbatimCompactionPreparation,
 	hardInputLimit: number,
+	sessionId: string | undefined,
 	usage?: Usage,
 	freshReason?: string,
 ): CompactionRungResult {
-	const fresh = buildFreshContextWindow(preparation, hardInputLimit);
+	const fresh = buildFreshContextWindow(preparation, hardInputLimit, sessionId);
 	return {
 		...withWholeContextStats(fresh.transcript, preparation, fresh.keptTail),
 		rung: "fresh",
 		keptTail: fresh.keptTail,
 		...(usage ? { usage } : {}),
 		...(freshReason ? { freshReason } : {}),
+		...(fresh.droppedProtected ? { droppedProtected: fresh.droppedProtected } : {}),
 	};
 }
 
@@ -517,7 +539,7 @@ async function runCompactionLadder(
 	// preparation this small; recoverable callers were refused before the runner.
 	if (preparation.region.lines.length < MIN_COMPACTABLE_REGION_LINES) {
 		if (request.urgency !== "load_bearing") throw new RangePlanError(NO_USABLE_RANGES_MESSAGE, 0, "", false);
-		return freshResult(preparation, hardInputLimit);
+		return freshResult(preparation, hardInputLimit, request.sessionId);
 	}
 
 	const selection = request.compactionModel ?? { kind: "chat", fullId: `${model.provider}/${model.id}`, model };
@@ -668,5 +690,5 @@ async function runCompactionLadder(
 
 	if (timeLimit.expired()) lastTerminal = timeLimit.outcome;
 	if (request.urgency !== "load_bearing") throw terminalError(lastTerminal);
-	return freshResult(preparation, hardInputLimit, plannerUsage, terminalMessage(lastTerminal));
+	return freshResult(preparation, hardInputLimit, request.sessionId, plannerUsage, terminalMessage(lastTerminal));
 }

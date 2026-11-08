@@ -14,6 +14,7 @@ export * from "./history-recall.js";
 export * from "./model-resolver.js";
 export * from "./pi-summary-fallback.js";
 export * from "./planner-outcome.js";
+export * from "./protected-overflow.js";
 export * from "./range-planner.js";
 export * from "./range-planner-diagnostics.js";
 export * from "./region-trimming.js";

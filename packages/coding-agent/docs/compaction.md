@@ -82,7 +82,7 @@ The planner lists its deletions in priority order, lowest continuation value fir
 
 ### Protected structure
 
-Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
+Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted, with one last-resort exception: when a [fresh context window](#the-fresh-context-window-rung) is the only option left and the protected spans alone still exceed the provider's hard input limit, whole spans are removed, oldest first. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
 
 Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text is capped at 2,000 characters before the planner sees it and before it becomes durable compaction text. The truncation marker says the full output is in this session's history, where the agent can reach it through `history://sessions/<sessionId>` as described above.
 
@@ -100,14 +100,14 @@ You are researching only. Do not implement code changes.
 </keepContext>
 ```
 
-Protection includes the tags and survives repeated compaction, even if the planner ignores its instructions.
+Protection includes the tags and survives repeated compaction, even if the planner ignores its instructions. The only exception is the last-resort removal described under [the fresh context window rung](#the-fresh-context-window-rung).
 
 - Put each tag on its own line. Tags mentioned inside prose do not protect content.
 - A span stays within one user or assistant message. An unclosed span protects through that message's end; a closing tag without an opener is ignored.
 - Tags in tool results have no effect. Restate important file or fetched content in your own message.
 - Protected content counts toward the keep target. Protect only essential constraints, since protecting more leaves less room for surrounding context.
 
-Results report protected ranges as `keptRanges`.
+Results report protected ranges as `keptRanges`, and any protected spans removed as a last resort as `droppedProtected`.
 
 ## Compaction model
 
@@ -214,7 +214,9 @@ Automatic compaction (threshold, overflow recovery and post-tool preflight) give
 
 ### The fresh context window rung
 
-If all configured planners fail during overflow recovery or post-tool preflight, Atomic can discard older compactable conversation and its prior summary. Explicit protected spans and the recent tail remain, unless the tail alone exceeds the provider's hard input limit. A region too small to plan is cleared only when known not to fit; a post-tool threshold crossing that still fits leaves it unchanged.
+If all configured planners fail during overflow recovery or post-tool preflight, Atomic can discard older compactable conversation and its prior summary. Explicit protected spans and the recent tail remain, unless the tail alone exceeds the provider's hard input limit.
+
+Protected spans are removed only when nothing else is left to remove and the rebuilt context, spans plus any kept tail, still exceeds the hard input limit. Atomic then drops whole spans, oldest first and only as many as needed to leave a safety margin below the limit, and never touches them on any other rung. Each removed span becomes one line, `[protected block removed to fit the context window: N lines; recall with search on history://sessions/<sessionId> for "<quote>", then read the match with :N-M]`. The quote is the start of the block's first line of content, not its `<keepContext>` tag. The agent can `search` that session history for it and `read` the match to restore the text. Atomic shows a warning with the number of blocks and lines, and records them as `details.droppedProtected` (`count`, `lines` and the removed `ranges`). A region too small to plan is cleared only when known not to fit; a post-tool threshold crossing that still fits leaves it unchanged.
 
 The chat shows `✻ Context cleared (compaction degraded)` rather than `✻ Context compacted`, and results record `details.rung: "fresh"`. When planning failed first, `details.freshReason` names the cause, for example `Compaction planning timed out after 300000 ms` or the last planner's provider error. Check what context remains before continuing important work.
 

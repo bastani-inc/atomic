@@ -53,9 +53,17 @@ const RUN: CompactionRungResult = {
 	model: "faux/borrowed",
 	summary: { readFiles: ["read.ts"], modifiedFiles: ["changed.ts"] },
 	freshReason: "Compaction planning timed out after 1 ms",
+	droppedProtected: {
+		count: 2,
+		lines: 7,
+		ranges: [
+			{ start: 3, end: 5 },
+			{ start: 9, end: 12 },
+		],
+	},
 };
 
-const { summary: _summary, freshReason: _freshReason, ...plannedFields } = RUN;
+const { summary: _summary, freshReason: _freshReason, droppedProtected: _droppedProtected, ...plannedFields } = RUN;
 const PLANNED_RUN: CompactionRungResult = { ...plannedFields, rung: "planned", backend: "planner" };
 
 interface AuthRequest {
@@ -135,7 +143,9 @@ describe("verbatim compaction plan and commit (#4330)", () => {
 		assert.equal(result.model, "faux/borrowed");
 		assert.deepEqual(result.summary, RUN.summary);
 		assert.equal(result.freshReason, RUN.freshReason);
+		assert.deepEqual(result.droppedProtected, RUN.droppedProtected);
 		assert.deepEqual(result.usage, PLANNER_USAGE);
+		assert.equal(vi.mocked(runVerbatimCompaction).mock.calls[0]?.[2].sessionId, harness.session.sessionId);
 
 		const boundary = boundaryOf(harness);
 		const details = boundary.details as Record<string, unknown>;
@@ -144,6 +154,7 @@ describe("verbatim compaction plan and commit (#4330)", () => {
 		assert.equal(details.model, "faux/borrowed");
 		assert.deepEqual(details.summary, RUN.summary);
 		assert.equal(details.freshReason, RUN.freshReason);
+		assert.deepEqual(details.droppedProtected, RUN.droppedProtected);
 		assert.deepEqual(boundary.usage, PLANNER_USAGE);
 	});
 

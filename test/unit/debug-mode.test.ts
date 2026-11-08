@@ -55,6 +55,7 @@ describe("isDebugEnabled (#4360)", () => {
 			"pooled-watch": "ATOMIC_DEBUG_POOLED_WATCH",
 			pool: undefined,
 			storage: undefined,
+			compaction: undefined,
 		});
 	});
 
