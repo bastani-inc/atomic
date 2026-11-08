@@ -1367,30 +1367,26 @@ function buildOpenAiReasoningOffFields(
 	return undefined;
 }
 
-interface RequestedThinkingFields {
+interface RequestedThinkingEffort {
 	output_config?: { effort?: string };
 	reasoning_effort?: string;
 	reasoning?: { effort?: string };
-	thinking?: { budget_tokens?: number };
 }
 
 /**
- * The effort or budget `additionalModelRequestFields` asks for: Claude's `output_config.effort` or
- * `thinking.budget_tokens`, or an OpenAI model's `reasoning_effort` or `reasoning.effort`.
+ * The effort `additionalModelRequestFields` asks for: Claude's `output_config.effort`, or an OpenAI model's
+ * `reasoning_effort` or `reasoning.effort`.
  */
-function getRequestedThinkingLevel(fields: RequestedThinkingFields | undefined): string | undefined {
-	const effort =
-		fields?.output_config?.effort ??
-		fields?.reasoning_effort ??
-		fields?.reasoning?.effort ??
-		fields?.thinking?.budget_tokens;
-	return effort === undefined ? undefined : String(effort);
+function getRequestedThinkingEffort(fields: RequestedThinkingEffort | undefined): string | undefined {
+	return fields?.output_config?.effort ?? fields?.reasoning_effort ?? fields?.reasoning?.effort;
 }
 
 /**
  * A request without a reasoning level is thinking `off`. A model whose thinking map denies `off` runs at its
- * lowest supported level instead, the same request as selecting that level, when that level sends an effort
- * or budget. The fallback is recorded on `output`.
+ * lowest supported level instead, the same request as selecting that level, when that level sends an effort.
+ * A budget-thinking Claude model keeps sending no thinking fields, which already means no thinking, because
+ * its level request also depends on the token adjustments `streamSimple` makes. The fallback is recorded on
+ * `output`.
  */
 function resolveThinkingOffOptions(
 	model: Model<"bedrock-converse-stream">,
@@ -1400,7 +1396,7 @@ function resolveThinkingOffOptions(
 	const level = options.reasoning ? undefined : getThinkingOffFallbackLevel(model);
 	if (level === undefined) return options;
 	const reasoningOptions = { ...options, reasoning: level };
-	const providerThinkingLevel = getRequestedThinkingLevel(buildAdditionalModelRequestFields(model, reasoningOptions));
+	const providerThinkingLevel = getRequestedThinkingEffort(buildAdditionalModelRequestFields(model, reasoningOptions));
 	if (providerThinkingLevel === undefined) return options;
 	appendThinkingOffFallbackDiagnostic(output, level, providerThinkingLevel);
 	return reasoningOptions;

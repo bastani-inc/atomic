@@ -31,6 +31,7 @@ import type {
 	TextContent,
 	ThinkingBudgets,
 	ThinkingContent,
+	ThinkingLevel,
 	ThinkingTokenBudgetField,
 	Tool,
 	ToolCall,
@@ -54,7 +55,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
-import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import { recordLowestThinkingOffFallback, recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import {
 	getDeclaredTools,
 	resolveTranscript,
@@ -415,7 +416,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				compat,
 				options?.apiKey,
 			);
-			const thinkingOffFallback = options?.reasoningEffort ? undefined : recordThinkingOffFallback(model, output);
+			const thinkingOffFallback = options?.reasoningEffort
+				? undefined
+				: recordCompletionsThinkingOffFallback(model, compat, output);
 			const reasoningOptions = thinkingOffFallback ? { ...options, reasoningEffort: thinkingOffFallback } : options;
 			let params = buildParams(
 				model,
@@ -794,6 +797,21 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 	return stream;
 };
 
+/**
+ * OpenRouter maps any gateway effort onto the efforts the routed model supports, so thinking `off` there runs
+ * at the lowest supported level even when the thinking map lists no effort for it. Other formats send the
+ * map's value as the effort and need it listed.
+ */
+function recordCompletionsThinkingOffFallback(
+	model: Model<"openai-completions">,
+	compat: ResolvedOpenAICompletionsCompat,
+	output: AssistantMessage,
+): ThinkingLevel | undefined {
+	return compat.thinkingFormat === "openrouter"
+		? recordLowestThinkingOffFallback(model, output)
+		: recordThinkingOffFallback(model, output);
+}
+
 export const streamSimple: StreamFunction<"openai-completions", SimpleStreamOptions> = (
 	model: Model<"openai-completions">,
 	context: TranscriptContext,
@@ -999,7 +1017,10 @@ function buildParams(
 			thinking?: { type: "enabled" | "disabled"; clear_thinking?: boolean };
 			reasoning_effort?: string;
 		};
-		zaiParams.thinking = options?.reasoningEffort ? { type: "enabled", clear_thinking: false } : { type: "disabled" };
+		const thinkingEnabled = resolveThinkingToggle(model, options);
+		if (thinkingEnabled !== undefined) {
+			zaiParams.thinking = thinkingEnabled ? { type: "enabled", clear_thinking: false } : { type: "disabled" };
+		}
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			const mappedEffort = model.thinkingLevelMap?.[options.reasoningEffort];
 			const effort = mappedEffort === undefined ? options.reasoningEffort : mappedEffort;
@@ -1008,7 +1029,10 @@ function buildParams(
 			}
 		}
 	} else if (compat.thinkingFormat === "qwen" && model.reasoning) {
-		(params as any).enable_thinking = !!options?.reasoningEffort;
+		const thinkingEnabled = resolveThinkingToggle(model, options);
+		if (thinkingEnabled !== undefined) {
+			(params as any).enable_thinking = thinkingEnabled;
+		}
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			const effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 			if (typeof effort === "string") {
@@ -1016,8 +1040,9 @@ function buildParams(
 			}
 		}
 	} else if (compat.thinkingFormat === "qwen-chat-template" && model.reasoning) {
+		const thinkingEnabled = resolveThinkingToggle(model, options);
 		(params as any).chat_template_kwargs = {
-			enable_thinking: !!options?.reasoningEffort,
+			...(thinkingEnabled === undefined ? {} : { enable_thinking: thinkingEnabled }),
 			preserve_thinking: true,
 		};
 	} else if (compat.thinkingFormat === "chat-template" && model.reasoning) {
@@ -1072,7 +1097,10 @@ function buildParams(
 			reasoning?: { enabled: boolean };
 			reasoning_effort?: string;
 		};
-		togetherParams.reasoning = { enabled: !!options?.reasoningEffort };
+		const thinkingEnabled = resolveThinkingToggle(model, options);
+		if (thinkingEnabled !== undefined) {
+			togetherParams.reasoning = { enabled: thinkingEnabled };
+		}
 		if (options?.reasoningEffort && compat.supportsReasoningEffort) {
 			togetherParams.reasoning_effort = model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort;
 		}
@@ -1196,7 +1224,7 @@ function resolveChatTemplateKwargValue(
 		return undefined;
 	}
 	if (value.$var === "thinking.enabled") {
-		return !!reasoningEffort;
+		return resolveThinkingToggle(model, options);
 	}
 	if (value.$var === "thinking.budget") {
 		return thinkingBudget;
@@ -1204,6 +1232,18 @@ function resolveChatTemplateKwargValue(
 
 	const mappedValue = reasoningEffort ? model.thinkingLevelMap?.[reasoningEffort] : model.thinkingLevelMap?.off;
 	return mappedValue === undefined ? reasoningEffort : typeof mappedValue === "string" ? mappedValue : undefined;
+}
+
+/**
+ * The value of a thinking on/off toggle. A model whose thinking map denies `off` is never sent a disabled
+ * toggle it does not support, so the toggle is left out and the provider keeps its default.
+ */
+function resolveThinkingToggle(
+	model: Model<"openai-completions">,
+	options: OpenAICompletionsOptions | undefined,
+): boolean | undefined {
+	if (options?.reasoningEffort) return true;
+	return model.thinkingLevelMap?.off === null ? undefined : false;
 }
 
 function getCompatCacheControl(

@@ -8,7 +8,15 @@ import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-re
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
 import { getModel, streamSimple } from "../src/compat.ts";
-import type { Api, AssistantMessage, Model, SimpleStreamOptions, ThinkingLevel } from "../src/types.ts";
+import type {
+	Api,
+	AssistantMessage,
+	Model,
+	OpenAICompletionsCompat,
+	SimpleStreamOptions,
+	ThinkingLevel,
+	ThinkingLevelMap,
+} from "../src/types.ts";
 import type { AssistantMessageDiagnostic } from "../src/utils/diagnostics.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -32,6 +40,9 @@ type WirePayload = Record<string, unknown> & {
 	promptMode?: string;
 	config?: { thinkingConfig?: Record<string, unknown> };
 	additionalModelRequestFields?: Record<string, unknown>;
+	inferenceConfig?: Record<string, unknown>;
+	enable_thinking?: boolean;
+	chat_template_kwargs?: Record<string, unknown>;
 };
 
 interface CapturedRequest {
@@ -500,20 +511,17 @@ describe("thinking off on Bedrock Converse (#4552)", () => {
 		},
 	);
 
-	it("runs a budget-thinking Claude model whose map denies off at its smallest budget", async () => {
+	it("leaves a budget-thinking Claude model whose map denies off without thinking fields, as the Anthropic API does", async () => {
 		const model: Model<"bedrock-converse-stream"> = {
 			...getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
 			thinkingLevelMap: { off: null },
 		};
 
-		const off = await captureRequest(model);
-		const minimal = await captureRequest(model, { reasoning: "minimal" });
+		const { payload, offFallbacks } = await captureRequest(model, { maxTokens: 800 });
 
-		expect(off.payload.additionalModelRequestFields).toMatchObject({
-			thinking: { type: "enabled", budget_tokens: 1024 },
-		});
-		expect(off.payload.additionalModelRequestFields).toEqual(minimal.payload.additionalModelRequestFields);
-		expect(off.offFallbacks).toEqual([offFallbackDiagnostic("minimal", "1024")]);
+		expect(payload.additionalModelRequestFields).toBeUndefined();
+		expect(payload.inferenceConfig).toEqual({ maxTokens: 800 });
+		expect(offFallbacks).toEqual([]);
 	});
 
 	it("records no fallback for a model whose lowest level sends no thinking fields", async () => {
@@ -608,8 +616,15 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 			getModel("github-copilot", "gemini-3.8-flash"),
 		],
 		["opencode-go/kimi-k3", "max", { reasoning_effort: "max" }, getModel("opencode-go", "kimi-k3")],
+		["openrouter/openai/o3", "minimal", { reasoning: { effort: "minimal" } }, getModel("openrouter", "openai/o3")],
+		[
+			"openrouter/google/gemini-2.5-pro",
+			"minimal",
+			{ reasoning: { effort: "minimal" } },
+			getModel("openrouter", "google/gemini-2.5-pro"),
+		],
 	] as const)(
-		"sends %s its lowest listed level, %s, when it cannot disable thinking",
+		"sends %s its lowest level, %s, when it cannot disable thinking",
 		async (_name, level, fields, model) => {
 			const off = await captureRequest(model);
 			const lowest = await captureRequest(model, { reasoning: level });
@@ -622,8 +637,11 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 	);
 
 	it.each([
-		["openrouter/openai/o3", getModel("openrouter", "openai/o3")],
 		["moonshotai/kimi-k2.7-code", getModel("moonshotai", "kimi-k2.7-code")],
+		[
+			"a model on the default format whose map lists no effort",
+			{ ...getModel("cerebras", "gpt-oss-120b"), thinkingLevelMap: { off: null } },
+		],
 	])("keeps omitting reasoning for %s, whose map lists no effort to fall back to", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
 
@@ -631,6 +649,49 @@ describe("thinking off on the OpenAI Chat Completions API (#4552)", () => {
 		expect(payload).not.toHaveProperty("reasoning_effort");
 		expect(payload).not.toHaveProperty("thinking");
 		expect(offFallbacks).toEqual([]);
+	});
+
+	function withThinkingFormat(
+		thinkingFormat: NonNullable<OpenAICompletionsCompat["thinkingFormat"]>,
+		thinkingLevelMap: ThinkingLevelMap,
+		compat: OpenAICompletionsCompat = {},
+	): Model<"openai-completions"> {
+		const model = getModel("cerebras", "gpt-oss-120b");
+		return { ...model, thinkingLevelMap, compat: { ...model.compat, ...compat, thinkingFormat } };
+	}
+
+	it.each([
+		["qwen", {}, ["enable_thinking"], false],
+		["zai", {}, ["thinking"], { type: "disabled" }],
+		["qwen-chat-template", {}, ["chat_template_kwargs", "enable_thinking"], false],
+		["together", {}, ["reasoning"], { enabled: false }],
+		[
+			"chat-template",
+			{ chatTemplateKwargs: { enable_thinking: { $var: "thinking.enabled" } } },
+			["chat_template_kwargs"],
+			{ enable_thinking: false },
+		],
+	] as const)(
+		"sends the %s format's disabled thinking toggle only to a model that can disable thinking",
+		async (thinkingFormat, compat, togglePath, disabled) => {
+			const canDisable = await captureRequest(withThinkingFormat(thinkingFormat, {}, compat));
+			const cannotDisable = await captureRequest(withThinkingFormat(thinkingFormat, { off: null }, compat));
+
+			expect(canDisable.payload).toHaveProperty([...togglePath], disabled);
+			expect(cannotDisable.payload).not.toHaveProperty([...togglePath]);
+			expect(cannotDisable.offFallbacks).toEqual([]);
+		},
+	);
+
+	it("sends an OpenRouter model the effort its map gives its lowest level", async () => {
+		const model = { ...getModel("openrouter", "openai/o3"), thinkingLevelMap: { off: null, minimal: "low" } };
+
+		const off = await captureRequest(model);
+		const minimal = await captureRequest(model, { reasoning: "minimal" });
+
+		expect(off.payload.reasoning).toEqual({ effort: "low" });
+		expect(off.payload).toEqual(minimal.payload);
+		expect(off.offFallbacks).toEqual([offFallbackDiagnostic("minimal", "low")]);
 	});
 
 	it("keeps sending the off effort to a model that can disable reasoning", async () => {

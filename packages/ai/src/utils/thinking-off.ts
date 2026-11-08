@@ -42,3 +42,19 @@ export function recordThinkingOffFallback(model: Model<Api>, output: AssistantMe
 	}
 	return undefined;
 }
+
+/**
+ * Resolve thinking `off` to the model's lowest supported level, for an endpoint that maps any effort onto the
+ * ones the model supports. The level's `thinkingLevelMap` value, or the level itself when the map lists none,
+ * is the effort sent. Returns the fallback level, recorded on `output`.
+ */
+export function recordLowestThinkingOffFallback(
+	model: Model<Api>,
+	output: AssistantMessage,
+): ThinkingLevel | undefined {
+	const level = getThinkingOffFallbackLevel(model);
+	if (level === undefined) return undefined;
+	const effort = model.thinkingLevelMap?.[level];
+	appendThinkingOffFallbackDiagnostic(output, level, typeof effort === "string" ? effort : level);
+	return level;
+}
