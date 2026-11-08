@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.72-alpha.1] - 2026-11-08
+
 ### Fixed
 
 - Streamable HTTP SSE streams framed with a lone CR line ending are now split into events. Lines end at CR, LF or CRLF, a CRLF split across chunks counts once, and a CR-terminated event is delivered while the stream stays open. Before, such a stream was parsed as one line at EOF and a tool call answered this way failed with "stream ended without a response" (upstream [#11775](https://github.com/earendil-works/pi/pull/11775))

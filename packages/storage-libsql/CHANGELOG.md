@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.72-alpha.1] - 2026-11-08
+
 ### Fixed
 
 - A `file:` database stays usable after a statement fails. A statement that gave up part way, for example a write that waited out the busy timeout while another process held the lock, stayed active on its connection until garbage collection. After that, every transaction on the database failed with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`, and a write outside a transaction reported success but was never committed. The adapter now replaces its local connections after any failed statement, before the next call, and turns foreign keys on again on the new one.

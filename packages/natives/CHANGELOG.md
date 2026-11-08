@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.72-alpha.1] - 2026-11-08
+
 ### Added
 
 - `Cleanup` has a `quarantined` state with the `resources` still unconfirmed: a command's result settled before its process-group exit or output drain was confirmed, and the supervisor keeps confirming in the background. Quarantine has no deadline until the owner closes or the task is stopped; it then ends `reaped`, or `failed` if cleanup is still unconfirmed 15 seconds later ([#4338](https://github.com/bastani-inc/atomic/issues/4338)).

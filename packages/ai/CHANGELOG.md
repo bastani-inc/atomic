@@ -4,6 +4,17 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.72-alpha.1] - 2026-11-08
+
+GPT Image 2.6, typed Copilot failures, and thinking `off` that every provider honors.
+
+- **GPT Image 2.6.** `gpt-image-2.6-sunburst` and `gpt-image-2.6-flare` generate animated GIF and SVG output and markup-guided edits, and invalid requests fail locally with a typed error naming the field ([#4332](https://github.com/bastani-inc/atomic/issues/4332)).
+- **Typed GitHub Copilot failures.** Every failed Copilot request carries a typed error with a stable code, so retries, fallback and compaction no longer depend on message text; Gemini on Copilot keeps its reasoning and counts its reasoning tokens ([#4324](https://github.com/bastani-inc/atomic/issues/4324)).
+- **Thinking off at the lowest level.** Models that cannot turn thinking off run at their lowest supported level, with a `thinking_off_fallback` diagnostic, and Azure and Gemini models offer only levels they accept ([#4545](https://github.com/bastani-inc/atomic/issues/4545), [#4552](https://github.com/bastani-inc/atomic/issues/4552), [#4556](https://github.com/bastani-inc/atomic/issues/4556)).
+- **Upstream pi fixes.** Connection errors keep their cause, Responses requests send `session-id`, Azure GPT-6 models get their 1,050,000-token windows, and new compat flags cover stricter proxies (upstream [#11783](https://github.com/earendil-works/pi/pull/11783), [#11793](https://github.com/earendil-works/pi/pull/11793), [#11781](https://github.com/earendil-works/pi/pull/11781), [#9442](https://github.com/earendil-works/pi/pull/9442)).
+
+**Breaking change:** If a proxy requires `tools` once the history has tool calls, such as older LiteLLM in front of Anthropic, set `compat.requiresToolsWithToolHistory: true` on that model.
+
 ### Breaking Changes
 
 - `openai-completions` no longer sends `"tools": []` when a request has no tools but the conversation contains tool calls or tool results; the field is omitted. This fixes 400 errors (`tools must not be an empty array`) from vLLM 0.20+, also behind LiteLLM. Proxies that require `tools` once the history has tool calls, such as older LiteLLM versions in front of Anthropic, now reject these requests; set `compat.requiresToolsWithToolHistory: true` on those models to send the empty array again (upstream [#11891](https://github.com/earendil-works/pi/pull/11891))
