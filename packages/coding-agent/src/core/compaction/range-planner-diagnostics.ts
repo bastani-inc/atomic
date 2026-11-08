@@ -16,7 +16,7 @@ import type { Api, AssistantMessage, Model, Usage } from "@bastani/pi-ai/compat"
 import { chmodSync, mkdirSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
-import { reportDebug } from "../debug.js";
+import { reportDebug } from "../debug.ts";
 import type { MorphRangeDiagnostics } from "./morph-compaction.js";
 
 /**
