@@ -263,7 +263,8 @@ describe("truncated tool output stays retrievable through history recall (#4568)
 				ctx as never,
 			),
 		);
-		const match = new RegExp(`${url.replace(/[/.]/g, "\\$&")}:(\\d+):`).exec(found);
+		const resultLine = found.split("\n").find((row) => row.startsWith(`${url}:`));
+		const match = /^:(\d+): /.exec(resultLine?.slice(url.length) ?? "");
 		assert.ok(match, `search finds the cut tail in:\n${found}`);
 		const line = Number(match[1]);
 		const opened = toolText(
