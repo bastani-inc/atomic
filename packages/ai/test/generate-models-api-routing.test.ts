@@ -386,7 +386,7 @@ test("copies the efforts the OpenAI catalog lists onto Azure deployments, except
 	assert.notEqual(copilot["gpt-5.1"].thinkingLevelMap?.off, "none");
 });
 
-test("copies the OpenAI off entry onto Azure deployments without masking their other levels (#4552)", () => {
+test("masks the levels below the lowest accepted effort on Azure deployments that cannot disable thinking (#4556)", () => {
 	const reasoningModel = (id: string, values: readonly string[]) => ({
 		id,
 		...toolCapable,
@@ -399,6 +399,9 @@ test("copies the OpenAI off entry onto Azure deployments without masking their o
 				models: {
 					o3: reasoningModel("o3", ["low", "medium", "high"]),
 					"gpt-5-pro": reasoningModel("gpt-5-pro", ["high"]),
+					"gpt-5.2-pro": reasoningModel("gpt-5.2-pro", ["medium", "high", "xhigh"]),
+					"gpt-5.3-codex-spark": reasoningModel("gpt-5.3-codex-spark", ["low", "medium", "high", "xhigh"]),
+					"gpt-5": reasoningModel("gpt-5", ["minimal", "low", "medium", "high"]),
 				},
 			},
 		},
@@ -407,8 +410,43 @@ test("copies the OpenAI off entry onto Azure deployments without masking their o
 
 	assert.equal(openai.o3.thinkingLevelMap?.off, null);
 	assert.equal(openai.o3.thinkingLevelMap?.minimal, null);
-	assert.deepEqual(azure.o3.thinkingLevelMap, { off: null, low: "low", medium: "medium", high: "high" });
-	assert.deepEqual(azure["gpt-5-pro"].thinkingLevelMap, { off: null, high: "high" });
+	assert.deepEqual(azure.o3.thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+	});
+	assert.deepEqual(azure["gpt-5-pro"].thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: null,
+		medium: null,
+		high: "high",
+	});
+	assert.deepEqual(azure["gpt-5.2-pro"].thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: null,
+		medium: "medium",
+		high: "high",
+		xhigh: "xhigh",
+	});
+	assert.deepEqual(azure["gpt-5.3-codex-spark"].thinkingLevelMap, {
+		off: null,
+		minimal: null,
+		low: "low",
+		medium: "medium",
+		high: "high",
+		xhigh: "xhigh",
+	});
+	assert.deepEqual(azure["gpt-5"].thinkingLevelMap, {
+		off: null,
+		minimal: "minimal",
+		low: "low",
+		medium: "medium",
+		high: "high",
+	});
 });
 
 test("denies thinking off for Gemini 2.5 Pro on Google and Vertex only (#4552)", () => {

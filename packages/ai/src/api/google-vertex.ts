@@ -57,6 +57,8 @@ export interface GoogleVertexOptions extends StreamOptions {
 		budgetTokens?: number; // -1 for dynamic, 0 to disable
 		level?: GoogleApiThinkingLevel;
 	};
+	/** Custom token budgets per level, used when thinking `off` runs a budget-thinking model at its lowest level. */
+	thinkingBudgets?: ThinkingBudgets;
 	project?: string;
 	location?: string;
 }
@@ -110,7 +112,9 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 						options?.env,
 						options?.identity,
 					);
-			recordGoogleThinkingOffFallback(model, options, output, (level) => getGoogleBudget(model, level));
+			recordGoogleThinkingOffFallback(model, options, output, (level) =>
+				getGoogleBudget(model, level, options?.thinkingBudgets),
+			);
 			let params = buildParams(model, normalizedContext, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -323,6 +327,7 @@ export const streamSimple: StreamFunction<"google-vertex", SimpleStreamOptions> 
 	const base = {
 		...buildBaseOptions(model, context, options, undefined),
 		toolChoice: options?.toolChoice,
+		thinkingBudgets: options?.thinkingBudgets,
 	} satisfies GoogleVertexOptions;
 	if (!options?.reasoning) {
 		return stream(model, context, {
@@ -513,7 +518,9 @@ function buildParams(
 		}
 		config.thinkingConfig = thinkingConfig;
 	} else if (model.reasoning && options.thinking && !options.thinking.enabled) {
-		config.thinkingConfig = getDisabledGoogleThinkingConfig(model, (level) => getGoogleBudget(model, level));
+		config.thinkingConfig = getDisabledGoogleThinkingConfig(model, (level) =>
+			getGoogleBudget(model, level, options.thinkingBudgets),
+		);
 	}
 
 	if (options.signal) {

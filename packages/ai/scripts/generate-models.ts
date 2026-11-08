@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSy
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { type AiGatewayPricing, getAiGatewayCost } from "./ai-gateway-pricing.ts";
+import { applyAzureOpenAIListedEfforts, applyAzureOpenAIThinkingOffMasks } from "./azure-openai-thinking-level-map.ts";
 import { getEffortThinkingLevelMap, type ModelsDevReasoningOption } from "./models-dev-reasoning-options.ts";
 import { buildOpenRouterCatalog, type OpenRouterCatalog, type OpenRouterModelListItem } from "./openrouter-catalog.ts";
 import {
@@ -1381,28 +1382,6 @@ function getGoogleThinkingLevelMap(
 		return { off: null, minimal: "MINIMAL", low: null, medium: null, high: "HIGH" };
 	}
 	return undefined;
-}
-
-/**
- * Azure serves the same OpenAI models, but its copies are made before the OpenAI thinking maps are
- * complete. Copy the OpenAI map's `off` entry and the efforts it lists, except `xhigh` and `max`: an entry
- * naming a level the copy already offers changes no request, and `off` changes only thinking `off`, while
- * other `null` masks, `xhigh` and `max` would change which levels Azure offers. This is what lets thinking
- * `off` send `none`, or fall back to a listed effort, on Azure.
- */
-function applyAzureOpenAIListedEfforts(models: readonly Model<any>[]): void {
-	const openAIThinkingLevelMaps = new Map(
-		models
-			.filter((model) => model.provider === "openai" && model.api === "openai-responses")
-			.map((model) => [model.id, model.thinkingLevelMap]),
-	);
-	for (const model of models) {
-		if (model.provider !== "azure" || model.api !== "azure-openai-responses") continue;
-		const copied = Object.entries(openAIThinkingLevelMaps.get(model.id) ?? {}).filter(
-			([level, value]) => level === "off" || (typeof value === "string" && level !== "xhigh" && level !== "max"),
-		);
-		if (copied.length > 0) mergeThinkingLevelMap(model, Object.fromEntries(copied));
-	}
 }
 
 function applyThinkingLevelMetadata(model: Model<any>): void {
@@ -3913,6 +3892,7 @@ async function generateModels() {
 	}
 	applyAnthropicAllowedFallbackModelMetadata(allModels.filter(isAnthropicFallbackMetadataModel));
 	applyAzureOpenAIListedEfforts(allModels);
+	applyAzureOpenAIThinkingOffMasks(allModels);
 
 	// Keep chat and image catalogs separate so one upstream ID can expose both
 	// operations with different API implementations.
