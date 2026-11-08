@@ -81,7 +81,7 @@ function compactionResult(
 			percentReduction: 96.1,
 		},
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "focus" },
-		promptVersion: 4,
+		promptVersion: 5,
 		rung,
 		...extra,
 	};

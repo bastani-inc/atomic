@@ -558,7 +558,7 @@ test("/compact in a pooled stage's chat redraws the open transcript from the com
 				percentReduction: 96,
 			},
 			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "" },
-			promptVersion: 4,
+			promptVersion: 5,
 			rung: "planned",
 		};
 		// The worker sends the compacted session's messages, then the compaction's end.

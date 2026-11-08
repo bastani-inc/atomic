@@ -17,12 +17,13 @@ import {
 } from "./compaction-parameters.js";
 import {
 	MIN_COMPACTABLE_REGION_LINES,
+	THINKING_FREE_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 } from "./compaction-types.js";
-import { createConversationRegion } from "./transcript-serialization.js";
+import { createConversationRegion, omitLegacyThinkingSections } from "./transcript-serialization.js";
 
 interface VisibleEntry {
 	entry: SessionEntry;
@@ -145,6 +146,21 @@ function latestActiveBoundary(
 }
 
 /**
+ * The previous boundary's durable text in the current transcript grammar.
+ *
+ * Boundaries written before `THINKING_FREE_PROMPT_VERSION` serialized thinking as
+ * `[Assistant thinking]: ` sections, so those sections are dropped before the text
+ * reaches the planner again. A current boundary is used as written: any such line in
+ * it is quoted payload, not a section header.
+ */
+function previousSummaryText(boundary: CompactionEntry<VerbatimCompactionDetails>): string {
+	const { promptVersion } = boundary.details as { promptVersion?: number };
+	return (promptVersion ?? 0) >= THINKING_FREE_PROMPT_VERSION
+		? boundary.summary
+		: omitLegacyThinkingSections(boundary.summary);
+}
+
+/**
  * Planner eligibility, kept separate from boundary preparation.
  *
  * `MIN_COMPACTABLE_REGION_LINES` exists to stop repeated pointless *planned*
@@ -191,7 +207,7 @@ export function prepareCompactionBoundary(
 
 	const region = createConversationRegion(
 		convertToLlm(regionMessages.map((item) => item.message)),
-		previous?.entry.summary,
+		previous ? previousSummaryText(previous.entry) : undefined,
 	);
 	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 
