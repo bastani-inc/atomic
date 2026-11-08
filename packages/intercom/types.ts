@@ -139,6 +139,8 @@ export interface BrokerStatusReport {
 	/** The shared storage selection the broker read, as a digest of its JSON, and where it read it; absent without one. */
 	storage?: { digest: string; source: "env" | "settings" };
 	multiNode: BrokerMultiNodeStatus;
+	/** #4538: the wire protocol versions this broker accepts; absent from a broker of protocol 1 (0.9.71 and earlier). */
+	protocol?: { min: number; max: number };
 }
 
 /**
@@ -238,6 +240,8 @@ export interface RegisterRequest {
 			supervisorOwnerToken?: string;
 			/** #3761: this recipient sends `received` once it has saved each message; `delivered` waits for it. */
 			acknowledgesReceipt?: true;
+			/** #4538: the wire protocol versions this client speaks; absent from a client of protocol 1 (0.9.71 and earlier). */
+			protocol?: { min: number; max: number };
 }
 
 export type ClientMessage =
@@ -388,6 +392,8 @@ export type BrokerMessage =
 			extendsSaves?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
 			multiNodeRouting?: BrokerMultiNodeStatus["status"];
+			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
+			protocol?: { min: number; max: number };
 	  }
 	| { type: "workflow_invocation_claimed"; requestId: string; claimed: boolean }
   | { type: "registration_failed"; reason: string; code?: LiveWorkflowStageRouteRefusalCode; requestId?: string }

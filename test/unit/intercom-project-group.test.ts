@@ -31,7 +31,7 @@ vi.mock("../../packages/intercom/broker/broker-routing.js", async () => {
 	return {
 		queryBrokerRouting: async (agentDir: string) => {
 			const selected = multiNodeSelected(agentDir, processStorageEnvironment());
-			return { acrossMachines: selected, hasSharedStorage: selected };
+			return { acrossMachines: selected, hasSharedStorage: selected, protocol: { min: 1, max: 2 } };
 		},
 	};
 });

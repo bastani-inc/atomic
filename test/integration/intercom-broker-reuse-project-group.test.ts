@@ -10,7 +10,7 @@ import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.j
 import { setCliStorageSelection } from "../../packages/coding-agent/src/core/storage/process-selection.js";
 import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
 import { queryIntercomBroker, restartIntercomBroker } from "../../packages/intercom/broker/control.js";
-import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
+import { createMessageReader, type JsonWireValue, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
 import { IntercomRuntimeInactiveError } from "../../packages/intercom/runtime-inactive-error.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
@@ -301,17 +301,77 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-type StatusFault = "silent" | "unsupported" | "malformed" | "multi-node" | "register-unsupported";
+/**
+ * `legacy*` brokers answer `broker_status` without a protocol range, as 0.9.71 did, and drop `register_verified` and
+ * `shutdown`: an older broker this session can neither verify nor replace. `multi-node` is a current broker.
+ */
+type StatusFault =
+	| "silent"
+	| "unsupported"
+	| "malformed"
+	| "multi-node"
+	| "legacy"
+	| "legacy-shared"
+	| "legacy-multi-node"
+	| "future"
+	| "current";
 
 interface FaultyBroker {
 	statusRequests: number;
 	registrations: number;
 	verifiedRegistrations: number;
+	shutdownRequests: number;
+	/** End every connection, as a broker restart would, so its sessions reconnect. */
+	dropConnections(): void;
+}
+
+const REGISTERING_FAULTS: ReadonlySet<StatusFault> = new Set([
+	"unsupported",
+	"malformed",
+	"legacy",
+	"legacy-shared",
+	"legacy-multi-node",
+	"future",
+]);
+
+function faultyStatusReport(fault: StatusFault): Record<string, JsonWireValue> | undefined {
+	switch (fault) {
+		case "multi-node":
+			return {
+				pid: 1,
+				sessions: 0,
+				storage: { digest: "d", source: "env" },
+				multiNode: { status: "on" },
+				protocol: { min: 1, max: 2 },
+			};
+		case "legacy":
+			return { pid: 1, sessions: 0, multiNode: { status: "off" } };
+		case "legacy-shared":
+			return { pid: 1, sessions: 0, storage: { digest: "d", source: "env" }, multiNode: { status: "off" } };
+		case "legacy-multi-node":
+			return { pid: 1, sessions: 0, multiNode: { status: "on" } };
+		case "future":
+			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 3, max: 4 } };
+		case "current":
+			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 1, max: 2 } };
+		case "malformed":
+			return { pid: "unknown" };
+		default:
+			return undefined;
+	}
 }
 
 async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
-	const broker: FaultyBroker = { statusRequests: 0, registrations: 0, verifiedRegistrations: 0 };
 	const sockets = new Set<net.Socket>();
+	const broker: FaultyBroker = {
+		statusRequests: 0,
+		registrations: 0,
+		verifiedRegistrations: 0,
+		shutdownRequests: 0,
+		dropConnections: () => {
+			for (const socket of sockets) socket.destroy();
+		},
+	};
 	const server = net.createServer((socket) => {
 		sockets.add(socket);
 		socket.on("error", () => {});
@@ -321,33 +381,34 @@ async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
 			createMessageReader(
 				(message) => {
 					if (typeof message !== "object" || message === null || Array.isArray(message)) return;
-					if (message.type === "register") broker.registrations += 1;
+					if (message.type === "register") {
+						broker.registrations += 1;
+						if (REGISTERING_FAULTS.has(fault))
+							writeMessage(socket, { type: "registered", sessionId: `fake-session-${broker.registrations}` });
+					}
 					if (message.type === "register_verified") {
 						broker.verifiedRegistrations += 1;
-						if (fault === "register-unsupported") socket.destroy();
+						if (fault.startsWith("legacy") || fault === "future") socket.destroy();
+						if (fault === "current")
+							writeMessage(socket, {
+								type: "registered",
+								sessionId: `fake-session-${broker.verifiedRegistrations}`,
+								multiNodeRouting: "off",
+								protocol: { min: 1, max: 2 },
+							});
+					}
+					if (message.type === "list")
+						writeMessage(socket, { type: "sessions", requestId: message.requestId, sessions: [] });
+					if (message.type === "shutdown") {
+						broker.shutdownRequests += 1;
+						socket.destroy();
 					}
 					if (message.type !== "broker_status") return;
 					broker.statusRequests += 1;
 					if (fault === "unsupported") socket.destroy();
-					if (fault === "multi-node" || fault === "register-unsupported") {
-						writeMessage(socket, {
-							type: "broker_status",
-							requestId: message.requestId,
-							report: {
-								pid: 1,
-								sessions: 0,
-								...(fault === "multi-node" ? { storage: { digest: "d", source: "env" } } : {}),
-								multiNode: { status: fault === "multi-node" ? "on" : "off" },
-							},
-						});
-					}
-					if (fault === "malformed") {
-						writeMessage(socket, {
-							type: "broker_status",
-							requestId: message.requestId,
-							report: { pid: "unknown" },
-						});
-					}
+					const report = faultyStatusReport(fault);
+					if (report !== undefined)
+						writeMessage(socket, { type: "broker_status", requestId: message.requestId, report });
 				},
 				() => {},
 			),
@@ -361,27 +422,70 @@ async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
 	return broker;
 }
 
-const FAULT_CODES: ReadonlyArray<readonly [StatusFault, string]> = [
-	["silent", "broker-routing-timeout"],
-	["unsupported", "broker-routing-unavailable"],
-	["malformed", "broker-routing-unavailable"],
-];
+const LOCAL_ONLY_WARNING =
+	/^warning: The running Intercom broker cannot verify how it routes \((broker_status|register): (unsupported|malformed)\)\. No multi-node storage is configured, so this session uses it on this machine only; run `atomic intercom restart` to replace it with this version's broker\./;
 
-for (const [fault, code] of FAULT_CODES) {
-	test(`a broker whose routing state cannot be verified (${fault}) denies registration with ${code} instead of using the default group (#4320)`, async () => {
+test("a broker that does not answer its routing state in time denies registration with broker-routing-timeout instead of using the default group (#4320)", async () => {
+	const faulty = await startFaultyBroker("silent");
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "unverified-silent");
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const denied = await alpha.status(alphaContext);
+	assert.equal(denied.isError, true, denied.content[0]?.text);
+	assert.equal(denied.details?.code, "broker-routing-timeout");
+	assert.equal(denied.details?.retryable, true);
+	assert.equal(faulty.statusRequests, 1);
+	assert.equal(faulty.registrations, 0);
+
+	await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
+	assert.equal(faulty.registrations, 0);
+});
+
+for (const fault of ["unsupported", "malformed"] as const) {
+	test(`a broker whose routing state cannot be read (${fault}) is used on this machine only, with one warning, when no multi-node storage is configured (#4538)`, async () => {
 		const faulty = await startFaultyBroker(fault);
-		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), `unverified-${fault}`);
+		const notices: string[] = [];
+		const alphaContext = sessionContext(
+			repository("alpha", "git@github.com:acme/alpha.git"),
+			`local-${fault}`,
+			notices,
+		);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+
+		const joined = await alpha.status(alphaContext);
+		assert.equal(joined.isError, false, joined.content[0]?.text);
+		assert.deepEqual(joined.details?.groups, ["default"]);
+		assert.deepEqual(
+			[faulty.statusRequests, faulty.registrations, faulty.verifiedRegistrations, faulty.shutdownRequests],
+			[1, 1, 0, 0],
+		);
+		assert.equal(notices.length, 1, notices.join("\n"));
+		assert.match(notices[0] ?? "", LOCAL_ONLY_WARNING);
+		assert.match(notices[0] ?? "", new RegExp(`\\(broker_status: ${fault}\\)`));
+
+		faulty.dropConnections();
+		await vi.waitFor(() => assert.equal(faulty.registrations, 2), { timeout: BROKER_WAIT_MS, interval: 25 });
+		assert.equal((await alpha.status(alphaContext)).isError, false);
+		assert.equal(notices.length, 1, "the warning is shown once per session, not on every reconnect");
+	});
+
+	test(`a broker whose routing state cannot be read (${fault}) denies a session that selects multi-node storage with broker-routing-unavailable (#4538)`, async () => {
+		const faulty = await startFaultyBroker(fault);
+		vi.stubEnv("ATOMIC_STORAGE", sharedStorage());
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), `shared-${fault}`, []);
 		const alpha = await loadExtension();
 		cleanups.push(() => alpha.stop(alphaContext));
 		await alpha.start(alphaContext);
 
 		const denied = await alpha.status(alphaContext);
 		assert.equal(denied.isError, true, denied.content[0]?.text);
-		assert.equal(denied.details?.code, code);
+		assert.equal(denied.details?.code, "broker-routing-unavailable");
 		assert.equal(denied.details?.retryable, true);
-		assert.equal(faulty.statusRequests, 1);
-		assert.equal(faulty.registrations, 0);
-
+		assert.deepEqual([faulty.statusRequests, faulty.registrations, faulty.verifiedRegistrations], [1, 0, 0]);
 		await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
 		assert.equal(faulty.registrations, 0);
 	});
@@ -550,21 +654,102 @@ test(
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
 
-test("a broker that cannot verify the routing a registration expects is never given the default group by a silent unverified register (#4320)", async () => {
-	const faulty = await startFaultyBroker("register-unsupported");
-	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "old-broker");
+test("an older broker that this session cannot replace is used on this machine only, with one warning naming the failed replacement, and never sent a verified registration (#4320, #4538)", async () => {
+	const faulty = await startFaultyBroker("legacy");
+	const notices: string[] = [];
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "old-broker", notices);
 	const alpha = await loadExtension();
 	cleanups.push(() => alpha.stop(alphaContext));
 	await alpha.start(alphaContext);
 
-	const denied = await alpha.status(alphaContext);
-	assert.equal(denied.isError, true, denied.content[0]?.text);
-	assert.equal(denied.details?.code, "broker-routing-unavailable");
-	assert.equal(faulty.verifiedRegistrations, 1);
-	assert.equal(faulty.registrations, 0);
-	await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
-	assert.equal(faulty.registrations, 0);
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.deepEqual(joined.details?.groups, ["default"]);
+	assert.deepEqual([faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations], [1, 0, 1]);
+	assert.equal(notices.length, 1, notices.join("\n"));
+	assert.match(notices[0] ?? "", LOCAL_ONLY_WARNING);
+	assert.match(
+		notices[0] ?? "",
+		/Replacing it failed: Could not replace the older Intercom broker \(pid 1, protocol 1\) while stopping it \(broker-upgrade-failed\)/,
+	);
 });
+
+test("a broker that shares no protocol version with this session is left running and used on this machine only, with one warning (#4538)", async () => {
+	const faulty = await startFaultyBroker("future");
+	const notices: string[] = [];
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "future-broker", notices);
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.deepEqual([faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations], [0, 0, 1]);
+	assert.equal(notices.length, 1, notices.join("\n"));
+	assert.match(notices[0] ?? "", LOCAL_ONLY_WARNING);
+	assert.doesNotMatch(notices[0] ?? "", /Replacing it failed/);
+});
+
+test("a session registers verified, without a warning, with a broker that speaks this version's protocol (#4538)", async () => {
+	const faulty = await startFaultyBroker("current");
+	const notices: string[] = [];
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "current-broker", notices);
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.deepEqual([faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations], [0, 1, 0]);
+	assert.deepEqual(notices, []);
+});
+
+test("a session without a UI writes the single-machine warning to stderr once (#4538)", async () => {
+	const { resetLocalOnlyBrokerWarningWithoutUi } = await import("../../packages/intercom/local-only-broker.js");
+	resetLocalOnlyBrokerWarningWithoutUi();
+	const written = vi.spyOn(console, "error").mockImplementation(() => {});
+	const faulty = await startFaultyBroker("unsupported");
+	const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), "headless-local");
+	const alpha = await loadExtension();
+	cleanups.push(() => alpha.stop(alphaContext));
+	await alpha.start(alphaContext);
+
+	const joined = await alpha.status(alphaContext);
+	assert.equal(joined.isError, false, joined.content[0]?.text);
+	assert.equal(faulty.registrations, 1);
+	const warnings = written.mock.calls
+		.map(([line]) => String(line))
+		.filter((line) => line.startsWith("Warning: The running Intercom broker"));
+	assert.equal(warnings.length, 1, warnings.join("\n"));
+	assert.match(warnings[0] ?? "", /\(broker_status: unsupported\)/);
+	written.mockRestore();
+	resetLocalOnlyBrokerWarningWithoutUi();
+});
+
+for (const [fault, label, storage, shutdownsUnlessItsStorageDiffers] of [
+	["legacy-shared", "the session selects multi-node storage", true, 0],
+	["legacy-multi-node", "the broker reports multi-node routing", false, 1],
+] as const) {
+	test(`an older broker that cannot verify a registration is refused with broker-routing-unavailable when ${label} (#4320, #4538)`, async () => {
+		const faulty = await startFaultyBroker(fault);
+		if (storage) vi.stubEnv("ATOMIC_STORAGE", sharedStorage());
+		const alphaContext = sessionContext(repository("alpha", "git@github.com:acme/alpha.git"), `old-${fault}`, []);
+		const alpha = await loadExtension();
+		cleanups.push(() => alpha.stop(alphaContext));
+		await alpha.start(alphaContext);
+
+		const denied = await alpha.status(alphaContext);
+		assert.equal(denied.isError, true, denied.content[0]?.text);
+		assert.equal(denied.details?.code, "broker-routing-unavailable");
+		assert.equal(denied.details?.retryable, true);
+		assert.deepEqual(
+			[faulty.shutdownRequests, faulty.verifiedRegistrations, faulty.registrations],
+			[shutdownsUnlessItsStorageDiffers, 0, 0],
+		);
+		await new Promise((settle) => setTimeout(settle, BACKGROUND_RECONNECT_SETTLE_MS));
+		assert.deepEqual([faulty.verifiedRegistrations, faulty.registrations], [0, 0]);
+	});
+}
 
 test("an attempt whose session was replaced while it checked the broker registers nothing (#4320)", async () => {
 	const faulty = await startFaultyBroker("multi-node");

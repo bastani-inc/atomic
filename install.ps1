@@ -1098,6 +1098,47 @@ function Add-AtomicBinDirToPath {
     return $userPathChanged
 }
 
+# 0.9.42 is the first release whose `atomic intercom` is a subcommand: an older one reads `intercom upgrade` as a
+# prompt for the model.
+function Test-AtomicReleaseHasIntercomCommand {
+    param([string]$Tag)
+
+    return [version]($Tag -replace '-alpha\.[0-9]+$', '') -ge [version]'0.9.42'
+}
+
+# Whether the installed shim lists `atomic intercom upgrade` in its Intercom help. Every redirection happens inside
+# cmd, so Windows PowerShell never turns the probe's stderr into an error record.
+function Test-AtomicShimHasIntercomUpgrade {
+    param([string]$ShimPath)
+
+    $helpLines = @(& $env:ComSpec /d /c ('"' + $ShimPath + '" intercom --help <NUL 2>NUL'))
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+    return @($helpLines | Where-Object { ([string]$_).Trim() -ceq 'atomic intercom upgrade' }).Count -gt 0
+}
+
+# Replace an Intercom broker the previous version left running, when that is safe (#4538). A release without the
+# command skips it, and it reads no input. The install is already committed when this runs, so a failure only warns.
+function Invoke-AtomicIntercomUpgrade {
+    param([string]$ShimPath, [string]$ReleaseTag)
+
+    try {
+        if (-not (Test-AtomicReleaseHasIntercomCommand $ReleaseTag) -or -not (Test-AtomicShimHasIntercomUpgrade $ShimPath)) {
+            return
+        }
+        $upgradeCommand = '"' + $ShimPath + '" intercom upgrade <NUL'
+        & $env:ComSpec /d /c $upgradeCommand | Out-Host
+        $upgradeExitCode = $LASTEXITCODE
+        if ($upgradeExitCode -ne 0) {
+            Write-Warning -Message "Installed atomic, but 'atomic intercom upgrade' exited with code $upgradeExitCode; run it manually if new sessions do not start." -WarningAction Continue
+        }
+    }
+    catch {
+        Write-Warning -Message "Installed atomic, but 'atomic intercom upgrade' failed: $_; run it manually if new sessions do not start." -WarningAction Continue
+    }
+}
+
 function Write-AtomicInstallSummary {
     param([bool]$UserPathAdded)
 
@@ -1476,6 +1517,7 @@ try {
         throw $commitError
     }
 
+    Invoke-AtomicIntercomUpgrade $shimPath $releaseTag
     Write-AtomicInstallSummary $transaction.UserPathChangeIntended
 }
 catch {

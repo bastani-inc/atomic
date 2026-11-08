@@ -48,7 +48,15 @@ import {
 	type IntercomPendingStageRouteTimeoutFields,
 } from "../pending-stage-route-timeout-error.js";
 import { isSocketAnswering } from "./socket-liveness.js";
-import { IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
+import { IntercomBrokerProtocolError, IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
+import {
+	BROKER_PROTOCOL,
+	type BrokerProtocolRange,
+	isBrokerProtocolRange,
+	LEGACY_BROKER_PROTOCOL,
+	protocolRangeOf,
+	VERIFIED_REGISTRATION_PROTOCOL,
+} from "./protocol-version.js";
 import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
 import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
 import {
@@ -131,6 +139,11 @@ const HELD_SEND_GRACE_MS = 5000;
 
 export interface ExpectedRouting {
   readonly acrossMachines: boolean;
+  /**
+   * #4538: the broker verifies the routing as it registers the session (`register_verified`, protocol 2). Without it
+   * the session registers as an older client does, and a broker that reports other routing in `registered` is refused.
+   */
+  readonly verify: boolean;
 }
 
 export interface SendOptions {
@@ -368,6 +381,8 @@ export class IntercomClient extends EventEmitter {
 	private brokerRefusesPendingStageRoutesInPlace = false;
 	private brokerAnswersStatus = false;
 	private _multiNodeRouting: BrokerMultiNodeStatus["status"] | undefined;
+	/** #4538: the protocol versions the broker of the current registration accepts. */
+	private _brokerProtocol: BrokerProtocolRange = LEGACY_BROKER_PROTOCOL;
 	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
 	private brokerClaimsWorkflowInvocations = false;
 	/** #3904: the connect attempt in progress, which `disconnect()` cancels. */
@@ -483,6 +498,11 @@ export class IntercomClient extends EventEmitter {
   get supervisorSessionId(): string | null {
     return this._supervisorSessionId;
   }
+  /** #4538: the protocol versions the broker of the current registration accepts; protocol 1 before registration. */
+  get brokerProtocol(): BrokerProtocolRange {
+    return this._brokerProtocol;
+  }
+
   /** Routing mode of this registration; absent when the broker predates this capability. */
   get multiNodeRouting(): BrokerMultiNodeStatus["status"] | undefined {
     return this._multiNodeRouting;
@@ -545,7 +565,7 @@ export class IntercomClient extends EventEmitter {
           if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
             const classified = await classifyRegistrationFailure(error);
             if (attempt.signal.aborted) throw connectAborted();
-            if (expectedRouting !== undefined && classified instanceof ConnectionClosedBeforeRegistrationError) {
+            if (expectedRouting?.verify === true && classified instanceof ConnectionClosedBeforeRegistrationError) {
               throw new IntercomRoutingUnavailableError("unsupported", "register");
             }
             throw classified;
@@ -631,6 +651,7 @@ export class IntercomClient extends EventEmitter {
         this.brokerRefusesPendingStageRoutesInPlace = false;
         this.brokerAnswersStatus = false;
         this._multiNodeRouting = undefined;
+        this._brokerProtocol = LEGACY_BROKER_PROTOCOL;
         this.brokerClaimsWorkflowInvocations = false;
         this.brokerExtendsSaves = false;
         this._messageSource = undefined;
@@ -686,9 +707,11 @@ export class IntercomClient extends EventEmitter {
         }
         try {
           writeMessage(socket, {
-            type: expectedRouting === undefined ? "register" : "register_verified",
-            ...(expectedRouting === undefined ? {} : { expectedRouting }),
+            ...(expectedRouting?.verify === true
+              ? { type: "register_verified", expectedRouting: { acrossMachines: expectedRouting.acrossMachines } }
+              : { type: "register" }),
             session,
+            protocol: { ...BROKER_PROTOCOL },
             ...(registrationGroup !== undefined ? { registrationGroup } : {}),
 			returnAddress: this.returnAddress,
 			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
@@ -763,12 +786,23 @@ export class IntercomClient extends EventEmitter {
           || (brokerMessage.multiNodeRouting !== undefined && brokerMessage.multiNodeRouting !== "off"
             && brokerMessage.multiNodeRouting !== "starting" && brokerMessage.multiNodeRouting !== "on"
             && brokerMessage.multiNodeRouting !== "unavailable")
-          || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)) {
+          || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)
+          || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
         }
-
         if (this._sessionId !== null) {
           throw new Error("Received duplicate registered message");
+        }
+        // #4538: a session that registered unverified on a broker it took for single-machine is refused if the broker
+        // that answered routes otherwise, as `register_verified` would have been, before it takes the registration.
+        const expected = this.registrationExpectedRouting;
+        if (
+          expected !== undefined && !expected.verify
+          && brokerMessage.multiNodeRouting !== undefined
+          && (brokerMessage.multiNodeRouting !== "off") !== expected.acrossMachines
+        ) {
+          this.emit("_registration_failed", new IntercomRoutingChangedError(expected.acrossMachines));
+          break;
         }
         this._sessionId = brokerMessage.sessionId;
         this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"
@@ -782,6 +816,7 @@ export class IntercomClient extends EventEmitter {
         this._multiNodeRouting = brokerMessage.multiNodeRouting as BrokerMultiNodeStatus["status"] | undefined;
         this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
         this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
+        this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
       }
@@ -1485,6 +1520,7 @@ export class IntercomClient extends EventEmitter {
    * Reserving a child again replaces its aliases, group and wake flag and keeps the sends held for it.
    */
   async reserveReleasedChildren(children: readonly ReleasedChildReservation[]): Promise<void> {
+    this.requireBrokerProtocol("reserve_released_children");
     const wireChildren = children.map((child) => ({
       childName: child.childName,
       ...(child.group === undefined ? {} : { group: child.group }),
@@ -1509,6 +1545,7 @@ export class IntercomClient extends EventEmitter {
    * a child another session owns fails with a `not_owner` `ReleasedChildReservationError` and drops nothing.
    */
   async dropReleasedChildren(childNames: readonly string[], outcome: { gone?: string; refusal?: string } = {}): Promise<void> {
+    this.requireBrokerProtocol("drop_released_children");
     for (let start = 0; start < childNames.length; start += RELEASED_CHILD_FRAME_MAX) {
       await this.restoringRecipientRequest({
         type: "drop_released_children",
@@ -1526,11 +1563,17 @@ export class IntercomClient extends EventEmitter {
    * session owns it.
    */
   acknowledgeReleasedChildWake(childName: string): Promise<void> {
+    try {
+      this.requireBrokerProtocol("acknowledge_released_child_wake");
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
     return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
   }
 
   acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean): boolean {
     if (!this.socket || this.socket.destroyed) return false;
+    this.requireBrokerProtocol("released_child_reply_ack");
     writeMessage(this.socket, {
       type: "released_child_reply_ack",
       messageId: reply.message.id,
@@ -1538,6 +1581,22 @@ export class IntercomClient extends EventEmitter {
       accepted,
     });
     return true;
+  }
+
+  /**
+   * #4538: refuse, before anything is sent, a request of protocol 2 to the broker of protocol 1 this client registered
+   * with, which would end the connection with a protocol error over a frame type it does not know. Without a
+   * registration the request fails as it always did, as not connected.
+   */
+  private requireBrokerProtocol(feature: string): void {
+    const broker = this._brokerProtocol;
+    if (this._sessionId === null || broker.max >= VERIFIED_REGISTRATION_PROTOCOL) return;
+    throw new IntercomBrokerProtocolError({
+      feature,
+      brokerProtocolMin: broker.min,
+      brokerProtocolMax: broker.max,
+      requiredProtocol: VERIFIED_REGISTRATION_PROTOCOL,
+    });
   }
 
   private restoringRecipientRequest(frame: Record<string, unknown>): Promise<void> {

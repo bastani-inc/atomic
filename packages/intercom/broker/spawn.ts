@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -12,7 +12,18 @@ import {
   type BrokerStartAnnouncement,
   readBrokerStartAnnouncement,
 } from "./start-announcement.js";
-import { createChildProcessEnvironment, isBunBinary, processSharedStorageSelection } from "@bastani/atomic";
+import {
+  createChildProcessEnvironment,
+  IntercomBrokerUpgradeError,
+  isBunBinary,
+  isIntercomBrokerStopTimeoutError,
+  processSharedStorageSelection,
+} from "@bastani/atomic";
+import { isBrokerStatusReport } from "./broker-status.js";
+import { BROKER_UPGRADE_STOP_TIMEOUT_MS, requestBrokerShutdown, waitForBrokerExit } from "./broker-stop.js";
+import { BROKER_CONTROL_TIMEOUT_MS, controlRequest } from "./control-request.js";
+import { BROKER_PROTOCOL, type BrokerProtocolRange, decideBrokerProtocol, protocolRangeOf } from "./protocol-version.js";
+import { readSharedStorageSetting, sharedStorageDigest } from "./shared-storage-setting.js";
 import {
   BROKER_STORAGE_ENV,
   getBrokerStartAnnouncementPath,
@@ -388,10 +399,24 @@ export async function spawnBrokerIfNeeded(
     await waitForBroker(readyTimeoutMs);
     return;
   }
+  await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true);
+}
 
+/**
+ * Start a broker while holding the spawn lock `lockOwner` wrote, and release it, unless a broker still starting takes
+ * it over. `recheck` returns at once when a broker answers by now.
+ */
+async function spawnBrokerHoldingLock(
+  lockOwner: string,
+  brokerCommand: string,
+  brokerArgs: string[],
+  readyTimeoutMs: number,
+  extensionDir: string,
+  recheck: boolean,
+): Promise<void> {
   let keepLock = false;
   try {
-    if (await isBrokerRunning()) {
+    if (recheck && (await isBrokerRunning())) {
       return;
     }
 
@@ -488,6 +513,114 @@ export async function spawnBrokerIfNeeded(
   }
 }
 
+/** How often a session waiting to upgrade the broker checks whether the spawn lock is free. */
+const UPGRADE_LOCK_POLL_MS = 50;
+
+/** What {@link upgradeBroker} did. */
+export type BrokerUpgradeOutcome =
+  /** An older broker was stopped and this version's broker started in its place. */
+  | "upgraded"
+  /** No broker was running, so this version's broker was started. */
+  | "started"
+  /** The running broker needs no upgrade (another session replaced it first, or it is not older), or reports no readable status. */
+  | "current"
+  /**
+   * The running broker reads another shared storage selection than a successor started from this process would, so
+   * replacing it would change how its sessions route; it is left running.
+   */
+  | "storage-differs"
+  /** Another process held the spawn lock for the whole wait; nothing was done. */
+  | "busy";
+
+/**
+ * #4538: replace an older broker with this version's, using the hand-over every session already performs when its
+ * broker retires: the older broker shuts down, its sessions reconnect, and they register with the successor. The spawn
+ * lock is held from before the shutdown until the successor answers, so a reconnecting session of the older version
+ * waits for the successor instead of starting its own older broker again, and sessions of this version that start
+ * together replace the broker once. Under the lock the broker is checked again, so a session that waited finds it
+ * already replaced. The lock is written again while the older broker exits, so it never looks stale to a spawner of
+ * either version, for up to `stopTimeoutMs`; if the older broker is still running then, the lock names its process
+ * instead, so no spawner starts a broker while that process lives, until the lock ages out
+ * ({@link BROKER_SPAWN_LOCK_MAX_AGE_MS} after its last renewal, about a minute). Once the process exits or the lock ages
+ * out, the next spawner of either version takes it, so an older session can start an older broker, which the next
+ * session of this version replaces again. A failure to stop the older broker, or to start the successor once it
+ * stopped, is an {@link IntercomBrokerUpgradeError} whose cause is that step's failure.
+ */
+export async function upgradeBroker(
+  brokerCommand: string,
+  brokerArgs: string[],
+  readyTimeoutMs: number = BROKER_READY_TIMEOUT_MS,
+  extensionDir: string = EXTENSION_DIR,
+  own: BrokerProtocolRange = BROKER_PROTOCOL,
+  stopTimeoutMs: number = BROKER_UPGRADE_STOP_TIMEOUT_MS,
+): Promise<BrokerUpgradeOutcome> {
+  ensurePrivateDirectory(INTERCOM_DIR);
+  const acquired = await acquireSpawnLockWithin(readyTimeoutMs + stopTimeoutMs);
+  if (acquired === undefined) return "busy";
+  let lockOwner = acquired;
+  let lockPassedOn = false;
+  const spawnHoldingLock = (): Promise<void> => {
+    lockPassedOn = true;
+    return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false);
+  };
+  try {
+    const answer = await controlRequest(BROKER_SOCKET, "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
+    if (!answer.connected) {
+      await spawnHoldingLock();
+      return "started";
+    }
+    const reply = answer.reply;
+    const report =
+      typeof reply === "object" && reply !== null && !Array.isArray(reply) && isBrokerStatusReport(reply.report)
+        ? reply.report
+        : undefined;
+    if (report === undefined) return "current";
+    const running = protocolRangeOf(report.protocol);
+    if (decideBrokerProtocol(own, running) !== "upgrade") return "current";
+    if (report.storage?.digest !== successorStorageDigest()) return "storage-differs";
+    const failed = (phase: "stop" | "start", cause?: Error): IntercomBrokerUpgradeError =>
+      new IntercomBrokerUpgradeError({ phase, previousPid: report.pid, previousProtocolMax: running.max }, { cause });
+    if ((await requestBrokerShutdown(BROKER_SOCKET)) === "unanswered") throw failed("stop");
+    try {
+      await waitForBrokerExit(report.pid, stopTimeoutMs, () => {
+        lockOwner = renewSpawnLock(lockOwner);
+      });
+    } catch (error) {
+      if (isIntercomBrokerStopTimeoutError(error)) {
+        lockPassedOn = handSpawnLockToBroker(report.pid, lockOwner);
+        throw failed("stop", error);
+      }
+      throw error;
+    }
+    try {
+      await spawnHoldingLock();
+    } catch (error) {
+      throw failed("start", toError(error));
+    }
+    return "upgraded";
+  } finally {
+    if (!lockPassedOn) releaseSpawnLock(lockOwner);
+  }
+}
+
+/** The digest of the shared storage selection a broker started from this process reads, as its `broker_status` reports it. */
+function successorStorageDigest(): string | undefined {
+  const setting = readSharedStorageSetting(dirname(INTERCOM_DIR), {
+    [BROKER_STORAGE_ENV]: processSharedStorageSelection() ?? "",
+  });
+  return setting === undefined ? undefined : sharedStorageDigest(setting);
+}
+
+/** Take the spawn lock, waiting up to `boundMs` while another process holds it. */
+async function acquireSpawnLockWithin(boundMs: number): Promise<string | undefined> {
+  const deadline = Date.now() + boundMs;
+  for (;;) {
+    const owner = acquireSpawnLock();
+    if (owner !== undefined || Date.now() >= deadline) return owner;
+    await sleep(UPGRADE_LOCK_POLL_MS);
+  }
+}
+
 async function isBrokerRunning(): Promise<boolean> {
   if (await checkSocketConnectable()) {
     return true;
@@ -519,6 +652,28 @@ function handSpawnLockToBroker(pid: number | undefined, owner: string): boolean 
   } catch {
     // The startup error must still reach the caller; an unrecorded lock is released like any other.
     return false;
+  }
+}
+
+/** How old a spawn lock held across a long wait may grow before it is written again; it is stale past {@link BROKER_SPAWN_LOCK_MAX_AGE_MS}. */
+const SPAWN_LOCK_RENEW_AFTER_MS = 10_000;
+
+/**
+ * Write the held spawn lock again with the current time, so a long wait never makes it look stale; returns the header
+ * that now proves ownership. A write that fails, as when another process is reading the lock on Windows, is tried
+ * again on the next call.
+ */
+function renewSpawnLock(owner: string, nowMs: number = Date.now()): string {
+  const writtenAt = Number.parseInt(owner.split("\n")[1] ?? "", 10);
+  if (nowMs - writtenAt < SPAWN_LOCK_RENEW_AFTER_MS || !ownsSpawnLock(owner)) return owner;
+  const renewed = `${process.pid}\n${nowMs}\n`;
+  const staged = `${BROKER_SPAWN_LOCK}.${process.pid}.renew`;
+  try {
+    writeFileSync(staged, renewed);
+    renameSync(staged, BROKER_SPAWN_LOCK);
+    return renewed;
+  } catch {
+    return owner;
   }
 }
 

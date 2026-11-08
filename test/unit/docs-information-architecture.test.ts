@@ -988,6 +988,7 @@ describe("docs references and assets (#2847)", () => {
 				"Terminal stage delivery failure",
 				"Destination-side admission failure",
 				"Broker restart or concurrent startup",
+				"Broker started by an older Atomic",
 				"Broker accepts connections but stops answering",
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",

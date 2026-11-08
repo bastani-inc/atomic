@@ -45,12 +45,48 @@ test("a status report is read as whether the broker routes across machines and w
 		},
 	});
 	const selection = { digest: "d", source: "env" };
+	const legacy = { min: 1, max: 1 };
 	control.reply = report({ status: "on" }, selection);
-	assert.deepEqual(await queryBrokerRouting("/unused"), { acrossMachines: true, hasSharedStorage: true });
+	assert.deepEqual(await queryBrokerRouting("/unused"), {
+		acrossMachines: true,
+		hasSharedStorage: true,
+		protocol: legacy,
+	});
 	control.reply = report({ status: "off" }, selection);
-	assert.deepEqual(await queryBrokerRouting("/unused"), { acrossMachines: false, hasSharedStorage: true });
+	assert.deepEqual(await queryBrokerRouting("/unused"), {
+		acrossMachines: false,
+		hasSharedStorage: true,
+		protocol: legacy,
+	});
 	control.reply = report({ status: "off" });
-	assert.deepEqual(await queryBrokerRouting("/unused"), { acrossMachines: false, hasSharedStorage: false });
+	assert.deepEqual(await queryBrokerRouting("/unused"), {
+		acrossMachines: false,
+		hasSharedStorage: false,
+		protocol: legacy,
+	});
+});
+
+test("a status report's protocol range is the broker's, and a report without one is protocol 1 (#4538)", async () => {
+	const report = (protocol?: unknown) => ({
+		connected: true,
+		reply: {
+			type: "broker_status",
+			requestId: "r",
+			report: { pid: 1, sessions: 0, multiNode: { status: "off" }, ...(protocol === undefined ? {} : { protocol }) },
+		},
+	});
+	control.reply = report({ min: 1, max: 2 });
+	assert.deepEqual((await queryBrokerRouting("/unused")).protocol, { min: 1, max: 2 });
+	control.reply = report({ min: 3, max: 7 });
+	assert.deepEqual((await queryBrokerRouting("/unused")).protocol, { min: 3, max: 7 });
+	control.reply = report();
+	assert.deepEqual((await queryBrokerRouting("/unused")).protocol, { min: 1, max: 1 });
+	for (const malformed of [{ min: 2, max: 1 }, { min: 0, max: 1 }, { min: 1.5, max: 2 }, { max: 2 }, [1, 2], "2"]) {
+		control.reply = report(malformed);
+		const error = await queryBrokerRouting("/unused").catch((caught: unknown) => caught);
+		assert.ok(isIntercomRoutingUnavailableError(error), JSON.stringify(malformed));
+		assert.deepEqual([error.reason, error.phase], ["malformed", "broker_status"]);
+	}
 });
 
 test("the routing question is a broker_status request on the agent directory's socket, answered by a broker_status reply (#4320)", async () => {

@@ -2,6 +2,7 @@ import type net from "node:net";
 import type { BrokerMessage } from "../types.js";
 import type { WorkflowSendPredictionFields } from "../workflow-prediction-fields.js";
 import { writeMessage } from "./framing.js";
+import { type BrokerProtocolRange, VERIFIED_REGISTRATION_PROTOCOL } from "./protocol-version.js";
 
 /**
  * Broker-side socket writes.
@@ -64,6 +65,33 @@ export interface HeldWrite {
 	readonly onSettled?: (written: boolean) => void;
 }
 
+/**
+ * #4538: frames of protocol 2. A client of protocol 1 (Atomic 0.9.71 and earlier) ends its connection with a protocol
+ * error on a frame type it does not know, so these are never written to one. Each is either the answer to a protocol 2
+ * request such a client never sends, or, for `peer_rebound`, a hint it never had: its reply waits keep working as they
+ * did against a broker of its own version.
+ */
+export const PROTOCOL_2_FRAME_TYPES: ReadonlySet<BrokerOutboundFrame["type"]> = new Set<BrokerOutboundFrame["type"]>([
+	"peer_rebound",
+	"released_child_reply",
+	"released_children_ack",
+	"restoring_recipient_wake",
+]);
+
+/** Sockets whose client registered speaking protocol 1 only. */
+const protocol1Clients = new WeakSet<net.Socket>();
+
+/** Record the protocol range the client on `socket` registered with, before anything is written to it. */
+export function recordClientProtocol(socket: net.Socket, protocol: BrokerProtocolRange): void {
+	if (protocol.max < VERIFIED_REGISTRATION_PROTOCOL) protocol1Clients.add(socket);
+	else protocol1Clients.delete(socket);
+}
+
+/** Whether the client on `socket` knows the type of `message`. */
+function clientKnows(socket: net.Socket, message: BrokerOutboundFrame): boolean {
+	return !(protocol1Clients.has(socket) && PROTOCOL_2_FRAME_TYPES.has(message.type));
+}
+
 /** Multi-node S5: sockets whose frames are held until their deferred `registered` is written. */
 const heldWrites = new WeakMap<net.Socket, HeldWrite[]>();
 
@@ -74,10 +102,11 @@ const heldWrites = new WeakMap<net.Socket, HeldWrite[]>();
  * means nothing was written and nothing may be recorded as delivered; it never
  * means the peer acknowledged anything. The converse under-approximates on
  * purpose: a `true` answer is not proof of receipt either, which is why the
- * sender-side send timeout remains the terminal authority.
+ * sender-side send timeout remains the terminal authority. A frame the socket's client does not know (#4538) is not
+ * written either, and answers `false` the same way.
  */
 export function writeMessageIfOpen(socket: net.Socket, message: BrokerOutboundFrame): boolean {
-	if (!isSocketOpenForWrite(socket)) return false;
+	if (!isSocketOpenForWrite(socket) || !clientKnows(socket, message)) return false;
 	const held = heldWrites.get(socket);
 	if (held !== undefined) {
 		held.push({ message });
@@ -99,7 +128,7 @@ export function writeMessageWithOutcome(
 	message: BrokerOutboundFrame,
 	onSettled: (written: boolean) => void,
 ): void {
-	if (!isSocketOpenForWrite(socket)) {
+	if (!isSocketOpenForWrite(socket) || !clientKnows(socket, message)) {
 		onSettled(false);
 		return;
 	}

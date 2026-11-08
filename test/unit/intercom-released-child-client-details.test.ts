@@ -15,6 +15,7 @@ interface WrittenFrame {
 
 interface Internals {
 	_sessionId: string;
+	_brokerProtocol: { min: number; max: number };
 	socket: { destroyed: boolean; writableEnded: boolean; writable: boolean; write(data: Buffer): boolean };
 	pendingRestoringRecipientRequests: Map<string, unknown>;
 	handleBrokerMessage(message: unknown): void;
@@ -33,6 +34,7 @@ function connectedClient(onFrame?: (frame: WrittenFrame, internals: Internals) =
 	const internals = client as unknown as Internals;
 	const frames: WrittenFrame[] = [];
 	internals._sessionId = "owner";
+	internals._brokerProtocol = { min: 1, max: 2 };
 	internals.socket = {
 		destroyed: false,
 		writableEnded: false,

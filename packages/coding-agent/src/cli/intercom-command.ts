@@ -1,15 +1,22 @@
 /**
  * `atomic intercom restart` replaces the agent directory's Intercom broker, so it reads the current storage
- * selection without closing every session; `atomic intercom status` shows what the running broker uses.
+ * selection without closing every session; `atomic intercom status` shows what the running broker uses;
+ * `atomic intercom upgrade` replaces a broker an older version started, when that is safe.
  */
 
 import { APP_NAME } from "../config.js";
-import type { BrokerQuery, IntercomBrokerControl } from "../core/intercom-broker-control.js";
+import type {
+	BrokerProtocolRange,
+	BrokerQuery,
+	IntercomBrokerControl,
+	UpgradeOutcome,
+} from "../core/intercom-broker-control.js";
 import { processStorageEnvironment } from "../core/storage/process-selection.js";
 
 const HELP = `Usage:
   ${APP_NAME} intercom status
   ${APP_NAME} intercom restart
+  ${APP_NAME} intercom upgrade
 
 Commands:
   status    Show whether this machine's Intercom broker is running, how many sessions it serves,
@@ -17,7 +24,11 @@ Commands:
             the number of other brokers live in the shared database.
   restart   Stop the broker so it picks up a changed storage selection. Connected sessions
             reconnect and start a new broker within a few seconds; without sessions, the next
-            session that uses Intercom starts one.`;
+            session that uses Intercom starts one.
+  upgrade   Replace a broker that an older ${APP_NAME} started, when that is safe: with no session
+            connected it is stopped, and the next session starts this version's broker; with
+            sessions connected the next session of this version hands it over without
+            disconnecting them. Installers and \`${APP_NAME} update\` run this for you.`;
 
 export interface IntercomCommandOptions {
 	readonly agentDir: string;
@@ -45,7 +56,32 @@ function describeBroker(
 			? "Storage: matches the current selection"
 			: `Storage: differs from the current selection${report.storage?.source === "env" ? " (a session started it with ATOMIC_STORAGE, ATOMIC_PROFILE=ci or --storage)" : ""}; run \`${APP_NAME} intercom restart\``,
 		`Multi-node routing: ${control.describeMultiNodeStatus(report.multiNode)}`,
+		`Protocol: ${describeProtocol(report.protocol ?? LEGACY_PROTOCOL)}${(report.protocol ?? LEGACY_PROTOCOL).max < control.BROKER_PROTOCOL.max ? `, older than this version's ${describeProtocol(control.BROKER_PROTOCOL)}; the next session of this version replaces it` : ""}`,
 	];
+}
+
+/** What a broker that reports no protocol range speaks. */
+const LEGACY_PROTOCOL: BrokerProtocolRange = { min: 1, max: 1 };
+
+function describeProtocol(protocol: BrokerProtocolRange): string {
+	return protocol.min === protocol.max ? `${protocol.max}` : `${protocol.min}-${protocol.max}`;
+}
+
+function describeUpgrade(outcome: UpgradeOutcome): string {
+	switch (outcome.status) {
+		case "not-running":
+			return "No Intercom broker is running. The next session that uses Intercom starts this version's broker.";
+		case "unreported":
+			return `The Intercom broker${outcome.pid === undefined ? "" : ` (pid ${outcome.pid})`} was started by an older ${APP_NAME} that does not report its sessions, so it was left running. Run \`${APP_NAME} intercom restart\` to replace it.`;
+		case "current":
+			return outcome.decision === "compatible"
+				? `The running Intercom broker (pid ${outcome.pid}, protocol ${describeProtocol(outcome.protocol)}) needs no upgrade.`
+				: `The running Intercom broker (pid ${outcome.pid}, protocol ${describeProtocol(outcome.protocol)}) shares no protocol version with this ${APP_NAME}, so it was left running for its sessions.`;
+		case "deferred":
+			return `The running Intercom broker (pid ${outcome.pid}, protocol ${describeProtocol(outcome.protocol)}) is older, and ${outcome.sessions} session${outcome.sessions === 1 ? " is" : "s are"} connected, so it was left running. The next session of this version hands it over to a new broker without disconnecting them.`;
+		case "stopped":
+			return `Stopped the older Intercom broker (pid ${outcome.previous.pid}). No session was connected; the next session that uses Intercom starts this version's broker.`;
+	}
 }
 
 /** Run `atomic intercom <args>` and return the exit code. */
@@ -57,9 +93,9 @@ export async function runIntercomCommand(args: readonly string[], options: Inter
 		log(HELP);
 		return 0;
 	}
-	if ((command !== "restart" && command !== "status") || rest.length > 0) {
+	if ((command !== "restart" && command !== "status" && command !== "upgrade") || rest.length > 0) {
 		error(
-			command === "restart" || command === "status"
+			command === "restart" || command === "status" || command === "upgrade"
 				? `Usage: ${APP_NAME} intercom ${command}`
 				: `Unknown intercom command "${command}". Use "${APP_NAME} intercom --help" for usage.`,
 		);
@@ -80,6 +116,10 @@ export async function runIntercomCommand(args: readonly string[], options: Inter
 				return 0;
 			}
 			for (const line of describeBroker(query, control, agentDir)) log(line);
+			return 0;
+		}
+		if (command === "upgrade") {
+			log(describeUpgrade(await control.upgradeIntercomBroker(agentDir, { onProgress: log })));
 			return 0;
 		}
 		const outcome = await control.restartIntercomBroker(agentDir, { onProgress: log });

@@ -55,6 +55,7 @@
         "packages/subagents",
         "packages/mcp",
         "packages/web-access",
-        "packages/intercom"
+        "packages/intercom",
+        "test/fixtures/intercom-0.9.71"
     ]
 }

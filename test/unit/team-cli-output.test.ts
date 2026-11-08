@@ -73,6 +73,8 @@ function underRoot(text: string): string {
 
 function control(outcome: RestartOutcome | Error, projectGroup?: string): IntercomBrokerControl {
 	return {
+		BROKER_PROTOCOL: { min: 1, max: 2 },
+		upgradeIntercomBroker: async () => ({ status: "not-running" }),
 		queryIntercomBroker: async () => ({ state: "stopped" }),
 		expectedBrokerStorage: () => undefined,
 		readLiveBrokers: async () => [],

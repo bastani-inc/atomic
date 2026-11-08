@@ -31,7 +31,7 @@ atomic list                        # List installed packages
 atomic config                      # Enable/disable package resources
 ```
 
-These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust.
+These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust. After it updates the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands) when the `atomic` on PATH reports the version just installed and lists the command; otherwise it prints a note and leaves the broker alone. A failure of the upgrade prints a warning and does not change the exit code.
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
@@ -125,6 +125,7 @@ atomic storage adopt <path>... [--no-discover]                       # Register 
 atomic storage consolidate                                           # Move finished runs of adopted files into the store
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
+atomic intercom upgrade                                              # Replace a broker an older Atomic started, when safe
 ```
 
 `atomic storage status` reports, for sessions, workflow runs, and Intercom, the selected storage, where the selection comes from (an environment variable, project or global settings, or the default) and the outranked selections, whether the adapter loads, and whether the database answers a `SELECT 1`. It also shows the running Intercom broker: whether it uses the current selection, its multi-node routing state, and the other brokers live in the shared database. It creates and changes nothing, and exits `1` when a selection is invalid, an adapter cannot load, a database does not answer, or the journal store has a shard file that is missing or cannot be opened.
@@ -136,6 +137,8 @@ atomic intercom restart                                              # Replace t
 `atomic storage adopt` registers journal files in the workflow journal store in place, without copying them, so their runs resolve by ID and resume where they are. Each path is a journal `.sqlite` file or a directory holding `journal.sqlite`; every path is checked before the first is registered. It also adopts the journal files the adopted runs were written to, unless `--no-discover` is given. `atomic storage consolidate` moves finished runs from adopted files into the store's own shards and reports the runs it left in place with the reason, and exits `1`, printing each distinct error's message and hint, when a run was left because of an error (a missing shard file, a different copy in the destination). Both also exit `1` with the error's message and hint when they cannot proceed. See [The workflow journal store](/storage#the-workflow-journal-store).
 
 `atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
+
+`atomic intercom upgrade` replaces a broker that an older Atomic started, when that is safe. With no session connected it stops the broker, and the next session starts this version's. With sessions connected it leaves the broker running, and the next session of this version hands it over without disconnecting them for longer than a reconnect. It does nothing when no broker runs or the broker is already this version's, leaves a broker too old to report its sessions running, and exits `1` only when stopping the broker fails. The installers and `atomic update` run it after a successful install when the installed version has the command, without passing it any input. See [Upgrading Atomic with sessions running](/intercom/operations#upgrading-atomic-with-sessions-running).
 
 See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) and [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
