@@ -1,8 +1,10 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { killProcessTree } from "../src/utils/shell.js";
 
 const packageDir = path.resolve(import.meta.dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-bundled-legacy-pi-"));
@@ -11,6 +13,7 @@ const app = path.join(root, "app.js");
 // Each case starts a real bundled CLI and cold-loads its extension graph under suite load.
 // Native Windows reached 87 s under CPU contention; allow headroom on slower hosted runners.
 const BUNDLED_CLI_EXIT_TIMEOUT_MS = 180_000;
+const BUNDLED_CLI_CLOSE_TIMEOUT_MS = 10_000;
 const BUNDLED_CLI_TEST_TIMEOUT_MS = BUNDLED_CLI_EXIT_TIMEOUT_MS + 20_000;
 
 beforeAll(() => {
@@ -61,16 +64,38 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 				...(mode === "interactive" ? { ATOMIC_INTERACTIVE_ENGINE_CHILD: "1" } : {}),
 			},
 			stdio: "pipe",
+			// The close-timeout fallback must still reach descendants after their parent exits.
+			detached: process.platform !== "win32",
 		},
 	);
+	return collectChild(child, mode);
+}
+
+function collectChild(
+	child: ChildProcessWithoutNullStreams,
+	mode: "print" | "rpc" | "interactive" = "print",
+	exitTimeoutMs = BUNDLED_CLI_EXIT_TIMEOUT_MS,
+	closeTimeoutMs = BUNDLED_CLI_CLOSE_TIMEOUT_MS,
+) {
 	return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
 		let stdout = "";
 		let stderr = "";
 		let timedOut = false;
+		let closeTimer: ReturnType<typeof setTimeout> | undefined;
 		const timer = setTimeout(() => {
 			timedOut = true;
 			child.kill("SIGKILL");
-		}, BUNDLED_CLI_EXIT_TIMEOUT_MS);
+			closeTimer = setTimeout(() => {
+				if (child.pid) killProcessTree(child.pid);
+				reject(
+					new Error(
+						`CLI pid ${child.pid}: close did not arrive within ${closeTimeoutMs} ms after SIGKILL\n${stderr}\n${stdout}`,
+					),
+				);
+				child.stdout.destroy();
+				child.stderr.destroy();
+			}, closeTimeoutMs);
+		}, exitTimeoutMs);
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (text) => {
@@ -91,10 +116,12 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 		});
 		child.on("error", (error) => {
 			clearTimeout(timer);
+			clearTimeout(closeTimer);
 			reject(error);
 		});
 		child.on("close", (status) => {
 			clearTimeout(timer);
+			clearTimeout(closeTimer);
 			// Windows may still hold app.js open until the killed process and its pipes close.
 			if (timedOut) reject(new Error(`CLI did not finish\n${stderr}\n${stdout}`));
 			else resolve({ status, stdout, stderr });
@@ -104,6 +131,64 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 		else child.stdin.write('{"id":"probe","type":"get_state"}\n{"id":"resources","type":"get_available_models"}\n');
 	});
 }
+
+it("waits for close before rejecting an ordinary watchdog kill (#4553)", async () => {
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "pipe" });
+	const CHILD_BUDGET_MS = 250;
+	let closed = false;
+	child.on("close", () => {
+		closed = true;
+	});
+	await expect(collectChild(child, "print", CHILD_BUDGET_MS)).rejects.toThrow("CLI did not finish");
+	expect(closed).toBe(true);
+});
+
+it("bounds the post-kill close wait when a descendant holds an output pipe (#4553)", async () => {
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			`const { spawn } = require("node:child_process");
+const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+  stdio: ["ignore", "inherit", "inherit"]
+});
+descendant.on("spawn", () => console.log(descendant.pid));
+process.stdin.resume();
+process.stdin.on("end", () => console.error("HELD_PIPE_MARKER"));`,
+		],
+		{ stdio: "pipe", detached: process.platform !== "win32" },
+	);
+	let descendantPid: number | undefined;
+	const CHILD_BUDGET_MS = 250;
+	const CLOSE_GRACE_MS = 250;
+	const REJECTION_DEADLINE_MS = CHILD_BUDGET_MS + CLOSE_GRACE_MS + 2_000;
+	let deadline: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const [ready] = await once(child.stdout, "data");
+		descendantPid = Number(ready.toString().trim());
+		const result = collectChild(child, "print", CHILD_BUDGET_MS, CLOSE_GRACE_MS);
+		const bounded = Promise.race([
+			result,
+			new Promise((_, reject) => {
+				deadline = setTimeout(
+					() => reject(new Error("helper did not reject within its close bound")),
+					REJECTION_DEADLINE_MS,
+				);
+			}),
+		]);
+		await expect(bounded).rejects.toThrow(
+			new RegExp(
+				`CLI pid ${child.pid}: close did not arrive within ${CLOSE_GRACE_MS} ms after SIGKILL[\\s\\S]*HELD_PIPE_MARKER`,
+			),
+		);
+	} finally {
+		clearTimeout(deadline);
+		if (child.pid) killProcessTree(child.pid);
+		if (descendantPid) killProcessTree(descendantPid);
+		child.stdout.destroy();
+		child.stderr.destroy();
+	}
+});
 
 it(
 	"loads an auto-discovered legacy pi extension through the bundled app without installed pi packages",
