@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isDecisionOutputError, isDecisionProviderError } from "@bastani/atomic";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { STRUCTURED_OUTPUT_CLOSING_INSTRUCTION } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
@@ -20,12 +21,13 @@ import type {
 } from "./stage-runner-helpers.js";
 import {
 	assert,
+	assistantMessageWithUsage,
 	createStageContext,
 	makeMockSession,
 	makeOpts,
 	skippedStructuredOutputTurn,
 } from "./stage-runner-helpers.js";
-import { FINAL_TEXT, InferenceRig, proseTurn, userTurn } from "./structured-output-auto-fixture.js";
+import { FINAL_TEXT, InferenceRig, NO_USAGE, proseTurn, userTurn } from "./structured-output-auto-fixture.js";
 import { executeWorkflowDecision } from "./structured-output-workflow-fixture.js";
 
 const SCHEMA = Type.Object(
@@ -283,6 +285,50 @@ describe("createStageContext — the runtime infers the structured result when t
 		}
 	});
 
+	test("the artifact is the very final answer the inference was given, whatever the earlier messages carried (#4565)", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "structured-output-4565-artifact-final-"));
+		try {
+			const output = join(directory, "review.md");
+			const reportWithFailedCall = {
+				...assistantMessageWithUsage("The full report.", NO_USAGE),
+				content: [
+					{ type: "text", text: "The full report." },
+					{ type: "toolCall", id: "failed-call", name: "structured_output", arguments: {} },
+				],
+			} as AgentSession["messages"][number];
+			const { ctx, inference } = stageOver({
+				turn: (_prompt, _tool, messages) => {
+					proseTurn(messages, "A progress note.");
+					messages.push(reportWithFailedCall);
+					proseTurn(messages, "   ");
+				},
+			});
+
+			await ctx.prompt("review the change", { output });
+
+			assert.equal(inference.requests[0]?.state.finalAssistantText, "The full report.");
+			assert.equal(await readFile(output, "utf8"), "The full report.");
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps an over-long final answer whole in the artifact while the inference sees it bounded (#4565)", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "structured-output-4565-artifact-long-"));
+		try {
+			const output = join(directory, "review.md");
+			const long = `START${"x".repeat(AUTOMATIC_STRUCTURED_OUTPUT_TEXT_CHARS)}END`;
+			const { ctx, inference } = stageOver({ turn: (_prompt, _tool, messages) => proseTurn(messages, long) });
+
+			await ctx.prompt("review the change", { output });
+
+			assert.ok(inference.requests[0]?.state.finalAssistantText.includes("characters omitted"));
+			assert.equal(await readFile(output, "utf8"), long);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	test("does not infer a result from a turn that left no assistant text (#4565)", async () => {
 		const { ctx, prompts, inference } = stageOver({
 			turn: (_prompt, _tool, messages) => proseTurn(messages, "   "),
@@ -381,6 +427,56 @@ describe("createStageContext — corrective prompts remain the fallback when the
 			toolCallId: "workflow-auto-structured-output-4",
 		});
 		assert.ok(cause.cause instanceof Error);
+		const warnings = ctx.__modelFallbackMeta().warnings ?? [];
+		assert.equal(warnings.length, 1, "one warning for the stage, not one per correction turn");
+		assert.match(warnings[0] ?? "", /\(auto-inference-failed\)\..* Cause: \w+/);
+	});
+
+	test("with a decision model, as every real session has, an invalid inferred answer is still a correctable contract failure (#4565)", async () => {
+		const inference = new InferenceRig(() => "invalid-answer", true);
+		const { ctx, prompts } = stageOver({ inference, turn: omitTheCall });
+
+		const failure = await ctx.prompt("review the change").then(
+			() => undefined,
+			(error: Error) => error,
+		);
+
+		assert.ok(isWorkflowStructuredOutputContractError(failure), String(failure));
+		assert.equal(prompts.length, 4, "the initial prompt plus three corrective ones");
+		const cause = findWorkflowStructuredOutputInferenceError(failure);
+		assert.equal(cause?.code, "auto-inference-failed");
+		assert.ok(isDecisionOutputError(cause?.cause), "the decision engine's typed output error is the cause");
+	});
+
+	test("with a decision model, a provider failure keeps its text and is no contract failure (#4565)", async () => {
+		const inference = new InferenceRig(() => "provider-failure", true);
+		const { ctx, prompts } = stageOver({ inference, turn: omitTheCall });
+
+		const failure = await ctx.prompt("review the change").then(
+			() => undefined,
+			(error: Error) => error,
+		);
+
+		assert.ok(failure);
+		assert.equal(isWorkflowStructuredOutputContractError(failure), false);
+		assert.equal(prompts.length, 4);
+		const cause = findWorkflowStructuredOutputInferenceError(failure);
+		assert.ok(cause?.cause instanceof Error && isDecisionProviderError(cause.cause));
+		assert.equal(failure.message, cause.cause.message);
+	});
+
+	test("an invalid inferred answer leaves no failure behind once a corrected call succeeds (#4565)", async () => {
+		const inference = new InferenceRig(() => "invalid-answer", true);
+		const { ctx, prompts } = stageOver({
+			inference,
+			turn: async (prompt, tool, messages) => {
+				if (prompt === 1) return proseTurn(messages, FINAL_TEXT);
+				await executeWorkflowDecision(tool, "model-call", { approved: true, summary: "corrected" });
+			},
+		});
+
+		assert.deepEqual(await ctx.prompt("review the change"), { approved: true, summary: "corrected" });
+		assert.equal(prompts.length, 2);
 	});
 
 	test("an inference failure no corrective prompt can repair keeps the stage's failure text and carries the typed error (#4565)", async () => {
@@ -416,7 +512,7 @@ describe("createStageContext — corrective prompts remain the fallback when the
 		const cause = findWorkflowStructuredOutputInferenceError(failure);
 		assert.equal(cause?.code, "tool-context-unavailable");
 		assert.equal(cause?.cause, undefined);
-		assert.equal(ctx.__modelFallbackMeta().warnings, undefined);
+		assert.equal(ctx.__modelFallbackMeta().warnings, undefined, "a setup fact, reported by the failure's cause");
 	});
 
 	test("a tool context that cannot be made is a typed failure with its cause, not a crash (#4565)", async () => {

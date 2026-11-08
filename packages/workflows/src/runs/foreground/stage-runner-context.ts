@@ -29,6 +29,7 @@ import {
 } from "./stage-runner-structured-output.js";
 import {
 	automaticInferenceExecutionFailure,
+	automaticInferenceWarning,
 	runAutomaticStructuredOutput,
 } from "./stage-runner-structured-output-auto.js";
 import type { InternalStageContext, LiveInternalStageContext, StageRunnerOpts } from "./stage-runner-types.js";
@@ -85,6 +86,8 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 	let artifactText: string | undefined;
 	let continuing = false;
 	let automaticInferences = 0;
+	let automaticArtifactText: string | undefined;
+	let warnedInference = false;
 
 	/**
 	 * The turn ended without a successful `structured_output` call: run the inference the tool performs, in the
@@ -204,6 +207,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 						// The model did not finish with the call, so the runtime does it for the stage. Only
 						// when that fails do the corrective prompts, and candidate failover, take over.
 						const automatic = await inferStructuredOutputAutomatically(text);
+						if (automatic.kind === "captured") automaticArtifactText = automatic.finalAssistantText;
 						if (structuredOutputCapture.called) break;
 						structuredOutputError = controller.structuredOutputFailureReason();
 						executionFailure ??= controller.structuredOutputExecutionFailure();
@@ -212,8 +216,13 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 						if (automatic.kind === "failed") {
 							automaticInferenceFailure = automatic.error;
 							executionFailure ??= automaticInferenceExecutionFailure(automatic.error);
-							if (automatic.error.code === "auto-inference-failed")
-								controller.recordStructuredOutputWarning(`[structured-output] ${automatic.error.message}`);
+							// An inference that ran and failed is a fallback worth showing, once: every correction turn
+							// would otherwise repeat it. A session without a tool context is a setup fact the typed
+							// cause of the stage's failure already reports.
+							if (automatic.error.code === "auto-inference-failed" && !warnedInference) {
+								warnedInference = true;
+								controller.recordStructuredOutputWarning(automaticInferenceWarning(automatic.error));
+							}
 						}
 						if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) break;
 						correctiveAttempts += 1;
@@ -248,8 +257,12 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 				// assistant text so an earlier-turn deliverable is not discarded
 				// (issue #2198); only when no prose exists anywhere is the artifact
 				// empty, and its receipt then carries the empty-artifact warning.
+				// A result the runtime inferred has no tool-call message to pair with, so the artifact is the final
+				// answer the inference itself was given, in full.
 				const rawOutputText = hasOutputArtifact
-					? (assistantArtifactTextForToolCall(sessionMessages ?? [], executionSnapshot.toolCallId) ?? "")
+					? (automaticArtifactText ??
+						assistantArtifactTextForToolCall(sessionMessages ?? [], executionSnapshot.toolCallId) ??
+						"")
 					: stringifyStructuredOutputValue(executionSnapshot.value);
 				lastAssistantText = await finalizePromptOutput(
 					rawOutputText,

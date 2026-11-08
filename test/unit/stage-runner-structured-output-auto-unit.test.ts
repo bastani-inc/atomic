@@ -1,4 +1,9 @@
-import { createStructuredOutputCapture, type ExtensionToolContext } from "@bastani/atomic";
+import {
+	createStructuredOutputCapture,
+	DecisionOutputError,
+	DecisionProviderError,
+	type ExtensionToolContext,
+} from "@bastani/atomic";
 import { Type } from "typebox";
 import { describe, test } from "vitest";
 import { stageSessionToolContext } from "../../packages/workflows/src/runs/foreground/stage-runner-session.js";
@@ -11,6 +16,7 @@ import {
 	AUTOMATIC_STRUCTURED_OUTPUT_TEXT_CHARS,
 	AUTOMATIC_STRUCTURED_OUTPUT_TRANSCRIPT_MESSAGES,
 	automaticInferenceExecutionFailure,
+	automaticInferenceWarning,
 	automaticStructuredOutputEvidence,
 	automaticStructuredOutputInstructions,
 	runAutomaticStructuredOutput,
@@ -80,6 +86,18 @@ describe("automaticStructuredOutputEvidence (#4565)", () => {
 			automaticStructuredOutputEvidence({ stagePrompt: "task", messages, promptStartIndex: 0 })?.finalAssistantText,
 			"earlier answer",
 		);
+	});
+
+	test("hands the inference the final answer trimmed, and the runner the answer as written (#4565)", async () => {
+		const padded = "\n  The verdict.  \n";
+		const messages = [user("task"), assistant(padded)];
+
+		assert.equal(
+			automaticStructuredOutputEvidence({ stagePrompt: "task", messages, promptStartIndex: 0 })?.finalAssistantText,
+			"The verdict.",
+		);
+		const { input } = portsOver({ messages });
+		assert.deepEqual(await runAutomaticStructuredOutput(input), { kind: "captured", finalAssistantText: padded });
 	});
 
 	test("has no evidence when there is no assistant text at all (#4565)", () => {
@@ -220,7 +238,7 @@ describe("runAutomaticStructuredOutput (#4565)", () => {
 
 		const outcome = await runAutomaticStructuredOutput(input);
 
-		assert.deepEqual(outcome, { kind: "captured" });
+		assert.deepEqual(outcome, { kind: "captured", finalAssistantText: "it is fine" });
 		assert.deepEqual(toolContextCalls, [[FIELDS.toolCallId, signal]]);
 		assert.equal(calls.length, 1);
 		const [toolCallId, params, passedSignal, onUpdate, passedContext] = calls[0] as [
@@ -338,6 +356,24 @@ describe("automaticInferenceExecutionFailure (#4565)", () => {
 		assert.equal(automaticInferenceExecutionFailure(failed("provider down")), "provider down");
 	});
 
+	test("is undefined for a typed decision output error whatever its message says, and the text for any other decision error (#4565)", () => {
+		assert.equal(
+			automaticInferenceExecutionFailure(
+				failed(new DecisionOutputError({ model: "m", detail: "no valid answer after repair" })),
+			),
+			undefined,
+		);
+		const provider = new DecisionProviderError({ model: "m", detail: "provider unavailable" });
+		assert.equal(automaticInferenceExecutionFailure(failed(provider)), provider.message);
+		const wrapped = new Error("tool failed", { cause: new DecisionOutputError({ model: "m" }) });
+		assert.equal(automaticInferenceExecutionFailure(failed(wrapped)), undefined, "found down the cause chain");
+		const copy = Object.assign(new Error("from another process"), {
+			name: "DecisionOutputError",
+			code: "invalid-output",
+		});
+		assert.equal(automaticInferenceExecutionFailure(failed(copy)), undefined, "a structural copy counts too");
+	});
+
 	test("is undefined for a contract failure and for an inference that never started (#4565)", () => {
 		assert.equal(
 			automaticInferenceExecutionFailure(
@@ -442,5 +478,33 @@ describe("createStageStructuredOutputTool (#4565)", () => {
 		assert.deepEqual(execution.snapshot, { toolCallId: "call-7", value: { ok: true } });
 		assert.deepEqual(capture.value, { ok: true });
 		assert.equal(capture.called, true);
+	});
+});
+
+describe("automaticInferenceWarning (#4565)", () => {
+	test("carries the typed error's message and the class and code of its cause, never the cause's text (#4565)", () => {
+		const cause = new DecisionProviderError({ model: "m", detail: "secret provider text" });
+		const warning = automaticInferenceWarning(
+			new WorkflowStructuredOutputInferenceError("auto-inference-failed", FIELDS, { cause }),
+		);
+
+		assert.ok(warning.startsWith("[structured-output] The automatic structured_output inference failed"), warning);
+		assert.ok(warning.endsWith(` Cause: DecisionProviderError (${cause.code}).`), warning);
+		assert.equal(warning.includes("secret provider text"), false);
+	});
+
+	test("names a cause without a code by its class alone, and says nothing of a missing or non-error cause (#4565)", () => {
+		const plain = automaticInferenceWarning(
+			new WorkflowStructuredOutputInferenceError("auto-inference-failed", FIELDS, { cause: new TypeError("x") }),
+		);
+		assert.ok(plain.endsWith(" Cause: TypeError."), plain);
+		for (const cause of [undefined, null, "text", { code: "x" }]) {
+			const error = new WorkflowStructuredOutputInferenceError(
+				"auto-inference-failed",
+				FIELDS,
+				cause === undefined ? undefined : { cause },
+			);
+			assert.equal(automaticInferenceWarning(error), `[structured-output] ${error.message}`);
+		}
 	});
 });

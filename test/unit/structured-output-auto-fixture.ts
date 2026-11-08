@@ -11,7 +11,7 @@ import type { AgentSession, StageSessionRuntime } from "./stage-runner-helpers.j
 import { assistantMessageWithUsage } from "./stage-runner-helpers.js";
 
 export const FINAL_TEXT = "The change is correct and the focused tests pass.";
-const NO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+export const NO_USAGE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
 
 export type Behavior = "answer" | "provider-failure" | "invalid-answer";
 
@@ -30,7 +30,19 @@ export class InferenceRig {
 	readonly contextRequests: string[] = [];
 	readonly models: string[] = [];
 
-	constructor(private readonly behavior: (call: number) => Behavior | "abort" = () => "answer") {}
+	/**
+	 * `withDecisionModel` gives the tool context a configured `decisionModel`, as every real session has, so a failure
+	 * reaches the stage as the typed decision error the engine wraps it in rather than as the raw engine error.
+	 */
+	constructor(
+		private readonly behavior: (call: number) => Behavior | "abort" = () => "answer",
+		withDecisionModel = false,
+	) {
+		if (withDecisionModel)
+			Object.assign(this.context, {
+				getDecisionModel: () => `${decisionChatModel.provider}/${decisionChatModel.id}`,
+			});
+	}
 
 	onAbort: (() => void) | undefined;
 	contextFailure: Error | undefined;

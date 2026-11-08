@@ -1,4 +1,9 @@
-import type { ExtensionToolContext, StructuredOutputCapture } from "@bastani/atomic";
+import {
+	type ExtensionToolContext,
+	findDecisionError,
+	isDecisionOutputError,
+	type StructuredOutputCapture,
+} from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import {
 	WorkflowStructuredOutputInferenceError,
@@ -45,31 +50,40 @@ function conversationText(message: StageMessage): AutomaticStructuredOutputMessa
 	return text.length === 0 ? undefined : { role: message.role, text };
 }
 
+interface FinalAnswer {
+	readonly index: number;
+	/** The message's ordinary text exactly as the model wrote it, which a stage's output artifact keeps. */
+	readonly rawText: string;
+}
+
+/** The last assistant message of the turn that carries text, or undefined when the turn left none. */
+function finalAssistantAnswer(messages: readonly StageMessage[], promptStartIndex: number): FinalAnswer | undefined {
+	for (let index = messages.length - 1; index >= promptStartIndex; index -= 1) {
+		const message = messages[index] as StageMessage;
+		if (message.role !== "assistant") continue;
+		const rawText = extractMessageText(message);
+		if (rawText.trim().length > 0) return { index, rawText };
+	}
+	return undefined;
+}
+
 /**
- * The named state for the automatic inference, or undefined when the turn left no assistant text: with nothing the
- * stage concluded there is nothing to infer a result from, and inferring one from the task alone would invent it.
- * The final answer is the last assistant text since the prompt began; the transcript is the user and assistant
- * messages before it, tool calls and their results left out.
+ * The named state for the automatic inference with the final answer it was built from, or undefined when the turn left
+ * no assistant text: with nothing the stage concluded there is nothing to infer a result from, and inferring one from
+ * the task alone would invent it. The final answer is the last assistant text since the prompt began; the transcript
+ * is the user and assistant messages before it, tool calls and their results left out.
  */
-export function automaticStructuredOutputEvidence(input: {
+function automaticStructuredOutputInput(input: {
 	readonly stagePrompt: string;
 	readonly messages: readonly StageMessage[];
 	readonly promptStartIndex: number;
-}): AutomaticStructuredOutputEvidence | undefined {
+}): { readonly evidence: AutomaticStructuredOutputEvidence; readonly finalText: string } | undefined {
 	const { messages, promptStartIndex } = input;
-	let finalIndex = messages.length - 1;
-	let final: AutomaticStructuredOutputMessage | undefined;
-	for (; finalIndex >= promptStartIndex; finalIndex -= 1) {
-		const candidate = conversationText(messages[finalIndex] as StageMessage);
-		if (candidate?.role === "assistant") {
-			final = candidate;
-			break;
-		}
-	}
+	const final = finalAssistantAnswer(messages, promptStartIndex);
 	if (final === undefined) return undefined;
 	const recent: AutomaticStructuredOutputMessage[] = [];
 	for (
-		let index = finalIndex - 1;
+		let index = final.index - 1;
 		index >= 0 && recent.length < AUTOMATIC_STRUCTURED_OUTPUT_TRANSCRIPT_MESSAGES;
 		index -= 1
 	) {
@@ -81,10 +95,22 @@ export function automaticStructuredOutputEvidence(input: {
 			});
 	}
 	return {
-		stageTask: boundedText(input.stagePrompt, AUTOMATIC_STRUCTURED_OUTPUT_TEXT_CHARS),
-		finalAssistantText: boundedText(final.text, AUTOMATIC_STRUCTURED_OUTPUT_TEXT_CHARS),
-		recentTranscript: recent,
+		finalText: final.rawText,
+		evidence: {
+			stageTask: boundedText(input.stagePrompt, AUTOMATIC_STRUCTURED_OUTPUT_TEXT_CHARS),
+			finalAssistantText: boundedText(final.rawText.trim(), AUTOMATIC_STRUCTURED_OUTPUT_TEXT_CHARS),
+			recentTranscript: recent,
+		},
 	};
+}
+
+/** The named state for the automatic inference, or undefined when the turn left no assistant text. */
+export function automaticStructuredOutputEvidence(input: {
+	readonly stagePrompt: string;
+	readonly messages: readonly StageMessage[];
+	readonly promptStartIndex: number;
+}): AutomaticStructuredOutputEvidence | undefined {
+	return automaticStructuredOutputInput(input)?.evidence;
 }
 
 /** The complete judgment instructions for the automatic inference, from the stage's result schema. */
@@ -101,7 +127,7 @@ export function automaticStructuredOutputInstructions(schema: TSchema): string {
 
 /** What a stage's automatic inference ended in. A cancelled stage throws its abort reason instead of returning. */
 export type AutomaticStructuredOutputOutcome =
-	| { readonly kind: "captured" }
+	| { readonly kind: "captured"; readonly finalAssistantText: string }
 	| { readonly kind: "skipped" }
 	| { readonly kind: "failed"; readonly error: WorkflowStructuredOutputInferenceError };
 
@@ -140,8 +166,9 @@ export async function runAutomaticStructuredOutput<TValue>(
 	input: AutomaticStructuredOutputInput<TValue>,
 ): Promise<AutomaticStructuredOutputOutcome> {
 	const { fields, signal } = input;
-	const evidence = automaticStructuredOutputEvidence(input);
-	if (evidence === undefined) return { kind: "skipped" };
+	const built = automaticStructuredOutputInput(input);
+	if (built === undefined) return { kind: "skipped" };
+	const { evidence, finalText } = built;
 	let context: ExtensionToolContext | undefined;
 	try {
 		context = input.toolContext(fields.toolCallId, signal);
@@ -160,16 +187,34 @@ export async function runAutomaticStructuredOutput<TValue>(
 		signal.throwIfAborted();
 		return failure("auto-inference-failed", fields, error);
 	}
-	return { kind: "captured" };
+	return { kind: "captured", finalAssistantText: finalText };
 }
 
 /**
  * The failure text of an automatic inference that no corrective prompt can repair, such as a deadline overrun or a
  * provider outage, classified as the same failure of a model's own call is. Undefined when the inference never
  * started, or failed on something a corrective prompt may fix.
+ *
+ * A decision model's invalid output is a typed `DecisionOutputError` and is correctable, whatever its message says.
+ * Only an error outside the decision family, such as the raw repair exhaustion a decision-less host raises, is told
+ * apart by the contract-failure text the model's own calls are classified by.
  */
 export function automaticInferenceExecutionFailure(error: WorkflowStructuredOutputInferenceError): string | undefined {
 	if (error.cause === undefined) return undefined;
+	const decision = findDecisionError(error.cause);
+	if (decision !== undefined) return isDecisionOutputError(decision) ? undefined : errorMessage(error.cause);
 	const detail = errorMessage(error.cause);
 	return isStructuredOutputContractFailure(detail) ? undefined : detail;
+}
+
+/**
+ * The stage warning for a failed automatic inference: the typed error's own message and the class and code of its
+ * cause. No cause text, which can quote the decision model's answer.
+ */
+export function automaticInferenceWarning(error: WorkflowStructuredOutputInferenceError): string {
+	const cause = error.cause;
+	const code = typeof cause === "object" && cause !== null ? (cause as { readonly code?: unknown }).code : undefined;
+	const name = cause instanceof Error ? cause.name : undefined;
+	const reason = name === undefined ? "" : ` Cause: ${name}${typeof code === "string" ? ` (${code})` : ""}.`;
+	return `[structured-output] ${error.message}${reason}`;
 }
