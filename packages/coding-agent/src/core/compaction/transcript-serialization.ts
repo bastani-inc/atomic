@@ -26,7 +26,7 @@ const LEGACY_THINKING_HEADER = "[Assistant thinking]: ";
 const KEEP_CONTEXT_OPEN_LINE_RE = /^<keepContext>$/i;
 const KEEP_CONTEXT_CLOSE_LINE_RE = /^<\/keepContext>$/i;
 
-const TOOL_RESULT_MAX_CHARS = 16_000;
+const TOOL_RESULT_MAX_CHARS = 2_000;
 
 /** One piece of a serialized transcript: literal text, or an image kept at its position. */
 export type TranscriptChunk = TextContent | ImageContent;
@@ -45,7 +45,7 @@ export function filteredMarker(lineCount: number): string {
 
 function truncateToolResult(text: string): string {
 	if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
-	return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${text.length - TOOL_RESULT_MAX_CHARS} more characters truncated]`;
+	return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${text.length - TOOL_RESULT_MAX_CHARS} more characters truncated; the full output is in this session's history]`;
 }
 
 function lastChunk(chunks: TranscriptChunk[]): TranscriptChunk | undefined {

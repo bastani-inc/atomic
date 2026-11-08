@@ -70,7 +70,7 @@ Removed lines are not lost. They stay in the session's history, and the compacte
 
 Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
 
-Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
+Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text is capped at 2,000 characters before the planner sees it and before it becomes durable compaction text. The truncation marker says the full output is in this session's history, where the agent can reach it through `history://sessions/<sessionId>` as described above.
 
 The recent tail is appended to the boundary in the same grammar, without thinking. Its tool results keep their full text.
 
