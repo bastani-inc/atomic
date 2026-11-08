@@ -64,7 +64,7 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 				...(mode === "interactive" ? { ATOMIC_INTERACTIVE_ENGINE_CHILD: "1" } : {}),
 			},
 			stdio: "pipe",
-			// The close-timeout fallback must still reach descendants after their parent exits.
+			// Give the watchdog a process group to kill on POSIX.
 			detached: process.platform !== "win32",
 		},
 	);
@@ -84,12 +84,11 @@ function collectChild(
 		let closeTimer: ReturnType<typeof setTimeout> | undefined;
 		const timer = setTimeout(() => {
 			timedOut = true;
-			child.kill("SIGKILL");
+			if (child.pid) killProcessTree(child.pid);
 			closeTimer = setTimeout(() => {
-				if (child.pid) killProcessTree(child.pid);
 				reject(
 					new Error(
-						`CLI pid ${child.pid}: close did not arrive within ${closeTimeoutMs} ms after SIGKILL\n${stderr}\n${stdout}`,
+						`CLI pid ${child.pid}: close did not arrive within ${closeTimeoutMs} ms after tree kill\n${stderr}\n${stdout}`,
 					),
 				);
 				child.stdout.destroy();
@@ -143,7 +142,7 @@ it("waits for close before rejecting an ordinary watchdog kill (#4553)", async (
 	expect(closed).toBe(true);
 });
 
-it("bounds the post-kill close wait when a descendant holds an output pipe (#4553)", async () => {
+it("kills pipe-holding descendants before rejecting a watchdog timeout (#4553)", async () => {
 	const child = spawn(
 		process.execPath,
 		[
@@ -154,18 +153,18 @@ const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"]
 });
 descendant.on("spawn", () => console.log(descendant.pid));
 process.stdin.resume();
-process.stdin.on("end", () => console.error("HELD_PIPE_MARKER"));`,
+process.stdin.on("end", () => console.error("HELD_PIPE_MARKER"));
+setInterval(() => {}, 1000);`,
 		],
 		{ stdio: "pipe", detached: process.platform !== "win32" },
 	);
-	let descendantPid: number | undefined;
 	const CHILD_BUDGET_MS = 250;
 	const CLOSE_GRACE_MS = 250;
 	const REJECTION_DEADLINE_MS = CHILD_BUDGET_MS + CLOSE_GRACE_MS + 2_000;
 	let deadline: ReturnType<typeof setTimeout> | undefined;
 	try {
 		const [ready] = await once(child.stdout, "data");
-		descendantPid = Number(ready.toString().trim());
+		const descendantPid = Number(ready.toString().trim());
 		const result = collectChild(child, "print", CHILD_BUDGET_MS, CLOSE_GRACE_MS);
 		const bounded = Promise.race([
 			result,
@@ -176,15 +175,20 @@ process.stdin.on("end", () => console.error("HELD_PIPE_MARKER"));`,
 				);
 			}),
 		]);
-		await expect(bounded).rejects.toThrow(
-			new RegExp(
-				`CLI pid ${child.pid}: close did not arrive within ${CLOSE_GRACE_MS} ms after SIGKILL[\\s\\S]*HELD_PIPE_MARKER`,
-			),
-		);
+		await expect(bounded).rejects.toThrow(/CLI did not finish[\s\S]*HELD_PIPE_MARKER/);
+		await expect
+			.poll(() => {
+				try {
+					process.kill(descendantPid, 0);
+					return false;
+				} catch (error) {
+					return (error as NodeJS.ErrnoException).code === "ESRCH";
+				}
+			})
+			.toBe(true);
 	} finally {
 		clearTimeout(deadline);
 		if (child.pid) killProcessTree(child.pid);
-		if (descendantPid) killProcessTree(descendantPid);
 		child.stdout.destroy();
 		child.stderr.destroy();
 	}
