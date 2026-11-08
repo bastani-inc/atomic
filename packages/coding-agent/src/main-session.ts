@@ -33,7 +33,7 @@ import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
-import { resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
+import { isSessionIdPrefix, resolveSessionIdTargetAcrossScopes } from "./session-id-target.js";
 import { createSessionCwdMatcher, resolvePath } from "./utils/paths.ts";
 
 type ResolvedSession =
@@ -56,13 +56,35 @@ async function findLocalSessionByExactId(sessionId: string, cwd: string, store: 
 		: undefined;
 }
 
+async function findSessionByExactId(
+	sessionId: string,
+	cwd: string,
+	store: SessionStore,
+): Promise<ResolvedSession | undefined> {
+	const header = await store.readHeader(sessionId).catch(() => undefined);
+	if (!header) return undefined;
+	const inProject = createSessionCwdMatcher(resolvePath(cwd))(resolvePath(header.cwd));
+	return { type: inProject ? "local" : "global", id: header.id, cwd: header.cwd };
+}
+
+async function sessionsWithIdPrefix(
+	idPrefix: string,
+	store: SessionStore,
+): Promise<{ readonly id: string; readonly cwd: string }[]> {
+	const sessions: { readonly id: string; readonly cwd: string }[] = [];
+	for await (const summary of store.list({ idPrefix, includeInternal: true })) {
+		sessions.push({ id: summary.id, cwd: summary.cwd });
+	}
+	return sessions;
+}
+
 async function resolveSessionId(sessionArg: string, cwd: string, store: SessionStore): Promise<ResolvedSession> {
-	const exact = await findLocalSessionByExactId(sessionArg, cwd, store).catch(() => undefined);
-	if (exact) return { type: "local", id: exact.id, cwd: exact.cwd };
-	const localSessions = await SessionManager.list(cwd, store, undefined, { includeInternal: true });
-	const resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, () =>
-		SessionManager.listAll(store, undefined, { includeInternal: true }),
-	);
+	const exact = await findSessionByExactId(sessionArg, cwd, store);
+	if (exact) return exact;
+	const candidates = isSessionIdPrefix(sessionArg) ? await sessionsWithIdPrefix(sessionArg, store) : [];
+	const inProject = createSessionCwdMatcher(resolvePath(cwd));
+	const localSessions = candidates.filter((session) => inProject(resolvePath(session.cwd)));
+	const resolution = await resolveSessionIdTargetAcrossScopes(sessionArg, localSessions, async () => candidates);
 	if (resolution.kind === "exact" || resolution.kind === "unique_prefix") {
 		return {
 			type: resolution.scope,

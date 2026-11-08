@@ -50,8 +50,14 @@ export interface SessionSummary {
 
 export interface SessionListQuery {
 	readonly cwd?: string;
+	/** Only sessions whose id starts with this text, compared case-insensitively. */
+	readonly idPrefix?: string;
 	readonly includeInternal?: boolean;
 	readonly signal?: AbortSignal;
+}
+
+export function matchesSessionIdPrefix(id: string, prefix: string | undefined): boolean {
+	return prefix === undefined || id.toLowerCase().startsWith(prefix.toLowerCase());
 }
 
 export interface SessionWriteOptions {

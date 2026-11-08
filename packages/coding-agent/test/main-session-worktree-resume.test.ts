@@ -76,3 +76,57 @@ test("a session without restores is not continued from another directory", async
 	await manager.appendSessionInfo("plain");
 	assert.equal(await sessionContinuesIn(store, manager.getSessionId(), sandbox.root), false);
 });
+
+test("an exact session id from another directory resolves without listing every session", async () => {
+	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	const source = await SessionManager.create(store, sandbox.root);
+	await source.appendSessionInfo("recorded elsewhere");
+	store.list = () => {
+		throw new Error("an exact id must not list the store");
+	};
+
+	const elsewhere = sandbox.path("elsewhere");
+	const forked = await createSessionManager(
+		parseArgs(["--fork", source.getSessionId()]),
+		elsewhere,
+		undefined,
+		SettingsManager.inMemory(),
+		store,
+	);
+
+	assert.notEqual(forked.getSessionId(), source.getSessionId());
+	assert.equal(forked.getCwd(), elsewhere);
+});
+
+test("a session id prefix from another directory resolves without listing every session", async () => {
+	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	const source = await SessionManager.create(store, sandbox.root);
+	await source.appendSessionInfo("recorded elsewhere");
+	const list = store.list.bind(store);
+	store.list = (query) => {
+		if (query.idPrefix === undefined) throw new Error("a prefix must not list every session");
+		return list(query);
+	};
+
+	const elsewhere = sandbox.path("elsewhere");
+	const forked = await createSessionManager(
+		parseArgs(["--fork", source.getSessionId().slice(0, 8)]),
+		elsewhere,
+		undefined,
+		SettingsManager.inMemory(),
+		store,
+	);
+
+	assert.notEqual(forked.getSessionId(), source.getSessionId());
+	assert.equal(forked.getCwd(), elsewhere);
+});

@@ -210,6 +210,22 @@ export function registerSessionStoreConformance(
 				assert.equal(await store.findMostRecent({ cwd: "missing" }), undefined);
 			});
 
+			check("lists only sessions whose id starts with an id prefix, ignoring case", async (store, reload) => {
+				await store.create(header("0a1b2c3d-0000-4000-8000-000000000001"), []);
+				await store.create({ ...header("0A1B2C3D-0000-4000-8000-000000000002"), internal: true }, []);
+				await store.create({ ...header("0a1b2c3e-0000-4000-8000-000000000003"), cwd: "/elsewhere" }, []);
+				store = await reload(store);
+				assert.deepEqual(
+					(await collect(store, { idPrefix: "0A1B2C3D", includeInternal: true })).map((item) => item.id).sort(),
+					["0A1B2C3D-0000-4000-8000-000000000002", "0a1b2c3d-0000-4000-8000-000000000001"],
+				);
+				assert.deepEqual((await collect(store, { idPrefix: "0a1b2c3" })).map((item) => item.id).sort(), [
+					"0a1b2c3d-0000-4000-8000-000000000001",
+					"0a1b2c3e-0000-4000-8000-000000000003",
+				]);
+				assert.deepEqual(await collect(store, { idPrefix: "ffffffff", includeInternal: true }), []);
+			});
+
 			check(
 				"computes summaries from messages and the latest metadata without rewriting text",
 				async (store, reload) => {

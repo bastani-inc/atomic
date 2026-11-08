@@ -652,6 +652,8 @@ Workflow runs use a SQLite journal, by default the [journal store](/storage#the-
 }
 ```
 
+`workflows.journal` selects where workflow runs are stored. Sessions, including the sessions of workflow stages, still use `sessions.storage` (default `~/.atomic/workflows/journal.sqlite`), so the `--session-store` path in a resume hint can differ from your journal path. To keep both in one file, set `sessions.storage` to the same path, or set the shared `storage` instead of either. Sessions already saved in the old store stay there; resume them with `--session-store <old path>`.
+
 #### Local worker pools
 
 Local worker pools are disabled unless `workflows.localWorkers` is set. With the option omitted, Atomic creates no worker tables, processes, or polling loops. A worker definition must be importable from its module path and export name. Only first-level `ctx.workflow(...)` child subtrees run in the pool; a root closure stays in the main process, and nested children stay on their assigned worker.

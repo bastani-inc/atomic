@@ -2,6 +2,10 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const UUID_PREFIX_PATTERN = /^[0-9a-f]{8}$/i;
 const UUID_FRAGMENT_PATTERN = /^[0-9a-f-]+$/i;
 
+export function isSessionIdPrefix(target: string): boolean {
+	return UUID_PREFIX_PATTERN.test(target);
+}
+
 export interface SessionIdCandidate {
 	readonly id: string;
 }

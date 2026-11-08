@@ -475,7 +475,11 @@ export class SqlSessionStore implements SessionStore {
 		this.assertListing(query);
 		// Read the token first: a commit racing the reads below moves it again before the next call.
 		const token = await this.changeToken();
-		const key = JSON.stringify([query.includeInternal === true, query.cwd ?? null]);
+		const key = JSON.stringify([
+			query.includeInternal === true,
+			query.cwd ?? null,
+			query.idPrefix?.toLowerCase() ?? null,
+		]);
 		const cached = this.scopes.get(key);
 		// A cached id without a summary is never expected; re-reading the scope repairs it instead of dropping it.
 		const scope =
@@ -541,8 +545,13 @@ export class SqlSessionStore implements SessionStore {
 			this.assertListing(query);
 			if (projectCwds.length === 0) return [];
 		}
-		const scope = `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}`;
-		const params = [query.includeInternal ? 1 : 0, ...(projectCwds ?? [])];
+		const idPrefix = query.idPrefix?.toLowerCase();
+		const scope = `(? = 1 OR internal = 0)${projectCwds ? ` AND cwd IN (${projectCwds.map(() => "?").join(", ")})` : ""}${idPrefix === undefined ? "" : " AND substr(lower(id), 1, ?) = ?"}`;
+		const params = [
+			query.includeInternal ? 1 : 0,
+			...(projectCwds ?? []),
+			...(idPrefix === undefined ? [] : [idPrefix.length, idPrefix]),
+		];
 		const inScope = (row: ListingRow) => !matchesCwd || matchesCwd(row.cwd);
 		if (listedBefore) {
 			const rows = (
