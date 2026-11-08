@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.72-alpha.1] - 2026-11-08
+
 ### Added
 
 - A released background subagent is woken in the restores of the session or run that launched it, and in those its owner recorded since. When it is woken on another machine, its recorded directory is mapped through them before anything checks that it exists, and its own session is prepared as a woken session is: each checkout it worked in on this machine stays, and the others are restored from its snapshots into worktrees there. A child that still cannot be restored stays the typed unrestorable outcome. See [Resume on any machine](../coding-agent/docs/guides/resume-on-any-machine.md) ([#4329](https://github.com/bastani-inc/atomic/issues/4329))
