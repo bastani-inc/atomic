@@ -341,3 +341,47 @@ test("AI Gateway pricing honors bracket ends and missing bracket rates", () => {
 		{ inputTokensAbove: 299, input: 1, output: 9, cacheRead: 0, cacheWrite: 0 },
 	]);
 });
+
+test("copies the efforts the OpenAI catalog lists onto Azure deployments, except xhigh and max (#4545)", () => {
+	const reasoningModel = (id: string, values: readonly string[]) => ({
+		id,
+		...toolCapable,
+		reasoning: true,
+		reasoning_options: [{ type: "effort", values }],
+	});
+	const catalogs = generateProviderCatalogs(
+		{
+			openai: {
+				models: {
+					"gpt-4.1": { id: "gpt-4.1", ...toolCapable },
+					"gpt-5": reasoningModel("gpt-5", ["minimal", "low", "medium", "high"]),
+					"gpt-5.1": reasoningModel("gpt-5.1", ["none", "low", "medium", "high", "xhigh", "max"]),
+				},
+			},
+			"github-copilot": {
+				models: {
+					"gpt-5.1": {
+						...reasoningModel("gpt-5.1", ["low", "medium", "high"]),
+						provider: { npm: "@ai-sdk/openai" },
+					},
+				},
+			},
+		},
+		["openai", "azure", "github-copilot"],
+	);
+	const { openai, azure, "github-copilot": copilot } = catalogs;
+
+	assert.equal(openai["gpt-5.1"].thinkingLevelMap?.max, "max");
+	assert.equal(openai["gpt-5.1"].thinkingLevelMap?.minimal, null);
+	assert.deepEqual(azure["gpt-5"].thinkingLevelMap, {
+		off: null,
+		minimal: "minimal",
+		low: "low",
+		medium: "medium",
+		high: "high",
+	});
+	assert.deepEqual(azure["gpt-5.1"].thinkingLevelMap, { off: "none", low: "low", medium: "medium", high: "high" });
+	assert.equal("thinkingLevelMap" in azure["gpt-4.1"], false);
+	assert.equal(copilot["gpt-5.1"].api, "openai-responses");
+	assert.notEqual(copilot["gpt-5.1"].thinkingLevelMap?.off, "none");
+});

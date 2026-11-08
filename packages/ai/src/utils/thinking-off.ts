@@ -29,8 +29,8 @@ export function appendThinkingOffFallbackDiagnostic(
 /**
  * Resolve thinking `off` for a Responses request, which sends a level's `thinkingLevelMap` value as the
  * effort. Falls back only to a level the map lists, because these endpoints reject an effort the model
- * does not support, and a map that lists none (such as the Azure GPT-5.x catalog entries) does not say
- * which effort is safe. Returns the fallback level, recorded on `output`.
+ * does not support, and a level the map leaves unlisted does not say which effort is safe. Returns the
+ * fallback level, recorded on `output`.
  */
 export function recordThinkingOffFallback(model: Model<Api>, output: AssistantMessage): ThinkingLevel | undefined {
 	const level = getThinkingOffFallbackLevel(model);

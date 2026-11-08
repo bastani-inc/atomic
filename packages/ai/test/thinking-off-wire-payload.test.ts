@@ -212,6 +212,8 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	it.each([
 		["openai/gpt-6-luna", getModel("openai", "gpt-6-luna")],
 		["azure/gpt-6-luna", getModel("azure", "gpt-6-luna")],
+		["azure/gpt-5.1", getModel("azure", "gpt-5.1")],
+		["azure/gpt-5.5", getModel("azure", "gpt-5.5")],
 		["github-copilot/gpt-6-luna", getModel("github-copilot", "gpt-6-luna")],
 	])("sends the listed off effort none for %s", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
@@ -227,6 +229,7 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 		["github-copilot/gpt-6.1-sol", "low", "low", getModel("github-copilot", "gpt-6.1-sol")],
 		["github-copilot/gpt-5.3-codex", "minimal", "low", getModel("github-copilot", "gpt-5.3-codex")],
 		["azure/gpt-6.1-sol", "low", "low", getModel("azure", "gpt-6.1-sol")],
+		["azure/gpt-5", "minimal", "minimal", getModel("azure", "gpt-5")],
 		["openai-codex/gpt-6.1-sol", "minimal", "low", getModel("openai-codex", "gpt-6.1-sol")],
 		["openai-codex/gpt-6-astra", "low", "low", getModel("openai-codex", "gpt-6-astra")],
 	] as const)(
@@ -244,8 +247,7 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 	);
 
 	it.each([
-		["azure/gpt-5", getModel("azure", "gpt-5")],
-		["azure/gpt-5.1", getModel("azure", "gpt-5.1")],
+		["azure/gpt-5-pro", getModel("azure", "gpt-5-pro")],
 		["a custom model", { ...getModel("openai", "gpt-6.1-sol"), thinkingLevelMap: { off: null, minimal: null } }],
 	])("keeps omitting reasoning for %s, whose map lists no effort to fall back to", async (_name, model) => {
 		const { payload, offFallbacks } = await captureRequest(model);
@@ -323,6 +325,7 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 		["github-copilot/gpt-6-luna", "low", "low", getModel("github-copilot", "gpt-6-luna")],
 		["xai/grok-4.5", "xhigh", "xhigh", getModel("xai", "grok-4.5")],
 		["azure/gpt-6.1-sol", "medium", "medium", getModel("azure", "gpt-6.1-sol")],
+		["azure/gpt-5.1", "minimal", "minimal", getModel("azure", "gpt-5.1")],
 		["openai-codex/gpt-6.1-sol", "high", "high", getModel("openai-codex", "gpt-6.1-sol")],
 	] as const)("keeps %s at an explicit %s level, effort %s", async (_name, reasoning, effort, model) => {
 		const { payload, offFallbacks } = await captureRequest(model, { reasoning });
