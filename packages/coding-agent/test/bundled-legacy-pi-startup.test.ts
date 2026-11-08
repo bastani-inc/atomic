@@ -1,12 +1,20 @@
-import { spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { killProcessTree } from "../src/utils/shell.js";
 
 const packageDir = path.resolve(import.meta.dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-bundled-legacy-pi-"));
 const app = path.join(root, "app.js");
+
+// Each case starts a real bundled CLI and cold-loads its extension graph under suite load.
+// Native Windows reached 87 s under CPU contention; allow headroom on slower hosted runners.
+const BUNDLED_CLI_EXIT_TIMEOUT_MS = 180_000;
+const BUNDLED_CLI_CLOSE_TIMEOUT_MS = 10_000;
+const BUNDLED_CLI_TEST_TIMEOUT_MS = BUNDLED_CLI_EXIT_TIMEOUT_MS + 20_000;
 
 beforeAll(() => {
 	const build = spawnSync(
@@ -56,15 +64,37 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 				...(mode === "interactive" ? { ATOMIC_INTERACTIVE_ENGINE_CHILD: "1" } : {}),
 			},
 			stdio: "pipe",
+			// Give the watchdog a process group to kill on POSIX.
+			detached: process.platform !== "win32",
 		},
 	);
+	return collectChild(child, mode);
+}
+
+function collectChild(
+	child: ChildProcessWithoutNullStreams,
+	mode: "print" | "rpc" | "interactive" = "print",
+	exitTimeoutMs = BUNDLED_CLI_EXIT_TIMEOUT_MS,
+	closeTimeoutMs = BUNDLED_CLI_CLOSE_TIMEOUT_MS,
+) {
 	return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
 		let stdout = "";
 		let stderr = "";
+		let timedOut = false;
+		let closeTimer: ReturnType<typeof setTimeout> | undefined;
 		const timer = setTimeout(() => {
-			child.kill("SIGKILL");
-			reject(new Error(`CLI did not finish\n${stderr}\n${stdout}`));
-		}, 25_000);
+			timedOut = true;
+			if (child.pid) killProcessTree(child.pid);
+			closeTimer = setTimeout(() => {
+				reject(
+					new Error(
+						`CLI pid ${child.pid}: close did not arrive within ${closeTimeoutMs} ms after tree kill\n${stderr}\n${stdout}`,
+					),
+				);
+				child.stdout.destroy();
+				child.stderr.destroy();
+			}, closeTimeoutMs);
+		}, exitTimeoutMs);
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (text) => {
@@ -85,11 +115,15 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 		});
 		child.on("error", (error) => {
 			clearTimeout(timer);
+			clearTimeout(closeTimer);
 			reject(error);
 		});
 		child.on("close", (status) => {
 			clearTimeout(timer);
-			resolve({ status, stdout, stderr });
+			clearTimeout(closeTimer);
+			// Windows may still hold app.js open until the killed process and its pipes close.
+			if (timedOut) reject(new Error(`CLI did not finish\n${stderr}\n${stdout}`));
+			else resolve({ status, stdout, stderr });
 		});
 		child.stdin.on("error", () => {});
 		if (mode === "print") child.stdin.end();
@@ -97,83 +131,166 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 	});
 }
 
-it("loads an auto-discovered legacy pi extension through the bundled app without installed pi packages", async () => {
-	const result = await run(
-		"legacy",
-		`import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+it("waits for close before rejecting an ordinary watchdog kill (#4553)", async () => {
+	const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "pipe" });
+	const CHILD_BUDGET_MS = 250;
+	let closed = false;
+	child.on("close", () => {
+		closed = true;
+	});
+	await expect(collectChild(child, "print", CHILD_BUDGET_MS)).rejects.toThrow("CLI did not finish");
+	expect(closed).toBe(true);
+});
+
+it("kills pipe-holding descendants before rejecting a watchdog timeout (#4553)", async () => {
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			`const { spawn } = require("node:child_process");
+const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+  stdio: ["ignore", "inherit", "inherit"]
+});
+descendant.on("spawn", () => console.log(descendant.pid));
+process.stdin.resume();
+process.stdin.on("end", () => console.error("HELD_PIPE_MARKER"));
+setInterval(() => {}, 1000);`,
+		],
+		{ stdio: "pipe", detached: process.platform !== "win32" },
+	);
+	const CHILD_BUDGET_MS = 250;
+	const CLOSE_GRACE_MS = 250;
+	const REJECTION_DEADLINE_MS = CHILD_BUDGET_MS + CLOSE_GRACE_MS + 2_000;
+	let deadline: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const [ready] = await once(child.stdout, "data");
+		const descendantPid = Number(ready.toString().trim());
+		const result = collectChild(child, "print", CHILD_BUDGET_MS, CLOSE_GRACE_MS);
+		const bounded = Promise.race([
+			result,
+			new Promise((_, reject) => {
+				deadline = setTimeout(
+					() => reject(new Error("helper did not reject within its close bound")),
+					REJECTION_DEADLINE_MS,
+				);
+			}),
+		]);
+		await expect(bounded).rejects.toThrow(/CLI did not finish[\s\S]*HELD_PIPE_MARKER/);
+		await expect
+			.poll(() => {
+				try {
+					process.kill(descendantPid, 0);
+					return false;
+				} catch (error) {
+					return (error as NodeJS.ErrnoException).code === "ESRCH";
+				}
+			})
+			.toBe(true);
+	} finally {
+		clearTimeout(deadline);
+		if (child.pid) killProcessTree(child.pid);
+		child.stdout.destroy();
+		child.stderr.destroy();
+	}
+});
+
+it(
+	"loads an auto-discovered legacy pi extension through the bundled app without installed pi packages",
+	async () => {
+		const result = await run(
+			"legacy",
+			`import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getAgentDir as legacy } from "@mariozechner/pi-coding-agent";
 import { getAgentDir as current } from "@earendil-works/pi-coding-agent";
 export default function(pi: ExtensionAPI) {
   if (legacy !== current) throw new Error("host identity mismatch");
   console.error("LEGACY_EXTENSION_LOADED");
 }`,
-	);
-	expect(result.stderr).toContain("LEGACY_EXTENSION_LOADED");
-	expect(result.stderr).not.toContain("Failed to load extension");
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+		);
+		expect(result.stderr).toContain("LEGACY_EXTENSION_LOADED");
+		expect(result.stderr).not.toContain("Failed to load extension");
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("keeps a broken legacy extension fatal and named in print mode", async () => {
-	const result = await run(
-		"broken-print",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-	);
-	expect(result.status).toBe(1);
-	expect(result.stderr).toContain('Failed to load extension "');
-	expect(result.stderr).toContain("legacy.ts");
-	expect(result.stderr).toContain("legacy dependency unavailable");
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"keeps a broken legacy extension fatal and named in print mode",
+	async () => {
+		const result = await run(
+			"broken-print",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+		);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain('Failed to load extension "');
+		expect(result.stderr).toContain("legacy.ts");
+		expect(result.stderr).toContain("legacy dependency unavailable");
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("skips a broken legacy extension when RPC is serving the interactive host", async () => {
-	const result = await run(
-		"broken-interactive",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-		"interactive",
-	);
-	expect(result.stderr).toContain("legacy.ts");
-	expect(result.stderr).toContain("legacy dependency unavailable");
-	expect(result.stdout).toContain('"id":"probe"');
-	expect(result.stdout).toContain('"success":true');
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"skips a broken legacy extension when RPC is serving the interactive host",
+	async () => {
+		const result = await run(
+			"broken-interactive",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+			"interactive",
+		);
+		expect(result.stderr).toContain("legacy.ts");
+		expect(result.stderr).toContain("legacy dependency unavailable");
+		expect(result.stdout).toContain('"id":"probe"');
+		expect(result.stdout).toContain('"success":true');
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("keeps a broken legacy extension fatal and named in standalone RPC mode", async () => {
-	const result = await run(
-		"broken-rpc",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-		"rpc",
-	);
-	expect(result.status).toBe(1);
-	expect(result.stderr).toContain('Failed to load extension "');
-	expect(result.stderr).toContain("legacy.ts");
-	expect(result.stderr).toContain("legacy dependency unavailable");
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"keeps a broken legacy extension fatal and named in standalone RPC mode",
+	async () => {
+		const result = await run(
+			"broken-rpc",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+			"rpc",
+		);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain('Failed to load extension "');
+		expect(result.stderr).toContain("legacy.ts");
+		expect(result.stderr).toContain("legacy dependency unavailable");
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("completes deferred interactive startup with a named diagnostic for a broken explicit extension", async () => {
-	const result = await run(
-		"broken-deferred",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-		"interactive",
-		true,
-	);
-	expect(result.stdout).toContain('"type":"extension_error"');
-	expect(result.stdout).toContain("legacy.ts");
-	expect(result.stdout).toContain("legacy dependency unavailable");
-	const response = result.stdout
-		.split("\n")
-		.map((line) => {
-			try {
-				return JSON.parse(line);
-			} catch {
-				return undefined;
-			}
-		})
-		.find((event) => event?.id === "resources");
-	expect(response, result.stderr).toMatchObject({ success: true });
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"completes deferred interactive startup with a named diagnostic for a broken explicit extension",
+	async () => {
+		const result = await run(
+			"broken-deferred",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+			"interactive",
+			true,
+		);
+		expect(result.stdout).toContain('"type":"extension_error"');
+		expect(result.stdout).toContain("legacy.ts");
+		expect(result.stdout).toContain("legacy dependency unavailable");
+		const response = result.stdout
+			.split("\n")
+			.map((line) => {
+				try {
+					return JSON.parse(line);
+				} catch {
+					return undefined;
+				}
+			})
+			.find((event) => event?.id === "resources");
+		expect(response, result.stderr).toMatchObject({ success: true });
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
 const tmuxAvailable = spawnSync("tmux", ["-V"]).status === 0;
 
@@ -216,7 +333,7 @@ it.skipIf(!tmuxAvailable)(
 		};
 		try {
 			tmux("new-session", "-d", "-s", "crash", "-x", "140", "-y", "45", "-c", home, "sh", "-c", command);
-			const deadline = Date.now() + 25_000;
+			const deadline = Date.now() + BUNDLED_CLI_EXIT_TIMEOUT_MS;
 			let pane = "";
 			do {
 				pane = tmux("capture-pane", "-p", "-J", "-S", "-", "-t", "crash");
@@ -234,4 +351,5 @@ it.skipIf(!tmuxAvailable)(
 			spawnSync("tmux", ["-S", socket, "kill-server"]);
 		}
 	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
 );
