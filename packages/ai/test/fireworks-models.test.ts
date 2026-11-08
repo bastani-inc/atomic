@@ -3,12 +3,13 @@ import type { AddressInfo } from "node:net";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { getModel, normalizeContext, streamSimple } from "../src/compat.ts";
+import { getModel, getModels, normalizeContext, streamSimple } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
-import { getSupportedThinkingLevels } from "../src/models.ts";
+import { getSupportedThinkingLevels, hasApi } from "../src/models.ts";
 import type { Context, Model, Tool } from "../src/types.ts";
 
 const originalFireworksApiKey = process.env.FIREWORKS_API_KEY;
+const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
 
 afterEach(() => {
 	if (originalFireworksApiKey === undefined) {
@@ -159,8 +160,9 @@ describe("Fireworks models", () => {
 		expect(getSupportedThinkingLevels(getModel("fireworks", modelId))).toEqual(levels);
 	});
 
-	it("keeps toggle-only Messages models without a verified fallback on budget-based thinking", async () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4");
+	it("keeps Messages models without native effort on budget-based thinking (#4548)", async () => {
+		// Budget behavior must remain covered even if the live catalog drops its last toggle-only model.
+		const model = createFireworksModel();
 		expect(model.compat?.forceAdaptiveThinking).toBeUndefined();
 		let payload: Record<string, unknown> | undefined;
 		await streamSimple(
@@ -186,9 +188,7 @@ describe("Fireworks models", () => {
 		expect(getEnvApiKey("fireworks")).toBe("test-fireworks-key");
 	});
 
-	it("sets Fireworks-specific compat for session affinity and unsupported tool fields", () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4");
-
+	it.each(fireworksMessagesModels)("sets Fireworks-specific session and tool compat for $id (#4548)", (model) => {
 		expect(model.compat).toBeDefined();
 		expect(model.compat?.sendSessionAffinityHeaders).toBe(true);
 		expect(model.compat?.supportsEagerToolInputStreaming).toBe(false);

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { getModel, getModels, streamSimple } from "../src/compat.ts";
+import { hasApi } from "../src/models.ts";
 import type { AssistantMessage, Context, Model } from "../src/types.ts";
+
+const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
 
 interface AnthropicPayload {
 	messages?: Array<{
@@ -105,15 +108,9 @@ describe("Anthropic empty thinking signature compat", () => {
 	});
 
 	// Regression for #9323: Fireworks emits unsigned thinking that must survive replay.
-	it.each([
-		"accounts/fireworks/models/deepseek-v4p1-flash",
-		"accounts/fireworks/models/qwen3p8-max",
-		"accounts/fireworks/models/qwen3p8-2p4t-a95b",
-		"accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-	] as const)("preserves unsigned thinking for Fireworks %s", async (modelId) => {
-		const model = getModel("fireworks", modelId);
+	it.each(fireworksMessagesModels)("preserves unsigned thinking for Fireworks $id (#4548)", async (model) => {
 		expect(model.compat?.allowEmptySignature).toBe(true);
-		const context = makeContext("", "internal reasoning", "fireworks", modelId);
+		const context = makeContext("", "internal reasoning", model.provider, model.id);
 		const assistant = context.messages[1] as AssistantMessage;
 		assistant.content.push({ type: "text", text: "answer" });
 		const payload = await capturePayload(model, context);
@@ -124,10 +121,10 @@ describe("Anthropic empty thinking signature compat", () => {
 	});
 
 	it("does not replay cross-model Fireworks thinking when opted into unsigned replay (#9323, #10995)", async () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash");
+		const model = fireworksMessagesModels[0];
 		const payload = await capturePayload(
 			model,
-			makeContext("", "internal reasoning", "fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"),
+			makeContext("", "internal reasoning", "fireworks", `${model.id}-other-model`),
 		);
 		const assistantBlocks = (payload.messages ?? [])
 			.filter((message) => message.role === "assistant")

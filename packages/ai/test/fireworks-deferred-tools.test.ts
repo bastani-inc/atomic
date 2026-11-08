@@ -2,9 +2,12 @@ import type { MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/b
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.js";
-import { getModel } from "../src/compat.js";
+import { getModels } from "../src/compat.js";
+import { hasApi } from "../src/models.js";
 import type { AssistantMessage, Context, Model, Tool, ToolResultMessage } from "../src/types.js";
 import { normalizeContext } from "../src/utils/transcript.ts";
+
+const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
 
 const lookup: Tool = {
 	name: "lookup",
@@ -67,12 +70,7 @@ async function capture(model: Model<"anthropic-messages">, context: Context): Pr
 
 // Follow-up to #9323: Fireworks thinking support alone did not enable tool references.
 describe("Fireworks deferred tools", () => {
-	it.each([
-		"accounts/fireworks/models/deepseek-v4p1-flash",
-		"accounts/fireworks/models/qwen3p8-max",
-		"accounts/fireworks/models/nemotron-3-ultra-nvfp4",
-	] as const)("serializes discovery and replay for %s", async (id) => {
-		const model = getModel("fireworks", id);
+	it.each(fireworksMessagesModels)("serializes discovery and replay for $id (#4548)", async (model) => {
 		for (const name of ["ToolSearch", "tool_search", "discover_tools"]) {
 			const context = discoveryContext(model, name);
 			const payload = await capture(model, context);
@@ -106,7 +104,7 @@ describe("Fireworks deferred tools", () => {
 			const events = [
 				{
 					type: "message_start",
-					message: { id: "msg_lookup", model: id, usage: { input_tokens: 100, output_tokens: 0 } },
+					message: { id: "msg_lookup", model: model.id, usage: { input_tokens: 100, output_tokens: 0 } },
 				},
 				{
 					type: "content_block_start",
@@ -163,7 +161,7 @@ describe("Fireworks deferred tools", () => {
 	});
 
 	it("deduplicates declarations across system updates and preserves ordinary text", async () => {
-		const model = getModel("fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4");
+		const model = fireworksMessagesModels[0];
 		const context = discoveryContext(model);
 		const assistant = context.messages[1] as AssistantMessage;
 		assistant.content.push({ type: "toolCall", id: "search2", name: "tool_search", arguments: { query: "lookup" } });
@@ -189,7 +187,7 @@ describe("Fireworks deferred tools", () => {
 	it.each(["no-discovery", "no-markers", "no-immediate", "already-used", "disabled"])(
 		"keeps normal schemas for %s",
 		async (scenario) => {
-			const base = getModel("fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4");
+			const base = fireworksMessagesModels[0];
 			const model = { ...base, compat: { ...base.compat, supportsMidConvoToolChanges: false } };
 			const context = discoveryContext(model);
 			if (scenario === "no-discovery") {
