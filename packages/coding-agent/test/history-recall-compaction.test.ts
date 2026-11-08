@@ -145,7 +145,9 @@ describe("history recall after verbatim compaction (#4568)", () => {
 
 		const { search, read } = recallTools(session, routerCwd);
 		const found = await search("needle-4568", url);
-		const match = new RegExp(`${url.replace(/[/.]/g, "\\$&")}:(\\d+): ${REMOVED_LINE}`).exec(found);
+		const resultLine = found.split("\n").find((row) => row.startsWith(`${url}:`));
+		const match = /^:(\d+): /.exec(resultLine?.slice(url.length) ?? "");
+		assert.ok(resultLine?.endsWith(REMOVED_LINE), `search returns the removed text in:\n${found}`);
 		assert.ok(match, `search finds the removed line in:\n${found}`);
 		const line = Number(match[1]);
 		const opened = await read(`${url}:${line}-${line}`);
