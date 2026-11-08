@@ -102,22 +102,43 @@ export function toGoogleSdkThinkingLevel(level: GoogleApiThinkingLevel): GoogleS
 	return GOOGLE_SDK_THINKING_LEVEL_MAP[level];
 }
 
+/** A Gemini model's thinking budget for a level, as the API module that sends the request computes it. */
+export type GoogleThinkingBudget = (level: ResolvedGoogleThinkingLevel) => number;
+
 interface GoogleThinkingOffFallback {
 	level: ThinkingLevel;
-	apiLevel: GoogleApiThinkingLevel;
+	thinkingConfig: ThinkingConfig;
+	providerThinkingLevel: string;
 }
 
-/** Thinking `off` on a level-based Gemini model that cannot disable thinking runs at its lowest level. */
-function getGoogleThinkingOffFallback<T extends GoogleApiType>(model: Model<T>): GoogleThinkingOffFallback | undefined {
-	if (!usesGoogleThinkingLevel(model)) return undefined;
+/**
+ * Thinking `off` on a Gemini model that cannot disable thinking runs at its lowest level: that level's
+ * `thinkingLevel` on a level-based model, or its thinking budget on a budget-based one.
+ */
+function getGoogleThinkingOffFallback<T extends GoogleApiType>(
+	model: Model<T>,
+	getBudget: GoogleThinkingBudget,
+): GoogleThinkingOffFallback | undefined {
 	const level = getThinkingOffFallbackLevel(model);
 	if (level === undefined) return undefined;
-	return { level, apiLevel: toGoogleThinkingLevel(resolveGoogleThinkingLevel(model, level)) };
+	const resolvedLevel = resolveGoogleThinkingLevel(model, level);
+	if (!usesGoogleThinkingLevel(model)) {
+		const thinkingBudget = getBudget(resolvedLevel);
+		return { level, thinkingConfig: { thinkingBudget }, providerThinkingLevel: String(thinkingBudget) };
+	}
+	const apiLevel = toGoogleThinkingLevel(resolvedLevel);
+	return {
+		level,
+		thinkingConfig: { thinkingLevel: toGoogleSdkThinkingLevel(apiLevel) },
+		providerThinkingLevel: apiLevel,
+	};
 }
 
-export function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(model: Model<T>): ThinkingConfig {
-	const fallback = getGoogleThinkingOffFallback(model);
-	return fallback ? { thinkingLevel: toGoogleSdkThinkingLevel(fallback.apiLevel) } : { thinkingBudget: 0 };
+export function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(
+	model: Model<T>,
+	getBudget: GoogleThinkingBudget,
+): ThinkingConfig {
+	return getGoogleThinkingOffFallback(model, getBudget)?.thinkingConfig ?? { thinkingBudget: 0 };
 }
 
 /** Record on `output` that a request for thinking `off` runs at the model's lowest thinking level. */
@@ -125,10 +146,11 @@ export function recordGoogleThinkingOffFallback<T extends GoogleApiType>(
 	model: Model<T>,
 	options: { thinking?: { enabled: boolean } } | undefined,
 	output: AssistantMessage,
+	getBudget: GoogleThinkingBudget,
 ): void {
 	if (options?.thinking?.enabled !== false) return;
-	const fallback = getGoogleThinkingOffFallback(model);
-	if (fallback) appendThinkingOffFallbackDiagnostic(output, fallback.level, fallback.apiLevel);
+	const fallback = getGoogleThinkingOffFallback(model, getBudget);
+	if (fallback) appendThinkingOffFallbackDiagnostic(output, fallback.level, fallback.providerThinkingLevel);
 }
 
 /**

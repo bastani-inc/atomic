@@ -385,3 +385,58 @@ test("copies the efforts the OpenAI catalog lists onto Azure deployments, except
 	assert.equal(copilot["gpt-5.1"].api, "openai-responses");
 	assert.notEqual(copilot["gpt-5.1"].thinkingLevelMap?.off, "none");
 });
+
+test("copies the OpenAI off entry onto Azure deployments without masking their other levels (#4552)", () => {
+	const reasoningModel = (id: string, values: readonly string[]) => ({
+		id,
+		...toolCapable,
+		reasoning: true,
+		reasoning_options: [{ type: "effort", values }],
+	});
+	const { openai, azure } = generateProviderCatalogs(
+		{
+			openai: {
+				models: {
+					o3: reasoningModel("o3", ["low", "medium", "high"]),
+					"gpt-5-pro": reasoningModel("gpt-5-pro", ["high"]),
+				},
+			},
+		},
+		["openai", "azure"],
+	);
+
+	assert.equal(openai.o3.thinkingLevelMap?.off, null);
+	assert.equal(openai.o3.thinkingLevelMap?.minimal, null);
+	assert.deepEqual(azure.o3.thinkingLevelMap, { off: null, low: "low", medium: "medium", high: "high" });
+	assert.deepEqual(azure["gpt-5-pro"].thinkingLevelMap, { off: null, high: "high" });
+});
+
+test("denies thinking off for Gemini 2.5 Pro on Google and Vertex only (#4552)", () => {
+	const gemini = (id: string) => ({ id, name: id, ...toolCapable, reasoning: true });
+	const catalogs = generateProviderCatalogs(
+		{
+			google: {
+				models: { "gemini-2.5-pro": gemini("gemini-2.5-pro"), "gemini-2.5-flash": gemini("gemini-2.5-flash") },
+			},
+			"google-vertex": { models: { "gemini-2.5-pro": gemini("gemini-2.5-pro") } },
+		},
+		["google", "google-vertex", "vercel-ai-gateway"],
+		[],
+		[
+			{
+				id: "google/gemini-2.5-pro",
+				name: "Gemini 2.5 Pro",
+				context_window: 1_048_576,
+				max_tokens: 65_536,
+				tags: ["reasoning", "tool-use"],
+				pricing: { input: "0.00000125", output: "0.00001" },
+			},
+		],
+	);
+
+	assert.deepEqual(catalogs.google["gemini-2.5-pro"].thinkingLevelMap, { off: null });
+	assert.deepEqual(catalogs["google-vertex"]["gemini-2.5-pro"].thinkingLevelMap, { off: null });
+	assert.equal("thinkingLevelMap" in catalogs.google["gemini-2.5-flash"], false);
+	assert.ok(catalogs["vercel-ai-gateway"]["google/gemini-2.5-pro"], "expected the AI Gateway entry to be generated");
+	assert.equal("thinkingLevelMap" in catalogs["vercel-ai-gateway"]["google/gemini-2.5-pro"], false);
+});

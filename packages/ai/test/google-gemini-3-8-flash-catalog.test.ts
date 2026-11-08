@@ -122,7 +122,10 @@ describe("Gemini 3.8 Flash Google catalogs", () => {
 		for (const provider of ["google", "google-vertex"] as const) {
 			const model = getModel(provider, "gemini-3.8-flash") as Model<"google-generative-ai" | "google-vertex">;
 
-			expect(getDisabledGoogleThinkingConfig(model), provider).toEqual({ thinkingLevel: "LOW" });
+			expect(
+				getDisabledGoogleThinkingConfig(model, () => 1024),
+				provider,
+			).toEqual({ thinkingLevel: "LOW" });
 			expect(resolveGoogleThinkingLevel(model, "low"), provider).toBe("low");
 			expect(resolveGoogleThinkingLevel(model, "medium"), provider).toBe("medium");
 			expect(resolveGoogleThinkingLevel(model, "high"), provider).toBe("high");

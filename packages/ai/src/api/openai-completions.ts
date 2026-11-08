@@ -54,6 +54,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
+import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import {
 	getDeclaredTools,
 	resolveTranscript,
@@ -414,10 +415,12 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				compat,
 				options?.apiKey,
 			);
+			const thinkingOffFallback = options?.reasoningEffort ? undefined : recordThinkingOffFallback(model, output);
+			const reasoningOptions = thinkingOffFallback ? { ...options, reasoningEffort: thinkingOffFallback } : options;
 			let params = buildParams(
 				model,
 				normalizedContext,
-				options,
+				reasoningOptions,
 				compat,
 				cacheRetention,
 				grammarToolInputProperties,

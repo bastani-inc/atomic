@@ -306,7 +306,7 @@ Example for a model where thinking cannot be disabled:
 }
 ```
 
-A request with thinking `off`, such as one made by compaction, branch summaries, or a subagent with an `:off` suffix, runs such a model at its lowest supported level instead of leaving the effort to the provider's default, which is often high. On OpenAI-style Responses endpoints this happens only when `thinkingLevelMap` lists that level's value, as in `"low": "low"`; otherwise the request keeps the provider's default. The reply records this in its `diagnostics` as `thinking_off_fallback`, with the level and provider value that were sent. A model whose `off` is supported is sent the provider's explicit disabled setting.
+A request with thinking `off`, such as one made by compaction, branch summaries, or a subagent with an `:off` suffix, runs such a model at its lowest supported level instead of leaving the effort to the provider's default, which is often high. On endpoints that send the map's value as the effort (OpenAI Responses, OpenAI Chat Completions and Mistral), it runs at the lowest supported level whose value `thinkingLevelMap` lists, as in `"low": "low"`; a map that lists no value, like the example above, keeps the provider's default. Gemini models that use thinking budgets run at that level's budget. The reply records this in its `diagnostics` as `thinking_off_fallback`, with the level and provider value that were sent. A model whose `off` is supported is sent the provider's explicit disabled setting.
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
 

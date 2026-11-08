@@ -62,6 +62,7 @@ import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
+import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
 import {
 	collapseSystemMessages,
 	getCurrentTools,
@@ -283,6 +284,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			const initialSystemMessage = getInitialSystemMessage(normalizedContext.messages);
 			const initialSystemPrompt = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : undefined;
 			let disablePreferredStrictTools = false;
+			const reasoningOptions = resolveThinkingOffOptions(model, options, output);
 			let response: ConverseStreamCommandOutput;
 			for (;;) {
 				const tools = convertToolConfig(
@@ -306,7 +308,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 							model.compat?.supportsTemperature !== false && { temperature: options.temperature }),
 					},
 					toolConfig: tools.toolConfig,
-					additionalModelRequestFields: buildAdditionalModelRequestFields(model, options),
+					additionalModelRequestFields: buildAdditionalModelRequestFields(model, reasoningOptions),
 					...(options.requestMetadata !== undefined && { requestMetadata: options.requestMetadata }),
 				};
 				const nextCommandInput = await options?.onPayload?.(commandInput, model);
@@ -1363,6 +1365,45 @@ function buildOpenAiReasoningOffFields(
 	if (candidates.some((candidate) => candidate.includes("gpt-oss"))) return { reasoning_effort: off };
 	if (candidates.some((candidate) => candidate.includes("gpt-"))) return { reasoning: { effort: off } };
 	return undefined;
+}
+
+interface RequestedThinkingFields {
+	output_config?: { effort?: string };
+	reasoning_effort?: string;
+	reasoning?: { effort?: string };
+	thinking?: { budget_tokens?: number };
+}
+
+/**
+ * The effort or budget `additionalModelRequestFields` asks for: Claude's `output_config.effort` or
+ * `thinking.budget_tokens`, or an OpenAI model's `reasoning_effort` or `reasoning.effort`.
+ */
+function getRequestedThinkingLevel(fields: RequestedThinkingFields | undefined): string | undefined {
+	const effort =
+		fields?.output_config?.effort ??
+		fields?.reasoning_effort ??
+		fields?.reasoning?.effort ??
+		fields?.thinking?.budget_tokens;
+	return effort === undefined ? undefined : String(effort);
+}
+
+/**
+ * A request without a reasoning level is thinking `off`. A model whose thinking map denies `off` runs at its
+ * lowest supported level instead, the same request as selecting that level, when that level sends an effort
+ * or budget. The fallback is recorded on `output`.
+ */
+function resolveThinkingOffOptions(
+	model: Model<"bedrock-converse-stream">,
+	options: BedrockOptions,
+	output: AssistantMessage,
+): BedrockOptions {
+	const level = options.reasoning ? undefined : getThinkingOffFallbackLevel(model);
+	if (level === undefined) return options;
+	const reasoningOptions = { ...options, reasoning: level };
+	const providerThinkingLevel = getRequestedThinkingLevel(buildAdditionalModelRequestFields(model, reasoningOptions));
+	if (providerThinkingLevel === undefined) return options;
+	appendThinkingOffFallbackDiagnostic(output, level, providerThinkingLevel);
+	return reasoningOptions;
 }
 
 function buildAdditionalModelRequestFields(

@@ -354,13 +354,21 @@ describe("Bedrock OpenAI reasoning payload", () => {
 		},
 	);
 
-	it.each(["global.openai.gpt-6-astra", "us.openai.gpt-6.1-sol", "global.openai.gpt-5.6-sol"] as const)(
-		"sends no reasoning fields when reasoning is off and %s maps off to nothing",
-		async (id) => {
+	it.each([
+		["global.openai.gpt-6-astra", { reasoning_effort: "low" }],
+		["us.openai.gpt-6.1-sol", { reasoning: { effort: "low" } }],
+	] as const)(
+		"sends %s, which cannot turn reasoning off, its lowest effort when reasoning is off (#4552)",
+		async (id, fields) => {
 			const payload = await captureOffPayload(getModel("amazon-bedrock", id));
-			assert.equal(payload.additionalModelRequestFields, undefined);
+			assert.deepEqual(payload.additionalModelRequestFields, fields);
 		},
 	);
+
+	it("sends no reasoning fields when reasoning is off and global.openai.gpt-5.6-sol maps off to nothing", async () => {
+		const payload = await captureOffPayload(getModel("amazon-bedrock", "global.openai.gpt-5.6-sol"));
+		assert.equal(payload.additionalModelRequestFields, undefined);
+	});
 });
 
 describe.skipIf(!hasBedrockCredentials())("Bedrock Claude max tokens E2E", () => {

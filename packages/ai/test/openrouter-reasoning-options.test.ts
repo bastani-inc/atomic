@@ -92,8 +92,8 @@ describe("OpenRouter mandatory reasoning payloads", () => {
 		supported_efforts: ["max", "high", "low"],
 	});
 
-	it("omits reasoning when a background call does not request it", async () => {
-		expect(await capturePayload(openRouterModel(mandatoryMap))).not.toHaveProperty("reasoning");
+	it("runs a background call that does not request reasoning at the lowest supported effort (#4552)", async () => {
+		expect(await capturePayload(openRouterModel(mandatoryMap))).toMatchObject({ reasoning: { effort: "low" } });
 	});
 
 	it("still sends an explicitly selected supported effort", async () => {
