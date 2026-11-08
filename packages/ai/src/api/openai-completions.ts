@@ -798,9 +798,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 };
 
 /**
- * OpenRouter maps any gateway effort onto the efforts the routed model supports, so thinking `off` there runs
- * at the lowest supported level even when the thinking map lists no effort for it. Other formats send the
- * map's value as the effort and need it listed.
+ * OpenRouter translates a gateway effort for the routed model, to its nearest supported effort or to a share
+ * of the output budget, so thinking `off` there runs at the lowest supported level even when the thinking map
+ * lists no effort for it: the same request as selecting that level. Other formats send the map's value to an
+ * endpoint that can reject an effort the model does not support, so they need it listed.
  */
 function recordCompletionsThinkingOffFallback(
 	model: Model<"openai-completions">,
