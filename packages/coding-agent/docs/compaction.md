@@ -7,7 +7,7 @@ description: "Verbatim line compaction, when it runs, planning rungs, and branch
 
 LLMs have finite context windows. Atomic reduces older transcript context with **verbatim line compaction** while preserving a configured count of recent context-visible messages. Branch summarization is a separate, lossy feature used when navigating away from a branch.
 
-Compaction normally uses the model selected by `compactionModel`. If it fails, Atomic borrows the next model from your configured `fallbackModels` for that request. A chat model's policy refusal first triggers pi's summary compaction on the same model, whether selected by `auto`, an explicit chat-model ID, or a `fallbackModels` entry. If that also fails, Atomic continues through the fallback models. Classifier and Morph failures go straight to the fallback models.
+Compaction normally uses the model selected by `compactionModel`. If it fails, Atomic borrows the next model from your configured `fallbackModels` for that request. A chat model's policy refusal that arrives before it generated anything first triggers pi's summary compaction on the same model, whether selected by `auto`, an explicit chat-model ID, or a `fallbackModels` entry. A refusal that arrives partway through the model's output is retried once and then planned in parts, keeping the result verbatim, before any summary. If that also fails, Atomic continues through the fallback models. Classifier and Morph failures go straight to the fallback models.
 
 **The selected compaction model and configured fallback models may receive the compaction transcript**, using their own credentials. Borrowing never changes the session's model or thinking level. Line planners select deletions, and Atomic reconstructs surviving lines without rewriting them. The policy-refusal summary fallback is lossy and appears as `summary (pi fallback)`.
 
@@ -22,7 +22,8 @@ This page covers the concepts and normal use of compaction and branch summarizat
 | Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Per-message `id:start,end` deletion records | Retained transcript text reconstructed from the originals |
 | Background compaction | Context passes `compaction.backgroundThresholdPercent` (75% by default) | The same verbatim compaction, run while the agent keeps working | The same boundary, committed at the next turn boundary |
 | Planner fallback borrowing | A failed selected compaction model | Same deletion records, from a configured `fallbackModels` entry | Retained text with the borrowed model recorded |
-| Policy-refusal summary fallback | A chat provider refuses compaction under its policy | Pi's summary compaction on the same model | A summary boundary labeled `summary (pi fallback)` |
+| Split planning | A chat provider refuses a compaction request partway through its output, twice | The same deletion records, planned for each part of the transcript split at message boundaries | Retained text reconstructed from the originals |
+| Policy-refusal summary fallback | A chat provider refuses compaction under its policy before generating anything, or split planning failed | Pi's summary compaction on the same model | A summary boundary labeled `summary (pi fallback)` |
 | Fresh context window | Load-bearing compaction after every configured model failed | *(none — no model call)* | A `CompactionEntry` with `details.rung: "fresh"` |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
@@ -118,7 +119,12 @@ The compaction card shows the backend and model that produced the result, such a
 
 ### Troubleshooting policy refusals
 
-If you see "This request was blocked as it seems to violate Anthropic's Terms of Service", or a refusal about reverse engineering or duplicating model outputs, the provider refused that compaction request. Atomic does not retry policy refusals as transient errors. For any chat compaction model, including `auto`, it tries pi's summary compaction on the same model. That summary retries recoverable rate-limit, server, overload, and transport errors according to `settings.retry`, just like the planner. If the summary also fails or is refused, Atomic continues through `fallbackModels`.
+If you see "This request was blocked as it seems to violate Anthropic's Terms of Service", or a refusal about reverse engineering or duplicating model outputs, the provider refused that compaction request. Atomic does not retry policy refusals as transient errors, and it handles two kinds differently.
+
+- **Refused before the model generated anything.** The provider rejected the request at once. For any chat compaction model, including `auto`, Atomic tries pi's summary compaction on the same model. That summary retries recoverable rate-limit, server, overload, and transport errors according to `settings.retry`, just like the planner. If the summary also fails or is refused, Atomic continues through `fallbackModels`.
+- **Refused partway through the model's output.** The refusal came after the model had billed output or reasoning tokens, which on a very large transcript can take minutes. Atomic retries the planner once. If the retry fails for another reason, Atomic goes to the summary as it does for an immediate refusal. If the retry is refused again, Atomic splits the compactable transcript at message boundaries and plans each half, then each quarter of a half that is refused, and merges the deletions into one verbatim result. A quarter that is still refused ends this step. Only then does Atomic fall back to the same-model summary and the `fallbackModels` as above.
+
+Splitting costs extra planner requests, at most eight per planner model, each billed by your provider. Automatic compaction shares the [planning time limit](#planning-time-limit) across all of them, so a run that is still refusing after five minutes ends as timed out; raise `compaction.planningTimeoutMs` or run `/compact`, which has no limit, to give it longer.
 
 Classifier and Morph refusals skip the summary fallback and go directly to the next configured model. Anthropic remains a supported compactor. To keep verbatim compaction when a model refuses deletion planning, choose another `compactionModel`, such as a chat model, classifier, or Morph. Adding a `fallbackModels` entry gives Atomic another verbatim planner if the same-model summary fails.
 
@@ -210,13 +216,13 @@ Atomic may recover usable deletion records when the provider truncates a planner
 
 ### Planner failure diagnostics
 
-For a persisted session, each failed planner attempt writes its own JSON sidecar beside the session JSONL and carries the path on the typed outcome. When a recoverable compaction exhausts every configured model, the resulting `RangePlanError` includes that path, for example:
+For a persisted session, each failed planner attempt writes its own JSON sidecar and carries the path on the typed outcome. A session kept in a JSONL file gets the sidecar beside the session file. A session kept in SQLite or another store has no session file, so its sidecars go to `compaction-diagnostics/` in the agent directory (`~/.atomic/agent/compaction-diagnostics/`, or under `ATOMIC_CODING_AGENT_DIR` when that is set) and are named `<session id>-compaction-diagnostic-<time>-<id>.json`. When a recoverable compaction exhausts every configured model, the resulting `RangePlanError` includes that path, for example:
 
 ```text
 Compaction range planning returned malformed output (diagnostic: /path/session-compaction-diagnostic-1785222000000-019fa7….json)
 ```
 
-Treat diagnostic sidecars like session files: a raw model response may echo sensitive input. They use `0600` permissions where supported and omit API keys, request headers, and the planner request. In-memory sessions do not create them.
+Treat diagnostic sidecars like session files: a raw model response may echo sensitive input. They use `0600` permissions where supported and omit API keys, request headers, and the planner request. The `rawResponse` field holds the model's answer with credential-shaped text replaced by `[redacted]`, cut to 65,536 characters; when it was cut, `rawResponseChars` gives its full length. Writing a sidecar is best effort: if the directory cannot be written, compaction reports its own failure without a path, and turning on debug mode records the unwritable path in the debug log. Atomic does not delete sidecars, so remove old files from the directory when you no longer need them. In-memory sessions do not create them.
 
 Interactive main chat and attached workflow stage chat treat `compaction_end` as the authority for cancellation and failure UI. A failed or cancelled `/compact` stops its spinner, shows the event-provided status or diagnostic path without a duplicate stack trace, writes no boundary, and leaves the session usable for another `/compact` attempt or a normal follow-up turn.
 

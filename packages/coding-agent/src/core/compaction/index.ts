@@ -15,6 +15,7 @@ export * from "./pi-summary-fallback.js";
 export * from "./planner-outcome.js";
 export * from "./range-planner.js";
 export * from "./range-planner-diagnostics.js";
+export * from "./refusal-recovery.js";
 export * from "./region-trimming.js";
 export * from "./session-summarization.ts";
 export * from "./structured-compaction-input.js";

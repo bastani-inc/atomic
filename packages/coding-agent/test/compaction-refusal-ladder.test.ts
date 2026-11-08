@@ -20,6 +20,7 @@ const model: Model<Api> = {
 	maxTokens: 4096,
 };
 const fallback = { ...model, id: "fallback" };
+const refusedBeforeOutput = { usage: { output: 0 } };
 const region = createNumberedRegion(Array.from({ length: 24 }, (_, i) => `line ${i}`).join("\n"));
 const preparation = {
 	firstKeptEntryId: "tail",
@@ -65,7 +66,7 @@ function fallbackContext() {
 test("policy refusal containing 500 goes to pi summary on the same model without 5xx retries (#3470)", async () => {
 	const calls: string[] = [];
 	const { streamFn, state } = createFauxStreamFn([
-		{ stopReason: "error", error: "Content policy block 500" },
+		{ stopReason: "error", error: "Content policy block 500", ...refusedBeforeOutput },
 		"checkpoint",
 	]);
 	const result = await runVerbatimCompaction(preparation, model, {
@@ -91,7 +92,7 @@ test("policy refusal containing 500 goes to pi summary on the same model without
 test("pi summary refusal continues to the borrowed planner and never changes its model (#3470)", async () => {
 	const calls: string[] = [];
 	const { streamFn } = createFauxStreamFn([
-		{ stopReason: "error", error: "Content policy block" },
+		{ stopReason: "error", error: "Content policy block", ...refusedBeforeOutput },
 		{ stopReason: "error", error: "Usage policy violation 500" },
 		"1:1,5",
 	]);
@@ -193,10 +194,15 @@ for (const rung of ["explicit", "borrowed"] as const) {
 				const stream = streamFn(candidate, context, options);
 				const call = calls.length;
 				const result = stream.result.bind(stream);
-				stream.result = async () => ({
-					...(await result()),
-					...(call === (rung === "borrowed" ? 2 : 1) ? { rawStopReason: "refusal" } : {}),
-				});
+				stream.result = async () => {
+					const response = await result();
+					if (call !== (rung === "borrowed" ? 2 : 1)) return response;
+					return {
+						...response,
+						rawStopReason: "refusal",
+						usage: { ...response.usage, output: 0, totalTokens: response.usage.input },
+					};
+				};
 				return stream;
 			},
 			summaryEntries,

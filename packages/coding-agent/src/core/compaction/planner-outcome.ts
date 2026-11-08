@@ -19,6 +19,13 @@ import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
 /** Which limit a `rateLimited` outcome represents. */
 export type PlannerLimitClass = "quota" | "rate_limited";
 
+/**
+ * When a policy refusal arrived. `input` is an immediate refusal of the request, before the model
+ * generated anything. `midstream` is a refusal after output or reasoning tokens were generated,
+ * which for a very large request can come minutes into the response (#4543).
+ */
+export type PolicyRefusalPhase = "input" | "midstream";
+
 /** Every way one planner attempt can end. */
 export type PlannerOutcome =
 	| { kind: "ranked"; ranges: RawLineRange[] }
@@ -39,7 +46,7 @@ export type PlannerOutcome =
 	  }
 	| { kind: "unusable"; category: DiagnosticFailureCategory; excerpt: string; diagnosticPath?: string }
 	| { kind: "overflowed"; diagnosticPath?: string }
-	| { kind: "policyRefusal"; message: string; diagnosticPath?: string }
+	| { kind: "policyRefusal"; phase: PolicyRefusalPhase; message: string; diagnosticPath?: string }
 	| { kind: "providerError"; message: string; diagnosticPath?: string };
 
 /** A planner outcome that cannot produce a boundary and must advance the ladder. */
@@ -130,6 +137,16 @@ export function isProviderPolicyRefusal(message: string): boolean {
 export function isProviderPolicyRefusalResponse(response: AssistantMessage): boolean {
 	return response.rawStopReason === "refusal" || isProviderPolicyRefusal(response.errorMessage ?? "");
 }
+
+/**
+ * Whether a refused response had already generated output, which a provider bills as output or
+ * reasoning tokens. A refusal that billed none is an `input` refusal.
+ */
+export function policyRefusalPhase(response: AssistantMessage): PolicyRefusalPhase {
+	const generated = (response.usage?.output ?? 0) > 0 || (response.usage?.reasoning ?? 0) > 0;
+	return generated ? "midstream" : "input";
+}
+
 /**
  * Classify one failed planner response.
  *

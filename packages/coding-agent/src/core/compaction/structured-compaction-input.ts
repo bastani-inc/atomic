@@ -46,7 +46,7 @@ export function buildStructuredCompactionInput(
 	};
 }
 
-function inferMessageSpans(region: NumberedRegion): NonNullable<NumberedRegion["messageSpans"]> {
+export function inferMessageSpans(region: NumberedRegion): NonNullable<NumberedRegion["messageSpans"]> {
 	const spans: NonNullable<NumberedRegion["messageSpans"]> = [];
 	for (let index = 0; index < region.lines.length; index++) {
 		const header = ROLE_HEADER_RE.exec(region.lines[index]);

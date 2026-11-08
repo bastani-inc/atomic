@@ -1,4 +1,5 @@
 import type { Usage } from "@bastani/pi-ai/compat";
+import { getCompactionDiagnosticsDir } from "../config.js";
 import type {
 	AgentSessionInternalSurface as AgentSession,
 	SessionCompactOptions,
@@ -144,6 +145,14 @@ export async function planVerbatimCompaction(
 	const plan: CompactionPlanOptions = {
 		streamFn: this.agent.streamFunction,
 		sessionFilePath: this.sessionManager.getSessionFile(),
+		...(this.sessionManager.isPersisted()
+			? {
+					sidecarDirectory: {
+						directory: getCompactionDiagnosticsDir(),
+						stem: this.sessionManager.getSessionId(),
+					},
+				}
+			: {}),
 		retry: this.settingsManager.getRetrySettings(),
 		callbacks: createSummarizationRetryCallbacks(this, { source: "compaction", reason: options.reason }),
 	};

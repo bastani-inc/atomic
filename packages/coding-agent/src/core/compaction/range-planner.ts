@@ -16,9 +16,10 @@ import {
 	isProviderPolicyRefusal,
 	isProviderPolicyRefusalResponse,
 	isReasoningStarved,
+	policyRefusalPhase,
 	syntheticErrorResponse,
 } from "./planner-outcome.js";
-import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
+import type { DiagnosticFailureCategory, SidecarDirectory } from "./range-planner-diagnostics.js";
 import { writeDiagnosticSidecar, writeRecoveryDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import {
 	buildStructuredCompactionInput,
@@ -63,6 +64,8 @@ export interface RangePlannerOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
 	sessionFilePath?: string;
+	/** Where diagnostics go for a persisted session that has no session file, such as one in SQLite. */
+	sidecarDirectory?: SidecarDirectory;
 	retry?: RetryPolicy;
 	callbacks?: RetryCallbacks;
 	/** Observe each completed provider attempt, including retries and overflow responses. */
@@ -219,7 +222,12 @@ function providerFailureOutcome(
 	const failure = classifyPlannerFailure(response, model.contextWindow);
 	if (failure === "policy_refusal") {
 		const diagnosticPath = emitDiagnostic(options, model, recorded, text, "policy_refusal", message);
-		return { kind: "policyRefusal", message, ...(diagnosticPath ? { diagnosticPath } : {}) };
+		return {
+			kind: "policyRefusal",
+			phase: policyRefusalPhase(response),
+			message,
+			...(diagnosticPath ? { diagnosticPath } : {}),
+		};
 	}
 	if (failure === "quota" || failure === "rate_limited") {
 		// Two independent facts. `category` is which limit this was — quota/billing
@@ -412,6 +420,7 @@ function emitDiagnostic(
 ): string | undefined {
 	return writeDiagnosticSidecar({
 		sessionFilePath: options.sessionFilePath,
+		sidecarDirectory: options.sidecarDirectory,
 		model,
 		requestMaxTokens: undefined,
 		response,
@@ -432,6 +441,7 @@ function emitRecoveryDiagnostic(
 	// Best-effort; write failures silently swallowed
 	writeRecoveryDiagnosticSidecar({
 		sessionFilePath: options.sessionFilePath,
+		sidecarDirectory: options.sidecarDirectory,
 		model,
 		requestMaxTokens: undefined,
 		response,

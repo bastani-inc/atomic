@@ -8,6 +8,11 @@ import { createNumberedRegion } from "../src/core/compaction/transcript-serializ
 import type { SessionEntry } from "../src/core/session-manager.js";
 import { createFauxStreamFn, fauxModel as FAUX_MODEL } from "./test-harness.js";
 
+/** A refusal that arrives before the model generated anything: no output or reasoning tokens are billed. */
+function refusedBeforeOutput(response: AssistantMessage): AssistantMessage {
+	return { ...response, usage: { ...response.usage, output: 0, totalTokens: response.usage.input } };
+}
+
 const region = createNumberedRegion(Array.from({ length: 24 }, (_, i) => `line ${i}`).join("\n"));
 const entries: SessionEntry[] = ["old", "tail"].map((id, index) => ({
 	type: "message",
@@ -44,7 +49,7 @@ for (const native of [
 					const stream = streamFn(model, context, options);
 					if (calls.length === 1) {
 						const result = stream.result.bind(stream);
-						stream.result = async () => ({ ...(await result()), ...native });
+						stream.result = async () => refusedBeforeOutput({ ...(await result()), ...native });
 					}
 					return stream;
 				},
@@ -82,7 +87,7 @@ test("native refusal text cannot become a summary checkpoint and advances the la
 				const stream = streamFn(model, context, options);
 				if (calls.length <= 2) {
 					const result = stream.result.bind(stream);
-					stream.result = async () => ({ ...(await result()), rawStopReason: "refusal" });
+					stream.result = async () => refusedBeforeOutput({ ...(await result()), rawStopReason: "refusal" });
 				}
 				return stream;
 			},
