@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.73-alpha.1] - 2026-11-08
+
+Intercom connects in every session of a multi-directory process.
+
+- **Intercom per agent directory.** A process that starts a second session with a different `ATOMIC_CODING_AGENT_DIR` now connects that session to its own directory's broker, so messaging works in both sessions instead of never connecting ([#4561](https://github.com/bastani-inc/atomic/issues/4561), [#4562](https://github.com/bastani-inc/atomic/pull/4562)).
+
 ### Fixed
 
 - Fixed Intercom never connecting when one process starts a second session with a different agent directory (`ATOMIC_CODING_AGENT_DIR`): the session now starts and connects to the broker for its own directory instead of finding the first directory's broker and then querying a directory with none ([#4561](https://github.com/bastani-inc/atomic/issues/4561))
