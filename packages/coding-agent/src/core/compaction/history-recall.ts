@@ -119,9 +119,13 @@ function queryTerms(queries: readonly string[]): QueryTerm[] {
 		.map(([lower, { text, weight }]) => ({ text, lower, weight }));
 }
 
+function escapeRegExp(text: string): string {
+	return text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
 function searchRequest(terms: readonly QueryTerm[]): InternalSearchRequest {
 	return {
-		pattern: terms.map((term) => term.text.replace(/\./g, "\\.")).join("|"),
+		pattern: terms.map((term) => escapeRegExp(term.text)).join("|"),
 		ignoreCase: true,
 		literal: false,
 		contextBefore: 0,

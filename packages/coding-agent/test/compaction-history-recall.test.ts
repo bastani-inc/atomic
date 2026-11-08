@@ -369,7 +369,9 @@ describe.each(SESSION_STORES)(
 			const url = `history://sessions/${compacting.session.sessionId}`;
 			assert.ok(!boundaryText(compacting.session).includes(CYCLE_ONE_DECISION), "cycle 1's line left the context");
 			const found = await tools.search("zebra_cache_eviction", url);
-			const match = new RegExp(`${url.replace(/[/.]/g, "\\$&")}:(\\d+): ${CYCLE_ONE_DECISION}`).exec(found);
+			const match = new RegExp(`${url.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")}:(\\d+): ${CYCLE_ONE_DECISION}`).exec(
+				found,
+			);
 			assert.ok(match, `search finds the earlier cycle's line in:\n${found}`);
 			assertIncludes(await tools.read(`${url}:${match[1]}-${match[1]}`), CYCLE_ONE_DECISION);
 		});
