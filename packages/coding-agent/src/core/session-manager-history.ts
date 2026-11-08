@@ -216,6 +216,7 @@ export function buildSessionProjection(
 	entries: SessionEntry[],
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
+	sessionId?: string,
 ): SessionProjection {
 	// Build uuid index if not available
 	if (!byId) {
@@ -275,10 +276,14 @@ export function buildSessionProjection(
 		keptTail.length > 0 && boundary.summary.length > 0 ? [{ type: "text", text: "\n\n" }] : [];
 	const boundaryMessages: AgentMessage[] = [
 		...(boundary.systemMessage ? [boundary.systemMessage] : []),
-		createVerbatimCompactionMessage(boundary.summary, boundary.tokensBefore, boundary.timestamp, boundary.details, [
-			...separator,
-			...keptTail,
-		]),
+		createVerbatimCompactionMessage(
+			boundary.summary,
+			boundary.tokensBefore,
+			boundary.timestamp,
+			boundary.details,
+			[...separator, ...keptTail],
+			sessionId,
+		),
 	];
 	const projected = contextEntries.map(
 		(sourceEntry): ProjectedSessionEntry => ({

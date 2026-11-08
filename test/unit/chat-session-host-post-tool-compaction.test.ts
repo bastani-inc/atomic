@@ -26,7 +26,7 @@ const compactionResult = {
 	firstKeptEntryId: "m1",
 	tokensBefore: 100,
 	parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "task" },
-	promptVersion: 5,
+	promptVersion: 6,
 	rung: "planned",
 	stats: {
 		linesBefore: 4,

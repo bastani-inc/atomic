@@ -10,6 +10,7 @@ import {
 	isVerbatimCompactionMessage,
 	SUMMARY_COMPACTION_PREFIX,
 	VERBATIM_COMPACTION_PREFIX,
+	verbatimRecallHint,
 } from "../../src/core/messages.js";
 import { buildSessionContext, type SessionEntry, SessionManager } from "../../src/core/session-manager.js";
 import { assistantMsg, userMsg } from "../utilities.js";
@@ -73,7 +74,7 @@ describe("verbatim compaction persistence and resume", () => {
 			content: [
 				{
 					type: "text",
-					text: `${VERBATIM_COMPACTION_PREFIX + compactedText}\n\n[User]: kept user\n\n[Assistant]: kept answer`,
+					text: `${VERBATIM_COMPACTION_PREFIX + verbatimRecallHint(manager.getSessionId()) + compactedText}\n\n[User]: kept user\n\n[Assistant]: kept answer`,
 				},
 			],
 		});
@@ -212,7 +213,12 @@ describe("verbatim compaction persistence and resume", () => {
 		const rebuiltMessages = convertToLlm(resumed.buildSessionContext().messages);
 		expect(rebuiltMessages[0]).toMatchObject({
 			role: "user",
-			content: [{ type: "text", text: VERBATIM_COMPACTION_PREFIX + compactedText }],
+			content: [
+				{
+					type: "text",
+					text: VERBATIM_COMPACTION_PREFIX + verbatimRecallHint(resumed.getSessionId()) + compactedText,
+				},
+			],
 		});
 		const rebuilt = JSON.stringify(rebuiltMessages);
 		expect(rebuilt).toContain("after boundary");

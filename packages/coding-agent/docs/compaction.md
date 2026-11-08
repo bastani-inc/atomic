@@ -64,6 +64,8 @@ Each deleted span is replaced on its own line with exactly:
 
 Counts remain cumulative across repeated compactions. The spelling is always plural, including `(filtered 1 lines)`.
 
+Removed lines are not lost. They stay in the session's history, and the compacted context tells the agent so, naming this session's `history://sessions/<sessionId>` URL: the agent uses `search` on that URL to find removed text and `read` with `:N-M` to open it. The planner is told the same, so it removes bulky output that can be read again, such as tool results, file dumps and logs, before your requests, decisions, root causes and conclusions. See [Recalling earlier work](sessions.md#recalling-earlier-work).
+
 ### Protected structure
 
 Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.

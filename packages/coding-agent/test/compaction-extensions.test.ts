@@ -222,7 +222,7 @@ describe("verbatim compaction extension hooks", () => {
 		);
 
 		const first = await session.compact({ preserve_recent: 0 });
-		expect(first.promptVersion).toBe(5);
+		expect(first.promptVersion).toBe(6);
 		const long = Array.from({ length: 20 }, (_, index) => `planner line ${index}`).join("\n");
 		await session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
 		await session.sessionManager.appendMessage(assistant("planner tail", Date.now() + 1));

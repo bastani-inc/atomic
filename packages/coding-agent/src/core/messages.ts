@@ -180,8 +180,21 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 
 export const VERBATIM_COMPACTION_PREFIX =
 	'The earlier conversation was compacted. Below is the verbatim transcript of the retained lines; elided spans are marked "(filtered N lines)".\n\n';
+const VERBATIM_RECALL_HINT_PATTERN =
+	/^Removed lines remain in this session's history at history:\/\/sessions\/\S+\. Use `search`[^\n]*\n\n/;
 export const SUMMARY_COMPACTION_PREFIX = "The following is a summary of the earlier conversation:\n\n";
 const verbatimCompactionMessages = new WeakSet<CustomMessage>();
+
+export function verbatimRecallHint(sessionId: string): string {
+	const url = `history://sessions/${sessionId}`;
+	return `Removed lines remain in this session's history at ${url}. Use \`search\` on that URL to find removed text, then \`read\` with \`:N-M\` to open it.\n\n`;
+}
+
+/** Drop the verbatim boundary prefix and, when present, the history recall hint that follows it. */
+export function stripVerbatimCompactionPrefix(text: string): string {
+	if (!text.startsWith(VERBATIM_COMPACTION_PREFIX)) return text;
+	return text.slice(VERBATIM_COMPACTION_PREFIX.length).replace(VERBATIM_RECALL_HINT_PATTERN, "");
+}
 
 export function isVerbatimCompactionMessage(message: CustomMessage): boolean {
 	return verbatimCompactionMessages.has(message);
@@ -192,6 +205,7 @@ export function isVerbatimCompactionMessage(message: CustomMessage): boolean {
  *
  * `retainedTail` holds the serialized kept tail. Its text merges into the boundary text and
  * its image blocks stay intact, so preserved content is not reduced to a placeholder.
+ * When `sessionId` is given, a verbatim boundary also tells the agent where removed lines can be recalled.
  */
 export function createVerbatimCompactionMessage(
 	compactedText: string,
@@ -199,11 +213,13 @@ export function createVerbatimCompactionMessage(
 	timestamp: string,
 	details?: unknown,
 	retainedTail?: readonly (TextContent | ImageContent)[],
+	sessionId?: string,
 ): CustomMessage {
-	const prefix =
-		typeof details === "object" && details !== null && "backend" in details && details.backend === "summary"
-			? SUMMARY_COMPACTION_PREFIX
-			: VERBATIM_COMPACTION_PREFIX;
+	const isSummary =
+		typeof details === "object" && details !== null && "backend" in details && details.backend === "summary";
+	const prefix = isSummary
+		? SUMMARY_COMPACTION_PREFIX
+		: VERBATIM_COMPACTION_PREFIX + (sessionId === undefined ? "" : verbatimRecallHint(sessionId));
 	const content: (TextContent | ImageContent)[] = [{ type: "text", text: prefix + compactedText }];
 	for (const block of retainedTail ?? []) {
 		const last = content[content.length - 1];
