@@ -486,13 +486,13 @@ describe("compaction rung whole-context stats (#2052)", () => {
 		// A large kept tail, recorded independently of the authoritative count the
 		// way prepareCompactionBoundary does at construction time.
 		setKeptTailTokenEstimate(prep, 500);
-		const faux = createFauxStreamFn(["1,20\n"]);
+		const faux = createFauxStreamFn(["1,15\n"]);
 		const result = await runVerbatimCompaction(prep, model, run({ streamFn: faux.streamFn }));
 		expect(result.rung).toBe("planned");
 		const tail = getKeptTailTokenEstimate(prep);
 		const regionOnly = reconstructCompactedTranscript(
 			prep.region,
-			validateDeletedRanges([{ start: 1, end: 20 }], prep.region),
+			validateDeletedRanges([{ start: 1, end: 15 }], prep.region),
 		).stats;
 		const before = regionOnly.tokensBefore + tail;
 		const after = regionOnly.tokensAfter + tail;

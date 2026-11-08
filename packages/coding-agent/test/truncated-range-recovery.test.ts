@@ -112,13 +112,13 @@ function recoveryFiles(dir: string): string[] {
 async function plan(
 	text: string | string[],
 	stopReason: string,
-	opts?: { lineCount?: number; sessionFilePath?: string; apiKey?: string },
+	opts?: { lineCount?: number; targetKeepLines?: number; sessionFilePath?: string; apiKey?: string },
 ) {
 	const outcome = await planDeletedLineRanges(
 		region(opts?.lineCount ?? 100),
 		params,
 		planner(mdl(), undefined, { apiKey: opts?.apiKey ?? "key" }),
-		50,
+		opts?.targetKeepLines ?? 50,
 		{ streamFn: stream(text, stopReason) as never, sessionFilePath: opts?.sessionFilePath },
 	);
 	if (outcome.kind === "ranked" || outcome.kind === "recovered") return outcome.ranges;
@@ -343,7 +343,7 @@ describe("truncated recovery: validation integration", () => {
 	});
 
 	it("drops out-of-bounds message-local ranges while retaining valid records", async () => {
-		const result = await plan("10,20\n40,60\n", "length", { lineCount: 50 });
+		const result = await plan("10,20\n40,60\n", "length", { lineCount: 50, targetKeepLines: 25 });
 		expect(result).toEqual([{ start: 10, end: 20 }]);
 	});
 });

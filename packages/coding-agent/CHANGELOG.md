@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed `--session <id>` and `--fork <id>` running out of memory on a large session store when the session belongs to another directory: a full id is now read directly and an 8-character prefix lists only matching sessions, instead of loading every session's search text ([#4566](https://github.com/bastani-inc/atomic/issues/4566))
+- Fixed verbatim compaction deleting far more than the keep ratio asks for: the planner's deletions are now applied in the priority order it lists them and stop once the keep target plus a small tolerance is reached, instead of all being applied (a 50% target could delete 87% of lines). Removed lines stay retrievable through the session's history ([#4568](https://github.com/bastani-inc/atomic/issues/4568))
 
 ## [0.9.73] - 2026-11-08
 
