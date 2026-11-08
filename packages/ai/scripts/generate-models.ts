@@ -1383,6 +1383,27 @@ function getGoogleThinkingLevelMap(
 	return undefined;
 }
 
+/**
+ * Azure serves the same OpenAI models, but its copies are made before the OpenAI thinking maps are
+ * complete. Copy the efforts the OpenAI map lists, except `xhigh` and `max`: an entry naming a level the
+ * copy already offers changes no request, while `null` masks, `xhigh` and `max` would change which levels
+ * Azure offers. This is what lets thinking `off` send `none`, or fall back to a listed effort, on Azure.
+ */
+function applyAzureOpenAIListedEfforts(models: readonly Model<any>[]): void {
+	const openAIThinkingLevelMaps = new Map(
+		models
+			.filter((model) => model.provider === "openai" && model.api === "openai-responses")
+			.map((model) => [model.id, model.thinkingLevelMap]),
+	);
+	for (const model of models) {
+		if (model.provider !== "azure" || model.api !== "azure-openai-responses") continue;
+		const listed = Object.entries(openAIThinkingLevelMaps.get(model.id) ?? {}).filter(
+			([level, value]) => typeof value === "string" && level !== "xhigh" && level !== "max",
+		);
+		if (listed.length > 0) mergeThinkingLevelMap(model, Object.fromEntries(listed));
+	}
+}
+
 function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (
 		(model.api === "openai-responses" || model.api === "azure-openai-responses") &&
@@ -3885,6 +3906,7 @@ async function generateModels() {
 		applyImageInputMetadata(model);
 	}
 	applyAnthropicAllowedFallbackModelMetadata(allModels.filter(isAnthropicFallbackMetadataModel));
+	applyAzureOpenAIListedEfforts(allModels);
 
 	// Keep chat and image catalogs separate so one upstream ID can expose both
 	// operations with different API implementations.

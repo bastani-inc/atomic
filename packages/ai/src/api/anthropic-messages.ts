@@ -32,6 +32,7 @@ import type {
 	StreamFunction,
 	StreamOptions,
 	TextContent,
+	ThinkingLevel,
 	Tool,
 	ToolResultMessage,
 	Usage,
@@ -58,6 +59,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
+import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
 import {
 	getCurrentTools,
 	getInitialSystemMessage,
@@ -1136,6 +1138,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		let inputTransformations: AnthropicInputTransformation[] | undefined;
 
 		try {
+			const thinkingOffFallback = getAnthropicThinkingOffFallback(model, options);
+			if (thinkingOffFallback) {
+				appendThinkingOffFallbackDiagnostic(output, thinkingOffFallback.level, thinkingOffFallback.effort);
+			}
 			let client: Anthropic;
 			let isOAuth: boolean;
 			let usageModel = model;
@@ -1554,6 +1560,25 @@ function mapThinkingLevelToEffort(
 	}
 }
 
+interface AnthropicThinkingOffFallback {
+	level: ThinkingLevel;
+	effort: AnthropicEffort;
+}
+
+/**
+ * Thinking `off` on an adaptive model that cannot disable thinking runs at the model's lowest effort.
+ * Sending no effort would leave the API's default, which is `high`.
+ */
+function getAnthropicThinkingOffFallback(
+	model: Model<"anthropic-messages">,
+	options: AnthropicOptions | undefined,
+): AnthropicThinkingOffFallback | undefined {
+	if (options?.thinkingEnabled !== false) return undefined;
+	if (model.compat?.forceAdaptiveThinking !== true && !supportsMidConvoEffort(model)) return undefined;
+	const level = getThinkingOffFallbackLevel(model);
+	return level === undefined ? undefined : { level, effort: mapThinkingLevelToEffort(model, level) };
+}
+
 export const streamSimple: StreamFunction<"anthropic-messages", SimpleStreamOptions> = (
 	model: Model<"anthropic-messages">,
 	context: TranscriptContext,
@@ -1830,6 +1855,7 @@ function buildParams(
 	const initialTools = initialSystemMessage?.toolsAdded ?? [];
 	const nativeToolChanges =
 		compat.supportsMidConvoSystemMessages && compat.supportsMidConvoToolChanges && initialTools.length > 0;
+	const thinkingOffFallback = getAnthropicThinkingOffFallback(model, options);
 	const thinkingDisabled =
 		model.reasoning && options?.thinkingEnabled === false && model.thinkingLevelMap?.off !== null;
 	// Effort cannot change between messages while thinking is disabled, so "off" sends no effort markers.
@@ -1842,7 +1868,7 @@ function buildParams(
 		effortMessages ? model.provider : undefined,
 		nativeToolChanges ? convertToolDefinitions : undefined,
 	);
-	const activeEffort = options?.effort ?? "high";
+	const activeEffort = options?.effort ?? thinkingOffFallback?.effort ?? "high";
 	const params: MessageCreateParamsStreaming = {
 		model: upstreamModelId(model),
 		messages: (effortMessages
@@ -1887,6 +1913,7 @@ function buildParams(
 	if (
 		options?.temperature !== undefined &&
 		!options?.thinkingEnabled &&
+		!thinkingOffFallback &&
 		!supportsMidConvoEffort(model) &&
 		compat.supportsTemperature
 	) {
@@ -1915,27 +1942,26 @@ function buildParams(
 		// organizations can cap effort and reject requests containing any level above the cap.
 		params.output_config = { effort: "low" };
 	} else if (model.reasoning) {
-		if (options?.thinkingEnabled) {
+		if (options?.thinkingEnabled || thinkingOffFallback) {
 			// Default to "summarized" so Opus 4.7 and Mythos Preview behave like
 			// older Claude 4 models (whose API default is also "summarized").
-			const display: AnthropicThinkingDisplay = options.thinkingDisplay ?? "summarized";
+			const display: AnthropicThinkingDisplay = options?.thinkingDisplay ?? "summarized";
+			const effort = options?.effort ?? thinkingOffFallback?.effort;
 			if (model.compat?.forceAdaptiveThinking === true) {
 				// Adaptive thinking: Claude decides when and how much to think.
 				params.thinking = { type: "adaptive", display };
-				if (options.effort) {
+				if (effort) {
 					// The Anthropic SDK types can lag newly supported effort values such as "xhigh".
 					params.output_config =
-						options.effort === "xhigh"
-							? ({ effort: options.effort } as unknown as NonNullable<
-									MessageCreateParamsStreaming["output_config"]
-								>)
-							: { effort: options.effort };
+						effort === "xhigh"
+							? ({ effort } as unknown as NonNullable<MessageCreateParamsStreaming["output_config"]>)
+							: { effort };
 				}
 			} else {
 				// Budget-based thinking for older models
 				params.thinking = {
 					type: "enabled",
-					budget_tokens: options.thinkingBudgetTokens || 1024,
+					budget_tokens: options?.thinkingBudgetTokens || 1024,
 					display,
 				};
 			}

@@ -306,6 +306,8 @@ Example for a model where thinking cannot be disabled:
 }
 ```
 
+A request with thinking `off`, such as one made by compaction, branch summaries, or a subagent with an `:off` suffix, runs such a model at its lowest supported level instead of leaving the effort to the provider's default, which is often high. On OpenAI-style Responses endpoints this happens only when `thinkingLevelMap` lists that level's value, as in `"low": "low"`; otherwise the request keeps the provider's default. The reply records this in its `diagnostics` as `thinking_off_fallback`, with the level and provider value that were sent. A model whose `off` is supported is sent the provider's explicit disabled setting.
+
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
 
 `/thinking` opens the thinking-level selector. Enter applies the level to the current session only. Persist (the selector's save action) writes `settings.modelThinkingLevels` for the active model instead of replacing the global `defaultThinkingLevel`. Settings → Default thinking level per model lists those overrides.

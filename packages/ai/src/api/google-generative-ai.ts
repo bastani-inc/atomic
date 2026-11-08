@@ -34,6 +34,7 @@ import {
 	getDisabledGoogleThinkingConfig,
 	isThinkingPart,
 	mapStopReason,
+	recordGoogleThinkingOffFallback,
 	resolveGoogleFunctionCallingMode,
 	resolveGoogleThinkingLevel,
 	retainThoughtSignature,
@@ -93,6 +94,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const client = createClient(model, apiKey, options?.headers, options?.identity);
+			recordGoogleThinkingOffFallback(model, options, output);
 			let params = buildParams(model, normalizedContext, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {

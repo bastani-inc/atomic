@@ -23,6 +23,7 @@ import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import {
@@ -183,14 +184,12 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 	// Start async processing
 	(async () => {
 		const compat = getCompat(model);
-		const configurationUpdateEffort = getConfigurationUpdateEffort(model, options, compat);
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
 			api: model.api as Api,
 			provider: model.provider,
 			model: model.id,
-			...(configurationUpdateEffort === undefined ? {} : { providerThinkingLevel: configurationUpdateEffort }),
 			usage: {
 				input: 0,
 				output: 0,
@@ -207,6 +206,13 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		let startEmitted = false;
 
 		try {
+			const thinkingOffFallback =
+				options?.reasoningEffort || options?.reasoningSummary
+					? undefined
+					: recordThinkingOffFallback(model, output);
+			const reasoningOptions = thinkingOffFallback ? { ...options, reasoningEffort: thinkingOffFallback } : options;
+			const configurationUpdateEffort = getConfigurationUpdateEffort(model, reasoningOptions, compat);
+			if (configurationUpdateEffort !== undefined) output.providerThinkingLevel = configurationUpdateEffort;
 			// Create OpenAI client
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
 			const chatGPTBackend = isChatGPTSubscriptionToken(bearerToken(options?.apiKey, options?.headers));
@@ -229,7 +235,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			let params = buildParams(
 				model,
 				normalizedContext,
-				options,
+				reasoningOptions,
 				compat,
 				grammarToolInputProperties,
 				configurationUpdateEffort,
@@ -524,7 +530,7 @@ function buildParams(
 				summary: options?.reasoningSummary || "auto",
 			};
 			params.include = ["reasoning.encrypted_content"];
-		} else if (model.provider !== "github-copilot" && model.thinkingLevelMap?.off !== null) {
+		} else if (sendsThinkingOffEffort(model)) {
 			params.reasoning = {
 				effort: (model.thinkingLevelMap?.off ?? "none") as NonNullable<typeof params.reasoning>["effort"],
 			};
@@ -539,6 +545,15 @@ function buildParams(
 	}
 
 	return params;
+}
+
+/**
+ * Copilot rejected an unlisted `none` effort (earendil-works/pi#2567), so it is sent an off effort only
+ * when the model's thinking map lists one.
+ */
+function sendsThinkingOffEffort(model: Model<"openai-responses">): boolean {
+	const off = model.thinkingLevelMap?.off;
+	return off === undefined ? model.provider !== "github-copilot" : off !== null;
 }
 
 function resolveOpenAIRequestServiceTier(

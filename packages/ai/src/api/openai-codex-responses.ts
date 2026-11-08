@@ -30,6 +30,7 @@ import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { admitFetch } from "../utils/request-admission.ts";
 import { createStreamDeadline, type StreamDeadlineHandle, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
+import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import {
 	getDeclaredTools,
 	getInitialSystemMessage,
@@ -280,6 +281,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
 		try {
+			const thinkingOffFallback =
+				options?.reasoningEffort === undefined || options.reasoningEffort === "none"
+					? recordThinkingOffFallback(model, output)
+					: undefined;
+			const reasoningOptions = thinkingOffFallback ? { ...options, reasoningEffort: thinkingOffFallback } : options;
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
 				throw new Error(`No API key for provider: ${model.provider}`);
@@ -292,7 +298,13 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			);
 			const cacheSessionId = options?.cacheRetention === "none" ? undefined : options?.sessionId;
 			const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
-			let body = buildRequestBody(model, normalizedContext, options, codexSessionId, grammarToolInputProperties);
+			let body = buildRequestBody(
+				model,
+				normalizedContext,
+				reasoningOptions,
+				codexSessionId,
+				grammarToolInputProperties,
+			);
 			const nextBody = await options?.onPayload?.(body, model);
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
