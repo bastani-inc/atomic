@@ -9,7 +9,7 @@ import { SettingsManager } from "../../packages/coding-agent/src/core/settings-m
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { loadStorageAdapter } from "../../packages/coding-agent/src/core/storage/provider.js";
 import { selectStorage } from "../../packages/coding-agent/src/core/storage/selection.js";
-import type { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { queryIntercomBroker } from "../../packages/intercom/broker/control.js";
 import { createMessageReader, writeMessage } from "../../packages/intercom/broker/framing.js";
 import { getBrokerSocketPath } from "../../packages/intercom/broker/paths.js";
@@ -17,8 +17,6 @@ import { getJitiCliPath } from "../../packages/intercom/broker/spawn.js";
 import type { Message, SessionInfo, SupervisorRegistration } from "../../packages/intercom/types.js";
 import { IntercomBrokerFixture } from "./intercom-broker-fixture.js";
 import { removePath } from "./runtime.js";
-
-type ClientModule = typeof import("../../packages/intercom/broker/client.js");
 
 export type BrokerNode = "a" | "b";
 export const BROKER_NODES: readonly BrokerNode[] = ["a", "b"];
@@ -86,7 +84,6 @@ export class TwoBrokerClient {
 
 interface NodeState {
 	readonly fixture: IntercomBrokerFixture;
-	readonly clientModule: ClientModule;
 	readonly clients: TwoBrokerClient[];
 	broker: ChildProcess | undefined;
 }
@@ -124,19 +121,6 @@ function nodeSettings(
 			prefix: TWO_BROKER_STORAGE_PREFIX,
 		},
 	});
-}
-
-/** Intercom snapshots its socket path at import, so each node gets its own module instance. */
-async function loadClientModule(agentDir: string): Promise<ClientModule> {
-	const original = process.env.ATOMIC_CODING_AGENT_DIR;
-	process.env.ATOMIC_CODING_AGENT_DIR = agentDir;
-	try {
-		vi.resetModules();
-		return await import("../../packages/intercom/broker/client.js");
-	} finally {
-		if (original === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-		else process.env.ATOMIC_CODING_AGENT_DIR = original;
-	}
 }
 
 function socketAnswers(socketPath: string): Promise<boolean> {
@@ -191,7 +175,6 @@ export class TwoBrokerHarness {
 			);
 			nodes[node] = {
 				fixture: new IntercomBrokerFixture(agentDir),
-				clientModule: await loadClientModule(agentDir),
 				clients: [],
 				broker: undefined,
 			};
@@ -393,7 +376,8 @@ export class TwoBrokerHarness {
 		const state = this.nodes[node];
 		const group = options.group ?? "default";
 		const returnAddress = options.returnAddress ?? randomUUID();
-		const client = new state.clientModule.IntercomClient(returnAddress, {
+		const client = new IntercomClient(returnAddress, {
+			brokerSocketPath: getBrokerSocketPath(process.platform, state.fixture.agentDir),
 			...(options.preferredSessionId === undefined ? {} : { preferredSessionId: options.preferredSessionId }),
 			acknowledgesReceipt: true,
 		});

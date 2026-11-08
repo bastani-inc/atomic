@@ -220,17 +220,10 @@ describe("brokers sharing a SQLite selection", () => {
 	test(
 		"a session's intercom status shows multi-node routing and its peers (#3857)",
 		async () => {
-			const original = process.env.ATOMIC_CODING_AGENT_DIR;
-			process.env.ATOMIC_CODING_AGENT_DIR = first.agentDir;
-			let clientModule: typeof import("../../packages/intercom/broker/client.js");
-			try {
-				vi.resetModules();
-				clientModule = await import("../../packages/intercom/broker/client.js");
-			} finally {
-				if (original === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
-				else process.env.ATOMIC_CODING_AGENT_DIR = original;
-			}
-			const client = new clientModule.IntercomClient();
+			const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+			const client = new IntercomClient(undefined, {
+				brokerSocketPath: getBrokerSocketPath(process.platform, first.agentDir),
+			});
 			const now = Date.now();
 			await client.connect({
 				name: "status",
