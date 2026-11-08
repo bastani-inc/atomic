@@ -136,6 +136,13 @@ async function plan(
 	);
 }
 
+function planOutcome(text: string | string[], stopReason: string, sessionFilePath?: string) {
+	return planDeletedLineRanges(region(100), params, planner(mdl(), undefined, { apiKey: "key" }), 50, {
+		streamFn: stream(text, stopReason) as never,
+		sessionFilePath,
+	});
+}
+
 // 1. Complete output with/without terminal newline
 describe("parseRangeRecords: complete output", () => {
 	it("parses records with terminal newline", () => {
@@ -265,15 +272,14 @@ describe("recoverTruncatedRecords: invalid middle line rejection", () => {
 
 // 4. Non-length malformed output
 describe("planDeletedLineRanges: non-length malformed output", () => {
-	it("does not recover when stopReason is 'stop' even with valid-looking truncated text", async () => {
-		let error: RangePlanError | undefined;
-		try {
-			await plan("5,10\n20,30\n40,", "stop");
-		} catch (e) {
-			error = e as RangePlanError;
-		}
-		expect(error).toBeInstanceOf(RangePlanError);
-		expect(error!.message).toContain("malformed output");
+	it("tolerates a trailing fragment on a normal completion as one skipped line (#4568)", async () => {
+		const outcome = await planOutcome("5,10\n20,30\n40,", "stop");
+		expect(outcome).toMatchObject({ kind: "ranked", skippedLineCount: 1 });
+	});
+
+	it("treats a mostly-prose normal completion as malformed output (#4568)", async () => {
+		const outcome = await planOutcome("I would remove the noisy output.\n5,10\nHope that helps!", "stop");
+		expect(outcome).toMatchObject({ kind: "unusable", category: "malformed_output" });
 	});
 
 	it("recovers when stopReason is 'length'", async () => {
@@ -397,6 +403,25 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 		expect(content.model.provider).toBe("copilot");
 		expect(content.model.id).toBe("gpt-4o");
 		expect(content.recoveredRangeCount).toBe(3);
+	});
+
+	it("reports tolerated noise on a recovered outcome and its sidecar (#4568)", async () => {
+		const sf = join(testDir, "session.jsonl");
+		const outcome = await planOutcome("Plan:\n5,15\n```\n25,35\nnote\n45,55\n60", "length", sf);
+		expect(outcome).toMatchObject({ kind: "recovered", recoveredCount: 3, skippedLineCount: 2 });
+		const files = recoveryFiles(testDir);
+		expect(files.length).toBe(1);
+		const content = JSON.parse(readFileSync(files[0], "utf-8")) as RecoveryDiagnostic;
+		expect(content.recoveredRangeCount).toBe(3);
+		expect(content.skippedLineCount).toBe(2);
+	});
+
+	it("omits the skipped line count when the recovered answer was clean (#4568)", async () => {
+		const sf = join(testDir, "session.jsonl");
+		const outcome = await planOutcome("5,15\n25,35\n45", "length", sf);
+		expect(outcome).not.toHaveProperty("skippedLineCount");
+		const content = JSON.parse(readFileSync(recoveryFiles(testDir)[0], "utf-8")) as RecoveryDiagnostic;
+		expect(content).not.toHaveProperty("skippedLineCount");
 	});
 
 	it("recovery sidecar does not contain API keys", async () => {

@@ -28,8 +28,8 @@ export type PolicyRefusalPhase = "input" | "midstream";
 
 /** Every way one planner attempt can end. */
 export type PlannerOutcome =
-	| { kind: "ranked"; ranges: RawLineRange[] }
-	| { kind: "recovered"; ranges: RawLineRange[]; recoveredCount: number }
+	| { kind: "ranked"; ranges: RawLineRange[]; skippedLineCount?: number }
+	| { kind: "recovered"; ranges: RawLineRange[]; recoveredCount: number; skippedLineCount?: number }
 	| {
 			kind: "rateLimited";
 			/**

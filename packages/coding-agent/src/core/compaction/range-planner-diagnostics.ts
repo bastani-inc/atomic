@@ -173,6 +173,8 @@ export interface RecoveryDiagnostic {
 	requestMaxTokens: number | undefined;
 	model: DiagnosticModelMeta;
 	recoveredRangeCount: number;
+	/** Non-record lines tolerated in the answer; omitted when none were skipped. */
+	skippedLineCount?: number;
 }
 
 export interface DiagnosticContext extends SidecarLocation {
@@ -266,6 +268,7 @@ export interface RecoveryDiagnosticContext extends SidecarLocation {
 	rawResponseText: string;
 	recoveryCategory: DiagnosticRecoveryCategory;
 	recoveredRangeCount: number;
+	skippedLineCount?: number;
 }
 
 function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnostic {
@@ -285,6 +288,7 @@ function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnosti
 			maxTokens: ctx.model.maxTokens,
 		},
 		recoveredRangeCount: ctx.recoveredRangeCount,
+		...(ctx.skippedLineCount ? { skippedLineCount: ctx.skippedLineCount } : {}),
 	};
 }
 

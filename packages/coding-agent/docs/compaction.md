@@ -230,6 +230,12 @@ Clearing context does not fix provider rate limits or guarantee the next turn su
 
 Atomic may recover usable deletion records when the provider truncates a planner response. Successful recovery appears as ordinary `✻ Context compacted`; unusable output advances to the next configured model.
 
+### Planner output with stray lines
+
+A planner answer is a list of `id:start,end` records. Atomic skips lines around the records that are not records, such as a sentence of prose, a header, blank lines or a Markdown fence, and trims whitespace around each record. The remaining records keep the order the planner listed them.
+
+An answer is treated as malformed output, and the next configured model is tried, when it contains no valid record or when more than half of its non-blank lines are not records. A derailed or conversational answer is therefore not mistaken for a sparse plan. A recovered answer that tolerated stray lines records how many were skipped as `skippedLineCount` in its recovery diagnostic.
+
 ### Planner failure diagnostics
 
 For a persisted session, each failed planner attempt writes its own JSON sidecar and carries the path on the typed outcome. A session kept in a JSONL file gets the sidecar beside the session file. A session kept in SQLite or another store has no session file, so its sidecars go to `compaction-diagnostics/` in the agent directory (`~/.atomic/agent/compaction-diagnostics/`, or under `ATOMIC_CODING_AGENT_DIR` when that is set) and are named `<session id>-compaction-diagnostic-<time>-<id>.json`. When a recoverable compaction exhausts every configured model, the resulting `RangePlanError` includes that path, for example:

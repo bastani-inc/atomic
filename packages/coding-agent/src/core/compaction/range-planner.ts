@@ -74,18 +74,32 @@ export interface RangePlannerOptions {
 
 /**
  * Parse the complete planner response text into deletion ranges.
- * Returns undefined if the text contains no valid records.
- * Each line must be `id:start,end` with canonical unsigned decimal integers.
- * On a normal (non-length) completion, the final record may omit a trailing newline.
+ * Returns undefined if the text contains no valid records or mostly non-record lines.
+ * Records are `id:start,end` lines with canonical unsigned decimal integers; blank
+ * lines, Markdown fences, and stray prose lines are skipped.
  */
 export function extractDeletedRanges(text: string, region: NumberedRegion): RawLineRange[] | undefined {
-	const records = parseMessageRangeRecords(text);
-	return records
-		? mapMessageRanges(
-				records,
-				buildStructuredCompactionInput(region, { query: "", compression_ratio: 0.5, preserve_recent: 0 }),
-			)
+	return extractDeletedRangesWithNoise(text, region)?.ranges;
+}
+
+function extractDeletedRangesWithNoise(
+	text: string,
+	region: NumberedRegion,
+): { ranges: RawLineRange[]; skippedLineCount: number } | undefined {
+	const parsed = parseMessageRangeRecords(text);
+	return parsed
+		? {
+				ranges: mapMessageRanges(
+					parsed.ranges,
+					buildStructuredCompactionInput(region, { query: "", compression_ratio: 0.5, preserve_recent: 0 }),
+				),
+				skippedLineCount: parsed.skippedLineCount,
+			}
 		: undefined;
+}
+
+function skippedLineCountField(skippedLineCount: number): { skippedLineCount?: number } {
+	return skippedLineCount > 0 ? { skippedLineCount } : {};
 }
 
 export { contiguousRanges };
@@ -384,15 +398,21 @@ export async function planDeletedLineRanges(
 		const records = parseMessageRangeRecords(text, true);
 		const recovery = records
 			? {
-					ranges: mapMessageRanges(records, buildStructuredCompactionInput(region, parameters)),
-					recoveredCount: records.length,
+					ranges: mapMessageRanges(records.ranges, buildStructuredCompactionInput(region, parameters)),
+					recoveredCount: records.ranges.length,
+					skippedLineCount: records.skippedLineCount,
 				}
 			: undefined;
 		const recovered = recovery ? validateDeletedRanges(recovery.ranges, region, validationOptions) : undefined;
 		if (recovery && recovered && recovered.length > 0) {
 			// Silent success — write private recovery diagnostic, never surface it.
-			emitRecoveryDiagnostic(options, model, response, text, recovery.recoveredCount);
-			return { kind: "recovered", ranges: [...recovered], recoveredCount: recovery.recoveredCount };
+			emitRecoveryDiagnostic(options, model, response, text, recovery.recoveredCount, recovery.skippedLineCount);
+			return {
+				kind: "recovered",
+				ranges: [...recovered],
+				recoveredCount: recovery.recoveredCount,
+				...skippedLineCountField(recovery.skippedLineCount),
+			};
 		}
 		if (isReasoningStarved(response, false)) {
 			return unusableOutcome(options, model, response, text, "starved", NO_USABLE_RANGES_MESSAGE);
@@ -401,13 +421,13 @@ export async function planDeletedLineRanges(
 			return unusableOutcome(options, model, response, text, "no_usable_ranges", NO_USABLE_RANGES_MESSAGE);
 		return unusableOutcome(options, model, response, text, "malformed_output", MALFORMED_OUTPUT_MESSAGE);
 	}
-	const extracted = extractDeletedRanges(text, region);
+	const extracted = extractDeletedRangesWithNoise(text, region);
 	if (!extracted) return unusableOutcome(options, model, response, text, "malformed_output", MALFORMED_OUTPUT_MESSAGE);
-	const validated = validateDeletedRanges(extracted, region, validationOptions);
+	const validated = validateDeletedRanges(extracted.ranges, region, validationOptions);
 	if (validated.length === 0) {
 		return unusableOutcome(options, model, response, text, "no_usable_ranges", NO_USABLE_RANGES_MESSAGE);
 	}
-	return { kind: "ranked", ranges: [...validated] };
+	return { kind: "ranked", ranges: [...validated], ...skippedLineCountField(extracted.skippedLineCount) };
 }
 
 function emitDiagnostic(
@@ -438,6 +458,7 @@ function emitRecoveryDiagnostic(
 	response: AssistantMessage,
 	rawResponseText: string,
 	recoveredRangeCount: number,
+	skippedLineCount: number,
 ): void {
 	// Best-effort; write failures silently swallowed
 	writeRecoveryDiagnosticSidecar({
@@ -449,5 +470,6 @@ function emitRecoveryDiagnostic(
 		rawResponseText,
 		recoveryCategory: "partial_length_recovery",
 		recoveredRangeCount,
+		skippedLineCount,
 	});
 }
