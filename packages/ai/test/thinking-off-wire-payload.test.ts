@@ -1,17 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
 import { stream as streamAzureOpenAIResponses } from "../src/api/azure-openai-responses.ts";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.ts";
+import { stream as streamGoogle } from "../src/api/google-generative-ai.ts";
 import { recordGoogleThinkingOffFallback } from "../src/api/google-shared.ts";
+import { streamSimple as streamSimpleVertex, stream as streamVertex } from "../src/api/google-vertex.ts";
 import { stream as streamMistral } from "../src/api/mistral-conversations.ts";
 import { stream as streamOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
 import { stream as streamOpenAICompletions } from "../src/api/openai-completions.ts";
 import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { clampThinkingLevel, getModel, getSupportedThinkingLevels, streamSimple } from "../src/compat.ts";
 import type {
 	Api,
 	AssistantMessage,
 	Model,
+	ModelThinkingLevel,
 	OpenAICompletionsCompat,
 	SimpleStreamOptions,
 	ThinkingLevel,
@@ -828,16 +831,126 @@ describe("thinking off on Azure OpenAI deployments (#4552)", () => {
 		expect(payload.reasoning).toEqual({ effort: "medium", summary: "auto" });
 		expect(offFallbacks).toEqual([offFallbackDiagnostic("medium", "medium")]);
 	});
+});
 
-	it("gives the Azure catalog the OpenAI off entry without masking other levels", () => {
+const untypedThinkingOff = "off" as ModelThinkingLevel as ThinkingLevel;
+
+const azureDeploymentsThatCannotDisableThinking = [
+	{
+		name: "azure/gpt-5-pro",
+		model: getModel("azure", "gpt-5-pro"),
+		openAIModel: getModel("openai", "gpt-5-pro"),
+		levels: ["high"],
+	},
+	{
+		name: "azure/gpt-5.2-pro",
+		model: getModel("azure", "gpt-5.2-pro"),
+		openAIModel: getModel("openai", "gpt-5.2-pro"),
+		levels: ["medium", "high", "xhigh"],
+	},
+	{
+		name: "azure/gpt-5.4-pro",
+		model: getModel("azure", "gpt-5.4-pro"),
+		openAIModel: getModel("openai", "gpt-5.4-pro"),
+		levels: ["medium", "high", "xhigh"],
+	},
+	{
+		name: "azure/gpt-5.3-codex-spark",
+		model: getModel("azure", "gpt-5.3-codex-spark"),
+		openAIModel: getModel("openai", "gpt-5.3-codex-spark"),
+		levels: ["low", "medium", "high", "xhigh"],
+	},
+	{
+		name: "azure/o1",
+		model: getModel("azure", "o1"),
+		openAIModel: getModel("openai", "o1"),
+		levels: ["low", "medium", "high"],
+	},
+	{
+		name: "azure/o1-pro",
+		model: getModel("azure", "o1-pro"),
+		openAIModel: getModel("openai", "o1-pro"),
+		levels: ["low", "medium", "high"],
+	},
+	{
+		name: "azure/o3",
+		model: getModel("azure", "o3"),
+		openAIModel: getModel("openai", "o3"),
+		levels: ["low", "medium", "high"],
+	},
+	{
+		name: "azure/o3-mini",
+		model: getModel("azure", "o3-mini"),
+		openAIModel: getModel("openai", "o3-mini"),
+		levels: ["low", "medium", "high"],
+	},
+	{
+		name: "azure/o3-pro",
+		model: getModel("azure", "o3-pro"),
+		openAIModel: getModel("openai", "o3-pro"),
+		levels: ["low", "medium", "high"],
+	},
+	{
+		name: "azure/o4-mini",
+		model: getModel("azure", "o4-mini"),
+		openAIModel: getModel("openai", "o4-mini"),
+		levels: ["low", "medium", "high"],
+	},
+] as const;
+
+describe("thinking levels on Azure deployments that cannot disable thinking (#4556)", () => {
+	it.each(azureDeploymentsThatCannotDisableThinking)(
+		"offers $name only $levels (#4556)",
+		({ model, openAIModel, levels }) => {
+			expect(getSupportedThinkingLevels(model)).toEqual(levels);
+			expect(getSupportedThinkingLevels(openAIModel)).toEqual(levels);
+		},
+	);
+
+	it.each(azureDeploymentsThatCannotDisableThinking)(
+		"clamps a session at thinking off on $name to its lowest accepted level and sends that request (#4556)",
+		async ({ model, levels }) => {
+			const sessionLevel = clampThinkingLevel(model, "off");
+			const off = await captureRequest(model, { reasoning: untypedThinkingOff });
+			const omitted = await captureRequest(model);
+			const lowest = await captureRequest(model, { reasoning: levels[0] });
+
+			expect(sessionLevel).toBe(levels[0]);
+			expect(off.payload.reasoning).toEqual({ effort: levels[0], summary: "auto" });
+			expect(off.payload).toEqual(lowest.payload);
+			expect(omitted.payload).toEqual(lowest.payload);
+			expect(omitted.offFallbacks).toEqual([offFallbackDiagnostic(levels[0], levels[0])]);
+		},
+	);
+
+	it.each(azureDeploymentsThatCannotDisableThinking)(
+		"never sends $name an unlisted minimal or none effort (#4556)",
+		async ({ model, levels }) => {
+			for (const reasoning of [undefined, untypedThinkingOff, "minimal", "low", "medium"] as const) {
+				const { payload } = await captureRequest(model, { reasoning });
+
+				expect(levels).toContain(payload.reasoning?.effort);
+			}
+		},
+	);
+
+	it("gives the Azure catalog the OpenAI masks below the lowest accepted effort (#4556)", () => {
 		expect(getModel("azure", "o3").thinkingLevelMap).toEqual({
 			off: null,
+			minimal: null,
 			low: "low",
 			medium: "medium",
 			high: "high",
 		});
-		expect(getModel("azure", "gpt-5-pro").thinkingLevelMap).toEqual({ off: null, high: "high" });
+		expect(getModel("azure", "gpt-5-pro").thinkingLevelMap).toEqual({
+			off: null,
+			minimal: null,
+			low: null,
+			medium: null,
+			high: "high",
+		});
 		expect(getModel("azure", "gpt-5.1").thinkingLevelMap).not.toHaveProperty("minimal");
+		expect(getSupportedThinkingLevels(getModel("azure", "gpt-5"))).toEqual(["minimal", "low", "medium", "high"]);
 	});
 });
 
@@ -845,7 +958,6 @@ describe("thinking off on budget-thinking Gemini models (#4552)", () => {
 	it.each([
 		["google/gemini-2.5-pro", "minimal", 128, getModel("google", "gemini-2.5-pro")],
 		["google-vertex/gemini-2.5-pro", "minimal", 128, getModel("google-vertex", "gemini-2.5-pro")],
-		["google/gemini-pro-latest", "low", -1, getModel("google", "gemini-pro-latest")],
 		[
 			"google/gemini-2.5-flash-lite whose map denies off",
 			"minimal",
@@ -881,6 +993,150 @@ describe("thinking off on budget-thinking Gemini models (#4552)", () => {
 		const { payload, offFallbacks } = await captureRequest(getModel("google", "gemini-2.5-pro"), { reasoning });
 
 		expect(payload.config?.thinkingConfig).toEqual({ includeThoughts: true, thinkingBudget: budget });
+		expect(offFallbacks).toEqual([]);
+	});
+});
+
+const googleProLatest = getModel("google", "gemini-pro-latest");
+const vertexProLatest: Model<"google-vertex"> = { ...googleProLatest, api: "google-vertex", provider: "google-vertex" };
+
+describe("thinking levels on gemini-pro-latest (#4556)", () => {
+	it("offers gemini-pro-latest the levels its map lists (#4556)", () => {
+		expect(getSupportedThinkingLevels(googleProLatest)).toEqual(["low", "medium", "high"]);
+	});
+
+	it.each([
+		["google/gemini-pro-latest", googleProLatest],
+		["google-vertex/gemini-pro-latest", vertexProLatest],
+	] as const)(
+		"runs thinking off on %s at thinkingLevel LOW, the level of selecting low (#4556)",
+		async (_name, model) => {
+			const omitted = await captureRequest(model);
+			const off = await captureRequest(model, { reasoning: untypedThinkingOff });
+			const low = await captureRequest(model, { reasoning: "low" });
+
+			expect(omitted.payload.config?.thinkingConfig).toEqual({ thinkingLevel: "LOW" });
+			expect(omitted.offFallbacks).toEqual([offFallbackDiagnostic("low", "LOW")]);
+			expect(low.payload.config?.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: "LOW" });
+			expect(off.payload).toEqual(low.payload);
+			expect(off.offFallbacks).toEqual([]);
+		},
+	);
+
+	it.each([
+		["minimal", "LOW"],
+		["low", "LOW"],
+		["medium", "MEDIUM"],
+		["high", "HIGH"],
+		["xhigh", "HIGH"],
+		["max", "HIGH"],
+	] as const)(
+		"sends an explicit %s level as thinkingLevel %s, not a thinking budget (#4556)",
+		async (reasoning, apiLevel) => {
+			for (const model of [googleProLatest, vertexProLatest]) {
+				const { payload, offFallbacks } = await captureRequest(model, {
+					reasoning,
+					thinkingBudgets: { low: 4000 },
+				});
+
+				expect(payload.config?.thinkingConfig).toEqual({ includeThoughts: true, thinkingLevel: apiLevel });
+				expect(offFallbacks).toEqual([]);
+			}
+		},
+	);
+});
+
+describe("thinking off with custom thinkingBudgets on budget-thinking Gemini models (#4556)", () => {
+	const thinkingBudgets = { minimal: 4000, low: 5000, medium: 6000, high: 7000 } as const;
+
+	it.each([
+		["google/gemini-2.5-pro", "minimal", getModel("google", "gemini-2.5-pro")],
+		["google-vertex/gemini-2.5-pro", "minimal", getModel("google-vertex", "gemini-2.5-pro")],
+		[
+			"google/gemini-2.5-flash-lite whose map denies off",
+			"minimal",
+			{ ...getModel("google", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
+		],
+		[
+			"google-vertex/gemini-2.5-flash-lite whose map denies off",
+			"minimal",
+			{ ...getModel("google-vertex", "gemini-2.5-flash-lite"), thinkingLevelMap: { off: null } },
+		],
+		[
+			"google/gemini-2.5-pro whose map also denies minimal",
+			"low",
+			{ ...getModel("google", "gemini-2.5-pro"), thinkingLevelMap: { off: null, minimal: null } },
+		],
+		[
+			"google-vertex/gemini-2.5-pro whose map also denies minimal",
+			"low",
+			{ ...getModel("google-vertex", "gemini-2.5-pro"), thinkingLevelMap: { off: null, minimal: null } },
+		],
+	] as const)("runs %s at the custom budget of its lowest level, %s (#4556)", async (_name, level, model) => {
+		const off = await captureRequest(model, { thinkingBudgets });
+		const lowest = await captureRequest(model, { reasoning: level, thinkingBudgets });
+		const { includeThoughts, ...lowestThinkingConfig } = lowest.payload.config?.thinkingConfig ?? {};
+
+		expect(off.payload.config?.thinkingConfig).toEqual({ thinkingBudget: thinkingBudgets[level] });
+		expect(includeThoughts).toBe(true);
+		expect(off.payload).toEqual({
+			...lowest.payload,
+			config: { ...lowest.payload.config, thinkingConfig: lowestThinkingConfig },
+		});
+		expect(off.offFallbacks).toEqual([offFallbackDiagnostic(level, String(thinkingBudgets[level]))]);
+	});
+
+	it.each([
+		[
+			"google",
+			(onPayload: (payload: unknown) => never) =>
+				streamGoogle(offline(getModel("google", "gemini-2.5-pro")), context, {
+					apiKey: "test-key",
+					thinking: { enabled: false },
+					thinkingBudgets,
+					onPayload,
+				}),
+		],
+		[
+			"google-vertex",
+			(onPayload: (payload: unknown) => never) =>
+				streamVertex(offline(getModel("google-vertex", "gemini-2.5-pro")), context, {
+					apiKey: "test-key",
+					thinking: { enabled: false },
+					thinkingBudgets,
+					onPayload,
+				}),
+		],
+	] as const)(
+		"uses custom thinkingBudgets in a low-level %s request with thinking off (#4556)",
+		async (_name, request) => {
+			const { payload, offFallbacks } = await captureStream(request);
+
+			expect(payload.config?.thinkingConfig).toEqual({ thinkingBudget: 4000 });
+			expect(offFallbacks).toEqual([offFallbackDiagnostic("minimal", "4000")]);
+		},
+	);
+
+	it("still runs a google-vertex streamSimple call made without options (#4556)", async () => {
+		vi.stubEnv("GOOGLE_CLOUD_PROJECT", "");
+		vi.stubEnv("GCLOUD_PROJECT", "");
+		try {
+			const reply = await streamSimpleVertex(offline(getModel("google-vertex", "gemini-2.5-pro")), context).result();
+
+			expect(reply.stopReason).toBe("error");
+			expect(reply.errorMessage).toContain("Vertex AI requires a project ID");
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it.each([
+		["google/gemini-2.5-flash", getModel("google", "gemini-2.5-flash")],
+		["google-vertex/gemini-2.5-flash", getModel("google-vertex", "gemini-2.5-flash")],
+	])("keeps disabling thinking with a zero budget on %s, which can turn it off (#4556)", async (_name, model) => {
+		const { payload, offFallbacks } = await captureRequest(model, { thinkingBudgets });
+
+		expect(payload.config?.thinkingConfig).toEqual({ thinkingBudget: 0 });
 		expect(offFallbacks).toEqual([]);
 	});
 });

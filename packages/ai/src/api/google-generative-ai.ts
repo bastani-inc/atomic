@@ -53,6 +53,8 @@ export interface GoogleOptions extends StreamOptions {
 		budgetTokens?: number; // -1 for dynamic, 0 to disable
 		level?: GoogleApiThinkingLevel;
 	};
+	/** Custom token budgets per level, used when thinking `off` runs a budget-thinking model at its lowest level. */
+	thinkingBudgets?: ThinkingBudgets;
 }
 
 // Counter for generating unique tool call IDs
@@ -94,7 +96,9 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 			const client = createClient(model, apiKey, options?.headers, options?.identity);
-			recordGoogleThinkingOffFallback(model, options, output, (level) => getGoogleBudget(model, level));
+			recordGoogleThinkingOffFallback(model, options, output, (level) =>
+				getGoogleBudget(model, level, options?.thinkingBudgets),
+			);
 			let params = buildParams(model, normalizedContext, options);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
@@ -313,6 +317,7 @@ export const streamSimple: StreamFunction<"google-generative-ai", SimpleStreamOp
 	const base = {
 		...buildBaseOptions(model, context, options, apiKey),
 		toolChoice: options?.toolChoice,
+		thinkingBudgets: options?.thinkingBudgets,
 	} satisfies GoogleOptions;
 	if (!options?.reasoning) {
 		return stream(model, context, { ...base, thinking: { enabled: false } } satisfies GoogleOptions);
@@ -408,7 +413,9 @@ function buildParams(
 		}
 		config.thinkingConfig = thinkingConfig;
 	} else if (model.reasoning && options.thinking && !options.thinking.enabled) {
-		config.thinkingConfig = getDisabledGoogleThinkingConfig(model, (level) => getGoogleBudget(model, level));
+		config.thinkingConfig = getDisabledGoogleThinkingConfig(model, (level) =>
+			getGoogleBudget(model, level, options.thinkingBudgets),
+		);
 	}
 
 	if (options.signal) {

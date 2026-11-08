@@ -78,6 +78,7 @@ export function usesGoogleThinkingLevel<T extends GoogleApiType>(model: Model<T>
 		// gemini-3-flash-preview, gemini-3.1-pro-preview, and gemini-3.8-flash.
 		/gemini-3(?:\.\d+)?-(?:pro|flash)/.test(id) ||
 		/gemini-(?:[4-9]|[1-9]\d)/.test(id) ||
+		id === "gemini-pro-latest" ||
 		id === "gemini-flash-latest" ||
 		id === "gemini-flash-lite-latest" ||
 		// Match both hosted Gemma 4 naming forms: gemma-4-* and gemma4-*.
