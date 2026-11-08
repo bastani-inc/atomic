@@ -8,6 +8,11 @@ const packageDir = path.resolve(import.meta.dirname, "..");
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-bundled-legacy-pi-"));
 const app = path.join(root, "app.js");
 
+// Each case starts a real bundled CLI and cold-loads its extension graph under suite load.
+// Native Windows reached 87 s under CPU contention; allow headroom on slower hosted runners.
+const BUNDLED_CLI_EXIT_TIMEOUT_MS = 180_000;
+const BUNDLED_CLI_TEST_TIMEOUT_MS = BUNDLED_CLI_EXIT_TIMEOUT_MS + 20_000;
+
 beforeAll(() => {
 	const build = spawnSync(
 		"bun",
@@ -61,10 +66,11 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 	return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve, reject) => {
 		let stdout = "";
 		let stderr = "";
+		let timedOut = false;
 		const timer = setTimeout(() => {
+			timedOut = true;
 			child.kill("SIGKILL");
-			reject(new Error(`CLI did not finish\n${stderr}\n${stdout}`));
-		}, 25_000);
+		}, BUNDLED_CLI_EXIT_TIMEOUT_MS);
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (text) => {
@@ -89,7 +95,9 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 		});
 		child.on("close", (status) => {
 			clearTimeout(timer);
-			resolve({ status, stdout, stderr });
+			// Windows may still hold app.js open until the killed process and its pipes close.
+			if (timedOut) reject(new Error(`CLI did not finish\n${stderr}\n${stdout}`));
+			else resolve({ status, stdout, stderr });
 		});
 		child.stdin.on("error", () => {});
 		if (mode === "print") child.stdin.end();
@@ -97,83 +105,103 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 	});
 }
 
-it("loads an auto-discovered legacy pi extension through the bundled app without installed pi packages", async () => {
-	const result = await run(
-		"legacy",
-		`import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+it(
+	"loads an auto-discovered legacy pi extension through the bundled app without installed pi packages",
+	async () => {
+		const result = await run(
+			"legacy",
+			`import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getAgentDir as legacy } from "@mariozechner/pi-coding-agent";
 import { getAgentDir as current } from "@earendil-works/pi-coding-agent";
 export default function(pi: ExtensionAPI) {
   if (legacy !== current) throw new Error("host identity mismatch");
   console.error("LEGACY_EXTENSION_LOADED");
 }`,
-	);
-	expect(result.stderr).toContain("LEGACY_EXTENSION_LOADED");
-	expect(result.stderr).not.toContain("Failed to load extension");
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+		);
+		expect(result.stderr).toContain("LEGACY_EXTENSION_LOADED");
+		expect(result.stderr).not.toContain("Failed to load extension");
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("keeps a broken legacy extension fatal and named in print mode", async () => {
-	const result = await run(
-		"broken-print",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-	);
-	expect(result.status).toBe(1);
-	expect(result.stderr).toContain('Failed to load extension "');
-	expect(result.stderr).toContain("legacy.ts");
-	expect(result.stderr).toContain("legacy dependency unavailable");
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"keeps a broken legacy extension fatal and named in print mode",
+	async () => {
+		const result = await run(
+			"broken-print",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+		);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain('Failed to load extension "');
+		expect(result.stderr).toContain("legacy.ts");
+		expect(result.stderr).toContain("legacy dependency unavailable");
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("skips a broken legacy extension when RPC is serving the interactive host", async () => {
-	const result = await run(
-		"broken-interactive",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-		"interactive",
-	);
-	expect(result.stderr).toContain("legacy.ts");
-	expect(result.stderr).toContain("legacy dependency unavailable");
-	expect(result.stdout).toContain('"id":"probe"');
-	expect(result.stdout).toContain('"success":true');
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"skips a broken legacy extension when RPC is serving the interactive host",
+	async () => {
+		const result = await run(
+			"broken-interactive",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+			"interactive",
+		);
+		expect(result.stderr).toContain("legacy.ts");
+		expect(result.stderr).toContain("legacy dependency unavailable");
+		expect(result.stdout).toContain('"id":"probe"');
+		expect(result.stdout).toContain('"success":true');
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("keeps a broken legacy extension fatal and named in standalone RPC mode", async () => {
-	const result = await run(
-		"broken-rpc",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-		"rpc",
-	);
-	expect(result.status).toBe(1);
-	expect(result.stderr).toContain('Failed to load extension "');
-	expect(result.stderr).toContain("legacy.ts");
-	expect(result.stderr).toContain("legacy dependency unavailable");
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"keeps a broken legacy extension fatal and named in standalone RPC mode",
+	async () => {
+		const result = await run(
+			"broken-rpc",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+			"rpc",
+		);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain('Failed to load extension "');
+		expect(result.stderr).toContain("legacy.ts");
+		expect(result.stderr).toContain("legacy dependency unavailable");
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
-it("completes deferred interactive startup with a named diagnostic for a broken explicit extension", async () => {
-	const result = await run(
-		"broken-deferred",
-		'throw new Error("legacy dependency unavailable"); export default () => {};',
-		"interactive",
-		true,
-	);
-	expect(result.stdout).toContain('"type":"extension_error"');
-	expect(result.stdout).toContain("legacy.ts");
-	expect(result.stdout).toContain("legacy dependency unavailable");
-	const response = result.stdout
-		.split("\n")
-		.map((line) => {
-			try {
-				return JSON.parse(line);
-			} catch {
-				return undefined;
-			}
-		})
-		.find((event) => event?.id === "resources");
-	expect(response, result.stderr).toMatchObject({ success: true });
-	expect(result.stderr).not.toContain("missing sourcemaps");
-});
+it(
+	"completes deferred interactive startup with a named diagnostic for a broken explicit extension",
+	async () => {
+		const result = await run(
+			"broken-deferred",
+			'throw new Error("legacy dependency unavailable"); export default () => {};',
+			"interactive",
+			true,
+		);
+		expect(result.stdout).toContain('"type":"extension_error"');
+		expect(result.stdout).toContain("legacy.ts");
+		expect(result.stdout).toContain("legacy dependency unavailable");
+		const response = result.stdout
+			.split("\n")
+			.map((line) => {
+				try {
+					return JSON.parse(line);
+				} catch {
+					return undefined;
+				}
+			})
+			.find((event) => event?.id === "resources");
+		expect(response, result.stderr).toMatchObject({ success: true });
+		expect(result.stderr).not.toContain("missing sourcemaps");
+	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
+);
 
 const tmuxAvailable = spawnSync("tmux", ["-V"]).status === 0;
 
@@ -216,7 +244,7 @@ it.skipIf(!tmuxAvailable)(
 		};
 		try {
 			tmux("new-session", "-d", "-s", "crash", "-x", "140", "-y", "45", "-c", home, "sh", "-c", command);
-			const deadline = Date.now() + 25_000;
+			const deadline = Date.now() + BUNDLED_CLI_EXIT_TIMEOUT_MS;
 			let pane = "";
 			do {
 				pane = tmux("capture-pane", "-p", "-J", "-S", "-", "-t", "crash");
@@ -234,4 +262,5 @@ it.skipIf(!tmuxAvailable)(
 			spawnSync("tmux", ["-S", socket, "kill-server"]);
 		}
 	},
+	BUNDLED_CLI_TEST_TIMEOUT_MS,
 );
