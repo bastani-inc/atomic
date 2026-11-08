@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `WorkflowStructuredOutputInferenceError`, with `isWorkflowStructuredOutputInferenceError`, `findWorkflowStructuredOutputInferenceError` and `deserializeWorkflowStructuredOutputInferenceError`: the typed `cause` a schema-backed stage's failure carries when Atomic's own `structured_output` inference produced no result ([#4565](https://github.com/bastani-inc/atomic/issues/4565))
+
+### Fixed
+
+- Fixed schema-backed workflow stages that failed their first attempt with the 1/3 structured-output corrective error because the stage prompt never said to finish with `structured_output`, and the model ended its turn without calling it. Atomic now closes every schema-backed prompt with that instruction, and when a turn still ends without a successful call it runs the same inference itself from the stage's final answer, so prompts no longer need to mention the tool; corrective follow-ups and `fallbackModels` apply only when that inference fails too ([#4565](https://github.com/bastani-inc/atomic/issues/4565))
+
 ## [0.9.72] - 2026-11-08
 
 Waiting stages free their resources, and pooled work runs across machines.

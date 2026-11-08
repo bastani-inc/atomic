@@ -77,6 +77,11 @@ import {
 } from "./run-eviction-errors.js";
 import { deserializeStageWaitError, type SerializedStageWaitError, StageWaitError } from "./stage-wait-errors.js";
 import {
+	deserializeWorkflowStructuredOutputInferenceError,
+	type SerializedWorkflowStructuredOutputInferenceError,
+	WorkflowStructuredOutputInferenceError,
+} from "./structured-output-errors.js";
+import {
 	isWorkflowGitRequiredError,
 	type SerializedWorkflowGitRequiredError,
 	WorkflowGitRequiredError,
@@ -295,6 +300,14 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 			return form;
 		},
 		rehydrate: rehydrateResumeError,
+	}),
+	"structured-output": family<
+		WorkflowStructuredOutputInferenceError,
+		SerializedWorkflowStructuredOutputInferenceError
+	>({
+		is: instanceOf(WorkflowStructuredOutputInferenceError),
+		serialize: (error) => error.toJSON(),
+		rehydrate: deserializeWorkflowStructuredOutputInferenceError,
 	}),
 } as const satisfies Readonly<Record<string, SerializableErrorFamily>>;
 

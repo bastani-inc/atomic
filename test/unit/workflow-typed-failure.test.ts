@@ -89,6 +89,7 @@ test("each family with its own JSON form is named by its envelope and has a cros
 /** The family the codec carries the errors of each exported rehydration as, the codec's own `rehydrateError` aside. */
 const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	deserializeStageWaitError: "stage-wait",
+	deserializeWorkflowStructuredOutputInferenceError: "structured-output",
 	deserializeToolDetachmentError: "tool-detachment",
 	deserializeRunEvictionError: "run-eviction",
 	rehydrateGitProvisionError: "git-provision",

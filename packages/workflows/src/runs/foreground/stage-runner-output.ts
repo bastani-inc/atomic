@@ -211,7 +211,17 @@ export function validatePromptOutputOptions(outputOptions: StageOutputOptions): 
 }
 
 /**
- * Instruction appended to any prompt whose stage configures `output:`.
+ * Closing instruction appended to every schema-backed stage's prompt, with or without `output:`.
+ *
+ * The prompt author writes the task; the runtime states that the stage ends with the `structured_output` call. A
+ * stage prompt that never says so leaves a model to finish with prose, which the runtime then has to catch and repair.
+ */
+export const STRUCTURED_OUTPUT_CLOSING_INSTRUCTION =
+	"\n\n[When your work is done, finish by calling the structured_output tool exactly once, with complete instructions and nonempty named state for this stage's result. Do not answer with plain JSON text.]";
+
+/**
+ * Instruction appended to any prompt whose stage configures `output:`, and the closing structured-output
+ * instruction for a schema-backed stage.
  *
  * The runtime owns the artifact write, so the prompt author should not have to
  * describe that plumbing — or remember to. Without this, a stage can end with
@@ -219,9 +229,10 @@ export function validatePromptOutputOptions(outputOptions: StageOutputOptions): 
  * foot-gun the workflow definition cannot see.
  */
 export function stageOutputInstruction(outputOptions: StageOutputOptions, hasStructuredOutput = false): string {
-	if (typeof outputOptions.output !== "string" || outputOptions.output.length === 0) return "";
+	const closing = hasStructuredOutput ? STRUCTURED_OUTPUT_CLOSING_INSTRUCTION : "";
+	if (typeof outputOptions.output !== "string" || outputOptions.output.length === 0) return closing;
 	if (hasStructuredOutput) {
-		return "\n\n[This stage has two final output channels. In the same final assistant message, write the complete human-readable artifact as ordinary assistant text before calling structured_output. That text is saved verbatim as the artifact and is what later stages read; the structured_output tool infers the separate machine-readable result for workflow logic from its instructions and state. Do not replace the artifact text with JSON or a pointer to another file. Files you write yourself are not the artifact.]";
+		return `\n\n[This stage has two final output channels. In the same final assistant message, write the complete human-readable artifact as ordinary assistant text before calling structured_output. That text is saved verbatim as the artifact and is what later stages read; the structured_output tool infers the separate machine-readable result for workflow logic from its instructions and state. Do not replace the artifact text with JSON or a pointer to another file. Files you write yourself are not the artifact.]${closing}`;
 	}
 	return "\n\n[This stage's completed answers are saved as its artifact and are what later stages read. Return the complete result as ordinary assistant text rather than a pointer to it. Follow-up answers within this stage are appended as numbered supplements, not replacements; state corrections explicitly. Tool-call progress is transcript-only. Files you write yourself are not the artifact.]";
 }

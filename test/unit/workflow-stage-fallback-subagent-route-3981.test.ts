@@ -80,7 +80,8 @@ type Caller = "stage" | "child" | "router";
 
 function callerOf(messages: readonly Message[]): Caller {
 	const text = firstUserText(messages);
-	if (text === "go") return "stage";
+	// A schema stage's prompt is the authored text plus the runtime's closing structured_output instruction.
+	if (text.startsWith("go\n\n")) return "stage";
 	// Auto routing of the subagent asks its questions as a structured state object.
 	if (text.includes('"questions"')) return "router";
 	return "child";

@@ -8,8 +8,8 @@ export const STRUCTURED_OUTPUT_MISSING_ERROR =
 
 export class WorkflowStructuredOutputContractError extends Error {
 	readonly code = "ATOMIC_WORKFLOW_STRUCTURED_OUTPUT_CONTRACT";
-	constructor(message: string) {
-		super(message);
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
 		this.name = "WorkflowStructuredOutputContractError";
 	}
 }
@@ -108,19 +108,21 @@ export function stringifyStructuredOutputValue(value: unknown): string {
 	}
 }
 
-export function stageOptionsWithStructuredOutput<TSchemaDef extends TSchema>(
-	options: StageOptions<TSchemaDef | undefined> | undefined,
-	capture: StructuredOutputCapture<Static<TSchemaDef>> | undefined,
+/** The `structured_output` tool a schema-backed stage registers: the shared factory's tool, recording its execution. */
+export type StageStructuredOutputTool = ReturnType<typeof createStructuredOutputTool>;
+
+export function createStageStructuredOutputTool<TSchemaDef extends TSchema>(
+	options: { readonly schema: TSchemaDef; readonly schemaTimeoutMs?: number },
+	capture: StructuredOutputCapture<Static<TSchemaDef>>,
 	executionCapture?: StructuredOutputExecutionCapture<Static<TSchemaDef>>,
-): StageOptions | undefined {
-	if (!options?.schema || !capture) return options;
+): StageStructuredOutputTool {
 	const structuredOutputTool = createStructuredOutputTool({
 		schema: options.schema,
 		capture,
 		...(options.schemaTimeoutMs === undefined ? {} : { timeoutMs: options.schemaTimeoutMs }),
 	});
 	const executeStructuredOutput = structuredOutputTool.execute;
-	const capturedStructuredOutputTool = {
+	return {
 		...structuredOutputTool,
 		async execute(...args: Parameters<typeof executeStructuredOutput>) {
 			const result = await executeStructuredOutput(...args);
@@ -137,6 +139,13 @@ export function stageOptionsWithStructuredOutput<TSchemaDef extends TSchema>(
 			return result;
 		},
 	};
+}
+
+export function stageOptionsWithStructuredOutput(
+	options: StageOptions | undefined,
+	structuredOutputTool: StageStructuredOutputTool | undefined,
+): StageOptions | undefined {
+	if (!options?.schema || !structuredOutputTool) return options;
 	const tools =
 		options.tools === undefined
 			? options.noTools === "all"
@@ -148,6 +157,6 @@ export function stageOptionsWithStructuredOutput<TSchemaDef extends TSchema>(
 		...options,
 		...(tools !== undefined ? { tools } : {}),
 		...(excludedTools !== undefined ? { excludedTools } : {}),
-		customTools: [...(options.customTools ?? []), capturedStructuredOutputTool],
+		customTools: [...(options.customTools ?? []), structuredOutputTool],
 	};
 }

@@ -60,6 +60,10 @@ import {
 	StageRehydrationError,
 } from "../../packages/workflows/src/shared/stage-wait-errors.js";
 import {
+	isWorkflowStructuredOutputInferenceError,
+	WorkflowStructuredOutputInferenceError,
+} from "../../packages/workflows/src/shared/structured-output-errors.js";
+import {
 	isWorkflowGitRequiredError,
 	WorkflowGitRequiredError,
 } from "../../packages/workflows/src/shared/workflow-git-required-error.js";
@@ -133,6 +137,23 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 			),
 		type: StageRehydrationError,
 		guard: isStageRehydrationError,
+		facts: ownFacts(toJSON),
+	},
+	{
+		family: "structured-output",
+		make: () =>
+			new WorkflowStructuredOutputInferenceError(
+				"auto-inference-failed",
+				{
+					runId: "run-1",
+					stageId: "stage-1",
+					stageName: "review",
+					toolCallId: "workflow-auto-structured-output-1",
+				},
+				{ cause: new Error("decision provider unavailable") },
+			),
+		type: WorkflowStructuredOutputInferenceError,
+		guard: isWorkflowStructuredOutputInferenceError,
 		facts: ownFacts(toJSON),
 	},
 	{

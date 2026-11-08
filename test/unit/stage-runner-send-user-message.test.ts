@@ -4,6 +4,7 @@ import type {
 	StageSessionEvent as PublicStageSessionEvent,
 	StageSessionRuntime as PublicStageSessionRuntime,
 } from "../../packages/workflows/src/authoring.js";
+import { STRUCTURED_OUTPUT_CLOSING_INSTRUCTION } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
 import { sendStageUserMessage } from "../../packages/workflows/src/runs/foreground/stage-runner-send-user-message.js";
 import type { AgentSessionAdapter, InternalStageContext, StageSessionCreateOptions } from "./stage-runner-helpers.js";
 import {
@@ -400,7 +401,7 @@ describe("createStageContext — sendUserMessage", () => {
 		assert.deepEqual(await ctx.prompt("produce structured output"), { ok: true });
 		await ctx.sendUserMessage("post-schema follow-on");
 
-		assert.deepEqual(prompts, ["produce structured output"]);
+		assert.deepEqual(prompts, [`produce structured output${STRUCTURED_OUTPUT_CLOSING_INSTRUCTION}`]);
 		assert.deepEqual(userMessages, ["post-schema follow-on"]);
 	});
 });

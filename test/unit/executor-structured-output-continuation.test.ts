@@ -1,4 +1,5 @@
 import { describe } from "vitest";
+import { STRUCTURED_OUTPUT_CLOSING_INSTRUCTION } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
 import {
 	type AgentSession,
 	assert,
@@ -158,7 +159,7 @@ describe("executor — a resume continuation cannot erase a finalized structured
 		assert.equal(observed.status, "completed");
 		// The continuation prompt is never injected: the stage already finalized
 		// its structured answer, so there is nothing left to continue.
-		assert.deepEqual(observed.promptCalls, ["run the live review"]);
+		assert.deepEqual(observed.promptCalls, [`run the live review${STRUCTURED_OUTPUT_CLOSING_INSTRUCTION}`]);
 		assert.equal(observed.promptCalls.includes(RESUME_CONTINUATION_PROMPT), false);
 		assert.equal(observed.stageResult, JSON.stringify(FEEDBACK_PAYLOAD, null, 2));
 		assert.equal(observed.stageResult?.includes(CONTINUATION_WRAP_UP), false);

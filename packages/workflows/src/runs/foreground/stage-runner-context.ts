@@ -1,6 +1,7 @@
 import { createStructuredOutputCapture, runCallback } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
+import type { WorkflowStructuredOutputInferenceError } from "../../shared/structured-output-errors.js";
 import type { StageExecutionMeta, StageOutputOptions } from "../../shared/types.js";
 import { StageSessionController } from "./stage-runner-controller.js";
 import {
@@ -16,6 +17,7 @@ import {
 } from "./stage-runner-output.js";
 import { agentSessionAdapterDefaultCwd } from "./stage-runner-session-options.js";
 import {
+	createStageStructuredOutputTool,
 	formatStructuredOutputCorrectionPrompt,
 	isStructuredOutputContractFailure,
 	STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS,
@@ -25,6 +27,10 @@ import {
 	stringifyStructuredOutputValue,
 	WorkflowStructuredOutputContractError,
 } from "./stage-runner-structured-output.js";
+import {
+	automaticInferenceExecutionFailure,
+	runAutomaticStructuredOutput,
+} from "./stage-runner-structured-output-auto.js";
 import type { InternalStageContext, LiveInternalStageContext, StageRunnerOpts } from "./stage-runner-types.js";
 
 export function createStageContext(opts: StageRunnerOpts): LiveInternalStageContext {
@@ -38,6 +44,13 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 	const structuredOutputCapture = stageOptions?.schema ? createStructuredOutputCapture<Static<TSchema>>() : undefined;
 	const structuredOutputExecutionCapture: StructuredOutputExecutionCapture<Static<TSchema>> | undefined =
 		stageOptions?.schema ? {} : undefined;
+	const structuredOutputTool = stageOptions?.schema
+		? createStageStructuredOutputTool(
+				{ schema: stageOptions.schema, schemaTimeoutMs: stageOptions.schemaTimeoutMs },
+				structuredOutputCapture!,
+				structuredOutputExecutionCapture,
+			)
+		: undefined;
 	const effectiveStageOptions = stageOptionsWithStructuredOutput(
 		adapters.sessionStore === undefined ||
 			stageOptions?.sessionStore !== undefined ||
@@ -45,8 +58,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 			stageOptions?.sessionManager !== undefined
 			? stageOptions
 			: { ...stageOptions, sessionStore: adapters.sessionStore },
-		structuredOutputCapture,
-		structuredOutputExecutionCapture,
+		structuredOutputTool,
 	);
 	const meta: StageExecutionMeta = {
 		runId,
@@ -72,6 +84,26 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 	let artifactClosed = false;
 	let artifactText: string | undefined;
 	let continuing = false;
+	let automaticInferences = 0;
+
+	/**
+	 * The turn ended without a successful `structured_output` call: run the inference the tool performs, in the
+	 * runtime, from the stage's final answer. The id is the runtime's own; no model message carries it.
+	 */
+	async function inferStructuredOutputAutomatically(stagePrompt: string) {
+		automaticInferences += 1;
+		return runAutomaticStructuredOutput({
+			tool: structuredOutputTool!,
+			schema: stageOptions!.schema!,
+			capture: structuredOutputCapture!,
+			stagePrompt,
+			messages: controller.currentSession?.messages ?? [],
+			promptStartIndex: controller.currentPromptStartIndex ?? 0,
+			toolContext: (toolCallId, signal) => controller.stageToolContext(toolCallId, signal),
+			signal: controller.stageCancellationSignal(),
+			fields: { runId, stageId, stageName, toolCallId: `workflow-auto-structured-output-${automaticInferences}` },
+		});
+	}
 
 	async function exportArtifact(): Promise<string> {
 		const text = assistantArtifactTextForGeneration(controller.outputGenerationMessages());
@@ -148,6 +180,7 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 			if (structuredOutputCapture) {
 				let structuredOutputError = STRUCTURED_OUTPUT_MISSING_ERROR;
 				let executionFailure: string | undefined;
+				let automaticInferenceFailure: WorkflowStructuredOutputInferenceError | undefined;
 				// One correction budget per model candidate. A candidate that spends
 				// the whole budget without capturing a structured result has failed,
 				// however clean its turns looked, so it fails over on the same chain
@@ -168,10 +201,20 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 							continuationText,
 						);
 						if (structuredOutputCapture.called) break;
+						// The model did not finish with the call, so the runtime does it for the stage. Only
+						// when that fails do the corrective prompts, and candidate failover, take over.
+						const automatic = await inferStructuredOutputAutomatically(text);
+						if (structuredOutputCapture.called) break;
 						structuredOutputError = controller.structuredOutputFailureReason();
 						executionFailure ??= controller.structuredOutputExecutionFailure();
 						if (!isStructuredOutputContractFailure(structuredOutputError))
 							executionFailure ??= structuredOutputError;
+						if (automatic.kind === "failed") {
+							automaticInferenceFailure = automatic.error;
+							executionFailure ??= automaticInferenceExecutionFailure(automatic.error);
+							if (automatic.error.code === "auto-inference-failed")
+								controller.recordStructuredOutputWarning(`[structured-output] ${automatic.error.message}`);
+						}
 						if (correctiveAttempts >= STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS) break;
 						correctiveAttempts += 1;
 						nextPrompt = formatStructuredOutputCorrectionPrompt(
@@ -185,9 +228,11 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 					}
 					if (structuredOutputCapture.called) break;
 					if (!(await controller.failCandidateForStructuredOutputExhaustion(structuredOutputError))) {
+						const failureOptions =
+							automaticInferenceFailure === undefined ? undefined : { cause: automaticInferenceFailure };
 						throw executionFailure === undefined
-							? new WorkflowStructuredOutputContractError(structuredOutputError)
-							: new Error(executionFailure);
+							? new WorkflowStructuredOutputContractError(structuredOutputError, failureOptions)
+							: new Error(executionFailure, failureOptions);
 					}
 				}
 				const sessionMessages = controller.currentSession?.messages;

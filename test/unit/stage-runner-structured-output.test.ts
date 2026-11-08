@@ -4,6 +4,7 @@ import {
 	EMPTY_COMPLETION_FAILURE_MESSAGE,
 	WorkflowPromptEmptyCompletionFailure,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-messages.js";
+import { STRUCTURED_OUTPUT_CLOSING_INSTRUCTION } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
 import {
 	errorMessage,
 	isRetryableModelFailure,
@@ -30,6 +31,11 @@ import {
 	tmpdir,
 } from "./stage-runner-helpers.js";
 import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
+
+/** What a schema-backed stage sends for an authored prompt: the runtime closes it with the `structured_output` instruction. */
+function sentPrompt(authored: string): string {
+	return `${authored}${STRUCTURED_OUTPUT_CLOSING_INSTRUCTION}`;
+}
 
 function assistantMessageWithContent(content: AssistantMessage["content"]): AssistantMessage {
 	return {
@@ -111,7 +117,7 @@ describe("createStageContext — structured_output corrective retry", () => {
 		assert.deepEqual(await ctx.prompt("review this"), { ok: true });
 		assert.equal((ctx as InternalStageContext).getLastAssistantText(), '{\n  "ok": true\n}');
 		assert.equal(prompts.length, 2);
-		assert.equal(prompts[0], "review this");
+		assert.equal(prompts[0], sentPrompt("review this"));
 		assert.match(prompts[1] ?? "", /Corrective attempt 1\/3/);
 		assert.match(prompts[1] ?? "", /must finish by calling structured_output/);
 		assert.match(prompts[1] ?? "", /Do not answer with plain JSON text/);
@@ -682,7 +688,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 		assert.match(promptsByModel.get("anthropic/primary")?.[3] ?? "", /Corrective attempt 3\/3/);
 		// The next candidate restarts from the original stage prompt with a fresh
 		// budget, never from a corrective prompt written for the abandoned one.
-		assert.deepEqual(promptsByModel.get("openai/fallback"), ["partition the work"]);
+		assert.deepEqual(promptsByModel.get("openai/fallback"), [sentPrompt("partition the work")]);
 
 		const meta = ctx.__modelFallbackMeta();
 		assert.deepEqual(meta.attemptedModels, [
@@ -832,7 +838,7 @@ describe("createStageContext — structured_output correction exhaustion and mod
 		// Each candidate spends its own budget: two candidates, four prompts each.
 		assert.deepEqual(calls, ["anthropic/primary", "openai/fallback"]);
 		assert.equal(prompts.length, 8);
-		assert.equal(prompts[4], "partition the work");
+		assert.equal(prompts[4], sentPrompt("partition the work"));
 		const meta = ctx.__modelFallbackMeta();
 		assert.deepEqual(
 			meta.modelAttempts?.map((attempt) => ({ model: attempt.model, success: attempt.success })),
@@ -1077,12 +1083,12 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 		// them the original prompt: no output-correction prompt is spent on a
 		// transport-layer condition.
 		assert.deepEqual(promptsByModel.get("anthropic/primary"), [
-			"review this",
-			"review this",
-			"review this",
-			"review this",
+			sentPrompt("review this"),
+			sentPrompt("review this"),
+			sentPrompt("review this"),
+			sentPrompt("review this"),
 		]);
-		assert.deepEqual(promptsByModel.get("openai/fallback"), ["review this"]);
+		assert.deepEqual(promptsByModel.get("openai/fallback"), [sentPrompt("review this")]);
 
 		const meta = ctx.__modelFallbackMeta();
 		assert.deepEqual(
@@ -1333,7 +1339,7 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 		assert.deepEqual(await ctx.prompt("review this"), { ok: true });
 		const primaryPrompts = promptsByModel.get("anthropic/primary") ?? [];
 		assert.equal(primaryPrompts.length, 3);
-		assert.equal(primaryPrompts[0], "review this");
+		assert.equal(primaryPrompts[0], sentPrompt("review this"));
 		assert.match(primaryPrompts[1] ?? "", /Corrective attempt 1\/3/);
 		// The retry re-sends the same corrective prompt rather than escalating
 		// the correction count for a request the model never answered.
@@ -1383,7 +1389,7 @@ describe("createStageContext — empty completions on schema-backed stages (#316
 		assert.deepEqual(await ctx.prompt("Write a 500+ character essay about X"), { ok: true });
 		assert.equal(promptsBySession.length, 2);
 		assert.deepEqual(modelsBySession, ["anthropic/primary", "openai/fallback"]);
-		assert.equal(promptsBySession[0]?.[0], "Write a 500+ character essay about X");
+		assert.equal(promptsBySession[0]?.[0], sentPrompt("Write a 500+ character essay about X"));
 		assert.match(promptsBySession[0]?.[1] ?? "", /^The previous response failed/);
 		// The new session never saw the task, so its first user message must carry
 		// the original stage prompt, followed by the pending corrective request.

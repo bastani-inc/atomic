@@ -6,6 +6,7 @@ import type { AgentSession } from "@bastani/atomic";
 import { test } from "vitest";
 import {
 	finalizePromptOutput,
+	STRUCTURED_OUTPUT_CLOSING_INSTRUCTION,
 	stageOutputInstruction,
 } from "../../packages/workflows/src/runs/foreground/stage-runner-output.js";
 
@@ -102,6 +103,22 @@ test("the runtime states the artifact contract so prompts do not have to", () =>
 	// No `output:` means no artifact, so the stage prompt is left untouched.
 	assert.equal(stageOutputInstruction({}), "");
 	assert.equal(stageOutputInstruction({ output: "" }), "");
+});
+
+test("the runtime closes every schema-backed prompt with the structured_output instruction, with or without an output file (#4565)", () => {
+	assert.equal(stageOutputInstruction({}, true), STRUCTURED_OUTPUT_CLOSING_INSTRUCTION);
+	assert.equal(stageOutputInstruction({ output: "" }, true), STRUCTURED_OUTPUT_CLOSING_INSTRUCTION);
+	assert.match(STRUCTURED_OUTPUT_CLOSING_INSTRUCTION, /finish by calling the structured_output tool exactly once/);
+	assert.match(STRUCTURED_OUTPUT_CLOSING_INSTRUCTION, /instructions and nonempty named state/);
+	assert.match(STRUCTURED_OUTPUT_CLOSING_INSTRUCTION, /Do not answer with plain JSON text/);
+
+	const withOutput = stageOutputInstruction({ output: "/tmp/report.md" }, true);
+	assert.ok(withOutput.endsWith(STRUCTURED_OUTPUT_CLOSING_INSTRUCTION), withOutput);
+	assert.equal(withOutput.split(STRUCTURED_OUTPUT_CLOSING_INSTRUCTION).length, 2, "the closing appears once");
+
+	// A stage without a schema is told nothing about structured_output.
+	assert.equal(stageOutputInstruction({}, false), "");
+	assert.equal(stageOutputInstruction({ output: "/tmp/report.md" }).includes("finish by calling"), false);
 });
 
 test("the runtime requests prose before structured_output when both output channels are configured", () => {

@@ -583,6 +583,17 @@ export type {
 	StageWakeKinds,
 } from "./shared/stage-wake.js";
 export { registerStageWakeKind } from "./shared/stage-wake.js";
+export type {
+	SerializedWorkflowStructuredOutputInferenceError,
+	WorkflowStructuredOutputInferenceErrorCode,
+	WorkflowStructuredOutputInferenceErrorFields,
+} from "./shared/structured-output-errors.js";
+export {
+	deserializeWorkflowStructuredOutputInferenceError,
+	findWorkflowStructuredOutputInferenceError,
+	isWorkflowStructuredOutputInferenceError,
+	WorkflowStructuredOutputInferenceError,
+} from "./shared/structured-output-errors.js";
 /**
  * Send a message to a stage of a live run in this process. Throws `StageWakeError` (`unknown-wake-kind`) when no
  * module registered the message's kind; otherwise returns what became of it.

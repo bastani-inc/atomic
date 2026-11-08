@@ -6,6 +6,7 @@ import {
 	currentWorktreeRootMappings,
 	type DetachedToolCall,
 	type DetachedToolResult,
+	type ExtensionToolContext,
 	isExtensionStartupFailure,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
@@ -115,6 +116,7 @@ import {
 	StageSessionBindingCleanupFailure,
 	shutdownStageSession,
 	stageError,
+	stageSessionToolContext,
 } from "./stage-runner-session.js";
 import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import {
@@ -538,6 +540,28 @@ export class StageSessionController {
 
 	structuredOutputExecutionFailure(): string | undefined {
 		return this.structuredOutputExecutionFailureValue;
+	}
+
+	/**
+	 * Cancels work the stage runs for itself between model turns, such as the automatic `structured_output`
+	 * inference. Both the workflow's abort and the stage's own funnel into the signal its startup waits use.
+	 */
+	stageCancellationSignal(): AbortSignal {
+		return this.residency.startupWait.signal;
+	}
+
+	/** The tool context a model's call to a tool of the stage's live session runs in; undefined without one. */
+	stageToolContext(toolCallId: string, signal: AbortSignal): ExtensionToolContext | undefined {
+		return stageSessionToolContext(this.session, toolCallId, signal);
+	}
+
+	/**
+	 * Keep a structured-output warning with the stage's model-fallback warnings, which its record and snapshot carry
+	 * once the fallback metadata is next published.
+	 */
+	recordStructuredOutputWarning(warning: string): void {
+		this.modelWarnings.push(warning);
+		this.notifyModelFallbackMetaChange();
 	}
 
 	/**

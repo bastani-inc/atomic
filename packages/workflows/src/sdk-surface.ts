@@ -373,6 +373,17 @@ export type {
 	WorkflowNotice,
 	WorkflowOverlayAdapter,
 } from "./shared/store-types.js";
+export type {
+	SerializedWorkflowStructuredOutputInferenceError,
+	WorkflowStructuredOutputInferenceErrorCode,
+	WorkflowStructuredOutputInferenceErrorFields,
+} from "./shared/structured-output-errors.js";
+export {
+	deserializeWorkflowStructuredOutputInferenceError,
+	findWorkflowStructuredOutputInferenceError,
+	isWorkflowStructuredOutputInferenceError,
+	WorkflowStructuredOutputInferenceError,
+} from "./shared/structured-output-errors.js";
 export type * from "./shared/types.js";
 export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
 export type {
