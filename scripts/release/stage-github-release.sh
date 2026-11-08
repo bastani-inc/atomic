@@ -3,8 +3,9 @@
 #
 # Usage: stage-github-release.sh TAG ASSET_DIR
 # ASSET_DIR holds the eight release archives and RELEASE_NOTES.md. The script
-# writes SHA256SUMS beside them, replaces an earlier draft for TAG, creates the
-# draft with every asset, and verifies the uploaded asset set. It refuses to
+# writes SHA256SUMS beside them, shortens notes longer than GitHub accepts,
+# replaces an earlier draft for TAG, creates the draft with every asset, and
+# verifies the uploaded asset set. It refuses to
 # touch a release that is already published.
 #
 # Transient GitHub API failures are retried. A draft this script could not
@@ -24,6 +25,7 @@ tag=$1
 cd "$2"
 
 sha256sum atomic-*.tar.gz atomic-*.zip >SHA256SUMS
+fit_release_notes RELEASE_NOTES.md "$tag" "${GH_REPO:?GH_REPO is required}"
 # Assigned first so that a release state GitHub could not report stops the script.
 state=$(release_state "$tag")
 case $state in

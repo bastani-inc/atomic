@@ -404,12 +404,28 @@ describe("publish-github-release", () => {
 });
 
 /** The archives and notes the build and Windows jobs hand to staging. */
-function stageGitHubRelease(rel: Release, tag: string): StepRun {
+function stageGitHubRelease(rel: Release, tag: string, notes = "notes\n"): StepRun {
 	const assets = join(rel.cwd, "release-assets");
 	mkdirSync(assets, { recursive: true });
 	for (const name of RELEASE_ASSETS.filter((asset) => asset !== "SHA256SUMS")) writeFileSync(join(assets, name), name);
-	writeFileSync(join(assets, "RELEASE_NOTES.md"), "notes\n");
-	return runStep(rel, "stage-github-release", "Validate and stage draft release", { RELEASE_TAG: tag });
+	writeFileSync(join(assets, "RELEASE_NOTES.md"), notes);
+	return runStep(rel, "stage-github-release", "Validate and stage draft release", {
+		RELEASE_TAG: tag,
+		GH_REPO: "bastani-inc/atomic",
+	});
+}
+
+const GITHUB_RELEASE_BODY_LIMIT = 125_000;
+const SUMMARY = "Highlights for this release.\n\n- **Faster agents.** They wait without holding memory.";
+const PACKAGES_LINK = "https://github.com/bastani-inc/atomic/tree/1.2.3-alpha.1/packages";
+
+function changelogEntries(characters: number): string {
+	const entry = "- Fixed a thing users noticed, with a longer explanation of what changed for them.\n";
+	return entry.repeat(Math.ceil(characters / entry.length));
+}
+
+function releaseBody(rel: Release): string {
+	return readFileSync(join(rel.state, "release.body"), "utf8");
 }
 
 describe("stage-github-release", () => {
@@ -470,6 +486,53 @@ describe("stage-github-release", () => {
 		assert.equal(ghCalls(run, "create"), 4);
 		assert.deepEqual(run.sleeps, [15, 30, 60]);
 		assert.equal(releaseState(rel).state, "missing");
+	});
+
+	test("notes within GitHub's body limit are staged unchanged", () => {
+		const rel = release();
+		const notes = `${SUMMARY}\n\n<details>\n<summary>Full changelog</summary>\n\n### Fixed\n\n${changelogEntries(1_000)}\n</details>\n`;
+		const run = stageGitHubRelease(rel, "1.2.3-alpha.1", notes);
+		assert.equal(run.exitCode, 0, run.output);
+		assert.equal(releaseBody(rel), notes);
+	});
+
+	test("notes longer than GitHub allows keep the summary and link to the package changelogs", () => {
+		const rel = release();
+		const notes = `${SUMMARY}\n\n<details>\n<summary>Full changelog</summary>\n\n### Fixed\n\n${changelogEntries(GITHUB_RELEASE_BODY_LIMIT)}\n</details>\n`;
+		const run = stageGitHubRelease(rel, "1.2.3-alpha.1", notes);
+		assert.equal(run.exitCode, 0, run.output);
+		assertCompleteDraft(rel);
+		const body = releaseBody(rel);
+		assert.ok(body.startsWith(`${SUMMARY}\n\n`), body);
+		assert.ok(body.includes(PACKAGES_LINK), body);
+		assert.ok(!body.includes("<details>"), body);
+		assert.match(run.output, /exceed GitHub's 125000-character limit/);
+	});
+
+	test("flat notes longer than GitHub allows become a link to the package changelogs", () => {
+		const rel = release();
+		const run = stageGitHubRelease(
+			rel,
+			"1.2.3-alpha.1",
+			`### Fixed\n\n${changelogEntries(GITHUB_RELEASE_BODY_LIMIT)}`,
+		);
+		assert.equal(run.exitCode, 0, run.output);
+		const body = releaseBody(rel);
+		assert.ok(body.includes(PACKAGES_LINK), body);
+		assert.ok(!body.includes("### Fixed"), body);
+	});
+
+	test("a summary alone longer than GitHub allows fails before creating a draft", () => {
+		const rel = release();
+		const summary = "Too long. ".repeat(GITHUB_RELEASE_BODY_LIMIT / 5);
+		const run = stageGitHubRelease(
+			rel,
+			"1.2.3-alpha.1",
+			`${summary}\n\n<details>\n\n### Fixed\n\n- x\n\n</details>\n`,
+		);
+		assert.notEqual(run.exitCode, 0);
+		assert.equal(ghCalls(run, "create"), 0);
+		assert.match(run.output, /summary for 1\.2\.3-alpha\.1 is longer than/);
 	});
 
 	test("refuses to touch a release that is already published", () => {
