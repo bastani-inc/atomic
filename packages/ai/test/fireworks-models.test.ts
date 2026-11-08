@@ -10,6 +10,10 @@ import type { Context, Model, Tool } from "../src/types.ts";
 
 const originalFireworksApiKey = process.env.FIREWORKS_API_KEY;
 const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
+expect(
+	fireworksMessagesModels.length,
+	"Expected fireworks catalog models using anthropic-messages for compatibility coverage (#4548)",
+).toBeGreaterThan(0);
 
 afterEach(() => {
 	if (originalFireworksApiKey === undefined) {

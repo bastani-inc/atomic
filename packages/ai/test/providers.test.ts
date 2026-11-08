@@ -204,10 +204,13 @@ describe("builtin providers", () => {
 			["deepseek", "deepseek-v4-pro"],
 			["openrouter", "openai/gpt-5.6-terra"],
 		] as const;
+		const fireworksMessagesModels = getBuiltinModels("fireworks").filter((model) => model.api === "anthropic-messages");
+		expect(
+			fireworksMessagesModels.length,
+			"Expected fireworks catalog models using anthropic-messages for system-message compatibility coverage (#4548)",
+		).toBeGreaterThan(0);
 		const unsupported = [
-			...getBuiltinModels("fireworks")
-				.filter((model) => model.api === "anthropic-messages")
-				.map((model) => [model.provider, model.id] as const),
+			...fireworksMessagesModels.map((model) => [model.provider, model.id] as const),
 			["openai", "gpt-4.1"],
 			["openai", "gpt-5.2"],
 			["anthropic", "claude-sonnet-4-5"],

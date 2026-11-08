@@ -8,6 +8,10 @@ import type { AssistantMessage, Context, Model, Tool, ToolResultMessage } from "
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
+expect(
+	fireworksMessagesModels.length,
+	"Expected fireworks catalog models using anthropic-messages for deferred-tool coverage (#4548)",
+).toBeGreaterThan(0);
 
 const lookup: Tool = {
 	name: "lookup",

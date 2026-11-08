@@ -4,6 +4,10 @@ import { hasApi } from "../src/models.ts";
 import type { AssistantMessage, Context, Model } from "../src/types.ts";
 
 const fireworksMessagesModels = getModels("fireworks").filter((model) => hasApi(model, "anthropic-messages"));
+expect(
+	fireworksMessagesModels.length,
+	"Expected fireworks catalog models using anthropic-messages for unsigned-thinking replay coverage (#4548)",
+).toBeGreaterThan(0);
 
 interface AnthropicPayload {
 	messages?: Array<{
