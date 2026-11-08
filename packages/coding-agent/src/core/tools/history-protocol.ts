@@ -189,6 +189,11 @@ function entryLines(entry: SessionEntry): string[] {
 	}
 }
 
+/** The lines `history://sessions/<id>` shows for `entries`, in the form a transcript search returns them. */
+export function transcriptEntryLines(entries: readonly SessionEntry[]): string[] {
+	return entries.flatMap(entryLines);
+}
+
 /** `linkRun` is false for a cross-project view, whose workflow history is not reachable from here. */
 async function loadTranscript(store: SessionStore, sessionId: string, linkRun: boolean): Promise<string[]> {
 	const { header, entries } = await store.load(sessionId);

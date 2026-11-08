@@ -131,3 +131,18 @@ describe("compaction planning time limit", () => {
 		}
 	});
 });
+
+describe("compaction history recall setting", () => {
+	it("is on by default and off only when compaction.historyRecall is false (#4568)", () => {
+		assert.equal(SettingsManager.inMemory().getCompactionHistoryRecall(), true);
+		assert.equal(SettingsManager.inMemory({ compaction: {} }).getCompactionHistoryRecall(), true);
+		assert.equal(
+			SettingsManager.inMemory({ compaction: { historyRecall: true } }).getCompactionHistoryRecall(),
+			true,
+		);
+		assert.equal(
+			SettingsManager.inMemory({ compaction: { historyRecall: false } }).getCompactionHistoryRecall(),
+			false,
+		);
+	});
+});

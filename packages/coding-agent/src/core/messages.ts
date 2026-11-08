@@ -181,13 +181,18 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 export const VERBATIM_COMPACTION_PREFIX =
 	'The earlier conversation was compacted. Below is the verbatim transcript of the retained lines; elided spans are marked "(filtered N lines)".\n\n';
 const VERBATIM_RECALL_HINT_PATTERN =
-	/^Removed lines remain in this session's history at history:\/\/sessions\/\S+\. Use `search`[^\n]*\n\n/;
+	/^Removed lines remain in this session's history at history:\/\/sessions\/\S+\. Use `search`[\s\S]*?\n\n/;
 export const SUMMARY_COMPACTION_PREFIX = "The following is a summary of the earlier conversation:\n\n";
 const verbatimCompactionMessages = new WeakSet<CustomMessage>();
 
 export function verbatimRecallHint(sessionId: string): string {
 	const url = `history://sessions/${sessionId}`;
-	return `Removed lines remain in this session's history at ${url}. Use \`search\` on that URL to find removed text, then \`read\` with \`:N-M\` to open it.\n\n`;
+	const lines = [
+		`Removed lines remain in this session's history at ${url}. Use \`search\` on that URL to find removed text, including text removed in this session's earlier compaction cycles, then \`read\` with \`:N-M\` to open it.`,
+		"You can also recall relevant findings from the project's other sessions (`search history://sessions`) and from workflow runs (`search history://workflows`, or `search history://` for both). Do this before redoing an investigation, or when a removed decision, error message, file path or result matters.",
+		"A search over several records covers the newest ones by default; page on with `?offset=`.",
+	];
+	return `${lines.join("\n")}\n\n`;
 }
 
 /** Drop the verbatim boundary prefix and, when present, the history recall hint that follows it. */
