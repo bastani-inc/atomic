@@ -23,6 +23,12 @@ import { getShellConfig } from "../../packages/coding-agent/src/utils/shell.js";
 
 // A real built CLI child loads all startup resources and serves RPC over pipes.
 const BUILT_ENGINE_RPC_TIMEOUT_MS = 90_000;
+/**
+ * The first RPC request waits for the child's cold start (a shell or cmd.exe, then the built CLI loading every startup
+ * resource), which a loaded Windows runner can stretch past the client's default 30 s. Bounded so the request, the
+ * client stop and ENGINE_EXIT_TIMEOUT_MS still fit inside BUILT_ENGINE_RPC_TIMEOUT_MS.
+ */
+const COLD_CLI_START_REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * Normally well under a second after `client.stop()`. The bound only names an engine that never exits, inside the
@@ -119,6 +125,7 @@ test(
 			cliPath: fileURLToPath(new URL("../../packages/coding-agent/dist/cli.js", import.meta.url)),
 			cwd: projectB,
 			runtimeExecutable: process.execPath,
+			requestTimeoutMs: COLD_CLI_START_REQUEST_TIMEOUT_MS,
 			args: buildInteractiveEngineArgs(parsed, manager, {}),
 			env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
 			interactiveEngine: { onDiagnostic: () => {} },
@@ -210,6 +217,7 @@ test(
 					cliPath: "",
 					cwd: projectB,
 					runtimeExecutable: shell.shell,
+					requestTimeoutMs: COLD_CLI_START_REQUEST_TIMEOUT_MS,
 					runtimeArgs: [
 						...shell.args,
 						`atomic() { exec ${quoteIfNeeded(process.execPath)} --require ${quoteIfNeeded(preload)} ${quoteIfNeeded(cli)} --mode rpc --offline --no-extensions --no-mcp --no-skills --no-prompt-templates --no-context-files --approve "$@"; }; ${hint}`,
@@ -281,6 +289,7 @@ test.runIf(process.platform === "win32")(
 					cliPath: "",
 					cwd: projectB,
 					runtimeExecutable: process.env.ComSpec ?? "cmd.exe",
+					requestTimeoutMs: COLD_CLI_START_REQUEST_TIMEOUT_MS,
 					runtimeArgs: ["/d", "/c", script],
 					env: { ATOMIC_CODING_AGENT_DIR: agentDir, ANTHROPIC_API_KEY: "test-only-no-requests" },
 				});
