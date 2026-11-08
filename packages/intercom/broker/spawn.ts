@@ -539,9 +539,12 @@ export type BrokerUpgradeOutcome =
  * waits for the successor instead of starting its own older broker again, and sessions of this version that start
  * together replace the broker once. Under the lock the broker is checked again, so a session that waited finds it
  * already replaced. The lock is written again while the older broker exits, so it never looks stale to a spawner of
- * either version, for up to `stopTimeoutMs`; if the older broker is still running then, the lock follows its process
- * instead, so no spawner starts a broker before it has gone. A failure to stop the older broker, or to start the
- * successor once it stopped, is an {@link IntercomBrokerUpgradeError} whose cause is that step's failure.
+ * either version, for up to `stopTimeoutMs`; if the older broker is still running then, the lock names its process
+ * instead, so no spawner starts a broker while that process lives, until the lock ages out
+ * ({@link BROKER_SPAWN_LOCK_MAX_AGE_MS} after its last renewal, about a minute). Once the process exits or the lock ages
+ * out, the next spawner of either version takes it, so an older session can start an older broker, which the next
+ * session of this version replaces again. A failure to stop the older broker, or to start the successor once it
+ * stopped, is an {@link IntercomBrokerUpgradeError} whose cause is that step's failure.
  */
 export async function upgradeBroker(
   brokerCommand: string,

@@ -391,8 +391,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await upgradeBroker(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
     } catch (error) {
       if (!isIntercomBrokerUpgradeError(error)) throw error;
-      // An older broker that shut down but is still exiting serves no session; the lock follows its process, and the
-      // next attempt starts its successor once it has gone.
+      // An older broker that shut down but is still exiting serves no session, so this attempt fails and the reconnect
+      // backoff retries. The lock names that process for about another minute; after it exits or the lock ages out, the
+      // first session to reconnect starts a broker, which can be an older one that this version replaces again.
       if (isIntercomBrokerStopTimeoutError(error.cause)) throw error;
       upgradeFailure = error;
     }

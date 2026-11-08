@@ -385,9 +385,13 @@ else fs.writeFileSync(${JSON.stringify(recordPath)},JSON.stringify(args));
 			expect(stdout).toContain(`Updated atomic from ${VERSION} to ${VERSION}`);
 			// The new Atomic is asked to retire an older Intercom broker, without this installation's package override.
 			expect(fakeAtomic.upgradeCalls()).toEqual([{ args: ["intercom", "upgrade"], packageDir: null }]);
-			// Its output reaches the user's terminal: the upgrade writes to this process's own standard output.
-			const ownStdout = fstatSync(1);
-			expect(fakeAtomic.upgradeStdout()).toEqual([{ dev: ownStdout.dev, ino: ownStdout.ino }]);
+			// Its output reaches the user's terminal: the upgrade writes to this process's own standard output. Windows
+			// reports a pipe's or console's handle value as its inode, which differs between processes, so only POSIX
+			// can compare them.
+			if (process.platform !== "win32") {
+				const ownStdout = fstatSync(1);
+				expect(fakeAtomic.upgradeStdout()).toEqual([{ dev: ownStdout.dev, ino: ownStdout.ino }]);
+			}
 			// It is asked whether it has the command first, and neither call reads this process's input.
 			const intercomCalls = fakeAtomic.intercomCalls();
 			expect(intercomCalls.map(({ call }) => call)).toEqual(["help", "upgrade"]);
