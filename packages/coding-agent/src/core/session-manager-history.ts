@@ -46,9 +46,11 @@ function contextMessageFromEntry(entry: SessionEntry): AgentMessage | undefined 
  * The tail is concatenated onto the end of the boundary string instead of being
  * replayed as structured messages. A tail that starts mid-turn (a tool result whose
  * tool call was compacted away, or a trailing unanswered tool call) would otherwise
- * emit ill-ordered provider blocks and fail the request. Serialization is lossless:
+ * emit ill-ordered provider blocks and fail the request. Payloads are kept whole:
  * tool results keep their full text and images stay as image blocks, because the tail
- * is exactly the span `preserve_recent` promised to keep.
+ * is exactly the span `preserve_recent` promised to keep. Thinking is omitted, as in
+ * the compacted region; the durable entries keep it, and messages after the boundary
+ * replay with their thinking blocks.
  */
 function serializeKeptTail(entries: SessionEntry[], edits?: Map<string, ContextEditEntry>): TranscriptChunk[] {
 	const messages: AgentMessage[] = [];

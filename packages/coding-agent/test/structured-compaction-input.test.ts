@@ -72,7 +72,7 @@ test("drops invalid message ranges rather than crossing message boundaries (#347
 	);
 });
 
-test("keeps thinking, text and tool calls in one message through overflow trimming (#3470)", () => {
+test("keeps text and tool calls in one message through overflow trimming and omits thinking (#3470, #4544)", () => {
 	const region = createConversationRegion([
 		{ role: "user", content: "objective", timestamp: 0 },
 		{
@@ -98,7 +98,12 @@ test("keeps thinking, text and tool calls in one message through overflow trimmi
 		input.messages.map((message) => message.role),
 		["user", "assistant", "tool"],
 	);
-	assert.match(input.messages[1].lines.join("\n"), /Assistant thinking[\s\S]*Assistant tool calls/);
+	assert.deepEqual(input.messages[1].lines, [
+		"[Assistant]: explanation",
+		"",
+		'[Assistant tool calls]: read(path="file.ts")',
+		"",
+	]);
 	const trimmed = trimRegionHead(region, 3);
 	assert(trimmed);
 	const trimmedInput = buildStructuredCompactionInput(trimmed, parameters);

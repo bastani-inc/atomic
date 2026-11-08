@@ -69,7 +69,7 @@ describe("verbatim transcript serialization", () => {
 			},
 		];
 		expect(serializeConversationForCompaction(messages)).toBe(
-			'[User]: request\n[image]\n\n[Assistant thinking]: reason\n\n[Assistant]: answer\n\n[Assistant tool calls]: read(path="a.ts")\n\n[Tool result]: result\n[image]',
+			'[User]: request\n[image]\n\n[Assistant]: answer\n\n[Assistant tool calls]: read(path="a.ts")\n\n[Tool result]: result\n[image]',
 		);
 	});
 

@@ -38,12 +38,13 @@ Atomic serializes the compactable part of the conversation into role-tagged line
 
 ```text
 [User]: Fix the failing parser test
-[Assistant thinking]: I will inspect the parser.
 [Assistant tool calls]: read(path="src/parser.ts")
 [Tool result]: export function parse(...) {
 ...
 [Assistant]: The off-by-one error is fixed.
 ```
+
+Thinking is left out, as in summary compaction: the transcript keeps user text, assistant text, tool calls, and tool results. Some providers refuse a compaction request that replays earlier thinking as text. Messages after the compaction boundary keep their thinking, and the session file keeps every message unchanged.
 
 The planner receives messages with their role and an array of lines. It returns inclusive per-message deletion ranges. For example, this deletes lines 2 through 5 of message 1:
 
@@ -68,6 +69,10 @@ Counts remain cumulative across repeated compactions. The spelling is always plu
 Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
 
 Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
+
+The recent tail is appended to the boundary in the same grammar, without thinking. Its tool results keep their full text.
+
+Compactions written by earlier Atomic versions still load unchanged. When such a session is compacted again, the `[Assistant thinking]:` sections in its earlier compacted text are dropped before the request. Thinking lines whose header an earlier compaction already deleted cannot be identified and stay.
 
 ### `keepContext` tags
 
@@ -107,7 +112,7 @@ An explicit compaction model can send the compactable transcript to a different 
 
 For classifier compaction, log in with `/login typesafe`, then set `"compactionModel": "typesafe/jev-latest"`. The classifier scores groups of transcript lines; Atomic removes lower-scored groups without rewriting the rest. Protected lines and the recent tail are not sent for scoring. If scoring fails, Atomic tries your fallback models. Group boundaries can make the retained fraction differ from the requested compression ratio.
 
-For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript, including serialized thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
+For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
 
 The compaction card shows the backend and model that produced the result, such as `classifier · typesafe/jev-latest` or `morph · morph/morph-compactor`. A policy-refusal summary appears as `summary (pi fallback)`.
 

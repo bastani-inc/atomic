@@ -3,7 +3,13 @@ import type { NumberedRegion } from "./compaction-types.js";
 
 export const FILTERED_MARKER_RE = /^\(filtered (\d+) lines\)$/;
 export const LINE_NUMBER_SEPARATOR = "→";
-export const ROLE_HEADER_RE = /^\[(User|Assistant|Assistant thinking|Assistant tool calls|Tool result)\]: /;
+export const ROLE_HEADER_RE = /^\[(User|Assistant|Assistant tool calls|Tool result)\]: /;
+
+/**
+ * Header of the thinking section that transcripts serialized before prompt version 5 carried.
+ * Current transcripts never emit it; it is recognized only to drop those sections from older summaries.
+ */
+const LEGACY_THINKING_HEADER = "[Assistant thinking]: ";
 
 /**
  * Callers wrap never-compressible content in `<keepContext>` / `</keepContext>`. Every line of
@@ -28,7 +34,8 @@ export type TranscriptChunk = TextContent | ImageContent;
 /**
  * `compacted` renders the durable transcript grammar: images become `[image]` markers and
  * oversized tool results are truncated. `retained` keeps every payload, for spans the
- * compaction promised to preserve verbatim.
+ * compaction promised to preserve verbatim. Both modes omit thinking, as `serializeConversation()`
+ * does for summaries.
  */
 type SerializeMode = "compacted" | "retained";
 
@@ -84,7 +91,13 @@ function serializeContentBlocks(
 	return chunks;
 }
 
-/** Serialize provider messages into transcript chunks using the durable section grammar. */
+/**
+ * Serialize provider messages into transcript chunks using the durable section grammar.
+ *
+ * The sections match `serializeConversation()`: user text, assistant text, assistant tool calls,
+ * and tool results. Thinking is omitted. Providers return summaries of the real reasoning, and
+ * some refuse a compaction request that replays earlier thinking as transcript text (#4544).
+ */
 function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): TranscriptChunk[] {
 	const chunks: TranscriptChunk[] = [];
 	const pushSection = (header: string, section: TranscriptChunk[]): void => {
@@ -104,11 +117,9 @@ function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): Tr
 
 		if (message.role === "assistant") {
 			const text: string[] = [];
-			const thinking: string[] = [];
 			const toolCalls: string[] = [];
 			for (const block of message.content) {
 				if (block.type === "text") text.push(block.text);
-				else if (block.type === "thinking") thinking.push(block.thinking);
 				else if (block.type === "toolCall") {
 					const args = Object.entries(block.arguments)
 						.map(([key, value]) => `${key}=${JSON.stringify(value)}`)
@@ -116,7 +127,6 @@ function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): Tr
 					toolCalls.push(`${block.name}(${args})`);
 				}
 			}
-			if (thinking.length > 0) pushSection("[Assistant thinking]: ", [{ type: "text", text: thinking.join("\n") }]);
 			if (text.length > 0) pushSection("[Assistant]: ", [{ type: "text", text: text.join("\n") }]);
 			if (toolCalls.length > 0)
 				pushSection("[Assistant tool calls]: ", [{ type: "text", text: toolCalls.join("; ") }]);
@@ -146,10 +156,30 @@ export function serializeConversationForCompaction(messages: Message[]): string 
 
 /**
  * Serialize retained messages without losing payloads: tool results keep their full text and
- * images stay as image blocks at their position in the transcript.
+ * images stay as image blocks at their position in the transcript. Thinking is omitted.
  */
 export function serializeRetainedTranscript(messages: Message[]): TranscriptChunk[] {
 	return serializeTranscriptChunks(messages, "retained");
+}
+
+/**
+ * Drop the `[Assistant thinking]: ` sections from a transcript serialized before prompt version 5.
+ *
+ * A section runs from its header to the next role header or `(filtered N lines)` marker. Stopping
+ * at a marker is deliberate: a prior compaction may have deleted the following header along with
+ * part of the section, so the lines after the marker can belong to the next section. Thinking lines
+ * whose header an earlier compaction deleted cannot be told apart from their neighbours and stay.
+ */
+export function omitLegacyThinkingSections(text: string): string {
+	const kept: string[] = [];
+	let omitting = false;
+	for (const line of text.split("\n")) {
+		if (line.startsWith(LEGACY_THINKING_HEADER)) omitting = true;
+		else if (omitting && (ROLE_HEADER_RE.test(line) || FILTERED_MARKER_RE.test(line))) omitting = false;
+		if (!omitting) kept.push(line);
+	}
+	if (omitting && kept[kept.length - 1] === "") kept.pop();
+	return kept.join("\n");
 }
 
 /**
