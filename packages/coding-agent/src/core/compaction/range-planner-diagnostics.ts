@@ -3,7 +3,9 @@
  *
  * When the one-pass range planner returns malformed output or no usable ranges,
  * this module writes a private diagnostic file next to the persisted session
- * file. The sidecar is never written for in-memory sessions.
+ * file. A persisted session without a session file, such as one stored in
+ * SQLite, gets it in a private directory instead (#4543). The sidecar is never
+ * written for in-memory sessions.
  *
  * Additionally, successful partial recovery from length-truncated responses
  * writes a private recovery diagnostic sidecar for operational observability.
@@ -11,9 +13,57 @@
 
 import { uuidv7 } from "@bastani/pi-ai";
 import type { Api, AssistantMessage, Model, Usage } from "@bastani/pi-ai/compat";
-import { chmodSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, writeFileSync } from "fs";
 import { basename, dirname, join } from "path";
+import { redactCredentialShapes } from "../../utils/credential-redaction.js";
+import { reportDebug } from "../debug.js";
 import type { MorphRangeDiagnostics } from "./morph-compaction.js";
+
+/**
+ * Longest text a sidecar keeps for a model response, in UTF-16 code units. A longer response is
+ * cut, and the payload records how long it was.
+ */
+export const MAX_DIAGNOSTIC_TEXT_CHARS = 65_536;
+
+/** A private directory for the sidecars of a persisted session that has no session file. */
+export interface SidecarDirectory {
+	/** Absolute path. It is created, owner-only, when the first sidecar is written. */
+	directory: string;
+	/** File-name prefix, normally the session id. */
+	stem: string;
+}
+
+/** Where one session's sidecars are written. With neither field set, none are. */
+export interface SidecarLocation {
+	/** Absolute path of the persisted JSONL session file; sidecars go beside it. Undefined for in-memory sessions. */
+	sessionFilePath?: string;
+	/** Used when the session is persisted without a session file, as in SQLite and libSQL stores. */
+	sidecarDirectory?: SidecarDirectory;
+}
+
+interface SidecarPlacement {
+	dir: string;
+	base: string;
+	createDirectory: boolean;
+}
+
+function sidecarPlacement(location: SidecarLocation): SidecarPlacement | undefined {
+	if (location.sessionFilePath) {
+		return {
+			dir: dirname(location.sessionFilePath),
+			base: basename(location.sessionFilePath, ".jsonl"),
+			createDirectory: false,
+		};
+	}
+	if (location.sidecarDirectory) {
+		return { dir: location.sidecarDirectory.directory, base: location.sidecarDirectory.stem, createDirectory: true };
+	}
+	return undefined;
+}
+
+function reportSidecarWriteFailure(path: string, error: unknown): void {
+	reportDebug("storage", "compaction-diagnostic-unwritable", { path, code: (error as NodeJS.ErrnoException).code });
+}
 
 /**
  * Write one private sidecar, never replacing an existing record.
@@ -25,11 +75,20 @@ import type { MorphRangeDiagnostics } from "./morph-compaction.js";
  * durable record per attempt. Retry on collision; every other failure stays
  * best-effort and never changes the planner outcome.
  */
-function writeSidecar(sessionFilePath: string, kind: string, payload: unknown): string | undefined {
-	const dir = dirname(sessionFilePath);
-	const base = basename(sessionFilePath, ".jsonl");
+function writeSidecar(location: SidecarLocation, kind: string, buildPayload: () => unknown): string | undefined {
+	const placement = sidecarPlacement(location);
+	if (!placement) return undefined;
+	const { dir, base, createDirectory } = placement;
+	if (createDirectory) {
+		try {
+			mkdirSync(dir, { recursive: true, mode: 0o700 });
+		} catch (error) {
+			reportSidecarWriteFailure(dir, error);
+			return undefined;
+		}
+	}
 	const timestamp = Date.now();
-	const body = JSON.stringify(payload, null, 2);
+	const body = JSON.stringify(buildPayload(), null, 2);
 	for (let attempt = 0; attempt < 4; attempt++) {
 		const filePath = join(dir, `${base}-compaction-${kind}-${timestamp}-${uuidv7()}.json`);
 		try {
@@ -42,6 +101,7 @@ function writeSidecar(sessionFilePath: string, kind: string, payload: unknown): 
 			return filePath;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException)?.code === "EEXIST") continue;
+			reportSidecarWriteFailure(filePath, error);
 			return undefined;
 		}
 	}
@@ -82,7 +142,10 @@ export interface CompactionDiagnostic {
 	timestamp: string;
 	failureCategory: DiagnosticFailureCategory;
 	failureMessage: string;
+	/** The planner's answer, with credential-shaped text redacted and at most `MAX_DIAGNOSTIC_TEXT_CHARS` long. */
 	rawResponse: string;
+	/** Present only when `rawResponse` was cut: the length of the full redacted answer. */
+	rawResponseChars?: number;
 	stopReason: string | undefined;
 	providerError: string | undefined;
 	usage: Usage | undefined;
@@ -103,6 +166,8 @@ export interface RecoveryDiagnostic {
 	timestamp: string;
 	recoveryCategory: DiagnosticRecoveryCategory;
 	rawResponse: string;
+	/** Present only when `rawResponse` was cut: the length of the full redacted answer. */
+	rawResponseChars?: number;
 	stopReason: string | undefined;
 	usage: Usage | undefined;
 	requestMaxTokens: number | undefined;
@@ -110,16 +175,14 @@ export interface RecoveryDiagnostic {
 	recoveredRangeCount: number;
 }
 
-export interface DiagnosticContext {
-	/** Absolute path to the persisted session file, or undefined for in-memory sessions. */
-	sessionFilePath: string | undefined;
+export interface DiagnosticContext extends SidecarLocation {
 	/** The model used for the planner request. */
 	model: Model<Api>;
 	/** The maxTokens value sent in the planner request; undefined when no cap is sent. */
 	requestMaxTokens: number | undefined;
 	/** The full assistant response message, if one was received. */
 	response: AssistantMessage | undefined;
-	/** The full raw text extracted from the response. */
+	/** The raw text extracted from the response. It is redacted and bounded before it is written. */
 	rawResponseText: string;
 	/** The failure category. */
 	failureCategory: DiagnosticFailureCategory;
@@ -129,15 +192,31 @@ export interface DiagnosticContext {
 	rateLimitExhausted?: boolean;
 }
 
+function boundedText(text: string): string {
+	return text.slice(0, MAX_DIAGNOSTIC_TEXT_CHARS);
+}
+
+function safeText(text: string): string {
+	return boundedText(redactCredentialShapes(text));
+}
+
+function rawResponseFields(rawResponseText: string): Pick<CompactionDiagnostic, "rawResponse" | "rawResponseChars"> {
+	const redacted = redactCredentialShapes(rawResponseText);
+	return {
+		rawResponse: boundedText(redacted),
+		...(redacted.length > MAX_DIAGNOSTIC_TEXT_CHARS ? { rawResponseChars: redacted.length } : {}),
+	};
+}
+
 function buildDiagnosticPayload(ctx: DiagnosticContext): CompactionDiagnostic {
 	return {
 		version: 1,
 		timestamp: new Date().toISOString(),
 		failureCategory: ctx.failureCategory,
-		failureMessage: ctx.failureMessage,
-		rawResponse: ctx.rawResponseText,
+		failureMessage: safeText(ctx.failureMessage),
+		...rawResponseFields(ctx.rawResponseText),
 		stopReason: ctx.response?.stopReason,
-		providerError: ctx.response?.errorMessage,
+		providerError: ctx.response?.errorMessage === undefined ? undefined : safeText(ctx.response.errorMessage),
 		usage: ctx.response?.usage,
 		requestMaxTokens: ctx.requestMaxTokens,
 		...(ctx.rateLimitExhausted === undefined ? {} : { rateLimitExhausted: ctx.rateLimitExhausted }),
@@ -171,9 +250,7 @@ export function diagnosticSidecarPath(sessionFilePath: string): string {
  * that support POSIX permissions.
  */
 export function writeDiagnosticSidecar(ctx: DiagnosticContext): string | undefined {
-	if (!ctx.sessionFilePath) return undefined;
-
-	return writeSidecar(ctx.sessionFilePath, "diagnostic", buildDiagnosticPayload(ctx));
+	return writeSidecar(ctx, "diagnostic", () => buildDiagnosticPayload(ctx));
 }
 
 /**
@@ -182,8 +259,7 @@ export function writeDiagnosticSidecar(ctx: DiagnosticContext): string | undefin
 export { buildDiagnosticPayload };
 
 /** Context for writing a recovery diagnostic sidecar. */
-export interface RecoveryDiagnosticContext {
-	sessionFilePath: string | undefined;
+export interface RecoveryDiagnosticContext extends SidecarLocation {
 	model: Model<Api>;
 	requestMaxTokens: number | undefined;
 	response: AssistantMessage;
@@ -197,7 +273,7 @@ function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnosti
 		version: 1,
 		timestamp: new Date().toISOString(),
 		recoveryCategory: ctx.recoveryCategory,
-		rawResponse: ctx.rawResponseText,
+		...rawResponseFields(ctx.rawResponseText),
 		stopReason: ctx.response.stopReason,
 		usage: ctx.response.usage,
 		requestMaxTokens: ctx.requestMaxTokens,
@@ -218,9 +294,7 @@ function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnosti
  * Write failures are silently swallowed — recovery success is never affected.
  */
 export function writeRecoveryDiagnosticSidecar(ctx: RecoveryDiagnosticContext): string | undefined {
-	if (!ctx.sessionFilePath) return undefined;
-
-	return writeSidecar(ctx.sessionFilePath, "recovery", buildRecoveryPayload(ctx));
+	return writeSidecar(ctx, "recovery", () => buildRecoveryPayload(ctx));
 }
 
 export { buildRecoveryPayload };
@@ -245,8 +319,7 @@ export interface SuccessDiagnostic {
 	model: DiagnosticModelMeta;
 }
 
-export interface SuccessDiagnosticContext {
-	sessionFilePath: string | undefined;
+export interface SuccessDiagnosticContext extends SidecarLocation {
 	/** The model that actually produced the accepted ranking. */
 	model: Model<Api>;
 	successCategory: DiagnosticSuccessCategory;
@@ -278,23 +351,20 @@ function buildSuccessPayload(ctx: SuccessDiagnosticContext): SuccessDiagnostic {
  * it cannot collide with the primary model's failure sidecar.
  */
 export function writeSuccessDiagnosticSidecar(ctx: SuccessDiagnosticContext): string | undefined {
-	if (!ctx.sessionFilePath) return undefined;
-
-	return writeSidecar(ctx.sessionFilePath, "success", buildSuccessPayload(ctx));
+	return writeSidecar(ctx, "success", () => buildSuccessPayload(ctx));
 }
 
 export { buildSuccessPayload };
 
 export function writeMorphDiagnosticSidecar(
-	sessionFilePath: string | undefined,
+	location: SidecarLocation,
 	diagnostics: MorphRangeDiagnostics,
 ): string | undefined {
-	if (!sessionFilePath) return undefined;
-	return writeSidecar(sessionFilePath, "morph", {
+	return writeSidecar(location, "morph", () => ({
 		version: 1,
 		timestamp: new Date().toISOString(),
 		backend: "morph",
 		model: "morph/morph-compactor",
 		...diagnostics,
-	});
+	}));
 }

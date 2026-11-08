@@ -496,6 +496,11 @@ export function getSessionsDir(): string {
 	return join(getAgentDir(), "sessions");
 }
 
+/** Get the directory of compaction diagnostics for persisted sessions that have no session file, such as SQLite sessions. */
+export function getCompactionDiagnosticsDir(): string {
+	return join(getAgentDir(), "compaction-diagnostics");
+}
+
 /** Get path to debug log file */
 export function getDebugLogPath(): string {
 	return join(getAgentDir(), `${APP_NAME}-debug.log`);

@@ -40,14 +40,21 @@ import {
 	RangePlanError,
 	resolvePlannerRequest,
 } from "./range-planner.js";
-import { writeMorphDiagnosticSidecar, writeSuccessDiagnosticSidecar } from "./range-planner-diagnostics.js";
-import { nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
+import {
+	type SidecarDirectory,
+	writeMorphDiagnosticSidecar,
+	writeSuccessDiagnosticSidecar,
+} from "./range-planner-diagnostics.js";
+import { type PlannerAttempt, planWithRefusalRecovery } from "./refusal-recovery.js";
+import { keepTargetForView, nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
 import { widenToWholeContextStats } from "./whole-context-stats.js";
 
 export interface CompactionPlanOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
 	sessionFilePath?: string;
+	/** Where diagnostics go for a persisted session that has no session file, such as one in SQLite. */
+	sidecarDirectory?: SidecarDirectory;
 	retry?: RetryPolicy;
 	callbacks?: RetryCallbacks;
 }
@@ -276,10 +283,6 @@ function terminalError(outcome: TerminalPlannerOutcome | undefined): RangePlanEr
 	return new RangePlanError(message, 1, outcome.excerpt, false, outcome.diagnosticPath, outcome);
 }
 
-type PlannerAttempt =
-	| { kind: "planned"; ranges: RawLineRange[] }
-	| { kind: "terminal"; outcome: TerminalPlannerOutcome };
-
 /**
  * Run one planner model, retrying the same model after oldest-first input
  * trimming when the request itself overflows the context window.
@@ -303,10 +306,7 @@ async function planWithTrimming(
 	for (;;) {
 		const region = offset === 0 ? preparation.region : trimRegionHead(preparation.region, offset);
 		if (!region) return { kind: "terminal", outcome: { kind: "overflowed" } };
-		const keepTarget = Math.max(
-			region.protectedLineNumbers?.size ?? 0,
-			Math.round(region.lines.length * preparation.parameters.compression_ratio),
-		);
+		const keepTarget = keepTargetForView(region, preparation.parameters.compression_ratio);
 		const outcome = await planDeletedLineRanges(region, preparation.parameters, planner, keepTarget, options);
 		if (outcome.kind === "ranked" || outcome.kind === "recovered") {
 			if (offset === 0) return { kind: "planned", ranges: outcome.ranges };
@@ -461,6 +461,10 @@ function startPlanningTimeLimit(timeoutMs: number | undefined, signal: AbortSign
  * a fresh context window. A manual `/compact` runs at `recoverable` urgency and
  * therefore cannot reach the context-destroying rung; it fails honestly instead.
  *
+ * A planner that is refused partway through its output (#4543) is retried once and then given the
+ * region in parts split at message boundaries; the lossy summary fallback runs only after that
+ * fails, or at once for an immediate input refusal.
+ *
  * Unavailable credentials are ladder control flow, not an early throw: a
  * borrowed candidate with its own working credentials can still rank the lines,
  * and a load-bearing caller still reaches the credential-free fresh rung.
@@ -495,6 +499,7 @@ async function runCompactionLadder(
 	const plannerOptions = {
 		streamFn: request.streamFn,
 		sessionFilePath: request.sessionFilePath,
+		sidecarDirectory: request.sidecarDirectory,
 		retry: request.retry,
 		callbacks: request.callbacks,
 		signal: timeLimit.signal,
@@ -555,7 +560,11 @@ async function runCompactionLadder(
 				apiKey: await untilAborted(Promise.resolve(request.resolveMorphApiKey?.()), timeLimit.signal),
 				signal: timeLimit.signal,
 				fetchFn: request.morphFetchFn,
-				onDiagnostics: (diagnostics) => writeMorphDiagnosticSidecar(request.sessionFilePath, diagnostics),
+				onDiagnostics: (diagnostics) =>
+					writeMorphDiagnosticSidecar(
+						{ sessionFilePath: request.sessionFilePath, sidecarDirectory: request.sidecarDirectory },
+						diagnostics,
+					),
 			});
 			return {
 				...plannedResult(preparation, ranges, undefined, undefined, selection.fullId),
@@ -597,8 +606,11 @@ async function runCompactionLadder(
 
 	while (planner && !timeLimit.expired()) {
 		let attempt: PlannerAttempt;
+		const activePlanner = planner;
 		try {
-			attempt = await planWithTrimming(preparation, planner, plannerOptions);
+			attempt = await planWithRefusalRecovery(preparation, (candidate) =>
+				planWithTrimming(candidate, activePlanner, plannerOptions),
+			);
 		} catch (error) {
 			// The time limit aborted the in-flight request: end planning, not the run.
 			if (signal?.aborted || !timeLimit.expired()) throw error;
@@ -612,6 +624,7 @@ async function runCompactionLadder(
 				// a sidecar write failure never affects compaction success.
 				writeSuccessDiagnosticSidecar({
 					sessionFilePath: request.sessionFilePath,
+					sidecarDirectory: request.sidecarDirectory,
 					model: planner.model,
 					successCategory: "borrowed_planner",
 					...(plannerModel.thinkingLevel === undefined ? {} : { thinkingLevel: plannerModel.thinkingLevel }),

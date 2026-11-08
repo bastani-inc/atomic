@@ -374,6 +374,7 @@ export async function runPiSummaryFallback(
 			const failure = classifyPlannerFailure(failedResponse, model.contextWindow);
 			const diagnosticPath = writeDiagnosticSidecar({
 				sessionFilePath: options.sessionFilePath,
+				sidecarDirectory: options.sidecarDirectory,
 				model,
 				requestMaxTokens: undefined,
 				response: failedResponse,

@@ -5,10 +5,13 @@
 ### Added
 
 - `SessionListQuery.idPrefix` lists only the sessions whose id starts with the given text (case-insensitive); custom session stores should honor it ([#4566](https://github.com/bastani-inc/atomic/issues/4566))
+- The planner's `policyRefusal` outcome now reports `phase` (`"input"` or `"midstream"`, exported as `PolicyRefusalPhase`), and `CompactionPlanOptions` and `CompactionRunRequest` accept `sidecarDirectory` (`SidecarDirectory`), where diagnostics go for a persisted session that has no session file ([#4543](https://github.com/bastani-inc/atomic/issues/4543))
 
 ### Fixed
 
 - Fixed `--session <id>` and `--fork <id>` running out of memory on a large session store when the session belongs to another directory: a full id is now read directly and an 8-character prefix lists only matching sessions, instead of loading every session's search text ([#4566](https://github.com/bastani-inc/atomic/issues/4566))
+- Fixed compaction replacing a large session with a lossy summary when the provider refused the planner partway through its output: a refusal that arrives after the model generated tokens is now retried once and then planned in halves, and in quarters of a refused half, at message boundaries, keeping the result verbatim; the summary runs only if that fails, and an immediate refusal still goes to the summary at once ([#4543](https://github.com/bastani-inc/atomic/issues/4543))
+- Fixed compaction failures such as "no usable deleted ranges" leaving no diagnostic for sessions kept in SQLite or another non-JSONL store: the planner's answer is now written to `compaction-diagnostics/` in the agent directory, and every diagnostic sidecar, JSONL sessions included, redacts credential-shaped text and cuts the stored answer to 65,536 characters ([#4543](https://github.com/bastani-inc/atomic/issues/4543))
 
 ## [0.9.73] - 2026-11-08
 
