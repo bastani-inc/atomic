@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, test } from "vitest";
+import { removeTempRootReleasingBroker, stopDetachedBroker } from "../helpers/detached-broker.js";
 
 /** Two real detached brokers started through jiti, one per agent directory. */
 const TWO_BROKER_STARTUP_TIMEOUT_MS = 60_000;
@@ -21,25 +22,12 @@ const { spawnBrokerIfNeeded } = await import("../../packages/intercom/broker/spa
 const { getBrokerPidPath } = await import("../../packages/intercom/broker/paths.js");
 const { queryBrokerRouting } = await import("../../packages/intercom/broker/broker-routing.js");
 
-function stopBroker(agentDir: string): void {
-	const pidPath = getBrokerPidPath(agentDir);
-	if (!existsSync(pidPath)) return;
-	const pid = Number.parseInt(readFileSync(pidPath, "utf8").trim(), 10);
-	if (!Number.isFinite(pid)) return;
-	try {
-		process.kill(pid, "SIGTERM");
-	} catch {
-		// The broker already exited.
-	}
-}
-
-afterAll(() => {
-	stopBroker(firstAgentDir);
-	stopBroker(secondAgentDir);
+afterAll(async () => {
 	if (originalAgentDir === undefined) delete process.env.ATOMIC_CODING_AGENT_DIR;
 	else process.env.ATOMIC_CODING_AGENT_DIR = originalAgentDir;
 	if (originalPiAgentDir !== undefined) process.env.PI_CODING_AGENT_DIR = originalPiAgentDir;
-	rmSync(root, { recursive: true, force: true });
+	await stopDetachedBroker(firstAgentDir);
+	await removeTempRootReleasingBroker(root, secondAgentDir);
 });
 
 describe("agent directory changed inside one process", () => {
