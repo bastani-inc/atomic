@@ -157,7 +157,7 @@ function promptFor(
 		task: `${REVERIFY_QUESTION}\n\nObjective:\n${context.objective}`,
 		groundTruthNote: `The objective is the contract. Verify the finding against observed code, not reviewer narration.`,
 		candidates: [candidate],
-		outputFormat: "Call structured_output with score (an integer from 1 to 20) and evidence (an array of observed, concise reasons).",
+		outputFormat: "Report score (an integer from 1 to 20) and evidence (an array of observed, concise reasons).",
 	};
 	const prompt = build_scoring_prompt(head, {
 		id: "finding_reverification",

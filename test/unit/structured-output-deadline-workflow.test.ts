@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import {
+	createStageStructuredOutputTool,
 	isStructuredOutputContractFailure,
 	isWorkflowStructuredOutputContractError,
 	stageOptionsWithStructuredOutput,
@@ -54,11 +55,13 @@ function hangingContext(extra: { getHttpIdleTimeoutMs?: () => number } = {}) {
 	return { context };
 }
 
-function structuredOutputToolOf(options: Parameters<typeof stageOptionsWithStructuredOutput>[0]) {
-	const tool = stageOptionsWithStructuredOutput(options, createStructuredOutputCapture())?.customTools?.find(
-		(candidate) => candidate.name === "structured_output",
+function structuredOutputToolOf(options: Parameters<typeof createStageStructuredOutputTool>[0]) {
+	const tool = createStageStructuredOutputTool(options, createStructuredOutputCapture());
+	assert.equal(tool.name, "structured_output");
+	assert.ok(
+		stageOptionsWithStructuredOutput({ schema: options.schema }, tool)?.customTools?.includes(tool),
+		"the schema-backed stage registers structured_output",
 	);
-	assert.ok(tool, "the schema-backed stage registers structured_output");
 	return tool;
 }
 
@@ -117,7 +120,7 @@ test("schemaTimeoutMs wins over the session's httpIdleTimeoutMs (#3806)", async 
 test("an invalid schemaTimeoutMs fails when the stage is set up, before any model turn (#3806)", () => {
 	for (const schemaTimeoutMs of [0, -1, 1.5, Number.NaN]) {
 		assert.throws(
-			() => stageOptionsWithStructuredOutput({ schema, schemaTimeoutMs }, createStructuredOutputCapture()),
+			() => createStageStructuredOutputTool({ schema, schemaTimeoutMs }, createStructuredOutputCapture()),
 			/timeoutMs/,
 			String(schemaTimeoutMs),
 		);

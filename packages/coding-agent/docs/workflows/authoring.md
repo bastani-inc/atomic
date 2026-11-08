@@ -431,7 +431,7 @@ Use `Static<typeof schema>` (both `Static` and `TSchema` are re-exported from `@
 const gate = ctx.stage("review-gate", {
   schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
 });
-const decision = await gate.prompt("Review the implementation and call structured_output.");
+const decision = await gate.prompt("Review the implementation.");
 if (!decision.approved) {
   await gate.sendUserMessage("Explain the highest-priority changes needed before approval.");
 }
@@ -681,7 +681,7 @@ A `verified` result is cached durably, so a resumed run does not click again. A 
 
 ### Classifier and image models in `ctx.tool`
 
-Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `decisionModel` may select a classifier for routing, but a classifier never executes a chat stage.
+Workflow stages run chat language models. For a schema-backed decision, use the stage's `schema` and `structured_output` tool; write only the task in the prompt, because Atomic ends every schema-backed prompt with the instruction to finish by calling the tool exactly once and, if the model skips the call, runs the same inference itself from the stage's final answer. It resolves an exact chat or registered classifier ID through the stage model registry and falls back on a classifier runtime failure. The direct `@bastani/pi-ai` examples below are for cases that need the classifier's probabilities or image generation from workflow TypeScript inside `ctx.tool(name, args, fn, { timeoutMs })`. Those calls are durable, replayable nodes. `model: "auto"` selects only chat language models for stage execution; `decisionModel` may select a classifier for routing, but a classifier never executes a chat stage.
 
 Atomic provides `@bastani/atomic/workflows`, `typebox`, and the exact imports `@bastani/atomic`, `@bastani/pi-ai`, and `@bastani/pi-ai/providers/all` to workflow files. The latter three use the running CLI's module instances and version, including `AuthStorage`. These examples need no project-local package installation, in npm or standalone-binary installs. A project copy does not override these host-provided imports.
 

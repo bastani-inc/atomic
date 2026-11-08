@@ -237,7 +237,7 @@ export default workflow({
         prompt: [
           `Review the current ${branch} diff against ${baseRef} for ${issue}.`,
           "Inspect the code and tests. Approve only when the issue is fully met and the patch is safe.",
-          "Return structured_output with approved and evidence-backed findings.",
+          "Report whether it is approved, with evidence-backed findings.",
         ].join("\n"),
       });
       const decision = review.structured as Static<typeof reviewDecision>;

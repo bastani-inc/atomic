@@ -1,4 +1,4 @@
-import type { AgentSession } from "@bastani/atomic";
+import type { AgentSession, ExtensionToolContext } from "@bastani/atomic";
 import { classifyFailureFrom } from "../../shared/workflow-failures-classifier.js";
 import type { StageSessionCreateResult, StageSessionRuntime } from "./stage-runner-types.js";
 
@@ -13,6 +13,27 @@ function stageSessionExtensionRunner(current: StageSessionRuntime): StageSession
 		return runner;
 	}
 	return undefined;
+}
+
+/**
+ * The tool context a model's tool call runs in on this session: its decision model, model registry and current chat
+ * model. Undefined for a runtime that is not an SDK session, which has no extension runner to make one.
+ */
+export function stageSessionToolContext(
+	session: StageSessionRuntime | undefined,
+	toolCallId: string,
+	signal: AbortSignal,
+): ExtensionToolContext | undefined {
+	const runner = (
+		session as
+			| (StageSessionRuntime & {
+					extensionRunner?: {
+						createToolContext?(toolCallId: string, signal: AbortSignal | undefined): ExtensionToolContext;
+					};
+			  })
+			| undefined
+	)?.extensionRunner;
+	return typeof runner?.createToolContext === "function" ? runner.createToolContext(toolCallId, signal) : undefined;
 }
 
 const shutdowns = new WeakMap<StageSessionRuntime, Promise<void>>();
