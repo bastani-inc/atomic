@@ -3741,7 +3741,7 @@
 		"test/integration/intercom-active-subagent-steering.test.ts": 607,
 		"test/integration/intercom-broker-retiring.test.ts": 30279,
 		"test/integration/intercom-broker-reuse-project-group.test.ts": 49428,
-		"test/integration/intercom-broker-upgrade.test.ts": 31259,
+		"test/integration/intercom-broker-upgrade.test.ts": 38378,
 		"test/integration/intercom-compose-cancellation.test.ts": 532,
 		"test/integration/intercom-durable-inbox-crash.test.ts": 8863,
 		"test/integration/intercom-multinode-held-startup.test.ts": 7154,
