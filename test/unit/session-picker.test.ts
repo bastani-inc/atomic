@@ -360,6 +360,22 @@ test("renderSessionPicker emits header, sections, and footer hints", () => {
 	assert.doesNotMatch(joined, /Kill/);
 });
 
+test("renderSessionPicker run rows show elapsed time without a stage count", () => {
+	const theme = deriveGraphTheme({});
+	const state = createSessionPickerState();
+	const stage = { id: "s1", name: "stage", status: "completed" } as unknown as RunSnapshot["stages"][number];
+	const rows = [
+		{
+			run: makeRun({ id: "cccc3333-0000-0000-0000-000000000000", name: "pipeline", stages: [stage, stage] }),
+			bucket: "active" as const,
+		},
+	];
+	const joined = renderSessionPicker({ width: 100, theme, rows, state, now: 61_000 }).join("\n");
+	assert.match(joined, /pipeline/);
+	assert.match(joined, /1m/);
+	assert.doesNotMatch(joined, /\d+\/\d+ stages/);
+});
+
 test("renderSessionPicker uses the awaiting-input glyph and info colour for a prompted run", () => {
 	const theme = deriveGraphTheme({});
 	const awaiting = makeRun({

@@ -276,12 +276,6 @@ function fmtElapsed(run: RunSnapshot, now: number): string {
 	return fmtDuration(elapsedRunMs(run, now));
 }
 
-function stageProgress(run: RunSnapshot): string {
-	const total = run.stages.length;
-	const done = run.stages.filter((s) => s.status === "completed" || s.status === "failed").length;
-	return `${done}/${total} stages`;
-}
-
 function renderRunRow(
 	row: PickerRow,
 	isSelected: boolean,
@@ -319,16 +313,14 @@ function renderRunRow(
 	};
 
 	const elapsed = fmtElapsed(run, now);
-	const progress = stageProgress(run);
 	const elapsedCol = elapsed.padStart(8, " ");
-	const progressCol = progress.padStart(10, " ");
-	const rightPlain = `${elapsedCol}   ${progressCol} `;
+	const rightPlain = `${elapsedCol} `;
 	const rightBudget = Math.max(1, inner - 5);
 	const rightVisible = truncateToWidth(rightPlain, rightBudget, "…");
 	const right =
 		visibleWidth(rightVisible) < visibleWidth(rightPlain)
 			? `${dim}${rightVisible}${RESET}${panelBg}`
-			: `${muted}${elapsedCol}${RESET}${panelBg}   ${dim}${progressCol}${RESET}${panelBg} `;
+			: `${muted}${elapsedCol}${RESET}${panelBg} `;
 	const nameBudget = Math.max(1, inner - 3 - visibleWidth(rightVisible) - 1);
 	const name = truncateToWidth(run.name, nameBudget, "…");
 
