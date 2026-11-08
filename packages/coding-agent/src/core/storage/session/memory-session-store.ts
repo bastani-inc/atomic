@@ -22,6 +22,7 @@ import type {
 	SessionWriteOptions,
 	StorageDescriptor,
 } from "./types.js";
+import { matchesSessionIdPrefix } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 const utf8Encoder = new TextEncoder();
@@ -341,6 +342,7 @@ export class MemorySessionStore implements SessionStore {
 		for (const [sessionId, record] of this.records) {
 			this.assertOpen();
 			query.signal?.throwIfAborted();
+			if (!matchesSessionIdPrefix(sessionId, query.idPrefix)) continue;
 			const header = decodeHeader(record);
 			if (matchesCwd && !matchesCwd(header.cwd)) continue;
 			if (!query.includeInternal && header.internal) continue;

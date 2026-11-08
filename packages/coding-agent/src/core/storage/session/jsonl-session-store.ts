@@ -48,6 +48,7 @@ import type {
 	SessionWriteOptions,
 	StorageDescriptor,
 } from "./types.js";
+import { matchesSessionIdPrefix } from "./types.js";
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 interface SessionFileState {
@@ -324,6 +325,7 @@ export class JsonlSessionStore implements SessionStore {
 					this.checkAbort(query.signal);
 					try {
 						const header = await this.readHeaderAt(path);
+						if (!matchesSessionIdPrefix(header.id, query.idPrefix)) return undefined;
 						if (matchesCwd && !matchesCwd(header.cwd)) return undefined;
 						if (!query.includeInternal && header.internal) return undefined;
 						return { ...summarizeSession(await this.readSnapshot(path)), location: path };

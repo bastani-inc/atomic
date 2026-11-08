@@ -162,6 +162,8 @@ A `skipped` result means consolidation did not finish, not that the run stayed i
 
 Select a journal file only to isolate runs, for example in tests or a sandbox: `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH`, `RunOpts.journal` and `createAgentSession({ journal })` keep working as one file. You do not need separate journals for performance: the store already keeps concurrent roots apart. A shared libSQL or Turso database stays one selection; the adapter scales it.
 
+A journal selection does not move sessions. Sessions, including workflow stage sessions, follow `sessions.storage` or the shared `storage`. Set one of those to the same file if you want sessions and runs stored together.
+
 `admission.userLimits` counts across the runs of one database, so it needs an explicit journal file: set `workflows.journal.path` and use that path as `userDatabase`.
 
 ## Bring your own driver

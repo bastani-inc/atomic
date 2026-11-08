@@ -19,6 +19,7 @@ import type {
 	SessionWriteOptions,
 	StorageDescriptor,
 } from "./types.js";
+import { matchesSessionIdPrefix } from "./types.js";
 
 const DELETED_TABLE = "session_legacy_deleted";
 
@@ -192,11 +193,13 @@ export class LegacySessionStore implements SessionStore {
 
 	private async *legacyFiles(query: {
 		readonly cwd?: string;
+		readonly idPrefix?: string;
 		readonly includeInternal?: boolean;
 	}): AsyncIterable<JsonlSessionFile> {
 		const matchesCwd = query.cwd === undefined ? undefined : createSessionCwdMatcher(query.cwd);
 		for (const [file] of (await this.legacyIndex()).values()) {
 			if (file === undefined) continue;
+			if (!matchesSessionIdPrefix(file.header.id, query.idPrefix)) continue;
 			if (matchesCwd && !matchesCwd(file.header.cwd)) continue;
 			if (!query.includeInternal && file.header.internal) continue;
 			if (await this.isDeleted(file.header.id)) continue;

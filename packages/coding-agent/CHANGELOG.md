@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SessionListQuery.idPrefix` lists only the sessions whose id starts with the given text (case-insensitive); custom session stores should honor it ([#4566](https://github.com/bastani-inc/atomic/issues/4566))
+
+### Fixed
+
+- Fixed `--session <id>` and `--fork <id>` running out of memory on a large session store when the session belongs to another directory: a full id is now read directly and an 8-character prefix lists only matching sessions, instead of loading every session's search text ([#4566](https://github.com/bastani-inc/atomic/issues/4566))
+
 ## [0.9.73] - 2026-11-08
 
 Intercom connects in every session of a multi-directory process.
