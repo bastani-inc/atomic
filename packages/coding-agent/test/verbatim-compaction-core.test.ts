@@ -88,8 +88,8 @@ describe("verbatim transcript serialization", () => {
 		expect(serializeConversationForCompaction([message])).toBe("[User]: alphabeta\n[image]\ngammadelta");
 	});
 
-	it("truncates tool results at 16k without changing the branch-summary serializer", () => {
-		const longText = "x".repeat(16_010);
+	it("truncates tool results at 2k and points at session history (#4568)", () => {
+		const longText = "x".repeat(2_010);
 		const message: Message = {
 			role: "toolResult",
 			toolCallId: "tc1",
@@ -99,8 +99,11 @@ describe("verbatim transcript serialization", () => {
 			timestamp: 1,
 		};
 		const serialized = serializeConversationForCompaction([message]);
-		expect(serialized).toContain("x".repeat(16_000));
-		expect(serialized.endsWith("\n\n[... 10 more characters truncated]")).toBe(true);
+		expect(serialized).toContain("x".repeat(2_000));
+		expect(serialized).not.toContain("x".repeat(2_001));
+		expect(
+			serialized.endsWith("\n\n[... 10 more characters truncated; the full output is in this session's history]"),
+		).toBe(true);
 	});
 
 	it("keeps image blocks and untruncated tool output in the retained serializer", () => {

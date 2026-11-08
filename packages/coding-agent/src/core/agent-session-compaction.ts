@@ -8,12 +8,15 @@ import type {
 import { authForStream } from "./agent-session-models.ts";
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import {
+	autoDetectCompactionQuery,
+	type CompactionBoundaryControl,
 	type CompactionPlannerModel,
 	type CompactionPlanOptions,
 	type CompactionRung,
 	type FallbackPlannerContext,
 	getKeptTailTokenEstimate,
 	prepareCompactionBoundary,
+	recallHistory,
 	runVerbatimCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
@@ -22,6 +25,7 @@ import {
 	type VerbatimCompactionResult,
 	type VerbatimCompactionStats,
 	widenToWholeContextStats,
+	withRecalledContext,
 } from "./compaction/index.ts";
 import { resolveCompactionModel } from "./compaction/model-resolver.js";
 import type {
@@ -33,6 +37,17 @@ import type {
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
+import { createHistoryRouter, transcriptEntryLines } from "./tools/history-protocol.ts";
+import { renderHistoryTranscript } from "./tools/history-transcript.ts";
+
+/** This session's own history layout, or undefined when it has no history a `read` could open. */
+function historyLocation(session: AgentSession): CompactionBoundaryControl["history"] {
+	const manager = session.sessionManager;
+	const header = manager.getHeader();
+	if (!header || !manager.isPersisted()) return undefined;
+	const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
+	return { sessionId: manager.getSessionId(), entryRanges };
+}
 
 function frozenCollectionMutation(): never {
 	throw new TypeError("Cannot mutate frozen compaction preparation");
@@ -88,6 +103,65 @@ function extensionStats(preparation: VerbatimCompactionPreparation, compactedTex
 	);
 }
 
+function entriesAfterRegion(branch: readonly SessionEntry[], preparation: VerbatimCompactionPreparation) {
+	const lastRegionEntryId = preparation.regionEntryIds[preparation.regionEntryIds.length - 1];
+	if (lastRegionEntryId !== undefined) {
+		const index = branch.findIndex((entry) => entry.id === lastRegionEntryId);
+		return index < 0 ? [] : branch.slice(index + 1);
+	}
+	const keptIndex = branch.findIndex((entry) => entry.id === preparation.firstKeptEntryId);
+	return keptIndex < 0 ? [] : branch.slice(keptIndex);
+}
+
+/**
+ * The planned text with a `Recalled context` section from earlier history, or `undefined` to leave it as planned.
+ * Every failure, timeout and cancellation also leaves it as planned: recall is never a reason to fail or hold up
+ * compaction.
+ */
+async function recallForPlannedText(
+	session: AgentSession,
+	preparation: VerbatimCompactionPreparation,
+	pathEntries: readonly SessionEntry[],
+	planned: { text: string; stats: VerbatimCompactionStats },
+	signal: AbortSignal,
+): Promise<{ text: string; stats: VerbatimCompactionStats } | undefined> {
+	try {
+		const router = createHistoryRouter({
+			cwd: session._cwd,
+			currentSessionId: session.sessionManager.getSessionId(),
+			sessionStore: () => session.sessionManager.getSessionStore(),
+			workflows: () => session._extensionRunner?.getWorkflowRunControl(),
+		});
+		const section = await recallHistory({
+			router,
+			sessionId: session.sessionManager.getSessionId(),
+			queries: [autoDetectCompactionQuery(pathEntries), preparation.parameters.query],
+			keptLines: [
+				...planned.text.split("\n"),
+				...transcriptEntryLines(entriesAfterRegion(session.sessionManager.getBranch(), preparation)),
+			],
+			keptTokens: planned.stats.tokensAfter,
+			signal,
+		});
+		if (section === undefined) return undefined;
+		const text = withRecalledContext(planned.text, section);
+		const tokensAfter = planned.stats.tokensAfter + Math.ceil((text.length - planned.text.length) / 4);
+		return {
+			text,
+			stats: {
+				...planned.stats,
+				tokensAfter,
+				percentReduction:
+					planned.stats.tokensBefore === 0
+						? 0
+						: Math.round((1 - tokensAfter / planned.stats.tokensBefore) * 1000) / 10,
+			},
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 /** A finished compaction plan, ready to be persisted as one boundary. */
 export interface PlannedVerbatimCompaction {
 	readonly text: string;
@@ -127,7 +201,7 @@ export async function planVerbatimCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 		},
-		{ allowSmallRegion },
+		{ allowSmallRegion, history: historyLocation(this) },
 	);
 	if (!preparation) {
 		// Mid-turn threshold preflight needs the load-bearing planner fallback if
@@ -262,6 +336,23 @@ export async function planVerbatimCompaction(
 	}
 	assertCompactionOpen(this);
 	if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
+
+	if (
+		compacted.rung === "planned" &&
+		compacted.backend !== "summary" &&
+		this.settingsManager.getCompactionHistoryRecall()
+	) {
+		const recalled = await recallForPlannedText(
+			this,
+			preparation,
+			pathEntries,
+			compacted,
+			options.abortController.signal,
+		);
+		assertCompactionOpen(this);
+		if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
+		if (recalled) compacted = { ...compacted, ...recalled };
+	}
 
 	// A fresh rung that had to drop the protected tail persists no tail boundary.
 	const firstKeptEntryId =

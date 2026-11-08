@@ -26,7 +26,7 @@ const LEGACY_THINKING_HEADER = "[Assistant thinking]: ";
 const KEEP_CONTEXT_OPEN_LINE_RE = /^<keepContext>$/i;
 const KEEP_CONTEXT_CLOSE_LINE_RE = /^<\/keepContext>$/i;
 
-const TOOL_RESULT_MAX_CHARS = 16_000;
+const TOOL_RESULT_MAX_CHARS = 2_000;
 
 /** One piece of a serialized transcript: literal text, or an image kept at its position. */
 export type TranscriptChunk = TextContent | ImageContent;
@@ -43,9 +43,17 @@ export function filteredMarker(lineCount: number): string {
 	return `(filtered ${lineCount} lines)`;
 }
 
-function truncateToolResult(text: string): string {
+/** Where a tool result's full output can be read back: a `history://sessions/<id>:N-M` URL, keyed by the message. */
+export type FullOutputLocators = ReadonlyMap<Message, string>;
+
+function truncateToolResult(text: string, fullOutputUrl: string | undefined): string {
 	if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
-	return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${text.length - TOOL_RESULT_MAX_CHARS} more characters truncated]`;
+	const removed = text.length - TOOL_RESULT_MAX_CHARS;
+	const where =
+		fullOutputUrl === undefined
+			? "the full output is in this session's history"
+			: `full output: read ${fullOutputUrl}`;
+	return `${text.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[... ${removed} more characters truncated; ${where}]`;
 }
 
 function lastChunk(chunks: TranscriptChunk[]): TranscriptChunk | undefined {
@@ -98,7 +106,11 @@ function serializeContentBlocks(
  * and tool results. Thinking is omitted. Providers return summaries of the real reasoning, and
  * some refuse a compaction request that replays earlier thinking as transcript text (#4544).
  */
-function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): TranscriptChunk[] {
+function serializeTranscriptChunks(
+	messages: Message[],
+	mode: SerializeMode,
+	locators?: FullOutputLocators,
+): TranscriptChunk[] {
 	const chunks: TranscriptChunk[] = [];
 	const pushSection = (header: string, section: TranscriptChunk[]): void => {
 		if (!hasContent(section)) return;
@@ -137,7 +149,7 @@ function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): Tr
 			const section = serializeContentBlocks(message.content, mode);
 			if (mode === "compacted") {
 				for (const chunk of section) {
-					if (chunk.type === "text") chunk.text = truncateToolResult(chunk.text);
+					if (chunk.type === "text") chunk.text = truncateToolResult(chunk.text, locators?.get(message));
 				}
 			}
 			pushSection("[Tool result]: ", section);
@@ -147,9 +159,13 @@ function serializeTranscriptChunks(messages: Message[], mode: SerializeMode): Tr
 	return chunks;
 }
 
-/** Serialize provider messages using the durable verbatim-compaction section grammar. */
-export function serializeConversationForCompaction(messages: Message[]): string {
-	return serializeTranscriptChunks(messages, "compacted")
+/**
+ * Serialize provider messages using the durable verbatim-compaction section grammar.
+ * A truncated tool result names its location in `locators` when it has one, and otherwise says only that the
+ * full output is in the session's history.
+ */
+export function serializeConversationForCompaction(messages: Message[], locators?: FullOutputLocators): string {
+	return serializeTranscriptChunks(messages, "compacted", locators)
 		.map((chunk) => (chunk.type === "text" ? chunk.text : ""))
 		.join("");
 }
@@ -284,11 +300,15 @@ export function createNumberedRegion(text: string, protectedLineNumbers?: Readon
 	};
 }
 
-export function createConversationRegion(messages: Message[], previousSummary?: string): NumberedRegion {
+export function createConversationRegion(
+	messages: Message[],
+	previousSummary?: string,
+	locators?: FullOutputLocators,
+): NumberedRegion {
 	const sections: { role: "user" | "assistant" | "tool"; text: string }[] = [];
 	if (previousSummary) sections.push({ role: "assistant", text: previousSummary });
 	for (const message of messages) {
-		const text = serializeConversationForCompaction([message]);
+		const text = serializeConversationForCompaction([message], locators);
 		if (text)
 			sections.push({
 				role: message.role === "toolResult" ? "tool" : message.role === "user" ? "user" : "assistant",

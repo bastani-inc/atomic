@@ -2,7 +2,7 @@ import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
-import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
+import { stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
 import type { CustomEntry } from "../../core/session-manager.ts";
 import { buildContextEntries, type SessionEntry, sessionEntryToContextMessages } from "../../core/session-manager.ts";
@@ -721,5 +721,5 @@ function isSynthesizedCompactionBoundary(message: AgentMessage | undefined, resu
 				.map((block) => block.text)
 				.join("\n")
 		: message.content;
-	return content === VERBATIM_COMPACTION_PREFIX + result.compactedText;
+	return stripVerbatimCompactionPrefix(content) === result.compactedText;
 }

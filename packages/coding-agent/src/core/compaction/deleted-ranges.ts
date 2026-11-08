@@ -37,9 +37,24 @@ function splitAroundProtected(range: LineRange, protectedLines: ReadonlySet<numb
 	return fragments;
 }
 
-/** Normalize untrusted model ranges into the sole range type accepted by reconstruction. */
-export function validateDeletedRanges(raw: RawLineRange[], region: NumberedRegion): ValidatedRanges {
-	const totalLines = region.lines.length;
+/** Extra share of the region the planner may delete beyond the keep target before records stop applying. */
+export const KEEP_TARGET_TOLERANCE_RATIO = 0.05;
+
+/** Unprotected lines a plan may delete: the target delete count plus the named tolerance, at least one for a non-empty region. */
+export function deleteBudget(totalLines: number, targetKeepLines: number): number {
+	return Math.max(0, totalLines - targetKeepLines) + Math.ceil(totalLines * KEEP_TARGET_TOLERANCE_RATIO);
+}
+
+export interface ValidateDeletedRangesOptions {
+	/**
+	 * Apply records in emitted order and stop once this many unprotected lines are
+	 * deleted, clipping the record that crosses the limit to its leading new lines.
+	 * Omitted, every record applies.
+	 */
+	maxDeletedLines?: number;
+}
+
+function normalizeRanges(raw: RawLineRange[], totalLines: number): LineRange[] {
 	const normalized: LineRange[] = [];
 	for (const candidate of raw) {
 		let start = coerceEndpoint(candidate.start);
@@ -50,10 +65,55 @@ export function validateDeletedRanges(raw: RawLineRange[], region: NumberedRegio
 		end = Math.min(totalLines, end);
 		if (start <= end) normalized.push({ start, end });
 	}
-	normalized.sort((left, right) => left.start - right.start || left.end - right.end);
+	return normalized;
+}
 
+function capInEmittedOrder(
+	records: readonly LineRange[],
+	protectedLines: ReadonlySet<number>,
+	totalLines: number,
+	maxDeletedLines: number,
+): LineRange[] {
+	const taken = new Uint8Array(totalLines + 1);
+	const accepted: LineRange[] = [];
+	let remaining = Math.max(0, Math.trunc(maxDeletedLines));
+	for (const record of records) {
+		let runStart: number | undefined;
+		for (let line = record.start; line <= record.end + 1 && remaining > 0; line++) {
+			const available = line <= record.end && !taken[line] && !protectedLines.has(line);
+			if (available) {
+				taken[line] = 1;
+				remaining--;
+				runStart ??= line;
+			}
+			if ((!available || remaining === 0) && runStart !== undefined) {
+				accepted.push({ start: runStart, end: available ? line : line - 1 });
+				runStart = undefined;
+			}
+		}
+		if (remaining === 0) break;
+	}
+	return accepted;
+}
+
+/**
+ * Normalize untrusted model ranges into the sole range type accepted by reconstruction.
+ * The output is sorted and merged; `maxDeletedLines` limits it by emitted (priority) order first.
+ */
+export function validateDeletedRanges(
+	raw: RawLineRange[],
+	region: NumberedRegion,
+	options: ValidateDeletedRangesOptions = {},
+): ValidatedRanges {
+	const totalLines = region.lines.length;
 	const protectedLines = new Set(region.protectedLineNumbers ?? []);
-	const split = mergeRanges(normalized).flatMap((range) => splitAroundProtected(range, protectedLines));
+	const normalized = normalizeRanges(raw, totalLines);
+	const selected =
+		options.maxDeletedLines === undefined
+			? normalized
+			: capInEmittedOrder(normalized, protectedLines, totalLines, options.maxDeletedLines);
+	selected.sort((left, right) => left.start - right.start || left.end - right.end);
+	const split = mergeRanges(selected).flatMap((range) => splitAroundProtected(range, protectedLines));
 	return Object.assign(split, { __brand: "ValidatedRanges" as const });
 }
 

@@ -16,6 +16,8 @@ export const SETTINGS_DEFAULTS = {
 		/** Compact a frozen prefix in the background past the soft threshold; commit at a turn boundary (#4330). */
 		background: true,
 		backgroundThresholdPercent: 75,
+		/** Add lines from earlier history that match the current task to each compacted context (#4568). */
+		historyRecall: true,
 	},
 	branchSummary: {
 		reserveTokens: 16384,

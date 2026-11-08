@@ -323,14 +323,19 @@ describe("background compaction (#4330)", () => {
 			...harness.sessionManager.getEntries(),
 		]);
 		await copy.createBranchedSession(forkPoint);
-		assert.equal(JSON.stringify(copy.buildSessionProjection().messages), before, "branched copy");
+		const asOriginalSession = (manager: SessionManager) =>
+			JSON.stringify(manager.buildSessionProjection().messages).replaceAll(
+				manager.getSessionId(),
+				harness.sessionManager.getSessionId(),
+			);
+		assert.equal(asOriginalSession(copy), before, "branched copy");
 
 		const navigated = SessionManager.inMemory(harness.tempDir, undefined, [
 			header,
 			...harness.sessionManager.getEntries(),
 		]);
 		await navigated.branch(forkPoint);
-		assert.equal(JSON.stringify(navigated.buildSessionProjection().messages), before, "tree navigation");
+		assert.equal(asOriginalSession(navigated), before, "tree navigation");
 	});
 
 	test("two overlapping compactions resolve to the newer one and the older is never applied (#4330)", async () => {

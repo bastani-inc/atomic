@@ -10,6 +10,7 @@ export * from "./compaction-runner.js";
 export * from "./compaction-types.js";
 export * from "./deleted-ranges.js";
 export * from "./fallback-planner.js";
+export * from "./history-recall.js";
 export * from "./model-resolver.js";
 export * from "./pi-summary-fallback.js";
 export * from "./planner-outcome.js";

@@ -329,6 +329,7 @@ On a genuine first run, Atomic previews available themes and asks whether to opt
 | `compaction.modelOverrides` | object | `{}` | Exact `"provider/modelId"` keys with optional `reserveTokens` and `preserve_recent` overrides |
 | `compaction.background` | boolean | `true` | Compact older context in the background while the agent keeps working; blocking compaction only on overflow or at the `reserveTokens` threshold when no background result is ready. `/settings`: **Background compaction**. See [Background compaction](/compaction#background-compaction) |
 | `compaction.backgroundThresholdPercent` | number | `75` | Percentage of the context window at which background compaction starts; above 0 and below 100. `/settings`: **Background compaction threshold** (50, 60, 70, 75, 80 or 90). While either background setting holds an invalid value, Atomic reports a settings warning on load or `/reload` and runs with background compaction off and the 75% default, and `/settings` shows those values until you pick valid ones |
+| `compaction.historyRecall` | boolean | `true` | Add a short `Recalled context` section to each compacted context: lines from this session's earlier history, the project's other sessions and workflow runs that match the current task, each with a `history://` source to `read`. It never adds more than 10% of the kept context or 1,500 tokens, gives up after 3 seconds, and leaves the compacted context unchanged on any failure. `false` turns it off. See [Recalled context](/compaction#recalled-context) |
 
 ```json
 {

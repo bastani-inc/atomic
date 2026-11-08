@@ -26,7 +26,7 @@ import {
 	serializeRetainedTranscript,
 } from "../src/core/compaction/transcript-serialization.js";
 import { serializeConversation } from "../src/core/compaction/utils.ts";
-import { convertToLlm, VERBATIM_COMPACTION_PREFIX } from "../src/core/messages.js";
+import { convertToLlm, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../src/core/messages.js";
 import type { CompactionEntry, SessionEntry } from "../src/core/session-manager.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -406,7 +406,7 @@ describe("verbatim compaction round trip without thinking (#4544)", () => {
 		const ids = await append(session, thinkingConversation());
 
 		const result = await session.compact({ preserve_recent: 2 });
-		expect(result.promptVersion).toBe(5);
+		expect(result.promptVersion).toBe(6);
 		expect(result.rung).toBe("planned");
 		expect(result.firstKeptEntryId).toBe(ids[6]);
 		expect(faux.state.callCount).toBe(1);
@@ -441,7 +441,7 @@ describe("verbatim compaction round trip without thinking (#4544)", () => {
 		].join("\n");
 		expect(result.compactedText).toBe(expectedSummary);
 
-		const expectedBoundary = `${VERBATIM_COMPACTION_PREFIX}${expectedSummary}\n\n[Assistant]: running\n\n[Assistant tool calls]: read(path="big.log")\n\n[Tool result]: ${LONG_OUTPUT}`;
+		const expectedBoundary = `${VERBATIM_COMPACTION_PREFIX}${verbatimRecallHint(session.sessionId)}${expectedSummary}\n\n[Assistant]: running\n\n[Assistant tool calls]: read(path="big.log")\n\n[Tool result]: ${LONG_OUTPUT}`;
 		expect(boundaryText(session)).toBe(expectedBoundary);
 
 		const keptAssistant = session.sessionManager.getEntry(ids[6]);
@@ -482,7 +482,9 @@ describe("verbatim compaction round trip without thinking (#4544)", () => {
 			"after marker",
 		].join("\n");
 		await session.sessionManager.appendCompaction(legacySummary, null, 100, legacyDetails(4));
-		expect(boundaryText(session)).toBe(`${VERBATIM_COMPACTION_PREFIX}${legacySummary}`);
+		expect(boundaryText(session)).toBe(
+			`${VERBATIM_COMPACTION_PREFIX}${verbatimRecallHint(session.sessionId)}${legacySummary}`,
+		);
 
 		await append(session, [
 			{
@@ -518,7 +520,7 @@ describe("verbatim compaction round trip without thinking (#4544)", () => {
 		const boundary = session.sessionManager
 			.getEntries()
 			.findLast((entry): entry is CompactionEntry => entry.type === "compaction");
-		expect(boundary?.details).toMatchObject({ promptVersion: 5 });
+		expect(boundary?.details).toMatchObject({ promptVersion: 6 });
 	});
 });
 

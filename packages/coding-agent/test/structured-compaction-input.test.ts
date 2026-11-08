@@ -4,6 +4,7 @@ import { syntheticErrorResponse } from "../src/core/compaction/planner-outcome.j
 import { trimRegionHead } from "../src/core/compaction/region-trimming.js";
 import {
 	buildStructuredCompactionInput,
+	MAX_SKIPPED_LINE_FRACTION,
 	mapMessageRanges,
 	parseMessageRangeRecords,
 } from "../src/core/compaction/structured-compaction-input.js";
@@ -40,16 +41,99 @@ test("maps every serialized line bijectively, including prior text and quoted he
 	assert.deepEqual(input.protected, [{ id: 2, start: 1, end: 3 }]);
 });
 
-test("parses message records strictly and recovers only complete records (#3470)", () => {
-	assert.deepEqual(parseMessageRangeRecords("2:1,3\n1:4,4"), [
-		{ id: 2, start: 1, end: 3 },
-		{ id: 1, start: 4, end: 4 },
-	]);
-	for (const malformed of ["1,3", "01:1,3", "1:1,3\n\n", "1:1,3\nprose", "1:1,2:3", "1:1,3 "])
+test("parses message records and recovers only complete records (#3470)", () => {
+	assert.deepEqual(parseMessageRangeRecords("2:1,3\n1:4,4"), {
+		ranges: [
+			{ id: 2, start: 1, end: 3 },
+			{ id: 1, start: 4, end: 4 },
+		],
+		skippedLineCount: 0,
+	});
+	for (const malformed of ["1,3", "01:1,3", "1:1,2:3", "", "\n", "```\n```"])
 		assert.equal(parseMessageRangeRecords(malformed), undefined);
-	assert.deepEqual(parseMessageRangeRecords("2:1,3\n1:4,4", true), [{ id: 2, start: 1, end: 3 }]);
+	assert.deepEqual(parseMessageRangeRecords("2:1,3\n1:4,4", true), {
+		ranges: [{ id: 2, start: 1, end: 3 }],
+		skippedLineCount: 0,
+	});
 	assert.equal(parseMessageRangeRecords("2:1,3", true), undefined);
 	assert.equal(parseMessageRangeRecords("bad\n2:1,3", true), undefined);
+});
+
+test("skips prose before and after records (#4568)", () => {
+	assert.deepEqual(parseMessageRangeRecords("Here is the plan:\n1:1,3\n2:4,4\nHope this helps"), {
+		ranges: [
+			{ id: 1, start: 1, end: 3 },
+			{ id: 2, start: 4, end: 4 },
+		],
+		skippedLineCount: 2,
+	});
+});
+
+test("ignores Markdown fences and blank lines without counting them as skipped (#4568)", () => {
+	for (const fence of ["```", "```text"])
+		assert.deepEqual(parseMessageRangeRecords(`${fence}\n1:1,3\n\n2:4,4\n\`\`\`\n`), {
+			ranges: [
+				{ id: 1, start: 1, end: 3 },
+				{ id: 2, start: 4, end: 4 },
+			],
+			skippedLineCount: 0,
+		});
+});
+
+test("trims whitespace around records, including carriage returns (#4568)", () => {
+	assert.deepEqual(parseMessageRangeRecords("  1:1,3 \r\n\t2:4,4\t\n1:5,5   "), {
+		ranges: [
+			{ id: 1, start: 1, end: 3 },
+			{ id: 2, start: 4, end: 4 },
+			{ id: 1, start: 5, end: 5 },
+		],
+		skippedLineCount: 0,
+	});
+});
+
+test("keeps records in emitted priority order amid noise without sorting or deduplicating (#4568)", () => {
+	assert.deepEqual(parseMessageRangeRecords("2:120,180\nnote\n1:6,40\n3:300,305\n1:6,40")?.ranges, [
+		{ id: 2, start: 120, end: 180 },
+		{ id: 1, start: 6, end: 40 },
+		{ id: 3, start: 300, end: 305 },
+		{ id: 1, start: 6, end: 40 },
+	]);
+});
+
+test("counts unsafe-integer and malformed record lines as skipped (#4568)", () => {
+	assert.deepEqual(parseMessageRangeRecords("1:1,3\n1:1,99999999999999999999\n01:1,3\n1,3\n1:2,2\n1:3,3"), {
+		ranges: [
+			{ id: 1, start: 1, end: 3 },
+			{ id: 1, start: 2, end: 2 },
+			{ id: 1, start: 3, end: 3 },
+		],
+		skippedLineCount: 3,
+	});
+});
+
+test("accepts exactly the skipped-line fraction and rejects anything above it (#4568)", () => {
+	assert.equal(MAX_SKIPPED_LINE_FRACTION, 0.5);
+	assert.equal(parseMessageRangeRecords("1:1,1\nprose")?.skippedLineCount, 1);
+	assert.equal(parseMessageRangeRecords("1:1,1\nprose\nmore prose"), undefined);
+});
+
+test("rejects a mostly-prose answer even when it contains a record (#4568)", () => {
+	assert.equal(
+		parseMessageRangeRecords("Sure! I would delete\nthe verbose tool output.\n1:1,3\nLet me know."),
+		undefined,
+	);
+	assert.equal(parseMessageRangeRecords("I cannot help with that."), undefined);
+});
+
+test("drops the incomplete last line and tolerates noise on a truncated answer (#4568)", () => {
+	assert.deepEqual(parseMessageRangeRecords("bad\n1:1,1\n2:2,2\n3:3", true), {
+		ranges: [
+			{ id: 1, start: 1, end: 1 },
+			{ id: 2, start: 2, end: 2 },
+		],
+		skippedLineCount: 1,
+	});
+	assert.equal(parseMessageRangeRecords("1:1,1\n2:2,2\nprose without newline", true)?.skippedLineCount, 0);
 });
 
 test("drops invalid message ranges rather than crossing message boundaries (#3470)", () => {

@@ -65,11 +65,27 @@ Each deleted span is replaced on its own line with exactly:
 
 Counts remain cumulative across repeated compactions. The spelling is always plural, including `(filtered 1 lines)`.
 
+Removed lines are not lost. They stay in the session's history, and the compacted context tells the agent so, naming this session's `history://sessions/<sessionId>` URL: the agent uses `search` on that URL to find removed text, including text removed by earlier compactions of the same session, and `read` with `:N-M` to open it. The same note points the agent at `search history://sessions` for the project's other sessions, `search history://workflows` for workflow runs and `search history://` for both. It tells the agent to use them before redoing an investigation, or when a removed decision, error message, file path or result matters, and that a search over several records covers the newest ones by default and pages on with `?offset=`. The planner is told that removed lines stay retrievable, so it removes bulky output that can be read again, such as tool results, file dumps and logs, before your requests, decisions, root causes and conclusions. See [Recalling earlier work](/sessions#recalling-earlier-work).
+
+### Recalled context
+
+Once the planner has chosen what to keep, Atomic looks through history for lines that bear on the current task and adds the best few to the compacted context, in a short `Recalled context` section after the kept lines. The search uses your latest request and the compaction `query`. It covers this session's own history, which includes lines earlier compactions removed, then the project's other sessions and workflow runs, with the same `history://` search the agent has. No model call is involved.
+
+Each snippet is quoted with `> ` and starts with a source line such as `history://sessions/<id>:12-14`, which `read` opens in full. A line the compacted context already shows, including the kept recent messages, is never repeated, and each line appears once.
+
+The section stays small: at most 10% of the kept context, never more than 1,500 tokens, and the whole search has 3 seconds. If the search fails, runs out of time, finds nothing relevant, or the compaction is cancelled, the compacted context stays as the planner left it and compaction carries on. A boundary written by a `session_before_compact` extension, a fresh context window or the policy-refusal summary fallback gets no recalled context. A recalled line is data, not structure: quoting means it can never act as a `<keepContext>` span, a role header or a `(filtered N lines)` marker when the boundary is compacted again.
+
+Recall is on by default. Set `compaction.historyRecall` to `false` in settings to leave the compacted context exactly as the planner kept it.
+
+### Keep target
+
+The planner lists its deletions in priority order, lowest continuation value first. Atomic applies them in that order and stops once the lines deleted reach the keep target (`compression_ratio`) plus a small tolerance of 5% of the compactable lines, trimming the deletion that crosses the limit. Deletions the planner lists after that point are ignored, so a plan that deletes far more than the ratio asks for no longer shrinks the transcript below it. A plan that deletes less than the target is applied as written. Protected lines are never deleted and do not count against the limit.
+
 ### Protected structure
 
 Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
 
-Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
+Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text is capped at 2,000 characters before the planner sees it and before it becomes durable compaction text. The truncation marker gives the exact location of the full output, for example `[... 41230 more characters truncated; full output: read history://sessions/<sessionId>:1234-1890]`, and `read` on that path returns the whole output. When the location cannot be determined, such as in a session that is not saved, the marker only says the full output is in this session's history, which the agent can search as described above.
 
 The recent tail is appended to the boundary in the same grammar, without thinking. Its tool results keep their full text.
 
@@ -196,7 +212,7 @@ When every configured model is exhausted, what happens depends on how much the c
 
 Recoverable failure writes no boundary, schedules no continuation, and reports the cause through `compaction_end`. Manual calls cannot request destructive recovery. Overflow recovery and post-tool preflight can fall back to the fresh context window below.
 
-A successful compaction may delete less than requested. The retry can still report a context overflow.
+A successful compaction may delete less than requested, because the planner can list fewer deletions than the keep target allows, but it does not delete more than the keep target plus a small tolerance. The retry can still report a context overflow.
 
 ### Planning time limit
 
@@ -213,6 +229,12 @@ Clearing context does not fix provider rate limits or guarantee the next turn su
 ### Length-truncated response recovery
 
 Atomic may recover usable deletion records when the provider truncates a planner response. Successful recovery appears as ordinary `✻ Context compacted`; unusable output advances to the next configured model.
+
+### Planner output with stray lines
+
+A planner answer is a list of `id:start,end` records. Atomic skips lines around the records that are not records, such as a sentence of prose, a header, blank lines or a Markdown fence, and trims whitespace around each record. The remaining records keep the order the planner listed them.
+
+An answer is treated as malformed output, and the next configured model is tried, when it contains no valid record or when more than half of its non-blank lines are not records. A derailed or conversational answer is therefore not mistaken for a sparse plan. A recovered answer that tolerated stray lines records how many were skipped as `skippedLineCount` in its recovery diagnostic.
 
 ### Planner failure diagnostics
 
