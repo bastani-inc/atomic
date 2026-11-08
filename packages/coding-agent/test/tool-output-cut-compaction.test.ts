@@ -9,15 +9,22 @@ import { afterEach, describe, it } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { DEFAULT_COMPACTION_SETTINGS, prepareCompactionBoundary } from "../src/core/compaction/index.js";
 import {
 	createConversationRegion,
+	ROLE_HEADER_RE,
 	serializeConversationForCompaction,
 	serializeRetainedTranscript,
 } from "../src/core/compaction/transcript-serialization.js";
 import { convertToLlm } from "../src/core/messages.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
 import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { renderHistoryTranscript } from "../src/core/tools/history-transcript.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
@@ -235,14 +242,18 @@ describe("truncated tool output stays retrievable through history recall (#4568)
 
 		const plannerInput = plannerRequest(faux.state.contexts[0]);
 		const plannerLines = plannerInput.messages.flatMap((message) => message.lines).join("\n");
-		assert.ok(plannerLines.includes(currentMarker(resultTexts[0].length - TOOL_RESULT_CAP)));
+		assert.ok(
+			plannerLines.includes(
+				`\n\n[... ${resultTexts[0].length - TOOL_RESULT_CAP} more characters truncated; full output: read history://sessions/${session.sessionId}:`,
+			),
+		);
 		assert.ok(!plannerLines.includes(needle(0)), "the planner never saw the cut tail");
 		assert.ok(!result.compactedText.includes(needle(0)), "the durable compaction text does not hold the cut tail");
 
 		const [boundary] = convertToLlm(session.sessionManager.buildSessionContext().messages);
 		assert.ok(typeof boundary?.content !== "string");
 		const boundaryText = boundary.content.map((block) => (block.type === "text" ? block.text : "")).join("");
-		assert.ok(boundaryText.includes("the full output is in this session's history]"));
+		assert.ok(boundaryText.includes(`full output: read history://sessions/${session.sessionId}:`));
 		assert.ok(!boundaryText.includes(needle(0)));
 
 		const url = `history://sessions/${session.sessionId}`;
@@ -277,5 +288,287 @@ describe("truncated tool output stays retrievable through history recall (#4568)
 			),
 		);
 		assert.ok(opened.includes(needle(0)), `read opens the cut tail in:\n${opened}`);
+	});
+});
+
+const FULL_OUTPUT_MARKER = /more characters truncated; full output: read (history:\/\/sessions\/[^\s:\]]+:\d+-\d+)\]/g;
+const FALLBACK_MARKER = "more characters truncated; the full output is in this session's history]";
+
+interface StoreBackend {
+	readonly name: string;
+	open(dir: string): Promise<{ store: SessionStore; close(): Promise<void> }>;
+}
+
+const STORE_BACKENDS: readonly StoreBackend[] = [
+	{
+		name: "JsonlSessionStore",
+		open: async (dir) => {
+			const store = await JsonlSessionStore.open(join(dir, "jsonl"));
+			return { store, close: () => store.close() };
+		},
+	},
+	{
+		name: "SqlSessionStore",
+		open: async (dir) => {
+			const database = await openNodeSqliteDatabase(join(dir, "sessions.sqlite"));
+			const store = await SqlSessionStore.open(database);
+			return {
+				store,
+				close: async () => {
+					await store.close();
+					await database.close();
+				},
+			};
+		},
+	},
+];
+
+function plannerText(context: Parameters<typeof plannerRequest>[0]): string {
+	return plannerRequest(context)
+		.messages.flatMap((message) => message.lines)
+		.join("\n");
+}
+
+function markerUrls(text: string): string[] {
+	return [...text.matchAll(FULL_OUTPUT_MARKER)].map((match) => match[1]);
+}
+
+describe("truncation markers locate the full output in session history (#4568)", () => {
+	const tempDirs: string[] = [];
+	const sessions: AgentSession[] = [];
+	const closers: Array<() => Promise<void>> = [];
+	afterEach(async () => {
+		for (const session of sessions.splice(0)) session.dispose();
+		for (const close of closers.splice(0)) await close();
+		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+	});
+
+	async function sessionOver(
+		manager: SessionManager,
+		cwd: string,
+		faux: ReturnType<typeof createPlannerStreamFn>,
+	): Promise<AgentSession> {
+		const agent = new Agent({
+			getApiKey: () => undefined,
+			initialState: { model: getModel("anthropic", "claude-sonnet-4-5")!, systemPrompt: "test", tools: [] },
+			streamFn: faux.streamFn,
+		});
+		const authStorage = AuthStorage.inMemory();
+		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settingsManager: SettingsManager.inMemory(),
+			cwd,
+			modelRuntime: getModelRuntime(await createInMemoryModelRegistry(authStorage)),
+			resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+		return session;
+	}
+
+	async function append(session: AgentSession, messages: Message[]): Promise<void> {
+		for (const message of messages) await session.sessionManager.appendMessage(message);
+		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+	}
+
+	function reader(session: AgentSession, cwd: string): (url: string) => Promise<string> {
+		const router = createHistoryRouter({
+			cwd,
+			currentSessionId: session.sessionId,
+			sessionStore: () => session.sessionManager.getSessionStore(),
+			workflows: () => undefined,
+		});
+		const ctx = { internalResourceRouter: router, cwd } as InternalResourceContext;
+		return async (url) =>
+			toolText(
+				await createReadToolDefinition(cwd).execute("read", { path: url }, undefined, undefined, ctx as never),
+			);
+	}
+
+	interface Oversized {
+		readonly index: number;
+		readonly text: string;
+	}
+
+	function oversizedResults(resultTexts: string[]): Oversized[] {
+		return resultTexts.flatMap((text, index) => (text.length > TOOL_RESULT_CAP ? [{ index, text }] : []));
+	}
+
+	async function expectEveryResultReadsBack(
+		session: AgentSession,
+		cwd: string,
+		urls: string[],
+		results: Oversized[],
+	): Promise<void> {
+		assert.equal(urls.length, results.length, `one marker per oversized result in ${urls.join(", ")}`);
+		const read = reader(session, cwd);
+		for (const [position, { index, text }] of results.entries()) {
+			const opened = await read(urls[position]);
+			assert.ok(opened.includes(text), `${urls[position]} opens the whole of result ${index}`);
+			const exact = await read(`${urls[position]}:raw`);
+			const [heading, ...body] = exact.split("\n");
+			assert.match(heading, / tool result read$/, `${urls[position]} starts at the result's own heading`);
+			assert.equal(body.join("\n"), text, `${urls[position]} ends at the last line of result ${index}`);
+			for (const other of results)
+				if (other.index !== index)
+					assert.ok(!opened.includes(needle(other.index)), `${urls[position]} holds only result ${index}`);
+		}
+	}
+
+	function toolTurn(index: number, timestamp: number): { messages: Message[]; result: Oversized } {
+		const id = `turn-${index}`;
+		const text = resultWithTail(index, LARGE_RESULT_ROWS);
+		return {
+			messages: [assistantMessage("", timestamp, { id }), toolResult(id, text, timestamp + 1)],
+			result: { index, text },
+		};
+	}
+
+	describe.each(STORE_BACKENDS)("$name", (backend) => {
+		async function openSession(options: { workflowStage: boolean }) {
+			const cwd = mkdtempSync(join(tmpdir(), "atomic-tool-output-locator-"));
+			tempDirs.push(cwd);
+			const { store, close } = await backend.open(cwd);
+			closers.push(close);
+			const manager = await SessionManager.create(store, cwd);
+			if (options.workflowStage)
+				await manager.markSessionInternal({ runId: "run-4568", stageId: "stage-4568", stageName: "implement" });
+			const faux = createPlannerStreamFn(["1,1\n"]);
+			return { cwd, faux, session: await sessionOver(manager, cwd, faux) };
+		}
+
+		it("reads the full output through the range in each marker (#4568)", async () => {
+			const { cwd, faux, session } = await openSession({ workflowStage: false });
+			const { messages, resultTexts } = fixture();
+			await append(session, messages);
+			await session.compact({ preserve_recent: 2 });
+
+			const urls = markerUrls(plannerText(faux.state.contexts[0]));
+			await expectEveryResultReadsBack(session, cwd, urls, oversizedResults(resultTexts));
+		});
+
+		it("reads the full output of a workflow stage session, whose header has an extra line (#4568)", async () => {
+			const { cwd, faux, session } = await openSession({ workflowStage: true });
+			assert.equal(session.sessionManager.getHeader()?.workflow?.stageName, "implement");
+			const { messages, resultTexts } = fixture();
+			await append(session, messages);
+			await session.compact({ preserve_recent: 2 });
+
+			const urls = markerUrls(plannerText(faux.state.contexts[0]));
+			await expectEveryResultReadsBack(session, cwd, urls, oversizedResults(resultTexts));
+		});
+
+		it("keeps every range correct after an earlier compaction in the same session (#4568)", async () => {
+			const { cwd, faux, session } = await openSession({ workflowStage: false });
+			const [first, second, third] = [toolTurn(10, 2), toolTurn(11, 7), toolTurn(12, 12)];
+			await append(session, [
+				{ role: "user", content: "task 0\nfirst task\nfiller", timestamp: 1 },
+				...first.messages,
+				assistantMessage("first findings", 5),
+				{ role: "user", content: "task 1", timestamp: 6 },
+				...second.messages,
+				assistantMessage("second findings", 10),
+			]);
+			await session.compact({ preserve_recent: 3 });
+			const firstUrls = markerUrls(plannerText(faux.state.contexts[0]));
+			await expectEveryResultReadsBack(session, cwd, firstUrls, [first.result]);
+
+			await append(session, [
+				{ role: "user", content: "task 2", timestamp: 11 },
+				...third.messages,
+				assistantMessage("third findings", 15),
+				{ role: "user", content: "task 3", timestamp: 16 },
+				assistantMessage("answer 3", 17),
+			]);
+			await session.compact({ preserve_recent: 2 });
+			const secondUrls = markerUrls(plannerText(faux.state.contexts[1]));
+			await expectEveryResultReadsBack(session, cwd, secondUrls, [first.result, second.result, third.result]);
+			assert.ok(secondUrls.includes(firstUrls[0]), "the earlier marker survives into the next planner input");
+		});
+	});
+
+	function persistedFallbackFixtureEntries(): Promise<{ manager: SessionManager; ids: Map<number, string> }> {
+		return (async () => {
+			const manager = SessionManager.inMemory();
+			const ids = new Map<number, string>();
+			await manager.appendMessage({ role: "user", content: "task 0\nfirst\nfiller", timestamp: 1 });
+			for (const index of [20, 21]) {
+				const [call, result] = toolTurn(index, 2 + index).messages;
+				await manager.appendMessage(call);
+				ids.set(index, await manager.appendMessage(result));
+			}
+			for (let turn = 0; turn < 3; turn++) {
+				await manager.appendMessage({ role: "user", content: `task ${turn + 1}`, timestamp: 100 + turn * 2 });
+				await manager.appendMessage(assistantMessage(`answer ${turn + 1}`, 101 + turn * 2));
+			}
+			return { manager, ids };
+		})();
+	}
+
+	function regionOf(manager: SessionManager, history?: Parameters<typeof prepareCompactionBoundary>[3]): string {
+		const preparation = prepareCompactionBoundary(manager.getBranch(), DEFAULT_COMPACTION_SETTINGS, {}, history);
+		assert.ok(preparation, "the fixture has a compactable region");
+		return preparation.region.lines.join("\n");
+	}
+
+	function historyOf(manager: SessionManager) {
+		const { entryRanges } = renderHistoryTranscript(manager.getHeader()!, manager.getEntries(), true);
+		return { history: { sessionId: manager.getSessionId(), entryRanges } };
+	}
+
+	it("uses the fallback marker when no session history is known (#4568)", async () => {
+		const { manager } = await persistedFallbackFixtureEntries();
+		const region = regionOf(manager);
+		assert.equal(region.split(FALLBACK_MARKER).length - 1, 2);
+		assert.deepEqual(markerUrls(region), []);
+	});
+
+	it("uses the fallback marker for an entry the history does not hold (#4568)", async () => {
+		const { manager, ids } = await persistedFallbackFixtureEntries();
+		const { history } = historyOf(manager);
+		const entryRanges = new Map(history.entryRanges);
+		entryRanges.delete(ids.get(20)!);
+		const region = regionOf(manager, { history: { ...history, entryRanges } });
+		assert.equal(region.split(FALLBACK_MARKER).length - 1, 1, "only the unknown entry falls back");
+		assert.equal(markerUrls(region).length, 1);
+	});
+
+	it("uses the fallback marker for a result whose model-facing content was edited (#4568)", async () => {
+		const { manager, ids } = await persistedFallbackFixtureEntries();
+		await manager.appendContextEdit(ids.get(20)!, { content: [{ type: "text", text: "edited ".repeat(1000) }] });
+		const region = regionOf(manager, historyOf(manager));
+		assert.equal(region.split(FALLBACK_MARKER).length - 1, 1, "the edited result falls back");
+		assert.deepEqual(markerUrls(region), [
+			`history://sessions/${manager.getSessionId()}:${historyOf(manager).history.entryRanges.get(ids.get(21)!)!.start}-${historyOf(manager).history.entryRanges.get(ids.get(21)!)!.end}`,
+		]);
+	});
+
+	it("uses the fallback marker in an in-memory session with no history to read (#4568)", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-tool-output-memory-"));
+		tempDirs.push(cwd);
+		const faux = createPlannerStreamFn(["1,1\n"]);
+		const session = await sessionOver(SessionManager.inMemory(cwd), cwd, faux);
+		await append(session, fixture().messages);
+		await session.compact({ preserve_recent: 2 });
+		const planner = plannerText(faux.state.contexts[0]);
+		assert.equal(planner.split(FALLBACK_MARKER).length - 1, 5);
+		assert.deepEqual(markerUrls(planner), []);
+	});
+
+	it("keeps a marker with a location inert when a later compaction reads it as ordinary text (#4568)", async () => {
+		const { manager } = await persistedFallbackFixtureEntries();
+		const first = regionOf(manager, historyOf(manager));
+		const url = markerUrls(first)[0];
+		assert.ok(url);
+		const second = createConversationRegion([], first);
+		assert.equal(second.lines.join("\n"), first);
+		assert.equal(second.priorMarkerNs.size, 0, "a location marker is not a filtered-lines marker");
+		assert.equal(second.protectedLineNumbers, undefined, "a location marker protects nothing");
+		assert.equal(
+			second.headerLineNumbers.size,
+			first.split("\n").filter((line) => ROLE_HEADER_RE.test(line)).length,
+			"the marker line is not a role header",
+		);
 	});
 });

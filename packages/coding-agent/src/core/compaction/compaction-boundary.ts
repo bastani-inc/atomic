@@ -1,3 +1,4 @@
+import type { Message } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import {
 	convertToLlm,
@@ -9,6 +10,7 @@ import {
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.ts";
 import { applyContextEdit, buildSessionProjection, collectContextEdits } from "../session-manager-history.ts";
 import type { CompactionEntry, ContextEditEntry, SessionEntry } from "../session-manager-types.ts";
+import type { HistoryLineRange } from "../tools/history-transcript.ts";
 import { type CompactionSettings, estimateProjectedContextTokens, estimateTokens } from "./compaction.ts";
 import {
 	COMPACTION_AUTO_QUERY,
@@ -23,7 +25,11 @@ import {
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 } from "./compaction-types.js";
-import { createConversationRegion, omitLegacyThinkingSections } from "./transcript-serialization.js";
+import {
+	createConversationRegion,
+	type FullOutputLocators,
+	omitLegacyThinkingSections,
+} from "./transcript-serialization.js";
 
 interface VisibleEntry {
 	entry: SessionEntry;
@@ -176,6 +182,45 @@ export interface CompactionBoundaryControl {
 	 * straight to the fresh rung without invoking a planner.
 	 */
 	allowSmallRegion?: boolean;
+	/**
+	 * Where this session's own entries sit in its `history://sessions/<sessionId>` view. A truncated tool result of
+	 * an entry listed here says where its full output can be read; without it the marker only says the output is
+	 * in the session's history.
+	 */
+	history?: {
+		sessionId: string;
+		entryRanges: ReadonlyMap<string, HistoryLineRange>;
+	};
+}
+
+/**
+ * Locate each tool result of a converted region in the session's history view.
+ *
+ * Conversion drops orphan results, inserts synthetic ones and clones renamed ones, so messages are matched to
+ * entries by their content array in order rather than by position. A result whose content a context edit rewrote
+ * has no locator: history holds the original output, not what the model saw.
+ */
+function fullOutputLocators(
+	items: readonly VisibleEntry[],
+	converted: readonly Message[],
+	history: NonNullable<CompactionBoundaryControl["history"]>,
+): FullOutputLocators {
+	const locators = new Map<Message, string>();
+	let cursor = 0;
+	for (const message of converted) {
+		if (message.role !== "toolResult") continue;
+		for (let index = cursor; index < items.length; index++) {
+			const item = items[index];
+			if (item.message.role !== "toolResult" || item.message.content !== message.content) continue;
+			cursor = index + 1;
+			const range = history.entryRanges.get(item.entry.id);
+			const unedited = item.entry.type === "message" && item.entry.message === item.message;
+			if (range && unedited)
+				locators.set(message, `history://sessions/${history.sessionId}:${range.start}-${range.end}`);
+			break;
+		}
+	}
+	return locators;
 }
 
 /** Prepare the complete compactable transcript and its exact context-visible message tail. */
@@ -205,9 +250,11 @@ export function prepareCompactionBoundary(
 	const regionMessages = visible.slice(0, tailStart);
 	const tailMessages = visible.slice(tailStart);
 
+	const regionConversation = convertToLlm(regionMessages.map((item) => item.message));
 	const region = createConversationRegion(
-		convertToLlm(regionMessages.map((item) => item.message)),
+		regionConversation,
 		previous ? previousSummaryText(previous.entry) : undefined,
+		control.history && fullOutputLocators(regionMessages, regionConversation, control.history),
 	);
 	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 

@@ -8,6 +8,7 @@ import type {
 import { authForStream } from "./agent-session-models.ts";
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import {
+	type CompactionBoundaryControl,
 	type CompactionPlannerModel,
 	type CompactionPlanOptions,
 	type CompactionRung,
@@ -33,6 +34,16 @@ import type {
 import { assertSessionOpen as assertCompactionOpen, trackSessionWork } from "./session-lifecycle-work.ts";
 import type { CompactionEntry, SessionEntry } from "./session-manager.ts";
 import { createSummarizationRetryCallbacks } from "./summarization-retry.ts";
+import { renderHistoryTranscript } from "./tools/history-transcript.ts";
+
+/** This session's own history layout, or undefined when it has no history a `read` could open. */
+function historyLocation(session: AgentSession): CompactionBoundaryControl["history"] {
+	const manager = session.sessionManager;
+	const header = manager.getHeader();
+	if (!header || !manager.isPersisted()) return undefined;
+	const { entryRanges } = renderHistoryTranscript(header, manager.getEntries(), true);
+	return { sessionId: manager.getSessionId(), entryRanges };
+}
 
 function frozenCollectionMutation(): never {
 	throw new TypeError("Cannot mutate frozen compaction preparation");
@@ -127,7 +138,7 @@ export async function planVerbatimCompaction(
 			...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 			...(options.query === undefined ? {} : { query: options.query }),
 		},
-		{ allowSmallRegion },
+		{ allowSmallRegion, history: historyLocation(this) },
 	);
 	if (!preparation) {
 		// Mid-turn threshold preflight needs the load-bearing planner fallback if
