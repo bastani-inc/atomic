@@ -185,15 +185,21 @@ describe("Anthropic mid-conversation effort", () => {
 		expect(message.providerThinkingLevel).toBe("medium");
 	});
 
-	it("keeps adaptive thinking when off is unsupported", async () => {
+	it("keeps adaptive thinking at the lowest effort when off is unsupported (#4545)", async () => {
 		const { payload, message } = await capture(
 			managedModel(),
 			{ messages: [user("one", 1)] },
 			{ thinkingEnabled: false },
 		);
 		expect(payload.thinking?.type).toBe("adaptive");
-		expect(effortMessages(payload)).toEqual([{ role: "system", content: [], output_config: { effort: "high" } }]);
-		expect(message.providerThinkingLevel).toBe("high");
+		expect(effortMessages(payload)).toEqual([{ role: "system", content: [], output_config: { effort: "low" } }]);
+		expect(message.providerThinkingLevel).toBe("low");
+		expect(message.diagnostics).toContainEqual(
+			expect.objectContaining({
+				type: "thinking_off_fallback",
+				details: { requestedThinkingLevel: "off", thinkingLevel: "minimal", providerThinkingLevel: "low" },
+			}),
+		);
 	});
 
 	it("leaves unsupported models on top-level effort", async () => {

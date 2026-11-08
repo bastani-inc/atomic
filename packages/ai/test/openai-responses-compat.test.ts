@@ -79,8 +79,11 @@ describe("openai-responses provider defaults", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("omits reasoning for Copilot gpt-6-luna, whose off level is none, when no reasoning is requested (earendil-works/pi#2567)", async () => {
-		const model = getModel("github-copilot", "gpt-6-luna");
+	it("omits reasoning for a Copilot model whose thinking map lists no off effort, when no reasoning is requested (earendil-works/pi#2567)", async () => {
+		const model: Model<"openai-responses"> = {
+			...getModel("github-copilot", "gpt-6-luna"),
+			thinkingLevelMap: undefined,
+		};
 		let capturedPayload: unknown;
 
 		vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -302,9 +305,17 @@ describe("openai-responses provider defaults", () => {
 		});
 	});
 
-	it.each(["gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro", "gpt-5.2-pro", "gpt-5.4-pro", "gpt-5.5-pro"] as const)(
-		"omits reasoning effort for OpenAI %s when off is unsupported",
-		async (modelId) => {
+	it.each([
+		["gpt-5", "minimal"],
+		["gpt-5-mini", "minimal"],
+		["gpt-5-nano", "minimal"],
+		["gpt-5-pro", "high"],
+		["gpt-5.2-pro", "medium"],
+		["gpt-5.4-pro", "medium"],
+		["gpt-5.5-pro", "medium"],
+	] as const)(
+		"sends OpenAI %s its lowest effort, %s, when no reasoning is requested and off is unsupported (#4545)",
+		async (modelId, effort) => {
 			const model = getModel("openai", modelId);
 			let capturedPayload: unknown;
 
@@ -333,8 +344,8 @@ describe("openai-responses provider defaults", () => {
 				if (event.type === "done" || event.type === "error") break;
 			}
 
-			expect(capturedPayload).not.toMatchObject({
-				reasoning: expect.anything(),
+			expect(capturedPayload).toMatchObject({
+				reasoning: { effort, summary: "auto" },
 			});
 		},
 	);

@@ -10,8 +10,8 @@ import {
 	type Part,
 	type ThinkingConfig,
 } from "@google/genai";
-import { clampThinkingLevel } from "../models.ts";
 import type {
+	AssistantMessage,
 	ImageContent,
 	Model,
 	StopReason,
@@ -24,6 +24,7 @@ import type {
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { appendThinkingOffFallbackDiagnostic, getThinkingOffFallbackLevel } from "../utils/thinking-off.ts";
 import { collapseSystemMessages, withoutInitialSystemMessage } from "../utils/transcript.ts";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.ts";
 import { transformMessages } from "./transform-messages.ts";
@@ -101,15 +102,33 @@ export function toGoogleSdkThinkingLevel(level: GoogleApiThinkingLevel): GoogleS
 	return GOOGLE_SDK_THINKING_LEVEL_MAP[level];
 }
 
+interface GoogleThinkingOffFallback {
+	level: ThinkingLevel;
+	apiLevel: GoogleApiThinkingLevel;
+}
+
+/** Thinking `off` on a level-based Gemini model that cannot disable thinking runs at its lowest level. */
+function getGoogleThinkingOffFallback<T extends GoogleApiType>(model: Model<T>): GoogleThinkingOffFallback | undefined {
+	if (!usesGoogleThinkingLevel(model)) return undefined;
+	const level = getThinkingOffFallbackLevel(model);
+	if (level === undefined) return undefined;
+	return { level, apiLevel: toGoogleThinkingLevel(resolveGoogleThinkingLevel(model, level)) };
+}
+
 export function getDisabledGoogleThinkingConfig<T extends GoogleApiType>(model: Model<T>): ThinkingConfig {
-	if (!usesGoogleThinkingLevel(model)) return { thinkingBudget: 0 };
+	const fallback = getGoogleThinkingOffFallback(model);
+	return fallback ? { thinkingLevel: toGoogleSdkThinkingLevel(fallback.apiLevel) } : { thinkingBudget: 0 };
+}
 
-	const fallback = clampThinkingLevel(model, "off");
-	if (fallback === "off") return { thinkingBudget: 0 };
-
-	const resolvedLevel = resolveGoogleThinkingLevel(model, fallback);
-	const apiLevel = toGoogleThinkingLevel(resolvedLevel);
-	return { thinkingLevel: toGoogleSdkThinkingLevel(apiLevel) };
+/** Record on `output` that a request for thinking `off` runs at the model's lowest thinking level. */
+export function recordGoogleThinkingOffFallback<T extends GoogleApiType>(
+	model: Model<T>,
+	options: { thinking?: { enabled: boolean } } | undefined,
+	output: AssistantMessage,
+): void {
+	if (options?.thinking?.enabled !== false) return;
+	const fallback = getGoogleThinkingOffFallback(model);
+	if (fallback) appendThinkingOffFallbackDiagnostic(output, fallback.level, fallback.apiLevel);
 }
 
 /**

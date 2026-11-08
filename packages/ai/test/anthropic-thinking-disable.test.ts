@@ -132,11 +132,11 @@ describe("Anthropic thinking disable payload", () => {
 		expect(payload.output_config).toBeUndefined();
 	});
 
-	it("omits thinking.type=disabled for Claude Fable 5 when thinking is off", async () => {
+	it("runs Claude Fable 5, which cannot disable thinking, at its lowest effort when thinking is off (#4545)", async () => {
 		const payload = await capturePayload(getModel("anthropic", "claude-fable-5"));
 
-		expect(payload.thinking).toBeUndefined();
-		expect(payload.output_config).toBeUndefined();
+		expect(payload.thinking).toEqual({ type: "adaptive", display: "summarized" });
+		expect(payload.output_config).toEqual({ effort: "low" });
 	});
 
 	it("uses adaptive thinking for Claude Opus 4.8 when reasoning is enabled", async () => {
@@ -170,9 +170,10 @@ describe("Anthropic thinking disable payload", () => {
 
 		expect(payload.thinking?.type).not.toBe("disabled");
 		expect(payload.thinking?.budget_tokens).toBeUndefined();
-		// Managed effort transports keep a stable top-level effort and append the active marker.
+		// Managed effort transports keep a stable top-level effort and append the active marker, which
+		// is the lowest effort rather than the API's default "high" (#4545).
 		expect(payload.output_config).toEqual({ effort: "low" });
-		expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: "high" } });
+		expect(payload.messages.at(-1)).toEqual({ role: "system", content: [], output_config: { effort: "low" } });
 	});
 
 	it("never sends a thinking budget for Claude Fable 5.1", async () => {

@@ -207,7 +207,7 @@ describe("xAI Responses provider", () => {
 		);
 	});
 
-	it("requests encrypted reasoning without an effort override", async () => {
+	it("requests encrypted reasoning at Grok's lowest effort, low, without an effort override (#4545)", async () => {
 		const captured = await captureRequest(
 			XAI_MODELS["grok-4.5"],
 			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
@@ -219,7 +219,7 @@ describe("xAI Responses provider", () => {
 			store: false,
 			include: ["reasoning.encrypted_content"],
 		});
-		expect(captured.body).not.toHaveProperty("reasoning");
+		expect(captured.body).toMatchObject({ reasoning: { effort: "low", summary: "auto" } });
 	});
 
 	it("uses /responses for Grok 4.7 with xhigh effort and encrypted reasoning", async () => {

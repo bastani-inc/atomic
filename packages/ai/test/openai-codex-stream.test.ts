@@ -1739,9 +1739,10 @@ describe("openai-codex streaming", () => {
 				},
 			).result();
 			expect(payload).toBeDefined();
+			// A model that cannot turn reasoning off runs at its lowest level, minimal here (#4545).
 			expect(payload?.reasoning).toEqual(
 				off === null
-					? undefined
+					? { effort: "minimal", summary: "auto" }
 					: { effort: off ?? "none", ...(reasoningEffort === undefined ? {} : { summary: "auto" }) },
 			);
 		}

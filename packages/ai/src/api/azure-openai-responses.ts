@@ -9,6 +9,7 @@ import { getIdentityHeaders } from "../utils/identity.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { type AzureEndpointOptions, resolveAzureConfig, resolveDeploymentName } from "./azure-openai-config.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
@@ -77,6 +78,11 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 		};
 
 		try {
+			const thinkingOffFallback =
+				options?.reasoningEffort || options?.reasoningSummary
+					? undefined
+					: recordThinkingOffFallback(model, output);
+			const reasoningOptions = thinkingOffFallback ? { ...options, reasoningEffort: thinkingOffFallback } : options;
 			// Create Azure OpenAI client
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -87,7 +93,13 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				getDeclaredTools(normalizedContext.messages),
 				model.compat?.supportsOpenAIGrammarTools ?? false,
 			);
-			let params = buildParams(model, normalizedContext, options, deploymentName, grammarToolInputProperties);
+			let params = buildParams(
+				model,
+				normalizedContext,
+				reasoningOptions,
+				deploymentName,
+				grammarToolInputProperties,
+			);
 			const nextParams = await options?.onPayload?.(params, model);
 			if (nextParams !== undefined) {
 				params = nextParams as ResponseCreateParamsStreaming;

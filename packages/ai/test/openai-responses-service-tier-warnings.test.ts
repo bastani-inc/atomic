@@ -400,15 +400,15 @@ describe("reported service tier downgrade (#3529)", () => {
 			[fastVariant("gpt-6.1-sol"), "ultrafast"],
 		] as const) {
 			const { result } = await run(model, [completedResponse(reported)]);
-			assert.deepEqual(result.diagnostics, undefined);
+			assert.deepEqual(serviceTierWarnings(result), []);
 		}
 	});
 
 	test("does not warn when the server reports no tier or the request carried none (#3529)", async () => {
 		const unreported = await run(ultrafastVariant("gpt-6.1-sol"), [completedResponse(undefined)]);
-		assert.equal(unreported.result.diagnostics, undefined);
+		assert.deepEqual(serviceTierWarnings(unreported.result), []);
 
 		const unrequested = await run(getModel("openai", "gpt-6.1-sol"), [completedResponse("default")]);
-		assert.equal(unrequested.result.diagnostics, undefined);
+		assert.deepEqual(serviceTierWarnings(unrequested.result), []);
 	});
 });

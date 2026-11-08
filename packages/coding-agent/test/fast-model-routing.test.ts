@@ -283,6 +283,44 @@ describe("fast model route resolution", () => {
 		});
 	});
 
+	it.each([
+		[
+			"cannot disable reasoning, at its lowest effort",
+			{ off: null, minimal: null },
+			{ effort: "low", summary: "auto" },
+			1,
+		],
+		["can disable reasoning, at its off effort", { off: "none" }, { effort: "none" }, 0],
+	] as const)(
+		"sends thinking off on a service-tier route for a model that %s (#4545)",
+		async (_case, thinkingLevelMap, reasoning, fallbackDiagnostics) => {
+			let payload: { reasoning?: unknown; service_tier?: string } | undefined;
+			const options = withFastRouteStreamOptions(serviceTierRoute, {
+				apiKey: "key",
+				onPayload: (captured) => {
+					payload = captured as typeof payload;
+					throw new Error("payload captured");
+				},
+			});
+
+			const reply = await streamWithFastRoute(
+				fullModel({
+					api: "openai-responses",
+					provider: "openai",
+					baseUrl: "http://127.0.0.1:9/v1",
+					thinkingLevelMap,
+				}),
+				{ messages: [{ role: "user", content: "Hello", timestamp: Date.now() }] },
+				options,
+			).result();
+
+			expect(payload).toEqual(expect.objectContaining({ reasoning, service_tier: FAST_MODEL_SERVICE_TIER }));
+			expect(
+				(reply.diagnostics ?? []).filter((diagnostic) => diagnostic.type === "thinking_off_fallback"),
+			).toHaveLength(fallbackDiagnostics);
+		},
+	);
+
 	it("uses native OpenAI Codex Responses streaming for a service-tier route", () => {
 		const calls: CapturedStreamCall[] = [];
 		const streamers = makeStreamers(calls);
