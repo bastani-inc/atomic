@@ -196,7 +196,7 @@ export function build_progress_prompt(input: ProgressPromptInput): string {
 		...input.checkpoints.map((checkpoint) => `- ${checkpoint}`),
 		"</checkpoints>",
 		"<output_format>",
-		`Return structured_output with scores: [{ checkpoint, score }], using integer scores from ${VERIFICATION_SCALE.min} through ${VERIFICATION_SCALE.max}.`,
+		`Report scores: [{ checkpoint, score }], using integer scores from ${VERIFICATION_SCALE.min} through ${VERIFICATION_SCALE.max}.`,
 		"</output_format>",
 	].join("\n");
 	return `${sharedHead}\n\n${checkpointTail}`;

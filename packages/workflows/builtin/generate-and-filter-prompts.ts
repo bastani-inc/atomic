@@ -14,7 +14,7 @@ export function renderGeneratorPrompt(task: string, ordinal: number): string {
 }
 
 export function renderFilterPrompt(task: string, candidatePaths: readonly string[], shortlistSize: number): string {
-  return `<artifacts>\nRead every candidate: ${candidatePaths.join(", ")}\n</artifacts>\n\n<role>\nYou deduplicate and filter independently generated candidates.\n</role>\n\n<rubric>\nFirst collapse substantively equivalent candidates. Then score fit to the task, feasibility, evidence, distinctiveness, and risk. Near-duplicates must not gain weight by repetition. Record every discarded candidate and a concrete reason.\n</rubric>\n\n<success_criteria>\nAt most ${shortlistSize} strongest distinct candidates remain, ranked by the rubric, and every discarded candidate has a concrete reason.\n</success_criteria>\n\n<stop_rules>\nStop after every candidate is shortlisted once or recorded as discarded.\n</stop_rules>\n\n<output_format>\nCall structured_output with shortlist (candidate artifact paths in ranked order) and discarded entries containing path and a concise, criteria-based reason.\n</output_format>\n\n<objective>\nSelect at most ${shortlistSize} strongest candidates for: ${task}\n</objective>`;
+  return `<artifacts>\nRead every candidate: ${candidatePaths.join(", ")}\n</artifacts>\n\n<role>\nYou deduplicate and filter independently generated candidates.\n</role>\n\n<rubric>\nFirst collapse substantively equivalent candidates. Then score fit to the task, feasibility, evidence, distinctiveness, and risk. Near-duplicates must not gain weight by repetition. Record every discarded candidate and a concrete reason.\n</rubric>\n\n<success_criteria>\nAt most ${shortlistSize} strongest distinct candidates remain, ranked by the rubric, and every discarded candidate has a concrete reason.\n</success_criteria>\n\n<stop_rules>\nStop after every candidate is shortlisted once or recorded as discarded.\n</stop_rules>\n\n<output_format>\nReport shortlist (candidate artifact paths in ranked order) and discarded entries containing path and a concise, criteria-based reason.\n</output_format>\n\n<objective>\nSelect at most ${shortlistSize} strongest candidates for: ${task}\n</objective>`;
 }
 
 export function renderJudgePrompt(
@@ -27,7 +27,7 @@ export function renderJudgePrompt(
 		task: `Rank at most ${shortlistSize} distinct candidate paths for: ${task}.`,
 		groundTruthNote: `Read the filter report at ${filterPath} and every candidate path it references before judging.`,
 		candidates,
-		outputFormat: "Call structured_output with shortlist (candidate paths in ranked order) and rationale (a concise, criteria-based explanation).",
+		outputFormat: "Report shortlist (candidate paths in ranked order) and rationale (a concise, criteria-based explanation).",
 	};
 	const prompt = build_scoring_prompt(head, {
 		id: "filtered_shortlist",

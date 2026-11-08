@@ -198,7 +198,7 @@ function stageName(cell: VerificationCell, reaskWave: number): string {
 }
 
 function verifierOutputFormat(criterionId: string): string {
-	return `Call structured_output with criterion_id (set to ${criterionId}), score (1–20), evidence (string array), and findings containing finding and severity (veto, blocking, or note).`;
+	return `Report criterion_id (set to ${criterionId}), score (1–20), evidence (string array), and findings containing finding and severity (veto, blocking, or note).`;
 }
 
 function scoreStep(

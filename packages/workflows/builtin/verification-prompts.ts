@@ -51,7 +51,7 @@ export type WarmFirstFanOutContext = Pick<WorkflowRunContext, "parallel">;
 
 const DEFAULT_WARM_CONCURRENCY = 4;
 const DEFAULT_OUTPUT_FORMAT =
-	"Call structured_output with criterion_id, score (1–20), evidence, and findings containing finding and severity.";
+	"Report criterion_id, score (1–20), evidence, and findings containing finding and severity.";
 
 function inlineCandidates(head: SharedHead): boolean {
 	return head.candidates.every(
