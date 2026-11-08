@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.9.72] - 2026-11-08
+
+### Fixed
+
+- A `file:` database stays usable after a statement fails. A statement that gave up part way, for example a write that waited out the busy timeout while another process held the lock, stayed active on its connection until garbage collection. After that, every transaction on the database failed with `SQLITE_BUSY: cannot commit transaction - SQL statements in progress`, and a write outside a transaction reported success but was never committed. The adapter now replaces its local connections after any failed statement, before the next call, and turns foreign keys on again on the new one.
+- Closing a `file:` database now releases its files before `close()` resolves, so they can be deleted or moved right away, including on Windows. libsql 0.5 keeps a closed connection open until its statements are garbage-collected; the adapter now runs two full garbage collections, shared by closes that arrive together, and waits for the driver to release its handles ([#4433](https://github.com/bastani-inc/atomic/issues/4433))
+- When opening a database fails and closing it afterwards fails too, the close failure is attached to the open error as `cleanupCause` instead of being discarded ([#4433](https://github.com/bastani-inc/atomic/issues/4433))
+- A remote database no longer fails a write because the process stalled in the middle of it. When a process was stopped (by a signal, starved of CPU, or asleep) longer than the server keeps an idle stream, its next statement failed with `STREAM_EXPIRED` and the write was lost to a `StorageUnavailableError`. The adapter now recognizes an expired stream, a transaction the server timed out, a refused connection and a broken connection by their codes and reports them as `StorageTransientError`; a statement, batch, or workflow journal or session write that they ended before it wrote anything runs again, up to five times over about four seconds. A write whose connection broke after the server may have applied it is not sent again and fails with `outcome: "unknown"` ([#4383](https://github.com/bastani-inc/atomic/issues/4383))
+
 ## [0.9.72-alpha.1] - 2026-11-08
 
 ### Fixed
