@@ -10,11 +10,23 @@ import type { LineRange } from "../../packages/coding-agent/src/core/compaction/
 import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { borrowed, PARAMETERS, region, scriptedStream, testModel } from "./compaction-rung-support.js";
 
-async function plan(text: string, stopReason: "stop" | "length", protectedLines: number[] = [], lineCount = 40) {
+async function plan(
+	text: string,
+	stopReason: "stop" | "length",
+	protectedLines: number[] = [],
+	lineCount = 40,
+	targetKeepLines = 20,
+) {
 	const stream = scriptedStream({ default: [{ text, stopReason }] });
-	return planDeletedLineRanges(region(lineCount, protectedLines), PARAMETERS, borrowed(testModel(), "high"), 20, {
-		streamFn: stream.streamFn,
-	});
+	return planDeletedLineRanges(
+		region(lineCount, protectedLines),
+		PARAMETERS,
+		borrowed(testModel(), "high"),
+		targetKeepLines,
+		{
+			streamFn: stream.streamFn,
+		},
+	);
 }
 
 function ranges(outcome: Awaited<ReturnType<typeof plan>>): LineRange[] {
@@ -56,7 +68,7 @@ test("ranked ranges never contain a protected line", async () => {
 test("recovered ranges from a truncated response are validated too", async () => {
 	// The trailing fragment and reversed record are discarded; valid records are
 	// sorted and split around the protected line.
-	const outcome = await plan("1:40,35\n1:25,30\n1:1,20\n1:40,", "length", [10]);
+	const outcome = await plan("1:40,35\n1:25,30\n1:1,20\n1:40,", "length", [10], 40, 10);
 	assert.equal(outcome.kind, "recovered");
 	assert.deepEqual(ranges(outcome), [
 		{ start: 1, end: 9 },

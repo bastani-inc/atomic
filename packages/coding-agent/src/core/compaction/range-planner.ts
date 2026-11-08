@@ -9,7 +9,7 @@ import type {
 	RawLineRange,
 	VerbatimCompactionParameters,
 } from "./compaction-types.js";
-import { validateDeletedRanges } from "./deleted-ranges.js";
+import { deleteBudget, validateDeletedRanges } from "./deleted-ranges.js";
 import type { PlannerOutcome, TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
 	classifyPlannerFailure,
@@ -308,6 +308,7 @@ export async function planDeletedLineRanges(
 		sessionId: uuidv7(),
 		...(model.reasoning && reasoning && reasoning !== "off" ? { reasoning } : {}),
 	};
+	const validationOptions = { maxDeletedLines: deleteBudget(region.lines.length, targetKeepLines) };
 	const retry = observeRetryActivity(options.callbacks);
 	let response: AssistantMessage;
 	let refusalResponse: AssistantMessage | undefined;
@@ -387,7 +388,7 @@ export async function planDeletedLineRanges(
 					recoveredCount: records.length,
 				}
 			: undefined;
-		const recovered = recovery ? validateDeletedRanges(recovery.ranges, region) : undefined;
+		const recovered = recovery ? validateDeletedRanges(recovery.ranges, region, validationOptions) : undefined;
 		if (recovery && recovered && recovered.length > 0) {
 			// Silent success — write private recovery diagnostic, never surface it.
 			emitRecoveryDiagnostic(options, model, response, text, recovery.recoveredCount);
@@ -402,7 +403,7 @@ export async function planDeletedLineRanges(
 	}
 	const extracted = extractDeletedRanges(text, region);
 	if (!extracted) return unusableOutcome(options, model, response, text, "malformed_output", MALFORMED_OUTPUT_MESSAGE);
-	const validated = validateDeletedRanges(extracted, region);
+	const validated = validateDeletedRanges(extracted, region, validationOptions);
 	if (validated.length === 0) {
 		return unusableOutcome(options, model, response, text, "no_usable_ranges", NO_USABLE_RANGES_MESSAGE);
 	}

@@ -12,7 +12,7 @@ The effective parameters appear in extension events and successful results:
 
 | Parameter | Default | Meaning |
 |---|---:|---|
-| `compression_ratio` | `0.5` | Fraction of compactable **lines to keep**, not a token ratio |
+| `compression_ratio` | `0.5` | Fraction of compactable **lines to keep**, not a token ratio. Planner deletions beyond this target plus a small tolerance are ignored |
 | `preserve_recent` | `2` | Exact number of newest context-visible messages protected client-side |
 | `query` | Last visible user message | Relevance focus for deciding which older lines to retain |
 

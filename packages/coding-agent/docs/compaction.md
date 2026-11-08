@@ -67,6 +67,10 @@ Counts remain cumulative across repeated compactions. The spelling is always plu
 
 Removed lines are not lost. They stay in the session's history, and the compacted context tells the agent so, naming this session's `history://sessions/<sessionId>` URL: the agent uses `search` on that URL to find removed text and `read` with `:N-M` to open it. The planner is told the same, so it removes bulky output that can be read again, such as tool results, file dumps and logs, before your requests, decisions, root causes and conclusions. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
+### Keep target
+
+The planner lists its deletions in priority order, lowest continuation value first. Atomic applies them in that order and stops once the lines deleted reach the keep target (`compression_ratio`) plus a small tolerance of 5% of the compactable lines, trimming the deletion that crosses the limit. Deletions the planner lists after that point are ignored, so a plan that deletes far more than the ratio asks for no longer shrinks the transcript below it. A plan that deletes less than the target is applied as written. Protected lines are never deleted and do not count against the limit.
+
 ### Protected structure
 
 Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The configured number of newest context-visible messages remains outside the classifier request entirely; all preceding active transcript content is included.
@@ -198,7 +202,7 @@ When every configured model is exhausted, what happens depends on how much the c
 
 Recoverable failure writes no boundary, schedules no continuation, and reports the cause through `compaction_end`. Manual calls cannot request destructive recovery. Overflow recovery and post-tool preflight can fall back to the fresh context window below.
 
-A successful compaction may delete less than requested. The retry can still report a context overflow.
+A successful compaction may delete less than requested, because the planner can list fewer deletions than the keep target allows, but it does not delete more than the keep target plus a small tolerance. The retry can still report a context overflow.
 
 ### Planning time limit
 
