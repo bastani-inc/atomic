@@ -6,6 +6,7 @@
 
 - `SessionListQuery.idPrefix` lists only the sessions whose id starts with the given text (case-insensitive); custom session stores should honor it ([#4566](https://github.com/bastani-inc/atomic/issues/4566))
 - The planner's `policyRefusal` outcome now reports `phase` (`"input"` or `"midstream"`, exported as `PolicyRefusalPhase`), and `CompactionPlanOptions` and `CompactionRunRequest` accept `sidecarDirectory` (`SidecarDirectory`), where diagnostics go for a persisted session that has no session file ([#4543](https://github.com/bastani-inc/atomic/issues/4543))
+- After a verbatim compaction, the compacted context now tells the agent that removed `(filtered N lines)` stay in the session's history and names its `history://sessions/<sessionId>` URL, so the agent can `search` it for removed text and `read` it with `:N-M`; a workflow stage session reaches its own history the same way, even when it runs in another directory. The planner is told that removed lines stay retrievable and removes bulky re-readable output before unique requirements, decisions and conclusions ([#4568](https://github.com/bastani-inc/atomic/issues/4568))
 
 ### Fixed
 

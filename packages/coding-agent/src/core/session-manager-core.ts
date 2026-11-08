@@ -740,7 +740,7 @@ export class SessionManager {
 
 	/** Build provenance-preserving, compaction-aware model context from the current leaf. */
 	buildSessionProjection(): SessionProjection {
-		return buildSessionProjection(this.getEntries(), this.leafId, this.byId);
+		return buildSessionProjection(this.getEntries(), this.leafId, this.byId, this.sessionId);
 	}
 
 	/** Build the session context (what gets sent to the LLM). */

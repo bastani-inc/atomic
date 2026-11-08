@@ -272,6 +272,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		const id = target.id ?? "";
 		const header = await requireStore().readHeader(id);
 		if (!header) throw new Error(`Session not found: ${id}`);
+		if (id === sources.currentSessionId) return id;
 		const { cwd } = projectScope(target);
 		if (cwd === undefined || createSessionCwdMatcher(cwd)(header.cwd)) return id;
 		// A stage session can run in its own directory or worktree; the project's run vouches for it.

@@ -4,7 +4,11 @@ import type {
 	VerbatimCompactionResult,
 	VerbatimCompactionStats,
 } from "../../../core/compaction/index.ts";
-import { type CustomMessage, SUMMARY_COMPACTION_PREFIX, VERBATIM_COMPACTION_PREFIX } from "../../../core/messages.ts";
+import {
+	type CustomMessage,
+	SUMMARY_COMPACTION_PREFIX,
+	stripVerbatimCompactionPrefix,
+} from "../../../core/messages.ts";
 import { theme } from "../theme/theme.js";
 import { parenthesizedKeyHint } from "./keybinding-hints.js";
 
@@ -126,10 +130,15 @@ export function compactionBoundaryFromMessage(
 				.map((block) => block.text)
 				.join("\n")
 		: message.content;
-	const prefix = details.backend === "summary" ? SUMMARY_COMPACTION_PREFIX : VERBATIM_COMPACTION_PREFIX;
+	const text =
+		details.backend === "summary"
+			? content.startsWith(SUMMARY_COMPACTION_PREFIX)
+				? content.slice(SUMMARY_COMPACTION_PREFIX.length)
+				: content
+			: stripVerbatimCompactionPrefix(content);
 	const component = new CompactionBoundaryMessageComponent(
 		{
-			text: content.startsWith(prefix) ? content.slice(prefix.length) : content,
+			text,
 			stats: details.stats,
 			rung: details.rung,
 			tokensBefore: details.tokensBefore ?? details.stats.tokensBefore,

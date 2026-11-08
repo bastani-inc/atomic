@@ -3,7 +3,7 @@ import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CompactionSettings } from "./compaction.ts";
 
-export const VERBATIM_COMPACTION_PROMPT_VERSION = 5 as const;
+export const VERBATIM_COMPACTION_PROMPT_VERSION = 6 as const;
 /** First prompt version whose durable transcripts carry no `[Assistant thinking]: ` sections. */
 export const THINKING_FREE_PROMPT_VERSION = 5;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
