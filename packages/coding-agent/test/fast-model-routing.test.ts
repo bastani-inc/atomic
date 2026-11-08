@@ -286,7 +286,7 @@ describe("fast model route resolution", () => {
 	it.each([
 		[
 			"cannot disable reasoning, at its lowest effort",
-			{ off: null, minimal: null },
+			{ off: null, minimal: null, low: "low" },
 			{ effort: "low", summary: "auto" },
 			1,
 		],

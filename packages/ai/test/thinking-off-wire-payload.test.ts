@@ -227,7 +227,6 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 		["github-copilot/gpt-6.1-sol", "low", "low", getModel("github-copilot", "gpt-6.1-sol")],
 		["github-copilot/gpt-5.3-codex", "minimal", "low", getModel("github-copilot", "gpt-5.3-codex")],
 		["azure/gpt-6.1-sol", "low", "low", getModel("azure", "gpt-6.1-sol")],
-		["azure/gpt-5", "minimal", "minimal", getModel("azure", "gpt-5")],
 		["openai-codex/gpt-6.1-sol", "minimal", "low", getModel("openai-codex", "gpt-6.1-sol")],
 		["openai-codex/gpt-6-astra", "low", "low", getModel("openai-codex", "gpt-6-astra")],
 	] as const)(
@@ -243,6 +242,17 @@ describe("thinking off on the OpenAI Responses APIs (#4545)", () => {
 			expect(lowest.offFallbacks).toEqual([]);
 		},
 	);
+
+	it.each([
+		["azure/gpt-5", getModel("azure", "gpt-5")],
+		["azure/gpt-5.1", getModel("azure", "gpt-5.1")],
+		["a custom model", { ...getModel("openai", "gpt-6.1-sol"), thinkingLevelMap: { off: null, minimal: null } }],
+	])("keeps omitting reasoning for %s, whose map lists no effort to fall back to", async (_name, model) => {
+		const { payload, offFallbacks } = await captureRequest(model);
+
+		expect(payload).not.toHaveProperty("reasoning");
+		expect(offFallbacks).toEqual([]);
+	});
 
 	it("sends none to a reasoning model whose thinking map does not mention off", async () => {
 		const model: Model<"openai-responses"> = { ...getModel("openai", "gpt-6-luna"), thinkingLevelMap: undefined };
