@@ -273,6 +273,11 @@
           "exclusiveMaximum": 100,
           "description": "Percentage of the context window at which background compaction starts. The reserveTokens threshold still compacts in the foreground when no background result is ready.",
           "default": 75
+        },
+        "historyRecall": {
+          "type": "boolean",
+          "description": "Add a short Recalled context section to each compacted context: lines from this session's earlier compaction cycles, the project's other sessions and workflow runs that match the current task. False leaves the compacted context as the planner kept it.",
+          "default": true
         }
       }
     },

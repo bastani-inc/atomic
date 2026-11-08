@@ -145,6 +145,8 @@ interface SettingsManagerBasicAccessors {
 	/** Percentage of the context window at which background compaction starts. */
 	getCompactionBackgroundThresholdPercent(): number;
 	setCompactionBackgroundThresholdPercent(percent: number): void;
+	/** Whether a compacted context gets a `Recalled context` section from earlier history (#4568). */
+	getCompactionHistoryRecall(): boolean;
 	getCompactionSettings(model?: CompactionModel): {
 		enabled: boolean;
 		reserveTokens: number;
@@ -584,6 +586,10 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.globalSettings.compaction.backgroundThresholdPercent = value;
 		state.markModified("compaction", "backgroundThresholdPercent");
 		state.save();
+	},
+
+	getCompactionHistoryRecall() {
+		return settingsInternals(this).settings.compaction?.historyRecall ?? SETTINGS_DEFAULTS.compaction.historyRecall;
 	},
 
 	getCompactionSettings(model) {

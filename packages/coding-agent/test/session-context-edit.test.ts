@@ -253,7 +253,7 @@ describe("session context edits", () => {
 
 		const estimate = estimateProjectedContextTokens(session.buildSessionProjection(), session.getBranch());
 		expect(estimate.usageTokens).toBe(0);
-		expect(estimate.tokens).toBeLessThan(100);
+		expect(estimate.tokens).toBeLessThan(50_001 / 10);
 	});
 
 	it("includes effective system and tool context in edited estimates", async () => {

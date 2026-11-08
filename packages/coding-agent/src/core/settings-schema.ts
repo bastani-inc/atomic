@@ -78,6 +78,13 @@ const CompactionSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.compaction.backgroundThresholdPercent,
 		}),
 	),
+	historyRecall: Type.Optional(
+		Type.Boolean({
+			description:
+				"Add a short Recalled context section to each compacted context: lines from this session's earlier compaction cycles, the project's other sessions and workflow runs that match the current task. False leaves the compacted context as the planner kept it.",
+			default: SETTINGS_DEFAULTS.compaction.historyRecall,
+		}),
+	),
 });
 
 const BranchSummarySettingsSchema = Type.Object({

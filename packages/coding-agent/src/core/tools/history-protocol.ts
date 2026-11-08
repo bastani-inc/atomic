@@ -18,8 +18,9 @@
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { WorkflowRunControl, WorkflowRunDetail, WorkflowRunSummary } from "../extensions/workflow-run-control.js";
+import type { SessionEntry } from "../session-manager-types.ts";
 import type { SessionStore, SessionSummary } from "../storage/session/types.js";
-import { renderHistoryTranscript, textLines, timestamp, wrapLine } from "./history-transcript.ts";
+import { entryLines, renderHistoryTranscript, textLines, timestamp, wrapLine } from "./history-transcript.ts";
 import {
 	type InternalResourceRouter,
 	type InternalSearchRequest,
@@ -103,6 +104,11 @@ function parseTarget(url: string): HistoryTarget {
 function oneLine(text: string, limit: number): string {
 	const flat = text.replace(/\s+/g, " ").trim();
 	return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
+/** The lines `history://sessions/<id>` shows for `entries`, in the form a transcript search returns them. */
+export function transcriptEntryLines(entries: readonly SessionEntry[]): string[] {
+	return entries.flatMap(entryLines);
 }
 
 /** `linkRun` is false for a cross-project view, whose workflow history is not reachable from here. */
