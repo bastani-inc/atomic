@@ -1,6 +1,6 @@
 # GPT-6.1 Terra prompting and migration
 
-Use this reference when targeting `gpt-6.1-terra` or migrating from GPT-5.6 Terra. Distilled from the GPT-6.1 Terra section and migration checklist of [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/prompt-guidance#gpt-61-terra), the [model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra), the [GPT-6.1 Terra announcement](https://openai.com/index/introducing-gpt-6-1-terra), and [A model guide for the GPT-6 family](https://openai.com/index/practical-guide-building-gpt-6/), all checked October 26, 2026.
+Use this reference when targeting `gpt-6.1-terra` or migrating from GPT-5.6 Terra. Distilled from the GPT-6.1 Terra section and migration checklist of [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model#gpt-61-terra), the [model page](https://developers.openai.com/api/docs/models/gpt-6.1-terra), the [GPT-6.1 Terra announcement](https://openai.com/index/introducing-gpt-6-1-terra), and [A model guide for the GPT-6 family](https://openai.com/index/practical-guide-building-gpt-6/), first checked October 26, 2026 and rechecked November 9, 2026.
 
 The guide's shared prompt templates address behavior observed with GPT-6 Astra, not independently established Terra behavior. OpenAI gives no Terra-specific prompt wording. Apply the shared templates only to failures you observe on Terra. The snippets below are adaptations, not verbatim OpenAI quotations.
 
@@ -39,7 +39,7 @@ OpenAI's migration advice is specific: compare both models on representative ima
 
 Run the unchanged prompt on both models first. Measure task success, answer correctness on your images, completion of screen workflows, tool behavior, latency, tokens, and cost per successful task. Change the prompt only for a regression you can point to, and retest after each change.
 
-Two host changes are not prompt fixes. If the application calls tools through Chat Completions, move those requests to the Responses API; Terra supports Chat Completions only for requests without tools. When effort is not `none`, sampling and logprob parameters must be removed; see the source's [API and model parameters checklist](https://developers.openai.com/api/docs/guides/prompt-guidance#update-api-and-model-parameters).
+Two host changes are not prompt fixes. If the application calls tools through Chat Completions, move those requests to the Responses API; Terra supports Chat Completions only for requests without tools. When effort is not `none`, sampling and logprob parameters must be removed; see the source's [API and model parameters checklist](https://developers.openai.com/api/docs/guides/latest-model#gpt-6-astra-update-api-and-model-parameters).
 
 ## Computer use and screen work
 

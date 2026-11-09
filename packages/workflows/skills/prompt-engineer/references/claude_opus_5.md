@@ -1,6 +1,6 @@
 # Claude Opus 5 prompting
 
-Distilled from [Anthropic's Opus 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5), checked September 22, 2026. Existing Opus 4.8 prompts are a useful baseline. The snippets below are adaptable examples, not verbatim quotations or instructions to add all at once. Start with the behavior you observe and compare representative tasks after each change.
+Distilled from [Anthropic's Opus 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5), checked November 9, 2026. Existing Opus 4.8 prompts are a useful baseline. The snippets below are adaptable examples, not verbatim quotations or instructions to add all at once. Start with the behavior you observe and compare representative tasks after each change.
 
 ## When an end-to-end task is incomplete or drifts in scope
 
@@ -70,13 +70,17 @@ Use only tools actually available and authorized. Compare image inspection again
 
 ## When thinking-disabled output contains fake tool calls or markup
 
-Prefer thinking enabled with lower effort. If an integration must disable thinking, remove rules forbidding thought and use one combined instruction:
+Prefer thinking enabled with lower effort; Anthropic says thinking enabled at `low` effort usually beats thinking disabled at similar cost. Thinking can be disabled only at effort `high` or below; `xhigh` or `max` with thinking disabled returns a 400 error. If an integration must disable thinking, remove rules forbidding thought and use one combined instruction:
 
 ```text
 You may give a brief user-facing sentence before a tool call. Use the actual tool interface, not printed call syntax. If no tool can express the requested action, say so rather than inventing a call. Keep internal or system markup out of the response.
 ```
 
 Validate structured tool events in the host: printed syntax is not execution. Do not name internal thinking tags or ask for private reasoning as a workaround.
+
+## When prompts ask for the model's reasoning
+
+Prompts, skills, and tool descriptions that ask Opus 5 to write its thinking or reasoning, "verbatim or in a fixed format, might be declined with the `reasoning_extraction` refusal category." Ask for a short explanation of the answer or a summary of the actions taken instead. If the application needs the reasoning, keep thinking on and read summarized thinking blocks.
 
 ## Validate the prompt change
 

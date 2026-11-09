@@ -1,6 +1,6 @@
 # GPT-5.6 prompting and migration
 
-Use this reference for the GPT-5.6 family. Guidance checked on September 5, 2026 against [OpenAI's GPT-5.6 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6). Snippets below are adaptations for prompt authors, not verbatim official quotes. Keep these defaults separate from [GPT-6](gpt_6.md) and [GPT-5.5](gpt_5_5.md).
+Use this reference for the GPT-5.6 family. Guidance checked on November 9, 2026 against [OpenAI's GPT-5.6 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.6). Snippets below are adaptations for prompt authors, not verbatim official quotes. Keep these defaults separate from [GPT-6](gpt_6.md) and [GPT-5.5](gpt_5_5.md).
 
 ## When moving from an older prompt stack
 
@@ -99,7 +99,7 @@ Caveats: if the host cannot render or inspect the UI, report that limitation and
 ## Prompt structure notes
 
 - Model choice: choose Sol, Terra, or Luna by workload and test the prompt on the variant you will run.
-- Caching: keep static instructions and tool definitions first and dynamic context last, so the shared prefix stays cacheable. Do not rewrite earlier turns when replaying history.
+- Caching: keep static instructions and tool definitions first and dynamic context last, and do not rewrite earlier turns when replaying history. Ordering alone is not enough on GPT-5.6 and later: OpenAI's [prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) says implicit-only caching "does not make the shorter shared prefix reusable," so the host must place an explicit breakpoint after the static content. `prompt_cache_key` is not needed to optimize caching on these models.
 - Safeguards: real-time cyber and biology classifiers can refuse requests or pause streaming. Do not prompt around safeguards; ask for the legitimate task directly.
 
 ## Validate the prompt change
