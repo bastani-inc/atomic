@@ -42,7 +42,12 @@ import {
 	WORKFLOW_STAGE_CLOSED_FOR_GOOD_STATE,
 	watchWorkflowStageSubagentChildren,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
-import { collectGarbage, MAX_COLLECTION_ROUNDS } from "../helpers/collect-garbage.js";
+import {
+	collectEverythingTracked,
+	collectGarbage,
+	MAX_COLLECTION_ROUNDS,
+	trackCollection,
+} from "../helpers/collect-garbage.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 
@@ -843,10 +848,13 @@ describe("what the index keeps besides entries (#4395)", () => {
 		let collected: object | undefined = {};
 		watchSubagentChildCard(kept, () => {}, "ix-two-cards:0", undefined);
 		watchSubagentChildCard(collected, () => {}, "ix-two-cards:0", undefined);
-		const probe = new WeakRef(collected);
+		// Watched through a FinalizationRegistry, not a WeakRef: `deref()` keeps its target alive for the rest of the
+		// job, and collectGarbage runs its first collection in that same job, so a deref-polling loop never sees it go.
+		const tracked = trackCollection();
+		tracked.track(collected);
 		collected = undefined;
-		for (let round = 0; round < MAX_COLLECTION_ROUNDS && probe.deref() !== undefined; round++)
-			await collectGarbage(1);
+		await collectEverythingTracked(tracked);
+		assert.deepEqual(tracked.uncollected(), [], "the dropped card is collected");
 		await collectGarbage(2);
 
 		assert.equal(subagentChildCardStateSizes().watchers, before + 1);
