@@ -16,8 +16,10 @@ import { basename, extname, join, relative } from "node:path";
 import { parse } from "acorn";
 import { simple } from "acorn-walk";
 import { test } from "vitest";
+import { WORKER_HOST_MODULE_SPECIFIERS } from "../../packages/coding-agent/src/bun/internal-workflow-worker.js";
 import {
 	INSTALLED_EXTENSION_ENTRIES,
+	WORKFLOWS_LOCAL_WORKER_ENTRIES,
 	WORKFLOWS_SDK_BUNDLE_ENTRY,
 } from "../../packages/coding-agent/src/core/builtin-install-layout.js";
 import { getVirtualModules } from "../../packages/coding-agent/src/core/extensions/loader-host-modules.js";
@@ -136,6 +138,16 @@ test(
 				for (const specifier of collectImportSpecifiers(source)) {
 					if (!isPermittedSpecifier(specifier, hostSpecifiers)) {
 						unexpected.push(`${relative(builtinRoot, artifactPath)}: ${specifier}`);
+					}
+				}
+			}
+
+			const workerSpecifiers = new Set<string>(WORKER_HOST_MODULE_SPECIFIERS);
+			for (const entry of WORKFLOWS_LOCAL_WORKER_ENTRIES) {
+				const source = readFileSync(join(builtinRoot, "workflows", entry), "utf8");
+				for (const specifier of collectImportSpecifiers(source)) {
+					if (!isPermittedSpecifier(specifier, workerSpecifiers)) {
+						unexpected.push(`${entry}: ${specifier}`);
 					}
 				}
 			}

@@ -6,10 +6,11 @@ import { installBrokerHostModules } from "./internal-intercom-broker.js";
 
 export const INTERNAL_WORKFLOW_WORKER_ARG = "--internal-workflow-worker";
 
-const WORKER_HOST_MODULE_SPECIFIERS: readonly AppHostModuleSpecifier[] = [
+export const WORKER_HOST_MODULE_SPECIFIERS: readonly AppHostModuleSpecifier[] = [
 	"@bastani/atomic",
 	"@bastani/atomic/storage",
 	"@bastani/atomic-natives",
+	"@bastani/pi-ai/providers/all",
 	"typebox",
 	"typebox/compile",
 	"typebox/value",
