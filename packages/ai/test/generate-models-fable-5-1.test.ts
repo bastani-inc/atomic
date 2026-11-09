@@ -133,6 +133,7 @@ interface GeneratedModel {
 	name: string;
 	api: string;
 	provider: string;
+	baseUrl?: string;
 	reasoning: boolean;
 	input: string[];
 	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
@@ -142,7 +143,7 @@ interface GeneratedModel {
 	compat?: Record<string, unknown>;
 }
 
-function generate(): Record<string, Record<string, GeneratedModel>> {
+function generate(catalogSource: unknown = CATALOG): Record<string, Record<string, GeneratedModel>> {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "pi-generate-fable-5-1-"));
 	temporaryRoots.push(fixtureRoot);
 	const isolatedPackageRoot = join(fixtureRoot, "package");
@@ -154,7 +155,7 @@ function generate(): Record<string, Record<string, GeneratedModel>> {
 	const preloadPath = join(fixtureRoot, "mock-model-apis.mjs");
 	writeFileSync(
 		preloadPath,
-		`const catalog = ${JSON.stringify(CATALOG)};\n` +
+		`const catalog = ${JSON.stringify(catalogSource)};\n` +
 			`globalThis.fetch = async (input) => {\n` +
 			`  const url = String(input);\n` +
 			`  if (url === "https://models.dev/api.json") return new Response(JSON.stringify(catalog), { status: 200 });\n` +
@@ -353,4 +354,147 @@ test("generates both GitHub Copilot Claude Fable models from models.dev metadata
 		"xhigh",
 		"max",
 	]);
+});
+
+const FABLE_5_2_EXPECTED_COST = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 };
+
+test("generates Claude Fable 5.2 as a static Anthropic entry while models.dev lacks it", () => {
+	const catalogs = generate();
+	assert.equal(CATALOG.anthropic.models["claude-fable-5-2" as keyof typeof CATALOG.anthropic.models], undefined);
+	const model = catalogs.anthropic["claude-fable-5-2"];
+
+	assert.ok(model, "expected anthropic/claude-fable-5-2 to be generated");
+	assert.equal(model.name, "Claude Fable 5.2");
+	assert.equal(model.api, "anthropic-messages");
+	assert.equal(model.baseUrl, "https://api.anthropic.com");
+	assert.equal(model.provider, "anthropic");
+	assert.equal(model.reasoning, true);
+	assert.deepEqual(model.input, ["text", "image"]);
+	assert.deepEqual(model.cost, FABLE_5_2_EXPECTED_COST);
+	assert.equal(model.contextWindow, 1_000_000);
+	assert.equal(model.maxTokens, 128_000);
+
+	assert.equal(model.compat?.forceAdaptiveThinking, true);
+	assert.equal(model.compat?.supportsTemperature, false);
+	assert.equal(model.compat?.supportsMidConvoEffort, true);
+	assert.equal(model.compat?.supportsMidConvoSystemMessages, true);
+	assert.equal(model.thinkingLevelMap?.off, null);
+	assert.equal(model.thinkingLevelMap?.xhigh, "xhigh");
+	assert.equal(model.thinkingLevelMap?.max, "max");
+
+	// Upstream scopes the Fable 5.1-only restrictions to 5.1, and 5.2 does not inherit them.
+	assert.equal(model.compat?.enforcesPreservedThinkingBinding, undefined);
+	assert.equal(model.compat?.supportsForcedToolChoice, undefined);
+});
+
+test("keeps the static Anthropic Fable 5.2 entry when another provider lists the same ID (#4610)", () => {
+	const catalogs = generate({
+		...CATALOG,
+		"github-copilot": {
+			models: {
+				...CATALOG["github-copilot"].models,
+				"claude-fable-5-2": {
+					...FABLE_5_1_MODELS_DEV,
+					id: "claude-fable-5-2",
+					provider: { npm: "@ai-sdk/anthropic" },
+				},
+			},
+		},
+	});
+	assert.equal(catalogs["github-copilot"]["claude-fable-5-2"].provider, "github-copilot");
+	assert.equal(catalogs.anthropic["claude-fable-5-2"].provider, "anthropic");
+	assert.deepEqual(catalogs.anthropic["claude-fable-5-2"].cost, FABLE_5_2_EXPECTED_COST);
+});
+
+test("limits Claude Fable 5.2 fallback targets to Claude Opus 5 and prices them", () => {
+	const fallbacks = generate().anthropic["claude-fable-5-2"].compat?.allowedFallbackModels as
+		| Array<{ provider: string; model: string; cost: unknown }>
+		| undefined;
+
+	assert.deepEqual(fallbacks, [
+		{
+			provider: "anthropic",
+			model: "claude-opus-5",
+			cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		},
+	]);
+});
+
+test("prefers a models.dev Claude Fable 5.2 row over the static entry once it is published", () => {
+	const published = {
+		...CATALOG,
+		anthropic: {
+			models: {
+				...CATALOG.anthropic.models,
+				"claude-fable-5-2": {
+					...FABLE_5_1_MODELS_DEV,
+					id: "claude-fable-5-2",
+					name: "Claude Fable 5.2 (models.dev)",
+					cost: { input: 7, output: 35, cache_read: 0.7, cache_write: 8.75 },
+				},
+			},
+		},
+	};
+	const model = generate(published).anthropic["claude-fable-5-2"];
+
+	assert.equal(model.name, "Claude Fable 5.2 (models.dev)");
+	assert.deepEqual(model.cost, { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 });
+	assert.equal(model.compat?.supportsMidConvoEffort, true);
+});
+
+test("keeps the Claude Fable 5.2 fallback targets once models.dev publishes the row", () => {
+	const published = {
+		...CATALOG,
+		anthropic: {
+			models: {
+				...CATALOG.anthropic.models,
+				"claude-fable-5-2": { ...FABLE_5_1_MODELS_DEV, id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+			},
+		},
+	};
+	const fallbacks = generate(published).anthropic["claude-fable-5-2"].compat?.allowedFallbackModels as
+		| Array<{ provider: string; model: string }>
+		| undefined;
+
+	assert.deepEqual(
+		fallbacks?.map((fallback) => fallback.model),
+		["claude-opus-5"],
+	);
+});
+
+test("gates per-message effort and mid-conversation system messages on exact Fable and Mythos 5.1 and 5.2 ids", () => {
+	const row = (id: string) => ({ ...FABLE_5_1_MODELS_DEV, id, cost: FABLE_COST });
+	const ids = [
+		"claude-fable-5-2-20261109",
+		"claude-mythos-5-2",
+		"claude-mythos-5.1",
+		"claude-fable-5-3",
+		"claude-fable-5-2-preview",
+		"prefix-claude-fable-5-2",
+		"claude-fable-5-2-2026110",
+		"claude-fable-5-2-abcdefgh",
+	];
+	const catalog = {
+		...CATALOG,
+		anthropic: {
+			models: {
+				...CATALOG.anthropic.models,
+				...Object.fromEntries(ids.map((id) => [id, row(id)])),
+			},
+		},
+	};
+	const anthropic = generate(catalog).anthropic;
+	const gates = (id: string) => [
+		anthropic[id]?.compat?.supportsMidConvoEffort,
+		anthropic[id]?.compat?.supportsMidConvoSystemMessages,
+	];
+
+	assert.deepEqual(gates("claude-fable-5-2-20261109"), [true, true]);
+	assert.deepEqual(gates("claude-mythos-5-2"), [true, true]);
+	assert.deepEqual(gates("claude-mythos-5.1"), [true, true]);
+	assert.deepEqual(gates("claude-fable-5-2"), [true, true]);
+	assert.deepEqual(gates("claude-fable-5-1"), [true, true]);
+	// Fable 5 takes mid-conversation system messages but not per-message effort.
+	assert.deepEqual(gates("claude-fable-5"), [undefined, true]);
+	for (const id of ids.slice(3)) assert.deepEqual(gates(id), [undefined, undefined], id);
 });

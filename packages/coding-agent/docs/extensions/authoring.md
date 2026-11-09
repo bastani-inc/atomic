@@ -516,7 +516,7 @@ pi.registerTool({
 
 **Operations interfaces:** `ReadOperations`, `WriteOperations`, `EditOperations`, `BashOperations`, `LsOperations`, `GrepOperations`, `FindOperations`
 
-`GrepOperations` only covers the directory check: grep always searches the local filesystem with its native search or `rg`. To search a remote system, override grep's `execute()` instead.
+`GrepOperations` only uses the directory check: grep always searches the local filesystem with its native search or `rg`. The optional `readFile` callback is deprecated and ignored, including for context lines. Existing integrations can leave it in place, but to search a remote system, override grep's `execute()` instead.
 
 For `user_bash`, extensions can reuse atomic's local shell backend via `createLocalBashOperations()` instead of reimplementing local process spawning, shell resolution, and process-tree termination.
 

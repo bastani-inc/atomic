@@ -10,6 +10,8 @@ import type { ImageEditParamsNonStreaming, ImageGenerateParamsNonStreaming, Imag
 import {
 	findImageGenerationError,
 	ImageGenerationApiError,
+	ImageGenerationConfigError,
+	type ImageGenerationConfigReason,
 	type ImageGenerationError,
 	ImageGenerationQuotaError,
 	ImageGenerationRateLimitError,
@@ -17,6 +19,7 @@ import {
 	ImageGenerationTimeoutError,
 	ImageGenerationUserError,
 	ImageModerationBlockedError,
+	isImageGenerationConfigError,
 } from "../image-generation-error.ts";
 import { calculateCost } from "../models.ts";
 import type {
@@ -34,6 +37,7 @@ import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import {
+	DEFAULT_SVG_AUTHOR_MODEL,
 	type OpenAIImagesOptions,
 	type OpenAIImagesWireParams,
 	partitionInputImages,
@@ -85,7 +89,11 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
-	const startedAt = Date.now();
+	const state: ImageRequestState = {
+		modelId: model.id,
+		timeoutMs: options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+		startedAt: Date.now(),
+	};
 
 	try {
 		if (!options?.apiKey) {
@@ -99,27 +107,39 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 		validateOpenAIImagesRequest(model, params);
 		const requestOptions = {
 			...(options?.signal ? { signal: options.signal } : {}),
-			...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
+			timeout: state.timeoutMs,
 			maxRetries: 0,
 		};
-		const { data: response, response: rawResponse } = await retryProviderRequest(
-			() =>
-				params.image !== undefined
-					? client.images.edit(params as ImageEditParamsNonStreaming, requestOptions).withResponse()
-					: client.images.generate(params as ImageGenerateParamsNonStreaming, requestOptions).withResponse(),
-			{
-				maxRetries: options?.maxRetries,
-				maxRetryDelayMs: options?.maxRetryDelayMs,
-				signal: options?.signal,
-				noRetry: (error) => classifyImageApiError(error)?.retryable === false,
-			},
-		);
+		const send = async (body: OpenAIImagesWireParams, svgModelDefaulted: boolean): Promise<SentRequest> => {
+			state.svgModelDefaulted = svgModelDefaulted;
+			const { data, response } = await retryProviderRequest(
+				() =>
+					body.image !== undefined
+						? client.images.edit(body as ImageEditParamsNonStreaming, requestOptions).withResponse()
+						: client.images.generate(body as ImageGenerateParamsNonStreaming, requestOptions).withResponse(),
+				{
+					maxRetries: options.maxRetries,
+					maxRetryDelayMs: options.maxRetryDelayMs,
+					signal: options.signal,
+					noRetry: (error) => classifyImageApiError(error, state)?.retryable === false,
+				},
+			);
+			return { params: body, data, response };
+		};
+		const {
+			params: sentParams,
+			data: response,
+			response: rawResponse,
+		} = await sendWithSvgRecovery(send, params, state, options.signal);
 		await options?.onResponse?.({ status: rawResponse.status, headers: headersToRecord(rawResponse.headers) }, model);
 
 		if (response.usage) {
 			output.usage = parseUsage(response.usage, model);
 		}
-		const mimeType = OUTPUT_FORMAT_MIME_TYPES[response.output_format ?? params.output_format ?? "png"] ?? "image/png";
+		const svgModel = svgAuthoringModel(response) ?? sentParams.svg?.model;
+		if (svgModel !== undefined) output.svgModel = svgModel;
+		const mimeType =
+			OUTPUT_FORMAT_MIME_TYPES[response.output_format ?? sentParams.output_format ?? "png"] ?? "image/png";
 		for (const image of response.data ?? []) {
 			if (!image.b64_json) continue;
 			output.output.push({ type: "image", mimeType, data: image.b64_json } satisfies ImageContent);
@@ -131,18 +151,68 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 		output.stopReason = aborted ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error));
 		if (!aborted) {
-			const typed =
-				findImageGenerationError(error) ??
-				classifyImageApiError(error, { timeoutMs: options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, startedAt });
+			const typed = findImageGenerationError(error) ?? classifyImageApiError(error, state);
 			if (typed) output.error = typed.toData();
 		}
 		return output;
 	}
 };
 
-interface ImageErrorTiming {
+/** What classifying a failure of one `generateImages()` call needs to know about the call. */
+interface ImageRequestState {
+	modelId: string;
 	timeoutMs: number;
 	startedAt: number;
+	/** True while the request in flight carries the default `svg` that recovery added. */
+	svgModelDefaulted?: boolean;
+}
+
+interface SentRequest {
+	params: OpenAIImagesWireParams;
+	data: ImagesResponse;
+	response: Response;
+}
+
+type SendImageRequest = (params: OpenAIImagesWireParams, svgModelDefaulted: boolean) => Promise<SentRequest>;
+
+/**
+ * Send a request, and for SVG output without a caller `svg` recover from two API answers: a
+ * missing `svg.model` retries once with {@link DEFAULT_SVG_AUTHOR_MODEL}, and an `svg` the API
+ * then rejects as unsupported retries once more without it. At most three requests are sent. An
+ * `svg` the caller or an `onPayload` hook set is never replaced or dropped.
+ */
+async function sendWithSvgRecovery(
+	send: SendImageRequest,
+	params: OpenAIImagesWireParams,
+	state: ImageRequestState,
+	signal: AbortSignal | undefined,
+): Promise<SentRequest> {
+	const recoverable = params.output_format === "svg" && params.svg === undefined;
+	try {
+		return await send(params, false);
+	} catch (error) {
+		if (!recoverable || svgRejection(error, state) !== "required-by-api") throw error;
+	}
+	signal?.throwIfAborted();
+	try {
+		return await send({ ...params, svg: { model: DEFAULT_SVG_AUTHOR_MODEL } }, true);
+	} catch (error) {
+		if (svgRejection(error, state) !== "unsupported-by-api") throw error;
+	}
+	signal?.throwIfAborted();
+	return send(params, false);
+}
+
+/** Why the API rejected the `svg` option, for the only failures that become a config error. */
+function svgRejection(error: unknown, state: ImageRequestState): ImageGenerationConfigReason | undefined {
+	const typed = classifyImageApiError(error, state);
+	return isImageGenerationConfigError(typed) ? typed.reason : undefined;
+}
+
+/** The authoring model the API names in `svg_usage`, which the SDK's response type does not declare. */
+function svgAuthoringModel(response: ImagesResponse): string | undefined {
+	const reported = (response as ImagesResponse & { svg_usage?: { model?: unknown } }).svg_usage?.model;
+	return typeof reported === "string" && reported !== "" ? reported : undefined;
 }
 
 /** Provider types, codes, request IDs and moderation categories are short identifiers. */
@@ -177,15 +247,14 @@ function safeCause(sdkError: APIError, summary: string): Error {
 }
 
 /** Translate an OpenAI SDK failure, also when wrapped in a retry-delay error, into the typed family. */
-function classifyImageApiError(error: unknown, timing?: ImageErrorTiming): ImageGenerationError | undefined {
+function classifyImageApiError(error: unknown, state: ImageRequestState): ImageGenerationError | undefined {
 	const cause = error instanceof Error ? error.cause : undefined;
 	const sdkError = [error, cause].find((candidate): candidate is APIError => candidate instanceof APIError);
 	if (!sdkError || sdkError instanceof APIUserAbortError) return undefined;
 	if (sdkError instanceof APIConnectionTimeoutError) {
-		const timeoutMs = timing?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 		return new ImageGenerationTimeoutError({
-			timeoutMs,
-			elapsedMs: timing ? Date.now() - timing.startedAt : timeoutMs,
+			timeoutMs: state.timeoutMs,
+			elapsedMs: Date.now() - state.startedAt,
 			cause: safeCause(sdkError, "no HTTP response, the request timed out"),
 		});
 	}
@@ -210,12 +279,81 @@ function classifyImageApiError(error: unknown, timing?: ImageErrorTiming): Image
 		}
 		return new ImageGenerationUserError(init);
 	}
+	const svgFailure = classifySvgFailure(sdkError.param, status, apiCode, state, init);
+	if (svgFailure) return svgFailure;
 	if (apiCode === "insufficient_quota" || apiType === "insufficient_quota") {
 		return new ImageGenerationQuotaError(init);
 	}
 	if (status === 429) return new ImageGenerationRateLimitError(init);
 	if ((status ?? 0) >= 500) return new ImageGenerationServerError(init);
 	return new ImageGenerationApiError({ ...init, retryable: status === undefined || status === 408 || status === 409 });
+}
+
+const SVG_FIELDS = ["svg", "svg.model"] as const;
+const SVG_REJECTION_STATUSES: readonly (number | undefined)[] = [400, 404, 422];
+const SVG_UNSUPPORTED_CODES: readonly (string | undefined)[] = ["unsupported_parameter", "unknown_parameter"];
+
+function isSvgField(param: unknown): param is (typeof SVG_FIELDS)[number] {
+	return SVG_FIELDS.some((field) => field === param);
+}
+
+function svgRejectionReason(
+	param: (typeof SVG_FIELDS)[number],
+	apiCode: string | undefined,
+): ImageGenerationConfigReason | undefined {
+	if (param === "svg.model" && apiCode === "missing_required_parameter") return "required-by-api";
+	if (SVG_UNSUPPORTED_CODES.includes(apiCode)) return "unsupported-by-api";
+	return param === "svg.model" ? "rejected-by-api" : undefined;
+}
+
+/**
+ * Translate the API's rejection of the `svg` option into an `invalid-option` error naming the
+ * field, found by the response's `param` and `code`, never by its message.
+ */
+function classifySvgFailure(
+	param: string | null | undefined,
+	status: number | undefined,
+	apiCode: string | undefined,
+	state: ImageRequestState,
+	init: { detail: string; cause: Error },
+): ImageGenerationConfigError | undefined {
+	if (!isSvgField(param) || !SVG_REJECTION_STATUSES.includes(status)) return undefined;
+	const reason = svgRejectionReason(param, apiCode);
+	if (reason === undefined) return undefined;
+	const text = describeSvgRejection(param, reason, state);
+	return new ImageGenerationConfigError({
+		model: state.modelId,
+		field: param,
+		reason,
+		detail: `${text.detail} (${init.detail})`,
+		hint: text.hint,
+		cause: init.cause,
+	});
+}
+
+function describeSvgRejection(
+	field: string,
+	reason: ImageGenerationConfigReason,
+	state: ImageRequestState,
+): { detail: string; hint: string } {
+	if (reason === "required-by-api") {
+		return {
+			detail: "the API requires svg.model for SVG output on this account",
+			hint: `Set svg.model to an SVG authoring model your account can use, for example svg: { model: "${DEFAULT_SVG_AUTHOR_MODEL}" }.`,
+		};
+	}
+	if (reason === "unsupported-by-api") {
+		return {
+			detail: `the API does not accept ${field} on this account`,
+			hint: "Remove svg from the request: this account does not take an SVG authoring model.",
+		};
+	}
+	return {
+		detail: state.svgModelDefaulted
+			? `the API rejected ${DEFAULT_SVG_AUTHOR_MODEL}, the default SVG authoring model the request was retried with`
+			: "the API rejected svg.model",
+		hint: "Set svg.model to an SVG authoring model your account can use.",
+	};
 }
 
 interface ImageApiErrorBody {

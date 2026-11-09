@@ -211,6 +211,7 @@ interface ImagesOptions {
   frameCount?: number;
   frameDurationMs?: number;
   complexity?: "low" | "medium" | "high";
+  /** Optional. Leave it out unless you choose the model that writes the SVG; see below. */
   svg?: { model: string; reasoning?: { effort?: string } };
   moderation?: "auto" | "low";
   safetyIdentifier?: string;
@@ -222,6 +223,8 @@ interface ImagesResult {
   /** Generated images, and text blocks for models that also return text. */
   output: (TextBlock | ImageBlock)[];
   usage?: ModelUsage;
+  /** For SVG output: the model that wrote the SVG. */
+  svgModel?: string;
   stopReason: "stop" | "error" | "aborted";
   errorMessage?: string;
   /** A classified failure: `name`, a stable `code`, `retryable`, `hint` and safe `fields`. */
@@ -234,6 +237,8 @@ type ImageBlock = { type: "image"; data: string; mimeType: string; role?: "marku
 ```
 
 The options are those of OpenAI's GPT Image models under `openai-images`; OpenRouter image models ignore them. The first image without a `role` is the base image to edit and the others are references. An image with `role: "markup"` is a transparent PNG with annotations, sent as `markup` and applied to the first image, which it must match in size; one with `role: "mask"` is an alpha-channel mask for the first image. They cannot be combined. `outputFormat: "gif"` returns an animation (`frameCount` 2-16, `frameDurationMs` 20-2000) and `"svg"` returns SVG; both need a GPT Image 2.6 model and generation without images. A request that cannot succeed does not throw: before anything is sent it returns `stopReason: "error"` with `error.code` `invalid-option` and `error.fields.field` naming the option. `error.code` is also `moderation-blocked`, `user-error`, `quota-exceeded`, `rate-limited`, `server-error`, `timeout` or `api-error`; branch on it, and on `error.retryable`, not on the message. See [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels) for each code.
+
+SVG output needs no other option: `{ outputFormat: "svg" }` works on every account. Some accounts must name the model that writes the SVG. When the API answers that `svg.model` is required and the call set no `svg`, Atomic retries once with `gpt-6.1-sol` and `result.svgModel` reports the model used. OpenAI's API reference lists no authoring models and no default, so `gpt-6.1-sol` is a value that worked in testing, not a documented default. Pass `svg: { model, reasoning }` to choose another model; an `svg` you pass is always sent as given and never retried or replaced. If the API rejects the retry's `svg` as unsupported, Atomic retries once more without it. A rejected `svg.model` or `svg` returns `error.code` `invalid-option` with `error.fields.field` `svg.model` or `svg`, and `error.fields.reason` `required-by-api`, `rejected-by-api` or `unsupported-by-api`. SVG authoring takes tens of seconds (plain requests took 12 to 46 seconds in testing, and OpenAI says complex prompts can take up to 2 minutes), and Atomic sets no request timeout shorter than 10 minutes, so a script that sets `timeout_ms` should allow at least 180000.
 
 Show generated images with `image(block)`. Do not print `data` with `text()`, `console`, or `return`: it is large and the model cannot read it as text. A script that generates images without showing any gets a note saying so. `image()` accepts PNG, JPEG, GIF and WebP, so show an animated GIF with `image(block)`. It does not accept SVG: Atomic saves each SVG that `models.generateImages()` returns to a private temp `.svg` file and names its path in the result, as `[SVG saved to <path> (image/svg+xml, <size>)]`. An SVG block (`image/svg+xml`) holds XML text, which a script can read with `atob(block.data)`. `image()` also saves each image to a private temp file and puts its path in the result, so a later turn can copy or move the file.
 
@@ -248,6 +253,23 @@ for (const block of result.output) {
   if (block.type === "image") image(block);
   else text(block.text);
 }
+```
+
+A plain SVG request, which Atomic recovers when the account needs `svg.model`, and a four-frame GIF:
+
+```js
+// @options: {"timeout_ms": 180000}
+const flare = await models.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
+const logo = await models.generateImages(flare, {
+  input: [{ type: "text", text: "A flat red paper lantern icon" }],
+}, { outputFormat: "svg" });
+if (logo.stopReason !== "stop") return logo.error ?? logo.errorMessage;
+const gif = await models.generateImages(flare, {
+  input: [{ type: "text", text: "A paper lantern swinging gently, flat vector style" }],
+}, { outputFormat: "gif", frameCount: 4, frameDurationMs: 200, size: "512x512" });
+if (gif.stopReason !== "stop") return gif.error ?? gif.errorMessage;
+for (const block of gif.output) if (block.type === "image") image(block);
+return { svgModel: logo.svgModel, svg: logo.output.map((block) => block.mimeType) };
 ```
 
 Extensions call classifiers and image models through `ctx.modelRegistry.classify()` and `ctx.modelRegistry.generateImages()`, without codemode.

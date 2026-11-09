@@ -168,6 +168,12 @@ export class ImageGenerationError extends Error {
 	}
 }
 
+/**
+ * Why an option was rejected. The first seven are found before a request is sent. The last three
+ * come from the API's own rejection of an option: `required-by-api` (the API needs an option the
+ * request did not carry), `rejected-by-api` (the API refused the option's value) and
+ * `unsupported-by-api` (the API does not accept the option for this account or model).
+ */
 export type ImageGenerationConfigReason =
 	| "out-of-range"
 	| "requires-option"
@@ -175,7 +181,10 @@ export type ImageGenerationConfigReason =
 	| "generation-only"
 	| "unsupported-by-model"
 	| "requires-base-image"
-	| "duplicate-role";
+	| "duplicate-role"
+	| "required-by-api"
+	| "rejected-by-api"
+	| "unsupported-by-api";
 
 export interface ImageGenerationConfigErrorInit {
 	model: string;
@@ -190,8 +199,9 @@ export interface ImageGenerationConfigErrorInit {
 }
 
 /**
- * The request options or input are invalid. Thrown before any request is sent, so nothing was
- * billed and retrying the same request fails the same way.
+ * The request options or input are invalid. Found before any request is sent, or reported by the
+ * API as a rejected option (`reason` `required-by-api`, `rejected-by-api` or `unsupported-by-api`).
+ * Either way nothing was billed and retrying the same request fails the same way.
  */
 export class ImageGenerationConfigError extends ImageGenerationError {
 	declare readonly name: "ImageGenerationConfigError";

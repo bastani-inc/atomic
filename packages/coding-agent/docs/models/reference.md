@@ -532,7 +532,7 @@ Changes to the system prompt, tools, or conversation prefix can invalidate signe
 
 [Compaction](/compaction) resets the signed reasoning chain while preserving retained text, tool calls, and tool results. Do not expect pre-compaction reasoning blocks to survive a boundary.
 
-Server-side fallback may continue a declined Fable 5.1 response with Claude Opus 4.8 or Claude Opus 5. The assistant turn keeps a `fallback` marker and records the serving model for usage accounting. Do not remove or reorder this marker when replaying messages.
+Server-side fallback may continue a declined Fable 5.1 response with Claude Opus 4.8 or Claude Opus 5. Fable 5.2 (`claude-fable-5-2`) is limited to Claude Opus 5, because Claude Opus 4.8 cannot take per-message effort; Opus 5's price is billed for the continued response. The assistant turn keeps a `fallback` marker and records the serving model for usage accounting. Do not remove or reorder this marker when replaying messages.
 
 These preserved-thinking behaviors apply only to first-party `anthropic` models using `anthropic-messages`. Bedrock, Vertex, Copilot, opencode zen, Vercel AI Gateway, and compatible proxies do not receive them automatically. On those routes, switching models does not replay the earlier model's thinking, and a changed prefix may cause a provider error. Enable `compat.delegatesThinkingModelBinding` and `compat.enforcesPreservedThinkingBinding` only for custom providers known to support the corresponding behavior.
 

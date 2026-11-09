@@ -4,9 +4,8 @@ import type { ImageApi, ImageModel, ImagesInputContent, ImagesInputImage, Images
 
 /**
  * Bounds the OpenAI Images API accepts for GPT Image 2.6 request fields. Requests outside them fail
- * before anything is sent. The image generation guide documents 2-64 GIF frames and the API
- * reference documents 2-16. A live request with 17 frames was rejected ("Use an integer from 2 to
- * 16", #4332), so the API reference is right and the maximum is 16.
+ * before anything is sent. The image generation guide and the API reference both document 2-16 GIF
+ * frames, and a live request with 17 frames was rejected ("Use an integer from 2 to 16", #4332).
  */
 export const OPENAI_IMAGES_LIMITS = {
 	gifFrameCount: { min: 2, max: 16 },
@@ -15,11 +14,23 @@ export const OPENAI_IMAGES_LIMITS = {
 	safetyIdentifierMaxLength: 128,
 } as const;
 
+/**
+ * The model SVG output retries with when the API answers that `svg.model` is required and the
+ * request carried no `svg`. OpenAI's documentation names no SVG authoring model and no default:
+ * the API reference says only that `svg.model` is required when SVG model selection is enabled
+ * for the account. `gpt-6.1-sol` is a value observed to work (#4615), not a documented default.
+ */
+export const DEFAULT_SVG_AUTHOR_MODEL = "gpt-6.1-sol";
+
 export type OpenAIImagesOutputFormat = "png" | "jpeg" | "webp" | "svg" | "gif";
 
 /** The model that writes the SVG for `outputFormat: "svg"`, and its reasoning effort. */
 export interface OpenAIImagesSvgOptions {
-	/** Required by the API when SVG model selection is enabled for the account. */
+	/**
+	 * Required by the API when SVG model selection is enabled for the account, and rejected when it is
+	 * not. Leave `svg` out to let SVG output recover: when the API answers that `svg.model` is
+	 * required, the request is retried once with {@link DEFAULT_SVG_AUTHOR_MODEL}.
+	 */
 	model: string;
 	reasoning?: { effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" };
 }
@@ -47,7 +58,10 @@ export interface OpenAIImagesOptions extends ImagesOptions {
 	outputFormat?: OpenAIImagesOutputFormat;
 	/**
 	 * Selects the model that authors the SVG. Needs `outputFormat: "svg"`; the API requires `svg.model`
-	 * when SVG model selection is enabled for the account and rejects the field otherwise.
+	 * when SVG model selection is enabled for the account and rejects the field otherwise. Without
+	 * `svg`, a request the API refuses for a missing `svg.model` is retried once with
+	 * {@link DEFAULT_SVG_AUTHOR_MODEL}, and that retry is sent again without `svg` if the API rejects
+	 * the field as unsupported. A `svg` you set is always sent as given and never retried or replaced.
 	 */
 	svg?: OpenAIImagesSvgOptions;
 	/** 0-100, for `jpeg` and `webp` output only. */

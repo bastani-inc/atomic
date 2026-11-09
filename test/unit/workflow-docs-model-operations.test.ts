@@ -28,18 +28,19 @@ afterEach(() => {
 	else process.env.ATOMIC_CODING_AGENT_DIR = previousAgentDir;
 });
 
-function documentedExamples(): { triage: string; previewAsset: string } {
+function documentedExamples(): { triage: string; previewAsset: string; svgAndGif: string } {
 	const text = readFileSync(authoringDoc, "utf8").replaceAll("\r\n", "\n");
 	const start = text.indexOf(SECTION_HEADING);
 	assert.notEqual(start, -1, `${SECTION_HEADING} is missing from the authoring guide`);
 	const end = text.indexOf("\n### ", start + SECTION_HEADING.length);
 	const section = text.slice(start, end === -1 ? undefined : end);
 	const fences = [...section.matchAll(/^```ts\n([\s\S]*?)^```/gmu)].map((match) => match[1] ?? "");
-	assert.equal(fences.length, 2, "the section documents exactly one classifier and one image example");
-	const [triage, previewAsset] = fences as [string, string];
+	assert.equal(fences.length, 3, "the section documents a classifier workflow, an image workflow and an SVG/GIF step");
+	const [triage, previewAsset, svgAndGif] = fences as [string, string, string];
 	assert.match(triage, /\.atomic\/workflows\/triage\.ts|name: "triage"/u);
 	assert.match(previewAsset, /name: "preview-asset"/u);
-	return { triage, previewAsset };
+	assert.match(svgAndGif, /ctx\.tool\("generate-svg-and-gif"/u);
+	return { triage, previewAsset, svgAndGif };
 }
 
 function userProject(): string {
@@ -47,9 +48,25 @@ function userProject(): string {
 	tempDirs.push(project);
 	process.env.ATOMIC_CODING_AGENT_DIR = join(project, "agent-config");
 	mkdirSync(join(project, ".atomic/workflows"), { recursive: true });
-	const { triage, previewAsset } = documentedExamples();
+	const { triage, previewAsset, svgAndGif } = documentedExamples();
 	writeFileSync(join(project, ".atomic/workflows/triage.ts"), triage);
 	writeFileSync(join(project, ".atomic/workflows/preview-asset.ts"), previewAsset);
+	writeFileSync(
+		join(project, ".atomic/workflows/svg-and-gif.ts"),
+		`${previewAsset.slice(0, previewAsset.indexOf("export default"))}
+export default workflow({
+  name: "svg-and-gif",
+  description: "Exercise the documented SVG and GIF tool step.",
+  inputs: { brief: Type.String() },
+  outputs: { paths: Type.Record(Type.String(), Type.String()), svgModel: Type.Optional(Type.String()) },
+  run: async (ctx) => {
+    const brief = ctx.inputs.brief;
+    const outputDir = join(ctx.cwd, ".atomic", "workflow-assets", ctx.runId);
+    ${svgAndGif}
+    return assets;
+  },
+});`,
+	);
 	return project;
 }
 
@@ -93,7 +110,7 @@ const jsonResponse = (value: unknown): Response =>
 	new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
 
 describe("workflow authoring guide: classifier and image examples", () => {
-	test("both documented workflows register without project node_modules (#3454)", async () => {
+	test("all documented model examples register without project node_modules (#3454, #4615)", async () => {
 		const project = userProject();
 		const { registry, errors } = await discoverWorkflows({
 			cwd: project,
@@ -102,7 +119,7 @@ describe("workflow authoring guide: classifier and image examples", () => {
 			getWorkflowHostModules,
 		});
 		assert.deepEqual(errors, []);
-		assert.deepEqual(registry.names().sort(), ["preview-asset", "triage"]);
+		assert.deepEqual(registry.names().sort(), ["preview-asset", "svg-and-gif", "triage"]);
 	});
 
 	test("triage routes a confident classifier answer to a chat stage and leaves the classifier out of execution", async () => {
@@ -206,6 +223,71 @@ describe("workflow authoring guide: classifier and image examples", () => {
 			/Provider is not configured: typesafe/u,
 		);
 		assert.deepEqual(taskCalls, []);
+	});
+
+	test("the documented SVG/GIF step negotiates SVG and saves both formats (#4615)", async () => {
+		const project = userProject();
+		const { registry, errors } = await discoverWorkflows({
+			cwd: project,
+			homeDir: project,
+			includeBundled: false,
+			getWorkflowHostModules,
+		});
+		assert.deepEqual(errors, []);
+		const svgAndGif = registry.get("svg-and-gif");
+		assert.ok(svgAndGif);
+		const { ctx, toolCalls } = fakeContext(project, { brief: "a teal loading animation" });
+		const seen: Array<Record<string, unknown>> = [];
+		const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+		const gif = "GIF89a-test-frames";
+		process.env.OPENAI_API_KEY = "test-openai-key";
+		try {
+			const result = await withFetch(
+				(url, init) => {
+					assert.match(url, /\/images\/generations$/u);
+					assert.equal(new Headers(init.headers).get("authorization"), "Bearer test-openai-key");
+					const payload = JSON.parse(String(init.body)) as Record<string, unknown>;
+					seen.push(payload);
+					if (seen.length === 1) {
+						return new Response(
+							JSON.stringify({ error: { code: "missing_required_parameter", param: "svg.model" } }),
+							{ status: 400, headers: { "content-type": "application/json" } },
+						);
+					}
+					return jsonResponse({
+						data: [{ b64_json: Buffer.from(payload.output_format === "svg" ? svg : gif).toString("base64") }],
+						...(payload.output_format === "svg" ? { svg_usage: { model: "test-svg-author" } } : {}),
+					});
+				},
+				async () => await svgAndGif.run(ctx as never),
+			);
+			const assets = result as { svgModel: string; paths: Record<string, string> };
+			assert.equal(assets.svgModel, "test-svg-author");
+			assert.deepEqual(assets.paths, {
+				"image.svg": join(project, ".atomic", "workflow-assets", "run-1", "image.svg"),
+				"image.gif": join(project, ".atomic", "workflow-assets", "run-1", "image.gif"),
+			});
+			assert.equal(readFileSync(assets.paths["image.svg"]!, "utf8"), svg);
+			assert.equal(readFileSync(assets.paths["image.gif"]!, "utf8"), gif);
+		} finally {
+			delete process.env.OPENAI_API_KEY;
+		}
+		assert.deepEqual(toolCalls, ["generate-svg-and-gif"]);
+		assert.equal(seen.length, 3);
+		assert.deepEqual(
+			seen.map((payload) => payload.output_format),
+			["svg", "svg", "gif"],
+		);
+		assert.equal(seen[0]!.svg, undefined);
+		assert.deepEqual(seen[1]!.svg, { model: "gpt-6.1-sol" });
+		assert.equal(seen[2]!.svg, undefined);
+		assert.equal(seen[2]!.frame_count, 4);
+		assert.equal(seen[2]!.frame_duration_ms, 200);
+		assert.equal(seen[2]!.size, "512x512");
+		for (const payload of seen) {
+			assert.equal(payload.model, "gpt-image-2.6-flare");
+			assert.equal(payload.prompt, "a teal loading animation");
+		}
 	});
 
 	test("preview-asset writes the generated image under the run's asset directory", async () => {

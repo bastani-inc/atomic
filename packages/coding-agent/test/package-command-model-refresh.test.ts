@@ -1,6 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ModelsError } from "@bastani/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, getAgentDir, getEnvNames, getLegacyAgentDir } from "../src/config.ts";
 import { handlePackageCommand, refreshModelCatalogs } from "../src/package-manager-cli.ts";
@@ -83,6 +84,81 @@ describe("atomic update --models", () => {
 		expect(observedOptions).toContainEqual({ allowNetwork: true, force: true });
 		expect(log.mock.calls.flat().join("\n")).toContain("Model catalogs refreshed");
 	});
+
+	it("warns about a signed-out provider and refreshes other catalogs (#4610)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		let successfulRefreshes = 0;
+
+		await handlePackageCommand(["update", "--models"], {
+			extensionFactories: [
+				(pi) => {
+					pi.registerProvider("signed-out-catalog", {
+						apiKey: "test-key",
+						refreshModels: async ({ allowNetwork }) => {
+							if (allowNetwork) throw new ModelsError("oauth", "OAuth refresh failed for signed-out-catalog");
+							return [];
+						},
+					});
+					pi.registerProvider("working-catalog", {
+						apiKey: "test-key",
+						refreshModels: async ({ allowNetwork }) => {
+							if (allowNetwork) successfulRefreshes++;
+							return [];
+						},
+					});
+				},
+			],
+		});
+
+		expect(successfulRefreshes).toBe(1);
+		expect(warn).toHaveBeenCalledTimes(1);
+		const warning = warn.mock.calls.flat().join("\n");
+		expect(warning).toContain("skipped model catalog for signed-out-catalog");
+		expect(warning).toContain("atomic auth login signed-out-catalog");
+		expect(log.mock.calls.flat().join("\n")).toContain("Model catalogs refreshed");
+		expect(error).not.toHaveBeenCalled();
+		expect(process.exitCode).toBe(0);
+	});
+
+	it.each(["model_source", "auth"] as const)(
+		"still fails for %s errors alongside a signed-out provider (#4610)",
+		async (code) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const error = vi.spyOn(console, "error").mockImplementation(() => {});
+			const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+			await handlePackageCommand(["update", "--models"], {
+				extensionFactories: [
+					(pi) => {
+						for (const [provider, failure] of [
+							["signed-out-catalog", new ModelsError("oauth", "login expired")],
+							["broken-catalog", new ModelsError(code, "catalog refresh failed")],
+							["unavailable-catalog", new Error("catalog unavailable")],
+						] as const) {
+							pi.registerProvider(provider, {
+								apiKey: "test-key",
+								refreshModels: async ({ allowNetwork }) => {
+									if (allowNetwork) throw failure;
+									return [];
+								},
+							});
+						}
+					},
+				],
+			});
+
+			expect(warn).toHaveBeenCalledTimes(1);
+			const failure = error.mock.calls.flat().join("\n");
+			expect(failure).toContain(
+				"Could not refresh model catalogs: broken-catalog: catalog refresh failed; unavailable-catalog: catalog unavailable",
+			);
+			expect(failure).not.toContain("signed-out-catalog");
+			expect(log.mock.calls.flat().join("\n")).not.toContain("Model catalogs refreshed");
+			expect(process.exitCode).toBe(1);
+		},
+	);
 
 	it("preserves legacy auth fallback when refreshing extension catalogs", async () => {
 		const isolatedEnvNames = [...getEnvNames(ENV_AGENT_DIR), "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"];

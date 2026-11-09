@@ -1086,6 +1086,98 @@ describe("Models runtime", () => {
 		});
 	});
 
+	it("refreshes catalogs that need only configured auth without refreshing OAuth", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("catalog-oauth", async () => ({
+			type: "oauth",
+			access: "expired",
+			refresh: "revoked",
+			expires: 0,
+		}));
+		await credentials.modify("catalog-key", async () => ({ type: "api_key", key: "stored-key" }));
+		const oauthRefresh = vi.fn(async (): Promise<never> => {
+			throw new Error("invalid_grant");
+		});
+		const networkCredentials = new Map<string, unknown>();
+		const hasUpdateCredential: boolean[] = [];
+		let unconfiguredRefreshes = 0;
+		const models = createModels({ credentials });
+		models.setProvider({
+			...testProvider({
+				id: "catalog-oauth",
+				auth: { oauth: testOAuth({ refresh: oauthRefresh }) },
+				refreshModels: async (context) => {
+					if (!context.allowNetwork) return;
+					networkCredentials.set("catalog-oauth", context.credential);
+					hasUpdateCredential.push(context.updateCredential !== undefined);
+				},
+			}),
+			refreshModelsAuth: "configured",
+		});
+		models.setProvider({
+			...testProvider({
+				id: "catalog-key",
+				auth: { apiKey: envKeyAuth(undefined) },
+				refreshModels: async (context) => {
+					if (context.allowNetwork) networkCredentials.set("catalog-key", context.credential);
+				},
+			}),
+			refreshModelsAuth: "configured",
+		});
+		models.setProvider({
+			...testProvider({
+				id: "catalog-unconfigured",
+				auth: { apiKey: envKeyAuth(undefined) },
+				refreshModels: async ({ allowNetwork }) => {
+					if (allowNetwork) unconfiguredRefreshes++;
+				},
+			}),
+			refreshModelsAuth: "configured",
+		});
+
+		expect((await models.refresh()).errors.size).toBe(0);
+		expect(oauthRefresh).not.toHaveBeenCalled();
+		expect([...networkCredentials]).toEqual([
+			["catalog-oauth", undefined],
+			["catalog-key", undefined],
+		]);
+		expect(hasUpdateCredential).toEqual([false]);
+		expect(unconfiguredRefreshes).toBe(0);
+		expect(await credentials.read("catalog-oauth")).toMatchObject({ access: "expired", refresh: "revoked" });
+	});
+
+	it("still refreshes OAuth for catalogs that declare the credential policy", async () => {
+		const credentials = new InMemoryCredentialStore();
+		await credentials.modify("catalog-default", async () => ({
+			type: "oauth",
+			access: "expired",
+			refresh: "old",
+			expires: 0,
+		}));
+		const oauthRefresh = vi.fn(async () => ({
+			type: "oauth" as const,
+			access: "fresh",
+			refresh: "new",
+			expires: Date.now() + 60_000,
+		}));
+		let networkCredential: unknown;
+		const models = createModels({ credentials });
+		models.setProvider({
+			...testProvider({
+				id: "catalog-default",
+				auth: { oauth: testOAuth({ refresh: oauthRefresh }) },
+				refreshModels: async (context) => {
+					if (context.allowNetwork) networkCredential = context.credential;
+				},
+			}),
+			refreshModelsAuth: "credential",
+		});
+
+		expect((await models.refresh()).errors.size).toBe(0);
+		expect(oauthRefresh).toHaveBeenCalledTimes(1);
+		expect(networkCredential).toMatchObject({ type: "oauth", access: "fresh" });
+	});
+
 	it("persists an OAuth refresh that started before the model refresh was cancelled (#3429)", async () => {
 		const credentials = new InMemoryCredentialStore();
 		await credentials.modify("p1", async () => ({

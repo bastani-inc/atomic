@@ -774,6 +774,8 @@ export interface AssistantImages {
 	output: ImagesOutputContent[];
 	responseId?: string;
 	usage?: Usage;
+	/** The model that authored an SVG result: the one the API reports, else the `svg.model` the request sent. */
+	svgModel?: string;
 	stopReason: ImagesStopReason;
 	errorMessage?: string;
 	/** Typed form of `errorMessage` when the failure is classified. Rebuild it with `imageGenerationErrorFromData()`. */
