@@ -5,12 +5,22 @@ import { test } from "vitest";
 import { openLibsqlDatabase as openAdapterDatabase } from "../../packages/storage-libsql/libsql.js";
 import { openLibsqlDatabase } from "../fixtures/storage-libsql-wrapper.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
-import { readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
+import { decodeStream, readStreamText, sleep, spawnProcess } from "../helpers/runtime.js";
 import { holdSqliteWriteLock } from "../helpers/sqlite-lock-holder.js";
 
 const writer = fileURLToPath(new URL("../fixtures/storage-libsql-file-writer.mjs", import.meta.url));
+const committer = fileURLToPath(new URL("../fixtures/storage-sqlite-busy-committer.mjs", import.meta.url));
 const WRITERS = 4;
 const ROUNDS = 100;
+/** The adapter's busy timeout for a local file (`FILE_BUSY_TIMEOUT_MS`): one wait of SQLite's busy handler. */
+const ADAPTER_BUSY_TIMEOUT_MS = 5_000;
+/**
+ * How long the other process keeps the lock for each of its commits: far longer than the moment between its commit
+ * and its next `BEGIN IMMEDIATE`, so SQLite's busy handler, which polls for the lock, finds it free almost never.
+ */
+const COMMIT_HOLD_MS = 100;
+/** How long the other process keeps committing: past two busy timeouts, each of which sees it commit. */
+const COMMITTING_MS = ADAPTER_BUSY_TIMEOUT_MS * 2.5;
 
 test("several processes write one libSQL file at once without a failed statement", async () => {
 	const directory = makeLibsqlDirectory();
@@ -53,6 +63,48 @@ test("several processes write one libSQL file at once without a failed statement
 	}
 }, 120_000);
 
+test(
+	"a write waits for another process that keeps committing past the busy timeout instead of failing with SQLITE_BUSY",
+	async () => {
+		const directory = makeLibsqlDirectory();
+		try {
+			const path = join(directory, "shared.sqlite");
+			const database = await openAdapterDatabase({ url: pathToFileURL(path).href });
+			try {
+				await database.exec("CREATE TABLE writes(n INTEGER NOT NULL)");
+				const other = spawnProcess(
+					[process.execPath, committer, path, String(COMMIT_HOLD_MS), String(COMMITTING_MS)],
+					{ stdout: "pipe", stderr: "pipe" },
+				);
+				const stderr = readStreamText(other.stderr);
+				const stdout = decodeStream(other.stdout!).getReader();
+				let output = "";
+				const readUntil = async (text: string) => {
+					while (!output.includes(text)) {
+						const { done, value } = await stdout.read();
+						if (done)
+							assert.fail(
+								`the committing process exited before it printed ${JSON.stringify(text)}: ${await stderr}`,
+							);
+						output += value;
+					}
+				};
+				await readUntil("committing\n");
+				// The lock changes hands every COMMIT_HOLD_MS: the write is behind a process that is making progress.
+				await database.run("INSERT INTO writes VALUES (1)");
+				await readUntil("committed ");
+				assert.equal(await other.exited, 0, await stderr);
+				assert.equal(Number((await database.get("SELECT COUNT(*) AS count FROM writes"))?.count), 1);
+			} finally {
+				await database.close();
+			}
+		} finally {
+			await removeLibsqlDirectory(directory);
+		}
+	},
+	ADAPTER_BUSY_TIMEOUT_MS * 12,
+);
+
 test("opening a libSQL file another process is writing waits for its lock to switch the file to the write-ahead log (#4270)", async () => {
 	const directory = makeLibsqlDirectory();
 	try {
@@ -94,7 +146,8 @@ test("a write that gave up on another process's lock leaves the file usable: lat
 		const database = await openAdapterDatabase({ url: pathToFileURL(path).href });
 		try {
 			await database.exec("CREATE TABLE writes(n INTEGER NOT NULL)");
-			// Give up at once instead of after the 5-second busy timeout; the failure is the same.
+			// The first wait gives up at once; the write runs again on a new connection, which waits one busy timeout in
+			// which the holder commits nothing, and then fails the same way.
 			await database.exec("PRAGMA busy_timeout = 0");
 			const holder = await holdSqliteWriteLock(path);
 			try {

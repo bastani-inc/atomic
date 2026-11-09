@@ -79,12 +79,13 @@ function urlCredentials(url) {
 /**
  * @param {() => Promise<import("@libsql/client").Client | import("@libsql/client").Transaction>} connection
  * @param {<T>(operation: () => Promise<T>) => Promise<T>} watch
+ * @param {<T>(operation: () => Promise<T>) => Promise<T>} [single] runs one statement, which a failure may run again
  * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
  */
-function statements(connection, watch) {
+function statements(connection, watch, single = watch) {
 	return {
 		execute: (sql, params) =>
-			watch(async () => driverResult(await (await connection()).execute({ sql, args: [...params] }))),
+			single(async () => driverResult(await (await connection()).execute({ sql, args: [...params] }))),
 		executeMultiple: (sql) => watch(async () => (await connection()).executeMultiple(sql)),
 	};
 }
@@ -103,6 +104,14 @@ function driverResult(result) {
  * one file, such as a workflow root, its coordinator and its workers, lose statements to each other.
  */
 const FILE_BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * Whether a driver call failed because another connection held a lock past the busy timeout.
+ * @param {unknown} error
+ */
+function isBusy(error) {
+	return /** @type {{ readonly code?: unknown } | undefined} */ (error)?.code === "SQLITE_BUSY";
+}
 
 /** V8's `gc`, taken from a context created while `--expose-gc` is set; the flag is off again for code that runs later. */
 function exposeGc() {
@@ -240,6 +249,35 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			throw error;
 		}
 	};
+	// SQLite's busy handler polls for a lock with growing sleeps, so a writer behind others that take the lock in turn
+	// can miss every poll and fail after the busy timeout although the lock changed hands many times meanwhile. So a
+	// call that the busy timeout ended before it wrote anything runs again, on new connections, as long as another
+	// connection committed while it waited: it fails only after a whole busy timeout in which nobody committed, as
+	// Atomic's own SQLite stores fail only after their lock wait passes without a commit. `PRAGMA data_version`, read
+	// on a connection of its own, changes when another connection commits.
+	/** @type {import("@libsql/client").Client | undefined} */
+	let probe;
+	const dataVersion = async () => {
+		probe ??= create();
+		const version = (await probe.execute("PRAGMA data_version")).rows[0]?.data_version;
+		return typeof version === "bigint" || typeof version === "number" ? version : undefined;
+	};
+	/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
+	const waitForLock = async (operation) => {
+		/** @type {bigint | number | undefined} */
+		let version;
+		for (;;) {
+			try {
+				return await watch(operation);
+			} catch (error) {
+				if (!local || !isBusy(error)) throw error;
+				// The first wait's progress is unknown, so it runs again once whatever the version says.
+				const current = await dataVersion().catch(() => version);
+				if (current === undefined || current === version) throw error;
+				version = current;
+			}
+		}
+	};
 	const connection = async () => {
 		if (replace) {
 			replace = false;
@@ -255,10 +293,13 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		descriptor: { adapter: "libsql", location: url },
 		redact: redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]),
 		transientFailure,
-		...statements(connection, watch),
-		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way.
+		// One statement outside a transaction that waited out the busy timeout wrote nothing and runs again. Several
+		// statements in one `exec` are not: the ones before the failed statement were committed.
+		...statements(connection, watch, waitForLock),
+		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
+		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing.
 		batch: (batched) =>
-			watch(async () => {
+			waitForLock(async () => {
 				const results = await (await connection()).batch(
 					batched.map(({ sql, params }) => ({ sql, args: [...params] })),
 					"write",
@@ -266,7 +307,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				return results.map(driverResult);
 			}),
 		async beginTransaction() {
-			const transaction = await watch(async () => (await connection()).transaction("write"));
+			const transaction = await waitForLock(async () => (await connection()).transaction("write"));
 			return {
 				...statements(async () => transaction, watch),
 				commit: () => watch(() => transaction.commit()),
@@ -276,6 +317,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		},
 		async close() {
 			client?.close();
+			probe?.close();
 			if (local) await releaseClosedConnections();
 		},
 	});
