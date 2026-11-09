@@ -69,11 +69,32 @@ Use `ctx.modelRegistry.complete()` for an extension model request that must use 
 
 Use `ctx.modelRegistry.generateImages(model, context, options)` to run an image model with request-time authentication. It resolves to the generated image blocks and usage, and reports provider errors through `stopReason`, `errorMessage` and, for a classified failure, `error` instead of rejecting. For `openai-images` models, `options` takes `size`, `quality`, `n`, `background`, `outputFormat` (`png`, `jpeg`, `webp`, `gif`, `svg`), `outputCompression`, `frameCount`, `frameDurationMs`, `complexity`, `svg`, `moderation` and `safetyIdentifier`; an image block with `role: "markup"` or `role: "mask"` is sent as the `markup` or `mask` field, and the first other image is the base image of an edit. GIF, SVG, `complexity` and the frame options need a GPT Image 2.6 model, which declares them in `model.capabilities`; a provider you register with image models declares them the same way.
 
+`outputFormat: "svg"` works without `svg`. Some accounts must name the model that writes the SVG. When the API answers that `svg.model` is required and the request set no `svg`, Atomic retries once with `gpt-6.1-sol` (exported as `DEFAULT_SVG_AUTHOR_MODEL` from `@bastani/pi-ai`), and `result.svgModel` reports the model that wrote the SVG. OpenAI's API reference lists no authoring models and no default, so `gpt-6.1-sol` is a value that worked in testing, not a documented default. Pass `svg: { model, reasoning }` to choose another model. An `svg` you pass is always sent as given and never retried or replaced. If the API rejects the retry's `svg` as unsupported, Atomic retries once more without it, so one call sends at most three requests. SVG authoring takes tens of seconds (plain requests took 12 to 46 seconds in testing, and OpenAI says complex prompts can take up to 2 minutes). Image requests have no deadline shorter than the SDK's 10 minutes unless you set `timeoutMs`, so leave it unset or allow at least 180000 for SVG.
+
+```typescript
+const flare = ctx.modelRegistry.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
+if (!flare) throw new Error("gpt-image-2.6-flare is unavailable");
+const input = [{ type: "text" as const, text: "A flat red paper lantern icon" }];
+
+const logo = await ctx.modelRegistry.generateImages(flare, { input }, { outputFormat: "svg", signal: ctx.signal });
+if (logo.stopReason !== "stop") throw new Error(logo.errorMessage);
+const svgBlock = logo.output.find((block) => block.type === "image");
+const svg = svgBlock?.type === "image" ? Buffer.from(svgBlock.data, "base64").toString("utf8") : undefined;
+console.log(logo.svgModel, svg?.slice(0, 60)); // gpt-6.1-sol <svg ...
+
+const motion = await ctx.modelRegistry.generateImages(
+  flare,
+  { input: [{ type: "text", text: "A paper lantern swinging gently, flat vector style" }] },
+  { outputFormat: "gif", frameCount: 4, frameDurationMs: 200, size: "512x512", signal: ctx.signal },
+);
+if (motion.stopReason !== "stop") throw new Error(motion.errorMessage);
+```
+
 `result.error` is a JSON-safe `ImageGenerationErrorData`. Rebuild it with `imageGenerationErrorFromData()` from `@bastani/pi-ai` and branch on its class, guard or `code`, not on the message. A cancelled request resolves with `stopReason: "aborted"` and no `error`.
 
 | Error class (guard) | `code` | When it happens | `retryable` | What to do |
 | --- | --- | --- | --- | --- |
-| `ImageGenerationConfigError` (`isImageGenerationConfigError`) | `invalid-option` | An option or input is invalid, for example GIF on an edit, `frameCount` without GIF, markup with a mask, SVG with `n` above 1, compression with `png`, `gif` or `svg`, or a 2.6 feature on an older model. Nothing was sent. Fields: `field`, `reason`, `related`, `model`. | No | Fix the option named by `field`; see `hint`. |
+| `ImageGenerationConfigError` (`isImageGenerationConfigError`) | `invalid-option` | An option or input is invalid, for example GIF on an edit, `frameCount` without GIF, markup with a mask, SVG with `n` above 1, compression with `png`, `gif` or `svg`, or a 2.6 feature on an older model. Nothing is billed. Found before a request is sent, except the `reason`s `required-by-api`, `rejected-by-api` and `unsupported-by-api`, which report the API's rejection of `svg` or `svg.model`. Fields: `field`, `reason`, `related`, `model`, `detail`. | No | Fix the option named by `field`; see `hint`. |
 | `ImageGenerationQuotaError` (`isImageGenerationQuotaError`) | `quota-exceeded` | The account is out of quota or credit, although the HTTP status is 429. | No | Add credit or raise the limit. |
 | `ImageGenerationRateLimitError` (`isImageGenerationRateLimitError`) | `rate-limited` | HTTP 429 rate limit. | Yes | Wait, or set `maxRetries`. |
 | `ImageGenerationServerError` (`isImageGenerationServerError`) | `server-error` | HTTP 5xx. | Yes | Retry later, or set `maxRetries`. |
@@ -95,6 +116,9 @@ An `ImageGenerationConfigError` carries a `reason`:
 | `unsupported-by-model` | `complexity`, GIF, SVG or markup on a model whose `capabilities` do not declare it. GPT Image 2.6 declares all four; GPT Image 2.5 declares markup; older models declare none. | Use a model that declares the feature. |
 | `requires-base-image` | An image with `role: "markup"` or `role: "mask"` but no image without a role for it to apply to. | Put the base image first, without a role. |
 | `duplicate-role` | Two images with `role: "markup"`, or two with `role: "mask"`. | Send at most one image per role. |
+| `required-by-api` | The API answered that `svg.model` is required and your own `svg` carried none, or the recovery retry still got that answer. `field` is `svg.model`. | Set `svg: { model }` to an SVG authoring model your account can use. |
+| `rejected-by-api` | The API refused the value of `svg.model` (an empty string or an unknown model, HTTP 400 or 404). `field` is `svg.model`; the `detail` names the default model when Atomic's own retry was refused. | Set `svg.model` to a model your account can use. |
+| `unsupported-by-api` | The API does not accept `svg` or `svg.model` on this account (`unsupported_parameter` or `unknown_parameter`). | Remove `svg`. |
 
 All of them extend `ImageGenerationError` (`isImageGenerationError`). A guard checks the value it is given; to look through a `cause` chain, use `findImageGenerationError(error, guard)`. `isRetryableImageGenerationError()` answers whether the nearest one in the chain is retryable. Typed errors name the HTTP status and the provider's codes, never the provider's message, which can quote the prompt. Serialized chains keep up to eight links: typed causes retain their fields, and foreign causes retain a safe name, an optional known errno `code`, and nested `cause`, but their message is always `[foreign error message omitted]`. Rehydration preserves those links and codes.
 

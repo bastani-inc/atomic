@@ -17,6 +17,7 @@ export type { MistralOptions } from "./api/mistral-conversations.ts";
 export type { OpenAICodexResponsesOptions, OpenAICodexWebSocketDebugStats } from "./api/openai-codex-responses.ts";
 export type { OpenAICompletionsOptions } from "./api/openai-completions.ts";
 export {
+	DEFAULT_SVG_AUTHOR_MODEL,
 	OPENAI_IMAGES_LIMITS,
 	type OpenAIImagesOptions,
 	type OpenAIImagesOutputFormat,

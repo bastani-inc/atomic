@@ -799,7 +799,35 @@ export default workflow({
 
 Hand the path to a later chat stage in its prompt. Review generated assets before publishing them or citing them as evidence: a generated image is not proof of a real-world state.
 
-To call OpenAI's Images API with your own OpenAI API key instead of OpenRouter, use an `openai-images` model, for example `models.getModelOfType("image", "openai-images", "gpt-image-2.6-flare")`. The provider also lists `gpt-image-2.6-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, and `gpt-image-1-mini`. It has no login of its own: it uses the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in cannot call the Images API, so with only that sign-in the call returns `stopReason: "error"` with `Provider is not configured: openai-images`. Text blocks become the prompt; add image blocks to `input` to edit them or use them as references. Pass `size`, `quality`, `n`, `background`, `outputFormat`, `outputCompression`, `complexity`, `moderation`, or `safetyIdentifier` with the other options when you need them, for example `{ signal, size: "1024x1024", quality: "low" }`; each generated image is a separate image block in `result.output`. GPT Image 2.6 models also return an animated GIF (`outputFormat: "gif"` with `frameCount` 2-16 and `frameDurationMs`) or an SVG (`outputFormat: "svg"`, `n` 1, and `svg: { model }` naming the model that writes it); both are generation-only, and the `mimeType` of the block (`image/gif`, `image/svg+xml`) decides the file extension. In an edit, the first image is the base and the others are references; mark one image block `role: "markup"` (a transparent PNG with annotations, the size of the first image) or `role: "mask"` to send it as the `markup` or `mask` field instead. A request that cannot succeed returns `stopReason: "error"` before anything is sent, with a typed `result.error` whose `code` is `invalid-option` and whose `fields.field` names the option; a blocked prompt returns `code: "moderation-blocked"`. See [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels).
+To call OpenAI's Images API with your own OpenAI API key instead of OpenRouter, use an `openai-images` model, for example `models.getModelOfType("image", "openai-images", "gpt-image-2.6-flare")`. The provider also lists `gpt-image-2.6-sunburst`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, `gpt-image-2`, `gpt-image-1.5`, `gpt-image-1`, and `gpt-image-1-mini`. It has no login of its own: it uses the key saved for `openai-api`, then a key saved for `openai`, then `OPENAI_API_KEY`. A ChatGPT sign-in cannot call the Images API, so with only that sign-in the call returns `stopReason: "error"` with `Provider is not configured: openai-images`. Text blocks become the prompt; add image blocks to `input` to edit them or use them as references. Pass `size`, `quality`, `n`, `background`, `outputFormat`, `outputCompression`, `complexity`, `moderation`, or `safetyIdentifier` with the other options when you need them, for example `{ signal, size: "1024x1024", quality: "low" }`; each generated image is a separate image block in `result.output`. GPT Image 2.6 models also return an animated GIF (`outputFormat: "gif"` with `frameCount` 2-16 and `frameDurationMs`) or an SVG (`outputFormat: "svg"` and `n` 1); both are generation-only, and the `mimeType` of the block (`image/gif`, `image/svg+xml`) decides the file extension. SVG needs no `svg` option: when the account's API answers that `svg.model` is required and the call set no `svg`, `generateImages()` retries once with `gpt-6.1-sol`, and `result.svgModel` reports the model that wrote the SVG. OpenAI's API reference lists no authoring models and no default, so `gpt-6.1-sol` is a value that worked in testing, not a documented default; pass `svg: { model, reasoning }` to choose another, which is always sent as given. A rejected `svg.model` returns `error.code` `invalid-option` with `error.fields.field` `svg.model` and `error.fields.reason` `required-by-api` or `rejected-by-api`. SVG authoring takes tens of seconds (plain requests took 12 to 46 seconds in testing, and OpenAI says complex prompts can take up to 2 minutes), so give the `ctx.tool` step a `timeoutMs` of at least 180_000 instead of the 120_000 above, or omit it. In an edit, the first image is the base and the others are references; mark one image block `role: "markup"` (a transparent PNG with annotations, the size of the first image) or `role: "mask"` to send it as the `markup` or `mask` field instead. A request that cannot succeed returns `stopReason: "error"` before anything is sent, with a typed `result.error` whose `code` is `invalid-option` and whose `fields.field` names the option; a blocked prompt returns `code: "moderation-blocked"`. See [Image generation](/extensions/api-reference#ctx-modelregistry-/-ctx-model-/-ctx-scopedmodels).
+
+Inside the `run` function above, a step that writes a plain SVG and a four-frame GIF with an OpenAI key:
+
+```ts
+const assets = await ctx.tool("generate-svg-and-gif", { brief, outputDir }, async ({ signal }) => {
+  const models = builtinModels({ credentials: AuthStorage.create() });
+  const flare = models.getModelOfType("image", "openai-images", "gpt-image-2.6-flare");
+  if (!flare) throw new Error("gpt-image-2.6-flare is unavailable");
+  const input = [{ type: "text" as const, text: brief }];
+  const svg = await models.generateImages(flare, { input }, { signal, outputFormat: "svg" });
+  const gif = await models.generateImages(flare, { input }, {
+    signal,
+    outputFormat: "gif",
+    frameCount: 4,
+    frameDurationMs: 200,
+    size: "512x512",
+  });
+  const paths: Record<string, string> = {};
+  await mkdir(outputDir, { recursive: true });
+  for (const [name, result] of [["image.svg", svg], ["image.gif", gif]] as const) {
+    const image = result.output.find((block) => block.type === "image");
+    if (result.stopReason !== "stop" || !image) throw new Error(result.errorMessage ?? `No image for ${name}`);
+    paths[name] = join(outputDir, name);
+    await writeFile(paths[name], Buffer.from(image.data, "base64"));
+  }
+  return { svgModel: svg.svgModel, paths };
+}, { timeoutMs: 300_000 });
+```
 
 `builtinModels()` covers Atomic's built-in image providers. For another image backend, register its implementation for a new `api` ID with `registerImagesApiProvider({ api, generateImages })` from `@bastani/pi-ai/compat`, then call `generateImages(model, context, { apiKey, signal })` from the same entry point with a model whose `api` matches. That call dispatches on `model.api` and does not look up credentials, so take `apiKey` from your own configuration, such as an environment variable, and never put it in workflow state or outputs. `@bastani/pi-ai/compat` is not one of the host-provided imports, so install `@bastani/pi-ai` next to the workflow. To make an image backend available to codemode and extensions through the session's model registry instead, register a provider with `images`; see [Custom providers](/custom-provider#quick-reference).
 
