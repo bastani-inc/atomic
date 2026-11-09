@@ -1,14 +1,21 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
+import { terminateRpcClientProcess } from "../src/modes/rpc/rpc-client-process.js";
 import type { RpcCommand, RpcResponse } from "../src/modes/rpc/rpc-types.ts";
 import { bunExecutable, cliPath, runCliProcess } from "./cli-test-helpers.ts";
+
+vi.mock("node:child_process", async (importOriginal) => {
+	const original = await importOriginal<typeof import("node:child_process")>();
+	return { ...original, spawn: vi.fn(original.spawn) };
+});
 
 const RPC_COMMAND_TIMEOUT_MS = 30_000;
 const REAL_HEADLESS_RPC_TEST_TIMEOUT_MS = 120_000;
@@ -150,18 +157,7 @@ function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile
 		},
 		async stop() {
 			detach();
-			if (child.exitCode !== null || child.killed) return;
-			child.kill("SIGTERM");
-			await new Promise<void>((resolve) => {
-				const timer = setTimeout(() => {
-					child.kill("SIGKILL");
-					resolve();
-				}, 1_000);
-				child.once("exit", () => {
-					clearTimeout(timer);
-					resolve();
-				});
-			});
+			await terminateRpcClientProcess(child, false);
 		},
 		stderr: () => stderr,
 		records: () => [...records],
@@ -175,6 +171,41 @@ function responseSuccess(response: RpcResponse): boolean {
 function responseError(response: RpcResponse): string | undefined {
 	return response.type === "response" && !response.success ? response.error : undefined;
 }
+
+describe("headless RPC harness shutdown", () => {
+	for (const alreadySignalled of [false, true]) {
+		it(`waits for exit before cleanup when already signalled is ${alreadySignalled} (#4610)`, async () => {
+			vi.useFakeTimers();
+			const child = Object.assign(new ChildProcess(), {
+				stdin: new PassThrough(),
+				stdout: new PassThrough(),
+				stderr: new PassThrough(),
+				killed: alreadySignalled,
+			}) as ChildProcessWithoutNullStreams;
+			child.kill = vi.fn(() => {
+				child.killed = true;
+				return true;
+			});
+			vi.mocked(spawn).mockReturnValueOnce(child);
+			try {
+				const rpc = startRpc("cwd", "agent", "sessions");
+				let stopped = false;
+				const stopping = rpc.stop().then(() => {
+					stopped = true;
+				});
+				await vi.advanceTimersByTimeAsync(1_000);
+				expect(stopped).toBe(false);
+				expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+				child.emit("exit", null, "SIGKILL");
+				await stopping;
+				expect(stopped).toBe(true);
+			} finally {
+				vi.useRealTimers();
+				vi.mocked(spawn).mockReset();
+			}
+		});
+	}
+});
 
 describe("unsupported provider in headless modes", () => {
 	let root: string;
