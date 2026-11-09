@@ -3,7 +3,7 @@ import {
 	formatWorktreeRestoreWarning,
 	resolveWorktreeSnapshotSettings,
 	scheduleSnapshotCollection,
-	setUpRestoredRunWorktrees,
+	setUpResumedRunWorktrees,
 	type WorktreeRootMapping,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
@@ -249,19 +249,31 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						createdAt: Date.now(),
 					}),
 			});
-			if (restored.length > 0) {
+			if (mappings.length > 0 || restored.length > 0) {
 				const snapshots = new Map(
 					(await listWorkflowSnapshotBoundaries(journal, runId)).map((boundary) => [
 						boundary.snapshot.id,
 						boundary.snapshot,
 					]),
 				);
-				await setUpRestoredRunWorktrees(
-					restored.map((mapping) => ({
-						root: mapping.to,
-						envHash: snapshots.get(mapping.snapshotId)!.envHash,
-					})),
-					{ signal: opts.signal },
+				const resumeToken = crypto.randomUUID();
+				let blueprintNoticeCount = 0;
+				await setUpResumedRunWorktrees(
+					{ restored, mappings, snapshots },
+					{
+						signal: opts.signal,
+						onNotices: (notices) => {
+							for (const notice of notices) {
+								activeStore.recordNotice({
+									id: `workflow-blueprint:${runId}:${resumeToken}:${blueprintNoticeCount++}`,
+									runId,
+									level: notice.type,
+									message: notice.message,
+									createdAt: Date.now(),
+								});
+							}
+						},
+					},
 				);
 			}
 			const allMappings = [...mappings, ...restored];

@@ -400,7 +400,7 @@ test("a failed scenario is recorded and the independent scenarios still run (#43
 		"pooled-child-reclaimed-after-host-sigkill",
 		"pooled-child-restored-with-the-recorded-tree",
 		"pooled-bound-work-never-on-the-gitless-host",
-		"pooled-setup-hook-ran-once-where-restored",
+		"pooled-blueprint-built-once-where-restored",
 		"chaos-hit-every-scenario",
 		"suite-execution-completed",
 	]);
@@ -423,7 +423,7 @@ test("a lost owner or worker host is part of its scenario whether or not sigkill
 	);
 });
 
-test("a pooled child is accepted only when it was restored where it finished, set up once there, and never ran on the git-less host (#4329)", () => {
+test("a pooled child is accepted only when it was restored where it finished, built once there, and never ran on the git-less host (#4329)", () => {
 	const check = (change: Partial<typeof pool>, killed = { signal: "SIGKILL", marker: true }) =>
 		Object.fromEntries(
 			checkResumeInvariants({ ...passingEvidence(), pool: { ...pool, ...change }, poolKilled: killed })
@@ -434,7 +434,7 @@ test("a pooled child is accepted only when it was restored where it finished, se
 		"pooled-child-reclaimed-after-host-sigkill": true,
 		"pooled-child-restored-with-the-recorded-tree": true,
 		"pooled-bound-work-never-on-the-gitless-host": true,
-		"pooled-setup-hook-ran-once-where-restored": true,
+		"pooled-blueprint-built-once-where-restored": true,
 	};
 	assert.deepEqual(check({}), passing);
 	// The killed host's worker survived the kill.
@@ -458,14 +458,14 @@ test("a pooled child is accepted only when it was restored where it finished, se
 		}),
 		{ ...passing, "pooled-child-restored-with-the-recorded-tree": false },
 	);
-	// The setup hook ran twice in the reclaimed worktree, or not at all on the host that first restored it.
+	// The blueprint was built twice in the reclaimed worktree, or not at all on the host that first restored it.
 	assert.deepEqual(check({ setup: { ...pool.setup, A: [...pool.setup.A, ...pool.setup.A] } }), {
 		...passing,
-		"pooled-setup-hook-ran-once-where-restored": false,
+		"pooled-blueprint-built-once-where-restored": false,
 	});
 	assert.deepEqual(check({ setup: { ...pool.setup, B: [] } }), {
 		...passing,
-		"pooled-setup-hook-ran-once-where-restored": false,
+		"pooled-blueprint-built-once-where-restored": false,
 	});
 	// A git-less host that asked for work while the child waited counts a busy worker during each claim request, but
 	// declined it: that alone is no violation.

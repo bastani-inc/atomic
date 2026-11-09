@@ -42,7 +42,7 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 			"byte-identical tree and HEAD",
 			"the conversation continues",
 			"node A's absolute paths resolve on node B",
-			"the setup hook runs once",
+			"the blueprint build runs once",
 		],
 		chaos: ["Git missing", "database partition during the lookup", "SIGKILL right after `git worktree add`"],
 		prerequisites: [{ module: ATOMIC, name: "resumeSessionWorktree", dependency: "#4245" }],

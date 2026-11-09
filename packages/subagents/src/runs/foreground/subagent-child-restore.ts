@@ -352,16 +352,18 @@ async function continueChildWhereItWorked(
 	const inherited = ctx.getChildSessionOptions?.({});
 	const agentDir = inherited?.agentDir ?? getAgentDir();
 	const settingsManager = inherited?.settingsManager ?? SettingsManager.create(launchCwd, agentDir);
-	return continueSessionWhereItWorked(
-		opened,
-		sessionResumeOptions(
+	return continueSessionWhereItWorked(opened, {
+		...sessionResumeOptions(
 			"rehydrate",
 			launchCwd,
 			agentDir,
 			settingsManager,
 			savedProjectTrust(agentDir, settingsManager),
 		),
-	);
+		onNotices: (notices) => {
+			for (const notice of notices) console.warn(`atomic-subagents: ${notice.message}`);
+		},
+	});
 }
 
 async function relaunchChild(

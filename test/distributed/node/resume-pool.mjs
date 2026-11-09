@@ -8,9 +8,11 @@
  * real database needs, a namespace and a token file, which those fixtures do not take. Credentials are read from files
  * and never printed.
  *
- *   host --ref-dir D --dir W --name H --agent-dir A --workers N [--setup-log L] <journal>
+ *   host --ref-dir D --dir W --name H --agent-dir A --workers N [--setup-log L [--setup-exit C]] <journal>
  *       Starts a worker host (`startWorkflowWorkerHost`) with its own agent directory A and host id H. With
- *       --setup-log, A's global settings set `resume.setupCommand` to append each worktree it sets up to L. Writes
+ *       --setup-log, A's global settings trust every restored worktree and set `resume.setupCommand`, the one global
+ *       maintenance step of the host's blueprint build, to append each worktree it builds to L and exit with C (default
+ *       0; a nonzero C is a failing blueprint, which must neither fail the child nor remove its worktree). Writes
  *       `W/host-ready-H` once it serves, and its stats to `W/host-stats-H.json` every second, with `maxBusy`, the most
  *       workers it ever had busy. A worker counts as busy while its claim request is in flight too, so an idle host
  *       that asks for work and takes none shows it; the journal's claim count says who took a child. Stops on SIGTERM.
@@ -113,7 +115,7 @@ async function host() {
 	if (setupLog !== undefined)
 		writeFileSync(
 			join(agentDir, "settings.json"),
-			`${JSON.stringify({ resume: { setupCommand: `printf '%s\\n' "$ATOMIC_RESUME_WORKTREE" >> '${setupLog}'` } })}\n`,
+			`${JSON.stringify({ defaultProjectTrust: "always", resume: { setupCommand: `printf '%s\\n' "$PWD" >> '${setupLog}'; exit ${Number(flags["setup-exit"] ?? 0)}` } })}\n`,
 		);
 	const { startWorkflowWorkerHost } = await source("packages/workflows/src/workers/worker-host.ts");
 	const workerHost = await startWorkflowWorkerHost({

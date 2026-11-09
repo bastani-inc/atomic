@@ -18,8 +18,8 @@ export const restorePreconditionsChecked = Symbol("restore-preconditions-checked
 
 /**
  * The typed failure of resuming run `runId` on this node when restoring the checkouts its latest snapshots recorded,
- * and that are gone or changed here, could not complete: Git is unavailable, or a snapshot has dependency inputs and no
- * setup hook could run. Read-only, so it can run before anything is claimed or restored.
+ * and that are gone or changed here, could not complete: Git is unavailable. A blueprint is never a precondition.
+ * Read-only, so it can run before anything is claimed or restored.
  */
 export async function runRestorePreconditionFailure(
 	journal: RunJournal,
@@ -32,7 +32,7 @@ export async function runRestorePreconditionFailure(
 	for (const boundary of workflowSnapshotFrontier(await listWorkflowSnapshotBoundaries(journal, runId))) {
 		const here = mapWorkflowWorktreePath(boundary.root, mappings);
 		if (await worktreeNeedsRestore(boundary.snapshot, here, { settings, signal })) {
-			restoring.push({ root: boundary.root, envHash: boundary.snapshot.envHash });
+			restoring.push({ root: boundary.root, remotes: boundary.snapshot.remotes });
 		}
 	}
 	return await runRestorePreconditionError(runId, restoring);

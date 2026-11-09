@@ -15,7 +15,10 @@ type InteractiveModePrototype = {
 type ImportCommandContext = {
 	loadingAnimation?: { stop: () => void };
 	statusContainer: { clear: () => void };
-	runtimeHost: { importFromJsonl: (inputPath: string, cwdOverride?: string) => Promise<{ cancelled: boolean }> };
+	runtimeHost: {
+		importFromJsonl: (inputPath: string, cwdOverride?: string) => Promise<{ cancelled: boolean }>;
+		takeResumeNotices: () => readonly { type: "info" | "warning"; message: string }[];
+	};
 	sessionManager: {
 		getBranch: () => SessionEntry[];
 		getWorktreeSnapshotRecords: () => Map<string, WorktreeSnapshot>;
@@ -72,7 +75,7 @@ describe("InteractiveMode /import parsing", () => {
 
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
-			runtimeHost: { importFromJsonl },
+			runtimeHost: { importFromJsonl, takeResumeNotices: () => [] },
 			sessionManager: sessionWithoutRestores(),
 			showError,
 			showWarning: vi.fn(),
@@ -106,7 +109,7 @@ describe("InteractiveMode /import parsing", () => {
 
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
-			runtimeHost: { importFromJsonl },
+			runtimeHost: { importFromJsonl, takeResumeNotices: () => [] },
 			sessionManager: sessionWithoutRestores(),
 			showError,
 			showWarning: vi.fn(),
@@ -156,7 +159,7 @@ describe("InteractiveMode /import parsing", () => {
 		const showWarning = vi.fn();
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
-			runtimeHost: { importFromJsonl },
+			runtimeHost: { importFromJsonl, takeResumeNotices: () => [] },
 			sessionManager: { getBranch: () => branch, getWorktreeSnapshotRecords: () => new Map() },
 			showError: vi.fn(),
 			showWarning,
@@ -196,7 +199,7 @@ describe("InteractiveMode /import parsing", () => {
 
 		const context: ImportCommandContext = {
 			statusContainer: { clear: vi.fn() },
-			runtimeHost: { importFromJsonl },
+			runtimeHost: { importFromJsonl, takeResumeNotices: () => [] },
 			sessionManager: sessionWithoutRestores(),
 			showError,
 			showWarning: vi.fn(),

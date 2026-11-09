@@ -217,7 +217,11 @@ export async function createEngineHostPair(
 	const hostHarness = await createHarness();
 	const client = new InProcessEngineClient({ toEngineMs: () => lag.toEngineMs, toHostMs: () => lag.toHostMs });
 	const handle = createRpcCommandHandler({
-		runtimeHost: { session: engine.session, services: { agentDir: engine.tempDir } } as AgentSessionRuntime,
+		runtimeHost: {
+			session: engine.session,
+			services: { agentDir: engine.tempDir },
+			takeResumeNotices: () => [],
+		} as unknown as AgentSessionRuntime,
 		getSession: () => engine.session,
 		rebindSession: async () => {},
 		output: (record) => client.engineOutput(record as RpcResponse),

@@ -22,6 +22,7 @@ function resumeMode(order: string[], recover: (reason: SessionRecoveryReason) =>
 				order.push("switch");
 				return { cancelled: false };
 			},
+			takeResumeNotices: () => [],
 		},
 		renderCurrentSessionState: () => order.push("render"),
 		showStatus: (message: string) => order.push(`status:${message}`),

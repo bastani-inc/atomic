@@ -6,8 +6,8 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
-	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -17,9 +17,6 @@ import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	type GitUnavailableError,
 	isResumePreconditionError,
-	isResumeSetupHookError,
-	isWorkspaceSnapshotError,
-	ProjectTrustStore,
 	restoreRunWorktree,
 	restoreWorktree,
 	runRestorePreconditionError,
@@ -27,19 +24,13 @@ import {
 	setUpRestoredRunWorktrees,
 	setWorktreeSnapshotGit,
 	type WorktreeRootMapping,
-	type WorktreeSnapshot,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
-import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.ts";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import { resolveToCwd } from "../../packages/coding-agent/src/core/tools/path-utils.ts";
-import {
-	appendLineCommand,
-	nodeCommand,
-	SUCCEEDING_COMMAND,
-} from "../../packages/coding-agent/test/helpers/hook-commands.ts";
+import { appendLineCommand, nodeCommand } from "../../packages/coding-agent/test/helpers/hook-commands.ts";
 import { missingGit } from "../../packages/coding-agent/test/helpers/missing-git.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalOwnershipError } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -53,6 +44,7 @@ import {
 	stageWakeKey,
 } from "../../packages/workflows/src/runs/foreground/stage-wake-dispatcher.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import { hostRestorePort } from "../../packages/workflows/src/workers/worker-host.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
@@ -64,8 +56,8 @@ import { createStageContext, type InternalStageContext, makeMockSession, makeOpt
 
 useTemporaryAgentDir();
 
-/** Longer than the test's own budget, so a hook the cancel does not stop fails the test. */
-const CANCELLED_HOOK_SLEEP_MS = 120_000;
+/** Longer than the test's own budget, so a build step the cancel does not stop fails the test. */
+const CANCELLED_STEP_SLEEP_MS = 120_000;
 
 let sandbox: GitSandbox;
 let priorAgentDir: string | undefined;
@@ -92,13 +84,22 @@ const restoredWorktrees = () =>
 		? readdirSync(sandbox.path("agent", "worktree-snapshots", "worktrees"))
 		: [];
 
+const blueprintNotices = (store: Store) =>
+	store.notices().filter((notice) => notice.id.startsWith("workflow-blueprint:"));
+
 /** A run on "node A" that recorded snapshots of a checkout with a lockfile, failed, and whose checkout is then gone. */
 async function runRecordedElsewhere(
 	observe: (cwd: string) => void = () => {},
 	removeCheckout = true,
 	recordOpts: Partial<Pick<RunOpts, "snapshots">> = {},
+	files: Record<string, string> = {},
+	failedAttempts = 1,
 ) {
-	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
+	const { clone } = await sandbox.remoteWithClone("repo", {
+		"README.md": "hello\n",
+		"package-lock.json": "{}\n",
+		...files,
+	});
 	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
 	cleanups.push(() => fixture.close());
 	const store = createStore();
@@ -113,7 +114,7 @@ async function runRecordedElsewhere(
 				sandbox.write(join(ctx.cwd!, "state.txt"), "written on node A\n");
 				return "written";
 			});
-			if (attempt++ === 0) throw new Error("node A stopped");
+			if (attempt++ < failedAttempts) throw new Error("node A stopped");
 			observe(ctx.cwd!);
 			return { ok: true };
 		},
@@ -133,12 +134,12 @@ async function runRecordedElsewhere(
 	};
 	const rerun = (extra: Partial<RunOpts> = {}) =>
 		run(definition, {}, { runId: first.runId, cwd: sandbox.root, durableBackend: fixture.backend, store, ...extra });
-	return { clone, runId: first.runId, backend: fixture.backend, resume, rerun };
+	return { clone, runId: first.runId, backend: fixture.backend, store, resume, rerun };
 }
 
-test("a run restored on another node runs its setup hook once before live work, and its tools resolve node A's paths (#4329)", async () => {
+test("a run restored on another node runs its setup command once before live work, and its tools resolve node A's paths (#4329)", async () => {
 	const marker = sandbox.path("setup-runs");
-	writeSettings({ resume: { setupCommand: appendLineCommand(marker, "ran") } });
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: appendLineCommand(marker, "ran") } });
 	const seen: { cwd: string; hookRuns: number; resolved: string }[] = [];
 	const recorded = await runRecordedElsewhere((cwd) => {
 		seen.push({
@@ -196,7 +197,7 @@ test("a run that restored nothing resolves every path its work names as given (#
 
 test("a run bound to an input worktree resumes on another node in the worktree restored for it (#4329)", async () => {
 	const marker = sandbox.path("setup-runs");
-	writeSettings({ resume: { setupCommand: appendLineCommand(marker, "ran") } });
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: appendLineCommand(marker, "ran") } });
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
 	const inputWorktree = sandbox.path("node-a-worktree");
 	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
@@ -256,10 +257,58 @@ test("a run bound to an input worktree resumes on another node in the worktree r
 	assert.equal(existsSync(inputWorktree), false);
 });
 
-test("a run whose restore needs a setup hook that cannot run fails typed before it is claimed (#4329)", async () => {
+test("a run whose restore has no blueprint and no setup command resumes in the worktree restored for it (#4588)", async () => {
+	writeSettings({});
+	const live: string[] = [];
+	const recorded = await runRecordedElsewhere((cwd) => {
+		live.push(cwd);
+	});
+
+	const { result, finished } = await recorded.resume();
+	assert.equal(result.ok, true, result.message);
+	await finished;
+
+	assert.equal(restoredWorktrees().length, 1);
+	assert.equal(live.length, 1);
+	assert.ok(live[0]!.startsWith(sandbox.path("agent", "worktree-snapshots", "worktrees")), live[0]);
+	assert.deepEqual(
+		recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings?.map((mapping) => mapping.to),
+		[live[0]],
+	);
+	assert.deepEqual(blueprintNotices(recorded.store), []);
+});
+
+test("a direct run() of a run recorded elsewhere checks its restore preconditions before restoring anything (#4329)", async () => {
+	writeSettings({});
+	let liveRuns = 0;
+	const recorded = await runRecordedElsewhere(() => {
+		liveRuns++;
+	});
+	setWorktreeSnapshotGit(async () => {
+		throw missingGit();
+	});
+
+	await assert.rejects(recorded.rerun(), (error: unknown) => {
+		assert.ok(isResumePreconditionError(error));
+		assert.equal(error.entryPoint, "workflow-resume");
+		assert.deepEqual(
+			error.problems.map((problem) => problem.code),
+			["git-unavailable"],
+		);
+		return true;
+	});
+	assert.equal(liveRuns, 0);
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
+});
+
+test("a run whose restore needs Git that this node cannot start fails typed before it is claimed (#4329)", async () => {
 	writeSettings({});
 	const recorded = await runRecordedElsewhere();
 	const statusBefore = recorded.backend.getWorkflow(recorded.runId)?.status;
+	setWorktreeSnapshotGit(async () => {
+		throw missingGit();
+	});
 
 	const { result } = await recorded.resume();
 
@@ -270,7 +319,7 @@ test("a run whose restore needs a setup hook that cannot run fails typed before 
 	assert.equal(result.error.entryPoint, "workflow-resume");
 	assert.deepEqual(
 		result.error.problems.map((problem) => problem.code),
-		["setup-hook-missing"],
+		["git-unavailable"],
 	);
 	assert.equal(result.message, result.error.message);
 	assert.deepEqual(restoredWorktrees(), []);
@@ -278,30 +327,9 @@ test("a run whose restore needs a setup hook that cannot run fails typed before 
 	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.status, statusBefore);
 });
 
-test("a direct run() of a run recorded elsewhere checks its restore preconditions before restoring anything (#4329)", async () => {
-	writeSettings({});
-	let liveRuns = 0;
-	const recorded = await runRecordedElsewhere(() => {
-		liveRuns++;
-	});
-
-	await assert.rejects(recorded.rerun(), (error: unknown) => {
-		assert.ok(isResumePreconditionError(error));
-		assert.equal(error.entryPoint, "workflow-resume");
-		assert.deepEqual(
-			error.problems.map((problem) => problem.code),
-			["setup-hook-missing"],
-		);
-		return true;
-	});
-	assert.equal(liveRuns, 0);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
-});
-
 test("a direct run() of a run another node still holds is refused before anything is restored or set up (#4329)", async () => {
 	const marker = sandbox.path("setup-runs");
-	writeSettings({ resume: { setupCommand: appendLineCommand(marker, "ran") } });
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: appendLineCommand(marker, "ran") } });
 	const recorded = await runRecordedElsewhere();
 	const held = await recorded.backend.snapshotJournal.acquire(recorded.runId, "node-a-still-running");
 	assert.equal(held.status, "acquired");
@@ -340,7 +368,7 @@ test("a direct run() judges its own checkout under the snapshot settings the run
 test.skipIf(process.platform === "win32")(
 	"a run's resume checks its restore preconditions once: run() trusts the check made before the claim (#4329)",
 	async () => {
-		writeSettings({ resume: { setupCommand: "true" } });
+		writeSettings({});
 		const recorded = await runRecordedElsewhere();
 		const calls = sandbox.path("git-calls.log");
 		const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
@@ -360,66 +388,163 @@ test.skipIf(process.platform === "win32")(
 	},
 );
 
-test("run() does not check the restore preconditions again when the resume that launched it already did (#4329)", async () => {
-	writeSettings({});
-	const recorded = await runRecordedElsewhere();
+test.skipIf(process.platform === "win32")(
+	"run() does not check the restore preconditions again when the resume that launched it already did (#4329)",
+	async () => {
+		writeSettings({});
+		const recorded = await runRecordedElsewhere();
+		const calls = sandbox.path("git-calls.log");
+		const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
+		const shim = sandbox.path("counting-git");
+		writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexec "${realGit}" "$@"\n`);
+		chmodSync(shim, 0o755);
+		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
 
-	await assert.rejects(recorded.rerun({ [restorePreconditionsChecked]: true }), (error: unknown) => {
-		assert.ok(isResumePreconditionError(error));
-		return true;
-	});
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), true);
-	assert.deepEqual(restoredWorktrees(), []);
-});
+		const result = await recorded.rerun({ [restorePreconditionsChecked]: true });
 
-test("a trusted restore whose repository has no .atomic/setup is removed again and records no mapping (#4329)", async () => {
+		assert.equal(result.status, "completed", result.error);
+		const probes = readFileSync(calls, "utf8")
+			.split("\n")
+			.filter((line) => line.endsWith("--version"));
+		assert.deepEqual(probes, []);
+		assert.equal(restoredWorktrees().length, 1);
+	},
+);
+
+test("a trusted restore builds its repository's own blueprint in the restored worktree and keeps it (#4588)", async () => {
 	writeSettings({ defaultProjectTrust: "always" });
-	let liveRuns = 0;
-	const recorded = await runRecordedElsewhere(() => {
-		liveRuns++;
-	});
+	const marker = sandbox.path("blueprint-runs");
+	const live: string[] = [];
+	const recorded = await runRecordedElsewhere(
+		(cwd) => {
+			live.push(cwd);
+		},
+		true,
+		{},
+		{ ".atomic/blueprint.yaml": `maintenance: ${JSON.stringify(appendLineCommand(marker, "ran"))}\n` },
+	);
 
-	const { result } = await recorded.resume();
+	const { result, finished } = await recorded.resume();
+	assert.equal(result.ok, true, result.message);
+	await finished;
 
-	assert.equal(result.ok, false);
-	if (result.ok) return;
-	assert.equal(result.reason, "startup_failed");
-	assert.ok(isResumePreconditionError(result.error));
+	assert.equal(readFileSync(marker, "utf8"), "ran\n");
+	assert.equal(live.length, 1);
+	assert.equal(restoredWorktrees().length, 1);
 	assert.deepEqual(
-		result.error.problems.map((problem) => [problem.code, problem.subject]),
-		[["setup-hook-missing", "setup hook"]],
+		recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings?.map((mapping) => mapping.to),
+		[live[0]],
 	);
-	assert.ok(result.message.endsWith(result.error.message), result.message);
-	assert.equal(result.error.entryPoint, "workflow-resume");
-	assert.equal((result.error as Error & { cleanupCause?: unknown }).cleanupCause, undefined);
-	assert.equal(liveRuns, 0);
-	assert.deepEqual(restoredWorktrees(), []);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
+	assert.deepEqual(blueprintNotices(recorded.store), []);
 });
 
-test("a setup hook that fails after a run's restore ends the resume typed with its exit status and removes the worktree (#4329)", async () => {
-	writeSettings({ resume: { setupCommand: nodeCommand("process.exit(3)") } });
+test("a run resumed again after its earlier build failed rebuilds that worktree once the environment is fixed (#4588)", async () => {
+	writeSettings({ defaultProjectTrust: "always" });
+	const marker = sandbox.path("blueprint-runs").replaceAll("\\", "/");
+	const tool = sandbox.path("tool-installed").replaceAll("\\", "/");
+	const recorded = await runRecordedElsewhere(
+		() => {},
+		true,
+		{},
+		{
+			".atomic/blueprint.yaml": `initialize: test -f ${tool} && echo initialize >> ${marker}\nmaintenance: echo maintenance >> ${marker}\n`,
+		},
+		2,
+	);
+
+	const first = await recorded.resume();
+	assert.equal(first.result.ok, true, first.result.message);
+	await first.finished;
+	assert.equal(existsSync(marker), false);
+	assert.equal(blueprintNotices(recorded.store).length, 1);
+
+	writeFileSync(tool, "installed\n");
+	const second = await recorded.resume();
+	assert.equal(second.result.ok, true, second.result.message);
+	await second.finished;
+
+	assert.equal(readFileSync(marker, "utf8"), "initialize\nmaintenance\n");
+	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings?.length, 1);
+	assert.equal(restoredWorktrees().length, 1);
+	const notices = blueprintNotices(recorded.store);
+	assert.equal(notices.length, 1);
+	assert.equal(new Set(notices.map((notice) => notice.id)).size, notices.length);
+});
+
+test("a run resumed again whose earlier build succeeded builds nothing and says nothing more (#4588)", async () => {
+	writeSettings({ defaultProjectTrust: "always" });
+	const marker = sandbox.path("blueprint-runs").replaceAll("\\", "/");
+	const recorded = await runRecordedElsewhere(
+		() => {},
+		true,
+		{},
+		{ ".atomic/blueprint.yaml": `maintenance: echo maintenance >> ${marker}\n` },
+		2,
+	);
+	const first = await recorded.resume();
+	await first.finished;
+	assert.equal(readFileSync(marker, "utf8"), "maintenance\n");
+	const second = await recorded.resume();
+	await second.finished;
+	assert.equal(readFileSync(marker, "utf8"), "maintenance\n");
+	assert.deepEqual(blueprintNotices(recorded.store), []);
+});
+
+test("the blueprint notices of two resumes of a run carry distinct ids, numbered from zero within a resume (#4588)", async () => {
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: nodeCommand("process.exit(3)") } });
+	const recorded = await runRecordedElsewhere(() => {}, true, {}, {}, 2);
+	await (await recorded.resume()).finished;
+	const firstIds = blueprintNotices(recorded.store).map((notice) => notice.id);
+	assert.equal(firstIds.length, 2);
+	await (await recorded.resume()).finished;
+	const ids = blueprintNotices(recorded.store).map((notice) => notice.id);
+	assert.ok(ids.length >= 4, ids.join(","));
+	assert.equal(new Set(ids).size, ids.length);
+	const pattern = new RegExp(`^workflow-blueprint:${recorded.runId}:[0-9a-f-]{36}:(\\d+)$`);
+	assert.deepEqual(
+		firstIds.map((id) => pattern.exec(id)?.[1]),
+		["0", "1"],
+	);
+});
+
+test("a restore whose project is not trusted runs no setup command and still resumes (#4588)", async () => {
+	const marker = sandbox.path("setup-runs");
+	writeSettings({ resume: { setupCommand: appendLineCommand(marker, "ran") } });
 	let liveRuns = 0;
 	const recorded = await runRecordedElsewhere(() => {
 		liveRuns++;
 	});
 
-	const { result } = await recorded.resume();
+	const { result, finished } = await recorded.resume();
+	assert.equal(result.ok, true, result.message);
+	await finished;
 
-	assert.equal(result.ok, false);
-	if (result.ok) return;
-	assert.ok(isResumeSetupHookError(result.error));
-	assert.deepEqual([result.error.code, result.error.exitStatus], ["setup-hook-failed", 3]);
-	assert.equal(
-		result.error.hint,
-		`Fix the hook (its output is in ${result.error.logPath}), then resume again; the hook runs again.`,
-	);
-	assert.equal(liveRuns, 0);
-	assert.deepEqual(restoredWorktrees(), []);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
+	assert.equal(existsSync(marker), false);
+	assert.equal(liveRuns, 1);
+	assert.equal(restoredWorktrees().length, 1);
+	assert.deepEqual(blueprintNotices(recorded.store), []);
 });
 
-test("a run whose recorded edits were committed here resumes in place with no setup check (#4329)", async () => {
+test("a setup command that fails after a run's restore only warns: the run resumes and keeps the worktree (#4588)", async () => {
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: nodeCommand("process.exit(3)") } });
+	let liveRuns = 0;
+	const recorded = await runRecordedElsewhere(() => {
+		liveRuns++;
+	});
+
+	const { result, finished } = await recorded.resume();
+	assert.equal(result.ok, true, result.message);
+	await finished;
+
+	assert.equal(liveRuns, 1);
+	assert.equal(restoredWorktrees().length, 1);
+	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings?.length, 1);
+	const notices = blueprintNotices(recorded.store);
+	assert.ok(notices.length > 0);
+	assert.ok(notices.every((notice) => notice.level === "warning" && notice.runId === recorded.runId));
+});
+
+test("a run whose recorded edits were committed here resumes in place with no restore (#4329)", async () => {
 	writeSettings({});
 	let liveRuns = 0;
 	const recorded = await runRecordedElsewhere(() => {
@@ -436,24 +561,23 @@ test("a run whose recorded edits were committed here resumes in place with no se
 	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
 });
 
-test("a run whose checkout is here but changed gets the pre-claim check before anything is restored (#4329)", async () => {
+test("a run whose checkout is here but changed resumes in a worktree restored beside it (#4588)", async () => {
 	writeSettings({});
-	let liveRuns = 0;
-	const recorded = await runRecordedElsewhere(() => {
-		liveRuns++;
+	const live: string[] = [];
+	const recorded = await runRecordedElsewhere((cwd) => {
+		live.push(cwd);
 	}, false);
 	sandbox.write(join(recorded.clone, "state.txt"), "changed after the snapshot\n");
 
-	const { result } = await recorded.resume();
+	const { result, finished } = await recorded.resume();
+	assert.equal(result.ok, true, result.message);
+	await finished;
 
-	assert.equal(result.ok, false);
-	if (result.ok) return;
-	assert.ok(isResumePreconditionError(result.error));
-	assert.equal(result.error.problems[0]?.code, "setup-hook-missing");
-	assert.ok(result.error.problems[0]?.why.startsWith("the snapshot has dependency inputs"), result.error.message);
-	assert.equal(liveRuns, 0);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
+	assert.equal(live.length, 1);
+	assert.ok(live[0]!.startsWith(sandbox.path("agent", "worktree-snapshots", "worktrees")), live[0]);
+	assert.equal(readFileSync(join(live[0]!, "state.txt"), "utf8"), "written on node A\n");
+	assert.equal(readFileSync(join(recorded.clone, "state.txt"), "utf8"), "changed after the snapshot\n");
+	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings?.length, 1);
 });
 
 test("a run's own snapshot settings decide whether its checkout changed before the claim (#4329)", async () => {
@@ -476,12 +600,13 @@ test("a run's own snapshot settings decide whether its checkout changed before t
 	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
 });
 
-test("cancelling a run's resume stops the setup hook of the checkout it restored and removes the worktree (#4329)", async () => {
-	const started = sandbox.path("hook-started").replaceAll("\\", "/");
+test("cancelling a run's resume stops the setup command of the checkout it restored and removes the worktree (#4329)", async () => {
+	const started = sandbox.path("setup-started").replaceAll("\\", "/");
 	writeSettings({
+		defaultProjectTrust: "always",
 		resume: {
 			setupCommand: nodeCommand(
-				`require('fs').writeFileSync('${started}', 'started'); setTimeout(() => {}, ${CANCELLED_HOOK_SLEEP_MS})`,
+				`require('fs').writeFileSync('${started}', 'started'); setTimeout(() => {}, ${CANCELLED_STEP_SLEEP_MS})`,
 			),
 		},
 	});
@@ -507,7 +632,7 @@ test("cancelling a run's resume stops the setup hook of the checkout it restored
 	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
 });
 
-test("a run whose checkout is still here resumes in place without a setup hook (#4329)", async () => {
+test("a run whose checkout is still here resumes in place without a restore (#4329)", async () => {
 	writeSettings({});
 	let liveRuns = 0;
 	const recorded = await runRecordedElsewhere(() => {
@@ -562,23 +687,22 @@ test("a run on a backend without a snapshot journal resumes with no restore chec
 	assert.equal(attempts, 2);
 });
 
-test("the hook's settings are read where the run runs, so another project's setup command does not count (#4329)", async () => {
-	writeSettings({});
+test("the setup command's settings are read where the run runs, so another project's setup command does not run (#4329)", async () => {
+	const marker = sandbox.path("setup-runs");
+	writeSettings({ defaultProjectTrust: "always" });
 	mkdirSync(sandbox.path(".atomic"), { recursive: true });
 	writeFileSync(
 		sandbox.path(".atomic", "settings.json"),
-		JSON.stringify({ resume: { setupCommand: SUCCEEDING_COMMAND } }),
+		JSON.stringify({ resume: { setupCommand: appendLineCommand(marker, "ran") } }),
 	);
 	const recorded = await runRecordedElsewhere();
 
-	const { result } = await recorded.resume();
+	const { result, finished } = await recorded.resume();
+	assert.equal(result.ok, true, result.message);
+	await finished;
 
-	assert.equal(result.ok, false);
-	if (result.ok) return;
-	assert.ok(isResumePreconditionError(result.error));
-	assert.equal(result.error.problems[0]?.code, "setup-hook-missing");
-	assert.ok(result.error.problems[0]?.why.startsWith("the snapshot has dependency inputs"), result.error.message);
-	assert.deepEqual(restoredWorktrees(), []);
+	assert.equal(existsSync(marker), false);
+	assert.equal(restoredWorktrees().length, 1);
 });
 
 test("a startup failure that is not a resume failure keeps its own message and carries no typed error (#4329)", async () => {
@@ -639,7 +763,7 @@ class CountingGit {
 	}
 }
 
-test("the pre-claim check reports missing Git and a missing hook together, and checks nothing when no checkout is missing (#4329)", async () => {
+test("the pre-claim check reports missing Git for every checkout it must restore, and checks nothing when none is missing (#4329)", async () => {
 	writeSettings({});
 	const gitless = new CountingGit(missingGit());
 	assert.equal(await runRestorePreconditionError("run-1", [], { io: gitless }), undefined);
@@ -648,8 +772,8 @@ test("the pre-claim check reports missing Git and a missing hook together, and c
 	const error = await runRestorePreconditionError(
 		"run-1",
 		[
-			{ root: "/node-a/one", envHash: "e".repeat(64) },
-			{ root: "/node-a/two", envHash: "f".repeat(64) },
+			{ root: "/node-a/one", remotes: [] },
+			{ root: "/node-a/two", remotes: ["https://example.test/repo.git"] },
 		],
 		{ io: gitless },
 	);
@@ -658,7 +782,7 @@ test("the pre-claim check reports missing Git and a missing hook together, and c
 	assert.equal(error.entryPoint, "workflow-resume");
 	assert.deepEqual(
 		error.problems.map((problem) => problem.code),
-		["git-unavailable", "setup-hook-missing"],
+		["git-unavailable"],
 	);
 	assert.equal(
 		error.problems[0]?.why,
@@ -667,148 +791,56 @@ test("the pre-claim check reports missing Git and a missing hook together, and c
 	assert.equal(gitless.probes, 1);
 });
 
-test("a saved trust decision for restored worktrees lets the repository's hook stand in for a setup command (#4329)", async () => {
+test("a restore with working Git has no unmet precondition, whatever blueprint or setup command this node has (#4588)", async () => {
 	writeSettings({});
-	new ProjectTrustStore(sandbox.path("agent")).set(sandbox.path("agent", "worktree-snapshots", "worktrees"), true);
-	const error = await runRestorePreconditionError("run-1", [{ root: "/node-a/one", envHash: "e".repeat(64) }], {
-		io: new CountingGit(),
-	});
+	const git = new CountingGit();
+	const error = await runRestorePreconditionError("run-1", [{ root: "/node-a/one", remotes: [] }], { io: git });
 	assert.equal(error, undefined);
+	assert.equal(git.probes, 1);
 });
 
-test("a rollback that cannot remove restored worktrees keeps the setup failure and attaches every cleanup failure (#4329)", async () => {
-	writeSettings({});
+test("a failing setup command never fails the build of restored worktrees nor removes them, and its warnings are reported (#4588)", async () => {
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: nodeCommand("process.exit(3)") } });
 	const worktree = (name: string) => {
 		const root = sandbox.path("agent", "worktree-snapshots", "worktrees", name);
 		sandbox.write(join(root, "package-lock.json"), "{}\n");
-		return { root, envHash: "e".repeat(64) };
+		return { root, remotes: [] };
 	};
-	const single = await setUpRestoredRunWorktrees([worktree("one")]).then(
-		() => assert.fail("no hook can run"),
-		(failure: Error) => failure,
-	);
-	assert.ok(isResumePreconditionError(single));
-	const cleanup = (single as Error & { cleanupCause?: unknown }).cleanupCause;
-	assert.ok(cleanup instanceof Error && !(cleanup instanceof AggregateError));
-	assert.equal(Object.keys(single).includes("cleanupCause"), false);
+	const targets = [worktree("one"), worktree("two")];
+	const reported: string[] = [];
 
-	const both = await setUpRestoredRunWorktrees([worktree("two"), worktree("three")]).then(
-		() => assert.fail("no hook can run"),
-		(failure: Error) => failure,
-	);
-	assert.ok(isResumePreconditionError(both));
-	const causes = (both as Error & { cleanupCause?: unknown }).cleanupCause;
-	assert.ok(causes instanceof AggregateError);
-	assert.equal(causes.errors.length, 2);
-	assert.equal(causes.message, "worktree cleanup failed");
-});
-
-test("a project's own resume.setupCommand never runs: only the global setting counts (#4329)", async () => {
-	const project = sandbox.path("untrusted-project");
-	mkdirSync(join(project, ".atomic"), { recursive: true });
-	writeFileSync(
-		join(project, ".atomic", "settings.json"),
-		JSON.stringify({ resume: { setupCommand: "project-command" } }),
-	);
-	writeSettings({});
-	assert.equal(SettingsManager.create(project, sandbox.path("agent")).getResumeSetupCommand(), undefined);
-	const predicted = await runRestorePreconditionError("run-1", [{ root: "/node-a/one", envHash: "e".repeat(64) }], {
-		io: new CountingGit(),
+	const blueprints = await setUpRestoredRunWorktrees(targets, {
+		onNotices: (notices) => reported.push(...notices.map((notice) => notice.type)),
 	});
-	assert.equal(predicted?.problems[0]?.code, "setup-hook-missing");
 
-	writeSettings({ resume: { setupCommand: "global-command" } });
-	assert.equal(SettingsManager.create(project, sandbox.path("agent")).getResumeSetupCommand(), "global-command");
-	assert.equal(
-		await runRestorePreconditionError("run-1", [{ root: "/node-a/one", envHash: "e".repeat(64) }], {
-			io: new CountingGit(),
-		}),
-		undefined,
-	);
+	assert.equal(blueprints.outcome?.status, "failed");
+	assert.ok(reported.length > 0);
+	assert.ok(reported.every((type) => type === "warning"));
+	assert.ok(blueprints.notices.length > 0);
+	for (const target of targets) assert.equal(existsSync(target.root), true);
 });
 
-test("a worker host's restore that needs a setup hook none can run is refused before anything is restored (#4329)", async () => {
-	const hostAgentDir = sandbox.path("host-agent");
-	mkdirSync(hostAgentDir, { recursive: true });
-	writeFileSync(join(hostAgentDir, "settings.json"), "{}");
-	let restores = 0;
+test("setting up restored worktrees stops with the signal's reason when the resume is cancelled (#4588)", async () => {
+	writeSettings({ defaultProjectTrust: "always", resume: { setupCommand: nodeCommand("process.exit(0)") } });
+	const root = sandbox.path("agent", "worktree-snapshots", "worktrees", "one");
+	sandbox.write(join(root, "package-lock.json"), "{}\n");
+	const stop = new Error("stop the resume");
 
 	await assert.rejects(
-		restoreRunWorktree(
-			"e".repeat(64),
-			async () => {
-				restores++;
-				return sandbox.path("never");
-			},
-			{ agentDir: hostAgentDir },
-		),
-		(error: unknown) =>
-			isResumePreconditionError(error) &&
-			error.entryPoint === "workflow-resume" &&
-			error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
+		setUpRestoredRunWorktrees([{ root, remotes: [] }], { signal: AbortSignal.abort(stop) }),
+		(error: unknown) => error === stop,
 	);
-	assert.equal(restores, 0);
+	assert.equal(existsSync(root), true);
 });
 
-test("a worker host runs the setup hook of its own agent directory once in the worktree it restored (#4329)", async () => {
-	const hostAgentDir = sandbox.path("host-agent");
-	const marker = sandbox.path("host-hook-runs");
-	mkdirSync(hostAgentDir, { recursive: true });
-	writeFileSync(
-		join(hostAgentDir, "settings.json"),
-		JSON.stringify({ resume: { setupCommand: appendLineCommand(marker, "ran") } }),
-	);
-	writeSettings({});
-	const worktree = join(hostAgentDir, "worktree-snapshots", "worktrees", "restored");
-	const restore = async () => {
-		mkdirSync(worktree, { recursive: true });
-		writeFileSync(join(worktree, "package-lock.json"), "{}\n");
-		return worktree;
-	};
-
-	const restored = await restoreRunWorktree("e".repeat(64), restore, { agentDir: hostAgentDir });
-	await restoreRunWorktree("e".repeat(64), async () => worktree, { agentDir: hostAgentDir });
-
-	assert.equal(restored, worktree);
-	assert.equal(readFileSync(marker, "utf8"), "ran\n");
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
-});
-
-test("a worker host restore without the snapshot's fingerprint reads it from the restored worktree before its hook (#4329)", async () => {
+test("a worker host's restore without a blueprint or a setup command restores the worktree and resolves its root (#4588)", async () => {
 	const hostAgentDir = sandbox.path("host-agent");
 	mkdirSync(hostAgentDir, { recursive: true });
 	writeFileSync(join(hostAgentDir, "settings.json"), "{}");
-	const worktree = join(hostAgentDir, "worktree-snapshots", "worktrees", "restored");
-	let restores = 0;
-
-	await assert.rejects(
-		restoreRunWorktree(
-			undefined,
-			async () => {
-				restores++;
-				mkdirSync(worktree, { recursive: true });
-				writeFileSync(join(worktree, "package-lock.json"), "{}\n");
-				return worktree;
-			},
-			{ agentDir: hostAgentDir },
-		),
-		(error: unknown) =>
-			isResumePreconditionError(error) &&
-			error.problems.map((problem) => problem.code).join() === "setup-hook-missing" &&
-			error.problems[0]!.subject === "setup hook",
-	);
-	assert.equal(restores, 1);
-});
-
-test("a worker host trusted for its restored worktrees restores a snapshot with dependency inputs (#4329)", async () => {
-	const hostAgentDir = sandbox.path("host-agent");
-	mkdirSync(hostAgentDir, { recursive: true });
-	writeFileSync(join(hostAgentDir, "settings.json"), "{}");
-	new ProjectTrustStore(hostAgentDir).set(join(hostAgentDir, "worktree-snapshots", "worktrees"), true);
 	let restores = 0;
 
 	const restored = await restoreRunWorktree(
-		"e".repeat(64),
+		["https://example.test/repo.git"],
 		async () => {
 			restores++;
 			return sandbox.path("restored-elsewhere");
@@ -819,12 +851,42 @@ test("a worker host trusted for its restored worktrees restores a snapshot with 
 	assert.deepEqual([restored, restores], [sandbox.path("restored-elsewhere"), 1]);
 });
 
-test("a worker host whose hook fails removes the worktree it restored from its own store (#4329)", async () => {
+test("a worker host runs the setup command of its own agent directory in the worktree it restored (#4329)", async () => {
+	const hostAgentDir = sandbox.path("host-agent");
+	const marker = sandbox.path("host-setup-runs");
+	mkdirSync(hostAgentDir, { recursive: true });
+	writeFileSync(
+		join(hostAgentDir, "settings.json"),
+		JSON.stringify({
+			defaultProjectTrust: "always",
+			resume: {
+				setupCommand: nodeCommand(
+					`require('fs').appendFileSync('${marker.replaceAll("\\", "/")}', process.cwd() + '\\n')`,
+				),
+			},
+		}),
+	);
+	writeSettings({});
+	const worktree = join(hostAgentDir, "worktree-snapshots", "worktrees", "restored");
+	const restore = async () => {
+		mkdirSync(worktree, { recursive: true });
+		writeFileSync(join(worktree, "package-lock.json"), "{}\n");
+		return worktree;
+	};
+
+	const restored = await restoreRunWorktree(undefined, restore, { agentDir: hostAgentDir });
+
+	assert.equal(restored, worktree);
+	assert.equal(readFileSync(marker, "utf8"), `${realpathSync(worktree)}\n`);
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+});
+
+test("a worker host whose setup command fails keeps the worktree it restored from its own store and reports the warning (#4588)", async () => {
 	const hostAgentDir = sandbox.path("host-agent");
 	mkdirSync(hostAgentDir, { recursive: true });
 	writeFileSync(
 		join(hostAgentDir, "settings.json"),
-		JSON.stringify({ resume: { setupCommand: nodeCommand("process.exit(3)") } }),
+		JSON.stringify({ defaultProjectTrust: "always", resume: { setupCommand: nodeCommand("process.exit(3)") } }),
 	);
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
 	sandbox.write(join(clone, "README.md"), "edited\n");
@@ -835,35 +897,46 @@ test("a worker host whose hook fails removes the worktree it restored from its o
 		blobs: fixture.journal.snapshotBlobs,
 	});
 	if (capture.status !== "captured") throw new Error(capture.status);
-	let restored = "";
+	const warnings: string[] = [];
 
-	await assert.rejects(
-		restoreRunWorktree(
-			capture.snapshot.envHash,
-			async () => {
-				restored = (
-					await restoreWorktree(capture.snapshot, {
-						blobs: fixture.journal.snapshotBlobs,
-						storeDir: join(hostAgentDir, "worktree-snapshots"),
-					})
-				).path;
-				return restored;
-			},
-			{ agentDir: hostAgentDir },
-		),
-		(error: unknown) =>
-			isResumeSetupHookError(error) && (error as { cleanupCause?: unknown }).cleanupCause === undefined,
+	const restored = await restoreRunWorktree(
+		capture.snapshot.remotes,
+		async () =>
+			(
+				await restoreWorktree(capture.snapshot, {
+					blobs: fixture.journal.snapshotBlobs,
+					storeDir: join(hostAgentDir, "worktree-snapshots"),
+				})
+			).path,
+		{ agentDir: hostAgentDir, onNotices: (notices) => warnings.push(...notices.map((notice) => notice.type)) },
 	);
+
 	assert.ok(restored.startsWith(join(hostAgentDir, "worktree-snapshots")), restored);
-	assert.equal(existsSync(restored), false);
+	assert.equal(existsSync(restored), true);
+	assert.equal(readFileSync(join(restored, "README.md"), "utf8"), "edited\n");
+	assert.ok(warnings.length > 0);
+	assert.ok(warnings.every((type) => type === "warning"));
 });
 
-test.skipIf(process.platform === "win32")(
-	"a worker host removes a restored worktree whose environment cannot be read (#4329)",
-	async () => {
+describe("the restore port of a worker host (#4329)", () => {
+	const git = { path: "git", env: {} };
+	const shared = { recordedSnapshots: async () => [] } as unknown as Parameters<typeof hostRestorePort>[2];
+	const journal = { snapshotBlobs: undefined } as unknown as Parameters<typeof hostRestorePort>[3];
+	const binding = { remotes: [], head: "h", tree: "t" };
+
+	test("a host given its own restore function runs it as it is, without the blueprint build", () => {
+		const custom = async () => sandbox.path("custom");
+		const options = { restore: custom } as unknown as Parameters<typeof hostRestorePort>[0];
+		assert.equal(hostRestorePort(options, git, shared, journal, sandbox.path("host-agent")), custom);
+	});
+
+	test("the default port builds the blueprint of the host's own agent directory in the restored worktree and warns when it fails (#4588)", async () => {
 		const hostAgentDir = sandbox.path("host-agent");
 		mkdirSync(hostAgentDir, { recursive: true });
-		writeFileSync(join(hostAgentDir, "settings.json"), "{}");
+		writeFileSync(
+			join(hostAgentDir, "settings.json"),
+			JSON.stringify({ defaultProjectTrust: "always", resume: { setupCommand: nodeCommand("process.exit(3)") } }),
+		);
 		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
 		const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
 		cleanups.push(() => fixture.close());
@@ -872,61 +945,35 @@ test.skipIf(process.platform === "win32")(
 			blobs: fixture.journal.snapshotBlobs,
 		});
 		if (capture.status !== "captured") throw new Error(capture.status);
-		let restored = "";
+		const hostJournal = { snapshotBlobs: fixture.journal.snapshotBlobs } as unknown as Parameters<
+			typeof hostRestorePort
+		>[3];
+		const hostGit = {
+			path: sandbox.executable.path,
+			env: { GIT_CONFIG_GLOBAL: sandbox.globalConfig, GIT_CONFIG_NOSYSTEM: "1", HOME: sandbox.root },
+		};
+		const port = hostRestorePort(
+			{} as Parameters<typeof hostRestorePort>[0],
+			hostGit,
+			shared,
+			hostJournal,
+			hostAgentDir,
+		)!;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-		const error = await restoreRunWorktree(
-			undefined,
-			async () => {
-				restored = (
-					await restoreWorktree(capture.snapshot, {
-						blobs: fixture.journal.snapshotBlobs,
-						storeDir: join(hostAgentDir, "worktree-snapshots"),
-					})
-				).path;
-				const lockfile = join(restored, "package-lock.json");
-				rmSync(lockfile);
-				symlinkSync(lockfile, lockfile);
-				return restored;
-			},
-			{ agentDir: hostAgentDir },
-		).then(
-			() => assert.fail("the environment cannot be read"),
-			(failure: unknown) => failure,
-		);
+		try {
+			const path = await port(binding as unknown as Parameters<typeof port>[0], {
+				signal: new AbortController().signal,
+				snapshot: capture.snapshot,
+			});
 
-		assert.ok(isWorkspaceSnapshotError(error), String(error));
-		assert.equal(error.code, "unreadable-path");
-		assert.equal((error as { cleanupCause?: unknown }).cleanupCause, undefined);
-		assert.equal(existsSync(restored), false);
-	},
-);
-
-describe("the restore port of a worker host (#4329)", () => {
-	const git = { path: "git", env: {} };
-	const shared = { recordedSnapshots: async () => [] } as unknown as Parameters<typeof hostRestorePort>[2];
-	const journal = { snapshotBlobs: undefined } as unknown as Parameters<typeof hostRestorePort>[3];
-	const binding = { remotes: [], head: "h", tree: "t", envHash: "e".repeat(64) };
-
-	test("a host given its own restore function runs it as it is, without the setup hook", () => {
-		const custom = async () => sandbox.path("custom");
-		const options = { restore: custom } as unknown as Parameters<typeof hostRestorePort>[0];
-		assert.equal(hostRestorePort(options, git, shared, journal, sandbox.path("host-agent")), custom);
-	});
-
-	test("the default port checks the setup hook of the host's own agent directory before restoring", async () => {
-		writeSettings({ resume: { setupCommand: SUCCEEDING_COMMAND } });
-		const hostAgentDir = sandbox.path("host-agent");
-		mkdirSync(hostAgentDir, { recursive: true });
-		writeFileSync(join(hostAgentDir, "settings.json"), "{}");
-		const port = hostRestorePort({} as Parameters<typeof hostRestorePort>[0], git, shared, journal, hostAgentDir)!;
-		const snapshot = { envHash: "e".repeat(64) } as unknown as WorktreeSnapshot;
-
-		await assert.rejects(
-			port(binding as unknown as Parameters<typeof port>[0], { signal: new AbortController().signal, snapshot }),
-			(error: unknown) =>
-				isResumePreconditionError(error) &&
-				error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
-		);
+			assert.ok(path.startsWith(join(hostAgentDir, "worktree-snapshots")), path);
+			assert.equal(existsSync(path), true);
+			assert.ok(warn.mock.calls.length > 0);
+			assert.ok(warn.mock.calls.every(([message]) => String(message).startsWith("atomic-workflows: ")));
+		} finally {
+			warn.mockRestore();
+		}
 	});
 });
 

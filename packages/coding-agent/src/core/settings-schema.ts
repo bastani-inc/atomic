@@ -174,7 +174,8 @@ const ResumeSettingsSchema = Type.Object({
 	setupCommand: Type.Optional(
 		Type.String({
 			description:
-				"Command run in a worktree restored on resume when its dependencies were never installed on this machine. A repository's trusted .atomic/setup runs instead when present.",
+				"Deprecated: move the command into the maintenance section of a blueprint (.atomic/blueprint.yaml in the repository, or ~/.atomic/agent/blueprint.yaml). Until it is removed, runs as one global maintenance step in each worktree restored on resume, in a trusted project.",
+			deprecated: true,
 		}),
 	),
 });

@@ -160,8 +160,9 @@ interface SettingsManagerBasicAccessors {
 	/** Merged `snapshots.*` settings; throws WorkspaceConfigError (source "settings") for an invalid value. */
 	getWorktreeSnapshotSettings(): WorktreeSnapshotSettings;
 	/**
-	 * `resume.setupCommand` from the global settings, trimmed; undefined when unset or blank. A project's own value is
-	 * ignored: it would run a repository-chosen command on a machine that never trusted the repository.
+	 * Deprecated `resume.setupCommand` from the global settings, trimmed; undefined when unset or blank. It runs as one
+	 * global maintenance step of the blueprint build. A project's own value is ignored: it would run a
+	 * repository-chosen command on a machine that never trusted the repository.
 	 */
 	getResumeSetupCommand(): string | undefined;
 	getRetryEnabled(): boolean;

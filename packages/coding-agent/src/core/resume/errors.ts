@@ -25,20 +25,17 @@ export type ResumeNotFoundErrorCode = "not-found";
  */
 export type ResumeNotFoundReason = "local-storage-not-joined" | "shared-miss";
 export type ResumePreconditionErrorCode = "preconditions-unmet";
-export type ResumeSetupHookErrorCode = "setup-hook-failed" | "setup-hook-timed-out";
 export type ResumeCatalogUnavailableErrorCode = "catalog-unavailable";
 export type ResumeCatalogTimeoutErrorCode = "catalog-timeout";
 export type ResumeErrorCode =
 	| ResumeNotFoundErrorCode
 	| ResumePreconditionErrorCode
-	| ResumeSetupHookErrorCode
 	| ResumeCatalogUnavailableErrorCode
 	| ResumeCatalogTimeoutErrorCode;
 export type ResumeErrorName =
 	| "ResumeError"
 	| "ResumeNotFoundError"
 	| "ResumePreconditionError"
-	| "ResumeSetupHookError"
 	| "ResumeCatalogUnavailableError"
 	| "ResumeCatalogTimeoutError";
 
@@ -46,16 +43,15 @@ export type ResumeErrorName =
 export type ResumeEntryPoint = "cli" | "switch-session" | "create-agent-session" | "workflow-resume" | "rehydrate";
 
 /**
- * One unmet precondition: `subject` names the adapter, variable, file or hook (never a secret value), `why` says
- * what this resume needs it for, and `fix` is the command or setting that supplies it. `checkout` is the recorded
- * checkout path a precondition of restoring that checkout belongs to; problems that apply to the whole resume omit it.
+ * One unmet precondition: `subject` names the adapter, variable or file (never a secret value), `why` says what this
+ * resume needs it for, and `fix` is the command or setting that supplies it. `checkout` is the recorded checkout path a
+ * precondition of restoring that checkout belongs to; problems that apply to the whole resume omit it.
  */
 export type ResumePreconditionProblemCode =
 	| "adapter-not-installed"
 	| "credential-missing"
 	| "credential-unreadable"
-	| "git-unavailable"
-	| "setup-hook-missing";
+	| "git-unavailable";
 export interface ResumePreconditionProblem {
 	readonly code: ResumePreconditionProblemCode;
 	readonly subject: string;
@@ -143,53 +139,6 @@ export class ResumePreconditionError extends ResumeError {
 	}
 }
 
-export interface ResumeSetupHookErrorFields {
-	/** `.atomic/setup` or the configured command's setting name. */
-	readonly hook: string;
-	readonly worktree: string;
-	/** The recorded environment fingerprint the hook was asked to materialize. */
-	readonly envHash: string;
-	readonly exitStatus: number | null;
-	readonly signal: string | null;
-	/** The hook's captured output. */
-	readonly logPath: string;
-	readonly timeoutMs: number;
-	readonly elapsedMs: number;
-}
-
-/** The setup hook a restored worktree needs ran and did not succeed. Resuming again runs it again. */
-export class ResumeSetupHookError extends ResumeError {
-	override readonly name = "ResumeSetupHookError" as const;
-	declare readonly code: ResumeSetupHookErrorCode;
-	declare readonly hook: string;
-	declare readonly worktree: string;
-	declare readonly envHash: string;
-	declare readonly exitStatus: number | null;
-	declare readonly signal: string | null;
-	declare readonly logPath: string;
-	declare readonly timeoutMs: number;
-	declare readonly elapsedMs: number;
-	readonly phase = "setup-hook" as const;
-
-	constructor(code: ResumeSetupHookErrorCode, fields: ResumeSetupHookErrorFields, cause?: Error) {
-		const outcome =
-			code === "setup-hook-timed-out"
-				? `did not finish within ${fields.timeoutMs} ms`
-				: fields.signal !== null
-					? `was stopped by ${fields.signal}`
-					: fields.exitStatus === null
-						? "could not be started"
-						: `exited with status ${fields.exitStatus}`;
-		super(
-			code,
-			`The setup hook ${fields.hook} ${outcome} in ${fields.worktree}`,
-			`Fix the hook (its output is in ${fields.logPath}), then resume again; the hook runs again.`,
-			{ ...fields },
-			cause,
-		);
-	}
-}
-
 const LOOKED_UP: Readonly<Record<ResumeSubject, string>> = { session: "the session", run: "the workflow run" };
 
 export interface ResumeCatalogUnavailableErrorFields {
@@ -265,7 +214,6 @@ const CODES: Record<ResumeErrorName, readonly ResumeErrorCode[]> = {
 	ResumeError: [],
 	ResumeNotFoundError: ["not-found"],
 	ResumePreconditionError: ["preconditions-unmet"],
-	ResumeSetupHookError: ["setup-hook-failed", "setup-hook-timed-out"],
 	ResumeCatalogUnavailableError: ["catalog-unavailable"],
 	ResumeCatalogTimeoutError: ["catalog-timeout"],
 };
@@ -293,10 +241,6 @@ export function isResumeNotFoundError(value: unknown): value is ResumeNotFoundEr
 export function isResumePreconditionError(value: unknown): value is ResumePreconditionError {
 	return value instanceof ResumePreconditionError || structurallyIs(value, "ResumePreconditionError");
 }
-export function isResumeSetupHookError(value: unknown): value is ResumeSetupHookError {
-	return value instanceof ResumeSetupHookError || structurallyIs(value, "ResumeSetupHookError");
-}
-
 export function isResumeCatalogUnavailableError(value: unknown): value is ResumeCatalogUnavailableError {
 	return value instanceof ResumeCatalogUnavailableError || structurallyIs(value, "ResumeCatalogUnavailableError");
 }
@@ -358,12 +302,6 @@ const REHYDRATORS: Record<Exclude<ResumeErrorName, "ResumeError">, Rehydrator> =
 		new ResumeCatalogTimeoutError(fields as unknown as ResumeCatalogTimeoutErrorFields, cause),
 	ResumeCatalogUnavailableError: (fields, _code, cause) =>
 		new ResumeCatalogUnavailableError(fields as unknown as ResumeCatalogUnavailableErrorFields, cause),
-	ResumeSetupHookError: (fields, code, cause) =>
-		new ResumeSetupHookError(
-			code as ResumeSetupHookErrorCode,
-			fields as unknown as ResumeSetupHookErrorFields,
-			cause,
-		),
 };
 
 /**

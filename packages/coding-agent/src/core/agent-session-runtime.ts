@@ -26,6 +26,7 @@ import {
 	continueSessionWhereItWorked,
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
+	type ResumeNotice,
 	savedProjectTrust,
 	sessionResumeOptions,
 } from "./resume/session-resume.ts";
@@ -617,18 +618,46 @@ export class AgentSessionRuntime {
 			...this.resumeOptions(entryPoint),
 			sessionDirectory,
 		});
-		return prepared.status === "ready" ? prepared.sessionManager : sessionManager;
+		if (prepared.status !== "ready") return sessionManager;
+		this.resumeNoticeQueue.push(...prepared.blueprintNotices);
+		return prepared.sessionManager;
+	}
+
+	private resumeNoticeQueue: ResumeNotice[] = [];
+
+	/**
+	 * Whether this runtime builds the blueprints of the worktrees a resume restores. A runtime that only mirrors a
+	 * session another process already prepared sets `"skip"`, so one resume builds once.
+	 */
+	protected resumeBlueprints: "build" | "skip" = "build";
+
+	/** Adds the warnings another process earned for a resume it prepared for this runtime's session. */
+	queueResumeNotices(notices: readonly ResumeNotice[]): void {
+		this.resumeNoticeQueue.push(...notices);
+	}
+
+	/**
+	 * The warnings the blueprint builds of the last resumes in this runtime earned, which the caller shows to the user.
+	 * Each is returned once.
+	 */
+	takeResumeNotices(): readonly ResumeNotice[] {
+		const notices = this.resumeNoticeQueue;
+		this.resumeNoticeQueue = [];
+		return notices;
 	}
 
 	private resumeOptions(entryPoint: ResumeEntryPoint): PrepareSessionResumeOptions {
 		const settings = this.services.settingsManager;
-		return sessionResumeOptions(
-			entryPoint,
-			this.cwd,
-			this.services.agentDir,
-			settings,
-			savedProjectTrust(this.services.agentDir, settings),
-		);
+		return {
+			...sessionResumeOptions(
+				entryPoint,
+				this.cwd,
+				this.services.agentDir,
+				settings,
+				savedProjectTrust(this.services.agentDir, settings),
+			),
+			blueprints: this.resumeBlueprints,
+		};
 	}
 
 	async switchSession(
@@ -817,7 +846,11 @@ export class AgentSessionRuntime {
 
 	/** Where a rehydrated session continues, decided checkout by checkout; see {@link continueSessionWhereItWorked}. */
 	private continueWhereItWorked(opened: SessionManager): Promise<SessionManager> {
-		return continueSessionWhereItWorked(opened, this.resumeOptions("rehydrate"), (cwd) =>
+		const options = {
+			...this.resumeOptions("rehydrate"),
+			onNotices: (notices: readonly ResumeNotice[]) => this.queueResumeNotices(notices),
+		};
+		return continueSessionWhereItWorked(opened, options, (cwd) =>
 			this.boundedSessionLookup(opened.openSessionById(opened.getSessionId(), cwd), opened.getSessionId()),
 		);
 	}

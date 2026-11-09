@@ -495,6 +495,7 @@ export function resumeRemote(ctx) {
 				"1",
 				"--setup-log",
 				`${poolDir}/setup-${name}.log`,
+				...(name === "B" ? ["--setup-exit", "1"] : []),
 				...poolJournal,
 			],
 			env(host, poolAgent(name), poolNodes[name], { ATOMIC_STORAGE: "" }),

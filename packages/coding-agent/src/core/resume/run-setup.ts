@@ -1,42 +1,55 @@
-import { join } from "node:path";
+import { stat } from "node:fs/promises";
 import { getAgentDir } from "../../config.js";
 import { SettingsManager } from "../settings-manager.ts";
-import { computeEnvironmentHash } from "../worktree-snapshot/env-hash.ts";
 import { removeRestoredWorktree } from "../worktree-snapshot/restore.ts";
+import type { WorktreeRootMapping, WorktreeSnapshot } from "../worktree-snapshot/types.ts";
+import type { BlueprintBuildConfig } from "./blueprint/build.ts";
+import type { BlueprintNotice } from "./blueprint/notices.ts";
+import {
+	checkoutsNeedingRebuild,
+	inheritedRemotes,
+	type ResumedBlueprints,
+	setUpResumedBlueprints,
+} from "./blueprint/resume.ts";
 import { ResumePreconditionError, type ResumePreconditionProblem } from "./errors.ts";
+import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, gitUnavailableProblem, type ResumePreflightIo } from "./preflight.ts";
 import { resumeStoreDir, savedProjectTrust } from "./session-resume.ts";
-import { ensureResumeSetup, predictedSetupProblem, type ResumeSetupConfig } from "./setup-hook.ts";
 
-/** A checkout a workflow run's resume restores, with the environment fingerprint its snapshot recorded. */
+/** A checkout a workflow run's resume restores, with the remotes its snapshot recorded. */
 export interface RunWorktreeTarget {
 	readonly root: string;
-	readonly envHash: string;
+	/** The repository's remotes; the same repository on this machine builds its blueprints incrementally. */
+	readonly remotes: readonly string[];
 }
 
 export interface RunResumeSetupOptions {
 	readonly signal?: AbortSignal;
 	readonly io?: ResumePreflightIo;
-	/** The agent directory whose worktree store, setup ledger and global settings apply; defaults to Atomic's. */
+	/** The agent directory whose worktree store, blueprint ledger and global settings apply; defaults to Atomic's. */
 	readonly agentDir?: string;
+	/** Told what a build warns about, once per restored set of worktrees. */
+	readonly onNotices?: (notices: readonly BlueprintNotice[]) => void;
 }
 
 /**
- * The worktree store and setup hook configuration of an agent directory. `resume.setupCommand` and the default
- * project trust are global settings, so no project's settings are read.
+ * The blueprint build configuration of an agent directory. `resume.setupCommand` and the default project trust are
+ * global settings, so no project's settings are read.
  */
-function runSetupConfig(agentDir = getAgentDir()): { readonly storeDir: string; readonly setup: ResumeSetupConfig } {
+function runBlueprintConfig(agentDir = getAgentDir()): BlueprintBuildConfig {
 	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false });
 	return {
+		agentDir,
 		storeDir: resumeStoreDir(agentDir),
-		setup: { command: settings.getResumeSetupCommand(), trusted: savedProjectTrust(agentDir, settings) },
+		setupCommand: settings.getResumeSetupCommand(),
+		trusted: savedProjectTrust(agentDir, settings),
 	};
 }
 
 /**
  * The unmet preconditions of restoring a workflow run's `missing` checkouts on this node, checked before the resume
- * claims the run: Git can be started, and a setup hook could run for a snapshot with dependency inputs. Returns one
- * `ResumePreconditionError` (entry point `workflow-resume`) listing every unmet piece, or undefined.
+ * claims the run: Git can be started. A blueprint is never a precondition. Returns one `ResumePreconditionError` (entry
+ * point `workflow-resume`) listing every unmet piece, or undefined.
  */
 export async function runRestorePreconditionError(
 	runId: string,
@@ -45,7 +58,6 @@ export async function runRestorePreconditionError(
 ): Promise<ResumePreconditionError | undefined> {
 	if (missing.length === 0) return undefined;
 	const io = options.io ?? defaultResumePreflightIo;
-	const { storeDir, setup } = runSetupConfig(options.agentDir);
 	const problems: ResumePreconditionProblem[] = [];
 	const git = await io.probeGit(options.signal);
 	if (git) {
@@ -56,47 +68,98 @@ export async function runRestorePreconditionError(
 			),
 		);
 	}
-	for (const target of missing) {
-		const problem = await predictedSetupProblem(target.envHash, join(storeDir, "worktrees"), setup);
-		if (problem) {
-			problems.push(problem);
-			break;
-		}
-	}
 	return problems.length === 0
 		? undefined
 		: new ResumePreconditionError({ entryPoint: "workflow-resume", problems }, git);
 }
 
 /**
- * Runs the setup hook in each worktree a workflow run's resume restored, once per worktree and environment. When any
- * hook is missing, fails or is cancelled, every worktree in `restored` is removed again (a removal failure is kept as
- * the error's `cleanupCause`) and the error is rethrown, so the next resume restores and sets up from scratch.
+ * Builds the blueprints of the worktrees a workflow run's resume restored (#4588). A blueprint that fails or cannot
+ * run never fails the resume and never removes a worktree: the outcome says what failed, and `options.onNotices` is
+ * told the warnings. Only `options.signal` aborting rejects, with its reason; the worktrees in `restored` are then
+ * removed again (a removal failure is kept as the error's `cleanupCause`), so the next resume restores from scratch.
  */
 export async function setUpRestoredRunWorktrees(
 	restored: readonly RunWorktreeTarget[],
 	options: RunResumeSetupOptions = {},
-): Promise<void> {
-	const { storeDir, setup } = runSetupConfig(options.agentDir);
+): Promise<ResumedBlueprints> {
+	return buildRunWorktrees(restored, restored, options);
+}
+
+/** What a workflow run's resume knows about the worktrees it restored now and those earlier resumes restored. */
+export interface RunRestoreHistory {
+	/** The restores this resume just made. */
+	readonly restored: readonly WorktreeRootMapping[];
+	/** Every restore earlier resumes of the run recorded, oldest first. */
+	readonly mappings: readonly WorktreeRootMapping[];
+	/** The run's snapshots by id; their remotes identify each repository for the build ledger. */
+	readonly snapshots: ReadonlyMap<string, WorktreeSnapshot>;
+}
+
+async function directoryExists(path: string): Promise<boolean> {
 	try {
-		for (const target of restored) {
-			await ensureResumeSetup({
-				entryPoint: "workflow-resume",
-				worktree: target.root,
-				envHash: target.envHash,
-				storeDir,
-				config: setup,
-				signal: options.signal,
-			});
-		}
+		return (await stat(path)).isDirectory();
 	} catch (error) {
-		throw await removedAfter(error, restored, storeDir);
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return false;
+		throw error;
 	}
 }
 
 /**
- * `error`, after every worktree in `restored` is removed again, with any removal failure kept as its `cleanupCause`, so
- * the next resume restores and sets up from scratch.
+ * Builds the blueprints of a workflow run's worktrees on resume (#4588): each worktree this resume restored, and again
+ * each worktree an earlier resume restored here whose last build failed, never finished or left no record, so fixing a
+ * blueprint and resuming the run builds it again. A repository is identified by the remotes its restores trace back
+ * to, so an unchanged workspace is inherited across resumes. Never fails for a blueprint; see
+ * {@link setUpRestoredRunWorktrees}.
+ */
+export async function setUpResumedRunWorktrees(
+	history: RunRestoreHistory,
+	options: RunResumeSetupOptions = {},
+): Promise<ResumedBlueprints> {
+	const storeDir = resumeStoreDir(options.agentDir ?? getAgentDir());
+	const links = [...history.mappings, ...history.restored];
+	const targetOf = (mapping: WorktreeRootMapping): RunWorktreeTarget => ({
+		root: mapping.to,
+		remotes: inheritedRemotes(
+			mapping.to,
+			history.snapshots.get(mapping.snapshotId)?.remotes ?? [],
+			links,
+			history.snapshots,
+		),
+	});
+	const restored = history.restored.map(targetOf);
+	const current = new Map<string, WorktreeRootMapping>();
+	for (const mapping of links) current.set(mapping.from, mapping);
+	const restoredRoots = new Set(restored.map((target) => target.root));
+	const earlier: RunWorktreeTarget[] = [];
+	for (const mapping of current.values()) {
+		if (restoredRoots.has(mapping.to) || !isInside(storeDir, mapping.to) || !(await directoryExists(mapping.to)))
+			continue;
+		earlier.push(targetOf(mapping));
+	}
+	const retried = await checkoutsNeedingRebuild(earlier, storeDir);
+	return buildRunWorktrees([...restored, ...retried], restored, options);
+}
+
+async function buildRunWorktrees(
+	targets: readonly RunWorktreeTarget[],
+	removableOnCancel: readonly RunWorktreeTarget[],
+	options: RunResumeSetupOptions,
+): Promise<ResumedBlueprints> {
+	const config = runBlueprintConfig(options.agentDir);
+	try {
+		const blueprints = await setUpResumedBlueprints({ restored: targets, config, signal: options.signal });
+		if (blueprints.notices.length > 0) options.onNotices?.(blueprints.notices);
+		return blueprints;
+	} catch (error) {
+		if (options.signal?.aborted) throw await removedAfter(error, removableOnCancel, config.storeDir);
+		throw error;
+	}
+}
+
+/**
+ * `error`, after every worktree in `restored` is removed again, with any removal failure kept as its `cleanupCause`.
  */
 async function removedAfter(error: unknown, restored: readonly { readonly root: string }[], storeDir: string) {
 	const failures: unknown[] = [];
@@ -115,29 +178,15 @@ async function removedAfter(error: unknown, restored: readonly { readonly root: 
 }
 
 /**
- * Restores a workflow worktree with `restore` and runs the setup hook in it, as a run's own resume does for the
- * checkouts it restores. `envHash` is the environment fingerprint of the snapshot being restored, when known: a hook
- * that cannot run for its dependency inputs is then reported as a {@link ResumePreconditionError} before `restore`
- * runs. Without it, the fingerprint is read from the restored worktree. A hook that is missing or fails removes the
- * restored worktree again. Resolves the restored worktree's path.
+ * Restores a workflow worktree with `restore` and builds its blueprints, as a run's own resume does for the checkouts
+ * it restores. `remotes` are the restored snapshot's, when known. Resolves the restored worktree's path.
  */
 export async function restoreRunWorktree(
-	envHash: string | undefined,
+	remotes: readonly string[] | undefined,
 	restore: () => Promise<string>,
 	options: RunResumeSetupOptions = {},
 ): Promise<string> {
-	const { storeDir, setup } = runSetupConfig(options.agentDir);
-	if (envHash !== undefined) {
-		const problem = await predictedSetupProblem(envHash, join(storeDir, "worktrees"), setup);
-		if (problem) throw new ResumePreconditionError({ entryPoint: "workflow-resume", problems: [problem] });
-	}
 	const root = await restore();
-	let restoredEnvHash: string;
-	try {
-		restoredEnvHash = envHash ?? (await computeEnvironmentHash(root));
-	} catch (error) {
-		throw await removedAfter(error, [{ root }], storeDir);
-	}
-	await setUpRestoredRunWorktrees([{ root, envHash: restoredEnvHash }], options);
+	await setUpRestoredRunWorktrees([{ root, remotes: remotes ?? [] }], options);
 	return root;
 }

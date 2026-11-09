@@ -360,7 +360,7 @@ export function checkResumeInvariants(evidence) {
 			},
 		},
 		{
-			name: "pooled-setup-hook-ran-once-where-restored",
+			name: "pooled-blueprint-built-once-where-restored",
 			passed:
 				setup?.A?.length === 1 &&
 				typeof child?.finalCwd === "string" &&
@@ -372,7 +372,7 @@ export function checkResumeInvariants(evidence) {
 				child.firstCwd.startsWith(setup.B[0] ?? "\0") &&
 				setup.C?.length === 0,
 			expected:
-				"each host's resume.setupCommand ran exactly once, in the worktree it restored for the child, before the child ran there",
+				"each restoring host's blueprint build ran exactly once, in the worktree it restored for the child, before the child ran there; n2's host's build failed, and that neither failed the child nor removed its worktree, which the child ran in",
 			actual: setup ?? null,
 		},
 		{

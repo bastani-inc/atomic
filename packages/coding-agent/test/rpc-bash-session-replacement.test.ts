@@ -211,6 +211,7 @@ describe("RPC bash ownership across session replacement", () => {
 				},
 				newSession: replace,
 				switchSession: replace,
+				takeResumeNotices: () => [],
 				importFromJsonl: replace,
 				fork: async () => ({ ...(await replace()), selectedText: undefined }),
 			} as unknown as AgentSessionRuntime;

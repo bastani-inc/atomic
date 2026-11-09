@@ -45,6 +45,7 @@ import type {
 	RpcExtensionUIResponse,
 	RpcModelCatalog,
 	RpcResourceExtension,
+	RpcResumeNotice,
 	RpcSlashCommand,
 } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
@@ -117,6 +118,8 @@ type PendingQueueClear = {
  */
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
+	/** The engine prepares every resume of this session and builds its blueprints; this mirror only restores the same state. */
+	protected override resumeBlueprints: "build" | "skip" = "skip";
 	private readonly patchedSessions = new WeakSet<AgentSession>();
 	private streaming = false;
 	private compacting = false;
@@ -611,6 +614,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	): Promise<{ cancelled: boolean }> {
 		const result = await this.client.switchSession(sessionId, options?.cwdOverride, options?.sessionDirectory);
 		if (!result.cancelled) {
+			this.queueResumeNotices(result.notices ?? []);
 			await super.switchSession(sessionId, {
 				cwdOverride: options?.cwdOverride,
 				sessionDirectory: options?.sessionDirectory,
@@ -618,7 +622,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			await this.initializeFromEngine();
 			if (options?.withSession) await options.withSession(this.session.createReplacedSessionContext());
 		}
-		return result;
+		return { cancelled: result.cancelled };
 	}
 
 	override async newSession(options?: { parentSession?: string }): Promise<{ cancelled: boolean }> {
@@ -635,19 +639,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	override async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
-		const result = await this.client.requestInternal<{ cancelled: boolean }>({
+		const result = await this.client.requestInternal<{ cancelled: boolean; notices?: readonly RpcResumeNotice[] }>({
 			type: "import_session",
 			inputPath,
 			cwdOverride,
 		});
-		if (result.cancelled) return result;
+		if (result.cancelled) return { cancelled: true };
+		this.queueResumeNotices(result.notices ?? []);
 		const state = await this.client.getState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
 			});
 		await this.initializeFromEngine();
-		return result;
+		return { cancelled: false };
 	}
 
 	override async fork(

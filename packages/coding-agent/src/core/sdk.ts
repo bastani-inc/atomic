@@ -256,7 +256,7 @@ async function acquireSessionPermit(
 /**
  * A supplied session that recorded worktree snapshots, prepared the way `atomic --session` prepares it: continued in
  * its recorded checkout when that still matches, in a matching checkout, or in a worktree restored from its snapshot,
- * with the setup hook. The checkout is compared under the `snapshots` the session itself records with. A session
+ * with its blueprints built. The checkout is compared under the `snapshots` the session itself records with. A session
  * without snapshots is returned unchanged, so creating it costs no Git call.
  */
 async function sessionResumedOnThisNode(

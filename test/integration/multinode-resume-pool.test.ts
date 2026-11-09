@@ -222,15 +222,19 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 			git.write(join(nodeA, "notes", "untracked.txt"), "untracked\n");
 			const expected = treeDigest(nodeA);
 			const c = campaign("multinode-pool", CAMPAIGN_BUDGET.waitMs, git);
-			// Every host's own agent directory configures the resume setup hook: it records each worktree it sets up.
+			// Every host's own agent directory configures a trusted setup command, the one maintenance step of its build: it
+			// records each worktree it builds. D's fails after recording, which must neither fail the child nor remove its worktree.
 			const hookLog = (host: string) => join(c.directory, `hook-${host}.log`);
 			for (const host of ["B", "C", "D", "E"]) {
 				const agentDir = join(c.directory, host, "agent");
 				mkdirSync(agentDir, { recursive: true });
-				const record = `require('fs').appendFileSync('${hookLog(host).replaceAll("\\", "/")}', process.env.ATOMIC_RESUME_WORKTREE + '\\n')`;
+				const record = `require('fs').appendFileSync('${hookLog(host).replaceAll("\\", "/")}', process.cwd() + '\\n')${host === "D" ? "; process.exit(1)" : ""}`;
 				writeFileSync(
 					join(agentDir, "settings.json"),
-					JSON.stringify({ resume: { setupCommand: `"${process.execPath}" -e "${record}"` } }),
+					JSON.stringify({
+						defaultProjectTrust: "always",
+						resume: { setupCommand: `"${process.execPath}" -e "${record}"` },
+					}),
 				);
 			}
 			const hosts = new Map<string, BudgetedProcess>();
@@ -364,7 +368,7 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 					assert.deepEqual(JSON.parse(child.finalFiles), expected);
 					assert.equal(child.finalHead, head);
 				}
-				// Each host set up every worktree it restored exactly once, before the child ran there; C restored none.
+				// Each host built every worktree it restored exactly once, before the child ran there, D's failing build included; C restored none.
 				const setUp = (host: string) =>
 					existsSync(hookLog(host)) ? readFileSync(hookLog(host), "utf8").trim().split("\n") : [];
 				for (const host of ["B", "D", "E"]) {

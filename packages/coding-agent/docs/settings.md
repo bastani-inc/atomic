@@ -381,7 +381,7 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `resume.setupCommand` | string | unset | Command run in a worktree restored on resume, or by a worker host for a pooled child, when its lockfiles were never installed on this machine; a trusted repository's `.atomic/setup` runs instead. Read from global settings only; a project's settings cannot set it. See [Resume on any machine](/guides/resume-on-any-machine) |
+| `resume.setupCommand` | string | unset | Deprecated; remove it in favour of a blueprint. Kept for one release as an alias for one maintenance step of the global blueprint: the command runs in the root of each worktree restored on resume, or by a worker host for a pooled child, in a trusted project. A resume that builds a worktree prints a deprecation warning while it is set. Move the command into the `maintenance` section of `.atomic/blueprint.yaml`. Read from global settings only; a project's settings cannot set it. See [Set the environment up with a blueprint](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) |
 
 ### Snapshots
 

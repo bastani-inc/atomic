@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	AgentRehydrateError,
 	BackgroundCompactionPersistError,
+	BlueprintStepFailedError,
 	DebugLogUnwritableError,
 	DecisionTimeoutError,
 	EditMatchError,
@@ -11,6 +12,7 @@ import {
 	IntercomBrokerSuccessorTimeoutError,
 	isAgentRehydrateError,
 	isBackgroundCompactionPersistError,
+	isBlueprintStepFailedError,
 	isDebugLogUnwritableError,
 	isDecisionTimeoutError,
 	isEditMatchError,
@@ -36,6 +38,7 @@ import {
 	StartupBenchmarkConfigError,
 	serializeAgentRehydrateError,
 	serializeBackgroundCompactionError,
+	serializeBlueprintError,
 	serializeDebugError,
 	serializeDecisionError,
 	serializeFileToolError,
@@ -392,6 +395,26 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: ResumePreconditionError,
 		guard: isResumePreconditionError,
 		facts: ownFacts(serializeResumeError),
+	},
+	{
+		family: "blueprint",
+		make: () =>
+			new BlueprintStepFailedError(
+				{
+					blueprint: "/repo/.atomic/blueprint.yaml",
+					scope: "repository",
+					section: "initialize",
+					index: 0,
+					step: "Install toolchain",
+					exitStatus: 7,
+					signal: null,
+					logPath: "/store/blueprint-logs/step.log",
+				},
+				new Error("spawn failed"),
+			),
+		type: BlueprintStepFailedError,
+		guard: isBlueprintStepFailedError,
+		facts: ownFacts(serializeBlueprintError),
 	},
 ];
 
