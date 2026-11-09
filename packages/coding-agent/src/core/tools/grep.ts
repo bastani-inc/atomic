@@ -105,6 +105,8 @@ function clampLineCount(value: number | undefined): number {
 export interface GrepOperations {
 	/** Check if path is a directory. Throws if path does not exist. */
 	isDirectory: (absolutePath: string) => Promise<boolean> | boolean;
+	/** @deprecated Ignored. Context lines come from local search. Override execute() for remote search. */
+	readFile?: (absolutePath: string) => Promise<string> | string;
 }
 
 const defaultGrepOperations: GrepOperations = {
