@@ -864,7 +864,8 @@ describe("what the index keeps besides entries (#4395)", () => {
 		kept = undefined;
 		await collectEverythingTracked(cards);
 		assert.equal(cards.collected(), 2);
-		await collectGarbage(2);
+		for (let round = 0; round < MAX_COLLECTION_ROUNDS && subagentChildCardStateSizes().watchers > before; round++)
+			await collectGarbage(1);
 		assert.equal(subagentChildCardStateSizes().watchers, before);
 	});
 
