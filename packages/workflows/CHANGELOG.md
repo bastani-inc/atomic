@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Impeccable skill to 4.8.1 with engine 0.1.19. The design hook's end-of-session review lists its findings and the agent fixes or skips each with a short reason, asking you only when it cannot decide. `hooks status` shows each harness's real wiring, `impeccable context` restores missing hook entries only after you accept the hook in the project's `config.local.json`, and a user-scope Claude Code install follows `CLAUDE_CONFIG_DIR`. Hermes Agent gets a design-hook plugin you enable with `hermes plugins enable impeccable-design-hook`. Live Mode can remove a picked element, with Undo and Apply, and mounts Vue variants and previews Svelte and Vue components after they compile. The detector raises fewer false alarms and `init` says which generated files to commit. The launcher now checks each engine download, and re-checks a cached engine, against SHA-256 digests that ship with the skill in `scripts/engine-checksums.txt`, instead of a digest published next to the binary; it refuses a binary that does not match or has no digest, and skips a binary next to it that reports a different engine version. Atomic's telemetry and update-check defaults remain off.
+
 ## [0.9.74] - 2026-11-09
 
 Schema-backed workflow stages finish reliably.

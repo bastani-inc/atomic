@@ -58,7 +58,7 @@ const agentDesktopSkillBodySha256 = "459f7f3d3b64332bb999bb2cbe6627aa744bc74747f
 const agentDesktopUpstreamSkillBodySha256 = "b175d7d504bdbf0d151c42c6894f666f0429dba48aebc220f1141f98627f7ee9";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.7.0 at aeeb3d8c30b5f95aeeb3e893b0f1a308af8fdb8f (engine 0.1.16)
+// skill-v4.8.1 at 924bbd194d02e5e15a227e75b5901fb0d7a4ecad (engine 0.1.19)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -114,6 +114,7 @@ scripts/VERSION
 scripts/command-metadata.json
 scripts/data/font-index-failures.json
 scripts/data/font-index.json
+scripts/engine-checksums.txt
 scripts/impeccable
 scripts/impeccable.cmd
 scripts/live-browser-dom.js
@@ -125,7 +126,14 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.16";
+const IMPECCABLE_ENGINE_VERSION = "0.1.19";
+const IMPECCABLE_ENGINE_ASSETS = [
+	"impeccable-darwin-arm64",
+	"impeccable-darwin-x64",
+	"impeccable-linux-x64",
+	"impeccable-linux-arm64",
+	"impeccable-windows-x64.exe",
+];
 
 function sha256(contents: string | Buffer): string {
 	return createHash("sha256").update(contents).digest("hex");
@@ -296,12 +304,13 @@ describe("synced upstream skill trees", () => {
 			"scripts/command-metadata.json",
 			"scripts/impeccable",
 			"scripts/impeccable.cmd",
+			"scripts/engine-checksums.txt",
 			"scripts/data/font-index.json",
 			"scripts/live-browser.js",
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.7\.0\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.8\.1\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -334,10 +343,11 @@ describe("synced upstream skill trees", () => {
 			"skills/impeccable/scripts/impeccable",
 			"skills/impeccable/scripts/impeccable.cmd",
 			"skills/impeccable/scripts/VERSION",
+			"skills/impeccable/scripts/engine-checksums.txt",
 		]);
 	});
 
-	test("ships the exact Impeccable 4.7.0 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.8.1 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
@@ -348,8 +358,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/pbakaus/impeccable"],
 			["github-path", ".pi/skills/impeccable"],
-			["github-ref", "refs/tags/skill-v4.7.0"],
-			["github-tree-sha", "f90e37ea2e9987475f4bdc263cf9d60499dba0ec"],
+			["github-ref", "refs/tags/skill-v4.8.1"],
+			["github-tree-sha", "33f5053739cd5a746d74a30d891e0da61b3f9829"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
@@ -547,6 +557,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/VERSION",
 			"scripts/impeccable",
 			"scripts/impeccable.cmd",
+			"scripts/engine-checksums.txt",
 			"scripts/data/font-index.json",
 		]) {
 			assert.ok(
@@ -598,7 +609,33 @@ describe("synced upstream skill trees", () => {
 			"cmd policy precedes dispatch",
 		);
 		assert.match(posix, /engine-v\$version\/\$asset"\r?\n/u, "download stays pinned to the VERSION file");
-		assert.match(posix, /\$url\.sha256/u, "downloads stay checksum-verified");
+	});
+
+	test("keeps the pinned Impeccable engine verified against the shipped SHA-256 manifest", () => {
+		const scripts = join(workflowSkills, "impeccable/scripts");
+		const posix = readFileSync(join(scripts, "impeccable"), "utf8");
+		const windows = readFileSync(join(scripts, "impeccable.cmd"), "utf8");
+		const manifest = readFileSync(join(scripts, "engine-checksums.txt"), "utf8");
+		const digests = new Map<string, string>();
+		for (const line of manifest.split(/\r?\n/u)) {
+			if (line === "" || line.startsWith("#")) continue;
+			const [version, asset, digest, ...extra] = line.split(/\s+/u);
+			assert.deepEqual(extra, [], `malformed engine checksum line: ${line}`);
+			assert.equal(version, IMPECCABLE_ENGINE_VERSION, `engine checksum for another version: ${line}`);
+			digests.set(asset, digest);
+		}
+		for (const asset of IMPECCABLE_ENGINE_ASSETS) {
+			assert.match(digests.get(asset) ?? "", /^[0-9a-f]{64}$/u, `no SHA-256 pinned for ${asset}`);
+		}
+		assert.match(posix, /^manifest="\$dir\/engine-checksums\.txt"\r?$/mu, "sh launcher stopped reading the manifest");
+		assert.match(posix, /checksum mismatch downloading/u, "sh launcher stopped comparing the download");
+		assert.match(posix, /refusing the unverified download/u, "sh launcher stopped failing closed");
+		assert.match(
+			windows,
+			/^set "manifest=%~dp0engine-checksums\.txt"\r?$/mu,
+			"cmd launcher stopped reading the manifest",
+		);
+		assert.match(windows, /refusing the unverified download/u, "cmd launcher stopped failing closed");
 	});
 
 	test("initializes its fixture without mutating an ambient linked worktree", () => {
