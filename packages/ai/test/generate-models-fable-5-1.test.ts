@@ -387,6 +387,25 @@ test("generates Claude Fable 5.2 as a static Anthropic entry while models.dev la
 	assert.equal(model.compat?.supportsForcedToolChoice, undefined);
 });
 
+test("keeps the static Anthropic Fable 5.2 entry when another provider lists the same ID (#4610)", () => {
+	const catalogs = generate({
+		...CATALOG,
+		"github-copilot": {
+			models: {
+				...CATALOG["github-copilot"].models,
+				"claude-fable-5-2": {
+					...FABLE_5_1_MODELS_DEV,
+					id: "claude-fable-5-2",
+					provider: { npm: "@ai-sdk/anthropic" },
+				},
+			},
+		},
+	});
+	assert.equal(catalogs["github-copilot"]["claude-fable-5-2"].provider, "github-copilot");
+	assert.equal(catalogs.anthropic["claude-fable-5-2"].provider, "anthropic");
+	assert.deepEqual(catalogs.anthropic["claude-fable-5-2"].cost, FABLE_5_2_EXPECTED_COST);
+});
+
 test("limits Claude Fable 5.2 fallback targets to Claude Opus 5 and prices them", () => {
 	const fallbacks = generate().anthropic["claude-fable-5-2"].compat?.allowedFallbackModels as
 		| Array<{ provider: string; model: string; cost: unknown }>
