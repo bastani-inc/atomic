@@ -99,7 +99,7 @@ export const SETTINGS_DEFAULTS = {
 		showUnknownTargetWarnings: false,
 	},
 	httpIdleTimeoutMs: 600_000,
-	cacheWarming: "streaming",
+	cacheWarming: "idle",
 	tasks: {
 		/** Same 15-minute default as workflow heartbeats. */
 		heartbeatMs: 15 * 60_000,

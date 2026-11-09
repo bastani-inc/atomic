@@ -64,7 +64,10 @@ See [Herdr](/herdr) for state aggregation, reporter conflicts, privacy, and Herd
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level. Anthropic, Google, and Bedrock use these natively. OpenAI-compatible models use them when `compat.thinkingTokenBudgetField` (or `supportsThinkingTokenBudget`) is set. |
 | `showCacheMissNotices` | boolean | `false` | Show transcript notices for significant prompt-cache misses, billed compaction or branch-summary usage, and provider recovery diagnostics such as dropped Anthropic thinking blocks, including when a persisted transcript is resumed |
+| `cacheWarming` | `"off" \| "streaming" \| "idle"` | `"idle"` | Keep eligible provider prompt caches warm during active runs and, with `"idle"`, for up to 30 minutes between runs. `"streaming"` warms only during active runs; `"off"` never warms. Each refresh costs money. Global setting only; project settings are ignored. |
 | `fallbackModels` | string[] | - | Ordered fallback models, written as `"provider/model"` with optional model-supported reasoning suffixes such as `:high`, `:xhigh`, or `:max`. Used by main-chat turns and, since compaction fallback rungs, borrowed for compaction planner requests |
+
+Cache warming runs only when the model declares a cache lifetime (`promptCache` in [Models Configuration](/models-configuration)) and Atomic estimates at least $0.05 in avoided cache-miss cost. Refreshes are recorded as usage entries and never enter the model's context. Extensions can override each decision with the `cache_warming_decision` event.
 
 `defaultProvider` and `defaultModel` form one exact saved selection when both are present. Atomic waits for built-in, configured, and extension provider registration before classifying the provider.
 

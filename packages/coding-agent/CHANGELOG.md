@@ -24,6 +24,7 @@
 
 ### Changed
 
+- `cacheWarming` now defaults to `"idle"` instead of `"streaming"`: Atomic also keeps eligible prompt caches warm for up to 30 minutes between agent runs, but only when a refresh is expected to pay for itself. Set `"cacheWarming": "streaming"` in global settings for the previous behavior, or `"off"` to disable warming
 - The `/login` and `/logout` provider lists and the `/login <provider>` and `/logout <provider>` completions now show the preferred partners Radius and OpenRouter first, then all other providers alphabetically. In the provider lists, partners are marked with `✦`, the selected Radius row shimmers in the Radius logo colors and the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes)
 
 ### Fixed
