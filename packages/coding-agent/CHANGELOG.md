@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.74-alpha.1] - 2026-11-09
+
+Compaction keeps more of your session verbatim and can recall what it removed.
+
+- **Verbatim compaction that holds up.** A planner refusal partway through its answer is retried and then planned in smaller pieces instead of falling back to a lossy summary, deletions stop at the keep target instead of removing most of the session, and stray prose around the planner's ranges no longer discards its whole answer ([#4543](https://github.com/bastani-inc/atomic/issues/4543), [#4576](https://github.com/bastani-inc/atomic/pull/4576), [#4568](https://github.com/bastani-inc/atomic/issues/4568), [#4578](https://github.com/bastani-inc/atomic/pull/4578)).
+- **Removed context stays reachable.** The compacted context tells the agent where removed lines live in `history://`, cut tool output names the exact range to read, and a short `Recalled context` section brings back relevant lines from earlier history; turn it off with `compaction.historyRecall: false` ([#4568](https://github.com/bastani-inc/atomic/issues/4568), [#4578](https://github.com/bastani-inc/atomic/pull/4578)).
+- **Diagnostics for every session store.** Compaction failures in SQLite and other non-JSONL stores now leave a redacted diagnostic in `compaction-diagnostics/` ([#4543](https://github.com/bastani-inc/atomic/issues/4543), [#4576](https://github.com/bastani-inc/atomic/pull/4576)).
+- **Resuming sessions on large stores.** `--session <id>` and `--fork <id>` no longer run out of memory when the session belongs to another directory ([#4566](https://github.com/bastani-inc/atomic/issues/4566), [#4567](https://github.com/bastani-inc/atomic/pull/4567)).
+- **Workflow stages survive detached `bash` waits.** Notifications, steering, follow-ups and compactions no longer push a session past a call whose result it still waits on, so the stage no longer fails with `ToolDetachmentError` ([#4580](https://github.com/bastani-inc/atomic/issues/4580), [#4581](https://github.com/bastani-inc/atomic/pull/4581)).
+
 ### Added
 
 - `AgentSession.isWaitingOnDetachedResults()` tells whether the transcript still waits on the result of a detached tool call; while it does and a detachment policy is set, nothing starts a turn on the session ([#4580](https://github.com/bastani-inc/atomic/issues/4580))

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.74-alpha.1] - 2026-11-09
+
+Schema-backed workflow stages finish reliably.
+
+- **Structured output without prompt boilerplate.** Atomic now tells every schema-backed stage to finish with `structured_output` and infers the result from the final answer when the model skips the call, so stages no longer fail their first attempt and prompts need not mention the tool ([#4565](https://github.com/bastani-inc/atomic/issues/4565), [#4577](https://github.com/bastani-inc/atomic/pull/4577)).
+- **Stages survive detached `bash` waits.** A stage whose conversation moves past a detached call, through a compaction, a resumed pause or a late result, now keeps its finished result instead of failing the run ([#4580](https://github.com/bastani-inc/atomic/issues/4580), [#4581](https://github.com/bastani-inc/atomic/pull/4581)).
+
 ### Added
 
 - Added `WorkflowStructuredOutputInferenceError`, with `isWorkflowStructuredOutputInferenceError`, `findWorkflowStructuredOutputInferenceError` and `deserializeWorkflowStructuredOutputInferenceError`: the typed `cause` a schema-backed stage's failure carries when Atomic's own `structured_output` inference produced no result ([#4565](https://github.com/bastani-inc/atomic/issues/4565))
