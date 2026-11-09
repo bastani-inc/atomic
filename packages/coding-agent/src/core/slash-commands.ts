@@ -172,6 +172,11 @@ const BUNDLED_WORKFLOW_COMPLETION_METADATA: WorkflowCompletionMetadata[] = [
 					"Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
 				kind: "boolean",
 			},
+			image_model: {
+				description:
+					"Image model for design reference images, as provider/id (for example openai-images/gpt-image-2.6-flare). Defaults to the newest available GPT Image model, then other image providers such as OpenRouter. Reference images are skipped when no image model is available.",
+				kind: "string",
+			},
 		},
 	},
 	{

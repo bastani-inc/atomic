@@ -3,6 +3,7 @@ import {
   ANTI_SLOP_RULES,
   HTML_PREVIEW_RULES,
   REFERENCE_PRECEDENCE,
+  referenceImageRelativeSrc,
   taggedPrompt,
 } from "./open-claude-design-utils.js";
 import {
@@ -56,6 +57,7 @@ type RefineOptions = {
   readonly designContextFile: string;
   /** Path to the persisted references.md artifact (issue #2121). */
   readonly referencesFile: string;
+  readonly referenceImagePaths: readonly string[];
   readonly designModelConfig: ModelConfig;
   readonly workflowCwd: string;
   readonly importContext?: string;
@@ -70,7 +72,7 @@ type RefineOptions = {
  * they leave. The preview is exported as it stands when the session ends.
  */
 export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ readonly latestDesign: string }> {
-  const { designContext, prompt, outputType, previewPath, previewFileUrl, browserBootstrapRules, designContextFile, referencesFile, designModelConfig, workflowCwd } = options;
+  const { designContext, prompt, outputType, previewPath, previewFileUrl, browserBootstrapRules, designContextFile, referencesFile, referenceImagePaths, designModelConfig, workflowCwd } = options;
   const importContext = options.importContext ?? "";
 
   // Large research context travels by artifact file (`reads` + explicit read
@@ -82,9 +84,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       previewPath,
       designContextFile,
       referencesFile,
+      referenceImagePaths,
       importContext,
     }),
-    reads: [designContextFile, referencesFile],
+    reads: [designContextFile, referencesFile, ...referenceImagePaths],
+    ...(referenceImagePaths.length > 0 ? { taskNeeds: { needsImages: true } } : {}),
     ...designModelConfig,
   });
 
@@ -94,7 +98,7 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
   // lifecycle failures must propagate and stop the workflow.
   const gateChoice = await options.ui
     .select(
-      buildLiveReviewGateMessage({ round: 1, previewPath, previewFileUrl }),
+      buildLiveReviewGateMessage({ round: 1, previewPath, previewFileUrl, referenceImagePaths }),
       LIVE_REVIEW_GATE_OPTIONS,
     )
     .catch((error: unknown) => {
@@ -108,6 +112,7 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       reviewStageName: "user-feedback-1",
       previewPath,
       previewFileUrl,
+      referenceImagePaths,
       browserBootstrapRules,
       designModelConfig,
       workflowCwd,
@@ -123,6 +128,7 @@ type LiveReviewSessionOptions = {
   readonly reviewStageName: string;
   readonly previewPath: string;
   readonly previewFileUrl: string;
+  readonly referenceImagePaths: readonly string[];
   readonly browserBootstrapRules: string;
   readonly designModelConfig: ModelConfig;
   readonly workflowCwd: string;
@@ -137,11 +143,11 @@ type LiveReviewSessionOptions = {
  * which is what prevents a poll timeout from ending an active review.
  */
 async function runLiveReviewSession(options: LiveReviewSessionOptions): Promise<void> {
-  const { designContext, round, reviewStageName, previewPath, previewFileUrl, browserBootstrapRules, designModelConfig, workflowCwd } = options;
+  const { designContext, round, reviewStageName, previewPath, previewFileUrl, referenceImagePaths, browserBootstrapRules, designModelConfig, workflowCwd } = options;
   let sessionId: string | undefined;
 
   const start = await designContext.task(`${reviewStageName}-start`, {
-    prompt: buildLiveSessionStartPrompt({ previewPath, previewFileUrl, browserBootstrapRules, round }),
+    prompt: buildLiveSessionStartPrompt({ previewPath, previewFileUrl, referenceImagePaths, browserBootstrapRules, round }),
     ...designModelConfig,
   });
   sessionId = start.sessionId;
@@ -180,8 +186,10 @@ function buildInitialGeneratePrompt(args: {
   readonly previewPath: string;
   readonly designContextFile: string;
   readonly referencesFile: string;
+  readonly referenceImagePaths: readonly string[];
   readonly importContext: string;
 }): string {
+  const hasReferenceImages = args.referenceImagePaths.length > 0;
   return taggedPrompt([
     ["design_brief", args.prompt],
     [
@@ -193,6 +201,9 @@ function buildInitialGeneratePrompt(args: {
       "reference_inspiration_file",
       `Read the file at ${args.referencesFile} for the curated reference inspiration to heavily emulate.`,
     ],
+    ...(hasReferenceImages
+      ? [["reference_images", renderReferenceImagesForGeneration(args.referenceImagePaths)] as const]
+      : []),
     ["reference_precedence", REFERENCE_PRECEDENCE],
     ["preview_artifact_path", args.previewPath],
     ["html_rules", HTML_PREVIEW_RULES],
@@ -208,6 +219,7 @@ function buildInitialGeneratePrompt(args: {
         `First read the design-context and reference-inspiration files named above; they are the design system and reference authority for every decision. If a file is missing, say so and proceed from the brief.`,
         `Create the HTML artifact exactly at ${args.previewPath}.`,
         "Follow <reference_precedence>; heavily reference the reference-inspiration file without copying wholesale or inventing traits.",
+        ...(hasReferenceImages ? [REFERENCE_IMAGE_GENERATION_RULE] : []),
         `Build the requested output_type (${args.outputType}): render full realistic layouts for prototypes/pages, or the component in at least three representative contexts.`,
         "Include structure, states, accessibility, responsive behavior, and integration notes as HTML comments so the preview stays clean.",
         "Use project language rather than generic placeholders when conventions exist. Add no features or abstractions beyond this design brief.",
@@ -229,6 +241,29 @@ function buildInitialGeneratePrompt(args: {
   ]);
 }
 
+const REFERENCE_IMAGE_GENERATION_RULE =
+  "Open every file listed in <reference_images> with the read tool before designing. They are illustrations of distinct visual directions for this brief. Choose the direction that best serves the brief and the references, say which one in your overview, and match its composition, palette, type character, density, and imagery stance in the HTML; borrow from the other directions only where they agree. Do not copy text from the images or invent content from them: <reference_precedence> still wins on any conflict. If an image cannot be read, say so and continue from the other context.";
+
+const REFERENCE_IMAGE_EXPORT_RULE =
+  "Add a \"Design References\" section after the Live Preview that shows every file listed in <reference_images> as `<img src=\"...\" alt=\"...\">` using the relative src given for it, with a caption naming its direction and a note that these are AI-generated illustrations rather than specifications. This is the one exception to the self-contained rule: link the image files by relative path and never inline their data into the HTML.";
+
+function renderReferenceImageList(paths: readonly string[]): string {
+  return paths.map((path) => `- ${path}`).join("\n");
+}
+
+function renderReferenceImagesForGeneration(paths: readonly string[]): string {
+  return [
+    "AI-generated design reference images for this brief, one per visual direction (named by file). They were rendered from the brief, PRODUCT.md/DESIGN.md, and the curated references.",
+    renderReferenceImageList(paths),
+  ].join("\n");
+}
+
+function renderReferenceImagesForExport(specPath: string, paths: readonly string[]): string {
+  return [
+    "AI-generated design reference images, one per visual direction (named by file), stored next to the spec. They are illustrations, not specifications.",
+    ...paths.map((path) => `- ${path} (src="${referenceImageRelativeSrc(specPath, path)}")`),
+  ].join("\n");
+}
 
 type ExportOptions = {
   readonly designContext: DesignContext;
@@ -243,13 +278,15 @@ type ExportOptions = {
   readonly designContextFile: string;
   /** Path to the persisted references.md artifact (issue #2121). */
   readonly referencesFile: string;
+  readonly referenceImagePaths: readonly string[];
   readonly latestDesign: string;
   readonly designModelConfig: ModelConfig;
 };
 
 export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ readonly latestDesign: string; readonly handoff: WorkflowTaskResult; }> {
-  const { designContext, prompt, outputType, previewPath, previewFileUrl, specPath, specFileUrl, browserBootstrapRules, designContextFile, referencesFile, designModelConfig } = options;
+  const { designContext, prompt, outputType, previewPath, previewFileUrl, specPath, specFileUrl, browserBootstrapRules, designContextFile, referencesFile, referenceImagePaths, designModelConfig } = options;
   const latestDesign = options.latestDesign;
+  const hasReferenceImages = referenceImagePaths.length > 0;
 
   const handoff = await designContext.task("exporter", {
     reads: [designContextFile, referencesFile],
@@ -264,6 +301,9 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
       ],
       ["preview_artifact_path", previewPath],
       ["spec_artifact_path", specPath],
+      ...(hasReferenceImages
+        ? [["reference_images", renderReferenceImagesForExport(specPath, referenceImagePaths)] as const]
+        : []),
       ["final_design_summary", "{previous}"],
       ["html_rules", HTML_PREVIEW_RULES],
       ["anti_design_slop_rules", ANTI_SLOP_RULES],
@@ -279,6 +319,7 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
           "In order, include: sticky header with title/status/run id; Executive Summary; Live Preview embedding the full preview via `<iframe srcdoc=\"...\">` or a side-by-side rendered copy in `<article class=\"preview-frame\">`; the six DESIGN.md sections (Overview, Colors, Typography, Elevation, Components, Do's and Don'ts) rendered with swatches, tables, and code blocks; Implementation handoff (Recommended files + components, Implementation steps, Usage example, Accessibility & responsive checklist, Validation commands, Known limitations); and an appendix linking the raw preview path.",
           "Use dense legible typography, generous whitespace, monospaced code, rendered hex/oklch swatches, and copy-to-clipboard hints in HTML comments.",
           `Show the absolute preview path (${previewPath}) and file URL (${previewFileUrl}) prominently. Preserve assumptions and limitations; introduce no requirement absent from the final design or DESIGN.md.`,
+          ...(hasReferenceImages ? [REFERENCE_IMAGE_EXPORT_RULE] : []),
         ].join("\n"),
       ],
       [

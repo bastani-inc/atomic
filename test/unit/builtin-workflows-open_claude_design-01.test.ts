@@ -23,7 +23,7 @@ describe("open-claude-design", () => {
 		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
 		assertWorkflowDefinition(mod.default);
 		assert.equal(mod.default.name, "open-claude-design");
-		assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["discover_references", "prompt"]);
+		assert.deepEqual(Object.keys(mod.default.inputs).sort(), ["discover_references", "image_model", "prompt"]);
 		assert.equal(mod.default.inputs.max_refinements, undefined);
 		assert.equal(fieldRequired(mod.default.inputs.prompt), true);
 		assertOutputTypes(mod.default.outputs, {
@@ -39,6 +39,7 @@ describe("open-claude-design", () => {
 			spec_file_url: "text",
 			spec_path: "text",
 			agent_browser_status: "text",
+			reference_images_status: "object",
 		});
 		assert.equal(mod.default.outputs.approved_for_export, undefined);
 		assert.equal(mod.default.outputs.refinements_completed, undefined);
@@ -50,6 +51,14 @@ describe("open-claude-design", () => {
 		assert.equal(fieldKind(schema), "boolean");
 		assert.equal(fieldDefault(schema), true);
 		assert.ok(fieldDescription(schema).length > 0);
+	});
+
+	test("declares an optional image_model text input for the reference image override (#4590)", async () => {
+		const mod = await import("../../packages/workflows/builtin/open-claude-design.js");
+		const schema = mod.default.inputs.image_model;
+		assert.equal(fieldKind(schema), "text");
+		assert.equal(fieldRequired(schema), false);
+		assert.match(fieldDescription(schema), /provider\/id/);
 	});
 
 	test("discovery decision schema retains the canonical output types", async () => {

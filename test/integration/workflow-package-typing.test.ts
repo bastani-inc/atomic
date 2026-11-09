@@ -354,6 +354,7 @@ run(authoredWorkflow, { message: "hello", omittedNoDefault: { enabled: true } })
 run(optionalOutputWorkflow, {}); run(postRunEditedWorkflow, {});
 run(openClaudeDesign, { prompt: "x" });
 run(openClaudeDesignDefault, { prompt: "x", discover_references: false });
+run(openClaudeDesignDefault, { prompt: "x", image_model: "openai-images/gpt-image-2.6-flare" });
 const typedFanOutOutputs: FanOutAndSynthesizeWorkflowOutputs = {
   result: "done",
   partitions: ["core"],
@@ -371,6 +372,8 @@ void typedFanOutInputs;
 void typedDesignOutputs;
 // @ts-expect-error builtin open-claude-design no longer accepts output_type as an input.
 run(openClaudeDesign, { prompt: "x", output_type: "prototype" });
+// @ts-expect-error builtin open-claude-design image_model is a provider/id string.
+run(openClaudeDesign, { prompt: "x", image_model: 1 });
 // @ts-expect-error builtin open-claude-design requires a prompt input.
 run(openClaudeDesign, {});
 // @ts-expect-error builtin open-claude-design no longer accepts max_refinements.

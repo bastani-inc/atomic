@@ -23,6 +23,7 @@ import type { WorkflowTaskResult } from "../src/shared/types.js";
 import {
   OUTPUT_TYPES,
   discoveryDecisionFromResult,
+  referenceImageFileUrl,
   taggedPrompt,
   type DiscoveryDecision,
 } from "./open-claude-design-utils.js";
@@ -283,12 +284,21 @@ export function buildLiveReviewGateMessage(args: {
   readonly round: number;
   readonly previewPath: string;
   readonly previewFileUrl: string;
+  readonly referenceImagePaths?: readonly string[];
 }): string {
+  const referenceImagePaths = args.referenceImagePaths ?? [];
   return [
     `Design review session ${args.round} is ready for your browser review.`,
     "",
     `Preview file: ${args.previewPath}`,
     `Preview URL: ${args.previewFileUrl}`,
+    ...(referenceImagePaths.length > 0
+      ? [
+          "",
+          "Reference images (AI-generated design directions the preview was built from):",
+          ...referenceImagePaths.map((path) => `- ${path} (${referenceImageFileUrl(path)})`),
+        ]
+      : []),
     "",
     `"${LIVE_REVIEW_GATE_OPTIONS[0]}" opens an interactive browser session; the session-start stage prints the live http:// review URL as soon as its server is up (attach with /workflow connect to see it, or open the preview URL above directly).`,
     "The session is unbounded: pick elements, accept variants, and steer for as long as you like, and everything you accept lands in the preview as you go.",

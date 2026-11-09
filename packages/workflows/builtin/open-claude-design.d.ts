@@ -5,12 +5,23 @@ export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "c
 export type OpenClaudeDesignWorkflowInputs = {
   readonly prompt: string;
   readonly discover_references: boolean;
+  readonly image_model?: string;
 };
 
 export type OpenClaudeDesignWorkflowRunInputs = {
   readonly prompt: string;
   readonly discover_references?: boolean;
+  readonly image_model?: string;
 };
+
+export type OpenClaudeDesignReferenceImagesStatus = {
+  readonly status: "skipped" | "generated" | "failed";
+  readonly reason?: string;
+  readonly model?: string;
+  readonly paths: string[];
+  readonly retryable?: boolean;
+};
+
 export type OpenClaudeDesignWorkflowOutputs = WorkflowOutputValues & {
   readonly output_type?: string;
   readonly design_system?: string;
@@ -24,6 +35,7 @@ export type OpenClaudeDesignWorkflowOutputs = WorkflowOutputValues & {
   readonly spec_path?: string;
   readonly spec_file_url?: string;
   readonly agent_browser_status?: string;
+  readonly reference_images_status?: OpenClaudeDesignReferenceImagesStatus;
 };
 
 export type OpenClaudeDesignWorkflowDefinition = WorkflowDefinition<

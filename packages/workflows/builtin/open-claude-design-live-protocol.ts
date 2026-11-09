@@ -19,6 +19,7 @@
 
 import { fileURLToPath } from "node:url";
 import { spawnProcess } from "@bastani/atomic";
+import { referenceImageFileUrl } from "./open-claude-design-utils.js";
 
 /** JSON values emitted by the live helper. */
 export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue };
@@ -290,10 +291,21 @@ export function buildLiveSessionStartPrompt(input: {
 	readonly previewFileUrl: string;
 	readonly browserBootstrapRules: string;
 	readonly round: number;
+	readonly referenceImagePaths?: readonly string[];
 }): string {
+	const referenceImagePaths = input.referenceImagePaths ?? [];
 	return [
 		`<preview_path>${input.previewPath}</preview_path>`,
 		`<preview_file_url>${input.previewFileUrl}</preview_file_url>`,
+		...(referenceImagePaths.length > 0
+			? [
+					[
+						"<reference_images>",
+						...referenceImagePaths.map((path) => `${path} (${referenceImageFileUrl(path)})`),
+						"</reference_images>",
+					].join("\n"),
+				]
+			: []),
 		`<browser_use_guidelines>${input.browserBootstrapRules}</browser_use_guidelines>`,
 		"<role>You are an opinionated staff design engineer opening an impeccable `live` review session.</role>",
 		[
@@ -307,6 +319,11 @@ export function buildLiveSessionStartPrompt(input: {
 			"2. Print the live `http://` review URL in plain text, plus the preview file URL as the manual fallback, so anyone attaching to this run can find the review.",
 			"3. Directly under the URL, print how the user ends the review, in plain text: click exit in the Impeccable overlay, close the browser tab, or say `exit live`. State that the review waits indefinitely until they do, and that ending it exports the design as it then stands, with no further round.",
 			"4. Do NOT start a poll loop. The workflow owns polling and will call you back for each event that needs you. Ending your turn does not end the review.",
+			...(referenceImagePaths.length > 0
+				? [
+						"5. Under the review URL, also print each <reference_images> path and file URL in plain text, labelled as the AI-generated design directions the preview was built from, so the user can open them beside the preview. Leave the live review tab on the preview.",
+					]
+				: []),
 			"</instructions>",
 		].join("\n"),
 		"<output_format>Under 150 words: the live review URL, the manual fallback path, how to end the review, and whether the browser opened.</output_format>",

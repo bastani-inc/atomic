@@ -1,4 +1,10 @@
-import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import type {
+  WorkflowParallelOptions,
+  WorkflowTaskOptions,
+  WorkflowTaskResult,
+  WorkflowTaskStep,
+  WorkflowToolPrimitive,
+} from "../src/shared/types.js";
 import {
   REFERENCE_PRECEDENCE,
   buildAgentBrowserBootstrapRules,
@@ -9,6 +15,12 @@ import {
   shouldEarlyExitForBrowser,
   taggedPrompt,
 } from "./open-claude-design-utils.js";
+import {
+  existingReferenceImagePaths,
+  runReferenceImagesStep,
+  type ReferenceImagesDeps,
+  type ReferenceImagesStatus,
+} from "./open-claude-design-images.js";
 import { exportOpenClaudeDesign, refineOpenClaudeDesign } from "./open-claude-design-phases.js";
 import {
   NO_REFERENCES_BRIEF,
@@ -31,20 +43,24 @@ type OpenClaudeDesignOutputs = {
   readonly import_context?: string; readonly run_id?: string;
   readonly artifact_dir?: string; readonly preview_path?: string; readonly preview_file_url?: string; readonly spec_path?: string; readonly spec_file_url?: string;
   readonly agent_browser_status?: string;
+  readonly reference_images_status?: ReferenceImagesStatus;
 };
 
 type OpenClaudeDesignContext = {
   readonly cwd?: string;
-  readonly inputs: { readonly prompt: string; readonly discover_references?: boolean };
+  readonly inputs: { readonly prompt: string; readonly discover_references?: boolean; readonly image_model?: string };
   exit?(options?: { readonly status?: string; readonly reason?: string; readonly outputs?: Partial<OpenClaudeDesignOutputs> }): never;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
-  /** Durable tool node; the workflow-driven live review loop is built from these. */
-  tool<T>(name: string, args: object, fn: (handle: { readonly signal: AbortSignal }) => Promise<T>): Promise<T>;
+  /** Durable tool node; the live review loop and reference image generation are built from these. */
+  readonly tool: WorkflowToolPrimitive;
   readonly ui: LiveReviewGateUi;
 };
 
-export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext): Promise<OpenClaudeDesignOutputs> {
+export async function runOpenClaudeDesignWorkflow(
+  ctx: OpenClaudeDesignContext,
+  deps: ReferenceImagesDeps = {},
+): Promise<OpenClaudeDesignOutputs> {
   const designContext = ctx;
 
   // Initial deterministic setup step (no LLM): ensure the agent-browser skill's
@@ -270,6 +286,20 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       ].join("\n")
     : "No user reference was provided; infer the design direction from the brief, project design context, research, and curated reference inspiration.";
 
+  const referenceImages = await runReferenceImagesStep(
+    designContext.tool,
+    {
+      brief: designBrief,
+      outputType,
+      artifactDir,
+      workflowCwd,
+      curatedReferences: referencesBriefRaw,
+      imageModel: inputs.image_model,
+    },
+    deps,
+  );
+  const referenceImagePaths = existingReferenceImagePaths(referenceImages);
+
   const refinement = await refineOpenClaudeDesign({
     designContext,
     prompt: designBrief,
@@ -279,6 +309,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     browserBootstrapRules,
     designContextFile,
     referencesFile,
+    referenceImagePaths,
     designModelConfig,
     workflowCwd,
     importContext,
@@ -297,6 +328,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     browserBootstrapRules,
     designContextFile,
     referencesFile,
+    referenceImagePaths,
     latestDesign,
     designModelConfig,
   });
@@ -315,5 +347,6 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     spec_path: specPath,
     spec_file_url: specFileUrl,
     agent_browser_status: agentBrowser.summary,
+    reference_images_status: referenceImages,
   };
 }

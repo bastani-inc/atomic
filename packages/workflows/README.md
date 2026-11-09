@@ -864,6 +864,8 @@ The poll and reply nodes run the bundled Impeccable 4.8.1 launcher (`skills/impe
 
 Research context moves between stages as artifact files, not inline prompt payloads: the project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads`.
 
+When an image model is available, the durable `reference-images` tool node (after `reference-discovery`, before `generate-1`) renders three design reference images into `<artifact_dir>/references/` and returns only paths and metadata; `generate-1` reads them via `reads`, the live gate and session-start stage list them, and the exporter links them from `spec.html`. The node picks the newest GPT Image model first, then other image providers such as OpenRouter, unless `image_model` names one. It runs with `failureMode: "return"`, so no image model or any generation failure leaves the run unchanged and is recorded in `reference_images_status`; image data is written to disk inside the callback and never enters workflow state, outputs, or prompts.
+
 ```text
 /workflow open-claude-design prompt="Design a kanban board component"
 ```
@@ -872,8 +874,9 @@ Research context moves between stages as artifact files, not inline prompt paylo
 | --------------------- | --------- | -------- | ------- | ------------------------------------------------------------------------- |
 | `prompt`              | `text`    | ✓        | —       | Design brief or description.                                                |
 | `discover_references` | `boolean` | —        | `true`  | Discover current gallery references with browser tooling; set false to skip. |
+| `image_model`         | `text`    | —        | newest available image model | Image model for design reference images as `provider/id`; overrides the automatic choice. |
 
-Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `agent_browser_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
+Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, `agent_browser_status`, and `reference_images_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
 
 ---
 

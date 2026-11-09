@@ -15,11 +15,16 @@
  *   live review    → impeccable `live` (unbounded browser review session)
  *   exporter       → impeccable `document` (rich HTML spec)
  *   final-display  → opens/surfaces the exported HTML spec
+ *
+ * When an image model is available, a durable `reference-images` tool node
+ * renders design reference images into `<artifact_dir>/references/` between
+ * reference discovery and generation. Without one, nothing else changes.
  */
 
 import { Type } from "typebox";
 import { workflow } from "../src/authoring/workflow.js";
 import { withBuiltinContext } from "./builtin-context.js";
+import { referenceImagesStatusSchema } from "./open-claude-design-images.js";
 import { runOpenClaudeDesignWorkflow } from "./open-claude-design-runner.js";
 
 export default workflow({
@@ -38,6 +43,10 @@ export default workflow({
       description:
         "Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
     }),
+    image_model: Type.Optional(Type.String({
+      description:
+        "Image model for design reference images, as provider/id (for example openai-images/gpt-image-2.6-flare). Defaults to the newest available GPT Image model, then other image providers such as OpenRouter. Reference images are skipped when no image model is available.",
+    })),
   },
   outputs: {
     output_type: Type.Optional(Type.String({ description: "Kind of design artifact produced." })),
@@ -52,6 +61,7 @@ export default workflow({
     spec_path: Type.Optional(Type.String({ description: "Absolute path to the generated spec.html file." })),
     spec_file_url: Type.Optional(Type.String({ description: "file:// URL for the generated spec.html file." })),
     agent_browser_status: Type.Optional(Type.String({ description: "Outcome of the initial deterministic step that ensures the agent-browser skill's `agent-browser` command is installed." })),
+    reference_images_status: Type.Optional(referenceImagesStatusSchema),
   },
   run: async (ctx) => await runOpenClaudeDesignWorkflow(withBuiltinContext(ctx)),
 });
