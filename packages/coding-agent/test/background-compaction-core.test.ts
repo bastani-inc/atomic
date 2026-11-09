@@ -174,6 +174,33 @@ describe("background compaction safe point (#4330)", () => {
 		assert.equal(findBackgroundCompactionSafePoint(branch), 2);
 	});
 
+	test("cuts before an awaited turn that a context-excluded entry follows (#4580)", () => {
+		const branch = [user("u1"), assistant("a1"), user("u2"), assistant("a2", ["c1"]), user("note")];
+		assert.equal(findBackgroundCompactionSafePoint(branch), 4);
+		assert.equal(findBackgroundCompactionSafePoint(branch, "a2"), 2);
+	});
+
+	test("an awaited turn later than the first unanswered call does not move the cut (#4580)", () => {
+		const branch = [user("u1"), assistant("a1", ["c1"]), assistant("a2", ["c2"])];
+		assert.equal(findBackgroundCompactionSafePoint(branch, "a2"), 0);
+	});
+
+	test("an awaited turn before the trailing run moves the cut before it (#4580)", () => {
+		const branch = [user("u1"), assistant("a1", ["c1"]), user("u2"), assistant("a2", ["c2"])];
+		assert.equal(findBackgroundCompactionSafePoint(branch), 2);
+		assert.equal(findBackgroundCompactionSafePoint(branch, "a1"), 0);
+	});
+
+	test("an awaited turn at the start of the branch leaves nothing safe (#4580)", () => {
+		const branch = [assistant("a1", ["c1"]), user("note")];
+		assert.equal(findBackgroundCompactionSafePoint(branch, "a1"), -1);
+	});
+
+	test("an awaited entry that is not on the branch changes nothing (#4580)", () => {
+		const branch = [user("u1"), assistant("a1"), user("u2"), assistant("a2")];
+		assert.equal(findBackgroundCompactionSafePoint(branch, "elsewhere"), 3);
+	});
+
 	test("keeps a fully answered tool batch in the prefix", () => {
 		const branch = [user("u1"), assistant("a1", ["c1", "c2"]), toolResult("r1", "c1"), toolResult("r2", "c2")];
 		assert.equal(findBackgroundCompactionSafePoint(branch), 3);

@@ -1,4 +1,5 @@
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { DrainedAgentQueues } from "./agent-session-types.js";
 import { customMessageExcludesContext } from "./agent-session-types.js";
@@ -388,11 +389,20 @@ function isPausedHeldProtectedReference(session: AgentSession, message: CustomMe
  */
 export async function prepareProtectedStreamingCustomMessagesForDisposal(session: AgentSession): Promise<void> {
 	const pending = protectedMessages(session);
-	const queued = pending.filter((entry) => entry.phase === "queued");
-	if (queued.some((entry) => !isPausedHeldProtectedReference(session, entry.message))) {
-		throw new Error("Cannot dispose a session with a queued protected reconciliation");
+	const unsealed = pending.filter(
+		(entry) => entry.phase === "queued" && !isPausedHeldProtectedReference(session, entry.message),
+	);
+	if (unsealed.length > 0) {
+		if (!waitsOnDetachedResults(session))
+			throw new Error("Cannot dispose a session with a queued protected reconciliation");
+		// A reconciliation appended now would sit between the waiting call and its result. Its card keeps the pending
+		// marker, so the session that reopens delivers it after the result (#4580).
+		for (const entry of unsealed) {
+			removeQueuedProtectedReference(session, entry.message);
+			pending.splice(pending.indexOf(entry), 1);
+		}
 	}
-	for (const entry of queued) {
+	for (const entry of pending.filter((candidate) => candidate.phase === "queued")) {
 		const admitted = entry.message as StageAdmittedCustomMessage;
 		await session.sessionManager.appendCustomMessageEntry(
 			entry.message.customType,

@@ -5,6 +5,7 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
 import { AgentSessionBusyError } from "./agent-session-busy-error.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import {
 	earlierHeldInputs,
 	finishHeldInput,
@@ -14,6 +15,10 @@ import {
 	stopWaiting,
 } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import {
+	isProtectedStreamingCustomMessage,
+	queueProtectedStreamingCustomMessage,
+} from "./agent-session-persistent-custom-messages.ts";
 import type { PromptDisposition, PromptOptions, QueuedInputDisposition } from "./agent-session-types.js";
 import {
 	formatNoApiKeyFoundMessage,
@@ -21,7 +26,7 @@ import {
 	formatUnresolvedModelMessage,
 } from "./auth-guidance.ts";
 import { runCallback } from "./callback-activity.ts";
-import type { CustomMessage } from "./messages.ts";
+import type { CustomMessage, StageAdmittedCustomMessage } from "./messages.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
 import {
 	isInsideInputHook,
@@ -678,6 +683,14 @@ export async function _runAgentPrompt(
 			reportDispatch?.("queued");
 			return;
 		}
+		// A delivery that starts a turn now would move the transcript past a detached call that has no result yet
+		// (#4580). It joins the turn the hand-back continues, as input does for a paused queue.
+		if (!prepared && holdsTurnsForDetachedResults(this)) {
+			const items = Array.isArray(messages) ? messages : [messages];
+			const keys = new Set<string>();
+			for (const message of items) await holdForDetachedResults(this, message, keys);
+			return;
+		}
 		if (customMessage?.role === "custom") {
 			const lastAssistant = this._findLastAssistantMessage();
 			if (lastAssistant) await this._checkCompaction(lastAssistant, false);
@@ -750,6 +763,26 @@ export async function _runAgentPrompt(
 		this._runSystemPromptOptions = undefined;
 		await settleAgentRun(this);
 	}
+}
+
+/**
+ * Hold a delivery for the turn the hand-back continues. An unprotected custom message gets a durable card and a hidden
+ * turn, like a protected delivery, so it survives the session being released before the results arrive (#4580). The
+ * messages of one batch share an admission key, and a card is found again by its key, so only the first of them keeps it.
+ */
+async function holdForDetachedResults(session: AgentSession, message: AgentMessage, keys: Set<string>): Promise<void> {
+	if (message.role !== "custom" || isProtectedStreamingCustomMessage(session, message)) {
+		session._queueAgentMessage(message, "steer");
+		return;
+	}
+	const { stageAdmissionKey } = message as StageAdmittedCustomMessage;
+	const repeated = stageAdmissionKey !== undefined && keys.has(stageAdmissionKey);
+	if (stageAdmissionKey !== undefined) keys.add(stageAdmissionKey);
+	await queueProtectedStreamingCustomMessage(
+		session,
+		repeated ? ({ ...message, stageAdmissionKey: undefined } as StageAdmittedCustomMessage) : message,
+		"steer",
+	);
 }
 
 async function settleAgentRun(session: AgentSession): Promise<void> {
@@ -832,6 +865,8 @@ async function settleSubagentMessages(session: AgentSession): Promise<void> {
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {
 	if (this._agentRunAbortRequested || sessionGenerationClosing.has(this) || sessionLifetime(this).aborted) return;
+	// Nothing continues past a detached call that has no result yet; the hand-back continues the turn (#4580).
+	if (holdsTurnsForDetachedResults(this)) return;
 	await this.agent.continue();
 	await this.waitForRetry();
 	await this._continueQueuedAgentMessages();
@@ -913,6 +948,8 @@ export async function _continueQueuedAgentMessages(this: AgentSession): Promise<
 			!this._agentRunAbortRequested &&
 			!closing() &&
 			!stopped() &&
+			// Nor on a call that detached and has no result yet: its hand-back continues the turn (#4580).
+			!holdsTurnsForDetachedResults(this) &&
 			!this._queuedMessagesPaused &&
 			this.agent.hasQueuedMessages()
 		) {
@@ -1143,6 +1180,7 @@ function canStartQueuedInputRun(session: AgentSession): boolean {
 		canContinueQueuedInput(session) &&
 		!session._agentRunAbortRequested &&
 		!session._stopAfterTurnBlockedContinuation &&
+		!holdsTurnsForDetachedResults(session) &&
 		session.agent.hasQueuedMessages() &&
 		session.agent.state.messages.some((message) => message.role !== "system")
 	);

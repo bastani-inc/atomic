@@ -2,6 +2,7 @@ import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
+import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
 import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
@@ -373,7 +374,7 @@ async function sendInterruptCustomMessageUnlocked<T>(
 	if (owner !== session) return owner._sendInterruptCustomMessageNow(message, forwardedMessageOptions(options));
 	assertSessionOpen(session);
 	if (lifetime.aborted) throw Object.assign(new Error("Session is closed"), { code: "SessionClosed" });
-	if (session._queuedMessagesPaused) {
+	if (session._queuedMessagesPaused || holdsTurnsForDetachedResults(session)) {
 		session._queueAgentMessage(message, "steer");
 		return;
 	}

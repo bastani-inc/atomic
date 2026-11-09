@@ -133,6 +133,8 @@ export interface StageSessionRuntime {
 	setToolDetachment?(policy: { readonly afterMs: number } | undefined): void;
 	takeDetachedToolCalls?(): DetachedToolCall[];
 	hasPendingDetachedTurn?(): boolean;
+	/** Whether the transcript still waits on the result of a detached call, so nothing may start a turn on it. */
+	isWaitingOnDetachedResults?(): boolean;
 	redispatchDetachedToolCalls?(): DetachedToolCall[];
 	resumeDetachedTurn?(results: readonly DetachedToolResult[]): Promise<void>;
 }

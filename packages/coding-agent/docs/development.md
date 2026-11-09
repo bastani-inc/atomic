@@ -20,7 +20,7 @@ In debug mode, every area below appends one JSON line per event to `~/.atomic/ag
 
 | Area | Own variable | What it shows | Own variable writes to |
 |------|--------------|---------------|------------------------|
-| `workflow` | `ATOMIC_WORKFLOW_DEBUG=1` | Failed background workflow discovery, failed workflow lifecycle, HiL-answer and heartbeat notices, and heartbeat intervals too large to schedule | stderr |
+| `workflow` | `ATOMIC_WORKFLOW_DEBUG=1` | Failed background workflow discovery, failed workflow lifecycle, HiL-answer and heartbeat notices, heartbeat intervals too large to schedule, and, in debug mode only (`ATOMIC_WORKFLOW_DEBUG=1` alone does not write them), a detached tool call dropped because its conversation moved past it (`stale-detached-call`) and a stage prompt or retry not sent because its session waits on a detached call's result (`stage-input-held-for-detached-results`) | stderr |
 | `model-routing` | `ATOMIC_MODEL_ROUTING_DEBUG=1` | `model: "auto"` routing decisions and fallbacks, including a workflow stage that falls back to the current chat model | stderr, or a workflow warning for a stage |
 | `pooled-watch` | `ATOMIC_DEBUG_POOLED_WATCH=1`, or a file path | Each step of watching a pooled stage: watches opening and ending, reconnects, rebinds, delivered messages and their outcomes, admissions and refusals | `pooled-watch-trace.jsonl` next to the pool journal, or the named file |
 | `pool` | None | Worker pool coordination counters: requests and journal writes per second, by kind. Debug mode also shows them as the `pool:` line in workflow status | — |

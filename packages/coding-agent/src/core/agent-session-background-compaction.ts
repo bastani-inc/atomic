@@ -16,6 +16,7 @@ import {
 	type PlannedVerbatimCompaction,
 	planVerbatimCompaction,
 } from "./agent-session-compaction.ts";
+import { awaitedToolTurnEntryId } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
@@ -463,7 +464,7 @@ export function _maybeStartBackgroundCompaction(this: AgentSession, contextToken
 	if (selectReadyBackgroundCompaction(branch)) return;
 	releaseStaleCommitFailure(runtime, undefined);
 	if (performance.now() < runtime.nextAttemptAt) return;
-	const safe = findBackgroundCompactionSafePoint(branch);
+	const safe = findBackgroundCompactionSafePoint(branch, awaitedToolTurnEntryId(this));
 	if (safe < 0) return;
 	startTask(this, branch.slice(0, safe + 1));
 }
