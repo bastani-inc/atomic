@@ -610,11 +610,33 @@ jobs:
         with:
           path: ${{ runner.temp }}/bun-compile-target-tarballs
           key: ${{ steps.bun-target.outputs.cache-primary-key }}
+      # build-binaries.sh also runs `bun add` for the clipboard bindings of every
+      # platform, which goes to the same registry from the same Bun cache: cold, it
+      # took 271 s in run 42660721117. Cache those packages too (about 8 MB), leaving
+      # out the target runtimes, which come from their verified tarballs above.
+      - name: Restore Bun package cache
+        id: bun-packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/bun-compile-targets/*
+            !${{ runner.temp }}/bun-compile-targets/bun-*-v*
+          key: bun-packages-${{ steps.bun.outputs.bun-version }}-${{ matrix.binary_platform }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            bun-packages-${{ steps.bun.outputs.bun-version }}-${{ matrix.binary_platform }}-
       - name: Build native release binary
         shell: bash
         env:
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
         run: ./scripts/build-binaries.sh --skip-install --skip-package-build --offline-model-data --platform "${{ matrix.binary_platform }}"
+      - name: Save Bun package cache
+        if: ${{ !cancelled() && steps.bun-packages.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/bun-compile-targets/*
+            !${{ runner.temp }}/bun-compile-targets/bun-*-v*
+          key: ${{ steps.bun-packages.outputs.cache-primary-key }}
       - name: Smoke test Linux release archive
         if: runner.os == 'Linux'
         shell: bash
