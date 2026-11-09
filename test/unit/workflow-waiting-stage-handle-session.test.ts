@@ -44,13 +44,13 @@ describe("a stage's control handle over a stage with no live session (#4309)", (
 		await resident.handle.steer("check the logs");
 		assert.deepEqual(resident.calls, ["reopen:saved-session", "steer:check the logs"]);
 
-		const released = handleOver("waiting", true);
+		const released = handleOver("suspended", true);
 		await released.handle.steer("check the logs");
 		assert.deepEqual(released.calls, ["steer:check the logs"]);
 	});
 
 	test("pausing a waiting stage pauses its session, and pausing a stage that already finished leaves its session alone (#4309)", async () => {
-		const waiting = handleOver("waiting", true);
+		const waiting = handleOver("suspended", true);
 		await waiting.handle.pause();
 		assert.deepEqual(waiting.calls, ["pause-session"]);
 

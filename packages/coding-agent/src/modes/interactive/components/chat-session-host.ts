@@ -172,7 +172,15 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		if (this.state.liveChat.hydrateStreamingAssistantMessage(message)) this.state.requestRender?.();
 	}
 
-	async loadSession(store: SessionStore, sessionId: string | undefined): Promise<boolean> {
+	/**
+	 * Shows a saved conversation. A call in `inFlightToolCallIds` has no result yet because its stage waits for one,
+	 * so it shows as pending, not as interrupted, and the call's own end replaces it with the result.
+	 */
+	async loadSession(
+		store: SessionStore,
+		sessionId: string | undefined,
+		inFlightToolCallIds?: ReadonlySet<string>,
+	): Promise<boolean> {
 		if (
 			this.historyHydrated ||
 			this.state.transcript.length > this.state.extraEntries.length ||
@@ -184,6 +192,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			const manager = await SessionManager.open(store, sessionId);
 			messages = repairOrphanToolResults(manager.buildSessionContext().messages, {
 				repairTrailing: true,
+				...(inFlightToolCallIds === undefined ? {} : { inFlightToolCallIds }),
 			}) as readonly AgentSnapshotMessage[];
 		} catch {
 			return false;

@@ -102,6 +102,7 @@ export const WorkflowParametersSchema = Type.Object(
 					Type.Literal("awaiting_input"),
 					Type.Literal("paused"),
 					Type.Literal("blocked"),
+					Type.Literal("suspended"),
 					Type.Literal("waiting"),
 					Type.Literal("completed"),
 					Type.Literal("failed"),
@@ -112,7 +113,7 @@ export const WorkflowParametersSchema = Type.Object(
 				],
 				{
 					description:
-						"Filter stages (stages action) or listed runs (status action without runId) by status; 'all' (default) includes everything. For the status listing, run statuses match directly, 'awaiting_input' selects runs with at least one stage awaiting input or pending human prompt, and in-flight runs are listed first.",
+						"Filter stages (stages action) or listed runs (status action without runId) by status; 'all' (default) includes everything. For the status listing, run statuses match directly, 'awaiting_input' selects runs with at least one stage awaiting input or pending human prompt, 'suspended' selects runs with at least one stage released from memory while it waits for a tool result or between turns, 'waiting' is a deprecated alias for 'suspended', and in-flight runs are listed first.",
 				},
 			),
 		),

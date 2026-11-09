@@ -17,7 +17,8 @@ export interface WorkflowRunJsonObject {
 	readonly [key: string]: WorkflowRunJsonValue | undefined;
 }
 
-export type WorkflowRunFilterStatus = WorkflowRunStatus | WorkflowStageStatus | "awaiting_input";
+/** `waiting` is a deprecated alias for `suspended`. */
+export type WorkflowRunFilterStatus = WorkflowRunStatus | WorkflowStageStatus | "awaiting_input" | "waiting";
 
 export interface WorkflowRunListFilter {
 	/** Run statuses match directly; `awaiting_input` selects runs with an unanswered prompt. */
@@ -27,7 +28,8 @@ export interface WorkflowRunListFilter {
 }
 
 export interface WorkflowStageListFilter {
-	readonly status?: WorkflowStageStatus;
+	/** `waiting` is a deprecated alias for `suspended`. */
+	readonly status?: WorkflowStageStatus | "waiting";
 }
 
 export interface WorkflowRunActiveStage {

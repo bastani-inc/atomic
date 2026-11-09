@@ -19,7 +19,7 @@ import {
 	StaleLeaseError,
 	StorageUnavailableError,
 } from "./types.js";
-import { journalCounter, serializeJson, storageBoundary, validateText } from "./values.js";
+import { journalCounter, runStatusFromRecord, serializeJson, storageBoundary, validateText } from "./values.js";
 
 interface MemoryRun {
 	header: RunHeader;
@@ -100,7 +100,7 @@ export class MemoryRunJournal implements RunJournal {
 		this.ensureOpen();
 		validateText("runId", runId);
 		const run = this.runs.get(runId);
-		return run ? (JSON.parse(serializeJson(run.header)) as RunSummary) : undefined;
+		return run ? this.summaryOf(run) : undefined;
 	}
 
 	async listRuns(filter?: { cwd?: string }): Promise<readonly RunSummary[]> {
@@ -109,7 +109,12 @@ export class MemoryRunJournal implements RunJournal {
 		return [...this.runs.values()]
 			.filter((run) => filter?.cwd === undefined || run.header.cwd === filter.cwd)
 			.sort((a, b) => Buffer.compare(Buffer.from(a.header.runId), Buffer.from(b.header.runId)))
-			.map((run) => JSON.parse(serializeJson(run.header)) as RunSummary);
+			.map((run) => this.summaryOf(run));
+	}
+
+	private summaryOf(run: MemoryRun): RunSummary {
+		const summary = JSON.parse(serializeJson(run.header)) as RunSummary;
+		return { ...summary, status: runStatusFromRecord(summary.status) };
 	}
 
 	private requireRun(runId: string): MemoryRun {

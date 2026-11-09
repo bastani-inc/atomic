@@ -73,7 +73,7 @@ function waitingSnapshot(
 	overrides: Partial<StageSnapshot> = {},
 ): StageSnapshot {
 	return stageSnapshot(name, {
-		status: "waiting",
+		status: "suspended",
 		wait: { kind, since, ...(promptsCompleted === undefined ? {} : { promptsCompleted }) },
 		...overrides,
 	});

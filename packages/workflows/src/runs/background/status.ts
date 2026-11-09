@@ -586,7 +586,7 @@ async function pauseRunWithAction(
 			currentRun?.stages.some(
 				(candidate) =>
 					candidate.id !== opts.stageId &&
-					(candidate.status === "running" || candidate.status === "pending" || candidate.status === "waiting"),
+					(candidate.status === "running" || candidate.status === "pending" || candidate.status === "suspended"),
 			) ?? false;
 		if (!stillActive) activeStore.recordRunPaused(runId);
 		return { ok: true, runId, paused };
@@ -597,7 +597,9 @@ async function pauseRunWithAction(
 		registry
 			.run(controlRunId)
 			.stages()
-			.filter((handle) => handle.status === "running" || handle.status === "pending" || handle.status === "waiting")
+			.filter(
+				(handle) => handle.status === "running" || handle.status === "pending" || handle.status === "suspended",
+			)
 			.map((handle) => ({ controlRunId, handle })),
 	);
 	const pauseHandles = async () => {

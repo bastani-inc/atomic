@@ -14,6 +14,7 @@ import {
 	summarizeStage,
 	transcriptEntryFromMessage,
 } from "./workflow-stage-results.js";
+import { currentStatusFilter } from "./workflow-status-summary.js";
 import { resolveToolRunTarget, resolveToolStageTarget } from "./workflow-targets.js";
 
 export interface WorkflowInspectionSource {
@@ -25,7 +26,7 @@ export interface WorkflowInspectionSource {
 export function workflowStagesResult(args: WorkflowToolArgs, source?: WorkflowInspectionSource): WorkflowToolResult {
 	const activeStore = source?.store ?? store;
 	const target = resolveToolRunTarget(args, "No active run to inspect.", activeStore);
-	const filter = args.statusFilter ?? "all";
+	const filter = currentStatusFilter(args.statusFilter ?? "all");
 	if (target.kind === "all") {
 		return {
 			action: "stages",

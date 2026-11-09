@@ -70,7 +70,7 @@ function waitingRun(work) {
 			{
 				id: `stage-${work.inputs.index}`,
 				name: "wait",
-				status: "waiting",
+				status: "suspended",
 				parentIds: [],
 				toolEvents: [],
 				startedAt: now,

@@ -87,7 +87,7 @@ async function seedWaitingStage(kind: StageWaitKind, promptsCompleted: number) {
 	await recordStageCheckpoint(deps(2_000), stage);
 	await recordStageSessionCheckpoint(
 		deps(3_000),
-		{ ...stage, status: "waiting", wait: { kind, since: 3_000, promptsCompleted } },
+		{ ...stage, status: "suspended", wait: { kind, since: 3_000, promptsCompleted } },
 		{ force: true },
 	);
 	return { runId, backend, sessionStore };

@@ -80,7 +80,7 @@ describe("a waiting stage's wait records that cannot be written (#4309)", () => 
 		);
 
 		assert.equal(result.status, "completed", result.error);
-		assert.ok(told.includes("waiting/release/wait-start"), told.join(" | "));
+		assert.ok(told.includes("suspended/release/wait-start"), told.join(" | "));
 	});
 
 	test("the results a woken stage could not record are named as such, before anything else it records (#4309)", async () => {

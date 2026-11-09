@@ -1,7 +1,6 @@
 import {
 	DURABLE_STAGE_TOPOLOGY_VERSION,
 	type DurableStageCheckpoint,
-	type DurableStageLifecycleStatus,
 	type DurableStageRunTopology,
 	type DurableStageTopology,
 } from "./types.js";
@@ -203,7 +202,7 @@ function isUnansweredPromptGroup(group: readonly DurableStageCheckpoint[]): bool
 	);
 }
 
-const UNANSWERED_PROMPT_STATUSES: ReadonlySet<DurableStageLifecycleStatus> = new Set([
+const UNANSWERED_PROMPT_STATUSES: ReadonlySet<NonNullable<DurableStageTopology["status"]>> = new Set([
 	"pending",
 	"running",
 	"awaiting_input",

@@ -758,7 +758,7 @@ test("the root drains only the stages on another host whose sessions take Interc
 				stages: [
 					remoteStage("live", {}),
 					remoteStage("starting", { sessionId: undefined }),
-					remoteStage("released", { status: "waiting" }),
+					remoteStage("released", { status: "suspended" }),
 					remoteStage("no-intercom", { pendingStageDeliveryAvailable: false }),
 					remoteStage("unknown-intercom", { pendingStageDeliveryAvailable: undefined }),
 					remoteStage("done", { status: "completed" }),

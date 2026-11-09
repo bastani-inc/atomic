@@ -62,7 +62,8 @@ export function pooledStageStartingText(stage: StageStartupView | undefined, now
 
 /**
  * What a stage with its session released waits on, for status text: `tool: wait_ci` for a detached tool call,
- * `released` after `stage.release()` or while it awaits a human answer, `idle` for a stage the workflow holds unused.
+ * `between turns` after `stage.release()` or for a stage the workflow holds unused, `released` while it awaits a human
+ * answer.
  */
 export function stageWaitLabel(wait: StageWaitSnapshot): string {
 	switch (wait.kind) {
@@ -71,14 +72,14 @@ export function stageWaitLabel(wait: StageWaitSnapshot): string {
 			return names.length === 0 ? "tool" : `tool: ${names.join(", ")}`;
 		}
 		case "idle":
-			return "idle";
 		case "release":
+			return "between turns";
 		case "prompt":
 			return "released";
 	}
 }
 
-/** `waiting (tool: wait_ci)`, `awaiting_input (released)`; the plain status for a stage with no released session. */
+/** `suspended (tool: wait_ci)`, `suspended (between turns)`, `awaiting_input (released)`; the plain status for a stage with no released session. */
 export function stageStatusWithWait(status: string, wait: StageWaitSnapshot | undefined): string {
 	return wait === undefined ? status : `${status} (${stageWaitLabel(wait)})`;
 }

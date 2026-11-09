@@ -14,7 +14,7 @@ function waitingStage(index: number): StageSnapshot {
 	return {
 		id: `id-${index}`,
 		name: `agent-${index}`,
-		status: "waiting",
+		status: "suspended",
 		parentIds: [],
 		toolEvents: [],
 		startedAt: NOW - 10_000,
@@ -38,19 +38,19 @@ function statusText(stageCount: number): string {
 	);
 }
 
-test("500 waiting stages produce a bounded status line that names 10 and counts all (#4309)", () => {
+test("500 suspended stages produce a bounded status line that names 10 and counts all (#4309, #4589)", () => {
 	const text = statusText(500);
-	const line = text.split("\n").find((candidate) => candidate.includes("waiting ("));
+	const line = text.split("\n").find((candidate) => candidate.includes("suspended ("));
 	assert.ok(line !== undefined, text);
-	assert.match(line, /waiting \(500\): /);
+	assert.match(line, /suspended \(500\): /);
 	assert.equal(line.match(/agent-\d+/g)?.length, NAMED_STAGES);
-	assert.match(line, /agent-9 \(released\), …, \+490 more/);
+	assert.match(line, /agent-9 \(between turns\), …, \+490 more/);
 	assert.ok(line.length < 500, `status line is ${line.length} characters`);
 });
 
-test("a run with exactly 10 waiting stages names them all and omits the overflow marker (#4309)", () => {
+test("a run with exactly 10 suspended stages names them all and omits the overflow marker (#4309, #4589)", () => {
 	const text = statusText(NAMED_STAGES);
-	assert.match(text, /waiting \(10\): agent-0 \(released\)/);
+	assert.match(text, /suspended \(10\): agent-0 \(between turns\)/);
 	assert.equal(text.match(/agent-\d+/g)?.length, NAMED_STAGES);
 	assert.doesNotMatch(text, /more/);
 });

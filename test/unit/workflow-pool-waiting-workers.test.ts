@@ -34,12 +34,12 @@ function runOf(stages: StageSnapshot[], toolNodes: ToolNodeStatus[] = []): RunSn
 
 describe("whether a pooled attempt waits released (#4374)", () => {
 	test("waits when every live stage waits on a tool result or an answer, across all its runs (#4374)", () => {
-		assert.equal(attemptWaitsReleased([runOf([stage("waiting", "tool")])]), true);
+		assert.equal(attemptWaitsReleased([runOf([stage("suspended", "tool")])]), true);
 		assert.equal(attemptWaitsReleased([runOf([stage("awaiting_input", "tool")])]), true);
 		assert.equal(attemptWaitsReleased([runOf([stage("awaiting_input", "prompt")])]), true);
 		assert.equal(
 			attemptWaitsReleased([
-				runOf([stage("completed"), stage("waiting", "tool")], ["completed", "cached"]),
+				runOf([stage("completed"), stage("suspended", "tool")], ["completed", "cached"]),
 				runOf([stage("failed"), stage("skipped"), stage("paused", "prompt")]),
 			]),
 			true,
@@ -50,13 +50,13 @@ describe("whether a pooled attempt waits released (#4374)", () => {
 		const cases: [string, RunSnapshot[]][] = [
 			["no run", []],
 			["no live stage", [runOf([stage("completed"), stage("failed"), stage("skipped")])]],
-			["a running stage", [runOf([stage("waiting", "tool"), stage("running")])]],
-			["a pending stage", [runOf([stage("waiting", "tool"), stage("pending")])]],
+			["a running stage", [runOf([stage("suspended", "tool"), stage("running")])]],
+			["a pending stage", [runOf([stage("suspended", "tool"), stage("pending")])]],
 			["a stage asking without a release", [runOf([stage("awaiting_input")])]],
-			["a stage the workflow released", [runOf([stage("waiting", "release")])]],
-			["an idle stage", [runOf([stage("waiting", "idle")])]],
-			["a running durable tool call", [runOf([stage("waiting", "tool")], ["completed", "running"])]],
-			["a second run still running", [runOf([stage("waiting", "tool")]), runOf([stage("running")])]],
+			["a stage the workflow released", [runOf([stage("suspended", "release")])]],
+			["an idle stage", [runOf([stage("suspended", "idle")])]],
+			["a running durable tool call", [runOf([stage("suspended", "tool")], ["completed", "running"])]],
+			["a second run still running", [runOf([stage("suspended", "tool")]), runOf([stage("running")])]],
 		];
 		for (const [name, runs] of cases) assert.equal(attemptWaitsReleased(runs), false, name);
 	});

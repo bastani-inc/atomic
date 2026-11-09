@@ -19,7 +19,7 @@ const ADDRESSABLE_STAGE_STATUSES: ReadonlySet<StageStatus> = new Set([
 	"awaiting_input",
 	"paused",
 	"blocked",
-	"waiting",
+	"suspended",
 ]);
 
 /**

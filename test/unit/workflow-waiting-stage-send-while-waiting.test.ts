@@ -216,7 +216,7 @@ describe("stage.sendUserMessage() while the stage waits on a tool call (#4309)",
 		const outcome = await sendWhileTheToolRuns({ afterMs: 0 });
 
 		assert.equal(outcome.result.status, "completed", outcome.result.error);
-		assert.deepEqual(outcome.whileWaiting, { status: "waiting", live: 0 });
+		assert.deepEqual(outcome.whileWaiting, { status: "suspended", live: 0 });
 		assert.equal(outcome.stage?.status, "completed");
 		assert.deepEqual(outcome.transcript, EXPECTED_TRANSCRIPT);
 		// Prompted once, continued once from the delivered result, in the one session it was reopened into.

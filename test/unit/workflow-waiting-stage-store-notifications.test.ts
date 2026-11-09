@@ -91,8 +91,8 @@ describe("the store is told each time a stage's wait begins, changes or ends (#4
 
 		assert.equal(result.status, "completed", result.error);
 		// Releasing tells the store once, with the wait shown.
-		assert.deepEqual(windows.released, [`waiting/release/startup:dispatched:first-dispatch`]);
-		assert.deepEqual(windows.releasedAgain, [`waiting/release/startup:active:ready`]);
+		assert.deepEqual(windows.released, [`suspended/release/startup:dispatched:first-dispatch`]);
+		assert.deepEqual(windows.releasedAgain, [`suspended/release/startup:active:ready`]);
 		// Reopening tells it first that the stage no longer waits and is back to how it was, before the new session starts.
 		assert.equal(windows.reopening?.[0], "completed/-/startup:dispatched:first-dispatch");
 		assert.ok(windows.reopening?.slice(1).every((state) => state.startsWith("completed/-/startup:active:")));
@@ -153,10 +153,10 @@ describe("the store is told each time a stage's wait begins, changes or ends (#4
 
 		assert.equal(result.status, "completed", result.error);
 		// The wait begins with the stage waiting on its tool; the results it was woken with are recorded before it runs.
-		assert.equal(sinceWaiting[0], "waiting/tool/startup:dispatched:first-dispatch");
+		assert.equal(sinceWaiting[0], "suspended/tool/startup:dispatched:first-dispatch");
 		assert.equal(sinceWaiting[1], "running/-/results/startup:dispatched:first-dispatch");
 		// The refused attempt shows the stage waiting again, keeping the results, and the next attempt running again.
-		const refused = sinceWaiting.indexOf("waiting/tool/results/startup:failed:resource-preparation");
+		const refused = sinceWaiting.indexOf("suspended/tool/results/startup:failed:resource-preparation");
 		assert.ok(refused > 1, sinceWaiting.join(" | "));
 		assert.equal(sinceWaiting[refused - 1], "running/-/results/startup:failed:resource-preparation");
 		assert.equal(sinceWaiting[refused + 1], "running/-/results/startup:failed:resource-preparation");

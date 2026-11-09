@@ -10,6 +10,7 @@ import type {
 import type { Api, Model } from "@bastani/pi-ai/compat";
 import type { RunJournalSettings } from "../durable/journal/resolution.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
+import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type { SessionManager as PersistenceSessionManager } from "../shared/persistence-restore.js";
 import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import type { WorkflowBudget, WorkflowInputValues } from "../shared/types.js";
@@ -281,7 +282,8 @@ export interface WorkflowToolArgs {
 	all?: boolean;
 	stageId?: string;
 	message?: string;
-	statusFilter?: StageStatus | RunStatus | "all";
+	/** `waiting` is a deprecated alias for `suspended`. */
+	statusFilter?: StageStatus | RunStatus | "all" | LegacyWaitingStatus;
 	/** Status with a runId only: return status, final outputs and blockers without the stage history. */
 	summary?: boolean;
 	format?: "text" | "json";

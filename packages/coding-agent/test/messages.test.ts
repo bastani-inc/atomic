@@ -157,6 +157,32 @@ describe("convertToLlm", () => {
 		expect(JSON.stringify(durable)).toBe(before);
 	});
 
+	test("leaves a call that is in flight pending, and closes the others, when reopening an inactive session (#4589)", () => {
+		const durable = [assistantWithToolCalls(["call-a", "call-b"])] as AgentMessage[];
+
+		const recovered = repairOrphanToolResults(durable, {
+			repairTrailing: true,
+			inFlightToolCallIds: new Set(["call-a"]),
+		});
+
+		expect(recovered.map((message) => message.role)).toEqual(["assistant", "toolResult"]);
+		expect(recovered[1]).toMatchObject({ toolCallId: "call-b", isError: true });
+	});
+
+	test("never closes an in-flight call, and keeps the real result once it is delivered (#4589)", () => {
+		const inFlight = new Set(["call-a"]);
+		const resumed = [
+			assistantWithToolCalls(["call-a"]),
+			{ role: "user", content: "continue", timestamp: 2 } as AgentMessage,
+		];
+		expect(repairOrphanToolResults(resumed, { inFlightToolCallIds: inFlight })).toEqual(resumed);
+
+		const delivered = [assistantWithToolCalls(["call-a"]), toolResult("call-a")];
+		const recovered = repairOrphanToolResults(delivered, { repairTrailing: true, inFlightToolCallIds: inFlight });
+		expect(recovered).toEqual(delivered);
+		expect(JSON.stringify(recovered)).not.toContain("interrupted");
+	});
+
 	test("does not invent results for aborted partial tool calls", () => {
 		const aborted = { ...assistantWithToolCalls(["partial-call"]), stopReason: "aborted" as const };
 

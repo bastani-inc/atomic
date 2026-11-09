@@ -192,7 +192,7 @@ describe("the stage factory's wait hooks (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const implement = ctx.task("implement", { prompt: "watch ci" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				service.finishAll();
 				await refused.promise;
 				const review = ctx.task("review", { prompt: "look" });
@@ -470,7 +470,7 @@ describe("the stage factory's wait hooks (#4309)", () => {
 		);
 
 		assert.equal(result.status, "completed", result.error);
-		assert.ok(told.includes("waiting/release/dispatched"), told.join(" | "));
+		assert.ok(told.includes("suspended/release/dispatched"), told.join(" | "));
 		// Only the end of the reopened session's startup reaches the store once the workflow returned; the stage is not
 		// settled again as if it were still released.
 		assert.deepEqual(told.slice(atReturn), ["completed/-/cancelled"]);

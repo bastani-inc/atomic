@@ -42,7 +42,7 @@ describe("a stage released when its run ends leaves waiting (#4309)", () => {
 			assert.equal(stored?.status, "completed");
 			assert.equal(stored?.wait, undefined);
 			const summary = summarizeRunSnapshot(store.runs()[0]!);
-			assert.equal(summary.waitingCount, 0);
+			assert.equal(summary.suspendedCount, 0);
 			assert.deepEqual(summary.activeStages, []);
 		});
 	}

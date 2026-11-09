@@ -176,7 +176,7 @@ test("journal appends whose stream expired mid-transaction are written exactly o
 	stallNextTransaction(fake);
 	const keyed = await journal.append(lease, checkpoint("plan"), { key: "stage:plan" });
 	stallNextTransaction(fake);
-	const keyless = await journal.append(lease, statusChanged("waiting"));
+	const keyless = await journal.append(lease, statusChanged("suspended"));
 	assert.equal(keyed.status, "appended");
 	assert.equal(keyless.status, "appended");
 	assert.equal(fake.expiredStatements, 2);
@@ -187,7 +187,7 @@ test("journal appends whose stream expired mid-transaction are written exactly o
 			[2, null, "StatusChanged"],
 		],
 	);
-	assert.equal((await journal.getRun("root"))?.status, "waiting");
+	assert.equal((await journal.getRun("root"))?.status, "suspended");
 });
 
 test("a batch of journal appends whose connection broke is never sent twice (#4383)", async () => {
@@ -195,7 +195,7 @@ test("a batch of journal appends whose connection broke is never sent twice (#43
 	const { journal, lease } = await journalOn(fake);
 	const appends = [
 		{ event: checkpoint("a"), key: "stage:a", context: <T>(action: () => T) => action() },
-		{ event: statusChanged("waiting"), context: <T>(action: () => T) => action() },
+		{ event: statusChanged("suspended"), context: <T>(action: () => T) => action() },
 	];
 	fake.fail({ kind: "reset-after" });
 	await assert.rejects(journal.appendMany(lease, appends), (error: unknown) => {

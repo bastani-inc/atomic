@@ -25,7 +25,7 @@ export interface GraphStageCounts {
 	awaiting_input: number;
 	paused: number;
 	blocked: number;
-	waiting: number;
+	suspended: number;
 	completed: number;
 	failed: number;
 	skipped: number;
@@ -544,7 +544,7 @@ export abstract class GraphViewState {
 			awaiting_input: 0,
 			paused: 0,
 			blocked: 0,
-			waiting: 0,
+			suspended: 0,
 			completed: 0,
 			failed: 0,
 			skipped: 0,

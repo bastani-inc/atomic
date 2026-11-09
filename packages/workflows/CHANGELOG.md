@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Released workflow stages now use `suspended` instead of `waiting` in `StageStatus` and status output. Migration: replace `waiting` with `suspended` in stage-status values, comparisons, switches and status-keyed maps, and read `suspendedCount` and `suspendedStages` instead of `waitingCount` and `waitingStages` in `workflow status` listings. The old JSON field names are not returned. `statusFilter: "waiting"` remains accepted as a deprecated alias of `suspended`, and saved journals, snapshots and stores recorded with `waiting` remain readable as `suspended` ([#4589](https://github.com/bastani-inc/atomic/issues/4589))
+
 ### Added
 
 - Added design reference images to the `open-claude-design` builtin: when an image model is available, a durable `reference-images` step renders three high-quality reference images, one per visual direction, from the confirmed brief, `PRODUCT.md`/`DESIGN.md` and the curated references into `<artifact_dir>/references/`. HTML generation reads them and matches their direction, the live review gate and session-start stage list them, and `spec.html` links them in a "Design References" section. The newest available GPT Image model is chosen first (today `openai-images/gpt-image-2.6-flare`), then other image providers such as OpenRouter; the new optional `image_model` input (`provider/id`) overrides the choice. With no image model, or on any generation failure, the run continues unchanged without a warning, and the new `reference_images_status` output records `skipped`, `generated` or `failed` with the reason, the model and the image paths ([#4590](https://github.com/bastani-inc/atomic/issues/4590))
@@ -14,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Updated the bundled Impeccable skill to 4.8.1 with engine 0.1.19. The design hook's end-of-session review lists its findings and the agent fixes or skips each with a short reason, asking you only when it cannot decide. `hooks status` shows each harness's real wiring, `impeccable context` restores missing hook entries only after you accept the hook in the project's `config.local.json`, and a user-scope Claude Code install follows `CLAUDE_CONFIG_DIR`. Hermes Agent gets a design-hook plugin you enable with `hermes plugins enable impeccable-design-hook`. Live Mode can remove a picked element, with Undo and Apply, and mounts Vue variants and previews Svelte and Vue components after they compile. The detector raises fewer false alarms and `init` says which generated files to commit. The launcher now checks each engine download, and re-checks a cached engine, against SHA-256 digests that ship with the skill in `scripts/engine-checksums.txt`, instead of a digest published next to the binary; it refuses a binary that does not match or has no digest, and skips a binary next to it that reports a different engine version. Atomic's telemetry and update-check defaults remain off.
 - Updated the bundled `unslop` skill to the current cursor/plugins pstack rules. It drops the puffery, name-dropping, promotional-language, formulaic-challenge and cutoff-disclaimer rules and the Process and Adding soul sections, tightens the wording of the remaining rules, and adds rules against mannered prose (aphorisms, personified code, figurative verbs) and over-compression (dropped articles, verbless fragments, symbol-speak, arrows). It stays available to the model.
+- Suspended stages keep the ◷ glyph and show what they wait on: `suspended (tool: <name>)` during an offloaded tool call and `suspended (between turns)` after a between-turn release. Stages waiting for a human answer remain `awaiting_input` ([#4589](https://github.com/bastani-inc/atomic/issues/4589))
+
+### Fixed
+
+- Fixed the chat of a suspended stage showing a tool call it still waits on as "Tool execution was interrupted after it started": the call now shows as pending and then shows its real result once the stage reopens ([#4589](https://github.com/bastani-inc/atomic/issues/4589))
 
 ## [0.9.74] - 2026-11-09
 

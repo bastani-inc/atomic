@@ -51,7 +51,7 @@ import {
 	type RunSummary,
 	StaleLeaseError,
 } from "./types.js";
-import { journalCounter, serializeJson, validateText } from "./values.js";
+import { journalCounter, runStatusFromRecord, serializeJson, validateText } from "./values.js";
 
 export { JOURNAL_READ_PAGE_SIZE } from "./internal.js";
 
@@ -377,7 +377,9 @@ export class SqlRunJournal implements RunJournal {
 				runId,
 			);
 			const found = row ?? (await this.legacy?.find(this.database, runId));
-			return found ? { ...(JSON.parse(found[c.headerJson]) as RunHeader), status: found[c.status] } : undefined;
+			return found
+				? { ...(JSON.parse(found[c.headerJson]) as RunHeader), status: runStatusFromRecord(found[c.status]) }
+				: undefined;
 		});
 	}
 
@@ -391,7 +393,10 @@ export class SqlRunJournal implements RunJournal {
 			);
 			const legacy = (await this.legacy?.pending(this.database, filter)) ?? [];
 			return [...rows, ...legacy]
-				.map((row) => ({ ...(JSON.parse(row[c.headerJson]) as RunHeader), status: row[c.status] }))
+				.map((row) => ({
+					...(JSON.parse(row[c.headerJson]) as RunHeader),
+					status: runStatusFromRecord(row[c.status]),
+				}))
 				.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : 0));
 		});
 	}

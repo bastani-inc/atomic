@@ -79,10 +79,10 @@ describe("absent waiting-stage parts are left out, not written as undefined (#43
 	});
 
 	test("a waiting stage shown without its wait lists no wait in the run's status (#4309)", () => {
-		const summary = summarizeRunSnapshot(runOf([stage("bare", { status: "waiting" })]), 10);
+		const summary = summarizeRunSnapshot(runOf([stage("bare", { status: "suspended" })]), 10);
 
-		assert.deepEqual(summary.waitingStages, [{ stageId: "bare", name: "bare" }]);
-		assert.equal(Object.hasOwn(summary.waitingStages[0]!, "wait"), false);
+		assert.deepEqual(summary.suspendedStages, [{ stageId: "bare", name: "bare" }]);
+		assert.equal(Object.hasOwn(summary.suspendedStages[0]!, "wait"), false);
 	});
 
 	test("a stage that ends without a typed failure keeps no failure detail field in the store (#4309)", () => {

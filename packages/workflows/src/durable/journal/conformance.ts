@@ -497,7 +497,7 @@ export function registerRunJournalConformance(
 		const context = <R>(action: () => R): R => action();
 		const results = await journal.appendMany(held, [
 			{ event: { type: "RunStarted", payload: null }, key: "start", context },
-			{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context },
+			{ event: { type: "StatusChanged", payload: { status: "suspended" } }, context },
 			{ event: { type: "RunFinished", payload: null }, key: "start", context },
 		]);
 		assert.deepEqual(
@@ -512,7 +512,7 @@ export function registerRunJournalConformance(
 			(await entries(journal)).map((entry) => entry.event.type),
 			["RunStarted", "StatusChanged"],
 		);
-		assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+		assert.equal((await journal.getRun(header.runId))?.status, "suspended");
 		assert.equal((await journal.takeover(header.runId, "next", held.holderId)).status, "acquired");
 		await assert.rejects(
 			journal.appendMany(held, [{ event: { type: "RunFinished", payload: null }, context }]),
@@ -528,23 +528,23 @@ export function registerRunJournalConformance(
 		const results = await journal.appendMany(held, [
 			{ event: { type: "RunStarted", payload: null }, context },
 			{ event: { type: "StatusChanged", payload: { status: "bad\u0000status" } }, context },
-			{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context },
+			{ event: { type: "StatusChanged", payload: { status: "suspended" } }, context },
 		]);
 		assert.deepEqual(
 			results.map((result) => result.status),
 			["fulfilled", "rejected", "fulfilled"],
 		);
-		const [started, invalid, waiting] = results;
+		const [started, invalid, suspended] = results;
 		assert.ok(invalid?.status === "rejected" && invalid.reason instanceof JournalInvalidTextError);
 		assert.deepEqual(
-			[started, waiting].map((result) => (result?.status === "fulfilled" ? result.value.entry.seq : undefined)),
+			[started, suspended].map((result) => (result?.status === "fulfilled" ? result.value.entry.seq : undefined)),
 			[1, 2],
 		);
 		assert.deepEqual(
 			(await entries(journal)).map((entry) => entry.event.type),
 			["RunStarted", "StatusChanged"],
 		);
-		assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+		assert.equal((await journal.getRun(header.runId))?.status, "suspended");
 	});
 	check("optional createRunWithEvents creates a run with its events atomically, or nothing", async (journal) => {
 		const createRunWithEvents = journal.createRunWithEvents;

@@ -435,7 +435,7 @@ function stageGlyph(status: StageStatus): string {
 			return "✗";
 		case "awaiting_input":
 			return "？";
-		case "waiting":
+		case "suspended":
 			return "◷";
 		case "skipped":
 			return "⊘";

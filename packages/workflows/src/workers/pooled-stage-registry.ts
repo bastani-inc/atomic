@@ -18,7 +18,7 @@ import type { PooledStageLease } from "./pooled-stage-sources.js";
 
 type Acquire = (runId: string, stageId: string) => Promise<PooledStageLease | undefined>;
 
-const LIVE = new Set<StageSnapshot["status"]>(["running", "awaiting_input", "paused", "blocked", "waiting"]);
+const LIVE = new Set<StageSnapshot["status"]>(["running", "awaiting_input", "paused", "blocked", "suspended"]);
 
 /**
  * A caller-registry handle of a stage on a local worker (#3996).

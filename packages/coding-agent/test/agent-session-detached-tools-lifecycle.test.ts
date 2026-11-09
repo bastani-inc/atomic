@@ -740,6 +740,29 @@ describe("resuming a detached turn (#4309)", () => {
 		assert.deepEqual(toolResultIds(reopened.sessionManager), ["ci-1", "deploy-1"]);
 	});
 
+	test("never sends the model a reopened stage's pending call as interrupted once its result is delivered (#4589)", async () => {
+		const tool = waitTool();
+		const { reopened } = await reopenedAfterDetaching(pool, [tool.definition], [waitForCiTurn("ci-1")]);
+		const toolResultTexts = (messages: readonly { role: string }[]): string[] =>
+			messages.flatMap((message) => (message.role === "toolResult" ? [getMessageText(message as never)] : []));
+		const requests: string[][] = [];
+		reopened.setResponses([
+			(context) => {
+				requests.push(toolResultTexts(context.messages));
+				return fauxAssistantMessage("ci passed");
+			},
+		]);
+
+		await reopened.session.startPendingRecovery("workflow_stage_resume");
+		reopened.session.refreshContext();
+		assert.deepEqual(toolResultTexts(reopened.session.messages), [], "the pending call is not closed while it waits");
+
+		await reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
+
+		assert.deepEqual(requests, [["passed"]]);
+		assert.deepEqual(toolResultTexts(reopened.session.messages), ["passed"]);
+	});
+
 	test("refuses a second resume that starts while the first has not begun streaming", async () => {
 		const tool = waitTool();
 		const { reopened } = await reopenedAfterDetaching(pool, [tool.definition], [waitForCiTurn("ci-1")]);

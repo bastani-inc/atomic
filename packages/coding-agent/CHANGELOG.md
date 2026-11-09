@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `WorkflowStageStatus` now uses `suspended` instead of `waiting` for a workflow stage whose session is released. Migration: replace `waiting` with `suspended` in stage-status values, comparisons, switches and status-keyed maps. The `status` filters of `session.workflows.listRuns()` and `getStages()` still accept `waiting` as a deprecated alias of `suspended`; this alias does not preserve the old returned status value ([#4589](https://github.com/bastani-inc/atomic/issues/4589))
+
 ### Fixed
 
 - Fixed `atomic --session <id>` refusing to resume with `setup-hook-missing` when a checkout other than the one the session runs in was missing or changed, for example a sibling worktree or a `/tmp` probe worktree a workflow stage used, although the current checkout was unchanged. Only the checkout the session's working directory is in can now stop a resume: a changed checkout the session worked in on this machine continues as it is, and another checkout that cannot be restored (no Git, no setup hook, a failed restore or a failed hook) is left out with a warning that names its path and why. When the current checkout cannot be restored, `ResumePreconditionError` lists every unmet piece of every checkout the resume would restore, and each `problems[]` entry names its checkout in the new optional `checkout` field ([#4584](https://github.com/bastani-inc/atomic/issues/4584))
+- Fixed a tool call that a suspended workflow stage still waits on showing in the stage's transcript as "Tool execution was interrupted after it started": `ChatSessionHost.loadSession()` takes the ids of the calls in flight and shows them as pending, then shows their real results ([#4589](https://github.com/bastani-inc/atomic/issues/4589))
 
 ## [0.9.74] - 2026-11-09
 
