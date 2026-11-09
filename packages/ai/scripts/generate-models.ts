@@ -3840,12 +3840,6 @@ async function generateModels() {
 			api: "azure-openai-responses",
 			provider: "azure",
 			baseUrl: "",
-			cost: {
-				input: model.cost.input,
-				output: model.cost.output,
-				cacheRead: model.cost.cacheRead,
-				cacheWrite: model.cost.cacheWrite,
-			},
 			contextWindow: AZURE_CONTEXT_WINDOW_OVERRIDES[model.id] ?? model.contextWindow,
 		}));
 	allModels.push(...azureOpenAiModels);

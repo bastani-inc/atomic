@@ -10,6 +10,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ### Fixed
 
+- Azure OpenAI models now keep OpenAI's long-context price tier, so requests above 272K input tokens are costed at Azure's long-context rates instead of the standard rates (upstream [#11948](https://github.com/earendil-works/pi/issues/11948))
 - Fixed Anthropic and Bedrock sending `strict: "prefer"` tools strict again on every request after Claude rejected them for exceeding its strict tool limits, which cost a rejected request (400) per turn. Later requests with the same `sessionId` now send those tools non-strict right away, until `cleanupSessionResources(sessionId)` (upstream [#11626](https://github.com/earendil-works/pi/issues/11626))
 
 ## [0.9.72] - 2026-11-08

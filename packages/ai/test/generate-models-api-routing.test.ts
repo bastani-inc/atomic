@@ -27,6 +27,7 @@ type GeneratedModel = {
 	};
 	thinkingLevelMap?: Record<string, string | null>;
 	cost: ModelCost;
+	contextWindow: number;
 };
 type GeneratedProviderCatalog = Record<string, Record<string, GeneratedModel>>;
 
@@ -447,6 +448,54 @@ test("masks the levels below the lowest accepted effort on Azure deployments tha
 		medium: "medium",
 		high: "high",
 	});
+});
+
+test("keeps OpenAI's long-context price tier on Azure OpenAI models (#11949)", () => {
+	const longContextTier = { inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 };
+	const { openai, azure } = generateProviderCatalogs(
+		{
+			openai: {
+				models: {
+					"gpt-6-sol": {
+						id: "gpt-6-sol",
+						name: "GPT-6 Sol",
+						...toolCapable,
+						reasoning: true,
+						limit: { context: 272_000, output: 128_000 },
+						cost: {
+							input: 2,
+							output: 10,
+							cache_read: 0.2,
+							cache_write: 2.5,
+							tiers: [
+								{
+									tier: { type: "context", size: 272_000 },
+									input: 4,
+									output: 15,
+									cache_read: 0.4,
+									cache_write: 5,
+								},
+							],
+						},
+					},
+					"gpt-4.1": { id: "gpt-4.1", name: "GPT-4.1", ...toolCapable },
+				},
+			},
+		},
+		["openai", "azure"],
+	);
+
+	assert.deepEqual(openai["gpt-6-sol"].cost, {
+		input: 2,
+		output: 10,
+		cacheRead: 0.2,
+		cacheWrite: 2.5,
+		tiers: [longContextTier],
+	});
+	assert.equal(azure["gpt-6-sol"].api, "azure-openai-responses");
+	assert.deepEqual(azure["gpt-6-sol"].cost, openai["gpt-6-sol"].cost);
+	assert.equal(azure["gpt-6-sol"].contextWindow, 1_050_000);
+	assert.deepEqual(azure["gpt-4.1"].cost, { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 });
 });
 
 test("denies thinking off for Gemini 2.5 Pro on Google and Vertex only (#4552)", () => {
