@@ -19,6 +19,7 @@
 - `/resume`, `/import` and woken sessions show the warnings of the blueprint builds they ran, and workflow resumes record them as workflow notices ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
 - Recorded Claude Fable 5.2 results in the evals snapshot used by automatic model routing: Artificial Analysis rows for all five efforts, its Terminal-Bench-Science measurements, and Anthropic's vendor-reported launch and system-card results ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
 - Recorded Artificial Analysis results in the evals snapshot for Kimi K3.1 Pro, Muse Wonder, Muse Ember, Muse Spark Open, MiniMax-M3.1-Flash, MiMo-V2.6-Flash, Ling 3.1 Flash, Inkling 2 Small, Mistral Large 4, Tencent Hy4, Beam 1.0, Nemotron 3.5 Super VL and Solar Mini 4, so automatic model routing can rank them on measured results ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
+- Refreshed Artificial Analysis values in the evals snapshot that AA re-measured under the same benchmark version: AutomationBench-AA for Claude Sonnet 5.5 and Solar Pro 4, GDP.pdf and MMMU-Pro for GPT-6 Luna, GDP.pdf for Qwen3.8 27B, and five more Solar Pro 4 columns ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
 
 ### Deprecated
 

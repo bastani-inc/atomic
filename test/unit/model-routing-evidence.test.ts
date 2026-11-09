@@ -35,7 +35,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	assert.doesNotMatch(evals, /^## Grok 4\.7$/mu);
 	assert.match(
 		evals,
-		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 and other new-model additions; earlier rows retain their snapshot dates below\)\.$/mu,
+		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 and other new-model additions, and refreshed Artificial Analysis values listed below; earlier rows retain their snapshot dates below\)\.$/mu,
 	);
 	assert.match(evals, /^\| slug \| Model \| Release date \| idx \| Brief \| Gn \| Auto \| TB4 \|/mu);
 	assert.match(
@@ -52,7 +52,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	);
 	assert.match(
 		evals,
-		/^\| claude-sonnet-5-5 \| Claude Sonnet 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 2026-09-28 \| 56 \| 65\.5 \| 67\.2 \| 71\.3 \| 63\.6 \|/mu,
+		/^\| claude-sonnet-5-5 \| Claude Sonnet 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 2026-09-28 \| 56 \| 65\.5 \| 67\.2 \| 71\.8 \| 63\.6 \|/mu,
 	);
 	assert.match(
 		evals,
@@ -472,4 +472,33 @@ test("other new-family AA rows keep published values and leave revised-version c
 		);
 	}
 	assert.equal(OTHER_NEW_FAMILY_AA_ROWS.length, 17);
+});
+
+test("refreshed AA cells carry the 2026-11-09 model-page values and name the refresh", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const cell = (slug: string, column: string) => aa.rows.find((row) => row[0] === slug)![aa.header.indexOf(column)];
+	const refreshed: ReadonlyArray<readonly [slug: string, column: string, value: string]> = [
+		["claude-sonnet-5-5", "Auto", "71.8"],
+		["claude-sonnet-5-5-xhigh", "Auto", "65.5"],
+		["claude-sonnet-5-5-high", "Auto", "59.4"],
+		["claude-sonnet-5-5-medium", "Auto", "54.9"],
+		["claude-sonnet-5-5-low", "Auto", "49.4"],
+		["gpt-6-luna", "PDF", "22.8"],
+		["gpt-6-luna", "MMMU", "79.7"],
+		["gpt-6-luna-xhigh", "MMMU", "79.7"],
+		["gpt-6-luna-high", "MMMU", "77.5"],
+		["gpt-6-luna-medium", "MMMU", "77.9"],
+		["gpt-6-luna-low", "MMMU", "76"],
+		["gpt-6-luna-non-reasoning", "MMMU", "62.1"],
+		["qwen3-8-27b", "PDF", "16.4"],
+		["solar-pro4", "Auto", "13.6"],
+		["solar-pro4", "TB4", "0"],
+		["solar-pro4", "Sci", "48"],
+		["solar-pro4", "HLE", "29.8"],
+		["solar-pro4", "Crit", "6.3"],
+		["solar-pro4", "LCR", "70.7"],
+	];
+	for (const [slug, column, value] of refreshed) assert.equal(cell(slug, column), value, `${slug} ${column}`);
+	assert.match(evals, /^- Refreshed values, accessed 2026-11-09 from the \[leaderboard\]/mu);
 });
