@@ -14,6 +14,11 @@ export const SUCCEEDING_COMMAND = nodeCommand("process.exit(0)");
 /** A command that keeps running for 30 seconds unless it is stopped. */
 export const SLEEPING_COMMAND = nodeCommand("setTimeout(() => {}, 30000)");
 
+/** A command that creates `file` once it is running, then keeps running for 30 seconds unless it is stopped. */
+export function startedSleepingCommand(file: string): string {
+	return nodeCommand(`require('fs').writeFileSync('${file.replaceAll("\\", "/")}', '');setTimeout(() => {}, 30000)`);
+}
+
 /** A command that appends `line` and a newline to `file`. */
 export function appendLineCommand(file: string, line: string): string {
 	return nodeCommand(`require('fs').appendFileSync('${file.replaceAll("\\", "/")}', '${line}\\n')`);

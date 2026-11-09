@@ -107,6 +107,7 @@ type ChatHost = ReturnType<typeof chatHost> & {
 	runtimeHost: {
 		switchSession?: () => Promise<{ cancelled: boolean }>;
 		importFromJsonl?: () => Promise<{ cancelled: boolean }>;
+		takeResumeNotices?: () => readonly { type: "info" | "warning"; message: string }[];
 	};
 };
 
@@ -135,6 +136,7 @@ describe("restore notices in the TUI (#4245)", () => {
 				await resumeSessionWorktree(manager, options());
 				return { cancelled: false };
 			},
+			takeResumeNotices: () => [],
 		};
 		assert.deepEqual(await handleResumeSession.call(host, manager.getSessionId()), { cancelled: false });
 		const lines = host.lines();
@@ -150,6 +152,7 @@ describe("restore notices in the TUI (#4245)", () => {
 				await resumeSessionWorktree(manager, options());
 				return { cancelled: false };
 			},
+			takeResumeNotices: () => [],
 		};
 		await handleImportCommand.call(host, "/import exported.jsonl");
 		const lines = host.lines();
@@ -303,5 +306,41 @@ describe("restore warnings recorded with their restore (#4245)", () => {
 			},
 		);
 		assert.equal(manager.getEntries().length, before);
+	});
+});
+
+describe("blueprint warnings in the TUI (#4588)", () => {
+	const warning = { type: "warning" as const, message: "Partial build: the initialize step of a blueprint failed." };
+
+	test("/resume shows each warning of the blueprint builds the runtime collected, once (#4588)", async () => {
+		const manager = await SessionManager.create(store, sandbox.root);
+		const host = chatHost(manager) as ChatHost;
+		let taken = 0;
+		host.runtimeHost = {
+			switchSession: async () => ({ cancelled: false }),
+			takeResumeNotices: () => (taken++ === 0 ? [warning] : []),
+		};
+		assert.deepEqual(await handleResumeSession.call(host, manager.getSessionId()), { cancelled: false });
+		assert.deepEqual(host.lines(), ["Resumed session", `Warning: ${warning.message}`]);
+		assert.equal(taken, 1);
+	});
+
+	test("/import shows each warning of the blueprint builds the runtime collected (#4588)", async () => {
+		const manager = await SessionManager.create(store, sandbox.root);
+		const host = chatHost(manager) as ChatHost;
+		host.runtimeHost = {
+			importFromJsonl: async () => ({ cancelled: false }),
+			takeResumeNotices: () => [warning],
+		};
+		await handleImportCommand.call(host, "/import exported.jsonl");
+		assert.deepEqual(host.lines(), ["Session imported from: exported.jsonl", `Warning: ${warning.message}`]);
+	});
+
+	test("a resume that built nothing shows no blueprint warning (#4588)", async () => {
+		const manager = await SessionManager.create(store, sandbox.root);
+		const host = chatHost(manager) as ChatHost;
+		host.runtimeHost = { switchSession: async () => ({ cancelled: false }), takeResumeNotices: () => [] };
+		await handleResumeSession.call(host, manager.getSessionId());
+		assert.deepEqual(host.lines(), ["Resumed session"]);
 	});
 });

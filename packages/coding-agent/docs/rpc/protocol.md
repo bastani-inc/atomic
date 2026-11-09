@@ -861,8 +861,10 @@ When choosing a session from another project's JSONL store, pass `sessionDirecto
 
 Response:
 ```json
-{"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false}}
+{"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false, "notices": []}}
 ```
+
+`notices` lists the warnings the resume earned, such as a [blueprint](/guides/resume-on-any-machine) build that was Partial, each as `{"type": "warning", "message": "..."}`. A client that shows resume warnings shows them once.
 
 If an extension cancelled the switch:
 ```json

@@ -143,8 +143,8 @@ export function crossProjectResumeMessage(workflowId: string, cwd: string): stri
 
 /**
  * The typed failure of resuming `handle` on this node when restoring the checkouts its latest snapshots recorded, and
- * that are gone or changed here, could not complete: Git is unavailable, or a snapshot has dependency inputs and no
- * setup hook could run. Checked before the run is claimed, so nothing is restored or committed.
+ * that are gone or changed here, could not complete: Git is unavailable. A blueprint is never a precondition. Checked
+ * before the run is claimed, so nothing is restored or committed.
  */
 async function restorePreconditionFailure(
 	handle: {

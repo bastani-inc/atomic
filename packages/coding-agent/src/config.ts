@@ -475,6 +475,24 @@ export function getBinDir(): string {
 	return join(getAgentDir(), "bin");
 }
 
+/** The file name of a blueprint inside a `.atomic` directory. */
+export const BLUEPRINT_FILE_NAME = "blueprint.yaml";
+
+/** Get path to the global blueprint, which replaces the `resume.setupCommand` setting: `~/.atomic/agent/blueprint.yaml`. */
+export function getGlobalBlueprintPath(agentDir: string = getAgentDir()): string {
+	return join(agentDir, BLUEPRINT_FILE_NAME);
+}
+
+/** Get path to the blueprint of a repository root or workspace directory: `<dir>/.atomic/blueprint.yaml`. */
+export function getProjectBlueprintPath(dir: string): string {
+	return join(dir, CONFIG_DIR_NAME, BLUEPRINT_FILE_NAME);
+}
+
+/** Get path to the directory that caches the GitHub Actions blueprint `uses` steps fetched, per owner, repository and ref. */
+export function getBlueprintActionsDir(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "blueprint-actions");
+}
+
 const EXTENSION_TRANSPILE_CACHE_FORMAT = "ts-source-specifiers";
 
 /**

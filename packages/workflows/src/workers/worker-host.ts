@@ -502,7 +502,7 @@ function withCleanupFailures(primary: unknown, cleanup: readonly unknown[]): unk
 /**
  * The restore port a worker host runs (#4416): the function it was given, or else #4245's worktree snapshot restore
  * from the snapshots recorded in `shared`'s journal, with the host's own `git`, into worktrees under this host's agent
- * directory, followed by the resume setup hook of this host's agent directory in the restored worktree (#4329). None
+ * directory, followed by the blueprint build of this host's agent directory in the restored worktree (#4329, #4588). None
  * for a host started with `restore: false` or without git: it takes bound work only when its tree is warm.
  */
 export function hostRestorePort(
@@ -521,9 +521,12 @@ export function hostRestorePort(
 		git,
 	});
 	return (binding, hook) =>
-		restoreRunWorktree(hook.snapshot?.envHash, () => restore(binding, hook), {
+		restoreRunWorktree(hook.snapshot?.remotes, () => restore(binding, hook), {
 			signal: hook.signal,
 			agentDir,
+			onNotices: (notices) => {
+				for (const notice of notices) console.warn(`atomic-workflows: ${notice.message}`);
+			},
 		});
 }
 

@@ -1,4 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import { detachableTool, forgetDetachableTools } from "./agent-session-detached-tools.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { isWorkflowStageTaskOwner } from "./agent-session-tasks.js";
@@ -185,7 +186,7 @@ export function _buildRuntime(
 	},
 ): void {
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
-	const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
+	const shellCommandPrefix = shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
 	const shellPath = this.settingsManager.getShellPath();
 	// Resolve ownership per call, just like command execution. Each wait receives
 	// a stable binding so observation cleanup can finish after session disposal.

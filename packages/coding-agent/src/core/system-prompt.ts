@@ -169,6 +169,19 @@ function buildRules(
 		);
 	}
 
+	if (tools.includes("edit") || tools.includes("write") || hasBash || hasPowerShell) {
+		addGuideline(
+			[
+				"**Blueprint**: Own the repository's `.atomic/blueprint.yaml`, the file a resume uses to set its environment up again. It is Devin's blueprint format: `initialize` installs tools, runtimes and system packages once; `maintenance` installs or updates project dependencies on every build, and is never run automatically at session start, so it must be self-contained, fast and incremental (`npm install`, not `npm ci`); `knowledge` is a list of `{ name, contents }` items, by convention `lint`, `test` and `build`, that is never executed. Each of `initialize` and `maintenance` is a string or a list of steps (`run`, with an optional `name` and `env`).",
+				"  - Generate it when missing: when a repository has no blueprint and you have to work out how to set it up, inspect lockfiles, toolchain files (`.nvmrc`, `rust-toolchain.toml`, `.python-version`, `mise.toml`), CI workflows, `package.json` scripts, Makefiles, the README and contributing docs, then write one with runtimes in `initialize`, incremental dependency installs in `maintenance` and the verified `lint`, `test` and `build` commands in `knowledge`.",
+				"  - Update it in the same change that needs it: when you add or remove a dependency or package manager, add a tool, runtime or system package, add a workspace, change how lint, test or build run, or need an environment variable in `$ENVRC`, edit the blueprint in the same commit, so the next restore reproduces the environment.",
+				"  - Record what you learn: when you find a non-obvious command or project fact the hard way, such as a test filter, a required service, a slow step to skip or a codegen step before build, add or update a `knowledge` item instead of rediscovering it next session, and fix `knowledge` that turns out to be wrong.",
+				"  - Use judgment: write only commands you have run or confirmed from the repository, keep `maintenance` fast and incremental, keep `knowledge` short and focused on commands, never write secrets into the file, and leave the blueprint alone when nothing about the environment changed. Blueprint edits are ordinary repository changes that appear in the diff and the PR. Edit the global `~/.atomic/agent/blueprint.yaml` only when the user asks.",
+				"  - Fix it when a build is Partial: when the blueprint context of a resumed session reports a blueprint that failed or did not run, read the build log of the failing step, fix the environment, then update the blueprint so the next restore succeeds.",
+			].join("\n"),
+		);
+	}
+
 	for (const name of selectedTools) {
 		for (const rule of toolGuidelines[name] ?? []) addRule(rule);
 	}

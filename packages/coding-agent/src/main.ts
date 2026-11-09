@@ -649,6 +649,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			agentDir,
 			sessionStorage,
 			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
+			blueprints: engineEnv.child === "1" ? "skip" : "build",
 			chooseDirtyCheckout:
 				appMode === "interactive"
 					? (prompt) => {

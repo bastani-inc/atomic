@@ -16,6 +16,7 @@ import { fauxAssistantMessage, fauxToolCall, getModel } from "@bastani/pi-ai/com
 import { parseArgs } from "../../packages/coding-agent/src/cli/args.ts";
 import { getAgentDir } from "../../packages/coding-agent/src/config.ts";
 import { resumeFailureMessage } from "../../packages/coding-agent/src/core/resume/failure.ts";
+import { savedProjectTrust } from "../../packages/coding-agent/src/core/resume/session-resume.ts";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.ts";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import { resolveSessionStore } from "../../packages/coding-agent/src/core/session-storage.ts";
@@ -78,7 +79,7 @@ async function record(args: RecordArgs): Promise<void> {
 function writeSetupCommand(agentDir: string, setupCommand: string | undefined): void {
 	if (setupCommand === undefined) return;
 	mkdirSync(agentDir, { recursive: true });
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ resume: { setupCommand } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always", resume: { setupCommand } }));
 }
 
 async function sdkOpen(args: SdkOpenArgs): Promise<void> {
@@ -109,7 +110,7 @@ async function resume(args: ResumeArgs): Promise<void> {
 	const settings = SettingsManager.create(args.launchCwd, agentDir);
 	const opened = await openCliSession(parsed, args.launchCwd, settings, {
 		agentDir,
-		trusted: () => false,
+		trusted: savedProjectTrust(agentDir, settings),
 		...(args.catalogTimeoutMs === undefined ? {} : { catalogTimeoutMs: args.catalogTimeoutMs }),
 	});
 	if (opened === "cancelled") throw new Error("resume was cancelled");

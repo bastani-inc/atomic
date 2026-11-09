@@ -342,7 +342,7 @@ test(
 			assert.equal(before.sessionId, original.getSessionId());
 			assert.equal(before.sessionLocation, original.getSessionFile());
 			assert.equal("sessionFile" in before, false);
-			assert.deepEqual(await client.switchSession(target.getSessionId()), { cancelled: false });
+			assert.deepEqual(await client.switchSession(target.getSessionId()), { cancelled: false, notices: [] });
 			const after = await client.getState();
 			assert.equal(after.sessionId, target.getSessionId());
 			assert.equal(after.sessionLocation, target.getSessionFile());
@@ -492,6 +492,7 @@ test(
 			await client.start();
 			assert.deepEqual(await client.switchSession(target.getSessionId(), undefined, foreign.directory), {
 				cancelled: false,
+				notices: [],
 			});
 			assert.equal((await client.getState()).sessionLocation, target.getSessionFile());
 			await client.restart(target.getSessionId(), { sessionDirectory: foreign.directory, cwd: foreign.cwd });

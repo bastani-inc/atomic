@@ -49,6 +49,12 @@ import type { JsonAgentSessionEvent } from "../json-event.ts";
 // RPC Commands (stdin)
 // ============================================================================
 
+/** A line a resume shows the user, carried from the engine that prepared the resume to the host that renders it. */
+export interface RpcResumeNotice {
+	readonly type: "info" | "warning";
+	readonly message: string;
+}
+
 export interface RpcModelCatalog {
 	models: Model<Api>[];
 	scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
@@ -410,9 +416,21 @@ export type RpcResponse =
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
 	| { id?: string; type: "response"; command: "get_tools"; success: true; data: ToolStatusReport }
-	| { id?: string; type: "response"; command: "import_session"; success: true; data: { cancelled: boolean } }
+	| {
+			id?: string;
+			type: "response";
+			command: "import_session";
+			success: true;
+			data: { cancelled: boolean; notices?: readonly RpcResumeNotice[] };
+	  }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
-	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
+	| {
+			id?: string;
+			type: "response";
+			command: "switch_session";
+			success: true;
+			data: { cancelled: boolean; notices?: readonly RpcResumeNotice[] };
+	  }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
 	| {

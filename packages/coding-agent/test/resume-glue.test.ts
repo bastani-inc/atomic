@@ -17,7 +17,6 @@ import {
 	isResumeError,
 	isResumeNotFoundError,
 	isResumePreconditionError,
-	isResumeSetupHookError,
 	isRetryableResumeError,
 	mapPathForCwd,
 	ResumeCatalogUnavailableError,
@@ -26,7 +25,6 @@ import {
 	ResumePreconditionError,
 	type ResumePreconditionProblem,
 	type ResumePreflightIo,
-	ResumeSetupHookError,
 	rehydrateResumeError,
 	resumeLookupError,
 	resumeNotFoundError,
@@ -55,30 +53,21 @@ const PROBLEM: ResumePreconditionProblem = {
 	fix: "Install Git with `sudo apt-get install git`, then retry.",
 };
 
-const HOOK_FIELDS = {
-	hook: ".atomic/setup",
-	worktree: "/w",
-	envHash: "e".repeat(64),
-	exitStatus: 3,
-	signal: null,
-	logPath: "/w.log",
-	timeoutMs: 1000,
-	elapsedMs: 5,
-};
+const CATALOG_FIELDS = { subject: "session", id: null, storage: "libsql", phase: "catalog-lookup" } as const;
 
 describe("resume error family (#4329)", () => {
 	test("every concrete error is a ResumeError with its stable code and a hint embedded once in the message", () => {
 		const errors: ResumeError[] = [
 			new ResumeNotFoundError({ subject: "session", id: "s1", reason: "shared-miss", storage: "libsql" }),
 			new ResumePreconditionError({ entryPoint: "cli", problems: [PROBLEM] }),
-			new ResumeSetupHookError("setup-hook-failed", HOOK_FIELDS),
+			new ResumeCatalogUnavailableError(CATALOG_FIELDS),
 		];
 		assert.deepEqual(
 			errors.map((error) => [error.name, error.code, error.retryable]),
 			[
 				["ResumeNotFoundError", "not-found", false],
 				["ResumePreconditionError", "preconditions-unmet", false],
-				["ResumeSetupHookError", "setup-hook-failed", false],
+				["ResumeCatalogUnavailableError", "catalog-unavailable", true],
 			],
 		);
 		for (const error of errors) {
@@ -138,22 +127,22 @@ describe("resume error family (#4329)", () => {
 	});
 
 	test("a precondition problem names its checkout, survives a process boundary and shares one fix in the hint (#4584)", () => {
-		const hook: ResumePreconditionProblem = {
-			code: "setup-hook-missing",
-			subject: "setup hook for /work/a (the checkout the session runs in)",
-			why: "restoring /work/a needs a hook",
-			fix: 'Set "resume.setupCommand", then resume again.',
+		const git: ResumePreconditionProblem = {
+			code: "git-unavailable",
+			subject: "Git for /work/a (the checkout the session runs in)",
+			why: "restoring /work/a needs Git",
+			fix: "Install Git, then resume again.",
 			checkout: "/work/a",
 		};
 		const error = new ResumePreconditionError({
 			entryPoint: "cli",
-			problems: [hook, { ...hook, subject: "setup hook for /work/b", checkout: "/work/b" }, PROBLEM],
+			problems: [git, { ...git, subject: "Git for /work/b", checkout: "/work/b" }, PROBLEM],
 		});
 		assert.deepEqual(
 			error.problems.map((problem) => problem.checkout),
 			["/work/a", "/work/b", undefined],
 		);
-		assert.equal(error.hint, `${hook.fix} Then: ${PROBLEM.fix}`);
+		assert.equal(error.hint, `${git.fix} Then: ${PROBLEM.fix}`);
 		const copy = rehydrateResumeError(JSON.parse(JSON.stringify(serializeResumeError(error))));
 		assert.ok(isResumePreconditionError(copy));
 		assert.deepEqual(
@@ -161,23 +150,6 @@ describe("resume error family (#4329)", () => {
 			["/work/a", "/work/b", undefined],
 		);
 		assert.deepEqual(copy.fields, error.fields);
-	});
-
-	test("setup hook failures name the hook and how it ended", () => {
-		const failed = new ResumeSetupHookError("setup-hook-failed", HOOK_FIELDS);
-		assert.match(failed.message, /^The setup hook \.atomic\/setup exited with status 3 in \/w \(setup-hook-failed\)/);
-		assert.match(failed.hint, /\/w\.log/);
-		assert.equal(failed.phase, "setup-hook");
-		const killed = new ResumeSetupHookError("setup-hook-failed", {
-			...HOOK_FIELDS,
-			exitStatus: null,
-			signal: "SIGKILL",
-		});
-		assert.match(killed.message, /was stopped by SIGKILL/);
-		const timedOut = new ResumeSetupHookError("setup-hook-timed-out", HOOK_FIELDS);
-		assert.match(timedOut.message, /did not finish within 1000 ms/);
-		assert.equal(timedOut.timeoutMs, 1000);
-		assert.equal(timedOut.elapsedMs, 5);
 	});
 
 	test("guards accept structural copies from other realms and reject mismatched names or codes", () => {
@@ -192,7 +164,9 @@ describe("resume error family (#4329)", () => {
 		assert.equal(isResumeError({ code: "not-found" }), false);
 		assert.equal(isResumeError(null), false);
 		assert.equal(isResumeError("ResumeNotFoundError"), false);
-		assert.ok(isResumeSetupHookError({ name: "ResumeSetupHookError", code: "setup-hook-timed-out" }));
+		assert.ok(
+			isResumeCatalogUnavailableError({ name: "ResumeCatalogUnavailableError", code: "catalog-unavailable" }),
+		);
 		assert.ok(isResumePreconditionError({ name: "ResumePreconditionError", code: "preconditions-unmet" }));
 	});
 
@@ -214,7 +188,7 @@ describe("resume error family (#4329)", () => {
 				cause,
 			),
 			new ResumePreconditionError({ entryPoint: "switch-session", problems: [PROBLEM] }),
-			new ResumeSetupHookError("setup-hook-timed-out", HOOK_FIELDS),
+			new ResumeCatalogUnavailableError(CATALOG_FIELDS),
 		];
 		for (const original of originals) {
 			const copy = rehydrateResumeError(JSON.parse(JSON.stringify(serializeResumeError(original))));
@@ -248,7 +222,7 @@ describe("resume error family (#4329)", () => {
 		assert.equal(copy.code, "future-code");
 		assert.equal(copy.hint, "h");
 		assert.equal(copy.retryable, true);
-		const mismatched = rehydrateResumeError({ ...form, name: "ResumeNotFoundError", code: "setup-hook-failed" });
+		const mismatched = rehydrateResumeError({ ...form, name: "ResumeNotFoundError", code: "preconditions-unmet" });
 		assert.equal(mismatched instanceof ResumeNotFoundError, false);
 		assert.ok(mismatched instanceof ResumeError);
 		const base = rehydrateResumeError({ ...form, name: "ResumeError", code: "not-found" });
@@ -749,7 +723,6 @@ describe("resume error family edge cases (#4329)", () => {
 			reason: "shared-miss",
 			storage: "libsql",
 		});
-		assert.equal(isResumeSetupHookError(notFound), false);
 		assert.equal(isResumePreconditionError(notFound), false);
 		assert.equal(isResumeCatalogUnavailableError(notFound), false);
 		assert.equal(isResumeNotFoundError({ name: "ResumePreconditionError", code: "not-found" }), false);

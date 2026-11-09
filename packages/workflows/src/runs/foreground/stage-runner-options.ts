@@ -1,7 +1,12 @@
 import {
 	bindSessionWorkspace,
 	type CreateAgentSessionOptions,
+	currentWorktreeRootMappings,
+	getAgentDir,
+	mapRestoredPath,
+	recordRestoredWorktreeContext,
 	resolveWorkspace,
+	resumeStoreDir,
 	SessionManager,
 	type SessionStore,
 	workspaceSessionCwd,
@@ -134,6 +139,16 @@ export async function stripWorkflowOnlyOptions(
 				classification,
 			);
 		}
+	}
+	const manager = sessionOptions.sessionManager;
+	if (manager !== undefined) {
+		const mappings = [...manager.getWorktreeRootMappings(), ...currentWorktreeRootMappings()];
+		const notKept = await recordRestoredWorktreeContext(
+			manager,
+			resumeStoreDir(sessionOptions.agentDir ?? getAgentDir()),
+			mapRestoredPath(cwd, mappings),
+		);
+		if (notKept !== undefined) console.warn(`atomic-workflows: ${notKept.message}`);
 	}
 	return {
 		...sessionOptions,

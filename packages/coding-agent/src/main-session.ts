@@ -505,10 +505,12 @@ export interface OpenCliSessionOptions {
 	/** How long the lookup waits for shared storage to answer. Default {@link RESUME_CATALOG_TIMEOUT_MS}. */
 	readonly catalogTimeoutMs?: number;
 	readonly sessionStorage?: SessionStore | StorageSelection;
-	/** Whether the project at a restored worktree is trusted, which its `.atomic/setup` hook requires. */
+	/** Whether the project at a restored worktree is trusted, which building its blueprints requires. */
 	readonly trusted: (worktree: string) => boolean;
 	readonly chooseDirtyCheckout?: (prompt: DirtyCheckoutPrompt) => Promise<DirtyCheckoutChoice>;
 	readonly io?: ResumePreflightIo;
+	/** `"skip"` in the interactive engine child, whose host already built the blueprints of this resume. */
+	readonly blueprints?: "build" | "skip";
 }
 
 export interface OpenedCliSession {
@@ -560,6 +562,7 @@ export async function openCliSession(
 		...sessionResumeOptions("cli", cwd, options.agentDir, settingsManager, options.trusted),
 		chooseDirtyCheckout: options.chooseDirtyCheckout,
 		io: options.io,
+		blueprints: resuming || parsed.fork !== undefined ? options.blueprints : "skip",
 	}).catch(async (error: unknown) => {
 		await release(error);
 		throw error;
@@ -594,7 +597,7 @@ export async function closeStoreAfter(store: Pick<SessionStore, "close">, failur
 }
 
 /**
- * Whether the CLI trusts the project at a restored worktree, which its `.atomic/setup` hook requires: the
+ * Whether the CLI trusts the project at a restored worktree, which building its blueprints requires: the
  * `--approve`/`--deny` override, else the saved decision for that path, else the default trust setting.
  */
 export function cliResumeTrust(

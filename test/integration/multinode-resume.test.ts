@@ -271,14 +271,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 				[gitless.output?.error?.name, gitless.output?.error?.code],
 				["ResumePreconditionError", "preconditions-unmet"],
 			);
-			assert.deepEqual(gitless.output?.error?.problems, [
-				{ code: "git-unavailable", subject: "git (offline)" },
-				{
-					code: "setup-hook-missing",
-					subject: `setup hook for ${clone} (the checkout the session runs in)`,
-					checkout: clone,
-				},
-			]);
+			assert.deepEqual(gitless.output?.error?.problems, [{ code: "git-unavailable", subject: "git (offline)" }]);
 			assert.deepEqual(gitless.output?.error?.cause, { name: "GitUnavailableError", code: "offline" });
 			assert.equal(existsSync(join(root, "node-c", "agent", "worktree-snapshots")), false);
 
@@ -394,7 +387,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 
 			const opened = await startNode(
 				"sdk-open",
-				{ sessionId: recorded.sessionId, readFile: "README.md", setupCommand: "true" },
+				{ sessionId: recorded.sessionId, readFile: "README.md" },
 				nodeEnv("node-b"),
 			).run;
 
@@ -513,7 +506,6 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 				sessionId: recorded.sessionId,
 				launchCwd: join(root, "prov-node-d", "home"),
 				readPath: join(recordedClone, "provisioned.txt"),
-				setupCommand: "true",
 			};
 
 			const failed = await startNode("resume", resumeArgs, gitless({ PROVISION_FAIL: "1" })).run;

@@ -182,17 +182,26 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		},
 	];
 	faux.setResponses([]);
+	// Fixed-width call IDs: the faux provider's own carry a random suffix whose length varies, and the release tests
+	// compare history sizes to the byte.
+	let calls = 0;
+	const callId = () => ({ id: `call-${String(++calls).padStart(8, "0")}` });
 	const respond = (context: {
 		readonly messages: readonly { readonly role: string; readonly toolName?: string }[];
 	}) => {
 		const last = context.messages.at(-1);
 		const turn = context.messages.filter((message) => message.role === "user").length;
 		if (last?.role === "user")
-			return fauxAssistantMessage([fauxText("x".repeat(1200)), fauxToolCall("lookup", { key: `${turn}` })], {
+			return fauxAssistantMessage(
+				[fauxText("x".repeat(1200)), fauxToolCall("lookup", { key: `${turn}` }, callId())],
+				{
+					stopReason: "toolUse",
+				},
+			);
+		if (last?.toolName === "lookup" && turn >= TURNS)
+			return fauxAssistantMessage([fauxToolCall(WAIT_TOOL, { run: `${turn}` }, callId())], {
 				stopReason: "toolUse",
 			});
-		if (last?.toolName === "lookup" && turn >= TURNS)
-			return fauxAssistantMessage([fauxToolCall(WAIT_TOOL, { run: `${turn}` })], { stopReason: "toolUse" });
 		return fauxAssistantMessage(last?.toolName === WAIT_TOOL ? "ci passed" : "turn done");
 	};
 	const script = (requests: number) => faux.appendResponses(Array.from({ length: requests }, () => respond));

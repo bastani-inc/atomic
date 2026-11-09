@@ -505,13 +505,19 @@ export function createRpcCommandHandler({
 				if (!result.cancelled) {
 					await rebindSession();
 				}
-				return createRpcSuccessResponse(id, "switch_session", result);
+				return createRpcSuccessResponse(id, "switch_session", {
+					...result,
+					notices: runtimeHost.takeResumeNotices(),
+				});
 			}
 
 			case "import_session": {
 				const result = await runtimeHost.importFromJsonl(command.inputPath, command.cwdOverride);
 				if (!result.cancelled) await rebindSession();
-				return createRpcSuccessResponse(id, "import_session", result);
+				return createRpcSuccessResponse(id, "import_session", {
+					...result,
+					notices: runtimeHost.takeResumeNotices(),
+				});
 			}
 
 			case "fork": {

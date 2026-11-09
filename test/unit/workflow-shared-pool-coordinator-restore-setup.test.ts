@@ -1,22 +1,10 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, vi } from "vitest";
-import {
-	bindingOf,
-	computeEnvironmentHash,
-	DEFAULT_RESUME_SETUP_TIMEOUT_MS,
-	isResumePreconditionError,
-	isResumeSetupHookError,
-	ProjectTrustStore,
-	RESUME_SETUP_COMMAND_SETTING,
-	ResumeSetupHookError,
-	readResumeSetupLedger,
-	workspace,
-} from "../../packages/coding-agent/src/index.js";
+import { bindingOf, hostPlatform, ProjectTrustStore, workspace } from "../../packages/coding-agent/src/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -52,8 +40,8 @@ vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
 }));
 
 /**
- * The resume setup hook in the worktrees a worker host restores for pooled children (#4523): bound work whose
- * worktree has a dependency input never installed on the host starts only once the host's hook ran in that worktree.
+ * The blueprint build in the worktrees a worker host restores for pooled children (#4523, #4588): bound work starts
+ * only once the host's build ran in that worktree, and a failing build never fails the child nor removes its worktree.
  */
 useTemporaryAgentDir();
 
@@ -66,10 +54,10 @@ const CLAIM_WINDOW_MS = 3_000;
 type HookMode = "install" | "fail" | "hang";
 type BindingMode = "recorded" | "carried";
 
-/** What a hook does in the worktree it runs in: it logs its worktree, and then installs, fails, or never ends. */
+/** What a setup command does in the worktree it runs in: it logs its worktree, and then installs, fails, or never ends. */
 const HOOK_SCRIPT = `const { appendFileSync, mkdirSync, writeFileSync } = require("node:fs");
 const [log, mode] = process.argv.slice(2);
-appendFileSync(log, "hook " + process.env.ATOMIC_RESUME_WORKTREE + "\\n");
+appendFileSync(log, "hook " + process.cwd() + "\\n");
 if (mode === "install") {
 	mkdirSync("node_modules", { recursive: true });
 	writeFileSync("node_modules/.installed", "");
@@ -100,7 +88,7 @@ const logLines = (path: string): string[] =>
 		.split("\n")
 		.filter((line) => line !== "");
 
-/** The worktrees the hook of `log` ran in, in order. */
+/** The worktrees the setup command of `log` ran in, in order. */
 const hookedWorktrees = (path: string): string[] =>
 	logLines(path)
 		.filter((line) => line.startsWith("hook "))
@@ -257,13 +245,6 @@ async function restoringSatellite(f: Fixture, sandbox: GitSandbox, agentDir: str
 	);
 }
 
-async function workRows(f: Fixture): Promise<(string | number)[][]> {
-	const rows = await sqlPoolStorage(f.hostJournal)!.read((executor) =>
-		executor.all(`SELECT state, generation FROM ${PREFIX}wf_runs_work WHERE root = 'root'`),
-	);
-	return rows.map((row) => [String(row.state), Number(row.generation)]);
-}
-
 test("a worker host started without restore, or without a git, has no restore port, and any other host has the default one (#4523)", () => {
 	const git: WorkerHostGit = { path: "git", env: {} };
 	const options: WorkflowWorkerHostOptions = { journal: { adapter: libsql, prefix: PREFIX }, maxWorkers: 1 };
@@ -287,10 +268,12 @@ for (const mode of ["recorded", "carried"] as const) {
 			const sandbox = new GitSandbox();
 			const clone = await uninstalledClone(sandbox);
 			const { f, snapshots } = await boundRoot(`shared-restore-setup-${mode}`, mode, clone);
-			const envHash = await computeEnvironmentHash(clone);
 			const agentDir = join(f.directory, "host-c", "agent");
 			const storeDir = join(agentDir, "worktree-snapshots");
-			writeHostSettings(agentDir, { resume: { setupCommand: hookCommand(f.directory, f.log, "install") } });
+			writeHostSettings(agentDir, {
+				defaultProjectTrust: "always",
+				resume: { setupCommand: hookCommand(f.directory, f.log, "install") },
+			});
 			const { parent, outcomes } = await fanOut(2)((await boundChild()) as never);
 			const execution = startRoot(f, parent, snapshots);
 			let host: WorkflowWorkerHost | undefined;
@@ -306,18 +289,20 @@ for (const mode of ["recorded", "carried"] as const) {
 				assert.equal(claims.length, 2);
 				const worktrees = claims.map(([, , cwd]) => cwd!);
 				assert.equal(new Set(worktrees).size, 2, "each child runs in a worktree of its own");
-				assert.deepEqual([...hookedWorktrees(f.log)].sort(), [...worktrees].sort(), "the hook ran once in each");
+				assert.deepEqual(
+					[...hookedWorktrees(f.log)].sort(),
+					worktrees.map((worktree) => realpathSync(worktree)).sort(),
+					"the setup command ran once in each",
+				);
 				for (const worktree of worktrees) {
 					assert.ok(worktree.startsWith(join(storeDir, "worktrees")), worktree);
-					const hooked = lines.indexOf(`hook ${worktree}`);
+					const hooked = lines.indexOf(`hook ${realpathSync(worktree)}`);
 					const claimed = lines.findIndex((line) => line.startsWith("host-c ") && line.split(" ")[2] === worktree);
-					assert.ok(hooked >= 0 && hooked < claimed, "the child was claimed after the hook ran in its worktree");
-					assert.ok(existsSync(join(worktree, "node_modules", ".installed")), "the dependencies are installed");
-					const ledger = await readResumeSetupLedger(storeDir, worktree);
-					assert.deepEqual(
-						[ledger?.hook, ledger?.exitStatus, ledger?.envHash],
-						[RESUME_SETUP_COMMAND_SETTING, 0, envHash],
+					assert.ok(
+						hooked >= 0 && hooked < claimed,
+						"the child was claimed after the command ran in its worktree",
 					);
+					assert.ok(existsSync(join(worktree, "node_modules", ".installed")), "the dependencies are installed");
 				}
 				assert.equal((await host.stats()).lastPlacementFailure, undefined);
 			} finally {
@@ -332,17 +317,24 @@ for (const mode of ["recorded", "carried"] as const) {
 }
 
 test.skipIf(WINDOWS)(
-	"a host trusted for its restored worktrees runs the repository's own .atomic/setup in the worktree it restored for a pooled child (#4523)",
+	"a host trusted for its restored worktrees builds the repository's own blueprint in the worktree it restored for a pooled child (#4523)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const clone = await uninstalledClone(sandbox);
-		const setup = join(clone, ".atomic", "setup");
 		sandbox.write(
-			setup,
-			'#!/bin/sh\nmkdir -p node_modules\n: > node_modules/.installed\necho "hook $ATOMIC_RESUME_WORKTREE" >> "$SHARED_POOL_STUB_LOG"\n',
+			join(clone, ".atomic", "blueprint.yaml"),
+			[
+				`runs-on: ${hostPlatform()}`,
+				"maintenance:",
+				"  - name: install",
+				"    run: |",
+				"      mkdir -p node_modules",
+				"      : > node_modules/.installed",
+				'      echo "hook $(pwd -P)" >> "$SHARED_POOL_STUB_LOG"',
+				"",
+			].join("\n"),
 		);
-		chmodSync(setup, 0o755);
-		await sandbox.commitAll(clone, "repository setup hook");
+		await sandbox.commitAll(clone, "repository blueprint");
 		const { f, snapshots } = await boundRoot("shared-restore-setup-repository", "recorded", clone);
 		const agentDir = join(f.directory, "host-c", "agent");
 		const storeDir = join(agentDir, "worktree-snapshots");
@@ -359,13 +351,12 @@ test.skipIf(WINDOWS)(
 			assert.deepEqual(outcomes, ["completed"]);
 			const [claim] = f.claims().filter(([claimer]) => claimer === "host-c");
 			const worktree = claim![2]!;
-			assert.deepEqual(hookedWorktrees(f.log), [worktree]);
+			assert.deepEqual(hookedWorktrees(f.log), [realpathSync(worktree)]);
 			assert.ok(
-				logLines(f.log).indexOf(`hook ${worktree}`) <
+				logLines(f.log).indexOf(`hook ${realpathSync(worktree)}`) <
 					logLines(f.log).findIndex((line) => line.startsWith("host-c ")),
 			);
 			assert.ok(existsSync(join(worktree, "node_modules", ".installed")));
-			assert.equal((await readResumeSetupLedger(storeDir, worktree))?.hook, ".atomic/setup");
 		} finally {
 			await host?.stop();
 			await execution.catch(() => {});
@@ -377,7 +368,7 @@ test.skipIf(WINDOWS)(
 );
 
 test.skipIf(WINDOWS)(
-	"a host given its own restore function runs no setup hook in the worktree it restores for a pooled child (#4523)",
+	"a host given its own restore function runs no blueprint build in the worktree it restores for a pooled child (#4523)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const clone = await uninstalledClone(sandbox);
@@ -385,7 +376,10 @@ test.skipIf(WINDOWS)(
 		const agentDir = join(f.directory, "host-c", "agent");
 		const hooks = join(f.directory, "hooks.log");
 		writeFileSync(hooks, "");
-		writeHostSettings(agentDir, { resume: { setupCommand: hookCommand(f.directory, hooks, "install") } });
+		writeHostSettings(agentDir, {
+			defaultProjectTrust: "always",
+			resume: { setupCommand: hookCommand(f.directory, hooks, "install") },
+		});
 		const restored = join(f.directory, "custom-restored");
 		const { parent, outcomes } = await fanOut(1)((await boundChild()) as never);
 		const execution = startRoot(f, parent, snapshots);
@@ -408,9 +402,9 @@ test.skipIf(WINDOWS)(
 				[["host-c", restored]],
 				"the child ran in the worktree its host's own restore returned",
 			);
-			assert.deepEqual(hookedWorktrees(hooks), [], "no hook ran for it");
+			assert.deepEqual(hookedWorktrees(hooks), [], "no setup command ran for it");
 			assert.equal(existsSync(join(restored, "node_modules")), false);
-			assert.equal(await readResumeSetupLedger(join(agentDir, "worktree-snapshots"), restored), undefined);
+			assert.equal(existsSync(join(agentDir, "worktree-snapshots", "blueprint-builds")), false);
 		} finally {
 			await host?.stop();
 			await execution.catch(() => {});
@@ -422,61 +416,42 @@ test.skipIf(WINDOWS)(
 );
 
 test.skipIf(WINDOWS)(
-	"a pooled child whose host's setup command fails fails typed with the hook's failure as the cause, its worktree gone, and spends no attempt (#4523)",
+	"a pooled child whose host's setup command fails still runs in its restored worktree, which is kept, and the host warns (#4588)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const clone = await uninstalledClone(sandbox);
-		const { f, binding, snapshots } = await boundRoot(
-			"shared-restore-setup-failing",
-			"recorded",
-			clone,
-			CLAIM_WINDOW_MS,
-		);
-		const envHash = await computeEnvironmentHash(clone);
-		const hooks = join(f.directory, "hooks.log");
-		writeFileSync(hooks, "");
-		const agentDir = join(f.directory, "host-b", "agent");
+		const { f, snapshots } = await boundRoot("shared-restore-setup-failing", "recorded", clone);
+		const agentDir = join(f.directory, "host-c", "agent");
 		const storeDir = join(agentDir, "worktree-snapshots");
-		writeHostSettings(agentDir, { resume: { setupCommand: hookCommand(f.directory, hooks, "fail") } });
+		writeHostSettings(agentDir, {
+			defaultProjectTrust: "always",
+			resume: { setupCommand: hookCommand(f.directory, f.log, "fail") },
+		});
 		const { parent, outcomes } = await fanOut(1)((await boundChild()) as never);
 		const execution = startRoot(f, parent, snapshots);
-		const failures: Error[] = [];
-		let host: PoolCoordinator | undefined;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		let host: WorkflowWorkerHost | undefined;
 		try {
-			host = await restoringSatellite(f, sandbox, agentDir, failures);
+			await f.root();
+			host = await startHost(f, agentDir);
 			const result = await execution;
 			assert.equal(result.status, "completed", JSON.stringify(result));
-			const [failure] = outcomes;
-			assert.ok(isWorkspaceRestoreUnavailableError(failure), String(failure));
-			assert.deepEqual(
-				[failure.code, failure.reason, failure.binding.tree],
-				["workspace-restore-unavailable", "no-capable-host", binding.tree],
-			);
-			const cause = failure.cause;
+			assert.deepEqual(outcomes, ["completed"]);
+
+			const [claim] = f.claims().filter(([claimer]) => claimer === "host-c");
+			const worktree = claim![2]!;
+			assert.ok(worktree.startsWith(join(storeDir, "worktrees")), worktree);
+			assert.deepEqual(hookedWorktrees(f.log), [realpathSync(worktree)], "the setup command ran once and failed");
+			assert.equal(existsSync(worktree), true, "the restored worktree was kept");
+			assert.deepEqual(readdirSync(join(storeDir, "worktrees")), [basename(worktree)]);
 			assert.ok(
-				cause instanceof ResumeSetupHookError,
-				`its cause is the hook's failure, as its class: ${String(cause)}`,
+				warn.mock.calls.some(([message]) => String(message).startsWith("atomic-workflows: ")),
+				"the host warned about the failed build",
 			);
-			assert.deepEqual(
-				[cause.code, cause.hook, cause.exitStatus, cause.signal, cause.envHash, cause.timeoutMs],
-				["setup-hook-failed", RESUME_SETUP_COMMAND_SETTING, 3, null, envHash, DEFAULT_RESUME_SETUP_TIMEOUT_MS],
-			);
-			const [worktree, ...again] = hookedWorktrees(hooks);
-			assert.deepEqual(again, [], "the host ran the hook once, and did not restore again while it backed off");
-			assert.equal(cause.worktree, worktree);
-			assert.ok(
-				readFileSync(cause.logPath, "utf8").includes("install failed"),
-				"the hook's output is kept in its log",
-			);
-			assert.equal((await readResumeSetupLedger(storeDir, worktree!))?.exitStatus, 3);
-			assert.deepEqual(readdirSync(join(storeDir, "worktrees")), [], "the restored worktree was removed again");
-			assert.equal(failures.length, 1);
-			assert.ok(isResumeSetupHookError(failures[0]), String(failures[0]));
-			assert.deepEqual(f.claims(), [], "no worker ran it");
-			assert.deepEqual(await workRows(f), [["failed", 0]], "the failed restore was no attempt of the child");
+			assert.equal((await host.stats()).lastPlacementFailure, undefined);
 		} finally {
-			await host?.stopSatellite();
-			await host?.shutdown();
+			warn.mockRestore();
+			await host?.stop();
 			await execution.catch(() => {});
 			await f.close();
 			sandbox.dispose();
@@ -486,39 +461,29 @@ test.skipIf(WINDOWS)(
 );
 
 test.skipIf(WINDOWS)(
-	"a pooled child whose snapshot needs a setup hook that its host cannot run fails typed before anything is restored (#4523)",
+	"a pooled child whose snapshot has dependency inputs still runs on a host with no blueprint or setup command, in the worktree it restored (#4588)",
 	async () => {
 		const sandbox = new GitSandbox();
 		const clone = await uninstalledClone(sandbox);
-		const { f, snapshots } = await boundRoot("shared-restore-setup-missing", "carried", clone, CLAIM_WINDOW_MS);
-		const agentDir = join(f.directory, "host-b", "agent");
+		const { f, snapshots } = await boundRoot("shared-restore-setup-missing", "carried", clone);
+		const agentDir = join(f.directory, "host-c", "agent");
 		writeHostSettings(agentDir, {});
 		const { parent, outcomes } = await fanOut(1)((await boundChild()) as never);
 		const execution = startRoot(f, parent, snapshots);
-		const failures: Error[] = [];
-		let host: PoolCoordinator | undefined;
+		let host: WorkflowWorkerHost | undefined;
 		try {
-			host = await restoringSatellite(f, sandbox, agentDir, failures);
+			await f.root();
+			host = await startHost(f, agentDir);
 			const result = await execution;
 			assert.equal(result.status, "completed", JSON.stringify(result));
-			const [failure] = outcomes;
-			assert.ok(isWorkspaceRestoreUnavailableError(failure), String(failure));
-			assert.equal(failure.reason, "no-capable-host");
-			const cause = failure.cause;
-			assert.ok(isResumePreconditionError(cause), String(cause));
-			assert.deepEqual(
-				[cause.code, cause.entryPoint, cause.problems.map((problem) => problem.code)],
-				["preconditions-unmet", "workflow-resume", ["setup-hook-missing"]],
-			);
-			assert.ok(cause.hint.includes(RESUME_SETUP_COMMAND_SETTING), "its hint names the setting that fixes it");
-			assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false, "nothing was restored on the host");
-			assert.equal(failures.length, 1);
-			assert.ok(isResumePreconditionError(failures[0]), String(failures[0]));
-			assert.deepEqual(f.claims(), [], "no worker ran it");
-			assert.deepEqual(await workRows(f), [["failed", 0]]);
+			assert.deepEqual(outcomes, ["completed"]);
+			const [claim] = f.claims().filter(([claimer]) => claimer === "host-c");
+			const worktree = claim![2]!;
+			assert.ok(worktree.startsWith(join(agentDir, "worktree-snapshots", "worktrees")), worktree);
+			assert.equal(existsSync(worktree), true);
+			assert.equal((await host.stats()).lastPlacementFailure, undefined);
 		} finally {
-			await host?.stopSatellite();
-			await host?.shutdown();
+			await host?.stop();
 			await execution.catch(() => {});
 			await f.close();
 			sandbox.dispose();
@@ -542,7 +507,10 @@ test.skipIf(WINDOWS)(
 		writeFileSync(hooks, "");
 		const agentDir = join(f.directory, "host-b", "agent");
 		const worktrees = join(agentDir, "worktree-snapshots", "worktrees");
-		writeHostSettings(agentDir, { resume: { setupCommand: hookCommand(f.directory, hooks, "hang") } });
+		writeHostSettings(agentDir, {
+			defaultProjectTrust: "always",
+			resume: { setupCommand: hookCommand(f.directory, hooks, "hang") },
+		});
 		const { parent, outcomes } = await fanOut(1)((await boundChild()) as never);
 		const execution = startRoot(f, parent, snapshots);
 		const failures: Error[] = [];

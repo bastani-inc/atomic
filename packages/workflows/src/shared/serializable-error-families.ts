@@ -1,6 +1,7 @@
 import {
 	AgentRehydrateError,
 	BackgroundCompactionError,
+	BlueprintError,
 	DebugError,
 	DecisionError,
 	deserializeGitHubCopilotError,
@@ -17,6 +18,7 @@ import {
 	ResumeError,
 	rehydrateAgentRehydrateError,
 	rehydrateBackgroundCompactionError,
+	rehydrateBlueprintError,
 	rehydrateDebugError,
 	rehydrateDecisionError,
 	rehydrateEditToolError,
@@ -34,6 +36,7 @@ import {
 	rehydrateWriteSelectorError,
 	type SerializedAgentRehydrateError,
 	type SerializedBackgroundCompactionError,
+	type SerializedBlueprintError,
 	type SerializedDebugError,
 	type SerializedDecisionError,
 	type SerializedFileToolError,
@@ -54,6 +57,7 @@ import {
 	SubscriptionError,
 	serializeAgentRehydrateError,
 	serializeBackgroundCompactionError,
+	serializeBlueprintError,
 	serializeDebugError,
 	serializeDecisionError,
 	serializeFileToolError,
@@ -300,6 +304,14 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 			return form;
 		},
 		rehydrate: rehydrateResumeError,
+	}),
+	blueprint: family<BlueprintError, SerializedBlueprintError>({
+		is: instanceOf(BlueprintError),
+		serialize: (error) => {
+			const { cause: _cause, ...form } = serializeBlueprintError(error);
+			return form;
+		},
+		rehydrate: rehydrateBlueprintError,
 	}),
 	"structured-output": family<
 		WorkflowStructuredOutputInferenceError,

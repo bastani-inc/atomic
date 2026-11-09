@@ -198,7 +198,7 @@ describe("resume notices", () => {
 			showStatus: (message: string) => statuses.push(message),
 			showWarning: (message: string) => warnings.push(message),
 			showError: (message: string) => errors.push(message),
-			runtimeHost: { switchSession: () => switchSession() },
+			runtimeHost: { switchSession: () => switchSession(), takeResumeNotices: () => [] },
 		};
 		const handleResumeSession = (
 			InteractiveMode.prototype as unknown as {

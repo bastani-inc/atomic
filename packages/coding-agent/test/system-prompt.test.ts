@@ -405,6 +405,42 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("blueprint ownership (#4588)", () => {
+		test("tells the agent to own .atomic/blueprint.yaml and to fix it after a Partial build (#4588)", () => {
+			const prompt = buildSystemPrompt({ contextFiles: [], skills: [], cwd: process.cwd() });
+
+			expect(prompt).toContain("**Blueprint**");
+			expect(prompt).toContain("`.atomic/blueprint.yaml`");
+			expect(prompt).toContain("Generate it when missing");
+			expect(prompt).toContain("lockfiles, toolchain files");
+			expect(prompt).toContain("Update it in the same change that needs it");
+			expect(prompt).toContain("Record what you learn");
+			expect(prompt).toContain("`knowledge` item");
+			expect(prompt).toContain("never write secrets into the file");
+			expect(prompt).toContain("Edit the global `~/.atomic/agent/blueprint.yaml` only when the user asks");
+			expect(prompt).toContain("Fix it when a build is Partial");
+			expect(prompt).toContain("never run automatically at session start");
+		});
+
+		test("is offered with a file-writing tool and left out without any (#4588)", () => {
+			const withEdit = buildSystemPrompt({
+				selectedTools: ["read", "edit"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+			const readOnly = buildSystemPrompt({
+				selectedTools: ["read", "search"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(withEdit).toContain("**Blueprint**");
+			expect(readOnly).not.toContain("**Blueprint**");
+		});
+	});
+
 	describe("session memory (#4252)", () => {
 		test("points at history:// as the way to recall earlier sessions and workflow runs", () => {
 			const prompt = buildSystemPrompt({ contextFiles: [], skills: [], cwd: process.cwd() });

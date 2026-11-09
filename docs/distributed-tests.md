@@ -177,18 +177,21 @@ n3 the git-less node.
 
 1. **Session.** n1 records a session with uncommitted and untracked files plus an unpushed commit, then is SIGKILLed.
    n2 observes a typed timeout during a database partition, is SIGKILLed during restore, then resumes the session; the
-   suite checks the tree, HEAD, conversation, mapped path, setup count and absence of partial worktrees.
+   suite checks the tree, HEAD, conversation, mapped path, blueprint build count and absence of partial worktrees.
 2. **Two repositories.** n1 runs children bound to two repositories, with completed `ctx.tool` effects, and is
    SIGKILLed mid-step. n2 waits for the real owner lease to expire, checks that a database partition gives a typed run
    lookup timeout, then resumes both children and checks their trees and that each effect ran once.
 3. **Pooled campaign.** A root on n1 runs with `workers: { placement: "shared" }` on the sqld journal, through
    `@bastani/atomic-storage-libsql`, with a table prefix of its own. Worker hosts (`startWorkflowWorkerHost`) serve on
-   n2 and n3 first, and each host's own agent directory sets `resume.setupCommand` to a command that records the
-   worktree it sets up. The root's tree has a lockfile, so a host that restores it runs the hook. Once n2's host holds
+   n2 and n3 first, and each host's own agent directory trusts its restored worktrees and sets `resume.setupCommand`
+   (the deprecated alias for one global maintenance step of the host's blueprint build) to a command that records the
+   worktree it builds. n2's command also exits nonzero, so its blueprint build fails. Once n2's host holds
    the child in a worktree it restored, a capable host joins on n1 and n2's host is SIGKILLed with its workers. The
    suite checks that the child was claimed again and finished on n1's host, in a worktree restored with the recorded
    tree and commit (manifest equality), replaying its completed first step instead of running it again; that each host
-   that restored the child ran the hook exactly once, in that worktree, before the child ran; and that n3's host, which
+   that restored the child built its blueprint exactly once, in that worktree, before the child ran there, and that n2's
+   failing build neither failed the child nor removed its worktree (invariant
+   `pooled-blueprint-built-once-where-restored`); and that n3's host, which
    has no Git and no restore port, never claimed the child, including while the reclaimed one waited: the journal
    records exactly two claims, n2's host's and n1's host's.
 4. **Fork on a third node.** n1 runs a two-stage workflow. After scenario 6 provisioned Git on n3, a fork from the

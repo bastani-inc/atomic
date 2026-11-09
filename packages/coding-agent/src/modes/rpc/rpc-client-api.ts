@@ -29,6 +29,7 @@ import type {
 	RpcModelCatalog,
 	RpcModelRefreshResult,
 	RpcResponse,
+	RpcResumeNotice,
 	RpcSessionInfo,
 	RpcSessionState,
 	RpcSlashCommand,
@@ -263,7 +264,7 @@ export abstract class RpcClientApi {
 		sessionId: string,
 		cwdOverride?: string,
 		sessionDirectory?: string,
-	): Promise<{ cancelled: boolean }> {
+	): Promise<{ cancelled: boolean; notices?: readonly RpcResumeNotice[] }> {
 		return this.data(await this.request({ type: "switch_session", sessionId, cwdOverride, sessionDirectory }));
 	}
 	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {

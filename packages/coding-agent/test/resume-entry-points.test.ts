@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -39,7 +39,6 @@ import {
 	isResumeCatalogTimeoutError,
 	isResumeCatalogUnavailableError,
 	isResumePreconditionError,
-	isResumeSetupHookError,
 	isRetryableResumeError,
 	type ResumePreflightIo,
 	resolveWorkspace,
@@ -53,6 +52,8 @@ import {
 	openCliSession,
 	startupResumeDiagnostics,
 } from "../src/main-session.ts";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 import { appendLineCommand, nodeCommand, shellPath } from "./helpers/hook-commands.ts";
 
 useTemporaryAgentDir();
@@ -97,20 +98,8 @@ async function storeFor(selection: StorageSelection): Promise<SessionStore> {
 }
 
 /** A session recorded "on node A" in `selection` whose last turn snapshotted its checkout. */
-async function recordSessionWithSnapshot(
-	selection: StorageSelection,
-	files: Record<string, string> = {},
-	executable: readonly string[] = [],
-) {
+async function recordSessionWithSnapshot(selection: StorageSelection, files: Record<string, string> = {}) {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", ...files });
-	for (const file of executable) {
-		chmodSync(join(clone, file), 0o755);
-		await sandbox.git(clone, "update-index", "--chmod=+x", file);
-	}
-	if (executable.length > 0) {
-		await sandbox.commitAll(clone, "make hooks executable");
-		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
-	}
 	sandbox.write(join(clone, "README.md"), "edited on node A\n");
 	const store = await storeFor(selection);
 	const manager = await SessionManager.create(store, clone);
@@ -125,18 +114,17 @@ async function recordSessionWithSnapshot(
 }
 
 /** A session recorded "on node A" in `selection`, whose checkout then disappears from this machine. */
-async function sessionRecordedElsewhere(
-	selection: StorageSelection,
-	files: Record<string, string> = {},
-	executable: readonly string[] = [],
-) {
-	const recorded = await recordSessionWithSnapshot(selection, files, executable);
+async function sessionRecordedElsewhere(selection: StorageSelection, files: Record<string, string> = {}) {
+	const recorded = await recordSessionWithSnapshot(selection, files);
 	renameSync(recorded.clone, sandbox.path("node-a-offline"));
 	return recorded;
 }
 
+/** Settings whose `resume.setupCommand` runs in every restored worktree: the alias runs only in a trusted project. */
 const settings = (setupCommand?: string) =>
-	SettingsManager.inMemory(setupCommand === undefined ? {} : { resume: { setupCommand } });
+	SettingsManager.inMemory(
+		setupCommand === undefined ? {} : { defaultProjectTrust: "always", resume: { setupCommand } },
+	);
 
 /** The text `session`'s own read tool returns for `path`. */
 async function readWithTools(session: AgentSession, path: string): Promise<string> {
@@ -209,7 +197,7 @@ describe("openCliSession (#4329)", () => {
 		});
 	});
 
-	test("--session for a session recorded on another node restores its checkout and runs the configured setup", async () => {
+	test("--session for a session recorded on another node restores its checkout and runs the configured setup command", async () => {
 		const selection = sqliteSelection("shared");
 		const { clone, sessionId } = await sessionRecordedElsewhere(selection, { "package-lock.json": "{}\n" });
 		const marker = sandbox.path("setup-ran");
@@ -221,7 +209,7 @@ describe("openCliSession (#4329)", () => {
 			{
 				agentDir: sandbox.path("agent"),
 				sessionStorage: selection,
-				trusted: () => false,
+				trusted: () => true,
 				io,
 			},
 		);
@@ -254,6 +242,71 @@ describe("openCliSession (#4329)", () => {
 });
 
 describe("openCliSession edge cases (#4329)", () => {
+	test("a new CLI session gets no blueprint context, with a repository blueprint or only resume.setupCommand set (#4588)", async () => {
+		sandbox.write(
+			join(sandbox.root, ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: make test\n"),
+		);
+		for (const setupCommand of [undefined, "npm ci"]) {
+			const opened = await openCliSession(parseArgs([]), sandbox.root, settings(setupCommand), {
+				agentDir: sandbox.path("agent"),
+				trusted: () => true,
+			});
+			assert.notEqual(opened, "cancelled");
+			if (opened === "cancelled") return;
+			cleanups.push(() => opened.sessionManager.getSessionStore().close());
+			assert.equal(opened.sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0);
+			assert.deepEqual(opened.notices, []);
+		}
+	});
+
+	test("a session resumed with --continue still gets the blueprint context of its checkout (#4588)", async () => {
+		const { clone } = await sandbox.remoteWithClone("continued", { "README.md": "hello\n" });
+		sandbox.write(
+			join(clone, ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: continue-fact\n"),
+		);
+		const store = await storeFor(sqliteSelection("continue"));
+		const seed = await SessionManager.create(store, clone);
+		await seed.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
+		const opened = await openCliSession(parseArgs(["--continue"]), clone, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: store,
+			trusted: () => true,
+		});
+		assert.notEqual(opened, "cancelled");
+		if (opened === "cancelled") return;
+		const contexts = opened.sessionManager
+			.getBranch()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === "blueprint-context");
+		assert.equal(contexts.length, 1);
+		assert.ok(contexts[0]?.type === "custom_message" && String(contexts[0].content).includes("continue-fact"));
+	});
+
+	test("a session forked with --fork gets the blueprint context of its checkout (#4588)", async () => {
+		const { clone } = await sandbox.remoteWithClone("forked", { "README.md": "hello\n" });
+		sandbox.write(
+			join(clone, ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: fork-fact\n"),
+		);
+		const store = await storeFor(sqliteSelection("fork"));
+		const source = await SessionManager.create(store, clone);
+		await source.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
+		const opened = await openCliSession(parseArgs(["--fork", source.getSessionId()]), clone, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: store,
+			trusted: () => true,
+		});
+		assert.notEqual(opened, "cancelled");
+		if (opened === "cancelled") return;
+		assert.notEqual(opened.sessionManager.getSessionId(), source.getSessionId());
+		const contexts = opened.sessionManager
+			.getBranch()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === "blueprint-context");
+		assert.equal(contexts.length, 1);
+		assert.ok(contexts[0]?.type === "custom_message" && String(contexts[0].content).includes("fork-fact"));
+	});
+
 	test("a resume from a store instance needs no storage preflight", async () => {
 		const store = await storeFor(sqliteSelection("instance"));
 		const io = new CountingIo();
@@ -267,22 +320,84 @@ describe("openCliSession edge cases (#4329)", () => {
 		assert.deepEqual(io.calls, []);
 	});
 
-	test("a restore that needs a setup hook nobody configured fails as a CLI precondition", async () => {
+	test("a restore with no setup command and no blueprint succeeds through the CLI (#4588)", async () => {
 		const selection = sqliteSelection("shared");
 		const { sessionId } = await sessionRecordedElsewhere(selection, { "package-lock.json": "{}\n" });
-		await assert.rejects(
-			openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
+		const opened = await openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: selection,
+			trusted: () => false,
+		});
+		assert.notEqual(opened, "cancelled");
+		if (opened === "cancelled") return;
+		cleanups.push(() => opened.sessionManager.getSessionStore().close());
+		const cwd = opened.sessionManager.getCwd();
+		assert.ok(cwd.startsWith(join(sandbox.path("agent"), "worktree-snapshots", "worktrees")), cwd);
+		assert.ok(existsSync(cwd));
+		assert.deepEqual(
+			opened.notices.map((notice) => notice.type),
+			["info"],
+		);
+	});
+
+	test("the interactive engine child mirrors a resume its host built: one initialize, one context, $ENVRC kept, and a later resume still rebuilds (#4588)", async () => {
+		const selection = sqliteSelection("shared");
+		const counter = sandbox.path("initialize-runs.txt").replaceAll("\\", "/");
+		const { sessionId } = await sessionRecordedElsewhere(selection, {
+			".atomic/blueprint.yaml": forThisHost(
+				[
+					"initialize:",
+					'  - run: echo "FROM_INITIALIZE=yes" >> "$ENVRC"',
+					`  - run: echo run >> ${counter}`,
+					"  - run: exit 7",
+					"knowledge:",
+					"  - name: test",
+					"    contents: make test",
+					"",
+				].join("\n"),
+			),
+		});
+		const resume = async (blueprints?: "build" | "skip") => {
+			const opened = await openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
 				agentDir: sandbox.path("agent"),
 				sessionStorage: selection,
-				trusted: () => false,
-			}),
-			(error: unknown) => {
-				assert.ok(isResumePreconditionError(error));
-				assert.equal(error.entryPoint, "cli");
-				assert.equal(error.problems[0]?.code, "setup-hook-missing");
-				return true;
-			},
+				trusted: () => true,
+				blueprints,
+			});
+			assert.notEqual(opened, "cancelled");
+			if (opened === "cancelled") throw new Error("cancelled");
+			cleanups.push(() => opened.sessionManager.getSessionStore().close());
+			return opened;
+		};
+		const runs = () => (existsSync(counter) ? readFileSync(counter, "utf8").trim().split("\n").length : 0);
+		const contextsOf = (opened: Awaited<ReturnType<typeof resume>>) =>
+			opened.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === "blueprint-context");
+		const envrcFiles = () => {
+			const directory = join(sandbox.path("agent"), "worktree-snapshots", "blueprint-env");
+			return existsSync(directory) ? readdirSync(directory) : [];
+		};
+
+		const host = await resume();
+		assert.equal(runs(), 1);
+		assert.equal(host.notices.filter((notice) => notice.message.startsWith("Partial build: ")).length, 1);
+		assert.equal(contextsOf(host).length, 1);
+		assert.equal(envrcFiles().length, 1);
+
+		const child = await resume("skip");
+		assert.equal(child.sessionManager.getCwd(), host.sessionManager.getCwd());
+		assert.equal(runs(), 1);
+		assert.deepEqual(
+			child.notices.filter((notice) => notice.message.startsWith("Partial build: ")),
+			[],
 		);
+		assert.equal(contextsOf(child).length, 1);
+		assert.equal(envrcFiles().length, 1);
+
+		const later = await resume();
+		assert.equal(runs(), 2);
+		assert.equal(later.notices.filter((notice) => notice.message.startsWith("Partial build: ")).length, 1);
 	});
 
 	test("a resume that fails or is cancelled closes the store it opened, and a close failure never hides the resume failure", async () => {
@@ -301,19 +416,25 @@ describe("openCliSession edge cases (#4329)", () => {
 		const close = vi.spyOn(SqlSessionStore.prototype, "close");
 		cleanups.push(() => close.mockRestore());
 
+		const withoutGit = () => setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
+
+		const git = withoutGit();
 		await assert.rejects(resume(sandbox.root), (error: unknown) => isResumePreconditionError(error));
 		assert.equal(close.mock.calls.length, 1);
+		setWorktreeSnapshotGit(git);
 		assert.equal(await resume(checkout), "cancelled");
 		assert.equal(close.mock.calls.length, 2);
 
 		const diskGone = new Error("disk gone");
 		close.mockRejectedValue(diskGone);
+		withoutGit();
 		await assert.rejects(resume(sandbox.root), (error: unknown) => {
 			assert.ok(isResumePreconditionError(error));
 			assert.equal((error as Error & { cleanupCause?: unknown }).cleanupCause, diskGone);
 			assert.equal(Object.keys(error).includes("cleanupCause"), false);
 			return true;
 		});
+		setWorktreeSnapshotGit(git);
 		await assert.rejects(resume(checkout), (error: unknown) => error === diskGone);
 	});
 
@@ -323,6 +444,7 @@ describe("openCliSession edge cases (#4329)", () => {
 		const store = await storeFor(selection);
 		const close = vi.spyOn(store, "close");
 		cleanups.push(() => close.mockRestore());
+		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 		await assert.rejects(
 			openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
 				agentDir: sandbox.path("agent"),
@@ -363,8 +485,11 @@ describe("resume helpers (#4329)", () => {
 		assert.equal(options.entryPoint, "switch-session");
 		assert.equal(options.launchCwd, "/launch");
 		assert.deepEqual(options.settings, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS);
-		assert.equal(options.setup.command, "npm ci");
-		assert.equal(options.setup.trusted, trusted);
+		assert.deepEqual(options.blueprint, {
+			agentDir: "/home/u/.atomic/agent",
+			setupCommand: "npm ci",
+			trusted,
+		});
 		assert.equal(settings("   ").getResumeSetupCommand(), undefined);
 		assert.equal(SettingsManager.inMemory({ resume: {} }).getResumeSetupCommand(), undefined);
 		assert.equal(settings().getResumeSetupCommand(), undefined);
@@ -483,13 +608,59 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		return { runtime, createRuntime };
 	}
 
-	test("/resume of a session recorded on another node continues in a restored worktree after its setup hook", async () => {
+	test("the isolated host mirrors a /resume its engine prepared: it builds nothing and shows the engine's warnings once (#4588)", async () => {
+		const agentDir = sandbox.path("agent");
+		const counter = sandbox.path("mirror-runs.txt").replaceAll("\\", "/");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
+			".atomic/blueprint.yaml": forThisHost(`maintenance: echo run >> ${counter}\n`),
+		});
+		const { runtime, createRuntime } = await runtimeOn(agentDir, { defaultProjectTrust: "always" });
+		const engineWarning = { type: "warning" as const, message: "Partial build: the engine's own warning" };
+		const client = {
+			onEvent: () => () => {},
+			onGenerationEnded: () => () => {},
+			switchSession: async () => ({ cancelled: false, notices: [engineWarning] }),
+			getState: async () => ({
+				sessionId,
+				thinkingLevel: "off",
+				isStreaming: false,
+				isCompacting: false,
+				steeringMode: "all",
+				followUpMode: "all",
+				autoCompactionEnabled: true,
+				compaction: { state: "idle" },
+				backgroundCompactionEnabled: true,
+				backgroundCompactionThresholdPercent: 75,
+				messageCount: 0,
+				pendingMessageCount: 0,
+				queuedMessagesPaused: false,
+			}),
+			requestInternal: async () => ({ models: [], scopedModels: [] }),
+			getCommands: async () => [],
+			stop: async () => {},
+		};
+		const host = new IsolatedInteractiveRuntime(runtime, createRuntime, client as never);
+
+		assert.deepEqual(await host.switchSession(sessionId), { cancelled: false });
+
+		assert.ok(host.session.sessionManager.getCwd().startsWith(join(agentDir, "worktree-snapshots")));
+		assert.equal(existsSync(counter), false);
+		assert.deepEqual(host.takeResumeNotices(), [engineWarning]);
+		assert.deepEqual(host.takeResumeNotices(), []);
+		assert.equal(
+			host.session.sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length,
+			0,
+		);
+	});
+
+	test("/resume of a session recorded on another node continues in a restored worktree after its setup command", async () => {
 		const agentDir = sandbox.path("agent");
 		const marker = sandbox.path("setup-ran");
 		const { clone, sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
 			"package-lock.json": "{}\n",
 		});
 		const { runtime, createRuntime } = await runtimeOn(agentDir, {
+			defaultProjectTrust: "always",
 			resume: { setupCommand: appendLineCommand(marker, "ran") },
 		});
 
@@ -507,38 +678,69 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.match(await readWithTools(reopened.session, join(clone, "README.md")), /edited on node A/);
 	});
 
-	test("a trusted repository's .atomic/setup runs when the default trust is always", async () => {
+	test("a trusted repository's blueprint maintenance runs when the default trust is always (#4588)", async () => {
 		const agentDir = sandbox.path("agent");
-		const { sessionId } = await sessionRecordedElsewhere(
-			sqliteSelection("shared"),
-			{
-				"package-lock.json": "{}\n",
-				".atomic/setup": "#!/bin/sh\necho hook > ../hook-ran\n",
-			},
-			[".atomic/setup"],
-		);
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
+			".atomic/blueprint.yaml": forThisHost("maintenance: echo hook > ../hook-ran\n"),
+		});
 		const { runtime } = await runtimeOn(agentDir, { defaultProjectTrust: "always" });
 		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
 		const cwd = runtime.session.sessionManager.getCwd();
-		assert.equal(readFileSync(join(cwd, "..", "hook-ran"), "utf8"), "hook\n");
+		assert.equal(readFileSync(join(cwd, "..", "hook-ran"), "utf8").trim(), "hook");
 	});
 
-	test("an untrusted repository's .atomic/setup never runs; the configured command does", async () => {
+	test("an untrusted repository's blueprint and the setup command never run, and the resume still succeeds (#4588)", async () => {
 		const agentDir = sandbox.path("agent");
 		const marker = sandbox.path("command-ran");
-		const { sessionId } = await sessionRecordedElsewhere(
-			sqliteSelection("shared"),
-			{
-				"package-lock.json": "{}\n",
-				".atomic/setup": "#!/bin/sh\necho hook > ../hook-ran\n",
-			},
-			[".atomic/setup"],
-		);
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
+			".atomic/blueprint.yaml": forThisHost("maintenance: echo hook > ../hook-ran\n"),
+		});
 		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: appendLineCommand(marker, "ran") } });
 		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
 		const cwd = runtime.session.sessionManager.getCwd();
+		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots")), cwd);
+		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
 		assert.equal(existsSync(join(cwd, "..", "hook-ran")), false);
-		assert.equal(readFileSync(marker, "utf8"), "ran\n");
+		assert.equal(existsSync(marker), false);
+	});
+
+	test("/resume with a failing initialize step still resumes in the restored worktree, hands its warning over once and gives the agent the failure (#4588)", async () => {
+		const agentDir = sandbox.path("agent");
+		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
+			".atomic/blueprint.yaml": forThisHost(
+				[
+					"initialize:",
+					"  - name: Install toolchain",
+					"    run: exit 7",
+					"maintenance: echo hook > ../hook-ran",
+					"knowledge:",
+					"  - name: test",
+					"    contents: make test",
+					"",
+				].join("\n"),
+			),
+		});
+		const { runtime } = await runtimeOn(agentDir, { defaultProjectTrust: "always" });
+
+		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
+
+		const cwd = runtime.session.sessionManager.getCwd();
+		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots")), cwd);
+		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
+		assert.equal(existsSync(join(cwd, "..", "hook-ran")), false);
+		const notices = runtime.takeResumeNotices();
+		assert.equal(notices.length, 1);
+		assert.equal(notices[0]?.type, "warning");
+		assert.match(notices[0]?.message ?? "", /^Partial build: .*Install toolchain/);
+		assert.deepEqual(runtime.takeResumeNotices(), []);
+		const context = runtime.session.sessionManager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "custom_message" && entry.customType === "blueprint-context" ? [String(entry.content)] : [],
+			);
+		assert.equal(context.length, 1);
+		assert.match(context[0] ?? "", /NOT RUN: the build of this blueprint failed before its maintenance/);
+		assert.match(context[0] ?? "", /make test/);
 	});
 
 	/** Makes the runtime's store look like `adapter` and delays each session load by `delayMs` of timer time. */
@@ -696,7 +898,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(readFileSync(join(restore!.to, "README.md"), "utf8"), "edited on node A\n");
 	});
 
-	test("rehydrating a session in its own checkout here continues there after the checkout changed, with no setup hook", async () => {
+	test("rehydrating a session in its own checkout here continues there after the checkout changed, with nothing built", async () => {
 		const agentDir = sandbox.path("agent");
 		const { clone, sessionId } = await recordSessionWithSnapshot(sqliteSelection("shared"), {
 			"package-lock.json": "{}\n",
@@ -712,8 +914,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 	});
 
 	/**
-	 * Sessions X and Y released on this node. X worked in `repo-b`. Y worked in `repo-a`, which has a lockfile so that
-	 * restoring it would need a setup hook, and edited `repo-b` after X, so `repo-b` now holds Y's edit.
+	 * Sessions X and Y released on this node. X worked in `repo-b`. Y worked in `repo-a`, which has a lockfile, and edited `repo-b` after X, so `repo-b` now holds Y's edit.
 	 */
 	async function sessionsSharingACheckout() {
 		const store = await storeFor(sqliteSelection("shared"));
@@ -777,17 +978,32 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		await assert.rejects(readWithTools(runtime.session, join(repoB, "README.md")), /ENOENT|not found/i);
 	});
 
-	test("rehydrating again after a failed setup hook runs the hook again in the worktree it restored", async () => {
+	test("rehydrating again after a failed setup command builds the worktree it restored again (#4588)", async () => {
 		const agentDir = sandbox.path("agent");
 		const marker = sandbox.path("setup-runs");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), { "package-lock.json": "{}\n" });
-		const failing = await runtimeOn(agentDir, { resume: { setupCommand: nodeCommand("process.exit(3)") } });
-		await assert.rejects(failing.runtime.rehydrate(sessionId), isResumeSetupHookError);
+		const failing = await runtimeOn(agentDir, {
+			defaultProjectTrust: "always",
+			resume: { setupCommand: nodeCommand("process.exit(3)") },
+		});
+		const failed = await failing.runtime.rehydrate(sessionId);
+		const restored = failed.sessionManager.getCwd();
+		assert.ok(restored.startsWith(join(agentDir, "worktree-snapshots")));
+		assert.equal(existsSync(marker), false);
+		const warnings = failing.runtime.takeResumeNotices();
+		assert.equal(warnings.length, 2);
+		assert.ok(warnings.every((notice) => notice.type === "warning"));
+		assert.ok(warnings[0]?.message.startsWith("Blueprint build FAILED: "));
+		assert.ok(warnings[1]?.message.startsWith("Deprecation warning: "));
+		assert.deepEqual(failing.runtime.takeResumeNotices(), []);
 
-		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: appendLineCommand(marker, "ran") } });
+		const { runtime } = await runtimeOn(agentDir, {
+			defaultProjectTrust: "always",
+			resume: { setupCommand: appendLineCommand(marker, "ran") },
+		});
 		const woken = await runtime.rehydrate(sessionId);
 
-		assert.ok(woken.sessionManager.getCwd().startsWith(join(agentDir, "worktree-snapshots")));
+		assert.equal(woken.sessionManager.getCwd(), restored);
 		assert.equal(readFileSync(marker, "utf8"), "ran\n");
 	});
 
@@ -808,21 +1024,19 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		return { clone, sessionId, runtime, worktree };
 	}
 
-	test("rehydrating after a failed setup hook, with none configured now, fails as a rehydrate precondition", async () => {
+	test("rehydrating after a failed setup command, with none configured now, still continues in the restored worktree (#4588)", async () => {
 		const agentDir = sandbox.path("agent");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), { "package-lock.json": "{}\n" });
-		const failing = await runtimeOn(agentDir, { resume: { setupCommand: nodeCommand("process.exit(3)") } });
-		await assert.rejects(failing.runtime.rehydrate(sessionId), isResumeSetupHookError);
+		const failing = await runtimeOn(agentDir, {
+			defaultProjectTrust: "always",
+			resume: { setupCommand: nodeCommand("process.exit(3)") },
+		});
+		const failed = await failing.runtime.rehydrate(sessionId);
 
 		const { runtime } = await runtimeOn(agentDir, {});
+		const woken = await runtime.rehydrate(sessionId);
 
-		await assert.rejects(
-			runtime.rehydrate(sessionId),
-			(error: unknown) =>
-				isResumePreconditionError(error) &&
-				error.entryPoint === "rehydrate" &&
-				error.problems.map((problem) => problem.code).join() === "setup-hook-missing",
-		);
+		assert.equal(woken.sessionManager.getCwd(), failed.sessionManager.getCwd());
 	});
 
 	test("rehydrating a session in a worktree this node restored needs no Git", async () => {
@@ -919,7 +1133,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 });
 
 describe("createAgentSession with a session recorded on another node (#4329)", () => {
-	test("continues in a restored worktree after its setup hook", async () => {
+	test("continues in a restored worktree after its setup command", async () => {
 		const agentDir = sandbox.path("agent");
 		const marker = sandbox.path("setup-ran");
 		const selection = sqliteSelection("shared");
@@ -1027,41 +1241,33 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		assert.equal(readFileSync(join(bound.worktree, "README.md"), "utf8"), "changed after the snapshot\n");
 	});
 
-	test("a trusted repository's .atomic/setup runs for the restored worktree", async () => {
+	test("a trusted repository's blueprint maintenance runs for the restored worktree (#4588)", async () => {
 		const marker = sandbox.path("setup-ran");
 		const selection = sqliteSelection("shared");
-		const { sessionId } = await sessionRecordedElsewhere(
-			selection,
-			{ "package-lock.json": "{}\n", ".atomic/setup": `#!/bin/sh\necho hook >> "${shellPath(marker)}"\n` },
-			[".atomic/setup"],
-		);
+		const { sessionId } = await sessionRecordedElsewhere(selection, {
+			".atomic/blueprint.yaml": forThisHost(`maintenance: echo hook >> "${shellPath(marker)}"\n`),
+		});
 		const store = await storeFor(selection);
 		await createOn({
 			settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
 			sessionManager: await SessionManager.open(store, sessionId),
 		});
-		assert.equal(readFileSync(marker, "utf8"), "hook\n");
+		assert.equal(readFileSync(marker, "utf8").trim(), "hook");
 	});
 
-	test("an untrusted repository's .atomic/setup never runs: with no setup command the resume stops before restoring", async () => {
+	test("an untrusted repository's blueprint never runs, and the session still starts in the restored worktree (#4588)", async () => {
 		const marker = sandbox.path("setup-ran");
 		const selection = sqliteSelection("shared");
-		const { sessionId } = await sessionRecordedElsewhere(
-			selection,
-			{ "package-lock.json": "{}\n", ".atomic/setup": `#!/bin/sh\necho hook >> "${shellPath(marker)}"\n` },
-			[".atomic/setup"],
-		);
+		const { sessionId } = await sessionRecordedElsewhere(selection, {
+			".atomic/blueprint.yaml": forThisHost(`maintenance: echo hook >> "${shellPath(marker)}"\n`),
+		});
 		const store = await storeFor(selection);
-		await assert.rejects(
-			createOn({ settingsManager: settings(), sessionManager: await SessionManager.open(store, sessionId) }),
-			(error: unknown) => {
-				assert.ok(isResumePreconditionError(error));
-				assert.equal(error.problems[0]?.code, "setup-hook-missing");
-				return true;
-			},
-		);
+		const session = await createOn({
+			settingsManager: settings(),
+			sessionManager: await SessionManager.open(store, sessionId),
+		});
+		assert.ok(session.sessionManager.getCwd().startsWith(sandbox.path("agent", "worktree-snapshots", "worktrees")));
 		assert.equal(existsSync(marker), false);
-		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 	});
 
 	test("an invalid storage selection fails before anything about a session recorded elsewhere is prepared", async () => {

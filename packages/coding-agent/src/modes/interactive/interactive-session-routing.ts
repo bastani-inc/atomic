@@ -346,7 +346,10 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus("Resumed session");
-		showSessionNotices(this, worktreeRestoreNotices(this.sessionManager, resumeStartedAt));
+		showSessionNotices(this, [
+			...worktreeRestoreNotices(this.sessionManager, resumeStartedAt),
+			...this.runtimeHost.takeResumeNotices(),
+		]);
 		this.startSessionRecovery("resume");
 		return result;
 	} catch (error: unknown) {

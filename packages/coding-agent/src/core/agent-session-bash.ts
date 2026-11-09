@@ -1,4 +1,5 @@
 import { getShellEnv } from "../utils/shell.ts";
+import { shellCommandPrefixFor } from "./agent-session-blueprint-environment.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { BashResult } from "./bash-executor.ts";
 import { executeBashWithOperations } from "./bash-executor.ts";
@@ -34,7 +35,7 @@ async function executeBashOperation(
 	controllers.add(abortController);
 	this._bashAbortControllers.set(requestKey, controllers);
 	// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
-	const prefix = this.settingsManager.getShellCommandPrefix();
+	const prefix = shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
 	const shellPath = this.settingsManager.getShellPath();
 	const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 	const env = { ...getShellEnv() };

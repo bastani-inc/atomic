@@ -189,7 +189,10 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 			this.clearFirstRunOnboardingUi();
 		}
 		this.showStatus(`Session imported from: ${inputPath}`);
-		showSessionNotices(this, worktreeRestoreNotices(this.sessionManager, importStartedAt));
+		showSessionNotices(this, [
+			...worktreeRestoreNotices(this.sessionManager, importStartedAt),
+			...this.runtimeHost.takeResumeNotices(),
+		]);
 	};
 
 	try {

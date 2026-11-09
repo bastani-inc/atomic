@@ -9,11 +9,12 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
-import { prepareSessionResume, ResumePreconditionError } from "../src/index.ts";
+import { prepareSessionResume, WorkspaceRestoreError } from "../src/index.ts";
 
 useTemporaryAgentDir();
 
 const removal = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
+const recordingFailure = new Error("session store is down");
 
 vi.mock("../src/core/worktree-snapshot/restore.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/core/worktree-snapshot/restore.ts")>();
@@ -34,10 +35,11 @@ beforeEach(() => {
 afterEach(async () => {
 	while (cleanups.length > 0) await cleanups.pop()?.();
 	removal.failure = undefined;
+	vi.restoreAllMocks();
 	sandbox.dispose();
 });
 
-test("a rollback that fails is kept as the cleanup cause of the missing-hook error, not in its place (#4329)", async () => {
+test("a rollback that fails is kept as the cleanup cause of the error that triggered it, not in its place (#4329)", async () => {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
 	sandbox.write(join(clone, "README.md"), "edited\n");
 	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
@@ -56,20 +58,20 @@ test("a rollback that fails is kept as the cleanup cause of the missing-hook err
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 	renameSync(clone, sandbox.path("gone"));
 	removal.failure = new Error("worktree is busy");
+	vi.spyOn(manager, "appendWorktreeSnapshot").mockRejectedValue(recordingFailure);
 
 	const error = await prepareSessionResume(manager, {
 		entryPoint: "cli",
 		launchCwd: sandbox.root,
 		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 		storeDir: sandbox.path("host"),
-		setup: { command: undefined, trusted: () => true },
+		blueprint: { agentDir: sandbox.path("agent"), trusted: () => true },
 	}).then(
-		() => assert.fail("the repository has no setup hook"),
+		() => assert.fail("recording the restore failed"),
 		(failure: Error) => failure,
 	);
 
-	assert.ok(error instanceof ResumePreconditionError);
-	assert.equal(error.problems[0]?.code, "setup-hook-missing");
+	assert.equal(error, recordingFailure);
 	assert.equal((error as Error & { cleanupCause?: unknown }).cleanupCause, removal.failure);
 	assert.equal(Object.keys(error).includes("cleanupCause"), false);
 });
@@ -105,23 +107,20 @@ test("a rollback of two restored worktrees that both fail keeps both causes toge
 	}
 	renameSync(outer, sandbox.path("outer-gone"));
 	removal.failure = new Error("worktree is busy");
+	vi.spyOn(manager, "appendWorktreeSnapshot").mockRejectedValue(recordingFailure);
 
 	const error = await prepareSessionResume(manager, {
 		entryPoint: "cli",
 		launchCwd: sandbox.root,
 		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 		storeDir: sandbox.path("host"),
-		setup: { command: undefined, trusted: () => true },
+		blueprint: { agentDir: sandbox.path("agent"), trusted: () => true },
 	}).then(
-		() => assert.fail("the repositories have no setup hook"),
+		() => assert.fail("recording the restores failed"),
 		(failure: Error) => failure,
 	);
 
-	assert.ok(error instanceof ResumePreconditionError);
-	assert.deepEqual(
-		error.problems.map((problem) => problem.checkout),
-		clones,
-	);
+	assert.equal(error, recordingFailure);
 	const cause = (error as Error & { cleanupCause?: unknown }).cleanupCause;
 	assert.ok(cause instanceof AggregateError);
 	assert.deepEqual(cause.errors, [removal.failure, removal.failure]);
@@ -152,13 +151,16 @@ test("a restore of another checkout whose removal also fails is skipped with bot
 	}
 	renameSync(clones[1]!, `${clones[1]}-gone`);
 	removal.failure = new Error("worktree is busy");
+	vi.spyOn(manager, "appendWorktreeSnapshot").mockRejectedValue(
+		new WorkspaceRestoreError("snapshot-not-found", { snapshotId: "gone", target: clones[1]! }),
+	);
 
 	const prepared = await prepareSessionResume(manager, {
 		entryPoint: "cli",
 		launchCwd: clones[0]!,
 		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 		storeDir: sandbox.path("host"),
-		setup: { command: undefined, trusted: () => true },
+		blueprint: { agentDir: sandbox.path("agent"), trusted: () => true },
 	});
 
 	assert.equal(prepared.status, "ready");

@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
+import {
+	hostPlatform,
+	setUpResumedBlueprints,
+	withWorktreeRootMappings,
+} from "../../packages/coding-agent/src/index.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import { isReopenableSession } from "../../packages/workflows/src/shared/session-transcript.js";
 
@@ -62,4 +70,113 @@ test("transcript validation does not create missing or blank sessions", async ()
 	assert.equal(await isReopenableSession(store, blank.getSessionId()), false);
 	await blank.appendMessage({ role: "user", content: "usable", timestamp: Date.now() });
 	assert.equal(await isReopenableSession(store, blank.getSessionId()), true);
+});
+
+test("a stage that starts in a worktree a resume restored is told that worktree's blueprint context once (#4588)", async () => {
+	const sandbox = mkdtempSync(join(tmpdir(), "stage-blueprint-context-"));
+	try {
+		const agentDir = join(sandbox, "agent");
+		const storeDir = join(agentDir, "worktree-snapshots");
+		const root = join(storeDir, "worktrees", "abc-123");
+		mkdirSync(join(root, ".atomic"), { recursive: true });
+		writeFileSync(
+			join(root, ".atomic", "blueprint.yaml"),
+			`runs-on: ${hostPlatform()}\ninitialize: exit 7\nknowledge:\n  - name: test\n    contents: make stage-test\n`,
+		);
+		const resumed = await setUpResumedBlueprints({
+			restored: [{ root, remotes: [] }],
+			config: {
+				agentDir,
+				storeDir,
+				trusted: () => true,
+				homeDir: sandbox,
+				environment: { PATH: process.env.PATH ?? "" },
+			},
+		});
+		assert.equal(resumed.notices.length, 1);
+
+		const meta = { runId: "run", stageId: "stage", stageName: "build" };
+		const store = new MemorySessionStore();
+		const options = { sessionStore: store, agentDir, cwd: join(root, "packages", "app") };
+		const stage = await stripWorkflowOnlyOptions(options, undefined, meta);
+		const contexts = (manager: SessionManager | undefined) =>
+			manager
+				?.getBranch()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === "blueprint-context") ?? [];
+		assert.equal(contexts(stage.sessionManager).length, 1);
+		const message = contexts(stage.sessionManager)[0];
+		assert.ok(message?.type === "custom_message" && String(message.content).includes("make stage-test"));
+		assert.ok(message?.type === "custom_message" && String(message.content).includes("NOT RUN"));
+
+		const recorded = join(sandbox, "recorded-on-node-a");
+		const mapped = await withWorktreeRootMappings(
+			[{ from: recorded, to: root, snapshotId: "snapshot", tree: "tree", restoredAt: "2026-11-09T00:00:00.000Z" }],
+			() => stripWorkflowOnlyOptions({ sessionStore: store, agentDir, cwd: join(recorded, "src") }, undefined, meta),
+		);
+		assert.equal(contexts(mapped.sessionManager).length, 1);
+
+		const elsewhere = await stripWorkflowOnlyOptions(
+			{ sessionStore: store, agentDir, cwd: sandbox },
+			undefined,
+			meta,
+		);
+		assert.equal(contexts(elsewhere.sessionManager).length, 0);
+	} finally {
+		rmSync(sandbox, { recursive: true, force: true });
+	}
+});
+
+test("a stage without any session store or directory starts without a session manager and without blueprint context (#4588)", async () => {
+	const stage = await stripWorkflowOnlyOptions({ cwd: process.cwd() }, undefined, {
+		runId: "run",
+		stageId: "stage",
+		stageName: "build",
+	});
+	assert.equal(stage.sessionManager, undefined);
+});
+
+test("a stage in a restored worktree still starts when its kept blueprint context cannot be read (#4588)", async () => {
+	const sandbox = mkdtempSync(join(tmpdir(), "stage-blueprint-unreadable-"));
+	try {
+		const agentDir = join(sandbox, "agent");
+		const storeDir = join(agentDir, "worktree-snapshots");
+		const root = join(storeDir, "worktrees", "abc-123");
+		mkdirSync(join(root, ".atomic"), { recursive: true });
+		writeFileSync(
+			join(root, ".atomic", "blueprint.yaml"),
+			`runs-on: ${hostPlatform()}\nknowledge:\n  - name: test\n    contents: make test\n`,
+		);
+		await setUpResumedBlueprints({
+			restored: [{ root, remotes: [] }],
+			config: {
+				agentDir,
+				storeDir,
+				trusted: () => true,
+				homeDir: sandbox,
+				environment: { PATH: process.env.PATH ?? "" },
+			},
+		});
+		const kept = join(storeDir, "blueprint-context");
+		for (const name of readdirSync(kept)) {
+			rmSync(join(kept, name));
+			mkdirSync(join(kept, name));
+		}
+		const warnings: string[] = [];
+		const warn = vi.spyOn(console, "warn").mockImplementation((message: string) => void warnings.push(message));
+		try {
+			const stage = await stripWorkflowOnlyOptions(
+				{ sessionStore: new MemorySessionStore(), agentDir, cwd: root },
+				undefined,
+				{ runId: "run", stageId: "stage", stageName: "build" },
+			);
+			assert.ok(stage.sessionManager);
+			assert.equal(stage.sessionManager.getBranch().filter((entry) => entry.type === "custom_message").length, 0);
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0] ?? "", /^atomic-workflows: .*could not be read/);
+		} finally {
+			warn.mockRestore();
+		}
+	} finally {
+		rmSync(sandbox, { recursive: true, force: true });
+	}
 });
