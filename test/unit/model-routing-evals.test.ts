@@ -262,3 +262,27 @@ test("shipped Claude Fable 5.2 evidence reaches every catalog route without Fabl
 	}
 	assert.doesNotMatch(catalogEvidence(catalog, ["anthropic/claude-fable-5-1"]), /^\| claude-fable-5-2/mu);
 });
+
+test("shipped new-family AA evidence reaches the catalog routes that name each model", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	const routes: ReadonlyArray<readonly [id: string, slug: string, releaseDate: string]> = [
+		["moonshotai/kimi-k3.1-pro", "kimi-k3-1-pro", "2026-10-23"],
+		["openrouter/meta/muse-wonder", "muse-wonder", "2026-10-12"],
+		["openrouter/meta/muse-ember", "muse-ember", "2026-11-09"],
+		["openrouter/meta/muse-spark-open", "muse-spark-open", "2026-10-15"],
+		["minimax/MiniMax-M3.1-Flash", "minimax-m3-1-flash", "2026-10-19"],
+		["xiaomi/mimo-v2.6-flash", "mimo-v2-6-flash", "2026-09-21"],
+		["openrouter/inclusionai/ling-3.1-flash", "ling-3-1-flash", "2026-10-22"],
+		["opencode/inkling-2-small-free", "inkling-2-small", "2026-11-05"],
+		["mistral/mistral-large-4", "mistral-large-4", "2026-10-29"],
+		["openrouter/nvidia/nemotron-3.5-super-vl", "nemotron-3-5-super-vl", "2026-10-15"],
+		["openrouter/upstage/solar-mini4", "solar-mini4", "2026-09-22"],
+	];
+	for (const [id, slug, releaseDate] of routes) {
+		assert.match(catalogEvidence(catalog, [id]), new RegExp(`^\\| ${slug} \\|`, "mu"), id);
+		assert.equal(candidateReleaseDate(catalog, id), releaseDate, id);
+	}
+});

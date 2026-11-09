@@ -35,7 +35,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	assert.doesNotMatch(evals, /^## Grok 4\.7$/mu);
 	assert.match(
 		evals,
-		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 additions; earlier rows retain their snapshot dates below\)\.$/mu,
+		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 and other new-model additions; earlier rows retain their snapshot dates below\)\.$/mu,
 	);
 	assert.match(evals, /^\| slug \| Model \| Release date \| idx \| Brief \| Gn \| Auto \| TB4 \|/mu);
 	assert.match(
@@ -63,7 +63,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
 	const caption =
-		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, and (\d+) Claude Fable 5\.2 rows accessed 2026-11-09\.$/mu.exec(
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, (\d+) Claude Fable 5\.2 rows accessed 2026-11-09, and (\d+) rows for 13 other new model families accessed 2026-11-09\.$/mu.exec(
 			evals,
 		);
 	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
@@ -75,7 +75,8 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 			Number(caption[4]) +
 			Number(caption[5]) +
 			Number(caption[6]) +
-			Number(caption[7]),
+			Number(caption[7]) +
+			Number(caption[8]),
 	);
 	assert.ok(aaRows.length > 500, "the catalog covers the whole leaderboard, not a top-N excerpt");
 	const aaHeaderCells = evals.match(/^\| slug \|.*$/mu)![0].split("|").length;
@@ -429,4 +430,46 @@ test("Claude Fable 5.2 published results keep score, qualifier and source", asyn
 		/\[system card\]\(https:\/\/www\.anthropic\.com\/document\/claude-fable-5-2-mythos-5-2-system-card\)/u,
 	);
 	assert.match(sources, /vendor-reported/u);
+});
+
+const OTHER_NEW_FAMILY_AA_ROWS: readonly string[] = [
+	"| kimi-k3-1-pro | Kimi K3.1 Pro | 2026-10-23 | ∅ | 58.7 | 67.9 | 73.3 | 67.2 | 60.8 | 52.5 | 31.4 | 24.6 | ∅ | ∅ | 86.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 83.9 | ∅ | ∅ | 38.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 33.3 | ∅ |",
+	"| muse-wonder | Muse Wonder (max) | 2026-10-12 | ∅ | 57.9 | 63.5 | 68.1 | 52 | 60.3 | 50.1 | 30.6 | 28.3 | ∅ | ∅ | 80.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-wonder-high | Muse Wonder (high) | 2026-10-12 | ∅ | 55.5 | ∅ | 67.2 | 38.4 | ∅ | ∅ | 29.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 83.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-ember | Muse Ember (max) | 2026-11-09 | ∅ | 51.1 | ∅ | 68.1 | 40.9 | ∅ | ∅ | 22.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-ember-xhigh | Muse Ember (xhigh) | 2026-11-09 | ∅ | 51.3 | ∅ | 66.7 | 35.4 | ∅ | ∅ | 22.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-spark-open | Muse Spark Open (xhigh) | 2026-10-15 | ∅ | 38.9 | 45.1 | 49.7 | 8.1 | 58.4 | 43.9 | 18.6 | 14.9 | ∅ | ∅ | 78.3 | ∅ | 89 | 76.4 | ∅ | ∅ | 80.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 27.8 | ∅ |",
+	"| minimax-m3-1-flash | MiniMax-M3.1-Flash | 2026-10-19 | ∅ | 48.8 | 48.3 | 72.5 | 25.8 | 53.4 | 48 | 20.8 | 22.3 | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 79.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 27.8 | ∅ |",
+	"| mimo-v2-6-flash | MiMo-V2.6-Flash | 2026-09-21 | ∅ | 49.3 | 55.7 | 64.1 | 22.7 | 51.3 | 35.1 | 9 | 12 | ∅ | ∅ | 74.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 73.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 52.8 | ∅ |",
+	"| ling-3-1-flash-1019 | Ling 3.1 Flash 1019 | 2026-10-22 | ∅ | 51.1 | 57.6 | 67.5 | 32.8 | 56.8 | 43.5 | 12.6 | 26 | ∅ | ∅ | 82.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| ling-3-1-flash | Ling 3.1 Flash | 2026-10-01 | ∅ | 44.8 | 56.3 | 61.7 | 33.3 | 54.1 | 39.4 | 10 | 18 | ∅ | ∅ | 83 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| inkling-2-small | Inkling 2 Small | 2026-11-05 | ∅ | 51.3 | 56.5 | 45.6 | 13.1 | 52.3 | 44.1 | 25.2 | ∅ | ∅ | ∅ | 83.3 | ∅ | ∅ | 81.3 | ∅ | ∅ | 81.6 | ∅ | 40.4 | 51.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 46.8 |",
+	"| mistral-large-4 | Mistral Large 4 (high) | 2026-10-29 | ∅ | 42.4 | ∅ | 57.8 | 24.7 | ∅ | ∅ | 17.6 | 10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| mistral-large-4-medium | Mistral Large 4 (medium) | 2026-10-29 | ∅ | 34.4 | ∅ | 52.8 | 23.2 | ∅ | ∅ | 16.8 | 11.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| tencent-hy4 | Tencent Hy4 | 2026-11-03 | ∅ | 47.3 | ∅ | 65.6 | 37.4 | ∅ | ∅ | 21.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| reflection-beam | Beam 1.0 | 2026-10-16 | ∅ | 23.8 | 33.9 | 48.5 | 3 | 48.5 | 34.7 | 11.6 | 13.1 | ∅ | ∅ | 78 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| nemotron-3-5-super-vl | Nemotron 3.5 Super VL | 2026-10-15 | ∅ | 24.9 | 33.1 | 14.8 | 0 | 47.8 | 30.7 | 8 | 10.6 | ∅ | ∅ | 69 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 83.3 | ∅ |",
+	"| solar-mini4 | Solar Mini 4 | 2026-09-22 | ∅ | 18.4 | 29.6 | 22.3 | 1 | 47.6 | 25.8 | 5 | 1.4 | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+];
+
+test("other new-family AA rows keep published values and leave revised-version columns unknown", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const revisedVersionColumns = ["idx", "OA", "ONH", "Omni", "Harvey", "MLCR"];
+	const revisedIndexes = revisedVersionColumns.map((column) => aa.header.indexOf(column));
+	for (const line of OTHER_NEW_FAMILY_AA_ROWS) {
+		assert.ok(evals.split("\n").includes(line), `${line.split("|")[1]!.trim()} row is present verbatim`);
+		const cells = line
+			.split("|")
+			.slice(1, -1)
+			.map((cell) => cell.trim());
+		assert.equal(cells.length, aa.header.length, `${cells[0]} has one cell per column`);
+		for (const index of revisedIndexes) assert.equal(cells[index], "∅", `${cells[0]} ${aa.header[index]}`);
+		assert.equal(cells[2]?.match(/^\d{4}-\d{2}-\d{2}$/u)?.length, 1, `${cells[0]} carries its release date`);
+		assert.ok(
+			evals.includes(`(https://artificialanalysis.ai/models/${cells[0]})`),
+			`${cells[0]} cites its model page`,
+		);
+	}
+	assert.equal(OTHER_NEW_FAMILY_AA_ROWS.length, 17);
 });
