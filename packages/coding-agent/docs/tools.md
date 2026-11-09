@@ -151,6 +151,8 @@ Shell internal-URL expansion only touches URLs that stand in plain shell words. 
 
 The `powershell` tool uses PowerShell single-quoted literals for resolved paths, doubling both ASCII apostrophes and PowerShell's smart single-quote delimiters (U+2018–U+201B). Bash keeps POSIX quoting, including when Bash runs on Windows. SDK adapters using `createBashToolDefinition` with custom PowerShell operations can set `shellDialect: "powershell"` for generated path literals; this option does not select the executable or rewrite deliberate shell code.
 
+On Windows, the `powershell` tool prefers PowerShell 7 and falls back to Windows PowerShell 5.1. A successful native command such as `git push 2>&1 | Select-Object -Last 3` reports success even when Windows PowerShell 5.1 turns its redirected stderr into error records. Failed final statements still report failure; use an explicit `exit <code>` when your script needs to return a specific code.
+
 Configured command prefixes and SDK `spawnHook` rewrites remain executable shell syntax, not a sandbox. Balanced setup commands such as quoted exports remain supported. A prefix that leaves a quote, substitution, or heredoc open across the following command can invalidate the generated path quoting; automatic URL expansion does not validate that composed shell context. Do not combine URL expansion with such wrappers. Use structured `cwd` and `env` for path data instead.
 
 ## `kill`
