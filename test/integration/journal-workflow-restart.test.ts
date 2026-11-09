@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { build } from "esbuild";
-import { afterAll, test } from "vitest";
+import { test } from "vitest";
+import { useBundledNodeFixture } from "../helpers/bundled-node-fixture.js";
 import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
 import {
 	bunExecutable,
@@ -20,32 +19,7 @@ const FIXTURE = join(ROOT, "test/fixtures/journal-workflow-restart.ts");
 const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
 const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
 
-let bundleDirectory: string | undefined;
-let nodeFixture: Promise<string> | undefined;
-
-function bundledNodeFixture(): Promise<string> {
-	nodeFixture ??= (async () => {
-		const parent = join(ROOT, "node_modules", ".cache");
-		mkdirSync(parent, { recursive: true });
-		bundleDirectory = mkdtempSync(join(parent, "journal-workflow-restart-"));
-		const outfile = join(bundleDirectory, "fixture.mjs");
-		await build({
-			entryPoints: [FIXTURE],
-			outfile,
-			bundle: true,
-			platform: "node",
-			format: "esm",
-			packages: "external",
-			logLevel: "warning",
-		});
-		return outfile;
-	})();
-	return nodeFixture;
-}
-
-afterAll(() => {
-	if (bundleDirectory !== undefined) rmSync(bundleDirectory, { recursive: true, force: true });
-});
+const bundledNodeFixture = useBundledNodeFixture(FIXTURE);
 
 for (const runtime of ["node", "bun"] as const) {
 	test(
