@@ -429,6 +429,33 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
+	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
+		const skillCreatorRoot = "packages/workflows/skills/skill-creator/";
+		const executableScripts = new Set(
+			[
+				"aggregate_benchmark",
+				"generate_report",
+				"improve_description",
+				"package_skill",
+				"quick_validate",
+				"run_eval",
+				"run_loop",
+			].map((name) => `scripts/${name}.py`),
+		);
+		const modes = new Map(
+			trackedModes(skillCreatorRoot).map((entry) => {
+				const [mode, path] = entry.split(" ");
+				return [path.slice(skillCreatorRoot.length), mode] as const;
+			}),
+		);
+		for (const script of executableScripts) {
+			assert.ok(modes.has(script), `untracked skill-creator script: ${script}`);
+		}
+		for (const [path, mode] of modes) {
+			assert.equal(mode, executableScripts.has(path) ? "100755" : "100644", `skill-creator mode drift: ${path}`);
+		}
+	});
+
 	test("ships the exact canonical LiteParse tree with no undocumented drift", () => {
 		assert.deepEqual(
 			collectFiles(liteparseSkill, [], liteparseSkill).sort(),
