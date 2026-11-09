@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
+import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
@@ -53,6 +54,23 @@ interface FindTarget {
 	pattern: string;
 	exactPathInput: boolean;
 	inputPath: string;
+}
+function cleanFdLine(rawLine: string): string {
+	return rawLine.replace(/\r$/, "").trim();
+}
+/**
+ * fd before 10.5.1 never matches `--full-path` globs on Windows, and workarounds for that break on fd 10.5.1, so on
+ * Windows fd lists every entry and minimatch matches path patterns. The options keep fd's glob behavior: `*` matches
+ * dotfiles, `+(a|b)` is literal, and an all-lowercase pattern matches case-insensitively (smart case). A trailing
+ * `/**` becomes `/**\/*` because minimatch's `src/**` also matches `src` itself and fd's does not.
+ */
+function createWindowsPathMatcher(pattern: string): Minimatch {
+	return new Minimatch(pattern.replace(/\/\*\*$/, "/**/*"), {
+		platform: "win32",
+		dot: true,
+		noext: true,
+		nocase: pattern === pattern.toLowerCase(),
+	});
 }
 function normalizeLimit(limit: number | undefined): number {
 	return limit === undefined || !Number.isFinite(limit)
@@ -681,29 +699,28 @@ export function createFindToolDefinition(
 						const relativized: string[] = [...exactFileResults];
 						const deadline = Date.now() + timeoutMs;
 						const runFdForTarget = async (target: FindTarget, remaining: number): Promise<boolean> => {
-							const args: string[] = [
-								"--glob",
-								"--color=never",
-								"--no-require-git",
-								"--max-results",
-								String(remaining + 1),
-							];
+							const args: string[] = ["--color=never", "--no-require-git"];
 							if (hidden !== false) args.push("--hidden");
 							if (gitignore === false) args.push("--no-ignore");
 							if (!findTargetMentionsNodeModules(target)) args.push("--exclude", "node_modules");
+							const isPathPattern = target.pattern.includes("/");
 							let fdPattern = target.pattern;
-							if (target.pattern.includes("/")) {
-								args.push("--full-path");
-								if (
-									!target.pattern.startsWith("/") &&
-									!target.pattern.startsWith("**/") &&
-									target.pattern !== "**"
-								)
-									fdPattern = `**/${target.pattern}`;
-								// fd matches full paths with native separators on Windows.
-								if (process.platform === "win32") fdPattern = fdPattern.replaceAll("/", String.raw`[/\\]`);
+							if (
+								isPathPattern &&
+								!target.pattern.startsWith("/") &&
+								!target.pattern.startsWith("**/") &&
+								target.pattern !== "**"
+							)
+								fdPattern = `**/${target.pattern}`;
+							const windowsPathMatcher =
+								process.platform === "win32" && isPathPattern ? createWindowsPathMatcher(fdPattern) : undefined;
+							if (windowsPathMatcher) {
+								args.push("--", "", target.searchPath);
+							} else {
+								args.push("--glob", "--max-results", String(remaining + 1));
+								if (isPathPattern) args.push("--full-path");
+								args.push("--", fdPattern, target.searchPath);
 							}
-							args.push("--", fdPattern, target.searchPath);
 							const remainingMs = deadline - Date.now();
 							if (remainingMs <= 0) {
 								timedOut = true;
@@ -731,7 +748,11 @@ export function createFindToolDefinition(
 								child.stderr?.on("data", (chunk) => {
 									stderr += chunk.toString();
 								});
-								rl.on("line", (line) => lines.push(line));
+								rl.on("line", (rawLine) => {
+									if (windowsPathMatcher && !windowsPathMatcher.match(cleanFdLine(rawLine))) return;
+									lines.push(rawLine);
+									if (windowsPathMatcher && lines.length > Math.max(0, remaining)) stopChild?.();
+								});
 								child.on("error", (error) => {
 									cleanup();
 									rejectTarget(new Error(`Failed to run fd: ${error.message}`));
@@ -747,7 +768,7 @@ export function createFindToolDefinition(
 										return;
 									}
 									for (const rawLine of lines.slice(0, remaining)) {
-										const line = rawLine.replace(/\r$/, "").trim();
+										const line = cleanFdLine(rawLine);
 										if (line) {
 											const found =
 												statSync(path.resolve(target.searchPath, line), {
