@@ -229,6 +229,14 @@ export interface Provider<TApi extends Api = Api> {
 	refreshModels?(context: RefreshModelsContext): Promise<void>;
 
 	/**
+	 * What the network phase of `refreshModels` needs. "credential" (the default) receives the
+	 * effective credential, so an expired OAuth token is refreshed first. "configured" is for catalogs
+	 * served by a source other than the provider, such as pi.dev: the phase still runs only when the
+	 * provider is configured, but OAuth is never refreshed for it and `context.credential` is undefined.
+	 */
+	readonly refreshModelsAuth?: "credential" | "configured";
+
+	/**
 	 * Optional provider policy for credential-specific model availability.
 	 * `getModels()` remains the complete synchronous chat catalog; `Models.getAvailable()`
 	 * applies this filter after confirming that provider auth is configured.
@@ -668,9 +676,16 @@ class ModelsImpl implements MutableModels {
 					if (credentialError !== undefined) throw credentialError;
 					if (!allowNetwork || signal.aborted) return;
 
-					const credential = await this.resolveRefreshCredential(provider, storedCredential, signal);
-					if (!credential) return;
-					await this.runProviderRefreshPhase(provider, credential, true, options.force, generation, signal);
+					const network = await this.resolveNetworkRefresh(provider, storedCredential, signal);
+					if (!network) return;
+					await this.runProviderRefreshPhase(
+						provider,
+						network.credential,
+						true,
+						options.force,
+						generation,
+						signal,
+					);
 				})();
 
 				try {
@@ -728,6 +743,18 @@ class ModelsImpl implements MutableModels {
 		}
 
 		return { aborted: callerSignal.aborted, errors: new Map(errors) };
+	}
+
+	private async resolveNetworkRefresh(
+		provider: Provider,
+		stored: Credential | undefined,
+		signal: AbortSignal,
+	): Promise<{ credential?: Credential } | undefined> {
+		if (provider.refreshModelsAuth === "configured") {
+			return (await this.checkProviderAuth(provider, stored, signal)) ? {} : undefined;
+		}
+		const credential = await this.resolveRefreshCredential(provider, stored, signal);
+		return credential ? { credential } : undefined;
 	}
 
 	private async resolveRefreshCredential(

@@ -3,6 +3,7 @@ import {
 	createModels,
 	createProvider,
 	type ImageModel,
+	InMemoryCredentialStore,
 	InMemoryModelsStore,
 	type Model,
 	type ModelsStore,
@@ -53,6 +54,33 @@ function builtinProvider(): Provider {
 
 function testProvider(localGeneratedAt?: number) {
 	return withRemoteCatalog(builtinProvider(), "https://pi.dev", localGeneratedAt);
+}
+
+function oauthProvider(refresh: OAuthAuth["refresh"]): Provider {
+	return {
+		...builtinProvider(),
+		auth: {
+			oauth: {
+				name: "Test OAuth",
+				login: async () => {
+					throw new Error("not used");
+				},
+				refresh,
+				toAuth: async (credential) => ({ apiKey: credential.access }),
+			},
+		},
+	};
+}
+
+async function staleOAuthCredentials(providerId: string): Promise<InMemoryCredentialStore> {
+	const credentials = new InMemoryCredentialStore();
+	await credentials.modify(providerId, async () => ({
+		type: "oauth",
+		access: "expired",
+		refresh: "revoked",
+		expires: 0,
+	}));
+	return credentials;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -288,6 +316,75 @@ describe("remote catalog provider", () => {
 		await provider.refreshModels?.(await refresh(true));
 		expect(fetchSpy.mock.calls[4]?.[1]?.headers).toMatchObject({ "if-none-match": '"catalog-1"' });
 		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
+	});
+
+	it("fetches the pi.dev catalog without refreshing a stale OAuth login", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () =>
+				new Response(JSON.stringify({ dynamic: model("dynamic") }), {
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const oauthRefresh = vi.fn(async (): Promise<never> => {
+			throw new Error("invalid_grant");
+		});
+		const provider = withRemoteCatalog(oauthProvider(oauthRefresh));
+		const credentials = await staleOAuthCredentials(provider.id);
+		const models = createModels({ credentials, modelsStore: new InMemoryModelsStore() });
+		models.setProvider(provider);
+
+		expect((await models.refresh({ force: true })).errors.size).toBe(0);
+		expect(oauthRefresh).not.toHaveBeenCalled();
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "dynamic"]);
+	});
+
+	it("still refreshes the OAuth login for the account model list a discovering wrapper reads", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 501 }));
+		const oauthRefresh = vi.fn(async () => ({
+			type: "oauth" as const,
+			access: "fresh",
+			refresh: "rotated",
+			expires: Date.now() + 3_600_000,
+		}));
+		const seen: unknown[] = [];
+		const provider = withDiscoveredModels(
+			withRemoteCatalog(oauthProvider(oauthRefresh)),
+			async (_catalog, context) => {
+				seen.push(context.credential);
+				return [];
+			},
+		);
+		const credentials = await staleOAuthCredentials(provider.id);
+		const models = createModels({ credentials, modelsStore: new InMemoryModelsStore() });
+		models.setProvider(provider);
+
+		expect((await models.refresh({ force: true })).errors.size).toBe(0);
+		expect(oauthRefresh).toHaveBeenCalledTimes(1);
+		expect(seen).toEqual([expect.objectContaining({ type: "oauth", access: "fresh" })]);
+	});
+
+	it("surfaces a stale OAuth login as the provider's refresh error when the catalog needs the credential", async () => {
+		const oauthRefresh = vi.fn(async (): Promise<never> => {
+			throw new Error("invalid_grant");
+		});
+		const discover = vi.fn<DiscoverModels>(async () => []);
+		const personalize = vi.fn<PersonalizeCatalog>(async (catalog) => catalog);
+		const discovering = withDiscoveredModels(withRemoteCatalog(oauthProvider(oauthRefresh)), discover);
+		const personalized = withPersonalizedCatalog(oauthProvider(oauthRefresh), personalize);
+
+		for (const provider of [discovering, personalized]) {
+			const models = createModels({
+				credentials: await staleOAuthCredentials(provider.id),
+				modelsStore: new InMemoryModelsStore(),
+			});
+			models.setProvider(provider);
+			const result = await models.refresh({ force: true });
+			expect(result.errors.get(provider.id)).toMatchObject({ name: "ModelsError", code: "oauth" });
+		}
+		expect(oauthRefresh).toHaveBeenCalledTimes(2);
+		expect(discover).not.toHaveBeenCalled();
+		expect(personalize).not.toHaveBeenCalled();
 	});
 
 	it("treats unimplemented pi.dev catalog routes as an unavailable overlay", async () => {

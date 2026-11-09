@@ -33,6 +33,8 @@ atomic config                      # Enable/disable package resources
 
 These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/getting-started/installation#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust. After it updates the Atomic CLI, `atomic update` runs the new version's [`atomic intercom upgrade`](#storage-and-intercom-commands) when the `atomic` on PATH reports the version just installed and lists the command; otherwise it prints a note and leaves the broker alone. A failure of the upgrade prints a warning and does not change the exit code.
 
+`atomic update --models` refreshes configured providers without updating packages. Built-in catalogs served by pi.dev do not refresh your provider login. Account-specific catalogs still need valid credentials; if an OAuth refresh fails, the command warns with `atomic auth login <provider>` and continues refreshing other catalogs. Other failures, such as a catalog network error, still make the command exit nonzero.
+
 See [Atomic Packages](/packages) for package sources and security notes.
 
 ### Custom update command
