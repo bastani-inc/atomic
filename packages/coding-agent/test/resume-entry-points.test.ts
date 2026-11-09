@@ -22,6 +22,7 @@ import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
 import {
 	StorageAdapterLoadError,
 	StorageConfigError,
@@ -125,6 +126,11 @@ const settings = (setupCommand?: string) =>
 	SettingsManager.inMemory(
 		setupCommand === undefined ? {} : { defaultProjectTrust: "always", resume: { setupCommand } },
 	);
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+
+const extensionFilesLoadedBy = (session: AgentSession) =>
+	session.extensionRunner.getExtensionPaths().filter((path) => !isSyntheticPath(path));
 
 /** The text `session`'s own read tool returns for `path`. */
 async function readWithTools(session: AgentSession, path: string): Promise<string> {
@@ -1145,10 +1151,12 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const { session } = await createAgentSession({
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_BUILTINS,
 			settingsManager,
 			sessionManager: await SessionManager.open(store, sessionId),
 		});
 		cleanups.push(() => session.dispose());
+		assert.deepEqual(extensionFilesLoadedBy(session), []);
 		const cwd = session.sessionManager.getCwd();
 		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots", "worktrees")), cwd);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
@@ -1175,6 +1183,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 				agentDir: sandbox.path("agent"),
 				cwd: restored,
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: NO_BUILTINS,
 				settingsManager: settings(),
 				sessionManager: SessionManager.inMemory(restored),
 			}),
@@ -1195,6 +1204,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 			createAgentSession({
 				agentDir: sandbox.path("agent"),
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: NO_BUILTINS,
 				settingsManager: settings(),
 				sessionManager: await SessionManager.open(store, sessionId),
 			}),
@@ -1213,6 +1223,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const { session } = await createAgentSession({
 			agentDir: sandbox.path("agent"),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_BUILTINS,
 			...options,
 		});
 		cleanups.push(() => session.dispose());
