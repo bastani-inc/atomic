@@ -1,6 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -15,6 +16,16 @@ const app = path.join(root, "app.js");
 const BUNDLED_CLI_EXIT_TIMEOUT_MS = 180_000;
 const BUNDLED_CLI_CLOSE_TIMEOUT_MS = 10_000;
 const BUNDLED_CLI_TEST_TIMEOUT_MS = BUNDLED_CLI_EXIT_TIMEOUT_MS + 20_000;
+/** A tmux command answers at once; a hung one fails the test by name instead of blocking the worker. */
+const TMUX_COMMAND_TIMEOUT_MS = 10_000;
+/**
+ * `bun` flags for the bundled app. Its `require("@bastani/atomic-natives")` resolves next to app.js, and Bun installs a
+ * bare specifier it cannot resolve from the npm registry while the require blocks: the published natives package
+ * (28 MB packed, 146 MB unpacked) for every case, since each runs under its own HOME and so its own install cache. On a
+ * slow registry that stalled these cases for minutes on CI. The workspace's natives are linked next to app.js instead,
+ * and auto-install is off, so an unresolved import fails at once instead of reaching the network.
+ */
+const BUN_APP_FLAGS = ["--no-install"];
 
 beforeAll(() => {
 	const build = spawnSync(
@@ -33,6 +44,11 @@ beforeAll(() => {
 		{ cwd: packageDir, encoding: "utf8", timeout: 60_000 },
 	);
 	expect(build.status, build.stderr).toBe(0);
+	const natives = path.dirname(
+		createRequire(path.join(packageDir, "package.json")).resolve("@bastani/atomic-natives/package.json"),
+	);
+	fs.mkdirSync(path.join(root, "node_modules", "@bastani"), { recursive: true });
+	fs.symlinkSync(natives, path.join(root, "node_modules", "@bastani", "atomic-natives"), "junction");
 });
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -44,6 +60,7 @@ function run(name: string, source: string, mode: "print" | "rpc" | "interactive"
 	const child = spawn(
 		"bun",
 		[
+			...BUN_APP_FLAGS,
 			app,
 			"--offline",
 			"--approve",
@@ -292,7 +309,7 @@ it(
 	BUNDLED_CLI_TEST_TIMEOUT_MS,
 );
 
-const tmuxAvailable = spawnSync("tmux", ["-V"]).status === 0;
+const tmuxAvailable = spawnSync("tmux", ["-V"], { timeout: TMUX_COMMAND_TIMEOUT_MS }).status === 0;
 
 it.skipIf(!tmuxAvailable)(
 	"keeps an unexpected engine exit visible after restoring the fullscreen terminal (#4524)",
@@ -323,11 +340,14 @@ it.skipIf(!tmuxAvailable)(
 		const command = [
 			"env -i",
 			...Object.entries(env).map(([key, value]) => `${key}=${quote(value)}`),
-			`bun ${quote(app)} --offline --approve --no-session`,
+			`bun ${BUN_APP_FLAGS.join(" ")} ${quote(app)} --offline --approve --no-session`,
 			`; status=$?; stty -a > ${quote(modes)}; echo REVIEW_STATUS=$status; exit "$status"`,
 		].join(" ");
 		const tmux = (...args: string[]) => {
-			const result = spawnSync("tmux", ["-S", socket, "-f", config, ...args], { encoding: "utf8" });
+			const result = spawnSync("tmux", ["-S", socket, "-f", config, ...args], {
+				encoding: "utf8",
+				timeout: TMUX_COMMAND_TIMEOUT_MS,
+			});
 			expect(result.status, result.stderr).toBe(0);
 			return result.stdout;
 		};
@@ -348,7 +368,7 @@ it.skipIf(!tmuxAvailable)(
 			expect(terminalModes).toMatch(/\sicanon(?:\s|;)/);
 			expect(terminalModes).toMatch(/\secho(?:\s|;)/);
 		} finally {
-			spawnSync("tmux", ["-S", socket, "kill-server"]);
+			spawnSync("tmux", ["-S", socket, "kill-server"], { timeout: TMUX_COMMAND_TIMEOUT_MS });
 		}
 	},
 	BUNDLED_CLI_TEST_TIMEOUT_MS,
