@@ -370,6 +370,7 @@ const EAGER_TOOL_INPUT_STREAMING_UNSUPPORTED_ANTHROPIC_MODELS = new Set([
 const ANTHROPIC_ALLOWED_FALLBACK_MODELS = {
 	"claude-fable-5": ["claude-opus-4-8", "claude-opus-5"],
 	"claude-fable-5-1": ["claude-opus-4-8", "claude-opus-5"],
+	"claude-fable-5-2": ["claude-opus-4-8", "claude-opus-5"],
 	"claude-opus-5": ["claude-opus-4-8"],
 } satisfies Record<string, string[]>;
 
@@ -839,12 +840,12 @@ function supportsAnthropicMidConvoEffort(modelId: string): boolean {
 	return (
 		/^claude-opus-(?:5|5[.-]5)(?:-\d{8})?$/.test(id) ||
 		/^claude-(?:sonnet|haiku)-5[.-]5(?:-\d{8})?$/.test(id) ||
-		/^claude-(?:fable|mythos)-5(?:[.-]1)(?:-\d{8})?$/.test(id)
+		/^claude-(?:fable|mythos)-5[.-][12](?:-\d{8})?$/.test(id)
 	);
 }
 
 // Claude models that accept `thinking: {type: "disabled"}` alongside per-message effort.
-// Opus 5.5, Sonnet 5.5, Fable 5.1, and Mythos 5.1 reject it.
+// Opus 5.5, Sonnet 5.5, Fable 5.1/5.2, and Mythos 5.1/5.2 reject it.
 // https://platform.claude.com/docs/en/build-with-claude/thinking#configuring-thinking
 const ANTHROPIC_DISABLED_THINKING_MODELS = new Set(["claude-opus-5", "claude-haiku-5-5", "claude-haiku-5.5"]);
 
@@ -861,7 +862,7 @@ function supportsAnthropicMidConvoSystemMessages(modelId: string): boolean {
 	return (
 		/^claude-opus-(?:4[.-]8|5(?:[.-]5)?)(?:-\d{8})?$/.test(modelId) ||
 		/^claude-(?:sonnet|haiku)-5[.-]5(?:-\d{8})?$/.test(modelId) ||
-		/^claude-(?:fable|mythos)-5(?:[.-]1)?(?:-\d{8})?$/.test(modelId)
+		/^claude-(?:fable|mythos)-5(?:[.-][12])?(?:-\d{8})?$/.test(modelId)
 	);
 }
 
@@ -3512,6 +3513,25 @@ async function generateModels() {
 			allModels.push(model);
 		}
 	}
+
+	// Released 2026-11-09; models.dev does not list it for Anthropic yet. A future models.dev row
+	// with the same ID wins.
+	// https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2
+	const missingAnthropicModels: Model<"anthropic-messages">[] = [
+		{
+			id: "claude-fable-5-2",
+			name: "Claude Fable 5.2",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			provider: "anthropic",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		},
+	];
+	allModels.push(...missingAnthropicModels);
 
 	const deepseekCompat: OpenAICompletionsCompat = {
 		requiresReasoningContentOnAssistantMessages: true,
