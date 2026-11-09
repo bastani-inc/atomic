@@ -1456,35 +1456,51 @@ describe("bounded catalog lookups (#4329)", () => {
 			adapter,
 			`export const atomicStorageAdapter = 1;
 export async function openSessionStore() {
-	globalThis.__atomicHangingReads = (globalThis.__atomicHangingReads ?? []);
 	return {
 		descriptor: { adapter: "hanging", location: "nowhere" },
-		readHeader(id) { globalThis.__atomicHangingReads.push(id); return new Promise(() => {}); },
+		readHeader(id) { globalThis.__atomicHangingRead(id); return new Promise(() => {}); },
 		async close() {},
 	};
 }
 `,
 		);
+		const reads: string[] = [];
+		const global = globalThis as { __atomicHangingRead?: (id: string) => void };
+		const reading = new Promise<void>((resolve) => {
+			global.__atomicHangingRead = (id) => {
+				reads.push(id);
+				resolve();
+			};
+		});
 		const io = new CountingIo();
-		await assert.rejects(
-			openCliSession(parseArgs(["--session", "abc"]), sandbox.root, settings(), {
+		// The deadline's clock moves only once the probe waits on the storage, so a host slow to load the adapter
+		// cannot spend the 100 ms before the read starts.
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const opening = openCliSession(parseArgs(["--session", "abc"]), sandbox.root, settings(), {
 				agentDir: sandbox.path("agent"),
 				sessionStorage: { kind: "adapter", module: adapter },
 				trusted: () => false,
 				io,
 				catalogTimeoutMs: 100,
-			}),
-			(error: unknown) => {
-				assert.ok(isResumeCatalogTimeoutError(error));
-				assert.deepEqual([error.subject, error.id, error.timeoutMs], ["session", "abc", 100]);
-				assert.equal(
-					error.hint,
-					"Check that this node can reach the shared storage (`atomic storage status`), then resume again; nothing was changed.",
-				);
-				return true;
-			},
-		);
-		assert.deepEqual((globalThis as { __atomicHangingReads?: string[] }).__atomicHangingReads, ["abc"]);
+			}).then(
+				() => assert.fail("the storage never answers"),
+				(error: unknown) => error,
+			);
+			await reading;
+			await vi.advanceTimersByTimeAsync(100);
+			const error = await opening;
+			assert.ok(isResumeCatalogTimeoutError(error));
+			assert.deepEqual([error.subject, error.id, error.timeoutMs], ["session", "abc", 100]);
+			assert.equal(
+				error.hint,
+				"Check that this node can reach the shared storage (`atomic storage status`), then resume again; nothing was changed.",
+			);
+		} finally {
+			vi.useRealTimers();
+			delete global.__atomicHangingRead;
+		}
+		assert.deepEqual(reads, ["abc"]);
 		assert.deepEqual(io.calls, [`load:${adapter}`]);
 	});
 
