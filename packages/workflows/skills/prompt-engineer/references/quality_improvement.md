@@ -39,13 +39,14 @@ Do not rewrite a working prompt stack and change effort, model, and tools simult
 
 ## Audit accumulated skills and repository instructions
 
-The following audit distills [Eric Provencher's advice on X](https://x.com/pvncher/status/2095991462416490862), read September 5, 2026. It is practitioner guidance for instruction maintenance, not an API specification or a measured guarantee for every model or harness.
+The following audit distills OpenAI's [Rethinking skills and prompts for GPT-6 Astra](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra), read November 9, 2026, and Anthropic's Fable 5.2 advice on [caution that piles up](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-2#keep-caution-from-piling-up). It is guidance for instruction maintenance, not an API specification or a measured guarantee for every model or harness.
 
-- Keep skill descriptions short and specific about when to load them. Prefer "Plan and validate database migrations" to "Use for anything involving databases." Too many broad or competing descriptions make routing harder. Provencher reports that Codex truncates descriptions when too many skills are installed; do not assume Atomic has the same truncation behavior.
+- Keep skill descriptions short and specific about when to load them. Prefer "Plan and validate database migrations" to "Use for anything involving databases." Too many broad or competing descriptions make routing harder. OpenAI reports that Codex shortens descriptions when too many skills are installed; do not assume Atomic has the same truncation behavior.
 - Keep a multi-purpose skill's root file a small router. Put task-specific procedures and scripts in references, and load only the branch needed. This saves context and avoids unrelated instructions changing the task.
 - Revisit inherited recipes after model upgrades. Replace rigid itineraries for routine judgment with outcomes, necessary dependencies, and completion criteria. Evaluate changes across the models used by repository contributors; guidance that helps Sol or Luna may overconstrain Astra.
 - Review `AGENTS.md` requirements in proportion to the task. A typo fix rarely needs a full repository map or a stack of design documents. Keep contextual pointers current and retain required pre-edit inspection and repository checks; propose changes to binding instructions rather than silently ignoring them.
 - Make permission boundaries concrete. If the environment actually uses disposable local fixtures with no production access, authorize running and repairing those tests as one workflow. Do not generalize that permission to production or publication, and do not ask again at every already-authorized step.
+- Prune accumulated cautions in memory, notes, and instruction files. Delete those whose reason no longer holds, name the steps that need no approval instead of a general "act more freely," and write exceptions into the rule itself. Keep confirmation for risky or irreversible actions.
 - Define completion before work starts, including running the implementation, inspecting results, and repairing failures when requested. A first-pass review gate is a deliberate stopping point; remove an accidental gate only when authorized. For broader exploration, state what to investigate and where to stop.
 
 Treat each audit change as a hypothesis. Compare representative tasks, including a small edit and a real approval boundary, before removing a rule globally. OpenAI's [GPT-6 guide](gpt_6.md) adds model-specific advice for excessive testing, early stops, and instruction conflicts.
@@ -122,7 +123,7 @@ Safety invariants may use `NEVER` or `MUST`; stylistic preferences and tool judg
 | Long visible answer | No explicit output length contract | Specify preserved content, omissions, sections, and word limit |
 | High latency/cost | Excess prompt text or effort | Delete first, then compare one lower effort level |
 | Long-context miss | Query precedes large documents | Put documents first and query last; Anthropic measured up to ~30% improvement |
-| Fable 5 refusal/fallback | Prompt solicits internal reasoning text | Request evidence and conclusions instead of reasoning text |
+| `reasoning_extraction` refusal on Fable, Opus 5/5.5, or Sonnet 5.5 | Prompt asks the model to write out its reasoning | Remove the request; ask for a short explanation or a summary of actions, or read thinking blocks |
 
 ## Model and Effort Regression Checks
 

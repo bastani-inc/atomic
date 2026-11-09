@@ -1,8 +1,8 @@
 # GPT-6 family prompting and migration
 
-Use this reference when targeting `gpt-6-astra`, `gpt-6-sol`, or `gpt-6-luna`, migrating a prompt to the GPT-6 family, or diagnosing early stops, excessive verification, under-delegation, or writing-style drift. Guidance checked on September 22, 2026 against [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model). The prompt blocks labeled **OpenAI template** are quoted verbatim from that guide. Start from them, then edit the wording to fit the product's approval gates and house style.
+Use this reference when targeting `gpt-6-astra` or `gpt-6-luna` (or an existing `gpt-6-sol` integration), migrating a prompt to the GPT-6 family, or diagnosing early stops, excessive verification, under-delegation, or writing-style drift. Guidance checked on November 9, 2026 against [OpenAI's GPT-6 guide](https://developers.openai.com/api/docs/guides/latest-model). The prompt blocks labeled **OpenAI template** are quoted verbatim from that guide. Start from them, then edit the wording to fit the product's approval gates and house style.
 
-OpenAI positions the three models by reasoning demand, latency, and cost: Astra for the highest capability and long multi-step work across code, browsers, and professional software; Sol for strong reasoning on demanding tasks; Luna for efficient, repeatable work at scale. OpenAI offers the templates below as a starting point for the whole family, but the behaviors they address were observed on Astra. Evaluate them on the chosen model and workload. See [Sol and Luna differences](#sol-and-luna-differences) before choosing effort or a tool-calling API. For `gpt-6.1-sol` and `gpt-6.1-terra`, start with [gpt_6_1_sol.md](gpt_6_1_sol.md) or [gpt_6_1_terra.md](gpt_6_1_terra.md), which link back here for the shared templates.
+OpenAI's guide lists four current models: GPT-6 Astra ("Highest intelligence"), GPT-6.1 Sol ("Balanced speed, cost, and intelligence"), GPT-6.1 Terra ("Fast and efficient"), and GPT-6 Luna ("Fastest and most cost-effective"). "If you already use `gpt-6-sol`, review the migration guidance before switching to GPT-6.1 Sol." OpenAI offers the templates below as a starting point for the whole family, but the behaviors they address were observed on Astra. Evaluate them on the chosen model and workload. See [Sol and Luna differences](#sol-and-luna-differences) before choosing effort or a tool-calling API. For `gpt-6.1-sol` and `gpt-6.1-terra`, start with [gpt_6_1_sol.md](gpt_6_1_sol.md) or [gpt_6_1_terra.md](gpt_6_1_terra.md), which link back here for the shared templates.
 
 ## When it asks before doing authorized work
 
@@ -122,11 +122,12 @@ Caveats: this does not replace required CI-equivalent checks, safety checks, rel
 
 ## Sol and Luna differences
 
-The templates above are shared, but two things change when the target is `gpt-6-sol` or `gpt-6-luna`.
+The templates above are shared, but check these API facts when the target is `gpt-6-sol` or `gpt-6-luna`:
 
-Effort sensitivity: effort moves Sol and Luna much more than it moves Astra, and both can run with no reasoning at all, which Astra cannot. Treat effort as a prompt variable: a Luna prompt tuned at medium effort may need high or max effort before it is comparable to a Sol prompt at medium, and a prompt run with no reasoning behaves like a different model. Do not compensate for a lower effort with longer instructions.
+- Reasoning effort: "GPT-6 Astra and GPT-6.1 Sol do not support `none`; use `low` instead. GPT-6.1 Terra, GPT-6 Sol, and GPT-6 Luna support `none`." Re-evaluate a prompt when moving it to `none` rather than lengthening instructions to compensate.
+- Tool calling: "GPT-6 Sol and GPT-6 Luna support function calling in Chat Completions only with `reasoning_effort: "none"`." Use the Responses API for reasoning with tools.
 
-Scope of the behavior guidance: OpenAI wrote the initiative, instruction-following, writing-style, delegation, and verification templates against Astra's behavior. Sol and Luna are cheaper to sweep, so measure whether the early-stop and over-testing templates are needed at all before adding them. A Luna prompt that carries Astra's autonomy language without the matching capability can keep going on work it cannot finish. Keep the same approval gates.
+Scope of the behavior guidance: OpenAI says the templates "address behavior observed with GPT-6 Astra; evaluate them with your chosen model and workload." Measure whether the early-stop and over-testing templates are needed on Sol or Luna before adding them, and keep the same approval gates.
 
 ## Prompt structure notes
 

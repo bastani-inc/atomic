@@ -1,6 +1,6 @@
 # Claude Opus 4.8 prompting
 
-Use this reference for Opus 4.8 verbosity, effort, tool triggering, subagent spawning, and design defaults. Distilled from [Anthropic's Opus 4.8 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-4-8), checked September 22, 2026. Existing Opus 4.7 prompts are a starting point; migrating onward to Opus 5 or 5.5 needs their own guides. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
+Use this reference for Opus 4.8 verbosity, effort, tool triggering, subagent spawning, and design defaults. Distilled from [Anthropic's Opus 4.8 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-4-8), checked November 9, 2026. Existing Opus 4.7 prompts are a starting point. Anthropic's guide now points onward to Opus 5.5 ([migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide#migrating-from-claude-opus-4-8)); use that model's page for the move. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
 
 ## Response length follows perceived complexity
 
@@ -14,7 +14,7 @@ Adapt the wording to the specific over-elaboration you observe (excess caveats, 
 
 ## Lower effort narrows investigation
 
-At lower effort, Opus 4.8 scopes its work strictly to what was asked and can under-investigate moderately complex tasks. If you see shallow reasoning, raise effort before adding reasoning instructions. Where effort must stay low for latency, add a targeted nudge:
+Anthropic recommends starting at `xhigh` effort for coding and agentic work and using at least `high` for most intelligence-sensitive work. At lower effort, Opus 4.8 scopes its work strictly to what was asked and can under-investigate moderately complex tasks. If you see shallow reasoning, raise effort before adding reasoning instructions. Where effort must stay low for latency, add a targeted nudge:
 
 ```text
 This task involves multistep reasoning. Think carefully through the problem before responding.
@@ -60,7 +60,7 @@ Use a warm, collaborative tone. Acknowledge the user's framing before answering.
 
 ## Subagent spawning needs explicit permission
 
-Opus 4.8 spawns fewer subagents by default than later Claude models. Where the host supports delegation, name when spawning is worthwhile and when it is not, matching the actual concurrency and ownership rules your harness enforces:
+Opus 4.8 tends to spawn fewer subagents by default. Where the host supports delegation, name when spawning is worthwhile and when it is not, matching the actual concurrency and ownership rules your harness enforces:
 
 ```text
 Keep a small task you can finish directly local. If delegation is available, fan out substantial independent investigations with distinct ownership and expected evidence. Keep dependent edits sequential and respect the host's concurrency limits.
