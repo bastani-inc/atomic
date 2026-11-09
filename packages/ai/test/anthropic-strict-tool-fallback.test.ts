@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import type { BetaTool, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/beta/messages/messages.js";
 import { Type } from "typebox";
-import { describe, it, vi } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { type AnthropicOptions, stream } from "../src/api/anthropic-messages.js";
+import { cleanupSessionResources } from "../src/session-resources.js";
 import type { Model, Tool } from "../src/types.js";
 import { normalizeContext } from "../src/utils/transcript.js";
 
@@ -56,6 +57,8 @@ const context = (tools: Tool[]) =>
 	normalizeContext({ tools, messages: [{ role: "user", content: "Hello", timestamp: 1 }] });
 
 describe("Anthropic strict tool capacity fallback (#10409)", () => {
+	afterEach(() => cleanupSessionResources());
+
 	it.each([grammarError, "Too many strict tools (32)", "Schemas contains too many parameters with union types (480)"])(
 		"retries %s only for preferred tools",
 		async (message) => {
@@ -174,7 +177,7 @@ describe("Anthropic strict tool capacity fallback (#10409)", () => {
 		assert.deepEqual(additions[1][1], additions[0][1]);
 	});
 
-	it("keeps fallback request-local", async () => {
+	it("keeps fallback request-local without a session", async () => {
 		const { payloads, options } = harness((attempt) => (attempt === 1 ? errorResponse() : successResponse()));
 		const transcript = context([tool("lookup", "prefer")]);
 		await stream(model, transcript, options).result();
@@ -183,6 +186,48 @@ describe("Anthropic strict tool capacity fallback (#10409)", () => {
 			payloads.map((payload) => (payload.tools as BetaTool[])[0].strict),
 			[true, undefined, true],
 		);
+	});
+
+	it("sends preferred tools non-strict right away on later requests of a rejected session (#11626)", async () => {
+		const { payloads, options } = harness((attempt) => (attempt === 1 ? errorResponse() : successResponse()));
+		const transcript = context([tool("lookup", "prefer"), tool("required", "require")]);
+		const first = await stream(model, transcript, { ...options, sessionId: "rejected" }).result();
+		const second = await stream(model, transcript, { ...options, sessionId: "rejected" }).result();
+		await stream(model, transcript, { ...options, sessionId: "other" }).result();
+		assert.equal(first.diagnostics?.[0]?.type, "anthropic_strict_tools_fallback");
+		assert.equal(second.stopReason, "stop");
+		assert.equal(second.diagnostics, undefined);
+		assert.deepEqual(
+			payloads.map((payload) => (payload.tools as BetaTool[]).map((definition) => definition.strict)),
+			[
+				[true, true],
+				[undefined, true],
+				[undefined, true],
+				[true, true],
+			],
+		);
+	});
+
+	it("tries strict sampling again after the session's resources are cleaned up", async () => {
+		const { payloads, options } = harness((attempt) => (attempt === 1 ? errorResponse() : successResponse()));
+		const transcript = context([tool("lookup", "prefer")]);
+		await stream(model, transcript, { ...options, sessionId: "cleaned" }).result();
+		cleanupSessionResources("cleaned");
+		await stream(model, transcript, { ...options, sessionId: "cleaned" }).result();
+		assert.deepEqual(
+			payloads.map((payload) => (payload.tools as BetaTool[])[0].strict),
+			[true, undefined, true],
+		);
+	});
+
+	it("surfaces a rejection of a remembered session's required tools without retrying", async () => {
+		const { payloads, options } = harness((attempt) => (attempt === 2 ? successResponse() : errorResponse()));
+		const transcript = context([tool("lookup", "prefer"), tool("required", "require")]);
+		await stream(model, transcript, { ...options, sessionId: "required" }).result();
+		const result = await stream(model, transcript, { ...options, sessionId: "required" }).result();
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage ?? "", new RegExp(grammarError));
+		assert.equal(payloads.length, 3);
 	});
 
 	it("does not retry a payload hook exception", async () => {

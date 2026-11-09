@@ -5,7 +5,7 @@ import type {
 	ConverseStreamOutput,
 } from "@aws-sdk/client-bedrock-runtime";
 import { Type } from "typebox";
-import { beforeEach, describe, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
 const bedrockMock = vi.hoisted(() => ({
 	inputs: [] as CommandInput[],
@@ -52,6 +52,7 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 
 import { BedrockRuntimeServiceException } from "@aws-sdk/client-bedrock-runtime";
 import { stream as streamBedrock } from "../src/api/bedrock-converse-stream.js";
+import { cleanupSessionResources } from "../src/session-resources.js";
 import type { Model, StreamOptions, Tool } from "../src/types.js";
 import { normalizeContext } from "../src/utils/transcript.js";
 
@@ -99,18 +100,24 @@ function successResponse(): Promise<ConverseStreamCommandOutput> {
 	});
 }
 
-function run(tools: Tool[], onPayload?: StreamOptions["onPayload"]) {
+function run(tools: Tool[], onPayload?: StreamOptions["onPayload"], sessionId?: string) {
 	return streamBedrock(
 		model,
 		normalizeContext({ tools, messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
-		{ cacheRetention: "none", onPayload },
+		{ cacheRetention: "none", onPayload, sessionId },
 	).result();
+}
+
+function strictFlags(): (boolean | undefined)[][] {
+	return bedrockMock.inputs.map((input) => input.toolConfig.tools.map((definition) => definition.toolSpec.strict));
 }
 
 describe("Bedrock preferred strict tool fallback (earendil-works/pi#11416)", () => {
 	beforeEach(() => {
 		bedrockMock.inputs = [];
 	});
+
+	afterEach(() => cleanupSessionResources());
 
 	it("retries a strict tool limit rejection with preferred tools non-strict and keeps required tools strict", async () => {
 		bedrockMock.respond = (attempt) =>
@@ -170,5 +177,57 @@ describe("Bedrock preferred strict tool fallback (earendil-works/pi#11416)", () 
 
 		assert.equal(result.stopReason, "error");
 		assert.equal(bedrockMock.inputs.length, 2);
+	});
+	it("does not remember a rejection without a session", async () => {
+		bedrockMock.respond = (attempt) =>
+			attempt === 1 ? Promise.reject(sdkError("ValidationException", unionLimitMessage)) : successResponse();
+
+		await run([tool("preferred", "prefer")]);
+		await run([tool("preferred", "prefer")]);
+
+		assert.deepEqual(strictFlags(), [[true], [undefined], [true]]);
+	});
+
+	it("sends preferred tools non-strict right away on later requests of a rejected session (#11626)", async () => {
+		bedrockMock.respond = (attempt) =>
+			attempt === 1 ? Promise.reject(sdkError("ValidationException", unionLimitMessage)) : successResponse();
+		const tools = [tool("preferred", "prefer"), tool("required", "require")];
+
+		await run(tools, undefined, "rejected");
+		const second = await run(tools, undefined, "rejected");
+		await run(tools, undefined, "other");
+
+		assert.equal(second.stopReason, "stop");
+		assert.equal(second.diagnostics, undefined);
+		assert.deepEqual(strictFlags(), [
+			[true, true],
+			[undefined, true],
+			[undefined, true],
+			[true, true],
+		]);
+	});
+
+	it("tries strict sampling again after the session's resources are cleaned up", async () => {
+		bedrockMock.respond = (attempt) =>
+			attempt === 1 ? Promise.reject(sdkError("ValidationException", unionLimitMessage)) : successResponse();
+
+		await run([tool("preferred", "prefer")], undefined, "cleaned");
+		cleanupSessionResources("cleaned");
+		await run([tool("preferred", "prefer")], undefined, "cleaned");
+
+		assert.deepEqual(strictFlags(), [[true], [undefined], [true]]);
+	});
+
+	it("surfaces a rejection of a remembered session's required tools without retrying", async () => {
+		bedrockMock.respond = (attempt) =>
+			attempt === 2 ? successResponse() : Promise.reject(sdkError("ValidationException", unionLimitMessage));
+		const tools = [tool("preferred", "prefer"), tool("required", "require")];
+
+		await run(tools, undefined, "required");
+		const result = await run(tools, undefined, "required");
+
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage ?? "", /too many parameters with union types/);
+		assert.equal(bedrockMock.inputs.length, 3);
 	});
 });

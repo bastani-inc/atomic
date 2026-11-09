@@ -33,6 +33,8 @@ Use `/login` in interactive mode, then select a provider:
 - Meta (Muse subscription)
 - Radius
 
+Radius and OpenRouter, Atomic's preferred partners, come first in the `/login` and `/logout` provider lists and in the `/login <provider>` and `/logout <provider>` completions, marked with `✦`. All other providers follow alphabetically. In the lists, the selected Radius row shimmers in the Radius logo colors and the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes).
+
 Use `/login <provider>`, such as `/login openrouter` or `/login kimi-coding`, to go directly to a provider. Select subscription or API-key authentication when both are available.
 
 To sign in from the shell without starting a session, for example over SSH, run `atomic auth login <provider>`. It opens the browser for account sign-in; `--no-browser` uses a device code or another sign-in method instead, and `--api-key` saves an API key. See [Credential Commands](/reference/cli#credential-commands).

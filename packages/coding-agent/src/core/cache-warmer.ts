@@ -1,4 +1,18 @@
-import { type Api, calculateCost, type Model, type TranscriptContext, type Usage } from "@bastani/pi-ai";
+import {
+	type Api,
+	CACHE_WARMING_MAX_AGE_MS,
+	CACHE_WARMING_MAX_IDLE_AGE_MS,
+	CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS,
+	type CacheWarmingAction,
+	type CacheWarmingDecision,
+	evaluateCacheWarming,
+	getCacheWarmingDelayMs,
+	getCacheWarmingRequestOptions,
+	getPromptCacheTtlMs as getPromptCacheLifetimeMs,
+	isCacheWarmingReplayable,
+	type Model,
+	type TranscriptContext,
+} from "@bastani/pi-ai";
 import type { SimpleStreamOptions } from "@bastani/pi-ai/compat";
 import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
@@ -7,16 +21,9 @@ import type { ModelRuntimeSimpleStreamOptions } from "./model-runtime-streaming.
 import type { SessionEntry, SessionManager, UsageEntry } from "./session-manager.ts";
 import type { CacheWarmingMode } from "./settings-manager.ts";
 
-const MAX_WARMING_AGE_MS = 60 * 60_000;
-const MAX_IDLE_WARMING_AGE_MS = 30 * 60_000;
-const CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS = 0.05;
-const IDLE_CONTINUATION_PROBABILITY = 0.15;
+export type { CacheWarmingAction, CacheWarmingDecision };
 
-export function getCacheWarmingDelayMs(ttlMs: number): number | undefined {
-	if (ttlMs <= 10_000) return undefined;
-	return Math.max(1, Math.floor(Math.min(ttlMs * 0.9, ttlMs - 10_000)));
-}
-
+/** Resolves the retention the session would use, including model-specific defaults, before looking up the lifetime. */
 export function getPromptCacheTtlMs(model: Model<Api>, options: SimpleStreamOptions | undefined): number | undefined {
 	const configured = getProviderEnvValue("PI_CACHE_RETENTION", options?.env);
 	const retention =
@@ -28,15 +35,7 @@ export function getPromptCacheTtlMs(model: Model<Api>, options: SimpleStreamOpti
 				: configured === "long"
 					? "long"
 					: getDefaultCacheRetention(model));
-	if (retention === "none") return undefined;
-	const seconds = model.promptCache?.[retention];
-	return seconds === undefined ? undefined : seconds * 1000;
-}
-
-/** Budget-based Anthropic thinking changes the cache key when max_tokens changes. */
-export function isReplayable(model: Model<Api>, options: SimpleStreamOptions | undefined): boolean {
-	if (!options?.reasoning || model.api !== "anthropic-messages") return true;
-	return (model as Model<"anthropic-messages">).compat?.forceAdaptiveThinking === true;
+	return getPromptCacheLifetimeMs(model, { ...options, cacheRetention: retention });
 }
 
 function lastPromptTokens(entries: SessionEntry[]): number {
@@ -50,31 +49,6 @@ function lastPromptTokens(entries: SessionEntry[]): number {
 	return 0;
 }
 
-function price(
-	model: Model<Api>,
-	tokens: Partial<Pick<Usage, "input" | "output" | "cacheRead" | "cacheWrite">>,
-): number {
-	return calculateCost(model, {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		...tokens,
-	}).total;
-}
-
-export type CacheWarmingAction = "warm" | "stop";
-export interface CacheWarmingDecision {
-	phase: "streaming" | "idle";
-	warmCost: number;
-	missCost: number;
-	continuationProbability: number;
-	expectedSavings: number;
-	economicsAvailable: boolean;
-	action: CacheWarmingAction;
-}
 export interface CacheWarmingDecisionEvent
 	extends Pick<CacheWarmingDecision, "warmCost" | "missCost" | "continuationProbability" | "action"> {
 	type: "cache_warming_decision";
@@ -156,7 +130,7 @@ export class CacheWarmer {
 			this.stop("cache warming disabled");
 			return;
 		}
-		if (!isReplayable(request.model, request.options)) {
+		if (!isCacheWarmingReplayable(request.model, request.options)) {
 			this.stop("request cannot be replayed safely");
 			return;
 		}
@@ -197,7 +171,7 @@ export class CacheWarmer {
 			return;
 		}
 		run.phase = "idle";
-		const deadline = run.startedAt + MAX_IDLE_WARMING_AGE_MS;
+		const deadline = run.startedAt + CACHE_WARMING_MAX_IDLE_AGE_MS;
 		if (run.nextWarmAt > deadline || Date.now() >= deadline) this.stop("30-minute idle safety limit reached");
 	}
 	onModeChanged(): void {
@@ -226,7 +200,8 @@ export class CacheWarmer {
 		// the planned pre-expiry margin for that delay and request dispatch; a
 		// late refresh is likely a full-price cache write, not a cache warm.
 		run.refreshDeadlineAt = run.nextWarmAt + Math.floor((run.ttlMs - run.delayMs) / 2);
-		const deadline = run.startedAt + (run.phase === "idle" ? MAX_IDLE_WARMING_AGE_MS : MAX_WARMING_AGE_MS);
+		const deadline =
+			run.startedAt + (run.phase === "idle" ? CACHE_WARMING_MAX_IDLE_AGE_MS : CACHE_WARMING_MAX_AGE_MS);
 		if (run.nextWarmAt > deadline || Date.now() >= deadline) {
 			this.stop(run.phase === "idle" ? "30-minute idle safety limit reached" : "one-hour safety limit reached");
 			return;
@@ -275,14 +250,7 @@ export class CacheWarmer {
 		run.extensionOverride = extensionOverride;
 		try {
 			const message = await this.models
-				.streamSimple(run.model, run.context, {
-					...run.options,
-					maxTokens: 1,
-					// The warm request repeats the last request; it must not replace the conversation's thread state.
-					disableContinuation: true,
-					maxRetries: 0,
-					signal: run.controller.signal,
-				})
+				.streamSimple(run.model, run.context, getCacheWarmingRequestOptions(run.options, run.controller.signal))
 				.result();
 			if (!this.validateRun(run)) return;
 			if (message.stopReason !== "error" && message.stopReason !== "aborted") {
@@ -319,27 +287,7 @@ export class CacheWarmer {
 		return undefined;
 	}
 	private evaluate(run: ActiveRun): CacheWarmingDecision {
-		const model = run.model;
-		const promptTokens = lastPromptTokens(this.sessionManager.getBranch());
-		const cacheHitCost = price(model, { cacheRead: promptTokens });
-		const cacheMissCost = price(
-			model,
-			model.cost.cacheWrite > 0 ? { cacheWrite: promptTokens } : { input: promptTokens },
-		);
-		const warmCost = price(model, { cacheRead: promptTokens, output: 1 });
-		const missCost = Math.max(0, cacheMissCost - cacheHitCost);
-		const continuationProbability = run.phase === "idle" ? IDLE_CONTINUATION_PROBABILITY : 1;
-		const economicsAvailable = promptTokens > 0 && (cacheHitCost > 0 || cacheMissCost > 0);
-		const expectedSavings = continuationProbability * missCost - warmCost;
-		return {
-			phase: run.phase,
-			warmCost,
-			missCost,
-			continuationProbability,
-			expectedSavings,
-			economicsAvailable,
-			action: expectedSavings >= CACHE_WARMING_MINIMUM_EXPECTED_SAVINGS ? "warm" : "stop",
-		};
+		return evaluateCacheWarming(run.model, lastPromptTokens(this.sessionManager.getBranch()), run.phase);
 	}
 }
 

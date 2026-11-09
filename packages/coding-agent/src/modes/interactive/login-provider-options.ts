@@ -1,5 +1,6 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
+import { compareProviders } from "../../core/preferred-providers.ts";
 import { type AuthSelectorProvider, formatAuthSelectorProviderType } from "./components/oauth-selector.ts";
 
 export type LoginProviderOption = {
@@ -34,7 +35,7 @@ export function mergeLoginProviderOptions(providerOptions: readonly AuthSelector
 			...(provider.subscription === undefined ? {} : { subscription: provider.subscription }),
 		});
 	}
-	return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+	return [...byId.values()].sort(compareProviders);
 }
 
 export function resolveLoginProviderReference(
