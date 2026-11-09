@@ -858,29 +858,22 @@ The common `.git` of two linked worktrees of one repository produces identical c
 
 `git.filters` (`core.autocrlf`, `core.eol`, the drivers `.gitattributes` names) is informational: bytes are restored exactly as captured, so no `filters` warning is raised for v2 snapshots.
 
-#### 5.4.4 File set (ignore rules)
+#### 5.4.4 File set: capture everything (D15)
 
-The launch contract asks for exactly the set `git ls-files --cached --others --exclude-standard` prints. A4 forbids running git. `CheckoutSource` computes the same set natively:
+Like Devin's disk snapshots, `CheckoutSource` does **not** reproduce git's file selection. Reproducing `git ls-files --cached --others --exclude-standard` without git kept losing user work in git corner cases (sparse-index directory entries, a submodule replaced by a file or symlink, a symlinked `.gitignore` git refuses to read, `core.excludesFile` set through config includes). Every such miss is silent data loss, and the extra code guards edge cases instead of removing them.
 
 ```text
 fileSet(root, gitDir, commonDir)
-  tracked   = entries of <gitDir>/index (gix-index), excluding skip-worktree entries absent on disk,
-              that exist on disk (a deleted tracked file is simply not in the snapshot)
-  untracked = ignore::WalkBuilder(root)
-                .git_ignore(true).git_exclude(true).git_global(true)   // .gitignore, info/exclude, core.excludesFile
-                .hidden(false).require_git(false).parents(true)
-              minus tracked, minus nested repositories that are not submodules (git prints them as "dir/";
-              capture.ts:205 already drops them)
-  set       = tracked ∪ untracked
-  apply policy (policy.ts, deny list removed, D14): .atomic/snapshot-ignore, includeUntracked,
-              maxFileBytes (untracked files only, D11)
+  set = every entry under root (files, symlinks as links, empty dirs), walked without following symlinks,
+        minus .atomic/snapshot-ignore patterns (gitignore syntax, read by Atomic, never git's ignore files)
+        minus snapshots.exclude directory names (default below), matched by name at any depth,
+        minus nested .git of the checkout itself (captured separately as git data)
   add git data: /checkout/.git/** (normal) or /gitdir/** (linked), with
               - lock files and *.lock skipped (they are the consistency check, not data)
               - .git/config served through the sanitizer (D13)
-              - .git/lfs/objects/** subject to maxFileBytes per object (D11)
 ```
 
-`gix-index` is a new dependency (`ignore` 0.4 is already in the workspace `Cargo.toml`). A parity test compares the computed set against `git ls-files -z --cached --others --exclude-standard --deduplicate` on fixture repositories wherever git is installed: nested ignores, negations, global excludes, `git add -f` of an ignored file, unmerged entries, sparse checkout, submodules, untracked directories containing only ignored files, and non-UTF-8 names on Unix.
+`snapshots.exclude` defaults to rebuildable dependency and build directories that `.atomic/blueprint.yaml` `maintenance` recreates: `node_modules`, `target`, `.venv`, `venv`, `__pycache__`, `.gradle`, `.next`, `.nuxt`, `.turbo`, `.cache`, `dist`, `build`, `.pytest_cache`, `.mypy_cache`. The setting replaces the list (an empty list captures absolutely everything). There is no size cap and no tracked/untracked distinction: rustic chunks large files, parent snapshots skip unchanged files by size and mtime, and dedup keeps repeats cheap. Nested repositories and submodules are captured as ordinary directories. `includeUntracked`, `maxFileBytes`, `gix-index` and the parity test are dropped.
 
 ### 5.5 Data Model
 
@@ -1324,7 +1317,7 @@ Each decision cites the precedent A2 asks for.
 | D1 | `rustic_core` 0.13.0 + `rustic_backend` 0.7.0, as is | User decision | restic/rustic |
 | D2 | Snapshot the whole checkout including `.git`; restore needs no git | User decision (A3); stashes, branches, index and unpushed work travel | Devin snapshots (whole machine state), Jujutsu working-copy snapshots |
 | D3 | Custom `CheckoutSource` with virtual `/checkout` and `/gitdir` paths; sibling-worktree second parent | Exact file set; OS-independent trees; stable `paths` keep rustic's parent grouping working | Bazel REAPI's input-root digests are path-relative |
-| D4 | Compute the `ls-files --cached --others --exclude-standard` set natively (`gix-index` + `ignore`), with a parity test | Launch ignore rule under A4's no-git rule | — |
+| D4 | ~~Compute the `ls-files` set natively~~ superseded by D15 | — | — |
 | D5 | `auto` = local for single-host stores, store backend for shared databases, per store; any failure → local with a warning | Zero setup (A1); never block (A2) | Intercom's "local file = single host" rule |
 | D6 | Store backend calls back into JS over a `ThreadsafeFunction` | One connection and writer queue, all adapters and secrets reused | — |
 | D7 | 1 MiB chunk rows; store packs 4 MiB (cap 8 MiB), growfactor 0; tree packs 1 MiB | sqld row/response limits; ≤ 8 rows per pack transaction | `SESSION_BLOB_CHUNK_BYTES` |
@@ -1335,6 +1328,7 @@ Each decision cites the precedent A2 asks for.
 | D12 | Lock files → `busy` at start, `lock-appeared` at end; retry at the next boundary | rustic has no change detection | Jujutsu snapshots at command boundaries |
 | D13 | Serve `.git/config` through a sanitizer: userinfo removed from `remote.*.url`/`pushurl`, `http.*.extraheader` removed | Keeps today's documented credential redaction | Codespaces never bakes user secrets into prebuilds |
 | D14 | No deny list, exactly like Devin: capture every file in the checkout and `.git`, encrypted; `.atomic/snapshot-ignore` is the opt-out | Devin parity; `.env` and local config survive a cross-machine resume, which no blueprint can rebuild | Working-tree deny list (loses `.env` on resume); history-wide deny list (needs an object walker, drops stashes) |
+| D15 | Capture every file in the checkout (minus `.atomic/snapshot-ignore` and the editable `snapshots.exclude` list of rebuildable directories); no git-parity file set, no size cap | Devin parity; a native `ls-files` copy silently lost user work in git corner cases; blueprint `maintenance` rebuilds excluded directories | Native `ls-files` parity (D4, data-loss corner cases); capturing dependency directories by default (large first snapshots) |
 | D14 | GC recomputes roots from owners' data, single claimant per repository, `delete_snapshots` then `prune` with default `keep_delete` | No triggers; rustic FAQ's single-host prune guidance | restic forget/prune |
 | D15 | Release N writes v2 and reads v1; v1 tables untouched; removal two minor releases later; no eager conversion | Rolling upgrades of multi-node fleets; conversion would need git and remotes | Kubernetes-style N/N+1 compatibility windows |
 | D16 | Export/import through `Repository::copy` into a temporary repository | Session files stay self-contained | restic `copy` |
