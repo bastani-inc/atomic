@@ -32,6 +32,7 @@
 
 ### Fixed
 
+- Fixed agent sessions slowing every later session on Node.js 22: each session kept two async-context stores alive for the life of the process, so long runs with many subagents or workflow stages grew steadily slower ([#4622](https://github.com/bastani-inc/atomic/pull/4622))
 - Fixed SQLite stores sometimes failing to open on Windows with `disk I/O error (SQLite code 1546)` after another process using the database was killed. Initialization now retries that specific error for up to 5 seconds, bounded by the configured busy timeout; other I/O errors still fail immediately ([#4610](https://github.com/bastani-inc/atomic/issues/4610))
 - Restored the optional, deprecated `GrepOperations.readFile` field so existing custom operations still compile. The callback remains ignored; context lines come from local search. Override `execute()` for remote search ([#4610](https://github.com/bastani-inc/atomic/issues/4610))
 - Fixed the `powershell` tool reporting exit code 1 on Windows PowerShell 5.1 when a native command succeeded but redirected stderr, such as `git push 2>&1 | Select-Object -Last 3`. Failed commands and unfinished scripts still report failure (upstream [#11964](https://github.com/earendil-works/pi/pull/11964), [#8842](https://github.com/earendil-works/pi/issues/8842))
