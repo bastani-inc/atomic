@@ -3531,7 +3531,11 @@ async function generateModels() {
 			maxTokens: 128000,
 		},
 	];
-	allModels.push(...missingAnthropicModels);
+	for (const model of missingAnthropicModels) {
+		if (!allModels.some((candidate) => candidate.provider === model.provider && candidate.id === model.id)) {
+			allModels.push(model);
+		}
+	}
 
 	const deepseekCompat: OpenAICompletionsCompat = {
 		requiresReasoningContentOnAssistantMessages: true,

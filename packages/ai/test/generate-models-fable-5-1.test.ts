@@ -423,6 +423,26 @@ test("prefers a models.dev Claude Fable 5.2 row over the static entry once it is
 	assert.equal(model.compat?.supportsMidConvoEffort, true);
 });
 
+test("keeps the Claude Fable 5.2 fallback targets once models.dev publishes the row", () => {
+	const published = {
+		...CATALOG,
+		anthropic: {
+			models: {
+				...CATALOG.anthropic.models,
+				"claude-fable-5-2": { ...FABLE_5_1_MODELS_DEV, id: "claude-fable-5-2", name: "Claude Fable 5.2" },
+			},
+		},
+	};
+	const fallbacks = generate(published).anthropic["claude-fable-5-2"].compat?.allowedFallbackModels as
+		| Array<{ provider: string; model: string }>
+		| undefined;
+
+	assert.deepEqual(
+		fallbacks?.map((fallback) => fallback.model),
+		["claude-opus-5"],
+	);
+});
+
 test("gates per-message effort and mid-conversation system messages on exact Fable and Mythos 5.1 and 5.2 ids", () => {
 	const row = (id: string) => ({ ...FABLE_5_1_MODELS_DEV, id, cost: FABLE_COST });
 	const ids = [
