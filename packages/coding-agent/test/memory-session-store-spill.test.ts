@@ -1273,7 +1273,7 @@ describe("released history outlives no process, except one killed, until the nex
 			assert.deepEqual((await store.load("s")).entries, entries("e", 2));
 
 			const opening = join(agentDir, "sweep-on-open");
-			const left = join(releasedHistoryUnder(opening), basename(host), `${gonePid}-1`);
+			const left = join(releasedHistoryUnder(opening), basename(host), `${process.pid}-1`);
 			mkdirSync(left, { recursive: true });
 			const memory = await afterDirectoryRemoval(left, () =>
 				new StorageProvider().openSessionStore({ kind: "memory" }, { agentDir: opening, domain: "sessions" }),
@@ -1282,7 +1282,7 @@ describe("released history outlives no process, except one killed, until the nex
 			await memory.close();
 
 			const resolving = join(agentDir, "sweep-on-resolve");
-			const leftThere = join(releasedHistoryUnder(resolving), basename(host), `${gonePid}-1`);
+			const leftThere = join(releasedHistoryUnder(resolving), basename(host), `${process.pid}-1`);
 			mkdirSync(leftThere, { recursive: true });
 			const sessions = await afterDirectoryRemoval(leftThere, () =>
 				resolveSessionStore(resolving, {
