@@ -589,7 +589,7 @@ export interface CaptureRequest {
   parents: string[];                // rustic snapshot ids, newest first
   hostname: string; tags: string[]; description: string;   // description = SnapshotRecord JSON minus ref
   includeUntracked: boolean; maxFileBytes: number;
-  denyPatterns: string[]; snapshotIgnoreFile: string | null;
+  snapshotIgnoreFile: string | null;
 }
 export interface CaptureResult {
   status: "captured" | "unchanged" | "busy" | "lock-appeared" | "unreadable";
@@ -872,7 +872,7 @@ fileSet(root, gitDir, commonDir)
               minus tracked, minus nested repositories that are not submodules (git prints them as "dir/";
               capture.ts:205 already drops them)
   set       = tracked ∪ untracked
-  apply policy (policy.ts, unchanged): deny list, .atomic/snapshot-ignore, includeUntracked,
+  apply policy (policy.ts, deny list removed, D14): .atomic/snapshot-ignore, includeUntracked,
               maxFileBytes (untracked files only, D11)
   add git data: /checkout/.git/** (normal) or /gitdir/** (linked), with
               - lock files and *.lock skipped (they are the consistency check, not data)
@@ -997,7 +997,7 @@ captureSnapshot({ paths, owner, parent? })
 | Unreadable path | That root's capture returns `skipped(unreadable-path)` naming the path, as today. Make it readable or add it to `.atomic/snapshot-ignore` |
 | Nested repositories | Not submodules: skipped, as `git ls-files` does |
 
-**What no longer exists:** `installedGitUnavailable`, provisioning checks, scratch indexes, snapshot commits in the user's object store, patch chains, bundles, the deny-list history check, `blob-store-unsupported`. A JSONL session directory now records snapshots too (into the local repository). In-memory sessions still record nothing.
+**What no longer exists:** `installedGitUnavailable`, provisioning checks, scratch indexes, snapshot commits in the user's object store, patch chains, bundles, the deny list and its history check (D14; `docs/worktree-snapshots.md` drops the deny-list guarantee and documents `.atomic/snapshot-ignore`), `blob-store-unsupported`. A JSONL session directory now records snapshots too (into the local repository). In-memory sessions still record nothing.
 
 ### 5.7 Restore Flow (item 4, A3)
 
@@ -1334,6 +1334,7 @@ Each decision cites the precedent A2 asks for.
 | D11 | `maxFileBytes` (default 50 MiB) applies to untracked files, LFS objects, and tracked files whose stat still matches the index; other tracked files and `.git/objects` are always captured | Code and uncommitted edits are user work; large refetchable content is blueprint-recoverable (A2) | Codespaces excludes rebuildable state from prebuilds |
 | D12 | Lock files → `busy` at start, `lock-appeared` at end; retry at the next boundary | rustic has no change detection | Jujutsu snapshots at command boundaries |
 | D13 | Serve `.git/config` through a sanitizer: userinfo removed from `remote.*.url`/`pushurl`, `http.*.extraheader` removed | Keeps today's documented credential redaction | Codespaces never bakes user secrets into prebuilds |
+| D14 | No deny list, exactly like Devin: capture every file in the checkout and `.git`, encrypted; `.atomic/snapshot-ignore` is the opt-out | Devin parity; `.env` and local config survive a cross-machine resume, which no blueprint can rebuild | Working-tree deny list (loses `.env` on resume); history-wide deny list (needs an object walker, drops stashes) |
 | D14 | GC recomputes roots from owners' data, single claimant per repository, `delete_snapshots` then `prune` with default `keep_delete` | No triggers; rustic FAQ's single-host prune guidance | restic forget/prune |
 | D15 | Release N writes v2 and reads v1; v1 tables untouched; removal two minor releases later; no eager conversion | Rolling upgrades of multi-node fleets; conversion would need git and remotes | Kubernetes-style N/N+1 compatibility windows |
 | D16 | Export/import through `Repository::copy` into a temporary repository | Session files stay self-contained | restic `copy` |
@@ -1353,7 +1354,7 @@ Each decision cites the precedent A2 asks for.
 - **The trust transition is singular.** Ids from storage, imported files and pool rows become `SnapshotRef` only in `parseSnapshotRef`. Archive content is verified against its ids in `importSnapshots`. Cloud credentials are resolved only in repository selection and setup.
 - **Encryption.** Every repository is encrypted and authenticated by rustic (AES-256-CTR + Poly1305, scrypt). Object stores hold ciphertext only; a party with bucket access but not the password can neither read nor plant content.
 - **Passwords and secrets.** Repository passwords live in the session database (database access is already full access, `docs/storage.md`) or in `AuthStorage` (0600). Cloud secrets are `SecretRef`s; pasted secrets go to 0600 files. Nothing secret is written to `settings.json`, logs, warnings or `status` output.
-- **What travels that did not before.** The whole `.git`: unpushed commits, stashes, reflogs, hooks, local config. Deny-listed working-tree files (`.env*`, keys, credentials) are still excluded, and credentials in remote URLs are still redacted (D13). A deny-listed file **committed** locally is inside `.git/objects` and is captured, encrypted. This narrows today's deny-list guarantee and is the one user-owned question (§9, Q1).
+- **What travels that did not before.** The whole `.git`: unpushed commits, stashes, reflogs, hooks, local config. Following Devin, there is **no deny list** (D14): working-tree files such as `.env*`, keys and credential files are captured like any other file, together with everything in `.git`, all encrypted and authenticated by the repository key, so a resume on another machine gets them back. Credentials in remote URLs are still redacted (D13). A user who wants a path never to leave the machine lists it in `.atomic/snapshot-ignore`. Long-lived secrets belong in the environment or a blueprint, as in Devin's Secrets model.
 - **Hooks.** `.git/hooks` is user state and travels with the checkout. A restored worktree starts untrusted for Atomic's project trust, as today; git itself runs hooks regardless of Atomic's trust, exactly as on the source machine.
 - **Irreversible effects pass one chokepoint each:** snapshot data destruction through `collectSnapshots`, v1 table drops through `dropLegacySnapshotStore`, cloud resource creation and global setting rewrites through `setupSnapshotStorage` behind `confirm`.
 - **Path safety.** Restore writes only under its staging directory; names that cannot exist on the target are filtered before rustic sees them (§5.7 step 3).
@@ -1499,7 +1500,7 @@ Each slice is one PR on top of the previous one, about 100–500 added lines (de
 | Slice | Content | +lines (≈) | −lines (≈) | Red test (first) | Verification |
 |---|---|---|---|---|---|
 | S1 | Cargo deps (`rustic_core =0.13.0`, `rustic_backend =0.7.0` opendal-only, `gix-index`); `SnapshotRepository.open/init/id` on the local backend; generated `.d.ts`; lazy import; `cargo test` step | 250 | 0 | `open` on an empty temp dir inits a repository and returns a 64-hex id | `cargo clippy`; all 8 native targets build in CI; vitest open/init |
-| S2 | `CheckoutSource` (file set, layouts, lock files, sanitizer, cap, deny list) and `capture` with parents, `skip_if_unchanged`, tags, description | 450 | 0 | Parity with `git ls-files` on the fixture set | Rust units; vitest parity; git-less capture |
+| S2 | `CheckoutSource` (file set, layouts, lock files, sanitizer, cap, snapshot-ignore) and `capture` with parents, `skip_if_unchanged`, tags, description | 450 | 0 | Parity with `git ls-files` on the fixture set | Rust units; vitest parity; git-less capture |
 | S3 | `restore` (streams, target filter, missing packs, staging, rename) and `compare` | 400 | 0 | Round trip of a normal checkout is byte-identical | vitest round trip; missing-pack fixture; dry-run writes nothing |
 | S4 | Fixups (1)–(5) | 300 | 0 | Linked worktree restored to a new path has working pointer files | Windows shard; Windows-captured fixtures on Linux |
 | S5 | Store backend: TSFN bridge, `snapshot_repository_*` tables, chunking | 450 | 0 | Conformance suite: write/list/read_partial/remove on node:sqlite | node:sqlite, libSQL fake, real sqld |
@@ -1520,13 +1521,11 @@ S8 is the switch: before it, everything is additive and unused; after it, Atomic
 
 ## 9. Open Questions / Unresolved Issues
 
-A2 asks for decisions rather than questions; §6.2 records them. One choice is genuinely the user's:
+A2 asks for decisions rather than questions; §6.2 records them. The one user-owned choice is resolved:
 
-- [ ] **Q1. Deny-list guarantee with whole-`.git` capture.** Today: "no deny-listed bytes are captured unless they are already in a commit reachable from a remote-tracking ref" (`docs/worktree-snapshots.md:49`). Capturing `.git` whole (A3) means a `.env` committed locally but never pushed, or stashed, is captured (encrypted).
-  - **(A) Recommended:** narrow the guarantee to working-tree files: deny-listed files in the checkout are never captured; git history, stashes and objects are captured as they are, encrypted; credentials in remote URLs stay redacted (D13). Trade-off: a locally committed secret now travels to the repository (under the repository password).
-  - **(B)** Keep the old guarantee: detect deny-listed paths in unpushed history and leave `.git/objects` out for that checkout. Trade-off: needs git or a native object walker to find them, contradicts A3's whole-`.git` capture, and loses stashes and history exactly when they matter.
+- [x] **Q1. Secrets policy with whole-checkout capture — decided: exactly Devin (D14).** Devin snapshots the whole disk with no deny list and keeps snapshots and secrets encrypted at rest; long-lived secrets come from its encrypted Secrets store as environment variables. Atomic does the same: no deny list, every file in the checkout and `.git` is captured, encrypted by the repository key (held in the session database or `AuthStorage`); credentials in remote URLs stay redacted (D13); `.atomic/snapshot-ignore` is the explicit opt-out. Rejected: (A) a working-tree-only deny list, because `.env` would then be missing after a cross-machine resume and no blueprint can rebuild it; (B) the old history-wide guarantee, because it needs a git object walker and drops stashes and history.
 
-  The spec is written assuming (A).
+There are no open questions left.
 
 ## 10. Backwards Compatibility
 
