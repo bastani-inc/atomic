@@ -86,8 +86,21 @@ function statements(connection, watch, single = watch) {
 	return {
 		execute: (sql, params) =>
 			single(async () => driverResult(await (await connection()).execute({ sql, args: [...params] }))),
-		executeMultiple: (sql) => watch(async () => (await connection()).executeMultiple(sql)),
+		// An `exec` of one statement wrote nothing when it fails, as one `execute` did; one of several statements may
+		// fail after the statements before it committed.
+		executeMultiple: (sql) =>
+			(isOneStatement(sql) ? single : watch)(async () => (await connection()).executeMultiple(sql)),
 	};
+}
+
+/**
+ * Whether `sql` is one statement: it has no `;` but at its end. A `;` in a literal or a comment also counts, so
+ * several statements are never taken for one.
+ * @param {string} sql
+ */
+function isOneStatement(sql) {
+	const first = sql.indexOf(";");
+	return first === -1 || /^[\s;]*$/.test(sql.slice(first));
 }
 
 /**
@@ -293,8 +306,9 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		descriptor: { adapter: "libsql", location: url },
 		redact: redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]),
 		transientFailure,
-		// One statement outside a transaction that waited out the busy timeout wrote nothing and runs again. Several
-		// statements in one `exec` are not: the ones before the failed statement were committed.
+		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
+		// timeout wrote nothing and runs again. Several statements in one `exec` do not: the ones before the failed
+		// statement were committed.
 		...statements(connection, watch, waitForLock),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
 		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing.
