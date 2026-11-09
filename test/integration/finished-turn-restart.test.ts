@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { test } from "vitest";
 import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/shared/resume-continuation.js";
+import { useBundledNodeFixture } from "../helpers/bundled-node-fixture.js";
 import {
 	bunExecutable,
 	fileExists,
@@ -17,6 +18,7 @@ import {
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/finished-turn-restart.ts");
+const bundledNodeFixture = useBundledNodeFixture(FIXTURE);
 const STAGES = 4;
 const WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS = 60_000;
 const PROCESS_RESTART_TIMEOUT_MS = 3 * WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS;
@@ -33,11 +35,16 @@ interface KilledRun {
 
 /** Start the fixture's `scenario`, SIGKILL it once it is ready, resume the same run in a new process, and report. */
 async function killThenResume(runtime: "node" | "bun", scenario: "finished" | "fork"): Promise<KilledRun> {
+	const fixture = runtime === "node" ? await bundledNodeFixture() : FIXTURE;
 	const directory = makeTempDirectory("finished-turn-restart-");
 	const runId = randomUUID();
-	const command = runtime === "node" ? [process.execPath, "--import", "jiti/register"] : [bunExecutable()];
-	const environment = { ...process.env, ATOMIC_AGENT_DIR: join(directory, "agent") };
-	const child = spawnProcess([...command, FIXTURE, "wait", directory, String(STAGES), runId, scenario], {
+	const command = runtime === "node" ? [process.execPath] : [bunExecutable()];
+	const environment = {
+		...process.env,
+		ATOMIC_AGENT_DIR: join(directory, "agent"),
+		ATOMIC_PACKAGE_DIR: join(ROOT, "packages/coding-agent"),
+	};
+	const child = spawnProcess([...command, fixture, "wait", directory, String(STAGES), runId, scenario], {
 		cwd: ROOT,
 		env: environment,
 	});
@@ -54,7 +61,7 @@ async function killThenResume(runtime: "node" | "bun", scenario: "finished" | "f
 		await child.exited;
 		const requestsBeforeKill = (await readText(join(directory, "effects.txt"))).split("\n").filter(Boolean);
 
-		const resumed = spawnSyncCollect([...command, FIXTURE, "resume", directory, String(STAGES), runId, scenario], {
+		const resumed = spawnSyncCollect([...command, fixture, "resume", directory, String(STAGES), runId, scenario], {
 			cwd: ROOT,
 			env: environment,
 			timeout: WORKFLOW_CHILD_STARTUP_AND_CHECKPOINT_TIMEOUT_MS,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -269,8 +270,17 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 	return { runtime, store, script, runAgent, live, subscriptions: () => subscriptions };
 }
 
+/**
+ * Async context stores alive now. On Node before 24 a store that has run stays in the process's hook list for good, and
+ * every promise or async resource made after it visits every one of them: a store per agent is kept, and slows the
+ * whole process down, after the agent is gone.
+ */
+function asyncContextStores(): number {
+	return queryObjects(AsyncLocalStorage, { format: "count" }) as number;
+}
+
 describe("idle agents hold nothing per agent (#4326)", () => {
-	test("released agents add no timer, socket, process, listener, dispatcher entry or live session", async () => {
+	test("released agents add no timer, socket, process, listener, async context store, dispatcher entry or live session", async () => {
 		const h = await host();
 		const dispatcher = new AgentWakeDispatcher();
 		const released: string[] = [];
@@ -283,13 +293,18 @@ describe("idle agents hold nothing per agent (#4326)", () => {
 		};
 
 		await wave(0);
-		const afterFirst = { handles: await settledHandles(), listeners: h.subscriptions() };
+		const afterFirst = {
+			handles: await settledHandles(),
+			listeners: h.subscriptions(),
+			stores: asyncContextStores(),
+		};
 		await wave(AGENTS_PER_WAVE);
 		await wave(AGENTS_PER_WAVE * 2);
 
 		assert.equal(released.length, AGENTS_PER_WAVE * 3);
 		assert.deepEqual(await settledHandles(), afterFirst.handles);
 		assert.equal(h.subscriptions(), afterFirst.listeners);
+		assert.equal(asyncContextStores(), afterFirst.stores);
 		assert.equal(h.runtime.rehydratedSessionCount, 0);
 		assert.equal(armedIdleSessionCount(), 0);
 		assert.deepEqual(dispatcher.stats(), {

@@ -235,3 +235,78 @@ test("shipped Gemini 4 Argon evidence reaches Copilot routing without Gemini 3.x
 	assert.match(full, /^\| gemini-4-argon-medium \| Gemini 4 Argon \| ABench \| 50\.1 \|/mu);
 	assert.equal(candidateReleaseDate(catalog, id), "2026-09-30");
 });
+
+test("shipped Claude Fable 5.2 evidence reaches every catalog route without Fable 5.1 rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	for (const id of [
+		"anthropic/claude-fable-5-2",
+		"openrouter/anthropic/claude-fable-5.2",
+		"vercel-ai-gateway/anthropic/claude-fable-5.2",
+	]) {
+		const evidence = catalogEvidence(catalog, [id]);
+		for (const effort of ["Max", "Xhigh", "High", "Medium", "Low"])
+			assert.match(
+				evidence,
+				new RegExp(
+					`^\\| claude-fable-5-2[a-z-]* \\| Claude Fable 5\\.2 \\(${effort}, Default Fallback\\) \\| 2026-11-09 \\|`,
+					"mu",
+				),
+				`${id} ${effort}`,
+			);
+		assert.match(evidence, /^\| claude-fable-5-2 \| Claude Fable 5\.2 \| TB4 \| 67\.6 \|[^\n]*\| Anthropic \|$/mu);
+		assert.doesNotMatch(evidence, /^\| claude-fable-5-1/mu, id);
+		assert.equal(candidateReleaseDate(catalog, id), "2026-11-09", id);
+	}
+	assert.doesNotMatch(catalogEvidence(catalog, ["anthropic/claude-fable-5-1"]), /^\| claude-fable-5-2/mu);
+});
+
+test("shipped new-family AA evidence reaches the catalog routes that name each model", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	const routes: ReadonlyArray<readonly [id: string, slug: string, releaseDate: string]> = [
+		["moonshotai/kimi-k3.1-pro", "kimi-k3-1-pro", "2026-10-23"],
+		["openrouter/meta/muse-wonder", "muse-wonder", "2026-10-12"],
+		["openrouter/meta/muse-ember", "muse-ember", "2026-11-09"],
+		["openrouter/meta/muse-spark-open", "muse-spark-open", "2026-10-15"],
+		["minimax/MiniMax-M3.1-Flash", "minimax-m3-1-flash", "2026-10-19"],
+		["xiaomi/mimo-v2.6-flash", "mimo-v2-6-flash", "2026-09-21"],
+		["openrouter/inclusionai/ling-3.1-flash", "ling-3-1-flash", "2026-10-22"],
+		["opencode/inkling-2-small-free", "inkling-2-small", "2026-11-05"],
+		["mistral/mistral-large-4", "mistral-large-4", "2026-10-29"],
+		["openrouter/nvidia/nemotron-3.5-super-vl", "nemotron-3-5-super-vl", "2026-10-15"],
+		["openrouter/upstage/solar-mini4", "solar-mini4", "2026-09-22"],
+		["openrouter/deepseek/deepseek-v4.1-flash-1017", "deepseek-v4-1-flash-1017", "2026-10-17"],
+	];
+	for (const [id, slug, releaseDate] of routes) {
+		assert.match(catalogEvidence(catalog, [id]), new RegExp(`^\\| ${slug} \\|`, "mu"), id);
+		assert.equal(candidateReleaseDate(catalog, id), releaseDate, id);
+	}
+});
+
+test("DeepSeek V4.1 Flash 1017 IDs resolve to the 1017 rows, not the earlier V4.1 Flash rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	for (const id of [
+		"openrouter/deepseek/deepseek-v4.1-flash-1017",
+		"vercel-ai-gateway/deepseek/deepseek-v4.1-flash-1017",
+		"baseten/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+		"mistral/deepseek-v4-1-flash-1017",
+	]) {
+		const evidence = catalogEvidence(catalog, [id]);
+		for (const slug of [
+			"deepseek-v4-1-flash-1017",
+			"deepseek-v4-1-flash-1017-high",
+			"deepseek-v4-1-flash-1017-non-reasoning",
+		])
+			assert.match(evidence, new RegExp(`^\\| ${slug} \\|[^\\n]*\\| 2026-10-17 \\|`, "mu"), `${id} ${slug}`);
+		assert.doesNotMatch(evidence, /^\| deepseek-v4-1-flash(?:-non-reasoning)? \|/mu, id);
+		assert.equal(candidateReleaseDate(catalog, id), "2026-10-17", id);
+	}
+});

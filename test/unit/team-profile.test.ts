@@ -65,6 +65,7 @@ const VARIABLES = [
 	"ATOMIC_TEAM_PREFIX",
 ];
 const TEAM_URL = "libsql://team.example.turso.io";
+const NO_BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
 
 let root: string;
 let agentDir: string;
@@ -464,7 +465,7 @@ describe("teamProfileSelection (#4320)", () => {
 		const sessionStore = { kind: "memory" } as const;
 		const journal = { memory: true } as const;
 		const adapterFailure = (options: CreateAgentSessionOptions) =>
-			createAgentSession({ cwd: project, agentDir, storage, ...options }).then(
+			createAgentSession({ cwd: project, agentDir, storage, builtins: NO_BUILTINS, ...options }).then(
 				async ({ session }) => {
 					session.dispose();
 					return undefined;

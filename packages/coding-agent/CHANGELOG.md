@@ -17,6 +17,9 @@
 - Variables a blueprint writes to `$ENVRC` reach the resumed session's `bash` tool for the worktrees the build restored ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
 - `BlueprintError` and its subclasses (`BlueprintInvalidError`, `BlueprintStepFailedError`, `BlueprintStepTimedOutError`, `BlueprintUsesUnsupportedError`, `BlueprintBuildFailedError`) with guards, `serializeBlueprintError` and `rehydrateBlueprintError`, plus `parseBlueprint`, `runBlueprintBuild`, `setUpResumedBlueprints` and `renderBlueprintContext`, are exported from `@bastani/atomic` ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
 - `/resume`, `/import` and woken sessions show the warnings of the blueprint builds they ran, and workflow resumes record them as workflow notices ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
+- Recorded Claude Fable 5.2 results in the evals snapshot used by automatic model routing: Artificial Analysis rows for all five efforts, its Terminal-Bench-Science measurements, and Anthropic's vendor-reported launch and system-card results ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
+- Recorded Artificial Analysis results in the evals snapshot for Kimi K3.1 Pro, Muse Wonder, Muse Ember, Muse Spark Open, MiniMax-M3.1-Flash, MiMo-V2.6-Flash, Ling 3.1 Flash, Inkling 2 Small, Mistral Large 4, Tencent Hy4, Beam 1.0, Nemotron 3.5 Super VL, Solar Mini 4 and DeepSeek V4.1 Flash 1017 (whose catalog IDs previously resolved to the older V4.1 Flash rows), so automatic model routing can rank them on measured results ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
+- Refreshed Artificial Analysis values in the evals snapshot that AA re-measured under the same benchmark version: AutomationBench-AA for Claude Sonnet 5.5 and Solar Pro 4, GDP.pdf and MMMU-Pro for GPT-6 Luna, GDP.pdf for Qwen3.8 27B, five more Solar Pro 4 columns, and newly published GDP.pdf and AA-AnalystAgent cells on those rows ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
 
 ### Deprecated
 
@@ -29,6 +32,7 @@
 
 ### Fixed
 
+- Fixed agent sessions slowing every later session on Node.js 22: each session kept two async-context stores alive for the life of the process, so long runs with many subagents or workflow stages grew steadily slower ([#4622](https://github.com/bastani-inc/atomic/pull/4622))
 - Fixed SQLite stores sometimes failing to open on Windows with `disk I/O error (SQLite code 1546)` after another process using the database was killed. Initialization now retries that specific error for up to 5 seconds, bounded by the configured busy timeout; other I/O errors still fail immediately ([#4610](https://github.com/bastani-inc/atomic/issues/4610))
 - Restored the optional, deprecated `GrepOperations.readFile` field so existing custom operations still compile. The callback remains ignored; context lines come from local search. Override `execute()` for remote search ([#4610](https://github.com/bastani-inc/atomic/issues/4610))
 - Fixed the `powershell` tool reporting exit code 1 on Windows PowerShell 5.1 when a native command succeeded but redirected stderr, such as `git push 2>&1 | Select-Object -Last 3`. Failed commands and unfinished scripts still report failure (upstream [#11964](https://github.com/earendil-works/pi/pull/11964), [#8842](https://github.com/earendil-works/pi/issues/8842))

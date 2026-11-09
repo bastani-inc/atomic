@@ -78,8 +78,12 @@ function assertPid(pid: number): void {
 }
 
 async function posixStopped(pid: number): Promise<boolean> {
-	const { stdout } = await promisify(execFile)("ps", ["-o", "stat=", "-p", String(pid)]);
-	return stdout.trim().startsWith("T");
+	const threadArguments = process.platform === "linux" ? ["-L"] : [];
+	const { stdout } = await promisify(execFile)("ps", [...threadArguments, "-o", "stat=", "-p", String(pid)]);
+	return stdout
+		.trim()
+		.split(/\s+/)
+		.every((state) => state.startsWith("T"));
 }
 
 const posixSuspender: ProcessSuspender = {

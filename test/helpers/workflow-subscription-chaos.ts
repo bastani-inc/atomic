@@ -52,8 +52,8 @@ export interface Records {
 	readonly watcherMessages: string[] | null;
 }
 
-export function records(directory: string, runId: string): Records {
-	const result = fixture(["records", directory, runId, "inspector"]);
+export function records(directory: string, runId: string, inspect = fixture): Records {
+	const result = inspect(["records", directory, runId, "inspector"]);
 	assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());
 	return lastJson(result.stdout);
 }
