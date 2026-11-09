@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { type SessionEntry, SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
+import { createProcessSuspender } from "../helpers/process-suspension.js";
 import { bunExecutable, readStreamText, type SpawnedProcess, sleep, spawnProcess } from "../helpers/runtime.js";
 
 const WRITER = fileURLToPath(new URL("../fixtures/jsonl-session-chaos-writer.ts", import.meta.url));
@@ -152,14 +153,17 @@ test.skipIf(process.platform === "win32")(
 	async () => {
 		const directory = scratchDirectory("jsonl-chaos-stop-");
 		const writers: SpawnedProcess[] = [];
+		const suspender = await createProcessSuspender();
 		try {
 			const child = writer(directory, "stopped", 300, 40);
 			writers.push(child);
 			assert.equal(await readLine(child), "ready");
+			const pid = child.pid;
+			assert.ok(pid !== undefined);
 			for (let pause = 0; pause < 5; pause++) {
-				child.kill("SIGSTOP");
+				await suspender.suspend(pid);
 				await assertSessionsIntact(directory, ["stopped"], 300);
-				child.kill("SIGCONT");
+				await suspender.resume(pid);
 				await sleep(20);
 			}
 			assert.match(await readLine(child), /^done 40$/);
@@ -167,6 +171,7 @@ test.skipIf(process.platform === "win32")(
 			assert.equal((await assertSessionsIntact(directory, ["stopped"], 300)).get("stopped"), 40);
 		} finally {
 			await stopWriters(writers);
+			await suspender.close();
 			rmSync(directory, { recursive: true, force: true });
 		}
 	},

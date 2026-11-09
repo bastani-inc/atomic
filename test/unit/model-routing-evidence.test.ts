@@ -35,7 +35,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	assert.doesNotMatch(evals, /^## Grok 4\.7$/mu);
 	assert.match(
 		evals,
-		/^Last Accessed: 2026-11-02 \(Gemini 4 Argon additions; earlier rows retain their snapshot dates below\)\.$/mu,
+		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 and other new-model additions, and refreshed Artificial Analysis values listed below; earlier rows retain their snapshot dates below\)\.$/mu,
 	);
 	assert.match(evals, /^\| slug \| Model \| Release date \| idx \| Brief \| Gn \| Auto \| TB4 \|/mu);
 	assert.match(
@@ -52,7 +52,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	);
 	assert.match(
 		evals,
-		/^\| claude-sonnet-5-5 \| Claude Sonnet 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 2026-09-28 \| 56 \| 65\.5 \| 67\.2 \| 71\.3 \| 63\.6 \|/mu,
+		/^\| claude-sonnet-5-5 \| Claude Sonnet 5\.5 \(Adaptive Reasoning, Max Effort, Default Fallback\) \| 2026-09-28 \| 56 \| 65\.5 \| 67\.2 \| 71\.8 \| 63\.6 \|/mu,
 	);
 	assert.match(
 		evals,
@@ -63,7 +63,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
 	const caption =
-		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, and (\d+) Gemini 4 Argon row accessed 2026-11-02\.$/mu.exec(
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, (\d+) Claude Fable 5\.2 rows accessed 2026-11-09, and (\d+) rows for 14 other new model families accessed 2026-11-09\.$/mu.exec(
 			evals,
 		);
 	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
@@ -74,7 +74,9 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 			Number(caption[3]) +
 			Number(caption[4]) +
 			Number(caption[5]) +
-			Number(caption[6]),
+			Number(caption[6]) +
+			Number(caption[7]) +
+			Number(caption[8]),
 	);
 	assert.ok(aaRows.length > 500, "the catalog covers the whole leaderboard, not a top-N excerpt");
 	const aaHeaderCells = evals.match(/^\| slug \|.*$/mu)![0].split("|").length;
@@ -333,4 +335,184 @@ test("GPT-6.1 Terra published results keep score, qualifier and source", async (
 	assert.match(sources, /\[system card addendum\]\(https:\/\/deploymentsafety\.openai\.com\/gpt-6-1-terra\)/u);
 	assert.match(sources, /vendor-reported/u);
 	assert.match(evals, /\[evaluation page\]\(https:\/\/artificialanalysis\.ai\/evaluations\/terminal-bench-science\)/u);
+});
+
+const FABLE_5_2_AA_PUBLISHED_COLUMNS = ["Brief", "Gn", "Auto", "TB4", "Sci", "HLE", "PDF", "Crit", "LCR"] as const;
+const FABLE_5_2_AA_ROWS: ReadonlyArray<readonly [slug: string, model: string, values: readonly string[]]> = [
+	[
+		"claude-fable-5-2",
+		"Claude Fable 5.2 (Max, Default Fallback)",
+		["64.3", "66.5", "76.4", "59.6", "67.7", "74.3", "24.2", "35.4", "83.3"],
+	],
+	[
+		"claude-fable-5-2-xhigh",
+		"Claude Fable 5.2 (Xhigh, Default Fallback)",
+		["61.9", "62.5", "74.2", "61.6", "65.6", "68.9", "21.4", "35.7", "82.7"],
+	],
+	[
+		"claude-fable-5-2-high",
+		"Claude Fable 5.2 (High, Default Fallback)",
+		["58.9", "60.9", "71.4", "59.6", "59.5", "66.2", "21.8", "32.9", "83.3"],
+	],
+	[
+		"claude-fable-5-2-medium",
+		"Claude Fable 5.2 (Medium, Default Fallback)",
+		["56.1", "54.6", "68.8", "55.1", "59.7", "61.9", "23.8", "30.9", "80"],
+	],
+	[
+		"claude-fable-5-2-low",
+		"Claude Fable 5.2 (Low, Default Fallback)",
+		["53.1", "52.3", "68", "54.5", "57.8", "59.7", "26.8", "29.4", "80"],
+	],
+];
+
+test("Claude Fable 5.2 AA rows keep five configurations, their published values and unknown cells", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const fableRows = aa.rows.filter((row) => /^claude-fable-5-2(?:-|$)/u.test(row[0]!));
+	assert.deepEqual(
+		fableRows.map((row) => row[0]),
+		FABLE_5_2_AA_ROWS.map(([slug]) => slug),
+		"each Fable 5.2 configuration appears exactly once",
+	);
+	const scoreColumns = aa.header.slice(3);
+	for (const [slug, model, values] of FABLE_5_2_AA_ROWS) {
+		const row = fableRows.find((candidate) => candidate[0] === slug)!;
+		assert.deepEqual(row.slice(1, 3), [model, "2026-11-09"], slug);
+		const expected = scoreColumns.map((column) => {
+			const index = FABLE_5_2_AA_PUBLISHED_COLUMNS.indexOf(
+				column as (typeof FABLE_5_2_AA_PUBLISHED_COLUMNS)[number],
+			);
+			return index < 0 ? "∅" : values[index]!;
+		});
+		assert.deepEqual(
+			row.slice(3),
+			expected,
+			`${slug} keeps published values and leaves revised-version columns unknown`,
+		);
+		assert.ok(evals.includes(`(https://artificialanalysis.ai/models/${slug})`), `${slug} cites its model page`);
+	}
+});
+
+test("Claude Fable 5.2 published results keep score, qualifier and source", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const published = sectionTable(evals, "## Published benchmark results");
+	const fable = published.rows
+		.filter((row) => row[0]!.startsWith("claude-fable-5-2"))
+		.map((row) => [row[0], row[2], row[3], row[5]]);
+	assert.deepEqual(fable, [
+		["claude-fable-5-2", "DSWE", "74.3", "Anthropic"],
+		["claude-fable-5-2", "FSWE", "69.9", "Anthropic"],
+		["claude-fable-5-2", "TB4", "67.6", "Anthropic"],
+		["claude-fable-5-2", "TBSci", "74.6", "Anthropic"],
+		["claude-fable-5-2", "HLE", "73.2", "Anthropic"],
+		["claude-fable-5-2", "HLEt", "74.2", "Anthropic"],
+		["claude-fable-5-2", "GDPElo", "1831", "Anthropic"],
+		["claude-fable-5-2", "BriefElo", "1785", "Anthropic"],
+		["claude-fable-5-2", "OSW21", "89.3", "Anthropic"],
+		["claude-fable-5-2", "ABench", "51.4", "Anthropic"],
+		["claude-fable-5-2", "Chart", "73.4", "Anthropic"],
+		["claude-fable-5-2", "ARC3", "65.66", "Anthropic"],
+		["claude-fable-5-2", "ARC3", "94.90", "Anthropic"],
+		["claude-fable-5-2-high", "ARC3", "79.26", "Anthropic"],
+		["claude-fable-5-2-high", "ARC3", "97.72", "Anthropic"],
+		["claude-fable-5-2", "TBSci", "73.3", "Artificial Analysis"],
+		["claude-fable-5-2-xhigh", "TBSci", "67.6", "Artificial Analysis"],
+		["claude-fable-5-2-high", "TBSci", "70.0", "Artificial Analysis"],
+		["claude-fable-5-2-medium", "TBSci", "60.5", "Artificial Analysis"],
+		["claude-fable-5-2-low", "TBSci", "53.8", "Artificial Analysis"],
+	]);
+	const sources = evals.split("\n").find((line) => line.startsWith("- Claude Fable 5.2, accessed 2026-11-09:"));
+	assert.ok(sources, "Fable 5.2 published results name their sources and access date");
+	assert.match(sources, /\[launch announcement\]\(https:\/\/www\.anthropic\.com\/claude-fable-and-mythos-5-2\)/u);
+	assert.match(
+		sources,
+		/\[system card\]\(https:\/\/www\.anthropic\.com\/document\/claude-fable-5-2-mythos-5-2-system-card\)/u,
+	);
+	assert.match(sources, /vendor-reported/u);
+});
+
+const OTHER_NEW_FAMILY_AA_ROWS: readonly string[] = [
+	"| kimi-k3-1-pro | Kimi K3.1 Pro | 2026-10-23 | ∅ | 58.7 | 67.9 | 73.3 | 67.2 | 60.8 | 52.5 | 31.4 | 24.6 | ∅ | ∅ | 86.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 83.9 | ∅ | ∅ | 38.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 33.3 | ∅ |",
+	"| muse-wonder | Muse Wonder (max) | 2026-10-12 | ∅ | 57.9 | 63.5 | 68.1 | 52 | 60.3 | 50.1 | 30.6 | 28.3 | ∅ | ∅ | 80.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-wonder-high | Muse Wonder (high) | 2026-10-12 | ∅ | 55.5 | ∅ | 67.2 | 38.4 | ∅ | ∅ | 29.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 83.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-ember | Muse Ember (max) | 2026-11-09 | ∅ | 51.1 | ∅ | 68.1 | 40.9 | ∅ | ∅ | 22.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-ember-xhigh | Muse Ember (xhigh) | 2026-11-09 | ∅ | 51.3 | ∅ | 66.7 | 35.4 | ∅ | ∅ | 22.4 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| muse-spark-open | Muse Spark Open (xhigh) | 2026-10-15 | ∅ | 38.9 | 45.1 | 49.7 | 8.1 | 58.4 | 43.9 | 18.6 | 14.9 | ∅ | ∅ | 78.3 | ∅ | 89 | 76.4 | ∅ | ∅ | 80.9 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 27.8 | ∅ |",
+	"| minimax-m3-1-flash | MiniMax-M3.1-Flash | 2026-10-19 | ∅ | 48.8 | 48.3 | 72.5 | 25.8 | 53.4 | 48 | 20.8 | 22.3 | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 79.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 27.8 | ∅ |",
+	"| mimo-v2-6-flash | MiMo-V2.6-Flash | 2026-09-21 | ∅ | 49.3 | 55.7 | 64.1 | 22.7 | 51.3 | 35.1 | 9 | 12 | ∅ | ∅ | 74.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 73.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 52.8 | ∅ |",
+	"| ling-3-1-flash-1019 | Ling 3.1 Flash 1019 | 2026-10-22 | ∅ | 51.1 | 57.6 | 67.5 | 32.8 | 56.8 | 43.5 | 12.6 | 26 | ∅ | ∅ | 82.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| ling-3-1-flash | Ling 3.1 Flash | 2026-10-01 | ∅ | 44.8 | 56.3 | 61.7 | 33.3 | 54.1 | 39.4 | 10 | 18 | ∅ | ∅ | 83 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| inkling-2-small | Inkling 2 Small | 2026-11-05 | ∅ | 51.3 | 56.5 | 45.6 | 13.1 | 52.3 | 44.1 | 25.2 | ∅ | ∅ | ∅ | 83.3 | ∅ | ∅ | 81.3 | ∅ | ∅ | 81.6 | ∅ | 40.4 | 51.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 46.8 |",
+	"| mistral-large-4 | Mistral Large 4 (high) | 2026-10-29 | ∅ | 42.4 | ∅ | 57.8 | 24.7 | ∅ | ∅ | 17.6 | 10 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| mistral-large-4-medium | Mistral Large 4 (medium) | 2026-10-29 | ∅ | 34.4 | ∅ | 52.8 | 23.2 | ∅ | ∅ | 16.8 | 11.1 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| tencent-hy4 | Tencent Hy4 | 2026-11-03 | ∅ | 47.3 | ∅ | 65.6 | 37.4 | ∅ | ∅ | 21.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| reflection-beam | Beam 1.0 | 2026-10-16 | ∅ | 23.8 | 33.9 | 48.5 | 3 | 48.5 | 34.7 | 11.6 | 13.1 | ∅ | ∅ | 78 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
+	"| nemotron-3-5-super-vl | Nemotron 3.5 Super VL | 2026-10-15 | ∅ | 24.9 | 33.1 | 14.8 | 0 | 47.8 | 30.7 | 8 | 10.6 | ∅ | ∅ | 69 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 83.3 | ∅ |",
+	"| solar-mini4 | Solar Mini 4 | 2026-09-22 | ∅ | 18.4 | 29.6 | 22.3 | 1 | 47.6 | 25.8 | 5 | 1.4 | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| deepseek-v4-1-flash-1017 | DeepSeek V4.1 Flash 1017 (max) | 2026-10-17 | ∅ | 53.5 | 62.3 | 66.6 | 33.8 | 55.9 | 43.3 | 17.2 | 24 | ∅ | ∅ | 82.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 80.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 44.4 | ∅ |",
+	"| deepseek-v4-1-flash-1017-high | DeepSeek V4.1 Flash 1017 (high) | 2026-10-17 | ∅ | 45.8 | ∅ | 68.5 | 28.8 | ∅ | ∅ | 14.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 44.4 | ∅ |",
+	"| deepseek-v4-1-flash-1017-non-reasoning | DeepSeek V4.1 Flash 1017 (non-reasoning) | 2026-10-17 | ∅ | 46.3 | ∅ | 48.8 | 9.1 | 38.5 | 11.5 | 4.4 | 0.3 | ∅ | ∅ | 57.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 69.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 44.4 | ∅ |",
+];
+
+test("other new-family AA rows keep published values and leave revised-version columns unknown", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const revisedVersionColumns = ["idx", "OA", "ONH", "Omni", "Harvey", "MLCR"];
+	const revisedIndexes = revisedVersionColumns.map((column) => aa.header.indexOf(column));
+	for (const line of OTHER_NEW_FAMILY_AA_ROWS) {
+		assert.ok(evals.split("\n").includes(line), `${line.split("|")[1]!.trim()} row is present verbatim`);
+		const cells = line
+			.split("|")
+			.slice(1, -1)
+			.map((cell) => cell.trim());
+		assert.equal(cells.length, aa.header.length, `${cells[0]} has one cell per column`);
+		for (const index of revisedIndexes) assert.equal(cells[index], "∅", `${cells[0]} ${aa.header[index]}`);
+		assert.equal(cells[2]?.match(/^\d{4}-\d{2}-\d{2}$/u)?.length, 1, `${cells[0]} carries its release date`);
+	}
+	assert.equal(OTHER_NEW_FAMILY_AA_ROWS.length, 20);
+	assert.match(
+		evals,
+		/^- Other new model families, 20 rows accessed 2026-11-09 from the \[leaderboard\]\(https:\/\/artificialanalysis\.ai\/leaderboards\/models\) and one model page per row at `https:\/\/artificialanalysis\.ai\/models\/<slug>`/mu,
+	);
+});
+
+test("refreshed AA cells carry the 2026-11-09 model-page values and name the refresh", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const cell = (slug: string, column: string) => aa.rows.find((row) => row[0] === slug)![aa.header.indexOf(column)];
+	const refreshed: ReadonlyArray<readonly [slug: string, column: string, value: string]> = [
+		["claude-sonnet-5-5", "Auto", "71.8"],
+		["claude-sonnet-5-5-xhigh", "Auto", "65.5"],
+		["claude-sonnet-5-5-high", "Auto", "59.4"],
+		["claude-sonnet-5-5-medium", "Auto", "54.9"],
+		["claude-sonnet-5-5-low", "Auto", "49.4"],
+		["gpt-6-luna", "PDF", "22.8"],
+		["gpt-6-luna", "MMMU", "79.7"],
+		["gpt-6-luna-xhigh", "MMMU", "79.7"],
+		["gpt-6-luna-high", "MMMU", "77.5"],
+		["gpt-6-luna-medium", "MMMU", "77.9"],
+		["gpt-6-luna-low", "MMMU", "76"],
+		["gpt-6-luna-non-reasoning", "MMMU", "62.1"],
+		["qwen3-8-27b", "PDF", "16.4"],
+		["solar-pro4", "Auto", "13.6"],
+		["solar-pro4", "TB4", "0"],
+		["solar-pro4", "Sci", "48"],
+		["solar-pro4", "HLE", "29.8"],
+		["solar-pro4", "Crit", "6.3"],
+		["solar-pro4", "LCR", "70.7"],
+		["claude-sonnet-5-5", "Analyst", "57.5"],
+		["claude-sonnet-5-5-high", "PDF", "25.2"],
+		["claude-sonnet-5-5-medium", "PDF", "20.2"],
+		["claude-sonnet-5-5-low", "PDF", "16"],
+		["gpt-6-luna", "Analyst", "43.8"],
+		["gpt-6-luna-xhigh", "PDF", "18.6"],
+		["gpt-6-luna-high", "PDF", "18.2"],
+		["gpt-6-luna-medium", "PDF", "13.8"],
+		["gpt-6-luna-low", "PDF", "9"],
+		["gpt-6-luna-non-reasoning", "PDF", "5.8"],
+		["solar-pro4", "PDF", "7"],
+	];
+	for (const [slug, column, value] of refreshed) assert.equal(cell(slug, column), value, `${slug} ${column}`);
+	assert.match(evals, /^- Refreshed values, accessed 2026-11-09 from the \[leaderboard\]/mu);
 });
