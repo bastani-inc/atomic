@@ -157,6 +157,8 @@ For gateway-issued Anthropic bearer credentials, set `ANTHROPIC_AUTH_TOKEN` with
 
 Claude Opus 5 is available from the bundled/dynamic Anthropic and Amazon Bedrock catalogs. With bearer-only Anthropic auth, select the exact `anthropic/claude-opus-5-*` entry through `/model`; Bedrock uses its catalog-advertised inference profile. `xhigh` appears only when the chosen entry advertises it. Bedrock requests retain adaptive thinking, prompt caching, and AWS validation/error details from the provider runtime.
 
+Claude Fable 5.2 (`anthropic/claude-fable-5-2`, $8 input / $40 output per million tokens, 1M context, 128K output) is also in the Anthropic catalog. Like Fable 5.1 it uses per-message effort and mid-conversation system messages, and its server-side fallback is limited to Claude Opus 5 because Claude Opus 4.8 cannot take per-message effort. Claude Fable 5.2 and Mythos 5.2 on other providers, such as OpenRouter's `anthropic/claude-fable-5.2`, get the same per-message effort support.
+
 `ANTHROPIC_AUTH_TOKEN` is specifically for Anthropic-compatible gateways that require a bearer header. It does not synthesize an API key or `x-api-key`, and callers may still add independent custom headers/base URLs through `models.json` or an extension. Empty environment variables do not count as configured. If token and API-key sources are both configured, normal credential resolution rules apply; avoid setting both accidentally.
 
 ### Anthropic workload identity federation

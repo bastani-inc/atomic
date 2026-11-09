@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { ModelsError } from "@bastani/pi-ai";
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
@@ -107,9 +108,20 @@ export async function refreshModelCatalogs(
 		const refresh = modelRuntime.refresh({ allowNetwork: true, force: true, signal: controller.signal });
 		const result = await Promise.race([refresh, aborted]);
 		if (!result || result.aborted) throw new Error("Model catalog refresh timed out.");
-		if (result.errors.size > 0) {
-			const details = [...result.errors].map(([provider, error]) => `${provider}: ${error.message}`).join("; ");
-			throw new Error(`Could not refresh model catalogs: ${details}`);
+		const failures: string[] = [];
+		for (const [provider, error] of result.errors) {
+			if (error instanceof ModelsError && error.code === "oauth") {
+				console.warn(
+					chalk.yellow(
+						`Warning: skipped model catalog for ${provider}: ${error.message}\nLog in again with \`${APP_NAME} auth login ${provider}\` to refresh it.`,
+					),
+				);
+			} else {
+				failures.push(`${provider}: ${error.message}`);
+			}
+		}
+		if (failures.length > 0) {
+			throw new Error(`Could not refresh model catalogs: ${failures.join("; ")}`);
 		}
 	} finally {
 		clearTimeout(timeout);

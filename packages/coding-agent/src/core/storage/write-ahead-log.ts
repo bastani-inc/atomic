@@ -20,16 +20,37 @@ export function isSqliteBusy(error: unknown): boolean {
 	return false;
 }
 
+const SQLITE_IOERR_TRUNCATE = 1546;
+const TRUNCATE_RETRY_MS = 5_000;
+
+function isSqliteTruncateFailure(error: unknown): boolean {
+	const seen = new Set<object>();
+	for (let cause = error; typeof cause === "object" && cause !== null && !seen.has(cause); ) {
+		seen.add(cause);
+		const { errcode, rawCode } = cause as { errcode?: unknown; rawCode?: unknown };
+		const code = errcode ?? rawCode;
+		if (typeof code === "number") return code === SQLITE_IOERR_TRUNCATE;
+		cause = (cause as { cause?: unknown }).cause;
+	}
+	return false;
+}
+
 /**
- * How long to wait after a failed attempt before the next, or rethrows its error: anything but SQLITE_BUSY at once,
- * and SQLITE_BUSY once `busyTimeoutMs` has passed since the first attempt.
+ * How long to wait after a failed attempt before the next, or rethrows its error: anything but SQLITE_BUSY and
+ * SQLITE_IOERR_TRUNCATE at once, SQLITE_BUSY once `busyTimeoutMs` has passed since the first attempt, and
+ * SQLITE_IOERR_TRUNCATE once the shorter of `busyTimeoutMs` and `TRUNCATE_RETRY_MS` has.
  */
 function retryAfter(busyTimeoutMs: number): (error: unknown) => number {
-	const deadline = Date.now() + busyTimeoutMs;
+	const started = Date.now();
 	let delay = RETRY_BASE_DELAY_MS;
 	return (error) => {
-		const remaining = deadline - Date.now();
-		if (remaining <= 0 || !isSqliteBusy(error)) throw error;
+		const limitMs = isSqliteBusy(error)
+			? busyTimeoutMs
+			: isSqliteTruncateFailure(error)
+				? Math.min(busyTimeoutMs, TRUNCATE_RETRY_MS)
+				: 0;
+		const remaining = started + limitMs - Date.now();
+		if (remaining <= 0) throw error;
 		const wait = Math.min(delay, remaining);
 		delay = Math.min(delay * 2, RETRY_MAX_DELAY_MS);
 		return wait;
@@ -47,7 +68,8 @@ const WAL_SWITCH = "PRAGMA journal_mode = WAL";
  * process switching the same new file or writing an older one, the switch fails at once with SQLITE_BUSY however long
  * the busy timeout is. It has changed nothing then, so it is tried again after a short wait until the busy timeout has
  * passed. Once the file is in WAL mode, switched by this connection or another, the switch writes nothing and cannot
- * meet that lock. Any other failure is thrown at once.
+ * meet that lock. A switch refused with SQLITE_IOERR_TRUNCATE, as on Windows while a killed process still maps the
+ * wal-index, is tried again for at most `TRUNCATE_RETRY_MS`. Any other failure is thrown at once.
  */
 export async function switchToWriteAheadLog(
 	exec: (sql: string) => Awaitable<unknown>,

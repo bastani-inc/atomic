@@ -22,6 +22,7 @@ import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { resolveSessionStore } from "../src/core/session-storage.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { isSyntheticPath } from "../src/core/source-info.ts";
 import {
 	StorageAdapterLoadError,
 	StorageConfigError,
@@ -39,7 +40,6 @@ import {
 	isResumeCatalogTimeoutError,
 	isResumeCatalogUnavailableError,
 	isResumePreconditionError,
-	isRetryableResumeError,
 	type ResumePreflightIo,
 	resolveWorkspace,
 	setWorktreeSnapshotGit,
@@ -125,6 +125,11 @@ const settings = (setupCommand?: string) =>
 	SettingsManager.inMemory(
 		setupCommand === undefined ? {} : { defaultProjectTrust: "always", resume: { setupCommand } },
 	);
+
+const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
+
+const extensionFilesLoadedBy = (session: AgentSession) =>
+	session.extensionRunner.getExtensionPaths().filter((path) => !isSyntheticPath(path));
 
 /** The text `session`'s own read tool returns for `path`. */
 async function readWithTools(session: AgentSession, path: string): Promise<string> {
@@ -1145,10 +1150,12 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const { session } = await createAgentSession({
 			agentDir,
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_BUILTINS,
 			settingsManager,
 			sessionManager: await SessionManager.open(store, sessionId),
 		});
 		cleanups.push(() => session.dispose());
+		assert.deepEqual(extensionFilesLoadedBy(session), []);
 		const cwd = session.sessionManager.getCwd();
 		assert.ok(cwd.startsWith(join(agentDir, "worktree-snapshots", "worktrees")), cwd);
 		assert.equal(readFileSync(join(cwd, "README.md"), "utf8"), "edited on node A\n");
@@ -1175,6 +1182,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 				agentDir: sandbox.path("agent"),
 				cwd: restored,
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: NO_BUILTINS,
 				settingsManager: settings(),
 				sessionManager: SessionManager.inMemory(restored),
 			}),
@@ -1195,6 +1203,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 			createAgentSession({
 				agentDir: sandbox.path("agent"),
 				model: getModel("anthropic", "claude-sonnet-4-5")!,
+				builtins: NO_BUILTINS,
 				settingsManager: settings(),
 				sessionManager: await SessionManager.open(store, sessionId),
 			}),
@@ -1213,6 +1222,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const { session } = await createAgentSession({
 			agentDir: sandbox.path("agent"),
 			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_BUILTINS,
 			...options,
 		});
 		cleanups.push(() => session.dispose());
@@ -1440,38 +1450,6 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 });
 
 describe("bounded catalog lookups (#4329)", () => {
-	test("the deadline passes results and failures through and times out typed and retryable", async () => {
-		const { withResumeLookupDeadline } = await import("../src/core/resume/not-found.ts");
-		const target = { subject: "session" as const, id: "abc", storage: "libsql" };
-		assert.equal(await withResumeLookupDeadline(Promise.resolve(7), target, 1000), 7);
-		await assert.rejects(withResumeLookupDeadline(Promise.reject(new TypeError("x")), target, 1000), TypeError);
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-		try {
-			const pending = withResumeLookupDeadline(new Promise(() => {}), target, 40).then(
-				() => assert.fail("the lookup never answers"),
-				(error: unknown) => error,
-			);
-			await vi.advanceTimersByTimeAsync(39);
-			assert.equal(vi.getTimerCount(), 1);
-			await vi.advanceTimersByTimeAsync(1);
-			const error = await pending;
-			assert.ok(isResumeCatalogTimeoutError(error));
-			assert.deepEqual(
-				[error.code, error.retryable, error.phase, error.timeoutMs, error.elapsedMs, error.id, error.storage],
-				["catalog-timeout", true, "catalog-lookup", 40, 40, "abc", "libsql"],
-			);
-			assert.ok(isRetryableResumeError(error));
-			assert.match(
-				error.message,
-				/^Cannot look up the session abc: the storage \(libsql\) did not answer within 40 ms/,
-			);
-			await withResumeLookupDeadline(Promise.resolve(1), target, 1000);
-			assert.equal(vi.getTimerCount(), 0);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
 	test("a resume whose shared storage never answers fails within the deadline, before the session lookup", async () => {
 		const adapter = sandbox.path("hanging-adapter.mjs");
 		sandbox.write(

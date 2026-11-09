@@ -844,21 +844,25 @@ describe("saving a child's latest record as one entry (#4395)", () => {
 describe("what the index keeps besides entries (#4395)", () => {
 	test("a key stays watched while one of its cards is, and goes with the last", async () => {
 		const before = subagentChildCardStateSizes().watchers;
-		const kept = {};
+		let kept: object | undefined = {};
 		let collected: object | undefined = {};
+		const cards = trackCollection();
+		cards.track(collected);
 		watchSubagentChildCard(kept, () => {}, "ix-two-cards:0", undefined);
 		watchSubagentChildCard(collected, () => {}, "ix-two-cards:0", undefined);
-		// Watched through a FinalizationRegistry, not a WeakRef: `deref()` keeps its target alive for the rest of the
-		// job, and collectGarbage runs its first collection in that same job, so a deref-polling loop never sees it go.
-		const tracked = trackCollection();
-		tracked.track(collected);
-		collected = undefined;
-		await collectEverythingTracked(tracked);
-		assert.deepEqual(tracked.uncollected(), [], "the dropped card is collected");
-		await collectGarbage(2);
+		assert.equal(subagentChildCardStateSizes().watchers, before + 1);
 
+		collected = undefined;
+		await collectEverythingTracked(cards);
+		assert.deepEqual(cards.uncollected(), []);
+		await collectGarbage(2);
 		assert.equal(subagentChildCardStateSizes().watchers, before + 1);
 		assert.ok(kept);
+
+		kept = undefined;
+		for (let round = 0; round < MAX_COLLECTION_ROUNDS && subagentChildCardStateSizes().watchers > before; round++)
+			await collectGarbage(1);
+		assert.equal(subagentChildCardStateSizes().watchers, before);
 	});
 
 	test("a card's watcher goes with the card", async () => {

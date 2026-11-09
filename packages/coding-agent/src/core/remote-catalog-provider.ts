@@ -163,6 +163,7 @@ export function withRemoteCatalog(
 				dynamicModels.filter((model) => isModelType(model, "chat")),
 			),
 		getAllModels: () => mergeModels(provider.getAllModels?.() ?? provider.getModels(), dynamicModels),
+		refreshModelsAuth: "configured",
 		refreshModels: async (context) => {
 			// 0.84.1 hands the snapshot in directly and coalesces concurrent refreshes
 			// itself, so the old inflight-promise dedup is gone. Every mutation of
@@ -259,6 +260,7 @@ export function withPersonalizedCatalog(
 		...provider,
 		getModels: () => getAllModels().filter((model) => isModelType(model, "chat")),
 		getAllModels,
+		refreshModelsAuth: "credential",
 		refreshModels: async (context) => {
 			const restored = (context.stored?.models ?? []).filter(
 				(model) => model.provider === provider.id && hasOperationShape(model),
@@ -338,6 +340,7 @@ export function withDiscoveredModels(provider: Provider, discover: DiscoverModel
 		...provider,
 		getModels: () => withDiscovered(provider.getModels()).filter((model) => isModelType(model, "chat")),
 		getAllModels: () => withDiscovered(catalogModels()),
+		refreshModelsAuth: "credential",
 		refreshModels: async (context) => {
 			const stored = context.stored;
 			const saved = (stored?.models ?? []).filter(

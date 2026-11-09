@@ -7,9 +7,11 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 ### Added
 
 - Added the prompt cache warming policy as shared helpers, so every host that warms a prompt cache decides the same way: `getPromptCacheTtlMs()` (the lifetime of the entry a request writes, from the model's `promptCache` tier for the request's `cacheRetention`, then `PI_CACHE_RETENTION`, defaulting to `short`), `getCacheWarmingDelayMs()`, `isCacheWarmingReplayable()`, `getCacheWarmingRequestOptions()`, `evaluateCacheWarming()`, the `CACHE_WARMING_*` constants and the `CacheWarmingAction`, `CacheWarmingPhase` and `CacheWarmingDecision` types. They moved from the coding agent's cache warmer, which keeps resolving the model-specific default retention before it asks for the lifetime (upstream [#11857](https://github.com/earendil-works/pi/pull/11857))
+- Added Claude Fable 5.2 (`claude-fable-5-2`) to the `anthropic` provider ($8/$40 per million input/output tokens, 1M context, 128K output). Like Fable 5.1 it uses per-message effort and mid-conversation system messages; requests its safety classifiers refuse before any output are answered by Claude Opus 5 through server-side fallback and billed at Opus 5's price. Claude Fable 5.2 and Mythos 5.2 on other providers, such as OpenRouter's `anthropic/claude-fable-5.2`, get the same per-message effort support
 
 ### Fixed
 
+- Catalog providers can set `Provider.refreshModelsAuth: "configured"` to refresh without renewing OAuth or receiving a provider credential, while still skipping unconfigured providers. Stale logins no longer block credential-free catalogs ([#4610](https://github.com/bastani-inc/atomic/issues/4610))
 - Azure OpenAI models now keep OpenAI's long-context price tier, so requests above 272K input tokens are costed at Azure's long-context rates instead of the standard rates (upstream [#11948](https://github.com/earendil-works/pi/issues/11948))
 - Fixed Anthropic and Bedrock sending `strict: "prefer"` tools strict again on every request after Claude rejected them for exceeding its strict tool limits, which cost a rejected request (400) per turn. Later requests with the same `sessionId` now send those tools non-strict right away, until `cleanupSessionResources(sessionId)` (upstream [#11626](https://github.com/earendil-works/pi/issues/11626))
 

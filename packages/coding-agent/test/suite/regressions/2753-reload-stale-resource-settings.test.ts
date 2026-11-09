@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { useTemporaryAgentDir } from "../../../../../test/helpers/temporary-agent-dir.js";
@@ -12,6 +12,7 @@ import {
 } from "../../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
 import { SessionManager } from "../../../src/core/session-manager.ts";
+import { isSyntheticPath } from "../../../src/core/source-info.ts";
 
 useTemporaryAgentDir();
 
@@ -43,6 +44,7 @@ describe("issue #2753 reload stale resource settings", () => {
 				agentDir,
 				authStorage,
 				resourceLoaderOptions: {
+					builtinPackagePaths: [],
 					extensionFactories: [
 						(pi) => {
 							pi.registerProvider(faux.getModel().provider, {
@@ -91,6 +93,10 @@ describe("issue #2753 reload stale resource settings", () => {
 			}
 		});
 
+		const extensionFiles = runtime.session.extensionRunner
+			.getExtensionPaths()
+			.filter((path) => !isSyntheticPath(path));
+		expect(extensionFiles.map((path) => basename(dirname(path)))).toEqual(["intercom"]);
 		expect(runtime.session.promptTemplates.map((prompt) => prompt.name)).toContain("test");
 
 		writeFileSync(join(agentDir, "settings.json"), `${JSON.stringify({ prompts: ["-prompts/test.md"] }, null, 2)}\n`);
