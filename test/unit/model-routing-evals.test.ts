@@ -235,3 +235,30 @@ test("shipped Gemini 4 Argon evidence reaches Copilot routing without Gemini 3.x
 	assert.match(full, /^\| gemini-4-argon-medium \| Gemini 4 Argon \| ABench \| 50\.1 \|/mu);
 	assert.equal(candidateReleaseDate(catalog, id), "2026-09-30");
 });
+
+test("shipped Claude Fable 5.2 evidence reaches every catalog route without Fable 5.1 rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	for (const id of [
+		"anthropic/claude-fable-5-2",
+		"openrouter/anthropic/claude-fable-5.2",
+		"vercel-ai-gateway/anthropic/claude-fable-5.2",
+	]) {
+		const evidence = catalogEvidence(catalog, [id]);
+		for (const effort of ["Max", "Xhigh", "High", "Medium", "Low"])
+			assert.match(
+				evidence,
+				new RegExp(
+					`^\\| claude-fable-5-2[a-z-]* \\| Claude Fable 5\\.2 \\(${effort}, Default Fallback\\) \\| 2026-11-09 \\|`,
+					"mu",
+				),
+				`${id} ${effort}`,
+			);
+		assert.match(evidence, /^\| claude-fable-5-2 \| Claude Fable 5\.2 \| TB4 \| 67\.6 \|[^\n]*\| Anthropic \|$/mu);
+		assert.doesNotMatch(evidence, /^\| claude-fable-5-1/mu, id);
+		assert.equal(candidateReleaseDate(catalog, id), "2026-11-09", id);
+	}
+	assert.doesNotMatch(catalogEvidence(catalog, ["anthropic/claude-fable-5-1"]), /^\| claude-fable-5-2/mu);
+});

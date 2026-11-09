@@ -17,6 +17,7 @@
 - Variables a blueprint writes to `$ENVRC` reach the resumed session's `bash` tool for the worktrees the build restored ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
 - `BlueprintError` and its subclasses (`BlueprintInvalidError`, `BlueprintStepFailedError`, `BlueprintStepTimedOutError`, `BlueprintUsesUnsupportedError`, `BlueprintBuildFailedError`) with guards, `serializeBlueprintError` and `rehydrateBlueprintError`, plus `parseBlueprint`, `runBlueprintBuild`, `setUpResumedBlueprints` and `renderBlueprintContext`, are exported from `@bastani/atomic` ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
 - `/resume`, `/import` and woken sessions show the warnings of the blueprint builds they ran, and workflow resumes record them as workflow notices ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
+- Recorded Claude Fable 5.2 results in the evals snapshot used by automatic model routing: Artificial Analysis rows for all five efforts, its Terminal-Bench-Science measurements, and Anthropic's vendor-reported launch and system-card results ([#4611](https://github.com/bastani-inc/atomic/issues/4611))
 
 ### Deprecated
 

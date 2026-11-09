@@ -35,7 +35,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	assert.doesNotMatch(evals, /^## Grok 4\.7$/mu);
 	assert.match(
 		evals,
-		/^Last Accessed: 2026-11-02 \(Gemini 4 Argon additions; earlier rows retain their snapshot dates below\)\.$/mu,
+		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 additions; earlier rows retain their snapshot dates below\)\.$/mu,
 	);
 	assert.match(evals, /^\| slug \| Model \| Release date \| idx \| Brief \| Gn \| Auto \| TB4 \|/mu);
 	assert.match(
@@ -63,7 +63,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
 	const caption =
-		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, and (\d+) Gemini 4 Argon row accessed 2026-11-02\.$/mu.exec(
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, and (\d+) Claude Fable 5\.2 rows accessed 2026-11-09\.$/mu.exec(
 			evals,
 		);
 	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
@@ -74,7 +74,8 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 			Number(caption[3]) +
 			Number(caption[4]) +
 			Number(caption[5]) +
-			Number(caption[6]),
+			Number(caption[6]) +
+			Number(caption[7]),
 	);
 	assert.ok(aaRows.length > 500, "the catalog covers the whole leaderboard, not a top-N excerpt");
 	const aaHeaderCells = evals.match(/^\| slug \|.*$/mu)![0].split("|").length;
@@ -333,4 +334,99 @@ test("GPT-6.1 Terra published results keep score, qualifier and source", async (
 	assert.match(sources, /\[system card addendum\]\(https:\/\/deploymentsafety\.openai\.com\/gpt-6-1-terra\)/u);
 	assert.match(sources, /vendor-reported/u);
 	assert.match(evals, /\[evaluation page\]\(https:\/\/artificialanalysis\.ai\/evaluations\/terminal-bench-science\)/u);
+});
+
+const FABLE_5_2_AA_PUBLISHED_COLUMNS = ["Brief", "Gn", "Auto", "TB4", "Sci", "HLE", "PDF", "Crit", "LCR"] as const;
+const FABLE_5_2_AA_ROWS: ReadonlyArray<readonly [slug: string, model: string, values: readonly string[]]> = [
+	[
+		"claude-fable-5-2",
+		"Claude Fable 5.2 (Max, Default Fallback)",
+		["64.3", "66.5", "76.4", "59.6", "67.7", "74.3", "24.2", "35.4", "83.3"],
+	],
+	[
+		"claude-fable-5-2-xhigh",
+		"Claude Fable 5.2 (Xhigh, Default Fallback)",
+		["61.9", "62.5", "74.2", "61.6", "65.6", "68.9", "21.4", "35.7", "82.7"],
+	],
+	[
+		"claude-fable-5-2-high",
+		"Claude Fable 5.2 (High, Default Fallback)",
+		["58.9", "60.9", "71.4", "59.6", "59.5", "66.2", "21.8", "32.9", "83.3"],
+	],
+	[
+		"claude-fable-5-2-medium",
+		"Claude Fable 5.2 (Medium, Default Fallback)",
+		["56.1", "54.6", "68.8", "55.1", "59.7", "61.9", "23.8", "30.9", "80"],
+	],
+	[
+		"claude-fable-5-2-low",
+		"Claude Fable 5.2 (Low, Default Fallback)",
+		["53.1", "52.3", "68", "54.5", "57.8", "59.7", "26.8", "29.4", "80"],
+	],
+];
+
+test("Claude Fable 5.2 AA rows keep five configurations, their published values and unknown cells", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const fableRows = aa.rows.filter((row) => /^claude-fable-5-2(?:-|$)/u.test(row[0]!));
+	assert.deepEqual(
+		fableRows.map((row) => row[0]),
+		FABLE_5_2_AA_ROWS.map(([slug]) => slug),
+		"each Fable 5.2 configuration appears exactly once",
+	);
+	const scoreColumns = aa.header.slice(3);
+	for (const [slug, model, values] of FABLE_5_2_AA_ROWS) {
+		const row = fableRows.find((candidate) => candidate[0] === slug)!;
+		assert.deepEqual(row.slice(1, 3), [model, "2026-11-09"], slug);
+		const expected = scoreColumns.map((column) => {
+			const index = FABLE_5_2_AA_PUBLISHED_COLUMNS.indexOf(
+				column as (typeof FABLE_5_2_AA_PUBLISHED_COLUMNS)[number],
+			);
+			return index < 0 ? "∅" : values[index]!;
+		});
+		assert.deepEqual(
+			row.slice(3),
+			expected,
+			`${slug} keeps published values and leaves revised-version columns unknown`,
+		);
+		assert.ok(evals.includes(`(https://artificialanalysis.ai/models/${slug})`), `${slug} cites its model page`);
+	}
+});
+
+test("Claude Fable 5.2 published results keep score, qualifier and source", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const published = sectionTable(evals, "## Published benchmark results");
+	const fable = published.rows
+		.filter((row) => row[0]!.startsWith("claude-fable-5-2"))
+		.map((row) => [row[0], row[2], row[3], row[5]]);
+	assert.deepEqual(fable, [
+		["claude-fable-5-2", "DSWE", "74.3", "Anthropic"],
+		["claude-fable-5-2", "FSWE", "69.9", "Anthropic"],
+		["claude-fable-5-2", "TB4", "67.6", "Anthropic"],
+		["claude-fable-5-2", "TBSci", "74.6", "Anthropic"],
+		["claude-fable-5-2", "HLE", "73.2", "Anthropic"],
+		["claude-fable-5-2", "HLEt", "74.2", "Anthropic"],
+		["claude-fable-5-2", "GDPElo", "1831", "Anthropic"],
+		["claude-fable-5-2", "BriefElo", "1785", "Anthropic"],
+		["claude-fable-5-2", "OSW21", "89.3", "Anthropic"],
+		["claude-fable-5-2", "ABench", "51.4", "Anthropic"],
+		["claude-fable-5-2", "Chart", "73.4", "Anthropic"],
+		["claude-fable-5-2", "ARC3", "65.66", "Anthropic"],
+		["claude-fable-5-2", "ARC3", "94.90", "Anthropic"],
+		["claude-fable-5-2-high", "ARC3", "79.26", "Anthropic"],
+		["claude-fable-5-2-high", "ARC3", "97.72", "Anthropic"],
+		["claude-fable-5-2", "TBSci", "73.3", "Artificial Analysis"],
+		["claude-fable-5-2-xhigh", "TBSci", "67.6", "Artificial Analysis"],
+		["claude-fable-5-2-high", "TBSci", "70.0", "Artificial Analysis"],
+		["claude-fable-5-2-medium", "TBSci", "60.5", "Artificial Analysis"],
+		["claude-fable-5-2-low", "TBSci", "53.8", "Artificial Analysis"],
+	]);
+	const sources = evals.split("\n").find((line) => line.startsWith("- Claude Fable 5.2, accessed 2026-11-09:"));
+	assert.ok(sources, "Fable 5.2 published results name their sources and access date");
+	assert.match(sources, /\[launch announcement\]\(https:\/\/www\.anthropic\.com\/claude-fable-and-mythos-5-2\)/u);
+	assert.match(
+		sources,
+		/\[system card\]\(https:\/\/www\.anthropic\.com\/document\/claude-fable-5-2-mythos-5-2-system-card\)/u,
+	);
+	assert.match(sources, /vendor-reported/u);
 });

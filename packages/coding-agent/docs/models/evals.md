@@ -5,13 +5,13 @@ description: "Primary-source benchmark facts used by Atomic automatic model rout
 
 # Evals
 
-Last Accessed: 2026-11-02 (Gemini 4 Argon additions; earlier rows retain their snapshot dates below).
+Last Accessed: 2026-11-09 (Claude Fable 5.2 additions; earlier rows retain their snapshot dates below).
 
 Key:
 
 - `∅`=source null/absent, not zero.
 - Values are rounded to 1 decimal from the public [model leaderboard](https://artificialanalysis.ai/leaderboards/models) and [Intelligence Index](https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index) pages. Each row includes the model's release date.
-- `PDF`, `MLCR`, `Open`, `Ent`, and `Analyst` are generally published only for models shown on the default Intelligence Index chart. The GPT-6.1 Sol model page publishes `PDF` at all five efforts and `MLCR` at max, and the GPT-6.1 Terra model pages publish `PDF` for all six configurations; other missing values remain `∅`.
+- `PDF`, `MLCR`, `Open`, `Ent`, and `Analyst` are generally published only for models shown on the default Intelligence Index chart. The GPT-6.1 Sol model page publishes `PDF` at all five efforts and `MLCR` at max, and the GPT-6.1 Terra model pages publish `PDF` for all six configurations, and the Claude Fable 5.2 model pages publish `PDF` for all five configurations; other missing values remain `∅`.
 - A chart label may show the nearest integer of `idx`.
 - `idx`: Intelligence Index points, aggregate performance across knowledge, reasoning, coding, and agentic work.
 - `Brief`: AA-Briefcase, long-horizon business knowledge work producing spreadsheets, presentations, and memos; normalized Elo `clamp((Elo-500)/2000)*100`.
@@ -46,7 +46,7 @@ Key:
 
 ## Artificial Analysis Intelligence Index v4.3.2
 
-Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28, 5 GPT-6.1 Sol rows accessed 2026-09-29, 5 Claude Haiku 5.5 rows accessed 2026-10-07, 6 GPT-6.1 Terra rows accessed 2026-10-26, and 1 Gemini 4 Argon row accessed 2026-11-02.
+Table: the 673 models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus 5 Claude Sonnet 5.5 rows accessed 2026-09-28, 5 GPT-6.1 Sol rows accessed 2026-09-29, 5 Claude Haiku 5.5 rows accessed 2026-10-07, 6 GPT-6.1 Terra rows accessed 2026-10-26, 1 Gemini 4 Argon row accessed 2026-11-02, and 5 Claude Fable 5.2 rows accessed 2026-11-09.
 
 Sources and access dates for later additions. Release dates are not evaluation run dates; AA does not publish run dates. These are AA measurements, not vendor launch-table results. AA's [methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking) uses mini-swe-agent for TB4, all 66 tasks, pass@1 averaged over three repeats, a 500-step cap and no context compaction.
 
@@ -54,9 +54,15 @@ Sources and access dates for later additions. Release dates are not evaluation r
 - Claude Haiku 5.5: rows accessed 2026-10-07 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and the [max](https://artificialanalysis.ai/models/claude-haiku-5-5), [xhigh](https://artificialanalysis.ai/models/claude-haiku-5-5-xhigh), [high](https://artificialanalysis.ai/models/claude-haiku-5-5-high), [medium](https://artificialanalysis.ai/models/claude-haiku-5-5-medium), and [low](https://artificialanalysis.ai/models/claude-haiku-5-5-low) model pages. AA labels these configurations "with fallback". All five pages publish non-estimated indices and twelve component measurements in their public structured data, although their text rendering says "Not publicly available". Missing `ONH` remains unknown; the published hallucination rate is a different metric.
 - GPT-6.1 Terra: six rows accessed 2026-10-26 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and the [max](https://artificialanalysis.ai/models/gpt-6-1-terra), [xhigh](https://artificialanalysis.ai/models/gpt-6-1-terra-xhigh), [high](https://artificialanalysis.ai/models/gpt-6-1-terra-high), [medium](https://artificialanalysis.ai/models/gpt-6-1-terra-medium), [low](https://artificialanalysis.ai/models/gpt-6-1-terra-low), and [non-reasoning](https://artificialanalysis.ai/models/gpt-6-1-terra-non-reasoning) model pages. All six publish non-estimated indices in their public structured data. Columns AA does not publish for Terra remain `∅`.
 - Gemini 4 Argon: `high`, the only configuration AA publishes, accessed 2026-11-02 from the [model page](https://artificialanalysis.ai/models/gemini-4-argon). AA now publishes `idx`, `OA`, `Omni`, `Harvey` and `MLCR` only on revised versions (Intelligence Index v5.0, Omniscience v1.1), so they stay `∅`. SciCode is under AA review.
+- Claude Fable 5.2: five rows accessed 2026-11-09 from the [leaderboard](https://artificialanalysis.ai/leaderboards/models) and the [max](https://artificialanalysis.ai/models/claude-fable-5-2), [xhigh](https://artificialanalysis.ai/models/claude-fable-5-2-xhigh), [high](https://artificialanalysis.ai/models/claude-fable-5-2-high), [medium](https://artificialanalysis.ai/models/claude-fable-5-2-medium), and [low](https://artificialanalysis.ai/models/claude-fable-5-2-low) model pages. AA labels these configurations "Default Fallback". AA now publishes the Intelligence Index (v5.0.1), Omniscience (v1.1), Harvey LAB-AA (v1.1) and MLCR-AA only in revised versions, so `idx`, `OA`, `ONH`, `Omni`, `Harvey` and `MLCR` stay `∅`; every other published column keeps the definition in the key above.
 
 | slug | Model | Release date | idx | Brief | Gn | Auto | TB4 | Sci | HLE | PDF | Crit | OA | ONH | LCR | Omni | GPQA | TB21 | TBh | IF | MMMU | tau2 | tauB | Analyst | ITB | Apex | AIME | LCB | Harvey | MLCR | Open | Ent |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| claude-fable-5-2 | Claude Fable 5.2 (Max, Default Fallback) | 2026-11-09 | ∅ | 64.3 | 66.5 | 76.4 | 59.6 | 67.7 | 74.3 | 24.2 | 35.4 | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-fable-5-2-xhigh | Claude Fable 5.2 (Xhigh, Default Fallback) | 2026-11-09 | ∅ | 61.9 | 62.5 | 74.2 | 61.6 | 65.6 | 68.9 | 21.4 | 35.7 | ∅ | ∅ | 82.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-fable-5-2-high | Claude Fable 5.2 (High, Default Fallback) | 2026-11-09 | ∅ | 58.9 | 60.9 | 71.4 | 59.6 | 59.5 | 66.2 | 21.8 | 32.9 | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-fable-5-2-medium | Claude Fable 5.2 (Medium, Default Fallback) | 2026-11-09 | ∅ | 56.1 | 54.6 | 68.8 | 55.1 | 59.7 | 61.9 | 23.8 | 30.9 | ∅ | ∅ | 80 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
+| claude-fable-5-2-low | Claude Fable 5.2 (Low, Default Fallback) | 2026-11-09 | ∅ | 53.1 | 52.3 | 68 | 54.5 | 57.8 | 59.7 | 26.8 | 29.4 | ∅ | ∅ | 80 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gemini-4-argon | Gemini 4 Argon (high) | 2026-09-30 | ∅ | 49.2 | 56.5 | 77.5 | 57.1 | 61.8 | 57.1 | 21.8 | 27.1 | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 48.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gpt-6-1-terra | GPT-6.1 Terra (max) | 2026-10-26 | 48.1 | 45.1 | 48.8 | 60.2 | 55.6 | 55.1 | 46.2 | 28.6 | 28.0 | 49.1 | 62.0 | 82.7 | 29.8 | ∅ | ∅ | ∅ | ∅ | 84.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
 | gpt-6-1-terra-xhigh | GPT-6.1 Terra (xhigh) | 2026-10-26 | 45.4 | 41.6 | 45.8 | 59.9 | 46.5 | 53.4 | 43.7 | 26.6 | 26.6 | 49.6 | 58.5 | 81.7 | 28.7 | ∅ | ∅ | ∅ | ∅ | 83.8 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |
@@ -867,6 +873,7 @@ Sources and access dates:
 - Claude Haiku 5.5, accessed 2026-10-07: Anthropic = [launch announcement](https://www.anthropic.com/claude-haiku-5-5), published that day. These launch-table results are vendor-reported; effort, harness revisions, and evaluation run dates are not stated unless shown in the setting. GDPval-AA and AA-Briefcase are raw Elo, not the normalized AA columns above. Artificial Analysis independently measures Haiku 5.5 Terminal-Bench-Science in its **with-fallback** configuration, from the effort-specific model pages for [max](https://artificialanalysis.ai/models/claude-haiku-5-5), [xhigh](https://artificialanalysis.ai/models/claude-haiku-5-5-xhigh), [high](https://artificialanalysis.ai/models/claude-haiku-5-5-high), [medium](https://artificialanalysis.ai/models/claude-haiku-5-5-medium), and [low](https://artificialanalysis.ai/models/claude-haiku-5-5-low); these are not Anthropic launch-table results. No Haiku 5.5 result was published on the checked [DeepSWE leaderboard](https://deepswe.datacurve.ai/) on 2026-10-07; no row is added to that table.
 - GPT-6.1 Terra, accessed 2026-10-26: OpenAI = [launch announcement](https://openai.com/index/introducing-gpt-6-1-terra/) and [system card addendum](https://deploymentsafety.openai.com/gpt-6-1-terra). These results are vendor-reported; harness revisions and run dates are not stated. The announcement text states one numeric Terra score on an external benchmark, TB4 at max effort; its Agents' Last Exam, MMMU-Pro, OSWorld 2.1 and Terminal-Bench-Science comparisons state no Terra score and are not transcribed. The system card reports cybersecurity results at the maximum tested solution length without naming an effort; its internal evaluations are excluded. Artificial Analysis independently measures Terminal-Bench-Science for the six configurations whose model pages are listed in the Intelligence Index section above. No GPT-6.1 Terra result was published on the [DeepSWE leaderboard](https://deepswe.datacurve.ai/), the [TB-Science leaderboard](https://www.terminal-bench-science.ai/), the [FrontierCode data](https://cognition.com/data/frontiercode-leaderboard/data.json), or the visible [AutomationBench leaderboard](https://zapier.com/benchmarks) on that date; no row is added to those tables.
 - Gemini 4 Argon, accessed 2026-11-02: Google = [model card](https://deepmind.google/models/model-cards/gemini-4-argon/) and [methodology](https://deepmind.google/models/evals-methodology/gemini-4-argon), vendor-reported at the highest thinking setting, pass@1; "from X" rows are Google's attribution, not separately retrieved. Zapier = [AutomationBench](https://zapier.com/benchmarks). The [DeepSWE leaderboard](https://deepswe.datacurve.ai/) had no Argon row.
+- Claude Fable 5.2, accessed 2026-11-09: Anthropic = [launch announcement](https://www.anthropic.com/claude-fable-and-mythos-5-2) and [system card](https://www.anthropic.com/document/claude-fable-5-2-mythos-5-2-system-card). These results are vendor-reported with safeguards on; unless a setting says otherwise they use adaptive thinking at max effort and average five trials. GDPval-AA and AA-Briefcase are raw Elo run by AA, not the normalized columns above, and the ARC-AGI-3 rows are ARC Prize Foundation-verified scores as the system card reports them. Artificial Analysis independently measures Terminal-Bench-Science for the five configurations whose model pages are listed in the Intelligence Index section above. Not transcribed: FrontierCode 2.0, SWE-bench Pro, Multilingual and Multimodal, WANDR, Remote Labor Index, BenchCAD 2.1 and Harvey LAB-AA v1.1, which have no matching key or are not comparable across versions, and the system card's internal evaluations and results for other models.
 
 Artificial Analysis Terminal-Bench-Science rows use the [evaluation page](https://artificialanalysis.ai/evaluations/terminal-bench-science) and [AA's general methodology](https://artificialanalysis.ai/methodology/intelligence-benchmarking): version 0.1.0, 70 tasks, mini-swe-agent, pass@1 averaged over three repeats, and a 1,000-step cap. These are AA's general settings, not a separately documented model-specific harness revision. Evaluation run dates are unpublished.
 
@@ -877,7 +884,7 @@ Key:
 - `DSWE`: DeepSWE v1.1, vendor-reported software-engineering results; distinct from Datacurve's independent table above.
 - `GDPpdf`: GDP.pdf All-pass, satisfying every criterion on professional-document tasks.
 - `GDPElo`, `BriefElo`: GDPval-AA v2.1 and AA-Briefcase v1.1, raw Elo ratings.
-- `OSW21`: OSWorld 2.1, computer-use workflows; the Haiku result covers the offline subset.
+- `OSW21`: OSWorld 2.1, computer-use workflows; the Haiku and Fable 5.2 results cover the offline subset.
 - `FC11`: FrontierCode 1.1 Main, weighted rubric score; distinct from all-blocking-criteria pass rate.
 - `Chart`: Chartography, chart understanding without tools.
 - `VALS`: Vals Index. `VFA`: Vals Finance Agent v2. `HLAB`: Harvey's Legal Agent Benchmark. `FSWE`: FrontierSWE v2. `VCB`: Vibe Code Bench. `PTB`: PostTrainBench v1.1. `CWE`: CWE-bench v1. `LAB2`: LABBench 2. `RBench`: RiemannBench. `GW128`, `GW1M`: GraphWalks BFS F1, up to 128k and 256k to 1M tokens. `LVB`: LVBench.
@@ -899,6 +906,26 @@ Key:
 
 | slug | Model | Benchmark | Score | Setting | Source |
 | --- | --- | --- | ---: | --- | --- |
+| claude-fable-5-2 | Claude Fable 5.2 | DSWE | 74.3 | v1.1; mean of five trials; effort not stated | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | FSWE | 69.9 | v2; max effort, Proximal's harness; mean of five trials | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | TB4 | 67.6 | v4.0; max effort; Claude Code --bare; safeguards on; 10 trials per task | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | TBSci | 74.6 | v0.1; max effort; Claude Code --bare; safeguards on; 10 trials per task | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | HLE | 73.2 | no tools; max effort | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | HLEt | 74.2 | with tools; max effort | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | GDPElo | 1831 | v2.1; raw Elo; max effort; run by AA | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | BriefElo | 1785 | v1.1; raw Elo; max effort; run by AA | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | OSW21 | 89.3 | v2.1, offline set of 82 tasks, partial; max effort | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | ABench | 51.4 | v1.0.6, private set, max effort, default fallbacks, run by Zapier | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | Chart | 73.4 | no tools; max effort | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | ARC3 | 65.66 | max effort, Standard harness; ARC Prize-verified | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | ARC3 | 94.90 | max effort, Provider Adapter harness; ARC Prize-verified | Anthropic |
+| claude-fable-5-2-high | Claude Fable 5.2 | ARC3 | 79.26 | high effort, Standard harness; ARC Prize-verified | Anthropic |
+| claude-fable-5-2-high | Claude Fable 5.2 | ARC3 | 97.72 | high effort, Provider Adapter harness; ARC Prize-verified | Anthropic |
+| claude-fable-5-2 | Claude Fable 5.2 | TBSci | 73.3 | max effort; default fallback; AA general settings above | Artificial Analysis |
+| claude-fable-5-2-xhigh | Claude Fable 5.2 | TBSci | 67.6 | xhigh effort; default fallback; AA general settings above | Artificial Analysis |
+| claude-fable-5-2-high | Claude Fable 5.2 | TBSci | 70.0 | high effort; default fallback; AA general settings above | Artificial Analysis |
+| claude-fable-5-2-medium | Claude Fable 5.2 | TBSci | 60.5 | medium effort; default fallback; AA general settings above | Artificial Analysis |
+| claude-fable-5-2-low | Claude Fable 5.2 | TBSci | 53.8 | low effort; default fallback; AA general settings above | Artificial Analysis |
 | gemini-4-argon | Gemini 4 Argon | DSWE | 77.9 | v1.1, mini-swe-agent; Google-reported, self-computed | Google |
 | gemini-4-argon | Gemini 4 Argon | FSWE | 55.0 | v2; Google-reported, from Proximal's leaderboard | Google |
 | gemini-4-argon | Gemini 4 Argon | TB4 | 57.4 | v4.0; Google-reported, self-computed | Google |
