@@ -190,7 +190,7 @@ try {
 		message?: string;
 		retryable?: boolean;
 		subject?: string;
-		problems?: readonly { code: string; subject: string }[];
+		problems?: readonly { code: string; subject: string; checkout?: string }[];
 		cause?: { name?: string; code?: string; cause?: { name?: string; code?: string } };
 	};
 	emit({
@@ -201,7 +201,11 @@ try {
 			retryable: typed.retryable,
 			subject: typed.subject,
 			rendered: resumeFailureMessage(error),
-			problems: typed.problems?.map((problem) => ({ code: problem.code, subject: problem.subject })),
+			problems: typed.problems?.map((problem) => ({
+				code: problem.code,
+				subject: problem.subject,
+				checkout: problem.checkout,
+			})),
 			...(typed.cause === undefined
 				? {}
 				: {

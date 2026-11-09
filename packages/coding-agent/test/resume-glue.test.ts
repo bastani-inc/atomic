@@ -137,6 +137,32 @@ describe("resume error family (#4329)", () => {
 		assert.throws(() => new ResumePreconditionError({ entryPoint: "cli", problems: [] }), RangeError);
 	});
 
+	test("a precondition problem names its checkout, survives a process boundary and shares one fix in the hint (#4584)", () => {
+		const hook: ResumePreconditionProblem = {
+			code: "setup-hook-missing",
+			subject: "setup hook for /work/a (the checkout the session runs in)",
+			why: "restoring /work/a needs a hook",
+			fix: 'Set "resume.setupCommand", then resume again.',
+			checkout: "/work/a",
+		};
+		const error = new ResumePreconditionError({
+			entryPoint: "cli",
+			problems: [hook, { ...hook, subject: "setup hook for /work/b", checkout: "/work/b" }, PROBLEM],
+		});
+		assert.deepEqual(
+			error.problems.map((problem) => problem.checkout),
+			["/work/a", "/work/b", undefined],
+		);
+		assert.equal(error.hint, `${hook.fix} Then: ${PROBLEM.fix}`);
+		const copy = rehydrateResumeError(JSON.parse(JSON.stringify(serializeResumeError(error))));
+		assert.ok(isResumePreconditionError(copy));
+		assert.deepEqual(
+			copy.problems.map((problem) => problem.checkout),
+			["/work/a", "/work/b", undefined],
+		);
+		assert.deepEqual(copy.fields, error.fields);
+	});
+
 	test("setup hook failures name the hook and how it ended", () => {
 		const failed = new ResumeSetupHookError("setup-hook-failed", HOOK_FIELDS);
 		assert.match(failed.message, /^The setup hook \.atomic\/setup exited with status 3 in \/w \(setup-hook-failed\)/);

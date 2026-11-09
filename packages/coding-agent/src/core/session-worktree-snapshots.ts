@@ -690,12 +690,32 @@ export async function openSessionInWorktree(
 	readonly notices: { readonly type: "info" | "warning"; readonly message: string }[];
 }> {
 	const resume = await resumeSessionWorktree(sessionManager, options);
-	const moved =
-		(resume.status === "restored" || resume.status === "verified") && resume.cwd !== sessionManager.getCwd();
-	const opened = moved
-		? await sessionManager.openSessionById(sessionManager.getSessionId(), resume.cwd, options.sessionDirectory)
-		: sessionManager;
-	const restoredHere = new Set(resume.status === "restored" ? resume.mappings.map((mapping) => mapping.to) : []);
+	return openResumedSession(
+		sessionManager,
+		resume.status === "none" ? sessionManager.getCwd() : resume.cwd,
+		resume.status === "restored" ? resume.mappings : [],
+		options.sessionDirectory,
+	);
+}
+
+/**
+ * Opens `sessionManager`'s session in `cwd`, where resuming it left its working directory, and returns the notices to
+ * show for the worktrees that resuming `restored` it into.
+ */
+export async function openResumedSession(
+	sessionManager: SessionManager,
+	cwd: string,
+	restored: readonly WorktreeRootMapping[],
+	sessionDirectory?: string,
+): Promise<{
+	readonly sessionManager: SessionManager;
+	readonly notices: { readonly type: "info" | "warning"; readonly message: string }[];
+}> {
+	const opened =
+		cwd !== sessionManager.getCwd()
+			? await sessionManager.openSessionById(sessionManager.getSessionId(), cwd, sessionDirectory)
+			: sessionManager;
+	const restoredHere = new Set(restored.map((mapping) => mapping.to));
 	return { sessionManager: opened, notices: restoreNotices(opened, (restore) => restoredHere.has(restore.to)) };
 }
 
