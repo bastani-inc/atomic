@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
+// From the package, not `packages/coding-agent/src/index.js`: the stage adapter loads `@bastani/atomic` for its
+// sessions, so the source barrel would load a second copy of the coding agent through jiti, about 870 more modules
+// and most of a Node child's start-up.
+import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
-import { AuthStorage, ModelRuntime, SettingsManager } from "../../packages/coding-agent/src/index.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
@@ -63,7 +65,6 @@ await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "f
 const modelRuntime = await ModelRuntime.create({
 	credentials: authStorage,
 	modelsPath: null,
-	modelsStore: new InMemoryCodingAgentModelsStore(),
 });
 modelRuntime.registerProvider(model.provider, {
 	baseUrl: model.baseUrl,

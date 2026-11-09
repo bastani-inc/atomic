@@ -12,9 +12,11 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
+// From the package, not `packages/coding-agent/src/index.js`: the stage adapter loads `@bastani/atomic` for its
+// sessions, so the source barrel would load a second copy of the coding agent through jiti, about 870 more modules
+// and most of a Node child's start-up.
+import { AuthStorage, ModelRuntime, SettingsManager, type ToolDefinition } from "@bastani/atomic";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import { AuthStorage, ModelRuntime, SettingsManager, type ToolDefinition } from "../../packages/coding-agent/src/index.js";
 import { createAgentSessionAdapter, run, workflow } from "../../packages/workflows/src/sdk-surface.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 
@@ -43,7 +45,6 @@ await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "f
 const modelRuntime = await ModelRuntime.create({
 	credentials: authStorage,
 	modelsPath: null,
-	modelsStore: new InMemoryCodingAgentModelsStore(),
 });
 modelRuntime.registerProvider(model.provider, {
 	baseUrl: model.baseUrl,
