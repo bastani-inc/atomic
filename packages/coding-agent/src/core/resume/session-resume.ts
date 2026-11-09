@@ -544,7 +544,7 @@ async function setUpRestoredCheckouts(
 			) {
 				throw error;
 			}
-			const recorded = mappings.findLast((mapping) => resolve(mapping.to) === root)?.from;
+			const recorded = mappings.filter((mapping) => resolve(mapping.to) === root).at(-1)?.from;
 			notices.push({
 				type: "warning",
 				message: `Continuing without the setup hook in ${root}${recorded === undefined ? "" : `, restored for ${recorded}`} (snapshot ${snapshot.id.slice(0, 12)}): ${describeFailure(error)}`,

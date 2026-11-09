@@ -2327,7 +2327,7 @@ describe("prepareSessionResume cases the other-checkout planning leaves as they 
 		},
 	);
 
-	test("a setup ledger that cannot be read stops the resume instead of counting as a missing hook", async () => {
+	test("a setup ledger directory that cannot be accessed stops the resume instead of counting as a missing hook", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
@@ -2335,13 +2335,37 @@ describe("prepareSessionResume cases the other-checkout planning leaves as they 
 		mkdirSync(sandbox.path("host"));
 		writeFileSync(sandbox.path("host", "setup-ledger"), "not a directory");
 
+		const expected = process.platform === "win32" ? "EEXIST" : "ENOTDIR";
 		await assert.rejects(
 			prepareSessionResume(manager, options({ launchCwd: clone })),
-			(error: unknown) => (error as NodeJS.ErrnoException).code === "ENOTDIR",
+			(error: unknown) => (error as NodeJS.ErrnoException).code === expected,
 		);
 
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
+	});
+
+	test("a setup ledger that cannot be parsed stops the resume and keeps the worktree restored earlier (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+		await prepareSessionResume(
+			manager,
+			options({ launchCwd: clone, setup: { command: nodeCommand("process.exit(3)"), trusted: () => false } }),
+		);
+		const ledgerDir = sandbox.path("host", "setup-ledger");
+		const entries = readdirSync(ledgerDir);
+		assert.notEqual(entries.length, 0);
+		for (const entry of entries) writeFileSync(join(ledgerDir, entry), "{");
+		const mappings = manager.getWorktreeRootMappings();
+		const restored = readdirSync(sandbox.path("host", "worktrees"));
+		assert.equal(mappings.length, 1);
+
+		await assert.rejects(prepareSessionResume(manager, options({ launchCwd: clone })), SyntaxError);
+
+		assert.deepEqual(manager.getWorktreeRootMappings(), mappings);
+		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), restored);
 	});
 
 	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(

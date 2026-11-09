@@ -54,7 +54,7 @@ interface NodeOutput {
 		name?: string;
 		code?: string;
 		message?: string;
-		problems?: readonly { code: string; subject: string }[];
+		problems?: readonly { code: string; subject: string; checkout?: string }[];
 		cause?: { name?: string; code?: string };
 	};
 }
@@ -273,7 +273,11 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 			);
 			assert.deepEqual(gitless.output?.error?.problems, [
 				{ code: "git-unavailable", subject: "git (offline)" },
-				{ code: "setup-hook-missing", subject: "setup hook" },
+				{
+					code: "setup-hook-missing",
+					subject: `setup hook for ${clone} (the checkout the session runs in)`,
+					checkout: clone,
+				},
 			]);
 			assert.deepEqual(gitless.output?.error?.cause, { name: "GitUnavailableError", code: "offline" });
 			assert.equal(existsSync(join(root, "node-c", "agent", "worktree-snapshots")), false);
