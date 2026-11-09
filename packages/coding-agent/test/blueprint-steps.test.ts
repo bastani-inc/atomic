@@ -56,8 +56,9 @@ const path = (...segments: string[]) => join(sandbox, ...segments);
 const markers = () => path("markers.txt");
 const results = () => path("results.txt");
 
+/** The lines of `file`: bash ends them with LF, PowerShell's `Add-Content` with CRLF on Windows. */
 function lines(file: string): string[] {
-	return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+	return existsSync(file) ? readFileSync(file, "utf8").split(/\r?\n/u).filter(Boolean) : [];
 }
 
 function hostSystemEnvironment(): Record<string, string> {

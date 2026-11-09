@@ -42,7 +42,7 @@ import {
 	WorkspaceDriftError,
 	withWorktreeRootMappings,
 } from "../src/index.ts";
-import { appendLineCommand, nodeCommand, SLEEPING_COMMAND } from "./helpers/hook-commands.ts";
+import { appendLineCommand, nodeCommand, startedSleepingCommand } from "./helpers/hook-commands.ts";
 import { missingGit } from "./helpers/missing-git.ts";
 
 useTemporaryAgentDir();
@@ -981,12 +981,16 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("gone"));
 		const controller = new AbortController();
+		const started = sandbox.path("setup-started");
 		const pending = prepareSessionResume(
 			manager,
-			options({ signal: controller.signal, blueprint: setupBlueprint({ setupCommand: SLEEPING_COMMAND }) }),
+			options({
+				signal: controller.signal,
+				blueprint: setupBlueprint({ setupCommand: startedSleepingCommand(started) }),
+			}),
 		);
-		const logs = sandbox.path("host", "blueprint-logs");
-		for (let waited = 0; !(existsSync(logs) && readdirSync(logs).length > 0); waited += 50) {
+		// Stopped once it runs: on Windows a tree kill that lands while Git Bash is still starting it can miss it.
+		for (let waited = 0; !existsSync(started); waited += 50) {
 			if (waited > 20_000) assert.fail("the setup command never started");
 			await new Promise((resolveWait) => setTimeout(resolveWait, 50));
 		}
@@ -1665,16 +1669,17 @@ describe("prepareSessionResume cases the other-checkout planning leaves as they 
 		const second = await recordOtherCheckout(manager, "second");
 		renameSync(second, sandbox.path("second-gone"));
 		const controller = new AbortController();
+		const started = sandbox.path("setup-started");
 		const pending = prepareSessionResume(
 			manager,
 			options({
 				launchCwd: clone,
 				signal: controller.signal,
-				blueprint: setupBlueprint({ setupCommand: SLEEPING_COMMAND }),
+				blueprint: setupBlueprint({ setupCommand: startedSleepingCommand(started) }),
 			}),
 		);
-		const logs = sandbox.path("host", "blueprint-logs");
-		for (let waited = 0; !(existsSync(logs) && readdirSync(logs).length > 0); waited += 50) {
+		// Stopped once it runs: on Windows a tree kill that lands while Git Bash is still starting it can miss it.
+		for (let waited = 0; !existsSync(started); waited += 50) {
 			if (waited > 20_000) assert.fail("the setup command never started");
 			await new Promise((resolveWait) => setTimeout(resolveWait, 50));
 		}

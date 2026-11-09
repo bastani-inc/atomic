@@ -14,7 +14,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
-import { DIRECTORY_AS_FILE_ERRNO } from "../../../test/helpers/worktree-snapshot.js";
 import { shellCommandPrefixFor } from "../src/core/agent-session-blueprint-environment.ts";
 import { bashPath, sessionEnvironmentPrefix, sessionEnvrcPath } from "../src/core/resume/blueprint/envrc.ts";
 import {
@@ -272,7 +271,7 @@ describe("blueprint build: environment and $ENVRC (#4588)", () => {
 			"1 from-envrc scoped",
 			"2 from-envrc ",
 			"3 step-wins",
-			`4 from-envrc ${shellSpelling(repo.root)}/tools`,
+			`4 from-envrc ${shellSpelling(repo.root, config().environment)}/tools`,
 		]);
 	});
 
@@ -1456,7 +1455,8 @@ describe("blueprint build: reading blueprints and surviving crashes (#4588)", ()
 		assert.ok(isBlueprintBuildFailedError(failure.error));
 		assert.equal(failure.error.phase, "read-blueprint");
 		assert.equal(failure.error.detail, `${path("agent", "blueprint.yaml")} could not be read`);
-		assert.equal((failure.error.cause as NodeJS.ErrnoException).code, DIRECTORY_AS_FILE_ERRNO);
+		// Reading a directory as a file fails with EISDIR on every platform, Windows included.
+		assert.equal((failure.error.cause as NodeJS.ErrnoException).code, "EISDIR");
 		assert.deepEqual(ran(), []);
 	});
 
