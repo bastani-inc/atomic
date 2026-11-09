@@ -1,5 +1,6 @@
 import { builtinProviders } from "@bastani/pi-ai/providers/all";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
+import { compareProviders } from "../../core/preferred-providers.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -55,9 +56,8 @@ InteractiveModeBase.prototype.getLoginProviderOptions = function (
 			...subscriptionFlag(subscriptions.get(provider.id)),
 		});
 	}
-	return (authType ? options.filter((option) => option.authType === authType) : options).sort((a, b) =>
-		a.name.localeCompare(b.name),
-	);
+	// The sort is stable, so a provider's account option stays above its API key option.
+	return (authType ? options.filter((option) => option.authType === authType) : options).sort(compareProviders);
 };
 InteractiveModeBase.prototype.getLogoutProviderOptions = function (this: InteractiveModeBase): AuthSelectorProvider[] {
 	const runtime = this.session.modelRuntime;
@@ -77,7 +77,7 @@ InteractiveModeBase.prototype.getLogoutProviderOptions = function (this: Interac
 		if (authType)
 			options.push({ id: providerId, name, authType, ...subscriptionFlag(subscriptions.get(providerId)) });
 	}
-	return options.sort((a, b) => a.name.localeCompare(b.name));
+	return options.sort(compareProviders);
 };
 
 InteractiveModeBase.prototype.startProviderLogin = async function (
@@ -187,8 +187,9 @@ InteractiveModeBase.prototype.showLoginProviderSelector = function (
 			},
 			(providerId) => this.session.modelRuntime.getProviderAuthStatus(providerId),
 			initialSearchInput,
+			this.ui,
 		);
-		return { component: selector, focus: selector };
+		return { component: selector, focus: selector, dispose: () => selector.dispose() };
 	});
 };
 
@@ -239,7 +240,8 @@ InteractiveModeBase.prototype.showOAuthSelector = async function (
 			},
 			undefined,
 			initialSearchInput,
+			this.ui,
 		);
-		return { component: selector, focus: selector };
+		return { component: selector, focus: selector, dispose: () => selector.dispose() };
 	});
 };

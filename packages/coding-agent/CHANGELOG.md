@@ -22,6 +22,10 @@
 
 - `resume.setupCommand` is deprecated and stays for one release as an alias for one maintenance step of the global blueprint, run in the root of each restored worktree in a trusted project; a resume that builds a worktree prints a deprecation warning while it is set. Move the command into the `maintenance` of `.atomic/blueprint.yaml` ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
 
+### Changed
+
+- The `/login` and `/logout` provider lists and the `/login <provider>` and `/logout <provider>` completions now show the preferred partners Radius and OpenRouter first, then all other providers alphabetically. In the provider lists, partners are marked with `✦`, the selected Radius row shimmers in the Radius logo colors and the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes)
+
 ### Fixed
 
 - Fixed `atomic --session <id>` refusing to resume with `setup-hook-missing` when a checkout other than the one the session runs in was missing or changed, for example a sibling worktree or a `/tmp` probe worktree a workflow stage used, although the current checkout was unchanged. Only the checkout the session's working directory is in can now stop a resume: a changed checkout the session worked in on this machine continues as it is, and another checkout that cannot be restored (no Git, no setup hook, a failed restore or a failed hook) is left out with a warning that names its path and why. When the current checkout cannot be restored, `ResumePreconditionError` lists every unmet piece of every checkout the resume would restore, and each `problems[]` entry names its checkout in the new optional `checkout` field ([#4584](https://github.com/bastani-inc/atomic/issues/4584))

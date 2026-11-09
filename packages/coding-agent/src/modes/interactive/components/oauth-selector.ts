@@ -7,11 +7,14 @@ import {
 	Input,
 	Spacer,
 	TruncatedText,
+	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ModelRuntime } from "../../../core/model-runtime.js";
+import { isPreferredProvider } from "../../../core/preferred-providers.ts";
 import type { AuthStatus } from "../../../core/provider-composer.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
+import { getProviderBrandStyle, type ProviderBrandStyle, startBrandAnimation } from "./provider-brand.ts";
 
 export type AuthSelectorProvider = {
 	id: string;
@@ -31,7 +34,8 @@ export function formatAuthSelectorProviderType(
 const MAX_VISIBLE = 8;
 
 /**
- * Component that renders an auth provider selector
+ * Component that renders an auth provider selector. With `tui`, the selected row of a preferred partner provider
+ * shows its animated brand style.
  */
 export class OAuthSelectorComponent extends Container implements Focusable {
 	readonly capturesViewportInput: boolean = true;
@@ -56,6 +60,8 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 	private getAuthStatus: (providerId: string) => AuthStatus;
 	private onSelectCallback: (providerId: string, authType: AuthSelectorProvider["authType"]) => void;
 	private onCancelCallback: () => void;
+	private readonly animationStart = performance.now();
+	private stopAnimation: (() => void) | undefined;
 
 	constructor(
 		mode: "login" | "logout",
@@ -65,6 +71,7 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 		onCancel: () => void,
 		getAuthStatus?: (providerId: string) => AuthStatus,
 		initialSearchInput = "",
+		tui?: TUI,
 	) {
 		super();
 
@@ -107,6 +114,25 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 
 		// Initial render
 		this.filterProviders(initialSearchInput);
+
+		if (tui) this.stopAnimation = startBrandAnimation(tui, () => this.getSelectedBrandStyle() !== undefined);
+	}
+
+	override render(width: number): string[] {
+		// The list is built from styled text, so an animated row needs a rebuild for each frame.
+		if (this.stopAnimation && this.getSelectedBrandStyle()) this.updateList();
+		return super.render(width);
+	}
+
+	/** Stops the brand animation. */
+	dispose(): void {
+		this.stopAnimation?.();
+		this.stopAnimation = undefined;
+	}
+
+	private getSelectedBrandStyle(): ProviderBrandStyle | undefined {
+		const selectedProvider = this.filteredProviders[this.selectedIndex];
+		return selectedProvider && getProviderBrandStyle(selectedProvider.id);
 	}
 
 	private filterProviders(query: string): void {
@@ -137,16 +163,16 @@ export class OAuthSelectorComponent extends Container implements Focusable {
 				(other) => other.id === provider.id && other.authType !== provider.authType,
 			);
 			const methodLabel = formatAuthSelectorProviderType(provider.authType, provider.subscription);
-			const providerLabel = hasMultipleMethods ? `${provider.name} · ${methodLabel}` : provider.name;
-			let line = "";
-			if (isSelected) {
-				const prefix = theme.fg("accent", "→ ");
-				const text = theme.fg("accent", providerLabel);
-				line = prefix + text + statusIndicator;
-			} else {
-				const text = `  ${theme.fg("text", providerLabel)}`;
-				line = text + statusIndicator;
-			}
+			const methodSuffix = hasMultipleMethods ? ` · ${methodLabel}` : "";
+			// U+2726 is single-width in every terminal, unlike star emoji or ambiguous-width symbols such as U+2605.
+			const partnerMarker = isPreferredProvider(provider.id) ? theme.fg("muted", " ✦") : "";
+			const color = isSelected ? "accent" : "text";
+			const brandStyle = isSelected && this.stopAnimation ? getProviderBrandStyle(provider.id) : undefined;
+			const name = brandStyle
+				? brandStyle(provider.name, performance.now() - this.animationStart)
+				: theme.fg(color, provider.name);
+			const text = name + partnerMarker + (methodSuffix && theme.fg(color, methodSuffix));
+			const line = isSelected ? theme.fg("accent", "→ ") + text + statusIndicator : `  ${text}${statusIndicator}`;
 
 			this.listContainer.addChild(new TruncatedText(line, 1, 0));
 		}
