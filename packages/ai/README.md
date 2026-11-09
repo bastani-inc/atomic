@@ -1,6 +1,6 @@
 # @bastani/pi-ai
 
-Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`244e5f5dba50a8915d652e0ccf9e1422bd468c44`](https://github.com/earendil-works/pi/commit/244e5f5dba50a8915d652e0ccf9e1422bd468c44). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
+Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`a07f251296c5f912ed105c78e5f306db9b1a9019`](https://github.com/earendil-works/pi/commit/a07f251296c5f912ed105c78e5f306db9b1a9019). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
 
 The public API is a drop-in replacement: install `@bastani/pi-ai` and import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. See [NOTICE.md](NOTICE.md). This package lives in the Atomic monorepo and publishes from `.github/workflows/publish.yml`. The first npm version must be published by hand so trusted publishing can be attached.
 

@@ -13,6 +13,7 @@ import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
@@ -429,7 +430,7 @@ export function createFindToolDefinition(
 		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
-					reject(new Error("Operation aborted"));
+					reject(new FileToolAbortedError(signal.reason));
 					return;
 				}
 				let settled = false;
@@ -443,7 +444,7 @@ export function createFindToolDefinition(
 				};
 				const onAbort = () => {
 					stopChild?.();
-					settle(() => reject(new Error("Operation aborted")));
+					settle(() => reject(new FileToolAbortedError(signal?.reason)));
 				};
 				signal?.addEventListener("abort", onAbort, { once: true });
 				const { limit, hidden, gitignore, timeout } = params;
@@ -521,7 +522,7 @@ export function createFindToolDefinition(
 									return;
 								}
 								if (signal?.aborted) {
-									settle(() => reject(new Error("Operation aborted")));
+									settle(() => reject(new FileToolAbortedError(signal.reason)));
 									return;
 								}
 								const remaining = effectiveLimit - relativized.length;
@@ -575,7 +576,7 @@ export function createFindToolDefinition(
 									continue;
 								}
 								if (signal?.aborted) {
-									settle(() => reject(new Error("Operation aborted")));
+									settle(() => reject(new FileToolAbortedError(signal.reason)));
 									return;
 								}
 								const visible = results.filter((p) => hidden !== false || !containsHiddenSegment(p));
@@ -687,7 +688,7 @@ export function createFindToolDefinition(
 							downloadFailure = status.error;
 						});
 						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
+							settle(() => reject(new FileToolAbortedError(signal.reason)));
 							return;
 						}
 						if (!fdPath) {
@@ -726,6 +727,7 @@ export function createFindToolDefinition(
 								timedOut = true;
 								return false;
 							}
+							if (signal?.aborted) return false;
 							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
 								const child = spawn(fdPath, args, {
 									env: createChildProcessEnvironment(),
@@ -760,7 +762,7 @@ export function createFindToolDefinition(
 								child.on("close", (code) => {
 									cleanup();
 									if (signal?.aborted) {
-										rejectTarget(new Error("Operation aborted"));
+										rejectTarget(new FileToolAbortedError(signal.reason));
 										return;
 									}
 									if (!timedOut && code !== 0 && lines.length === 0) {
@@ -815,7 +817,7 @@ export function createFindToolDefinition(
 						);
 					} catch (e) {
 						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
+							settle(() => reject(new FileToolAbortedError(signal.reason)));
 							return;
 						}
 						const error = e instanceof Error ? e : new Error(String(e));
