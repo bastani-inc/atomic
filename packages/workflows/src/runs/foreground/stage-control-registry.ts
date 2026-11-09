@@ -44,7 +44,7 @@ export type StageControlStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
-	| "waiting"
+	| "suspended"
 	| "completed"
 	| "failed"
 	| "skipped";
@@ -434,7 +434,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 							.map((entry) => entry.handle)
 					: controlEntries
 							.map((entry) => entry.handle)
-							.filter((h) => h.status === "running" || h.status === "pending" || h.status === "waiting");
+							.filter((h) => h.status === "running" || h.status === "pending" || h.status === "suspended");
 				const before = new Map(controlEntries.map((entry) => [entry.handle.stageId, entry.handle.status]));
 				for (const handle of targets) {
 					if (handle.status === "paused") continue;

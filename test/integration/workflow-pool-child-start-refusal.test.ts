@@ -212,7 +212,7 @@ test.skipIf(process.platform === "win32")(
 						id: "waiting-stage",
 						name: "review",
 						replayKey: "stage:review:1",
-						status: "waiting",
+						status: "suspended",
 						parentIds: [],
 						toolEvents: [],
 						startedAt: 1_000,

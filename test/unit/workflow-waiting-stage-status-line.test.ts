@@ -14,7 +14,7 @@ function waitingStage(name: string, wait: StageWaitSnapshot | undefined): StageS
 	return {
 		id: `id-${name}`,
 		name,
-		status: "waiting",
+		status: "suspended",
 		parentIds: [],
 		toolEvents: [],
 		startedAt: NOW - 10_000,
@@ -45,8 +45,8 @@ function summaryLine(snapshot: RunSnapshot): string {
 	return line;
 }
 
-describe("what a status line says about a run's waiting stages (#4309)", () => {
-	test("each waiting stage is named with what it waits on, and a run of ten or fewer lists them with no overflow marker (#4309)", () => {
+describe("what a status line says about a run's suspended stages (#4309, #4589)", () => {
+	test("each suspended stage is named with what it waits on, and a run of ten or fewer lists them with no overflow marker (#4309, #4589)", () => {
 		const line = summaryLine(
 			runSnapshot([
 				waitingStage("build", {
@@ -60,12 +60,14 @@ describe("what a status line says about a run's waiting stages (#4309)", () => {
 			]),
 		);
 		assert.ok(
-			line.endsWith("waiting (4): build (tool: wait_for_ci), idle-one (idle), held (released), no-wait"),
+			line.endsWith(
+				"suspended (4): build (tool: wait_for_ci), idle-one (between turns), held (between turns), no-wait",
+			),
 			line,
 		);
 	});
 
-	test("the waiting stages come after the stage that awaits input and before the run's tools, joined by a middle dot (#4309)", () => {
+	test("the suspended stages come after the stage that awaits input and before the run's tools, joined by a middle dot (#4309, #4589)", () => {
 		const line = summaryLine(
 			runSnapshot(
 				[
@@ -91,7 +93,7 @@ describe("what a status line says about a run's waiting stages (#4309)", () => {
 		);
 		const parts = line.split("  ").at(-1)?.split(" · ");
 		assert.equal(parts?.[0]?.startsWith("awaiting input (1)"), true, line);
-		assert.equal(parts?.[1], "waiting (1): held (released)");
+		assert.equal(parts?.[1], "suspended (1): held (between turns)");
 		assert.equal(parts?.[2], "tools: lint (running)");
 		assert.equal(parts?.length, 3);
 	});
@@ -106,7 +108,7 @@ describe("what a status line says about a run's waiting stages (#4309)", () => {
 		assert.equal(bare.endsWith("running  0ms") || /running {2}\S+$/.test(bare), true, bare);
 	});
 
-	test("a stage listing shows a released stage with what it waits on, and a stage summary carries a copy of its wait (#4309)", () => {
+	test("a stage listing shows a released stage with what it waits on, and a stage summary carries a copy of its wait (#4309, #4589)", () => {
 		const wait: StageWaitSnapshot = {
 			kind: "tool",
 			since: NOW,
@@ -126,8 +128,11 @@ describe("what a status line says about a run's waiting stages (#4309)", () => {
 			},
 			{ action: "stages" },
 		);
-		assert.ok(text.includes("[1] build (id-build) waiting (tool: wait_for_ci, deploy)"), text);
-		assert.ok(text.includes("[2] plain (id-plain) waiting\n") || text.endsWith("[2] plain (id-plain) waiting"), text);
+		assert.ok(text.includes("[1] build (id-build) suspended (tool: wait_for_ci, deploy)"), text);
+		assert.ok(
+			text.includes("[2] plain (id-plain) suspended\n") || text.endsWith("[2] plain (id-plain) suspended"),
+			text,
+		);
 
 		const summary = summarizeStage(stage);
 		assert.deepEqual(summary.wait, wait);
@@ -136,8 +141,8 @@ describe("what a status line says about a run's waiting stages (#4309)", () => {
 	});
 });
 
-describe("what a stage waits on, as status text (#4309)", () => {
-	test("a tool wait names its distinct tools in call order, and every other wait has one fixed label (#4309)", () => {
+describe("what a stage waits on, as status text (#4309, #4589)", () => {
+	test("a tool wait names its distinct tools in call order, and every other wait has one fixed label (#4309, #4589)", () => {
 		assert.equal(stageWaitLabel({ kind: "tool", since: 1 }), "tool");
 		assert.equal(stageWaitLabel({ kind: "tool", since: 1, toolCalls: [] }), "tool");
 		assert.equal(
@@ -152,10 +157,10 @@ describe("what a stage waits on, as status text (#4309)", () => {
 			}),
 			"tool: b_tool, a_tool",
 		);
-		assert.equal(stageWaitLabel({ kind: "idle", since: 1 }), "idle");
-		assert.equal(stageWaitLabel({ kind: "release", since: 1 }), "released");
+		assert.equal(stageWaitLabel({ kind: "idle", since: 1 }), "between turns");
+		assert.equal(stageWaitLabel({ kind: "release", since: 1 }), "between turns");
 		assert.equal(stageWaitLabel({ kind: "prompt", since: 1 }), "released");
-		assert.equal(stageStatusWithWait("waiting", undefined), "waiting");
+		assert.equal(stageStatusWithWait("suspended", undefined), "suspended");
 		assert.equal(stageStatusWithWait("awaiting_input", { kind: "prompt", since: 1 }), "awaiting_input (released)");
 	});
 });

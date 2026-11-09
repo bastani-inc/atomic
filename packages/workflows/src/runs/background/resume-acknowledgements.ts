@@ -53,7 +53,7 @@ export async function settleResumeAcknowledgements(
 			target.handle.status === "running" ||
 			target.handle.status === "pending" ||
 			target.handle.status === "awaiting_input" ||
-			target.handle.status === "waiting";
+			target.handle.status === "suspended";
 		if (result.status === "fulfilled" || controlVisiblyRunning) acknowledged += 1;
 		if ((result.status === "fulfilled" || controlVisiblyRunning) && controlRun?.endedAt === undefined) {
 			const stage = targetStage(store, target);

@@ -27,7 +27,7 @@ export type WorkflowStageStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
-	| "waiting"
+	| "suspended"
 	| "completed"
 	| "failed"
 	| "skipped";

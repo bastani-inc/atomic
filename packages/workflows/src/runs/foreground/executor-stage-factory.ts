@@ -273,13 +273,13 @@ export function createWorkflowStageFactory(input: {
 				wait.kind !== "tool" || stageSnapshot.status === "completed" || stageSnapshot.status === "failed"
 					? stageSnapshot.status
 					: undefined;
-			if (stageSnapshot.status !== "paused") stageSnapshot.status = "waiting";
+			if (stageSnapshot.status !== "paused") stageSnapshot.status = "suspended";
 			if (wait.kind !== "tool") idleReleaser.trackReleased(stageId, settleReleased);
 		};
 		const settleReleased = (): void => {
 			shownWait = undefined;
 			delete stageSnapshot.wait;
-			if (stageSnapshot.status === "waiting") stageSnapshot.status = statusBeforeRelease ?? "completed";
+			if (stageSnapshot.status === "suspended") stageSnapshot.status = statusBeforeRelease ?? "completed";
 			input.activeStore.recordStageStart(input.runId, stageSnapshot);
 		};
 		const wakeKey = stageWakeKey(input.runId, stageId);
@@ -368,7 +368,7 @@ export function createWorkflowStageFactory(input: {
 				}
 				runtime.abortListeners.attach();
 				delete stageSnapshot.wait;
-				if (stageSnapshot.status === "waiting") stageSnapshot.status = statusBeforeRelease ?? "running";
+				if (stageSnapshot.status === "suspended") stageSnapshot.status = statusBeforeRelease ?? "running";
 				statusBeforeRelease = undefined;
 				input.activeStore.recordStageStart(input.runId, stageSnapshot);
 			},
@@ -724,7 +724,7 @@ export function createWorkflowStageFactory(input: {
 			await dropStageControlForCompletion();
 			if (shownWait !== undefined) {
 				statusBeforeRelease = "completed";
-				stageSnapshot.status = "waiting";
+				stageSnapshot.status = "suspended";
 				input.activeStore.recordStageStart(input.runId, stageSnapshot);
 			}
 			return recorded;

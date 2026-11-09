@@ -139,7 +139,7 @@ describe("stages held idle by the workflow release their session (#4309)", () =>
 		assert.equal(result.status, "completed", result.error);
 		assert.equal(beforeThreshold, 0);
 		assert.deepEqual(whileIdle, {
-			statuses: ["waiting", "waiting", "waiting"],
+			statuses: ["suspended", "suspended", "suspended"],
 			kinds: ["idle", "idle", "idle"],
 			live: 0,
 		});

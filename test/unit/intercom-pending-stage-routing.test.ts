@@ -418,7 +418,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			stages: [
 				{
 					...run.stages[0]!,
-					status: "waiting",
+					status: "suspended",
 					sessionId: "released-session",
 					wait: { kind: "tool", since: 1, toolCalls: [{ toolCallId: "call-1", toolName: "wait_for_ci" }] },
 				},
@@ -453,7 +453,7 @@ describe("workflows-owned pending-stage delivery event bridge", () => {
 			awaiting_input: true,
 			paused: true,
 			blocked: true,
-			waiting: true,
+			suspended: true,
 			completed: true,
 			failed: true,
 			skipped: true,

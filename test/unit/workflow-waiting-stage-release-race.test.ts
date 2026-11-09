@@ -74,7 +74,7 @@ describe("a release and a message that race (#4309)", () => {
 		// Waiting only while no session is live; the message's reopening comes after the release, never before it, and
 		// gives the stage back the status it had before the release (a ctx.stage stays completed after its prompt).
 		assert.deepEqual(samples, [
-			{ at: "stage_waiting", live: 0, status: "waiting" },
+			{ at: "stage_waiting", live: 0, status: "suspended" },
 			{ at: "stage_rehydrated", live: 1, status: "completed" },
 			{ at: "settled", live: 1, status: "completed" },
 		]);

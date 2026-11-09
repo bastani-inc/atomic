@@ -1031,7 +1031,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
 					pid: 2,
 					startedAt: 1,
 					lastActivity: 1,
-					status: "waiting",
+					status: "suspended",
 				},
 				{ id: "parent-reply", timestamp: Date.now(), replyTo: surfaced[0]?.id, content: { text: "Approved" } },
 			);

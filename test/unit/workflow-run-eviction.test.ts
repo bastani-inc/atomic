@@ -37,7 +37,7 @@ describe("evicting a run whose stages only wait on detached calls (#4373)", () =
 		assert.equal(store.run(runId)?.status, "running");
 		assert.deepEqual(
 			store.run(runId)?.stages.map((stage) => stage.status),
-			["waiting", "waiting", "waiting"],
+			["suspended", "suspended", "suspended"],
 		);
 		assert.equal(started.starts(), 1);
 
@@ -103,7 +103,7 @@ describe("evicting a run whose stages only wait on detached calls (#4373)", () =
 			"the stage that kept waiting was not announced again",
 		);
 		const beta = store.run(runId)?.stages.find((stage) => stage.name === "beta");
-		assert.equal(beta?.status, "waiting");
+		assert.equal(beta?.status, "suspended");
 		assert.deepEqual(beta?.wait?.toolCalls, [{ toolCallId: "call-beta", toolName: "wait_for_ci" }]);
 		assert.equal(backend.getWorkflow(runId)?.status, "running");
 

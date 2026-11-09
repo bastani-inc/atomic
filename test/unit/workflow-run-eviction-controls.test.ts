@@ -278,7 +278,7 @@ describe("an evicted run answers its owner (#4373)", () => {
 		});
 		try {
 			const started = start(stagesWaiting(["alpha"]), { evictWhenWaiting: { afterMs: 100 } });
-			await until(() => started.store.run(started.runId)?.stages[0]?.status === "waiting");
+			await until(() => started.store.run(started.runId)?.stages[0]?.status === "suspended");
 			const stageId = started.store.run(started.runId)!.stages[0]!.id;
 			assert.deepEqual(deliverStageWake(started.runId, stageId, { kind: "test-eviction-ping", note: "busy" }), {
 				status: "handled",

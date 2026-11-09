@@ -82,7 +82,7 @@ describe("explicit stage.release() and stage.rehydrate() (#4309)", () => {
 		);
 
 		assert.equal(result.status, "completed", result.error);
-		assert.deepEqual(duringRelease, { status: "waiting", kind: "release", live: 0 });
+		assert.deepEqual(duringRelease, { status: "suspended", kind: "release", live: 0 });
 		assert.equal(afterRehydrate, "completed");
 		assert.equal(seen.userPrompts.get("implement"), 2);
 		assert.equal(seen.created, 3);
@@ -236,7 +236,7 @@ describe("control of a waiting stage (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const task = ctx.task("implement", { prompt: "write the change" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				const [handle] = registry.forRun(store.runs()[0]!.id);
 				await handle!.steer("also update the docs");
 				await handle!.followUp("then summarize");
@@ -278,7 +278,7 @@ describe("control of a waiting stage (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const task = ctx.task("implement", { prompt: "write the change" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				const [handle] = registry.forRun(store.runs()[0]!.id);
 				await handle!.pause();
 				statuses.push(stageNamed(store, "implement")!.status);
@@ -322,7 +322,7 @@ describe("control of a waiting stage (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const task = ctx.task("implement", { prompt: "write the change" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				const runId = store.runs()[0]!.id;
 				const paused = await pauseRun(runId, { store, stageControlRegistry: registry });
 				statuses.push(`pause:${paused.ok}`, stageNamed(store, "implement")!.status);
@@ -346,7 +346,7 @@ describe("control of a waiting stage (#4309)", () => {
 		);
 
 		assert.equal(result.status, "completed", result.error);
-		assert.deepEqual(statuses, ["pause:true", "paused", "resume:true", "waiting"]);
+		assert.deepEqual(statuses, ["pause:true", "paused", "resume:true", "suspended"]);
 		assert.equal(seen.userPrompts.get("implement"), 1);
 		await registry.clear();
 	});
@@ -396,7 +396,7 @@ describe("control of a waiting stage (#4309)", () => {
 		assert.equal(seen.created - seen.disposed, 0);
 
 		await resumeRun(runId, { store, stageControlRegistry: registry });
-		assert.equal(stageNamed(store, "implement")?.status, "waiting");
+		assert.equal(stageNamed(store, "implement")?.status, "suspended");
 		service.finishAll();
 		assert.equal((await execution).status, "completed");
 		assert.equal(seen.userPrompts.get("implement"), 1);

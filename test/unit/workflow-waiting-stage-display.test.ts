@@ -1,5 +1,5 @@
 /**
- * Stages waiting with their session released read as waiting, and say what they wait on, on every surface (#4309).
+ * Stages suspended with their session released read as suspended, and say what they wait on, on every surface (#4309, #4589).
  */
 import assert from "node:assert/strict";
 import { test } from "vitest";
@@ -70,11 +70,11 @@ function statusText(snapshot: RunSnapshot): string {
 	);
 }
 
-test("the stages summary carries the wait of a waiting stage, as JSON and in the text (#4309)", () => {
+test("the stages summary carries the wait of a suspended stage, as JSON and in the text (#4309, #4589)", () => {
 	const stages = [
-		stage("ci", "waiting", TOOL_WAIT),
-		stage("held", "waiting", RELEASE_WAIT),
-		stage("parked", "waiting", IDLE_WAIT),
+		stage("ci", "suspended", TOOL_WAIT),
+		stage("held", "suspended", RELEASE_WAIT),
+		stage("parked", "suspended", IDLE_WAIT),
 		stage("asked", "awaiting_input", PROMPT_WAIT),
 		stage("busy", "running"),
 	];
@@ -96,21 +96,21 @@ test("the stages summary carries the wait of a waiting stage, as JSON and in the
 		{ action: "stages", runId: "run-1", filter: "all", stages: summaries },
 		{ action: "stages" },
 	);
-	assert.match(text, /\[1\] ci \(id-ci\) waiting \(tool: wait_ci\)\n/);
-	assert.match(text, /\[2\] held \(id-held\) waiting \(released\)\n/);
-	assert.match(text, /\[3\] parked \(id-parked\) waiting \(idle\)\n/);
+	assert.match(text, /\[1\] ci \(id-ci\) suspended \(tool: wait_ci\)\n/);
+	assert.match(text, /\[2\] held \(id-held\) suspended \(between turns\)\n/);
+	assert.match(text, /\[3\] parked \(id-parked\) suspended \(between turns\)\n/);
 	assert.match(text, /\[4\] asked \(id-asked\) awaiting_input \(released\)\n/);
 	assert.match(text, /\[5\] busy \(id-busy\) running$/);
 });
 
-test("the status summary lists the waiting stages with what each waits on (#4309)", () => {
+test("the status summary lists the suspended stages with what each waits on (#4309, #4589)", () => {
 	const summary = summarizeRunSnapshot(
-		run([stage("ci", "waiting", TOOL_WAIT), stage("held", "waiting", RELEASE_WAIT), stage("busy", "running")]),
+		run([stage("ci", "suspended", TOOL_WAIT), stage("held", "suspended", RELEASE_WAIT), stage("busy", "running")]),
 		NOW,
 	);
-	assert.equal(summary.waitingCount, 2);
+	assert.equal(summary.suspendedCount, 2);
 	assert.deepEqual(
-		summary.waitingStages.map((waiting) => [waiting.stageId, waiting.name, waiting.wait?.kind]),
+		summary.suspendedStages.map((waiting) => [waiting.stageId, waiting.name, waiting.wait?.kind]),
 		[
 			["id-ci", "ci", "tool"],
 			["id-held", "held", "release"],
@@ -118,22 +118,22 @@ test("the status summary lists the waiting stages with what each waits on (#4309
 	);
 });
 
-test("the status text names the waiting stages of a run whose stages all wait (#4309)", () => {
-	const text = statusText(run([stage("ci", "waiting", TOOL_WAIT), stage("held", "waiting", RELEASE_WAIT)]));
-	assert.match(text, /waiting \(2\): ci \(tool: wait_ci\), held \(released\)/);
+test("the status text names the suspended stages of a run whose stages all wait (#4309, #4589)", () => {
+	const text = statusText(run([stage("ci", "suspended", TOOL_WAIT), stage("held", "suspended", RELEASE_WAIT)]));
+	assert.match(text, /suspended \(2\): ci \(tool: wait_ci\), held \(between turns\)/);
 
-	const mixed = statusText(run([stage("ci", "waiting", TOOL_WAIT), stage("busy", "running")]));
-	assert.match(mixed, /stage: busy · waiting \(1\): ci \(tool: wait_ci\)/);
+	const mixed = statusText(run([stage("ci", "suspended", TOOL_WAIT), stage("busy", "running")]));
+	assert.match(mixed, /stage: busy · suspended \(1\): ci \(tool: wait_ci\)/);
 
-	assert.doesNotMatch(statusText(run([stage("busy", "running")])), /waiting \(/);
+	assert.doesNotMatch(statusText(run([stage("busy", "running")])), /suspended \(/);
 });
 
-test("a waiting stage shows the waiting glyph, not the pending one, in node cards, status rows and the strip (#4309)", () => {
-	assert.equal(statusIcon("waiting"), "◷");
-	assert.notEqual(statusIcon("waiting"), statusIcon("pending"));
+test("a suspended stage shows the suspended glyph, not the pending one, in node cards, status rows and the strip (#4309, #4589)", () => {
+	assert.equal(statusIcon("suspended"), "◷");
+	assert.notEqual(statusIcon("suspended"), statusIcon("pending"));
 
-	const waiting = stage("ci", "waiting", TOOL_WAIT);
-	assert.match(plain(renderNodeCard(waiting, { theme, width: 26 })), /◷ waiting/);
+	const waiting = stage("ci", "suspended", TOOL_WAIT);
+	assert.match(plain(renderNodeCard(waiting, { theme, width: 26 })), /◷ suspended/);
 	assert.match(plain(renderNodeCard(stage("later", "pending"), { theme, width: 26 })), /○ pending/);
 
 	const detail = plain(
@@ -151,17 +151,17 @@ test("a waiting stage shows the waiting glyph, not the pending one, in node card
 			{ theme, now: NOW, width: 100 },
 		),
 	);
-	assert.match(detail, /◷ ci\s+waiting/);
+	assert.match(detail, /◷ ci\s+suspended/);
 	assert.match(detail, /○ later\s+pending/);
 
 	assert.match(
 		plain(renderSwitcher([waiting], { query: "", selectedIndex: -1 }, { theme, width: 60 })),
-		/◷ ci\s+waiting/,
+		/◷ ci\s+suspended/,
 	);
 	assert.equal(
-		plain(progressStrip([{ status: "waiting" }, { status: "pending" }, { status: "running" }], 40)),
+		plain(progressStrip([{ status: "suspended" }, { status: "pending" }, { status: "running" }], 40)),
 		"[◷][○][●]",
 	);
-	assert.equal(plain(progressStrip([{ status: "waiting" }], 40, theme)), "[◷]");
+	assert.equal(plain(progressStrip([{ status: "suspended" }], 40, theme)), "[◷]");
 	assert.match(plain(renderHeader(run([waiting]), { theme, width: 100 })), /◷ 1/);
 });

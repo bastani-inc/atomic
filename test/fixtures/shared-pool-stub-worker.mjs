@@ -218,7 +218,7 @@ for (;;) {
 	const waitingStage = {
 		id: "stage",
 		name: "stage",
-		status: "waiting",
+		status: "suspended",
 		wait: { kind: "tool", since: startedAt },
 		parentIds: [],
 		toolEvents: [],

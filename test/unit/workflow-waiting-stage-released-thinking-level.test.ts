@@ -66,7 +66,7 @@ async function seedStoppedRun(): Promise<{
 	await recordStageCheckpoint(deps(2_000), stage);
 	await recordStageSessionCheckpoint(
 		deps(3_000),
-		{ ...stage, status: "waiting", wait: { kind: "release", since: 3_000, promptsCompleted: 1 } },
+		{ ...stage, status: "suspended", wait: { kind: "release", since: 3_000, promptsCompleted: 1 } },
 		{ force: true },
 	);
 	return { runId, backend, sessionStore };

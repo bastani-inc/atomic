@@ -66,7 +66,7 @@ export class StageIdleReleaser {
 
 	/**
 	 * The workflow finished: a stage still released between turns will not be used again, so it shows the status it
-	 * had before it was released — completed, for a stage the workflow held — rather than `waiting`.
+	 * had before it was released — completed, for a stage the workflow held — rather than `suspended`.
 	 */
 	settleReleased(): void {
 		this.finished = true;

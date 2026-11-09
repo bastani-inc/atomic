@@ -427,14 +427,14 @@ export interface StageWorktreeSnapshot extends WorkflowSerializableObject {
 	readonly warnings: readonly string[];
 }
 
-export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked" | "waiting";
+export type StageStatus = RunStatus | "skipped" | "awaiting_input" | "blocked" | "suspended";
 
 export interface StageSnapshot extends WorkflowSerializableObject {
 	readonly id: string;
 	readonly name: string;
 	readonly status: StageStatus;
 	readonly snapshot?: StageWorktreeSnapshot;
-	/** Present while the stage is `waiting`: what it waits on. Its session is released meanwhile. */
+	/** Present while the stage is `suspended`: what it waits on. Its session is released meanwhile. */
 	readonly wait?: StageWaitSnapshot;
 	/** Set when a record of the stage's wait could not be saved after retries; the stage carried on without it. */
 	readonly waitRecordFailure?: import("./stage-wait-errors.js").SerializedStageWaitError;

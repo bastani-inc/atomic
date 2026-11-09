@@ -11,6 +11,7 @@
 
 import type { WorktreeSnapshot } from "@bastani/atomic";
 import type { DurableRepositoryBinding, DurableWorkspaceBinding, WorkflowForkedFrom } from "../shared/fork-lineage.js";
+import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type {
 	PendingStageMessage,
 	WorkflowActor,
@@ -194,7 +195,7 @@ export type DurableStageLifecycleStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
-	| "waiting"
+	| "suspended"
 	| "completed"
 	| "failed"
 	| "skipped";
@@ -249,8 +250,8 @@ export interface DurableStageTopology {
 	readonly sourceOrder?: number;
 	/** Distinguishes one durable prompt-node occurrence from its logical continuation replay key. */
 	readonly occurrenceKey?: string;
-	/** Actual stage lifecycle state represented by this checkpoint. */
-	readonly status?: DurableStageLifecycleStatus;
+	/** Actual stage lifecycle state represented by this checkpoint; a record written before `suspended` replaced it holds `waiting`. */
+	readonly status?: DurableStageLifecycleStatus | LegacyWaitingStatus;
 	/** Shared admission order with durable tool nodes. */
 	readonly order?: number;
 	/** Owning run and boundary linkage for nested workflow graph reconstruction. */
@@ -301,7 +302,7 @@ export interface DurableStageCheckpoint {
 	readonly artifacts?: readonly WorkflowArtifact[];
 	/** Model-fallback warnings recorded for the completed stage/task. */
 	readonly warnings?: readonly string[];
-	/** What a `waiting` stage waits on; absent once the stage is woken. */
+	/** What a `suspended` stage waits on; absent once the stage is woken. */
 	readonly wait?: import("../shared/authoring-contract-stage.js").StageWaitSnapshot;
 	/**
 	 * The results a stage's detached calls delivered, recorded before its session reopened and kept until its transcript

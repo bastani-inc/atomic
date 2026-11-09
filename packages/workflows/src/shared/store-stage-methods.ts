@@ -45,7 +45,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			}
 			if (stage.status === "running" && context.observation.liveRunIds.has(runId)) {
 				context.observation.executingStageIds.add(workflowActivityNodeKey(runId, stage.id));
-			} else if (stage.status === "waiting") {
+			} else if (stage.status === "suspended") {
 				context.observation.executingStageIds.delete(workflowActivityNodeKey(runId, stage.id));
 			}
 			context.bumpAndNotify({ runId, stageId: stage.id });
@@ -333,7 +333,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
 			// A stage paused while it waited released goes back to waiting; it runs again only once it is woken.
 			if (context.observation.liveRunIds.has(runId) && stage.wait === undefined)
 				context.observation.executingStageIds.add(workflowActivityNodeKey(runId, stageId));
-			stage.status = stage.wait === undefined ? "running" : "waiting";
+			stage.status = stage.wait === undefined ? "running" : "suspended";
 			if (stage.startedAt !== undefined) {
 				stage.pausedDurationMs = accumulatePausedDurationMs(stage.pausedDurationMs, stage.pausedAt, resumedTs);
 			}

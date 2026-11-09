@@ -113,7 +113,7 @@ describe("run-level pause reaches waiting stages (#4309)", () => {
 		const statuses: StageControlStatus[] = [
 			"running",
 			"pending",
-			"waiting",
+			"suspended",
 			"awaiting_input",
 			"blocked",
 			"completed",
@@ -129,15 +129,15 @@ describe("run-level pause reaches waiting stages (#4309)", () => {
 			fakes.map(({ calls }) => calls.pause),
 			[1, 1, 1, 0, 0, 0, 0, 0],
 		);
-		assert.deepEqual(changed.map((handle) => handle.stageId).sort(), ["s-pending", "s-running", "s-waiting"]);
+		assert.deepEqual(changed.map((handle) => handle.stageId).sort(), ["s-pending", "s-running", "s-suspended"]);
 	});
 
 	test("pausing a run through /workflow pause pauses its waiting stage and marks the run paused", async () => {
 		const store = createStore();
-		const waiting = stage("s-waiting", "waiting", { wait: WAIT });
+		const waiting = stage("s-waiting", "suspended", { wait: WAIT });
 		store.recordRunStart(runOf([waiting]));
 		const registry = createStageControlRegistry();
-		const fake = fakeHandle(RUN_ID, "s-waiting", "waiting");
+		const fake = fakeHandle(RUN_ID, "s-waiting", "suspended");
 		registry.register(fake.handle);
 
 		const result = await pauseRun(RUN_ID, { store, stageControlRegistry: registry });
@@ -182,7 +182,7 @@ describe("run-level pause reaches waiting stages (#4309)", () => {
 	});
 
 	test("pausing one stage leaves the run running while another stage still runs, is pending or waits", async () => {
-		for (const sibling of ["running", "pending", "waiting"] as const) {
+		for (const sibling of ["running", "pending", "suspended"] as const) {
 			const store = createStore();
 			store.recordRunStart(runOf([stage("target", "running"), stage("sibling", sibling)]));
 			const registry = createStageControlRegistry();
@@ -226,8 +226,8 @@ describe("resume acknowledgements count a stage that is visibly back to work (#4
 	}
 
 	test("a resume that failed counts as acknowledged when the stage is visibly running, pending, awaiting input or waiting", async () => {
-		for (const visible of ["running", "pending", "awaiting_input", "waiting"] as const) {
-			const { store } = pausedStore(visible === "waiting" ? { wait: WAIT } : {});
+		for (const visible of ["running", "pending", "awaiting_input", "suspended"] as const) {
+			const { store } = pausedStore(visible === "suspended" ? { wait: WAIT } : {});
 			const fake = fakeHandle(RUN_ID, "s1", "paused", async (set) => {
 				set(visible);
 				throw new Error("resume refused");
@@ -239,7 +239,7 @@ describe("resume acknowledgements count a stage that is visibly back to work (#4
 			assert.equal(result.acknowledged, 1, visible);
 			assert.deepEqual(result.failures, [], visible);
 			// The stage is no longer paused in the store either: waiting again if it still waits, running otherwise.
-			assert.equal(store.run(RUN_ID)?.stages[0]?.status, visible === "waiting" ? "waiting" : "running", visible);
+			assert.equal(store.run(RUN_ID)?.stages[0]?.status, visible === "suspended" ? "suspended" : "running", visible);
 		}
 	});
 
@@ -285,7 +285,7 @@ describe("a stage waiting with its session released in the store (#4309)", () =>
 		store.recordStageStart(RUN_ID, target);
 		assert.equal(executing.has(key), true);
 
-		target.status = "waiting";
+		target.status = "suspended";
 		target.wait = WAIT;
 		store.recordStageStart(RUN_ID, target);
 		assert.equal(executing.has(key), false);
@@ -311,7 +311,7 @@ describe("a stage waiting with its session released in the store (#4309)", () =>
 		const target = stage("s1", "running", { startedAt: 1 });
 		store.recordRunStart(runOf([target]));
 		store.recordStageStart(RUN_ID, target);
-		target.status = "waiting";
+		target.status = "suspended";
 		target.wait = WAIT;
 		store.recordStageStart(RUN_ID, target);
 		assert.equal(store.recordStagePaused(RUN_ID, "s1"), true);
@@ -319,7 +319,7 @@ describe("a stage waiting with its session released in the store (#4309)", () =>
 
 		assert.equal(store.recordStageResumed(RUN_ID, "s1"), true);
 
-		assert.equal(store.run(RUN_ID)?.stages[0]?.status, "waiting");
+		assert.equal(store.run(RUN_ID)?.stages[0]?.status, "suspended");
 		assert.equal(executing.has(key), false);
 	});
 
@@ -341,11 +341,11 @@ describe("a stage waiting with its session released in the store (#4309)", () =>
 
 	test("a waiting stage resumed on a run that is not live does not execute either", () => {
 		const store = createStore();
-		const target = stage("s1", "waiting", { startedAt: 1, wait: WAIT });
+		const target = stage("s1", "suspended", { startedAt: 1, wait: WAIT });
 		store.recordRunStart(runOf([target]));
 		store.recordStagePaused(RUN_ID, "s1");
 		store.recordStageResumed(RUN_ID, "s1");
-		assert.equal(store.run(RUN_ID)?.stages[0]?.status, "waiting");
+		assert.equal(store.run(RUN_ID)?.stages[0]?.status, "suspended");
 		assert.equal(workflowObservationRuntime(store).executingStageIds.has(key), false);
 	});
 });
@@ -357,8 +357,8 @@ describe("the run header counts waiting stages (#4309)", () => {
 
 	test("a badge counts the stages waiting, apart from running and pending ones", () => {
 		const text = header([
-			stage("a", "waiting", { wait: WAIT }),
-			stage("b", "waiting", { wait: WAIT }),
+			stage("a", "suspended", { wait: WAIT }),
+			stage("b", "suspended", { wait: WAIT }),
 			stage("c", "running"),
 			stage("d", "pending"),
 		]);
@@ -368,7 +368,7 @@ describe("the run header counts waiting stages (#4309)", () => {
 	});
 
 	test("a single waiting stage shows its count, and no stage waiting shows no badge", () => {
-		assert.match(header([stage("a", "waiting", { wait: WAIT })]), /◷ 1/);
+		assert.match(header([stage("a", "suspended", { wait: WAIT })]), /◷ 1/);
 		const none = header([stage("a", "running"), stage("b", "completed")]);
 		assert.equal(none.includes("◷"), false);
 		assert.equal(header([]).includes("◷"), false);
@@ -376,7 +376,7 @@ describe("the run header counts waiting stages (#4309)", () => {
 
 	test("the waiting badge is drawn in the dim color, as the pending badge is, and not as a running one", () => {
 		const colored = renderHeader(
-			runOf([stage("a", "waiting", { wait: WAIT }), stage("b", "pending"), stage("c", "running")]),
+			runOf([stage("a", "suspended", { wait: WAIT }), stage("b", "pending"), stage("c", "running")]),
 			{ theme, width: 100 },
 		).join("\n");
 		const colorOf = (label: string): string | undefined =>
@@ -413,7 +413,7 @@ describe("a stage's wait is checkpointed durably (#4309)", () => {
 	}
 
 	test("the checkpoint carries the wait only while the stage waits", () => {
-		const waiting = stage("s1", "waiting", { wait: WAIT, sessionId: "sid-1" });
+		const waiting = stage("s1", "suspended", { wait: WAIT, sessionId: "sid-1" });
 		assert.deepEqual(durableStageCheckpointMetadata(waiting).wait, WAIT);
 		const running = stage("s1", "running", { sessionId: "sid-1" });
 		assert.equal("wait" in durableStageCheckpointMetadata(running), false);
@@ -423,8 +423,8 @@ describe("a stage's wait is checkpointed durably (#4309)", () => {
 		const { backend, deps: stageDeps } = await deps();
 		const base = { replayKey: "stage:analyze:1", sessionId: "sid-1", startedAt: 1_000 };
 		const running = stage("s1", "running", base);
-		const first = stage("s1", "waiting", { ...base, wait: { kind: "release", since: 2_000 } });
-		const second = stage("s1", "waiting", { ...base, wait: { kind: "release", since: 3_000 } });
+		const first = stage("s1", "suspended", { ...base, wait: { kind: "release", since: 2_000 } });
+		const second = stage("s1", "suspended", { ...base, wait: { kind: "release", since: 3_000 } });
 
 		for (const snapshot of [running, first, second, first]) {
 			await recordStageSessionCheckpoint(stageDeps, snapshot, { force: true });
@@ -623,7 +623,7 @@ describe("a stage that waits reports it through the SDK (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const task = ctx.task("implement", { prompt: "write the change" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				const snapshot = stageNamed(store, "implement")!;
 				stageId = snapshot.id;
 				const executing = workflowObservationRuntime(store).executingStageIds;
@@ -658,14 +658,14 @@ describe("a stage that waits reports it through the SDK (#4309)", () => {
 		);
 
 		assert.equal(result.status, "completed", result.error);
-		assert.equal(waiting?.status, "waiting");
+		assert.equal(waiting?.status, "suspended");
 		assert.equal(waiting?.wait?.kind, "tool");
 		assert.deepEqual(waiting?.wait?.toolCalls, [{ toolCallId: "call-implement", toolName: TOOL }]);
 		assert.equal(waiting?.executing, false, "a waiting stage executes nothing");
 		// The wait is checkpointed durably, and forced, the moment the stage starts waiting.
 		assert.deepEqual(
-			checkpoints.find((checkpoint) => checkpoint.status === "waiting"),
-			{ status: "waiting", wait: "tool", forceDurable: true },
+			checkpoints.find((checkpoint) => checkpoint.status === "suspended"),
+			{ status: "suspended", wait: "tool", forceDurable: true },
 		);
 		assert.equal(continuing?.status, "running");
 		assert.equal(continuing?.wait, undefined);
@@ -702,7 +702,7 @@ describe("a stage that waits reports it through the SDK (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const task = ctx.task("implement", { prompt: "write the change" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				service.finishAll();
 				await task;
 				return {};
@@ -745,7 +745,7 @@ describe("a stage that waits reports it through the SDK (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const task = ctx.task("implement", { prompt: "write the change" });
-				await until(() => stageNamed(store, "implement")?.status === "waiting");
+				await until(() => stageNamed(store, "implement")?.status === "suspended");
 				service.finishAll();
 				await task;
 				return {};
@@ -849,7 +849,7 @@ describe("a stage that waits reports it through the SDK (#4309)", () => {
 				outputs: {},
 				run: async (ctx) => {
 					const task = ctx.task("implement", { prompt: "write the change" });
-					await until(() => stageNamed(store, "implement")?.status === "waiting");
+					await until(() => stageNamed(store, "implement")?.status === "suspended");
 					const before = checkpoints;
 					await vi.advanceTimersByTimeAsync(STAGE_SESSION_HEARTBEAT_INTERVAL_MS * 3 + 100);
 					checkpointsWhileWaiting = checkpoints - before;
@@ -902,7 +902,9 @@ describe("waiting stages and the run's admission slots (#4309)", () => {
 			outputs: {},
 			run: async (ctx) => {
 				const tasks = Array.from({ length: STAGES }, (_, index) => ctx.task(`stage-${index}`, { prompt: "go" }));
-				await until(() => store.runs()[0]?.stages.filter((stage) => stage.status === "waiting").length === STAGES);
+				await until(
+					() => store.runs()[0]?.stages.filter((stage) => stage.status === "suspended").length === STAGES,
+				);
 				tracker.peak = 0;
 				tracker.hold = gate.promise;
 				service.finishAll();
@@ -991,7 +993,7 @@ describe("waiting stages and the run's admission slots (#4309)", () => {
 				run: async (ctx) => {
 					const first = ctx.stage("first");
 					const turn = first.prompt("go");
-					await until(() => stageNamed(store, "first")?.status === "waiting");
+					await until(() => stageNamed(store, "first")?.status === "suspended");
 					await first.abort();
 					try {
 						await turn;
@@ -1164,7 +1166,7 @@ describe("author and host controls of a released stage (#4309)", () => {
 			run: async (ctx) => {
 				const waiting = ctx.task("waiting", { prompt: "go" });
 				const resident = ctx.task("resident", { prompt: "go", releaseWhenWaiting: false });
-				await until(() => stageNamed(store, "waiting")?.status === "waiting" && service.pending.size === 2);
+				await until(() => stageNamed(store, "waiting")?.status === "suspended" && service.pending.size === 2);
 				const handles = registry.forRun(store.runs()[0]!.id);
 				const waitingHandle = handles.find((handle) => handle.stageName === "waiting")!;
 				const residentHandle = handles.find((handle) => handle.stageName === "resident")!;
@@ -1339,8 +1341,8 @@ describe("Intercom reaches a waiting stage through the run's route bridge (#4309
 		const cases: [Partial<StageSnapshot>, string][] = [
 			[{ status: "running", sessionId: "session-1" }, "running"],
 			[{ status: "running", sessionFile: "/sessions/stage.jsonl" }, "running"],
-			[{ status: "waiting", sessionId: "session-1", wait: WAIT }, "pending"],
-			[{ status: "waiting", sessionFile: "/sessions/stage.jsonl", wait: WAIT }, "pending"],
+			[{ status: "suspended", sessionId: "session-1", wait: WAIT }, "pending"],
+			[{ status: "suspended", sessionFile: "/sessions/stage.jsonl", wait: WAIT }, "pending"],
 			[{ status: "running" }, "pending"],
 			[{ status: "pending" }, "pending"],
 		];
@@ -1366,7 +1368,7 @@ describe("Intercom reaches a waiting stage through the run's route bridge (#4309
 		assert.deepEqual(await byFile.send(), FORWARD);
 		byFile.dispose();
 
-		const waiting = await bridge({ status: "waiting", sessionId: "session-1", wait: WAIT });
+		const waiting = await bridge({ status: "suspended", sessionId: "session-1", wait: WAIT });
 		assert.deepEqual(await waiting.send(), QUEUED);
 		assert.equal(waiting.store.pendingStageMessagesFor(BRIDGE_RUN_ID, "reviewer-id").length, 1);
 		waiting.dispose();
@@ -1381,7 +1383,7 @@ describe("Intercom reaches a waiting stage through the run's route bridge (#4309
 		);
 		running.dispose();
 
-		const waiting = await bridge({ status: "waiting", sessionId: "session-1", wait: WAIT });
+		const waiting = await bridge({ status: "suspended", sessionId: "session-1", wait: WAIT });
 		assert.deepEqual(await waiting.send(true), QUEUED, "a waiting stage has no session to take a live send");
 		assert.equal(waiting.store.pendingStageMessagesFor(BRIDGE_RUN_ID, "reviewer-id").length, 1);
 		waiting.dispose();

@@ -54,7 +54,7 @@ export function remoteStageDrainTargets(
 			const { sessionId } = stage;
 			if (
 				sessionId === undefined ||
-				stage.status === "waiting" ||
+				stage.status === "suspended" ||
 				stage.pendingStageDeliveryAvailable !== true ||
 				isTerminalStageStatus(stage.status)
 			)

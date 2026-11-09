@@ -66,7 +66,7 @@ async function seedReleasedStage(promptsCompleted: number, recorded?: string): P
 	if (recorded !== undefined) await recordStageCheckpoint(deps(2_000), stage);
 	await recordStageSessionCheckpoint(
 		deps(3_000),
-		{ ...stage, status: "waiting", result: undefined, wait: { kind: "release", since: 3_000, promptsCompleted } },
+		{ ...stage, status: "suspended", result: undefined, wait: { kind: "release", since: 3_000, promptsCompleted } },
 		{ force: true },
 	);
 	return { runId, backend, sessionStore };

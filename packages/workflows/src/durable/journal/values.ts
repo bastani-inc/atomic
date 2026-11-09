@@ -12,6 +12,11 @@ export function validateText(field: JournalInvalidTextError["field"], value: str
 	if (/\p{Surrogate}/u.test(value)) throw new JournalInvalidTextError(field, "ill-formed-unicode");
 }
 
+/** A run status as read back: `waiting`, which `suspended` replaced, reads as `suspended`. */
+export function runStatusFromRecord(status: string): string {
+	return status === "waiting" ? "suspended" : status;
+}
+
 export function serializeJson(value: RunHeader | RunEvent["payload"]): string {
 	const text = JSON.stringify(value);
 	return text.replace(/\p{Surrogate}/gu, (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`);

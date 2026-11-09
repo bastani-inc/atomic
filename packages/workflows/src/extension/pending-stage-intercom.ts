@@ -287,7 +287,7 @@ export function registerPendingStageIntercomBridge(
 						stageName: stage.name,
 						target: stageRouteTarget(lookups.runs, rootRunId, run.id, stage.id, lookups.segments),
 						lifecycle:
-							stage.status === "waiting" || (stage.sessionId === undefined && stage.sessionFile === undefined)
+							stage.status === "suspended" || (stage.sessionId === undefined && stage.sessionFile === undefined)
 								? "pending"
 								: "running",
 						// Keep agent identity for alias reactivation even after discovery eligibility ends.
@@ -590,7 +590,7 @@ export function registerPendingStageIntercomBridge(
 		};
 		const stage = destination.stage;
 		// A waiting stage released its session: a send to it queues until the stage reopens that session.
-		const live = stage.status !== "waiting" && (stage.sessionId !== undefined || stage.sessionFile !== undefined);
+		const live = stage.status !== "suspended" && (stage.sessionId !== undefined || stage.sessionFile !== undefined);
 		// A terminal stage (completed/skipped/failed — e.g. reviewer-a after iteration 1)
 		// cannot take a live forward: its alias is stale, so today's forward would fail
 		// with "Session not found" (round-1 review). D3 keeps exactly-once queueing only
@@ -619,7 +619,7 @@ export function registerPendingStageIntercomBridge(
 					: Promise.resolve({ outcome: "refused" as const, reason: refusal });
 			return;
 		}
-		if ((payload.live === true && stage.status !== "waiting") || (live && !stageTerminal)) {
+		if ((payload.live === true && stage.status !== "suspended") || (live && !stageTerminal)) {
 			payload.handled = true;
 			payload.completion = validateLiveDelivery(activeStore, resolvedEvent).then((result) =>
 				result.outcome === "forward"
@@ -1202,7 +1202,7 @@ function knownUninitializedStage(
 	const candidates = exactIds.length > 0 ? exactIds : run.stages.filter((stage) => stage.name === stageKey);
 	if (candidates.length !== 1) return undefined;
 	const stage = candidates[0]!;
-	if (stage.status === "waiting") return stage;
+	if (stage.status === "suspended") return stage;
 	return isAddressableStageStatus(stage.status) && stage.sessionId === undefined && stage.sessionFile === undefined
 		? stage
 		: undefined;

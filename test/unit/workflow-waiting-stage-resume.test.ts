@@ -141,7 +141,7 @@ async function seedStoppedRun(stages: readonly SeededStage[], failed = false): P
 			deps(3_000),
 			{
 				...stage,
-				status: "waiting",
+				status: "suspended",
 				wait: { kind: seeded.kind, since: 3_000, promptsCompleted: seeded.promptsCompleted },
 			},
 			{ force: true },

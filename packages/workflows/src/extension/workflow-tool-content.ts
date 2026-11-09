@@ -43,7 +43,7 @@ function compactWorkflowToolMessage(
 
 const STATUS_MESSAGE_CHAR_LIMIT = 120;
 const STATUS_PENDING_STAGE_LIMIT = 10;
-const STATUS_WAITING_STAGE_LIMIT = 10;
+const STATUS_SUSPENDED_STAGE_LIMIT = 10;
 
 function truncateStatusText(text: string): string {
 	const flattened = text.replace(/\s+/g, " ").trim();
@@ -84,18 +84,18 @@ function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
 			})
 			.join(", ")}`;
 	}
-	const waitingHint =
-		run.waitingStages.length > 0
-			? `waiting (${run.waitingCount}): ${[
-					...run.waitingStages
-						.slice(0, STATUS_WAITING_STAGE_LIMIT)
+	const suspendedHint =
+		run.suspendedStages.length > 0
+			? `suspended (${run.suspendedCount}): ${[
+					...run.suspendedStages
+						.slice(0, STATUS_SUSPENDED_STAGE_LIMIT)
 						.map((stage) => stageStatusWithWait(stage.name, stage.wait)),
-					...(run.waitingStages.length > STATUS_WAITING_STAGE_LIMIT
-						? [`…, +${run.waitingStages.length - STATUS_WAITING_STAGE_LIMIT} more`]
+					...(run.suspendedStages.length > STATUS_SUSPENDED_STAGE_LIMIT
+						? [`…, +${run.suspendedStages.length - STATUS_SUSPENDED_STAGE_LIMIT} more`]
 						: []),
 				].join(", ")}`
 			: undefined;
-	const hints = [primary, waitingHint, budgetHint, toolHint].filter((part) => part !== undefined);
+	const hints = [primary, suspendedHint, budgetHint, toolHint].filter((part) => part !== undefined);
 	if (hints.length > 0) return hints.join(" · ");
 	if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
 	if (run.exitReason !== undefined && run.exitReason.length > 0) {

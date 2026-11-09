@@ -91,7 +91,7 @@ async function seedStoppedStage(promptsCompleted: number, recorded: Recorded): P
 		deps(3_000),
 		{
 			...stage,
-			status: "waiting",
+			status: "suspended",
 			result: undefined,
 			structured: undefined,
 			wait: { kind: "release", since: 3_000, promptsCompleted },
@@ -198,7 +198,7 @@ describe("a resumed stage answers its finished calls from the run's record (#430
 		assert.equal(status, "completed", error);
 		assert.deepEqual(observed.answers, ["planned alpha", undefined]);
 		assert.deepEqual(observed.afterFirst, {
-			status: "waiting",
+			status: "suspended",
 			result: "planned alpha",
 			structured: { verdict: "ok" },
 			startedAt: observed.afterFirst.startedAt,
@@ -229,7 +229,7 @@ describe("a resumed stage answers its finished calls from the run's record (#430
 		assert.deepEqual(observed.answers, [undefined]);
 		assert.deepEqual(observed.createdAfter, [0]);
 		assert.equal(observed.afterFirst.result, "planned alpha");
-		assert.equal(observed.afterFirst.status, "waiting");
+		assert.equal(observed.afterFirst.status, "suspended");
 		await seeded.backend.close();
 	});
 
@@ -290,7 +290,7 @@ describe("what the store is told while a resumed stage answers from the record (
 		assert.equal(status, "completed", error);
 		const beforeFirstAnswer = observed.told.slice(0, observed.told.indexOf("answered"));
 		// Started pending; resumed released, shown at once; completed from the record, shown released again.
-		assert.deepEqual(beforeFirstAnswer, ["pending/-", "waiting/release", "waiting/release"]);
+		assert.deepEqual(beforeFirstAnswer, ["pending/-", "suspended/release", "suspended/release"]);
 		// The message that follows reopens the session: the stage is no longer shown waiting until the run ends.
 		const afterFirstAnswer = observed.told.slice(observed.told.indexOf("answered") + 1);
 		assert.ok(afterFirstAnswer.every((state) => state === "completed/-" || state === "answered"));

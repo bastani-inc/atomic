@@ -465,7 +465,7 @@ test("appendMany sends one batch and no transaction when the database can batch 
 	const before = { ...calls };
 	const results = await journal.appendMany!(lease, [
 		{ event: { type: "RunStarted", payload: null }, key: "start", context: run },
-		{ event: { type: "StatusChanged", payload: { status: "waiting" } }, context: run },
+		{ event: { type: "StatusChanged", payload: { status: "suspended" } }, context: run },
 		{ event: { type: "RunFinished", payload: null }, key: "start", context: run },
 		{ event: { type: "RunFinished", payload: null }, key: "end", context: run },
 	]);
@@ -479,7 +479,7 @@ test("appendMany sends one batch and no transaction when the database can batch 
 			["appended", 3],
 		],
 	);
-	assert.equal((await journal.getRun(header.runId))?.status, "waiting");
+	assert.equal((await journal.getRun(header.runId))?.status, "suspended");
 	await journal.close();
 });
 

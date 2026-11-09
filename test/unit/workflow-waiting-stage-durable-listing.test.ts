@@ -30,7 +30,7 @@ describe("the waiting stages a run's records list (#4309)", () => {
 			id: "stage-own",
 			name: "own",
 			replayKey: "stage:own:1",
-			status: "waiting",
+			status: "suspended",
 			parentIds: [],
 			toolEvents: [],
 			startedAt: 1_000,

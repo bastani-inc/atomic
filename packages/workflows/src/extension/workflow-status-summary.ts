@@ -21,6 +21,7 @@ import {
 } from "../engine/run-liveness.js";
 import type { StageWaitSnapshot } from "../shared/authoring-contract-stage.js";
 import type { ExpandedWorkflowStage } from "../shared/expanded-workflow-graph.js";
+import type { LegacyWaitingStatus } from "../shared/legacy-waiting-status.js";
 import type {
 	PendingWorkflowRunStatusResolver,
 	PendingWorkflowStageStatus,
@@ -50,10 +51,15 @@ import { elapsedRunMs } from "../shared/timing.js";
  * Status filter accepted by the `status` run listing (and the `stages`
  * action). Run-level statuses match runs directly; `awaiting_input` selects
  * runs with at least one stage awaiting input or pending human prompt;
- * `waiting` selects runs with at least one stage waiting with its session
+ * `suspended` selects runs with at least one stage suspended with its session
  * released; `all` (the default) includes everything.
  */
 export type WorkflowRunStatusFilter = StageStatus | RunStatus | "all";
+
+/** `filter` with the deprecated `waiting` read as `suspended`. */
+export function currentStatusFilter(filter: WorkflowRunStatusFilter | LegacyWaitingStatus): WorkflowRunStatusFilter {
+	return filter === "waiting" ? "suspended" : filter;
+}
 
 /** A currently active (running or awaiting-input) stage within a run. */
 export interface WorkflowStatusActiveStage {
@@ -64,8 +70,8 @@ export interface WorkflowStatusActiveStage {
 	readonly rateLimits?: StageSnapshot["rateLimits"];
 }
 
-/** A stage waiting with its session released, and what it waits on. */
-export interface WorkflowStatusWaitingStage {
+/** A stage suspended with its session released, and what it waits on. */
+export interface WorkflowStatusSuspendedStage {
 	/** Expanded-graph stage id; valid for stage-scoped inspection and control. */
 	readonly stageId: string;
 	readonly name: string;
@@ -127,10 +133,10 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly tools: readonly WorkflowStatusToolNode[];
 	readonly awaitingInputCount: number;
 	readonly awaitingInput: readonly WorkflowStatusAwaitingInput[];
-	/** Stages of the run that wait with their session released (status `waiting`). */
-	readonly waitingCount: number;
-	/** The waiting stages, with the calls or reason each waits on. */
-	readonly waitingStages: readonly WorkflowStatusWaitingStage[];
+	/** Stages of the run that wait with their session released (status `suspended`). */
+	readonly suspendedCount: number;
+	/** The suspended stages, with the calls or reason each waits on. */
+	readonly suspendedStages: readonly WorkflowStatusSuspendedStage[];
 	readonly budget?: RunBudgetSnapshot;
 	readonly budgetState?: RunBudgetState;
 	/** The run's local worker pool, for a root that runs one: its coordinator's traffic by kind. */
@@ -244,8 +250,8 @@ export function summarizeRunSnapshot(
 	options?: WorkflowStatusSummaryOptions,
 ): WorkflowRunStatusSummary {
 	const awaitingInput = awaitingInputEntries(run);
-	const waitingStages = run.stages
-		.filter((stage) => stage.status === "waiting")
+	const suspendedStages = run.stages
+		.filter((stage) => stage.status === "suspended")
 		.map((stage) => ({
 			stageId: stage.id,
 			name: stage.name,
@@ -340,8 +346,8 @@ export function summarizeRunSnapshot(
 		}),
 		awaitingInputCount: awaitingInput.length,
 		awaitingInput,
-		waitingCount: waitingStages.length,
-		waitingStages,
+		suspendedCount: suspendedStages.length,
+		suspendedStages,
 		exitReason: run.exitReason,
 		error: run.error ?? (strandedRoot ? IMPOSSIBLE_ROOT_LIVENESS_MESSAGE : undefined),
 		...(strandedRoot ? { strandedRoot: true as const } : {}),
@@ -352,7 +358,7 @@ export function summarizeRunSnapshot(
 export function runMatchesStatusFilter(summary: WorkflowRunStatusSummary, filter: WorkflowRunStatusFilter): boolean {
 	if (filter === "all") return true;
 	if (filter === "awaiting_input") return summary.awaitingInputCount > 0;
-	if (filter === "waiting") return summary.waitingCount > 0;
+	if (filter === "suspended") return summary.suspendedCount > 0;
 	return summary.status === filter;
 }
 
@@ -362,10 +368,11 @@ export function runMatchesStatusFilter(summary: WorkflowRunStatusSummary, filter
  */
 export function buildWorkflowStatusListing(
 	snapshots: readonly RunSnapshot[],
-	filter: WorkflowRunStatusFilter = "all",
+	requestedFilter: WorkflowRunStatusFilter | LegacyWaitingStatus = "all",
 	now = Date.now(),
 	options?: WorkflowStatusSummaryOptions,
 ): WorkflowStatusListing {
+	const filter = currentStatusFilter(requestedFilter);
 	const paired = snapshots
 		.map((snapshot) => ({ snapshot, summary: summarizeRunSnapshot(snapshot, now, options) }))
 		.filter(({ summary }) => runMatchesStatusFilter(summary, filter));

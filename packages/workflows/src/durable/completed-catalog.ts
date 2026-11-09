@@ -1,5 +1,6 @@
 import type { SessionStore } from "@bastani/atomic";
 import { flattenTruncatedString } from "../shared/flat-string.js";
+import { stageStatusFromRecord } from "../shared/legacy-waiting-status.js";
 import { isReopenableSession } from "../shared/session-transcript.js";
 import { stageSessionStore } from "../shared/stage-session-store.js";
 import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/store-types.js";
@@ -768,7 +769,7 @@ function runSnapshotsFromCheckpoints(
 }
 
 function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readonly string[]): StageSnapshot {
-	const status = draft.topology?.status ?? "completed";
+	const status = stageStatusFromRecord(draft.topology?.status ?? "completed");
 	const startedAt = draft.startedAt ?? draft.firstCompletedAt;
 	const endedAt = draft.endedAt ?? (status === "running" ? undefined : draft.firstCompletedAt);
 	const workflowChild = workflowChildFromDraft(draft);

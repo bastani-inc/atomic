@@ -40,6 +40,7 @@ import type { StageUserMessageDeliveryAction } from "../runs/foreground/stage-ru
 import { STAGE_SESSION_HEARTBEAT_INTERVAL_MS } from "../runs/foreground/stage-session-heartbeat.js";
 import { rehydrateError, type SerializedError, serializeError } from "../shared/error-codec.js";
 import { workflowInvocationIntercomGroup } from "../shared/intercom-group.js";
+import { runSnapshotsFromRecord } from "../shared/legacy-waiting-status.js";
 import {
 	rotateWorkflowPendingStageRouteCapability,
 	workflowPendingStageRouteCapability,
@@ -1375,7 +1376,7 @@ export class PoolCoordinator {
 			this.activityCursor = Math.max(this.activityCursor, entry.version);
 			// A work item this host now runs publishes through its own worker.
 			if (local.has(entry.work.id) || !this.attemptBase.has(entry.work.id)) continue;
-			const runs = JSON.parse(entry.runs) as readonly RunSnapshot[];
+			const runs = runSnapshotsFromRecord(JSON.parse(entry.runs) as readonly RunSnapshot[]);
 			this.pendingActivity.set(entry.work.id, { work: entry.work, runs });
 			for (const [id, reason] of this.remoteWatches.relayed(entry.work, runs)) this.endRemoteWatch(id, reason);
 		}

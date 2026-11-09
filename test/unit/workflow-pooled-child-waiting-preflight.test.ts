@@ -127,7 +127,7 @@ async function seedWaitingChild(host: WorkerHost, stages: readonly SeededStage[]
 			id: `stage-${index}`,
 			name: seeded.name,
 			replayKey: `stage:${seeded.name}:1`,
-			status: "waiting",
+			status: "suspended",
 			parentIds: [],
 			toolEvents: [],
 			startedAt: 1_000,

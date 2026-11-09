@@ -22,7 +22,7 @@ export type StageStatus =
 	| "awaiting_input"
 	| "paused"
 	| "blocked"
-	| "waiting"
+	| "suspended"
 	| "completed"
 	| "failed"
 	| "skipped";
@@ -463,7 +463,7 @@ export interface StageSnapshot {
 	/** Snapshot-safe child workflow result metadata for continuation replay of import boundaries. */
 	workflowChild?: WorkflowChildReplaySnapshot;
 	readonly toolEvents: ToolEvent[];
-	/** Present while the stage is `waiting` with its session released: what it waits on. */
+	/** Present while the stage is `suspended` with its session released: what it waits on. */
 	wait?: import("./authoring-contract-stage.js").StageWaitSnapshot;
 	/**
 	 * The results the stage's detached calls delivered, recorded with its wait before its session reopens and kept

@@ -72,7 +72,7 @@ async function seedFailedRun(invocationCwd: string | undefined, waitingSessionId
 				id: "stage-alpha",
 				name: "alpha",
 				replayKey: "stage:alpha:1",
-				status: "waiting",
+				status: "suspended",
 				parentIds: [],
 				toolEvents: [],
 				startedAt: 1_000,

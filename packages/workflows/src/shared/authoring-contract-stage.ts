@@ -218,13 +218,13 @@ export type ReleaseWhenWaiting = boolean | { readonly afterMs: number };
 export type EvictWhenWaiting = boolean | { readonly afterMs: number };
 
 /**
- * What a waiting stage waits on, with its session released:
- * - `tool`: a detached tool call; the stage is `waiting` and reopens when the result arrives.
- * - `release`: an explicit `stage.release()`; the stage is `waiting` until `rehydrate()` or its next message reopens it.
+ * What a suspended stage waits on, with its session released:
+ * - `tool`: a detached tool call; the stage is `suspended` and reopens when the result arrives.
+ * - `release`: an explicit `stage.release()`; the stage is `suspended` until `rehydrate()` or its next message reopens it.
  * - `prompt`: a human answer to the stage's readiness question; the stage stays `awaiting_input` and reopens when
  *   the answer arrives.
  * - `idle`: the workflow held the stage without using it (for example while it awaited a child workflow or a
- *   run-level prompt) for longer than its `releaseWhenWaiting` threshold; the stage is `waiting` until its next
+ *   run-level prompt) for longer than its `releaseWhenWaiting` threshold; the stage is `suspended` until its next
  *   prompt, message or `rehydrate()`.
  */
 export type StageWaitKind = "tool" | "release" | "prompt" | "idle";
@@ -235,7 +235,7 @@ export interface StageWaitToolCall extends WorkflowSerializableObject {
 	readonly toolName: string;
 }
 
-/** Why a stage is `waiting`, stored with the stage so the wait survives a restart. */
+/** Why a stage is `suspended`, stored with the stage so the wait survives a restart. */
 export interface StageWaitSnapshot extends WorkflowSerializableObject {
 	readonly kind: StageWaitKind;
 	/** When the stage released its session (epoch milliseconds). */
@@ -528,7 +528,7 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
 	abort(): Promise<void>;
 	/**
 	 * Give up the stage's session while the workflow holds the stage across a long wait between prompts. The stage is
-	 * `waiting` until `rehydrate()` or the next prompt reopens it from the session store.
+	 * `suspended` until `rehydrate()` or the next prompt reopens it from the session store.
 	 */
 	release(): Promise<void>;
 	/** Reopen a released stage's session from the session store. Does nothing when the stage is resident. */

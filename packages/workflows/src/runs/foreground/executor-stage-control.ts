@@ -260,7 +260,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			if (
 				statusBeforePause === "pending" ||
 				statusBeforePause === "running" ||
-				statusBeforePause === "waiting" ||
+				statusBeforePause === "suspended" ||
 				runtime.innerCtx.isStreaming
 			) {
 				try {

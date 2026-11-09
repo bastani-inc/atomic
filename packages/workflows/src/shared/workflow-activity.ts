@@ -141,7 +141,7 @@ function projectRoot(
 		for (const stage of run.stages) {
 			if (run.status === "running" && stage.status === "paused") paused = true;
 			// A waiting stage of a live run holds no session but resumes on its own when what it waits on arrives.
-			if (live && run.status === "running" && !runStopping && stage.status === "waiting") waitingStages++;
+			if (live && run.status === "running" && !runStopping && stage.status === "suspended") waitingStages++;
 			if (stage.status === "awaiting_input" || stage.pendingPrompt) {
 				if (acceptsAttention && stage.status !== "paused") {
 					humanWaits++;

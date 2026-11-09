@@ -524,7 +524,7 @@ The inherited `isFallbackModelAllowed` predicate also applies when a workflow re
 
 ### Waiting workflow stages
 
-A workflow stage that only waits on a long tool call does not keep its session in memory. Give the tool `detachable: true` (see [Detachable tool calls](/sdk/reference#detachable-tool-calls)); once a call of it outlasts the stage's `releaseWhenWaiting` threshold, the stage closes its session, frees its admission slot, and reopens the same session from the session store when the result arrives:
+A workflow stage that only waits on a long tool call does not keep its session in memory. Give the tool `detachable: true` (see [Detachable tool calls](/sdk/reference#detachable-tool-calls)); once a call of it outlasts the stage's `releaseWhenWaiting` threshold, the stage closes its session, frees its admission slot, and reopens the same session from the session store when the result arrives. While its session is released the stage's status is `suspended`:
 
 ```typescript
 import { run } from "@bastani/atomic/workflows";

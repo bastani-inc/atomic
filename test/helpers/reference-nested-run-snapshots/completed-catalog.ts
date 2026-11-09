@@ -15,6 +15,7 @@ import {
 } from "../../../packages/workflows/src/durable/run-timing.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "../../../packages/workflows/src/durable/workflow-heartbeat-anchor.js";
 import { flattenTruncatedString } from "../../../packages/workflows/src/shared/flat-string.js";
+import { stageStatusFromRecord } from "../../../packages/workflows/src/shared/legacy-waiting-status.js";
 import { isReopenableSession } from "../../../packages/workflows/src/shared/session-transcript.js";
 import { stageSessionStore } from "../../../packages/workflows/src/shared/stage-session-store.js";
 import type {
@@ -629,7 +630,7 @@ function runSnapshotsFromCheckpoints(
 }
 
 function stageSnapshotFromDraft(draft: StageDraft, id: string, parentIds: readonly string[]): StageSnapshot {
-	const status = draft.topology?.status ?? "completed";
+	const status = stageStatusFromRecord(draft.topology?.status ?? "completed");
 	const startedAt = draft.startedAt ?? draft.firstCompletedAt;
 	const endedAt = draft.endedAt ?? (status === "running" ? undefined : draft.firstCompletedAt);
 	const workflowChild = workflowChildFromDraft(draft);

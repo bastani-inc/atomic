@@ -408,6 +408,12 @@ function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
 	);
 }
 
+/** The calls a stage with its session released waits on: their results arrive when it reopens, so none is interrupted. */
+function waitingToolCallIds(stage: StageSnapshot | undefined): ReadonlySet<string> | undefined {
+	const calls = stage?.wait?.toolCalls;
+	return calls === undefined ? undefined : new Set(calls.map((call) => call.toolCallId));
+}
+
 function snapshotMessagesFromSession(ctx: StageChatViewContext, stage: StageSnapshot | undefined): void {
 	const handle = liveHandle(ctx);
 	const sessionId = handle?.sessionId ?? stage?.sessionId;
@@ -418,7 +424,7 @@ function snapshotMessagesFromSession(ctx: StageChatViewContext, stage: StageSnap
 		if (!handle) ctx.postMortemUnavailableReason ??= "invalid_session";
 		return;
 	}
-	void ctx.chatHost.loadSession(sessionStore, sessionId).then((loaded) => {
+	void ctx.chatHost.loadSession(sessionStore, sessionId, waitingToolCallIds(stage)).then((loaded) => {
 		if (!loaded && !liveHandle(ctx)) ctx.postMortemUnavailableReason ??= "invalid_session";
 		ctx.requestRender?.();
 	});

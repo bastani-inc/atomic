@@ -1637,7 +1637,7 @@ async function executeRun(
 		if (selectedTerminalEvent.kind === "failure" && pendingChildWorkflows.size > 0 && !ownController.signal.aborted) {
 			ownController.abort(err);
 		}
-		// The run ends here: a stage still released between turns can never reopen, so it leaves `waiting` (#4309).
+		// The run ends here: a stage still released between turns can never reopen, so it leaves `suspended` (#4309).
 		settleReleasedStages(runtime.wakeDispatcher);
 		await admittedTools.closeAndDrain();
 		// Racing the author body must not race past admitted child teardown and
