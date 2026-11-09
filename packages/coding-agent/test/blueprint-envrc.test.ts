@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, sep } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { basename, delimiter, dirname, join, relative, sep, win32 } from "node:path";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	bashPath,
 	bashPathOn,
@@ -12,6 +12,7 @@ import {
 	sessionEnvrcPath,
 	shellQuote,
 } from "../src/core/resume/blueprint/envrc.ts";
+import * as shell from "../src/utils/shell.ts";
 
 let sandbox: string;
 
@@ -20,13 +21,20 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.restoreAllMocks();
 	rmSync(sandbox, { recursive: true, force: true });
 });
 
 const path = (...segments: string[]) => join(sandbox, ...segments);
 
 function bash(script: string): string {
-	const result = spawnSync("bash", ["-c", script], { encoding: "utf8", env: { PATH: process.env.PATH ?? "" } });
+	const { shell: executable, args, commandTransport } = shell.getShellConfig();
+	const byStdin = commandTransport === "stdin";
+	const result = spawnSync(executable, byStdin ? args : [...args, script], {
+		encoding: "utf8",
+		env: { PATH: process.env.PATH ?? "" },
+		...(byStdin ? { input: script } : {}),
+	});
 	assert.equal(result.status, 0, result.stderr);
 	return result.stdout;
 }
@@ -156,12 +164,86 @@ describe("evaluating an ENVRC file (#4588)", () => {
 		assert.equal(environment.OVERRIDDEN, "from-file");
 		assert.equal(environment.MULTILINE, "first\nsecond");
 		assert.equal(environment.KEEP, "from-base");
-		assert.equal(environment.PATH, base().PATH);
+		const expectedPath = process.platform === "win32" ? bash('/usr/bin/cygpath -wp "$PATH"').trimEnd() : base().PATH;
+		assert.equal(environment.PATH, expectedPath);
 		assert.equal("" in environment, false);
 		assert.equal(
 			Object.values(environment).every((value) => typeof value === "string"),
 			true,
 		);
+	});
+
+	test("a quoted ENVRC path stays data and cannot execute shell syntax (#4588)", async () => {
+		const directory = path("it's a $(exit 8) store");
+		mkdirSync(directory);
+		const file = join(directory, "build.envrc");
+		writeFileSync(file, "FROM_QUOTED_PATH=yes\n");
+		assert.equal((await evaluateEnvrc(file, base())).FROM_QUOTED_PATH, "yes");
+	});
+
+	test("PATH written to ENVRC reaches native processes in their own path-list format (#4588)", async () => {
+		const directory = path("custom bin");
+		mkdirSync(directory);
+		const file = path("path.envrc");
+		writeFileSync(file, `export PATH=${shellQuote(bashPath(directory))}:"$PATH"\n`);
+		const environment = await evaluateEnvrc(file, base());
+		const result = spawnSync(process.execPath, ["-e", "console.log(JSON.stringify(process.env.PATH))"], {
+			env: environment,
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 0, result.stderr);
+		const directories = (JSON.parse(result.stdout) as string).split(delimiter);
+		const normalize = process.platform === "win32" ? win32.normalize : (value: string) => value;
+		assert.equal(normalize(directories[0]!), normalize(directory));
+	});
+
+	test("a shell that takes its script on stdin still receives the ENVRC as a positional argument (#4588)", async () => {
+		const config = shell.getShellConfig();
+		vi.spyOn(shell, "getShellConfig").mockReturnValue({
+			shell: config.shell,
+			args: ["-s"],
+			commandTransport: "stdin",
+		});
+		const file = path("stdin's build.envrc");
+		writeFileSync(file, "FROM_STDIN=yes\n");
+		assert.equal((await evaluateEnvrc(file, base())).FROM_STDIN, "yes");
+	});
+
+	test("Windows evaluation converts the sourced PATH for native children with cygpath (#4588)", async () => {
+		const config = shell.getShellConfig();
+		vi.spyOn(shell, "getShellConfig").mockReturnValue(config);
+		const commands = path("commands");
+		mkdirSync(commands);
+		const converter = join(commands, "cygpath");
+		writeFileSync(
+			converter,
+			'#!/bin/sh\n[ "$1" = -wp ] || exit 4\nprintf "%s" "$2" > "$CAPTURE_PATH"\nprintf "%s\\n" "$NATIVE_PATH"\n',
+		);
+		chmodSync(converter, 0o755);
+		const file = path("windows.envrc");
+		const captured = path("captured-path");
+		const extra = path("extra tools");
+		writeFileSync(file, `export PATH=${shellQuote(bashPath(extra))}:${shellQuote(bashPath(commands))}:"$PATH"\n`);
+		const realPlatform = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32" });
+		try {
+			const environment = await evaluateEnvrc(file, {
+				...base(),
+				PATH: `${commands}${delimiter}${base().PATH}`,
+				CAPTURE_PATH: captured,
+				NATIVE_PATH: "C:\\extra tools;C:\\base",
+			});
+			assert.equal(environment.PATH, "C:\\extra tools;C:\\base");
+			assert.ok(readFileSync(captured, "utf8").startsWith(`${bashPath(extra)}:`));
+		} finally {
+			Object.defineProperty(process, "platform", { value: realPlatform });
+		}
+	});
+
+	test("a failing assignment in ENVRC stops evaluation rather than silently exporting a partial environment (#4588)", async () => {
+		const file = path("assignment.envrc");
+		writeFileSync(file, "FROM_FAILURE=$(exit 9)\nSHOULD_NOT_RUN=yes\n");
+		await assert.rejects(evaluateEnvrc(file, base()), /Sourcing the ENVRC file failed with status 9:/);
 	});
 
 	test("an empty file gives the base environment and nothing of the calling process leaks in (#4588)", async () => {

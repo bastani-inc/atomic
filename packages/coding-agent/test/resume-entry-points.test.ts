@@ -53,6 +53,7 @@ import {
 	startupResumeDiagnostics,
 } from "../src/main-session.ts";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
+import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 import { appendLineCommand, nodeCommand, shellPath } from "./helpers/hook-commands.ts";
 
 useTemporaryAgentDir();
@@ -244,7 +245,7 @@ describe("openCliSession edge cases (#4329)", () => {
 	test("a new CLI session gets no blueprint context, with a repository blueprint or only resume.setupCommand set (#4588)", async () => {
 		sandbox.write(
 			join(sandbox.root, ".atomic", "blueprint.yaml"),
-			"knowledge:\n  - name: test\n    contents: make test\n",
+			forThisHost("knowledge:\n  - name: test\n    contents: make test\n"),
 		);
 		for (const setupCommand of [undefined, "npm ci"]) {
 			const opened = await openCliSession(parseArgs([]), sandbox.root, settings(setupCommand), {
@@ -263,7 +264,7 @@ describe("openCliSession edge cases (#4329)", () => {
 		const { clone } = await sandbox.remoteWithClone("continued", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			"knowledge:\n  - name: test\n    contents: continue-fact\n",
+			forThisHost("knowledge:\n  - name: test\n    contents: continue-fact\n"),
 		);
 		const store = await storeFor(sqliteSelection("continue"));
 		const seed = await SessionManager.create(store, clone);
@@ -284,7 +285,10 @@ describe("openCliSession edge cases (#4329)", () => {
 
 	test("a session forked with --fork gets the blueprint context of its checkout (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("forked", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), "knowledge:\n  - name: test\n    contents: fork-fact\n");
+		sandbox.write(
+			join(clone, ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: fork-fact\n"),
+		);
 		const store = await storeFor(sqliteSelection("fork"));
 		const source = await SessionManager.create(store, clone);
 		await source.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
@@ -340,16 +344,18 @@ describe("openCliSession edge cases (#4329)", () => {
 		const selection = sqliteSelection("shared");
 		const counter = sandbox.path("initialize-runs.txt").replaceAll("\\", "/");
 		const { sessionId } = await sessionRecordedElsewhere(selection, {
-			".atomic/blueprint.yaml": [
-				"initialize:",
-				'  - run: echo "FROM_INITIALIZE=yes" >> "$ENVRC"',
-				`  - run: echo run >> ${counter}`,
-				"  - run: exit 7",
-				"knowledge:",
-				"  - name: test",
-				"    contents: make test",
-				"",
-			].join("\n"),
+			".atomic/blueprint.yaml": forThisHost(
+				[
+					"initialize:",
+					'  - run: echo "FROM_INITIALIZE=yes" >> "$ENVRC"',
+					`  - run: echo run >> ${counter}`,
+					"  - run: exit 7",
+					"knowledge:",
+					"  - name: test",
+					"    contents: make test",
+					"",
+				].join("\n"),
+			),
 		});
 		const resume = async (blueprints?: "build" | "skip") => {
 			const opened = await openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
@@ -606,7 +612,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const agentDir = sandbox.path("agent");
 		const counter = sandbox.path("mirror-runs.txt").replaceAll("\\", "/");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
-			".atomic/blueprint.yaml": `maintenance: echo run >> ${counter}\n`,
+			".atomic/blueprint.yaml": forThisHost(`maintenance: echo run >> ${counter}\n`),
 		});
 		const { runtime, createRuntime } = await runtimeOn(agentDir, { defaultProjectTrust: "always" });
 		const engineWarning = { type: "warning" as const, message: "Partial build: the engine's own warning" };
@@ -675,7 +681,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 	test("a trusted repository's blueprint maintenance runs when the default trust is always (#4588)", async () => {
 		const agentDir = sandbox.path("agent");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
-			".atomic/blueprint.yaml": "maintenance: echo hook > ../hook-ran\n",
+			".atomic/blueprint.yaml": forThisHost("maintenance: echo hook > ../hook-ran\n"),
 		});
 		const { runtime } = await runtimeOn(agentDir, { defaultProjectTrust: "always" });
 		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
@@ -687,7 +693,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const agentDir = sandbox.path("agent");
 		const marker = sandbox.path("command-ran");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
-			".atomic/blueprint.yaml": "maintenance: echo hook > ../hook-ran\n",
+			".atomic/blueprint.yaml": forThisHost("maintenance: echo hook > ../hook-ran\n"),
 		});
 		const { runtime } = await runtimeOn(agentDir, { resume: { setupCommand: appendLineCommand(marker, "ran") } });
 		assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
@@ -701,16 +707,18 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 	test("/resume with a failing initialize step still resumes in the restored worktree, hands its warning over once and gives the agent the failure (#4588)", async () => {
 		const agentDir = sandbox.path("agent");
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"), {
-			".atomic/blueprint.yaml": [
-				"initialize:",
-				"  - name: Install toolchain",
-				"    run: exit 7",
-				"maintenance: echo hook > ../hook-ran",
-				"knowledge:",
-				"  - name: test",
-				"    contents: make test",
-				"",
-			].join("\n"),
+			".atomic/blueprint.yaml": forThisHost(
+				[
+					"initialize:",
+					"  - name: Install toolchain",
+					"    run: exit 7",
+					"maintenance: echo hook > ../hook-ran",
+					"knowledge:",
+					"  - name: test",
+					"    contents: make test",
+					"",
+				].join("\n"),
+			),
 		});
 		const { runtime } = await runtimeOn(agentDir, { defaultProjectTrust: "always" });
 
@@ -1237,7 +1245,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const marker = sandbox.path("setup-ran");
 		const selection = sqliteSelection("shared");
 		const { sessionId } = await sessionRecordedElsewhere(selection, {
-			".atomic/blueprint.yaml": `maintenance: echo hook >> "${shellPath(marker)}"\n`,
+			".atomic/blueprint.yaml": forThisHost(`maintenance: echo hook >> "${shellPath(marker)}"\n`),
 		});
 		const store = await storeFor(selection);
 		await createOn({
@@ -1251,7 +1259,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		const marker = sandbox.path("setup-ran");
 		const selection = sqliteSelection("shared");
 		const { sessionId } = await sessionRecordedElsewhere(selection, {
-			".atomic/blueprint.yaml": `maintenance: echo hook >> "${shellPath(marker)}"\n`,
+			".atomic/blueprint.yaml": forThisHost(`maintenance: echo hook >> "${shellPath(marker)}"\n`),
 		});
 		const store = await storeFor(selection);
 		const session = await createOn({

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFi
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, vi } from "vitest";
-import { bindingOf, ProjectTrustStore, workspace } from "../../packages/coding-agent/src/index.js";
+import { bindingOf, hostPlatform, ProjectTrustStore, workspace } from "../../packages/coding-agent/src/index.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { listWorkflowSnapshotBoundaries } from "../../packages/workflows/src/durable/worktree-snapshots.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
@@ -324,6 +324,7 @@ test.skipIf(WINDOWS)(
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
 			[
+				`runs-on: ${hostPlatform()}`,
 				"maintenance:",
 				"  - name: install",
 				"    run: |",

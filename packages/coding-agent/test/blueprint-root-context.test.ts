@@ -11,7 +11,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { rootKey } from "../src/core/resume/blueprint/ledger.ts";
 import { restoredWorktreeOf } from "../src/core/resume/blueprint/resume.ts";
@@ -23,6 +23,7 @@ import {
 	recordRestoredWorktreeContext,
 	setUpResumedBlueprints,
 } from "../src/index.ts";
+import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 
 let sandbox: string;
 
@@ -45,7 +46,7 @@ function write(file: string, content: string): void {
 function worktree(name: string, blueprint?: string): string {
 	const root = join(storeDir(), "worktrees", name);
 	mkdirSync(root, { recursive: true });
-	if (blueprint !== undefined) write(join(root, ".atomic", "blueprint.yaml"), blueprint);
+	if (blueprint !== undefined) write(join(root, ".atomic", "blueprint.yaml"), forThisHost(blueprint));
 	return root;
 }
 
@@ -63,7 +64,7 @@ function config(overrides: Partial<BlueprintBuildConfig> = {}): BlueprintBuildCo
 const knowledge = (contents: string) => `knowledge:\n  - name: test\n    contents: ${contents}\n`;
 
 describe("restoredWorktreeOf (#4588)", () => {
-	const store = join(sep, "store");
+	const store = resolve(sep, "store");
 	const worktrees = join(store, "worktrees");
 
 	test("names the restored worktree that holds a directory, whatever its depth (#4588)", () => {
@@ -84,7 +85,7 @@ describe("restoredWorktreeOf (#4588)", () => {
 
 describe("the blueprint context kept for later sessions (#4588)", () => {
 	test("each build keeps one context per restored worktree: the global blueprint's and that worktree's own (#4588)", async () => {
-		write(path("agent", "blueprint.yaml"), knowledge("global-fact"));
+		write(path("agent", "blueprint.yaml"), forThisHost(knowledge("global-fact")));
 		const first = worktree("one", knowledge("first-fact"));
 		const second = worktree("two", knowledge("second-fact"));
 		await setUpResumedBlueprints({

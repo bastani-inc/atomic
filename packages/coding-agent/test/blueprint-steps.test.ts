@@ -32,7 +32,9 @@ import {
 	type StepContext,
 } from "../src/core/resume/blueprint/steps.ts";
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
-import type { ShellConfig } from "../src/utils/shell.ts";
+import { getShellConfig, type ShellConfig } from "../src/utils/shell.ts";
+import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { shellPath } from "./helpers/hook-commands.ts";
 
 const STEP_TIMEOUT_MS = 60_000;
 const PROCESS_START_WAIT_MS = 20_000;
@@ -58,6 +60,14 @@ function lines(file: string): string[] {
 	return existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
 }
 
+function hostSystemEnvironment(): Record<string, string> {
+	if (process.platform !== "win32") return {};
+	const names = ["SystemRoot", "windir", "ComSpec", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "ProgramFiles"];
+	return Object.fromEntries(
+		names.flatMap((name) => (process.env[name] === undefined ? [] : [[name, process.env[name]]])),
+	);
+}
+
 function context(overrides: Partial<StepContext> = {}): StepContext {
 	return {
 		blueprint: path("repo", ".atomic", "blueprint.yaml"),
@@ -70,6 +80,7 @@ function context(overrides: Partial<StepContext> = {}): StepContext {
 		logPrefix: LOG_PREFIX,
 		timeoutMs: STEP_TIMEOUT_MS,
 		environment: {
+			...hostSystemEnvironment(),
 			PATH: process.env.PATH ?? "",
 			HOME: sandbox,
 			MARKERS: markers(),
@@ -190,6 +201,12 @@ describe("a section's steps and their logs (#4588)", () => {
 	test("a step stopped by a signal is a failure with the signal and no exit status (#4588)", async () => {
 		const failure = failureOf(await runSection("maintenance", [run("kill -TERM $$")], context()));
 		assert.ok(failure.error instanceof BlueprintStepFailedError);
+		if (process.platform === "win32") {
+			assert.equal(failure.error.signal, null);
+			assert.ok(failure.error.exitStatus !== null && failure.error.exitStatus !== 0);
+			assert.match(failure.outputTail, /\n# exit status \d+\n$/);
+			return;
+		}
 		assert.equal(failure.error.signal, "SIGTERM");
 		assert.equal(failure.error.exitStatus, null);
 		assert.match(failure.outputTail, /\n# stopped by signal SIGTERM\n$/);
@@ -242,7 +259,7 @@ describe("what a run step sees (#4588)", () => {
 	test("it runs in the working directory with the context environment, its own variables and the ENVRC path (#4588)", async () => {
 		writeFileSync(path("build.envrc"), "SHARED=from-envrc\nENVRC_ONLY=from-envrc\n");
 		const script = [
-			'echo "cwd $(pwd -P)" >> "$MARKERS"',
+			`echo "cwd $(${WORKING_DIRECTORY_COMMAND})" >> "$MARKERS"`,
 			'echo "envrc $ENVRC" >> "$MARKERS"',
 			'echo "context $FROM_CONTEXT" >> "$MARKERS"',
 			'echo "step $FROM_STEP" >> "$MARKERS"',
@@ -263,7 +280,7 @@ describe("what a run step sees (#4588)", () => {
 		);
 		assert.deepEqual(result, { completed: 1 });
 		assert.deepEqual(lines(markers()), [
-			`cwd ${path("repo")}`,
+			`cwd ${shellPath(path("repo"))}`,
 			`envrc ${bashPath(path("build.envrc"))}`,
 			"context ctx",
 			"step step",
@@ -276,17 +293,36 @@ describe("what a run step sees (#4588)", () => {
 
 	test("a powershell blueprint on Windows is not run in bash, and on another platform it is (#4588)", async () => {
 		const step = run('echo ran >> "$MARKERS"');
-		const onWindows = await runSection("maintenance", [step], context({ shell: "powershell", platform: "windows" }));
-		assert.equal(onWindows.completed, 0);
-		assert.ok(onWindows.failure !== undefined);
-		assert.deepEqual(lines(markers()), []);
+		if (process.platform === "win32") {
+			const inPowerShell = await runSection(
+				"maintenance",
+				[
+					run(
+						'Add-Content -LiteralPath $env:MARKERS -Value powershell; [IO.File]::AppendAllText($env:ENVRC, "FROM_POWERSHELL=yes`n")',
+					),
+				],
+				context({ shell: "powershell", platform: "windows" }),
+			);
+			assert.deepEqual(inPowerShell, { completed: 1 });
+			assert.deepEqual(lines(markers()), ["powershell"]);
+			assert.equal(readFileSync(path("build.envrc"), "utf8"), "FROM_POWERSHELL=yes\n");
+		} else {
+			const onWindows = await runSection(
+				"maintenance",
+				[step],
+				context({ shell: "powershell", platform: "windows" }),
+			);
+			assert.equal(onWindows.completed, 0);
+			assert.ok(onWindows.failure !== undefined);
+			assert.deepEqual(lines(markers()), []);
+		}
 		const elsewhere = await runSection(
 			"maintenance",
 			[step],
 			context({ shell: "powershell", platform: "linux", logPrefix: "elsewhere" }),
 		);
 		assert.deepEqual(elsewhere, { completed: 1 });
-		assert.deepEqual(lines(markers()), ["ran"]);
+		assert.deepEqual(lines(markers()), process.platform === "win32" ? ["powershell", "ran"] : ["ran"]);
 	});
 
 	test("a missing ENVRC file is no obstacle (#4588)", async () => {
@@ -397,11 +433,9 @@ describe("uses steps (#4588)", () => {
 		assert.ok(log.includes(`# cwd: ${path("repo")}\n# command:\nuses github.com/acme/hello@v1\n# --- output ---\n`));
 		assert.ok(log.endsWith("\n# exit status 0\n"));
 		const exported = spawnSync(
-			"bash",
-			["-c", `set -a; . '${bashPath(path("build.envrc"))}'; set +a; printenv EXPORTED`],
-			{
-				encoding: "utf8",
-			},
+			getShellConfig().shell,
+			["-c", 'set -a; . "$1"; set +a; printenv EXPORTED', "bash", bashPath(path("build.envrc"))],
+			{ encoding: "utf8" },
 		);
 		assert.equal(exported.stdout, "from-action\n");
 	});
@@ -479,13 +513,14 @@ describe("which shell runs a step (#4588)", () => {
 	test("the PowerShell process stops on errors, runs in the working directory and its ENVRC wins over the step env (#4588)", () => {
 		const powerShell = { shell: "pwsh.exe", args: ["-NoProfile", "-Command"] };
 		const evaluated = { BASE: "evaluated", A: "evaluated" };
+		const envrcPath = "C:\\build\\envrc";
 		assert.deepEqual(
-			powerShellProcess(run("Write-Output 'hi'", "Greet", step.env), context(), powerShell, evaluated),
+			powerShellProcess(run("Write-Output 'hi'", "Greet", step.env), context({ envrcPath }), powerShell, evaluated),
 			{
 				command: "pwsh.exe",
 				args: ["-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; Write-Output 'hi'"],
 				cwd: path("repo"),
-				env: { BASE: "evaluated", A: "1", ENVRC: bashPath(path("build.envrc")) },
+				env: { BASE: "evaluated", A: "1", ENVRC: envrcPath },
 			},
 		);
 	});

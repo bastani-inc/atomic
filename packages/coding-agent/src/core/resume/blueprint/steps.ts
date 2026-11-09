@@ -90,7 +90,7 @@ export function powerShellProcess(
 		command: powerShell.shell,
 		args: [...powerShell.args, `$ErrorActionPreference = 'Stop'; ${step.run}`],
 		cwd: context.cwd,
-		env: { ...evaluated, ...step.env, ENVRC: bashPath(context.envrcPath) },
+		env: { ...evaluated, ...step.env, ENVRC: context.envrcPath },
 	};
 }
 

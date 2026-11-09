@@ -45,13 +45,28 @@ export function sessionEnvironmentPrefix(storeDir: string, roots: Iterable<strin
  * starting from `base`. Used where a step cannot source the file itself: PowerShell and GitHub Actions.
  */
 export async function evaluateEnvrc(envrcPath: string, base: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
-	const { shell } = getShellConfig();
-	const script = `set -a; . ${shellQuote(bashPath(envrcPath))}; set +a; env -0`;
-	const child = spawn(shell, ["-c", script], { env: base, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+	const { shell, args, commandTransport } = getShellConfig();
+	const script = [
+		"set -ae",
+		'. "$1"',
+		"set +a",
+		process.platform === "win32"
+			? 'env -0; atomic_blueprint_native_path=$(cygpath -wp "$PATH"); printf \'PATH=%s\\0\' "$atomic_blueprint_native_path"'
+			: "env -0",
+	].join("\n");
+	const byStdin = commandTransport === "stdin";
+	const child = spawn(
+		shell,
+		byStdin ? [...args, "--", bashPath(envrcPath)] : [...args, script, "atomic-blueprint-envrc", bashPath(envrcPath)],
+		{ env: base, stdio: [byStdin ? "pipe" : "ignore", "pipe", "pipe"], windowsHide: true },
+	);
+	if (byStdin) child.stdin?.end(script);
+	const { stdout, stderr } = child;
+	if (stdout === null || stderr === null) throw new Error("ENVRC evaluation started without output pipes");
 	const chunks: Buffer[] = [];
 	const errors: Buffer[] = [];
-	child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-	child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+	stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+	stderr.on("data", (chunk: Buffer) => errors.push(chunk));
 	const status = await new Promise<number | null>((settle, reject) => {
 		child.once("error", reject);
 		child.once("close", settle);

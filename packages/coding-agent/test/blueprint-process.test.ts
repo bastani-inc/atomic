@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
+	copiesOutputToLog,
 	LOG_TAIL_BYTES,
 	type LoggedProcess,
 	type LoggedProcessOptions,
@@ -24,6 +25,7 @@ import {
 	runLoggedProcess,
 	startsProcessGroup,
 } from "../src/core/resume/blueprint/process.ts";
+import { getShellConfig } from "../src/utils/shell.ts";
 
 const STEADY_TIMEOUT_MS = 60_000;
 const PROCESS_START_WAIT_MS = 20_000;
@@ -218,6 +220,66 @@ describe("running a logged process (#4588)", () => {
 		} finally {
 			await log.close();
 		}
+	});
+
+	test("the output of the shell a blueprint step runs in reaches the log, for echo to stdout and to stderr alike (#4588)", async () => {
+		const { shell, args, commandTransport } = getShellConfig();
+		const script = 'echo "to stdout"; echo "to stderr" >&2';
+		const { exit, output } = await execute({
+			command: shell,
+			args: commandTransport === "stdin" ? args : [...args, script],
+			cwd: sandbox,
+			env: { ...process.env },
+			...(commandTransport === "stdin" ? { stdin: script } : {}),
+		});
+		assert.equal(exit.exitStatus, 0, output);
+		assert.deepEqual(output.split("\n").sort(), ["", "to stderr", "to stdout"]);
+	});
+
+	test("output copied into the log keeps both streams and the exit status, whatever platform runs it (#4588)", async () => {
+		const real = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32" });
+		try {
+			const { exit, output } = await execute(
+				nodeProcess('process.stdout.write("out\\n", () => { console.error("err"); process.exitCode = 3; })'),
+			);
+			assert.equal(output, "out\nerr\n");
+			assert.equal(exit.exitStatus, 3);
+			assert.equal(exit.spawnError, undefined);
+			assert.equal(exit.timedOut, false);
+			const missing = await execute(nodeProcess("", { command: path("missing-command") }));
+			assert.equal((missing.exit.spawnError as NodeJS.ErrnoException).code, "ENOENT");
+			assert.equal(missing.exit.exitStatus, null);
+		} finally {
+			Object.defineProperty(process, "platform", { value: real });
+		}
+	});
+
+	test("output that cannot be copied into the log rejects naming the log instead of being lost (#4588)", async () => {
+		const real = process.platform;
+		Object.defineProperty(process, "platform", { value: "win32" });
+		try {
+			await assert.rejects(
+				runLoggedProcess(
+					nodeProcess('console.log("lost")'),
+					{ fd: 999_999, path: path("unwritable.log") },
+					{
+						timeoutMs: STEADY_TIMEOUT_MS,
+					},
+				),
+				(error: unknown) =>
+					error instanceof Error &&
+					error.message.includes(path("unwritable.log")) &&
+					(error.cause as NodeJS.ErrnoException).code === "EBADF",
+			);
+		} finally {
+			Object.defineProperty(process, "platform", { value: real });
+		}
+	});
+
+	test("only Windows has the output of a process copied into the log instead of written to it by the process (#4588)", () => {
+		assert.equal(copiesOutputToLog("win32"), true);
+		for (const platform of ["linux", "darwin", "freebsd"] as const) assert.equal(copiesOutputToLog(platform), false);
 	});
 
 	test("only platforms other than Windows start the process as the leader of its own group (#4588)", () => {

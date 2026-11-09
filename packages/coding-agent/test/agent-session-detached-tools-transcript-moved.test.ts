@@ -21,6 +21,7 @@ import {
 	waitTool,
 } from "./helpers/detached-tools.js";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.js";
 
 const pool = harnessPool();
 const compacting: Harness[] = [];
@@ -44,14 +45,19 @@ function lines(count: number, characters: number): string {
 
 const CONTEXT_WINDOW = 10_000;
 
+const SYSTEM_PROMPT_TOKENS = 8_100;
+const SYSTEM_PROMPT = "z".repeat(SYSTEM_PROMPT_TOKENS * 4);
+
 /** A session whose automatic compaction threshold sits just above what three short exchanges fill. */
 async function compactingHarness(
 	tool: ReturnType<typeof waitTool>,
 	...observers: ExtensionFactory[]
 ): Promise<Harness> {
+	const extensionsResult = await createTestExtensionsResult([compactedText, ...observers]);
 	const harness = await createHarness({
 		customTools: [tool.definition],
-		extensionFactories: [compactedText, ...observers],
+		initialActiveToolNames: [tool.definition.name],
+		resourceLoader: createTestResourceLoader({ extensionsResult, systemPrompt: SYSTEM_PROMPT }),
 		models: [{ id: "faux-small", contextWindow: CONTEXT_WINDOW }],
 		settings: {
 			compaction: { enabled: true, reserveTokens: 1_000, compression_ratio: 0.5, preserve_recent: 2 },

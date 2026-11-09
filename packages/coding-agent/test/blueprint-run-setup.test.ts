@@ -13,6 +13,8 @@ import {
 	setUpRestoredRunWorktrees,
 	setUpResumedRunWorktrees,
 } from "../src/index.ts";
+import { forThisHost, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { shellPath } from "./helpers/hook-commands.ts";
 import { missingGit } from "./helpers/missing-git.ts";
 
 let sandbox: string;
@@ -44,7 +46,7 @@ function trustEverything(extra: Record<string, unknown> = {}): void {
 function worktree(name: string, blueprint?: string): string {
 	const root = path("agent", "worktree-snapshots", "worktrees", name);
 	mkdirSync(root, { recursive: true });
-	if (blueprint !== undefined) write(join(root, ".atomic", "blueprint.yaml"), blueprint);
+	if (blueprint !== undefined) write(join(root, ".atomic", "blueprint.yaml"), forThisHost(blueprint));
 	return root;
 }
 
@@ -119,14 +121,16 @@ describe("building the blueprints of restored workflow worktrees (#4588)", () =>
 	});
 
 	test("the global resume.setupCommand runs in the restored worktree and earns the deprecation warning (#4588)", async () => {
-		trustEverything({ resume: { setupCommand: `echo "alias $(pwd -P)" >> '${marker()}'` } });
+		trustEverything({
+			resume: { setupCommand: `echo "alias $(${WORKING_DIRECTORY_COMMAND})" >> '${marker()}'` },
+		});
 		const root = worktree("one");
 		const told: (readonly BlueprintNotice[])[] = [];
 		await setUpRestoredRunWorktrees([{ root, remotes: [] }], {
 			agentDir: agentDir(),
 			onNotices: (notices) => told.push(notices),
 		});
-		assert.deepEqual(ran(), [`alias ${root}`]);
+		assert.deepEqual(ran(), [`alias ${shellPath(root)}`]);
 		assert.equal(told.length, 1);
 		assert.match(told[0]?.[0]?.message ?? "", /^Deprecation warning: resume\.setupCommand is deprecated/);
 	});
@@ -294,7 +298,7 @@ describe("building a workflow run's worktrees on resume (#4588)", () => {
 
 	test("a restore whose snapshot record is missing is still built, identified by its own path (#4588)", async () => {
 		trustEverything();
-		write(join(root("a"), ".atomic", "blueprint.yaml"), `maintenance: ${mark("a")}\n`);
+		write(join(root("a"), ".atomic", "blueprint.yaml"), forThisHost(`maintenance: ${mark("a")}\n`));
 		const built = await setUpResumedRunWorktrees(
 			{ restored: [mapping("a")], mappings: [], snapshots: new Map() },
 			{ agentDir: agentDir() },
@@ -308,9 +312,9 @@ describe("building a workflow run's worktrees on resume (#4588)", () => {
 		const tool = path("tool").replaceAll("\\", "/");
 		write(
 			join(root("failing"), ".atomic", "blueprint.yaml"),
-			`initialize: test -f ${tool}\nmaintenance: ${mark("failing")}\n`,
+			forThisHost(`initialize: test -f ${tool}\nmaintenance: ${mark("failing")}\n`),
 		);
-		write(join(root("fine"), ".atomic", "blueprint.yaml"), `maintenance: ${mark("fine")}\n`);
+		write(join(root("fine"), ".atomic", "blueprint.yaml"), forThisHost(`maintenance: ${mark("fine")}\n`));
 		write(path("plain-file"), "not a directory");
 		const gone = mapping("gone");
 		const belowFile = { ...mapping("below"), to: join(store(), "worktrees", "below-file") };
@@ -357,7 +361,7 @@ describe("building a workflow run's worktrees on resume (#4588)", () => {
 		for (const name of ["hop-one", "hop-two"]) {
 			write(
 				join(root(name), ".atomic", "blueprint.yaml"),
-				`initialize: ${mark("initialize")}\nmaintenance: ${mark("maintenance")}\n`,
+				forThisHost(`initialize: ${mark("initialize")}\nmaintenance: ${mark("maintenance")}\n`),
 			);
 		}
 		await setUpResumedRunWorktrees({ restored: [hopOne], mappings: [], snapshots }, { agentDir: agentDir() });

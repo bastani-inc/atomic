@@ -533,7 +533,7 @@ describe("Node.js actions", () => {
 		const hostGithubEnv = join(fixture.root, "host-github-env");
 
 		await runToSuccess("github.com/acme/env-probe@v1", {
-			env: { CUSTOM_STEP_VALUE: "from-step-env", GITHUB_ENV: hostGithubEnv },
+			env: { CUSTOM_STEP_VALUE: "from-step-env", GITHUB_ENV: hostGithubEnv, GITHUB_EVENT_NAME: undefined },
 		});
 
 		const seen = JSON.parse((resultLines()[0] ?? "").slice("main ".length)) as Record<string, string | boolean>;

@@ -21,6 +21,8 @@ import {
 	removeRestoredWorktree,
 	setUpRestoredRunWorktrees,
 } from "../src/index.ts";
+import { forThisHost, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { shellPath } from "./helpers/hook-commands.ts";
 
 useTemporaryAgentDir();
 
@@ -58,7 +60,8 @@ async function recordSession(root: string, cwd = root): Promise<SessionManager> 
 }
 
 const markers = () => sandbox.path("markers.txt");
-const mark = (label: string) => `echo "${label} $(pwd -P)" >> "${markers().replaceAll("\\", "/")}"`;
+const mark = (label: string) =>
+	`echo "${label} $(${WORKING_DIRECTORY_COMMAND})" >> "${markers().replaceAll("\\", "/")}"`;
 const ran = () => (existsSync(markers()) ? readFileSync(markers(), "utf8").trim().split("\n") : []);
 
 function options(overrides: Partial<PrepareSessionResumeOptions["blueprint"]> = {}): PrepareSessionResumeOptions {
@@ -99,8 +102,8 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 	async function recordTwoCheckouts(firstBlueprint: string, secondBlueprint: string) {
 		const { clone: first } = await sandbox.remoteWithClone("first", { "README.md": "first\n" });
 		const { clone: second } = await sandbox.remoteWithClone("second", { "README.md": "second\n" });
-		sandbox.write(join(first, ".atomic", "blueprint.yaml"), firstBlueprint);
-		sandbox.write(join(second, ".atomic", "blueprint.yaml"), secondBlueprint);
+		sandbox.write(join(first, ".atomic", "blueprint.yaml"), forThisHost(firstBlueprint));
+		sandbox.write(join(second, ".atomic", "blueprint.yaml"), forThisHost(secondBlueprint));
 		const manager = await recordSession(first);
 		const store = manager.getSessionStore();
 		const capture = await captureWorktreeSnapshot(second, { settings, blobs: store.snapshotBlobs });
@@ -120,14 +123,14 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const first = ready(await prepareSessionResume(manager, options()));
 		const restored = manager.getWorktreeRootMappings().map((mapping) => mapping.to);
 		assert.equal(restored.length, 2);
-		assert.deepEqual(ran(), [`second-maintenance ${restored[1]}`]);
+		assert.deepEqual(ran(), [`second-maintenance ${shellPath(restored[1]!)}`]);
 		assert.equal(first.blueprintNotices.length, 1);
 
 		const again = ready(await prepareSessionResume(manager, options()));
 		assert.equal(again.blueprintNotices.length, 1);
 		assert.match(again.blueprintNotices[0]?.message ?? "", /^Partial build: /);
 		assert.ok((again.blueprintNotices[0]?.message ?? "").includes(restored[0]!));
-		assert.deepEqual(ran(), [`second-maintenance ${restored[1]}`]);
+		assert.deepEqual(ran(), [`second-maintenance ${shellPath(restored[1]!)}`]);
 		const context = again.blueprintContext ?? "";
 		assert.equal(context.split("<blueprint>").length - 1, 2);
 		assert.equal(context.split(`repository: ${restored[0]}`).length - 1, 1);
@@ -141,11 +144,11 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const { clone } = await sandbox.remoteWithClone("dirty", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			"knowledge:\n  - name: test\n    contents: make dirty-test\n",
+			forThisHost("knowledge:\n  - name: test\n    contents: make dirty-test\n"),
 		);
 		sandbox.write(
 			join(sandbox.path("agent"), "blueprint.yaml"),
-			"knowledge:\n  - name: global\n    contents: global-knowledge\n",
+			forThisHost("knowledge:\n  - name: global\n    contents: global-knowledge\n"),
 		);
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "dirty");
@@ -171,7 +174,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		mkdirSync(outside, { recursive: true });
 		sandbox.write(
 			join(sandbox.path("agent"), "blueprint.yaml"),
-			"knowledge:\n  - name: global\n    contents: global-only\n",
+			forThisHost("knowledge:\n  - name: global\n    contents: global-only\n"),
 		);
 		const store = await sqlStore("outside-sessions");
 		const manager = await SessionManager.create(store, outside);
@@ -185,7 +188,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const { clone } = await sandbox.remoteWithClone("woken", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			"knowledge:\n  - name: test\n    contents: woken-knowledge\n",
+			forThisHost("knowledge:\n  - name: test\n    contents: woken-knowledge\n"),
 		);
 		const store = await sqlStore("woken-sessions");
 		const manager = await SessionManager.create(store, clone);
@@ -199,7 +202,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 
 	test("waking a session whose checkouts all stay builds nothing and records one context (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("stays", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), `maintenance: ${mark("never")}\n`);
+		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost(`maintenance: ${mark("never")}\n`));
 		const manager = await recordSession(clone);
 		await continueSessionWhereItWorked(manager, options());
 		await continueSessionWhereItWorked(manager, options());
@@ -255,7 +258,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 
 	test("waking a session whose blueprints say nothing is wrong never calls onNotices, whether its checkout stays or is restored (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("quiet", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), "maintenance: echo ok\n");
+		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost("maintenance: echo ok\n"));
 		const manager = await recordSession(clone);
 		let calls = 0;
 		const onNotices = () => {
@@ -271,7 +274,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 
 	test("a wake the user cancels at the dirty-checkout prompt returns the session as it was and reports nothing (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("cancelled", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), "initialize: exit 3\n");
+		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost("initialize: exit 3\n"));
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "cancelled");
 		mkdirSync(sandbox.path("node-b"));
@@ -308,13 +311,13 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const { clone } = await sandbox.remoteWithClone("two-hops", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			`initialize: ${mark("initialize")}\nmaintenance: ${mark("maintenance")}\n`,
+			forThisHost(`initialize: ${mark("initialize")}\nmaintenance: ${mark("maintenance")}\n`),
 		);
 		const recorded = await recordSession(clone);
 		renameSync(clone, sandbox.path("two-hops-gone"));
 		const manager = ready(await prepareSessionResume(recorded, options())).sessionManager;
 		const firstHop = manager.getWorktreeRootMappings().at(-1)!.to;
-		assert.deepEqual(ran(), [`initialize ${firstHop}`, `maintenance ${firstHop}`]);
+		assert.deepEqual(ran(), [`initialize ${shellPath(firstHop)}`, `maintenance ${shellPath(firstHop)}`]);
 
 		const capture = await captureWorktreeSnapshot(firstHop, {
 			settings,
@@ -329,7 +332,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const again = ready(await prepareSessionResume(manager, options())).sessionManager;
 		const secondHop = again.getWorktreeRootMappings().at(-1)!.to;
 		assert.notEqual(secondHop, firstHop);
-		assert.deepEqual(ran().slice(2), [`maintenance ${secondHop}`]);
+		assert.deepEqual(ran().slice(2), [`maintenance ${shellPath(secondHop)}`]);
 
 		const ledger = await readLedger(sandbox.path("host"));
 		assert.equal(new Set(Object.keys(ledger.workspaces).map((key) => key.split(":")[0])).size, 1);
@@ -374,7 +377,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 	test("an unreadable global blueprint never rejects a resume that restores a worktree or one that restores nothing (#4588)", async () => {
 		mkdirSync(join(sandbox.path("agent"), "blueprint.yaml"), { recursive: true });
 		const { clone } = await sandbox.remoteWithClone("global-dir", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), `maintenance: ${mark("repo")}\n`);
+		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost(`maintenance: ${mark("repo")}\n`));
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("global-dir-gone"));
 		const restored = ready(await prepareSessionResume(manager, options()));
@@ -404,7 +407,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const { clone } = await sandbox.remoteWithClone("skipped", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			"knowledge:\n  - name: test\n    contents: skipped-fact\n",
+			forThisHost("knowledge:\n  - name: test\n    contents: skipped-fact\n"),
 		);
 		const skipping = { ...options(), blueprints: "skip" as const };
 

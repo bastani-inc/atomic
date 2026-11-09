@@ -29,6 +29,8 @@ import {
 	prepareSessionResume,
 	SETUP_COMMAND_ALIAS,
 } from "../src/index.ts";
+import { forThisHost, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { shellPath } from "./helpers/hook-commands.ts";
 
 useTemporaryAgentDir();
 
@@ -66,7 +68,8 @@ async function recordSession(root: string, cwd = root): Promise<SessionManager> 
 }
 
 const markers = () => sandbox.path("markers.txt");
-const mark = (label: string) => `echo "${label} $(pwd -P)" >> "${markers().replaceAll("\\", "/")}"`;
+const mark = (label: string) =>
+	`echo "${label} $(${WORKING_DIRECTORY_COMMAND})" >> "${markers().replaceAll("\\", "/")}"`;
 const ran = () => (existsSync(markers()) ? readFileSync(markers(), "utf8").trim().split("\n") : []);
 
 function options(overrides: Partial<PrepareSessionResumeOptions["blueprint"]> = {}): PrepareSessionResumeOptions {
@@ -106,8 +109,10 @@ function contexts(manager: SessionManager): string[] {
 /** A clone with a blueprint, recorded by a session and then gone from "node A", so a resume restores it. */
 async function recordedProject(blueprint: string | undefined, extra: Record<string, string> = {}) {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", "package-lock.json": "{}\n" });
-	if (blueprint !== undefined) sandbox.write(join(clone, ".atomic", "blueprint.yaml"), blueprint);
-	for (const [file, content] of Object.entries(extra)) sandbox.write(join(clone, file), content);
+	if (blueprint !== undefined) sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost(blueprint));
+	for (const [file, content] of Object.entries(extra)) {
+		sandbox.write(join(clone, file), file.endsWith("blueprint.yaml") ? forThisHost(content) : content);
+	}
 	const manager = await recordSession(clone);
 	renameSync(clone, sandbox.path("node-a-gone"));
 	return { clone, manager };
@@ -138,7 +143,7 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		assert.equal(prepared.sessionManager.getCwd(), restoredRoot);
 		assert.ok(restoredRoot.startsWith(sandbox.path("host")));
 		assert.equal(readFileSync(join(restoredRoot, "README.md"), "utf8"), "hello\n");
-		assert.deepEqual(ran(), [`api-maintenance ${join(restoredRoot, "services", "api")}`]);
+		assert.deepEqual(ran(), [`api-maintenance ${shellPath(join(restoredRoot, "services", "api"))}`]);
 		assert.equal(prepared.blueprintNotices.length, 1);
 		const [warning] = prepared.blueprintNotices;
 		assert.equal(warning?.type, "warning");
@@ -161,14 +166,16 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 
 		writeFileSync(
 			join(restoredRoot, ".atomic", "blueprint.yaml"),
-			`includes: [services/api]\ninitialize: ${mark("root-initialize")}\nmaintenance: ${mark("root-maintenance")}\n`,
+			forThisHost(
+				`includes: [services/api]\ninitialize: ${mark("root-initialize")}\nmaintenance: ${mark("root-maintenance")}\n`,
+			),
 		);
 		const resumedAgain = await continueSessionWhereItWorked(prepared.sessionManager, options());
 		assert.deepEqual(ran(), [
-			`api-maintenance ${join(restoredRoot, "services", "api")}`,
-			`root-initialize ${restoredRoot}`,
-			`root-maintenance ${restoredRoot}`,
-			`api-maintenance ${join(restoredRoot, "services", "api")}`,
+			`api-maintenance ${shellPath(join(restoredRoot, "services", "api"))}`,
+			`root-initialize ${shellPath(restoredRoot)}`,
+			`root-maintenance ${shellPath(restoredRoot)}`,
+			`api-maintenance ${shellPath(join(restoredRoot, "services", "api"))}`,
 		]);
 		const [, relabelled] = contexts(resumedAgain);
 		assert.match(relabelled ?? "", /ran during this resume's build/);
@@ -182,7 +189,7 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		const { manager } = await recordedProject(`maintenance: ${mark("repo")}\n`);
 		const failingGlobal = options();
 		const agentBlueprint = join(sandbox.path("agent"), "blueprint.yaml");
-		sandbox.write(agentBlueprint, "initialize:\n  - name: Install global tools\n    run: exit 2\n");
+		sandbox.write(agentBlueprint, forThisHost("initialize:\n  - name: Install global tools\n    run: exit 2\n"));
 		const prepared = ready(await prepareSessionResume(manager, failingGlobal));
 		assert.equal(prepared.sessionManager.getCwd(), manager.getWorktreeRootMappings().at(-1)!.to);
 		assert.equal(prepared.blueprintNotices.length, 1);
@@ -230,7 +237,7 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		const { manager } = await recordedProject(undefined);
 		const prepared = ready(await prepareSessionResume(manager, options({ setupCommand: mark(SETUP_COMMAND_ALIAS) })));
 		const restoredRoot = manager.getWorktreeRootMappings().at(-1)!.to;
-		assert.deepEqual(ran(), [`${SETUP_COMMAND_ALIAS} ${restoredRoot}`]);
+		assert.deepEqual(ran(), [`${SETUP_COMMAND_ALIAS} ${shellPath(restoredRoot)}`]);
 		assert.match(
 			prepared.blueprintNotices[0]?.message ?? "",
 			/^Deprecation warning: resume\.setupCommand is deprecated/,
@@ -242,7 +249,7 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		const { clone } = await sandbox.remoteWithClone("inplace", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			`maintenance: ${mark("never")}\nknowledge:\n  - name: test\n    contents: make test\n`,
+			forThisHost(`maintenance: ${mark("never")}\nknowledge:\n  - name: test\n    contents: make test\n`),
 		);
 		const manager = await recordSession(clone);
 		const prepared = ready(await prepareSessionResume(manager, { ...options(), launchCwd: clone }));
@@ -257,7 +264,7 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 		const { clone } = await sandbox.remoteWithClone("moved", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
-			`maintenance: ${mark("never")}\nknowledge:\n  - name: test\n    contents: make test\n`,
+			forThisHost(`maintenance: ${mark("never")}\nknowledge:\n  - name: test\n    contents: make test\n`),
 		);
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("node-b", "moved");
@@ -278,7 +285,10 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 
 	test("resuming again before anything changed adds no duplicate context (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("inplace", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), "knowledge:\n  - name: test\n    contents: make test\n");
+		sandbox.write(
+			join(clone, ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: make test\n"),
+		);
 		const manager = await recordSession(clone);
 		await prepareSessionResume(manager, { ...options(), launchCwd: clone });
 		await prepareSessionResume(manager, { ...options(), launchCwd: clone });
@@ -287,8 +297,11 @@ describe("resuming a session builds its blueprints and never fails on them (#458
 
 	test("a session with no snapshots still gets its repository's and the global blueprint's context (#4588)", async () => {
 		const { clone } = await sandbox.remoteWithClone("plain", { "README.md": "hello\n" });
-		sandbox.write(join(clone, ".atomic", "blueprint.yaml"), "knowledge:\n  - name: test\n    contents: make test\n");
-		sandbox.write(join(sandbox.path("agent"), "blueprint.yaml"), "maintenance: echo global\n");
+		sandbox.write(
+			join(clone, ".atomic", "blueprint.yaml"),
+			forThisHost("knowledge:\n  - name: test\n    contents: make test\n"),
+		);
+		sandbox.write(join(sandbox.path("agent"), "blueprint.yaml"), forThisHost("maintenance: echo global\n"));
 		const store = await sqlStore("plain-sessions");
 		const manager = await SessionManager.create(store, join(clone));
 		await manager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });

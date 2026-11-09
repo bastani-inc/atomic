@@ -16,6 +16,7 @@ import {
 	currentWorktreeRootMappings,
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	type GitUnavailableError,
+	hostPlatform,
 	isResumePreconditionError,
 	restoreRunWorktree,
 	restoreWorktree,
@@ -421,7 +422,9 @@ test("a trusted restore builds its repository's own blueprint in the restored wo
 		},
 		true,
 		{},
-		{ ".atomic/blueprint.yaml": `maintenance: ${JSON.stringify(appendLineCommand(marker, "ran"))}\n` },
+		{
+			".atomic/blueprint.yaml": `runs-on: ${hostPlatform()}\nmaintenance: ${JSON.stringify(appendLineCommand(marker, "ran"))}\n`,
+		},
 	);
 
 	const { result, finished } = await recorded.resume();
@@ -447,7 +450,7 @@ test("a run resumed again after its earlier build failed rebuilds that worktree 
 		true,
 		{},
 		{
-			".atomic/blueprint.yaml": `initialize: test -f ${tool} && echo initialize >> ${marker}\nmaintenance: echo maintenance >> ${marker}\n`,
+			".atomic/blueprint.yaml": `runs-on: ${hostPlatform()}\ninitialize: test -f ${tool} && echo initialize >> ${marker}\nmaintenance: echo maintenance >> ${marker}\n`,
 		},
 		2,
 	);
@@ -478,7 +481,7 @@ test("a run resumed again whose earlier build succeeded builds nothing and says 
 		() => {},
 		true,
 		{},
-		{ ".atomic/blueprint.yaml": `maintenance: echo maintenance >> ${marker}\n` },
+		{ ".atomic/blueprint.yaml": `runs-on: ${hostPlatform()}\nmaintenance: echo maintenance >> ${marker}\n` },
 		2,
 	);
 	const first = await recorded.resume();

@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
-import { setUpResumedBlueprints, withWorktreeRootMappings } from "../../packages/coding-agent/src/index.js";
+import {
+	hostPlatform,
+	setUpResumedBlueprints,
+	withWorktreeRootMappings,
+} from "../../packages/coding-agent/src/index.js";
 import { stripWorkflowOnlyOptions } from "../../packages/workflows/src/runs/foreground/stage-runner-options.js";
 import { isReopenableSession } from "../../packages/workflows/src/shared/session-transcript.js";
 
@@ -77,7 +81,7 @@ test("a stage that starts in a worktree a resume restored is told that worktree'
 		mkdirSync(join(root, ".atomic"), { recursive: true });
 		writeFileSync(
 			join(root, ".atomic", "blueprint.yaml"),
-			"initialize: exit 7\nknowledge:\n  - name: test\n    contents: make stage-test\n",
+			`runs-on: ${hostPlatform()}\ninitialize: exit 7\nknowledge:\n  - name: test\n    contents: make stage-test\n`,
 		);
 		const resumed = await setUpResumedBlueprints({
 			restored: [{ root, remotes: [] }],
@@ -138,7 +142,10 @@ test("a stage in a restored worktree still starts when its kept blueprint contex
 		const storeDir = join(agentDir, "worktree-snapshots");
 		const root = join(storeDir, "worktrees", "abc-123");
 		mkdirSync(join(root, ".atomic"), { recursive: true });
-		writeFileSync(join(root, ".atomic", "blueprint.yaml"), "knowledge:\n  - name: test\n    contents: make test\n");
+		writeFileSync(
+			join(root, ".atomic", "blueprint.yaml"),
+			`runs-on: ${hostPlatform()}\nknowledge:\n  - name: test\n    contents: make test\n`,
+		);
 		await setUpResumedBlueprints({
 			restored: [{ root, remotes: [] }],
 			config: {

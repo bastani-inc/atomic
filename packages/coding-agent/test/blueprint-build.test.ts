@@ -44,6 +44,8 @@ import {
 	runBlueprintBuild,
 	SETUP_COMMAND_ALIAS,
 } from "../src/core/resume/index.ts";
+import { shellSpelling, WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
+import { shellPath } from "./helpers/hook-commands.ts";
 
 let sandbox: string;
 let clock: number;
@@ -95,7 +97,7 @@ function ran(): string[] {
 	return existsSync(markers()) ? readFileSync(markers(), "utf8").trim().split("\n").filter(Boolean) : [];
 }
 
-const mark = (label: string) => `echo "${label} $(pwd -P)" >> "$MARKERS"`;
+const mark = (label: string) => `echo "${label} $(${WORKING_DIRECTORY_COMMAND})" >> "$MARKERS"`;
 
 function failureStep(outcome: BlueprintBuildOutcome) {
 	const [failure] = outcome.failures;
@@ -142,13 +144,13 @@ describe("blueprint build: order and working directories (#4588)", () => {
 		const outcome = await runBlueprintBuild([repo], config());
 		assert.equal(outcome.status, "success");
 		assert.deepEqual(ran(), [
-			`global ${path("home")}`,
-			`root-init ${repo.root}`,
-			`root-maint ${repo.root}`,
-			`api-init ${join(repo.root, "services", "api")}`,
-			`api-maint ${join(repo.root, "services", "api")}`,
-			`web-maint ${join(repo.root, "web")}`,
-			`post ${path("home")}`,
+			`global ${shellPath(path("home"))}`,
+			`root-init ${shellPath(repo.root)}`,
+			`root-maint ${shellPath(repo.root)}`,
+			`api-init ${shellPath(join(repo.root, "services", "api"))}`,
+			`api-maint ${shellPath(join(repo.root, "services", "api"))}`,
+			`web-maint ${shellPath(join(repo.root, "web"))}`,
+			`post ${shellPath(path("home"))}`,
 		]);
 		assert.deepEqual(
 			outcome.layers.map((layer) => [layer.scope, layer.directory]),
@@ -167,7 +169,7 @@ describe("blueprint build: order and working directories (#4588)", () => {
 		const first = await runBlueprintBuild([repo], config());
 		assert.equal(first.status, "success");
 		assert.deepEqual(first.removed, []);
-		assert.deepEqual(ran(), [`root ${repo.root}`]);
+		assert.deepEqual(ran(), [`root ${shellPath(repo.root)}`]);
 	});
 
 	test("a full-path include of a .devin or otherwise named blueprint file runs none of its steps (#4588)", async () => {
@@ -180,7 +182,7 @@ describe("blueprint build: order and working directories (#4588)", () => {
 		);
 		const outcome = await runBlueprintBuild([repo], config());
 		assert.equal(outcome.status, "success");
-		assert.deepEqual(ran(), [`root ${repo.root}`]);
+		assert.deepEqual(ran(), [`root ${shellPath(repo.root)}`]);
 		assert.deepEqual(blueprintNotices(outcome, false), []);
 	});
 
@@ -195,7 +197,7 @@ describe("blueprint build: order and working directories (#4588)", () => {
 			["."],
 		);
 		assert.deepEqual(blueprintNotices(first, false), []);
-		assert.deepEqual(ran(), [`root ${repo.root}`]);
+		assert.deepEqual(ran(), [`root ${shellPath(repo.root)}`]);
 		const second = await runBlueprintBuild([repo], config());
 		assert.equal(second.status, "success");
 		assert.equal((await readLedger(path("store"))).roots[rootKey(repo.root)]?.state, "success");
@@ -238,7 +240,7 @@ describe("blueprint build: order and working directories (#4588)", () => {
 		const repo = repository("multi");
 		blueprint(repo.root, `maintenance: ${mark("linux")}\n---\nruns-on: macos\nmaintenance: ${mark("mac")}\n`);
 		await runBlueprintBuild([repo], config({ platform: "macos" }));
-		assert.deepEqual(ran(), [`mac ${repo.root}`]);
+		assert.deepEqual(ran(), [`mac ${shellPath(repo.root)}`]);
 	});
 });
 
@@ -270,7 +272,7 @@ describe("blueprint build: environment and $ENVRC (#4588)", () => {
 			"1 from-envrc scoped",
 			"2 from-envrc ",
 			"3 step-wins",
-			`4 from-envrc ${repo.root}/tools`,
+			`4 from-envrc ${shellSpelling(repo.root)}/tools`,
 		]);
 	});
 
@@ -342,7 +344,7 @@ describe("blueprint build: environment and $ENVRC (#4588)", () => {
 		blueprint(repo.root, `maintenance: |\n  ${mark("before")}\n  false\n  ${mark("after")}\n`);
 		const outcome = await runBlueprintBuild([repo], config());
 		assert.equal(outcome.status, "partial");
-		assert.deepEqual(ran(), [`before ${repo.root}`]);
+		assert.deepEqual(ran(), [`before ${shellPath(repo.root)}`]);
 	});
 });
 
@@ -495,9 +497,9 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 
 		assert.equal(outcome.status, "partial");
 		assert.deepEqual(ran(), [
-			`healthy-init ${healthy.root}`,
-			`healthy-maint ${healthy.root}`,
-			`pkg-maint ${join(healthy.root, "pkg")}`,
+			`healthy-init ${shellPath(healthy.root)}`,
+			`healthy-maint ${shellPath(healthy.root)}`,
+			`pkg-maint ${shellPath(join(healthy.root, "pkg"))}`,
 		]);
 		const failure = failureStep(outcome);
 		assert.ok(isBlueprintStepFailedError(failure.error));
@@ -558,7 +560,7 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		);
 		const outcome = await runBlueprintBuild([repo], config());
 		assert.equal(outcome.status, "partial");
-		assert.deepEqual(ran(), [`init ${repo.root}`, `maint-1 ${repo.root}`]);
+		assert.deepEqual(ran(), [`init ${shellPath(repo.root)}`, `maint-1 ${shellPath(repo.root)}`]);
 		const failure = failureStep(outcome);
 		assert.ok(isBlueprintStepFailedError(failure.error));
 		assert.equal(failure.error.section, "maintenance");
@@ -580,6 +582,11 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		blueprint(repo.root, "maintenance: kill -TERM $$\n");
 		const failure = failureStep(await runBlueprintBuild([repo], config()));
 		assert.ok(isBlueprintStepFailedError(failure.error));
+		if (process.platform === "win32") {
+			assert.equal(failure.error.signal, null);
+			assert.ok(failure.error.exitStatus !== null && failure.error.exitStatus !== 0);
+			return;
+		}
 		assert.equal(failure.error.signal, "SIGTERM");
 		assert.equal(failure.error.exitStatus, null);
 	});
@@ -612,7 +619,7 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		assert.equal(failure.error.phase, "maintenance");
 		assert.equal(failure.error.step, "hang");
 		assert.ok(failure.error.elapsedMs >= 300);
-		assert.deepEqual(ran(), [`started ${repo.root}`]);
+		assert.deepEqual(ran(), [`started ${shellPath(repo.root)}`]);
 		assert.ok(failure.logPath !== null);
 		assert.match(readFileSync(failure.logPath, "utf8"), /timed out after 400 ms/);
 	});
@@ -647,7 +654,7 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		const next = await runBlueprintBuild([repo], config());
 		assert.equal(next.status, "success");
 		assert.equal(next.kind, "full");
-		assert.deepEqual(ran(), [`global-maint ${path("home")}`, `repo-maint ${repo.root}`]);
+		assert.deepEqual(ran(), [`global-maint ${shellPath(path("home"))}`, `repo-maint ${shellPath(repo.root)}`]);
 	});
 
 	test("a global failure leaves restored worktrees marked to build again on the next resume (#4588)", async () => {
@@ -666,7 +673,7 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		blueprint(repo.root, `maintenance: ${mark("repo-maint")}\n`);
 		const outcome = await runBlueprintBuild([repo], config());
 		assert.equal(outcome.status, "failed");
-		assert.deepEqual(ran(), [`repo-maint ${repo.root}`]);
+		assert.deepEqual(ran(), [`repo-maint ${shellPath(repo.root)}`]);
 		const failure = failureStep(outcome);
 		assert.ok(isBlueprintStepFailedError(failure.error));
 		assert.equal(failure.error.section, "post-build");
@@ -681,7 +688,7 @@ describe("blueprint build: failures never block and are reported (#4588)", () =>
 		blueprint(good.root, `maintenance: ${mark("good")}\n`);
 		const outcome = await runBlueprintBuild([bad, good], config());
 		assert.equal(outcome.status, "partial");
-		assert.deepEqual(ran(), [`good ${good.root}`]);
+		assert.deepEqual(ran(), [`good ${shellPath(good.root)}`]);
 		const failure = failureStep(outcome);
 		assert.ok(isBlueprintInvalidError(failure.error));
 		assert.equal(failure.error.reason, "uses-in-maintenance");
@@ -774,7 +781,7 @@ describe("blueprint build: trust and the deprecated alias (#4588)", () => {
 			[trusted, untrusted],
 			config({ trusted: (root) => root === trusted.root }),
 		);
-		assert.deepEqual(ran(), [`trusted ${trusted.root}`]);
+		assert.deepEqual(ran(), [`trusted ${shellPath(trusted.root)}`]);
 		assert.equal(outcome.status, "success");
 		assert.deepEqual(
 			outcome.layers.map((layer) => [layer.root === trusted.root, layer.state.kind]),
@@ -793,10 +800,10 @@ describe("blueprint build: trust and the deprecated alias (#4588)", () => {
 		const outcome = await runBlueprintBuild([first, second], config({ setupCommand: mark(SETUP_COMMAND_ALIAS) }));
 		assert.equal(outcome.status, "success");
 		assert.deepEqual(ran(), [
-			`global-maint ${path("home")}`,
-			`${SETUP_COMMAND_ALIAS} ${first.root}`,
-			`${SETUP_COMMAND_ALIAS} ${second.root}`,
-			`first-maint ${first.root}`,
+			`global-maint ${shellPath(path("home"))}`,
+			`${SETUP_COMMAND_ALIAS} ${shellPath(first.root)}`,
+			`${SETUP_COMMAND_ALIAS} ${shellPath(second.root)}`,
+			`first-maint ${shellPath(first.root)}`,
 		]);
 	});
 
@@ -804,7 +811,7 @@ describe("blueprint build: trust and the deprecated alias (#4588)", () => {
 		const repo = repository("alias-only");
 		const outcome = await runBlueprintBuild([repo], config({ setupCommand: mark(SETUP_COMMAND_ALIAS) }));
 		assert.equal(outcome.status, "success");
-		assert.deepEqual(ran(), [`${SETUP_COMMAND_ALIAS} ${repo.root}`]);
+		assert.deepEqual(ran(), [`${SETUP_COMMAND_ALIAS} ${shellPath(repo.root)}`]);
 	});
 
 	test("a failing resume.setupCommand is a global failure that names the alias and its log (#4588)", async () => {
@@ -1181,7 +1188,7 @@ describe("blueprint build: global failures and the alias (#4588)", () => {
 		const second = repository("alias-second");
 		const outcome = await runBlueprintBuild([first, second], config({ setupCommand: `${mark("alias")}\nexit 9` }));
 		assert.equal(outcome.status, "failed");
-		assert.deepEqual(ran(), [`alias ${first.root}`]);
+		assert.deepEqual(ran(), [`alias ${shellPath(first.root)}`]);
 		const failure = failureStep(outcome);
 		assert.ok(isBlueprintStepFailedError(failure.error));
 		assert.equal(failure.blueprint, SETUP_COMMAND_ALIAS);
@@ -1238,7 +1245,7 @@ describe("blueprint build: global failures and the alias (#4588)", () => {
 			outcome.layers.map((layer) => layer.scope),
 			["repository"],
 		);
-		assert.deepEqual(ran(), [`repo ${repo.root}`]);
+		assert.deepEqual(ran(), [`repo ${shellPath(repo.root)}`]);
 		assert.deepEqual(
 			logNames().map((name) => name.replace(BUILD_ID, "")),
 			[`${keyOf(repo.root)}-_-maintenance-1.log`],
@@ -1296,7 +1303,7 @@ describe("blueprint build: repositories, workspaces and failures in the outcome 
 		blueprint(built.root, `maintenance: ${mark("built")}\n`);
 		const outcome = await runBlueprintBuild([plain, built], config());
 		assert.equal(outcome.status, "success");
-		assert.deepEqual(ran(), [`built ${built.root}`]);
+		assert.deepEqual(ran(), [`built ${shellPath(built.root)}`]);
 		assert.deepEqual(
 			outcome.layers.map((layer) => layer.root),
 			[built.root],
@@ -1631,7 +1638,7 @@ describe("blueprint build: reading blueprints and surviving crashes (#4588)", ()
 		assert.equal(failure.error.reason, "yaml-syntax");
 		assert.equal(failure.error.subject, "document 1");
 		assert.ok(failure.error.cause instanceof Error);
-		assert.deepEqual(ran(), [`good ${good.root}`]);
+		assert.deepEqual(ran(), [`good ${shellPath(good.root)}`]);
 	});
 
 	test("a crash is a failed outcome that keeps the error as its cause and cuts its detail to 200 characters (#4588)", async () => {
