@@ -213,8 +213,15 @@ Inputs:
 |---|---|---|---|---|
 | `prompt` | text | yes | — | What to design. The discovery stage refines the brief, output type, and references. |
 | `discover_references` | boolean | no | `true` | Discover current design references and feed them to generation. |
+| `image_model` | text | no | newest available image model | Image model for design reference images, as `provider/id` (for example `openai-images/gpt-image-2.6-flare`). Overrides the automatic choice. |
 
 The workflow establishes or loads project design context, extracts user-provided references, can browse curated galleries, writes one live `preview.html`, and exports an HTML spec and implementation handoff after the review session. Browser-backed preview and review use the `agent-browser` skill when available. Research context moves between stages as artifact files rather than inline prompt payloads: the composed project design context is written to `<artifact_dir>/design-context.md` and the curated references brief to `<artifact_dir>/references.md`; `reference-discovery`, `generate-1`, and `exporter` read the required files via `reads` with explicit read instructions.
+
+**Reference images.** When an image model is available, the workflow renders three design reference images after reference discovery and before generation: one per visual direction (reference-led, brand-forward, and information-dense), prompted from the confirmed brief, `PRODUCT.md`, `DESIGN.md`, and the curated references, at high quality. They are written to `<artifact_dir>/references/`. `generate-1` reads them and matches the direction that best fits the brief; the run-level gate and the session-start stage list each image with its `file://` URL; and the exporter adds a "Design References" section to `spec.html` that links the images by relative path, so keep `spec.html` next to its `references/` folder when you move it.
+
+The workflow picks the newest available GPT Image model first (`openai-images/gpt-image-2.6-flare`, then `gpt-image-2.6-sunburst`, then older GPT Image versions in descending order), so newer releases win automatically, and then other image providers such as OpenRouter. Pass `image_model` to choose a model yourself; if it does not name an available model, the images are skipped instead of falling back to another one. Models come from Atomic's built-in image providers and the credentials you saved: an OpenAI API key enables the `openai-images` models and an OpenRouter key enables OpenRouter's image models. A ChatGPT sign-in cannot call the Images API, and image models added through `models.json` or an extension are not used. Each run with an image model makes three image requests billed to that provider account.
+
+With no image model, or when generation fails (moderation, quota, rate limit, timeout, and so on), the run continues exactly as it would without images and shows no warning. The `reference_images_status` output records what happened: `status` (`skipped`, `generated`, or `failed`), the `reason`, the `model` used, the image `paths`, and `retryable` for a failure the provider classified. For a classified failure the `reason` is the provider's error code, such as `moderation-blocked`, `quota-exceeded`, `rate-limited`, or `timeout`; otherwise it is `no-image-model`, `image-model-unavailable`, `unclassified`, `no-images-written`, `write-failed`, `unexpected-error`, or `tool-failed`.
 
 **The run-level gate.** The browser review is a long-poll, not an `awaiting_input` graph node, so the run first pauses at a deterministic prompt that names the preview path and `file://` URL. Answer `Start live review` to open the browser session — the session-start stage prints the live `http://` review URL in its first lines of output, visible via `/workflow connect <run-id>` — or `Skip remaining review rounds and export as-is` to export the current preview without opening a session. In headless runs the gate is skipped.
 
@@ -224,11 +231,12 @@ The workflow uses Atomic's bundled live-review helper, not a project-vendored co
 
 **Ending the review is the user's job.** The session waits through any amount of silence — a poll timeout is not an ending — so the run advances only when the user clicks exit in the Impeccable overlay, closes the browser tab, or says `exit live`. The run-level gate says so before the session opens, and the session-start stage prints it again directly under the live review URL. Ending the session exports the design as it then stands: there is no further round and no confirmation step.
 
-No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `agent_browser_status`. It has no implicit `result` output.
+No `<artifact_dir>/feedback/` directory, JSON record, Markdown copy, or annotated-snapshot copy is written. The declared outputs are `output_type`, `design_system`, `artifact`, `handoff`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, `agent_browser_status`, and `reference_images_status`. It has no implicit `result` output.
 
 ```text
 /workflow open-claude-design prompt="Refresh the settings page hierarchy"
 /workflow open-claude-design prompt="Design a marketing landing page" discover_references=false
+/workflow open-claude-design prompt="Design a pricing page" image_model=openai-images/gpt-image-2.6-flare
 ```
 
 ### Launching with natural language

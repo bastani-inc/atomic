@@ -25,6 +25,7 @@ import type {
 	WorkflowTaskResult,
 	WorkflowTaskStep,
 	WorkflowToolContext,
+	WorkflowToolOptions,
 	WorkflowUIContext,
 } from "../../packages/workflows/src/shared/types.js";
 
@@ -57,6 +58,8 @@ export interface MockCalls {
 	readonly prompts: Record<string, string[]>;
 	readonly taskOptions: Record<string, WorkflowTaskOptions[]>;
 	readonly tool: string[];
+	readonly toolArgs: Record<string, Readonly<Record<string, WorkflowSerializableValue>>[]>;
+	readonly toolOptions: Record<string, (WorkflowToolOptions | undefined)[]>;
 	readonly uiSelects: { message: string; options: readonly string[] }[];
 }
 
@@ -91,7 +94,7 @@ interface MockResponders {
 	) => Promise<WorkflowTaskResult[] | undefined> | WorkflowTaskResult[] | undefined;
 	omitParallelResults?: readonly string[];
 	skipOutputWrites?: readonly string[];
-	/** Override a ctx.tool call, e.g. to replay a durably cached value. */
+	/** Override a ctx.tool call, e.g. to replay a durably cached value. A `failureMode: "return"` call receives the value as returned, so supply its outcome. */
 	tool?: (
 		name: string,
 		args: Readonly<Record<string, WorkflowSerializableValue>>,
@@ -155,6 +158,8 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 		prompts: {},
 		taskOptions: {},
 		tool: [],
+		toolArgs: {},
+		toolOptions: {},
 		uiSelects: [],
 	};
 
@@ -260,8 +265,11 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 			name: string,
 			args: Readonly<Record<string, WorkflowSerializableValue>>,
 			fn: (toolCtx: WorkflowToolContext) => Promise<T>,
+			options?: WorkflowToolOptions,
 		): Promise<T> => {
 			calls.tool.push(name);
+			calls.toolArgs[name] = [...(calls.toolArgs[name] ?? []), args];
+			calls.toolOptions[name] = [...(calls.toolOptions[name] ?? []), options];
 			const override = responders.tool?.(name, args, calls);
 			if (override !== undefined) return override as T;
 			// open-claude-design's review loop polls the impeccable live helper
@@ -270,6 +278,24 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
 			// supplies its own events and every other test sees an ended session.
 			if (name.startsWith("live-poll-")) return { type: "exit", raw: '{"type":"exit"}' } as unknown as T;
 			if (name.startsWith("live-reply-")) return { code: 0, stdout: "", stderr: "" } as unknown as T;
+			if (options?.failureMode === "return") {
+				try {
+					return {
+						ok: true,
+						value: await fn({ signal: new AbortController().signal }),
+						attempts: 1,
+						cached: false,
+					} as unknown as T;
+				} catch (error) {
+					const failure = error instanceof Error ? error : new Error(String(error));
+					return {
+						ok: false,
+						error: { name: failure.name, message: failure.message },
+						attempts: 1,
+						cached: false,
+					} as unknown as T;
+				}
+			}
 			return fn({ signal: new AbortController().signal });
 		},
 		subscribe: (source) => {

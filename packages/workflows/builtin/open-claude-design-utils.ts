@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { Type } from "typebox";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
@@ -99,6 +99,15 @@ export function discoveryDecisionFromResult(
     output_type: normalizeOutputType(decision?.output_type),
     references,
   };
+}
+
+export function referenceImageFileUrl(path: string): string {
+  return `file://${path}`;
+}
+
+/** Path of an image relative to the spec file, with URL separators. */
+export function referenceImageRelativeSrc(specPath: string, imagePath: string): string {
+  return relative(dirname(specPath), imagePath).split(sep).join("/");
 }
 
 export function joinResults(results: readonly WorkflowTaskResult[]): string {

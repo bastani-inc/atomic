@@ -67,6 +67,25 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(target).not.toBe(aliases["@bastani/pi-ai"]);
 	});
 
+	it("shares the image provider catalog with binary extensions and workflow workers (#4590)", async () => {
+		const modules = await extensionLoaderTestHooks.loadVirtualModules();
+		const providers = await import("@bastani/pi-ai/providers/all");
+		const { getWorkflowHostModules } = await import("../src/core/extensions/loader-host-modules.js");
+		const workflowModules = await getWorkflowHostModules();
+		assert.equal(modules["@bastani/pi-ai/providers/all"], providers);
+		assert.equal(workflowModules["@bastani/pi-ai/providers/all"], providers);
+		const { createBrokerHostModulePlugin } = await import("../src/bun/internal-intercom-broker.js");
+		const { WORKER_HOST_MODULE_SPECIFIERS } = await import("../src/bun/internal-workflow-worker.js");
+		const registered = new Map<string, () => Promise<{ exports: object; loader: "object" }>>();
+		createBrokerHostModulePlugin(
+			async () => ({ loadHostModule: async (specifier) => modules[specifier]! }),
+			WORKER_HOST_MODULE_SPECIFIERS,
+		).setup({ module: (specifier, callback) => registered.set(specifier, callback) });
+		const loadProviderCatalog = registered.get("@bastani/pi-ai/providers/all");
+		assert.ok(loadProviderCatalog);
+		assert.equal((await loadProviderCatalog()).exports, providers);
+	});
+
 	it("registers provider environment helpers for binary extension imports", async () => {
 		// #3129: binaries use virtual modules instead of the filesystem aliases.
 		const modules = await extensionLoaderTestHooks.loadVirtualModules();

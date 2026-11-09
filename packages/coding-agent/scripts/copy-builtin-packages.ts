@@ -77,6 +77,7 @@ const HOST_PROVIDED_EXTERNALS = [
 	"@bastani/pi-ai",
 	"@bastani/pi-ai/compat",
 	"@bastani/pi-ai/oauth",
+	"@bastani/pi-ai/providers/all",
 	"@bastani/pi-ai/api/cloudflare-gateway-binding",
 	"@earendil-works/*",
 	"@mariozechner/*",
