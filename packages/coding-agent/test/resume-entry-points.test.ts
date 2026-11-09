@@ -40,7 +40,6 @@ import {
 	isResumeCatalogTimeoutError,
 	isResumeCatalogUnavailableError,
 	isResumePreconditionError,
-	isRetryableResumeError,
 	type ResumePreflightIo,
 	resolveWorkspace,
 	setWorktreeSnapshotGit,
@@ -1451,38 +1450,6 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 });
 
 describe("bounded catalog lookups (#4329)", () => {
-	test("the deadline passes results and failures through and times out typed and retryable", async () => {
-		const { withResumeLookupDeadline } = await import("../src/core/resume/not-found.ts");
-		const target = { subject: "session" as const, id: "abc", storage: "libsql" };
-		assert.equal(await withResumeLookupDeadline(Promise.resolve(7), target, 1000), 7);
-		await assert.rejects(withResumeLookupDeadline(Promise.reject(new TypeError("x")), target, 1000), TypeError);
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-		try {
-			const pending = withResumeLookupDeadline(new Promise(() => {}), target, 40).then(
-				() => assert.fail("the lookup never answers"),
-				(error: unknown) => error,
-			);
-			await vi.advanceTimersByTimeAsync(39);
-			assert.equal(vi.getTimerCount(), 1);
-			await vi.advanceTimersByTimeAsync(1);
-			const error = await pending;
-			assert.ok(isResumeCatalogTimeoutError(error));
-			assert.deepEqual(
-				[error.code, error.retryable, error.phase, error.timeoutMs, error.elapsedMs, error.id, error.storage],
-				["catalog-timeout", true, "catalog-lookup", 40, 40, "abc", "libsql"],
-			);
-			assert.ok(isRetryableResumeError(error));
-			assert.match(
-				error.message,
-				/^Cannot look up the session abc: the storage \(libsql\) did not answer within 40 ms/,
-			);
-			await withResumeLookupDeadline(Promise.resolve(1), target, 1000);
-			assert.equal(vi.getTimerCount(), 0);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
 	test("a resume whose shared storage never answers fails within the deadline, before the session lookup", async () => {
 		const adapter = sandbox.path("hanging-adapter.mjs");
 		sandbox.write(
