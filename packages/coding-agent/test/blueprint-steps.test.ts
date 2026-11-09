@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import {
 	closeSync,
 	existsSync,
@@ -16,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import type { ActionFetcher } from "../src/core/resume/blueprint/actions.ts";
-import { bashPath } from "../src/core/resume/blueprint/envrc.ts";
+import { bashPath, evaluateEnvrc } from "../src/core/resume/blueprint/envrc.ts";
 import {
 	type BlueprintSection,
 	BlueprintStepFailedError,
@@ -32,7 +31,7 @@ import {
 	type StepContext,
 } from "../src/core/resume/blueprint/steps.ts";
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
-import { getShellConfig, type ShellConfig } from "../src/utils/shell.ts";
+import type { ShellConfig } from "../src/utils/shell.ts";
 import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
 
@@ -433,12 +432,8 @@ describe("uses steps (#4588)", () => {
 		assert.ok(log.includes("# step: Use it (2/2)\n"));
 		assert.ok(log.includes(`# cwd: ${path("repo")}\n# command:\nuses github.com/acme/hello@v1\n# --- output ---\n`));
 		assert.ok(log.endsWith("\n# exit status 0\n"));
-		const exported = spawnSync(
-			getShellConfig().shell,
-			["-c", 'set -a; . "$1"; set +a; printenv EXPORTED', "bash", bashPath(path("build.envrc"))],
-			{ encoding: "utf8" },
-		);
-		assert.equal(exported.stdout, "from-action\n");
+		const exported = await evaluateEnvrc(path("build.envrc"), process.env);
+		assert.equal(exported.EXPORTED, "from-action");
 	});
 
 	test("a uses step that cannot run is a typed failure with its location and the cause, and its log says why (#4588)", async () => {
