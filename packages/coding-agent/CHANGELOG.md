@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `atomic --session <id>` refusing to resume with `setup-hook-missing` when a checkout other than the one the session runs in was missing or changed, for example a sibling worktree or a `/tmp` probe worktree a workflow stage used, although the current checkout was unchanged. Only the checkout the session's working directory is in can now stop a resume: a changed checkout the session worked in on this machine continues as it is, and another checkout that cannot be restored (no Git, no setup hook, a failed restore or a failed hook) is left out with a warning that names its path and why. When the current checkout cannot be restored, `ResumePreconditionError` lists every unmet piece of every checkout the resume would restore, and each `problems[]` entry names its checkout in the new optional `checkout` field ([#4584](https://github.com/bastani-inc/atomic/issues/4584))
+
 ## [0.9.74] - 2026-11-09
 
 Compaction keeps more of your session verbatim and can recall what it removed.

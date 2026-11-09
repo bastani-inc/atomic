@@ -47,7 +47,8 @@ export type ResumeEntryPoint = "cli" | "switch-session" | "create-agent-session"
 
 /**
  * One unmet precondition: `subject` names the adapter, variable, file or hook (never a secret value), `why` says
- * what this resume needs it for, and `fix` is the command or setting that supplies it.
+ * what this resume needs it for, and `fix` is the command or setting that supplies it. `checkout` is the recorded
+ * checkout path a precondition of restoring that checkout belongs to; problems that apply to the whole resume omit it.
  */
 export type ResumePreconditionProblemCode =
 	| "adapter-not-installed"
@@ -60,6 +61,7 @@ export interface ResumePreconditionProblem {
 	readonly subject: string;
 	readonly why: string;
 	readonly fix: string;
+	readonly checkout?: string;
 }
 
 /**
@@ -134,7 +136,7 @@ export class ResumePreconditionError extends ResumeError {
 		super(
 			"preconditions-unmet",
 			`Cannot resume here: ${fields.problems.map((problem) => `${problem.subject} (${problem.code}): ${problem.why}`).join("; ")}`,
-			fields.problems.map((problem) => problem.fix).join(" Then: "),
+			[...new Set(fields.problems.map((problem) => problem.fix))].join(" Then: "),
 			{ entryPoint: fields.entryPoint, problems: fields.problems.map((problem) => ({ ...problem })) },
 			cause,
 		);

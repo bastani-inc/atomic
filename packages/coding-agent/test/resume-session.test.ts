@@ -1565,55 +1565,26 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.equal(setupRuns(), 1);
 	});
 
-	test("a missing setup hook for any checkout to restore is reported before anything is restored", async () => {
-		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "no lockfile here\n" });
-		const { second, manager } = await twoCheckoutSession(clone);
-		renameSync(clone, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
-		const io = new CountingGitIo();
-
-		await assert.rejects(
-			prepareSessionResume(manager, options({ io, setup: { command: undefined, trusted: () => false } })),
-			(error: unknown) => {
-				assert.ok(error instanceof ResumePreconditionError);
-				assert.deepEqual(
-					error.problems.map((problem) => problem.code),
-					["setup-hook-missing"],
-				);
-				return true;
-			},
-		);
-		assert.equal(io.probes, 1);
-		assert.deepEqual(manager.getWorktreeRootMappings(), []);
-		assert.equal(existsSync(sandbox.path("host")), false);
-	});
-
-	test("a hook missing for both checkouts is one problem, and one found missing after restoring removes both worktrees", async () => {
+	test("a setup hook found missing after restoring the checkout the session runs in removes its worktree, and nothing else is restored", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
 		renameSync(clone, sandbox.path("first-gone"));
 		renameSync(second, sandbox.path("second-gone"));
 
 		await assert.rejects(
-			prepareSessionResume(manager, options({ setup: { command: undefined, trusted: () => false } })),
-			(error: unknown) => {
-				assert.ok(error instanceof ResumePreconditionError);
-				assert.deepEqual(
-					error.problems.map((problem) => problem.code),
-					["setup-hook-missing"],
-				);
-				return true;
-			},
-		);
-		await assert.rejects(
 			prepareSessionResume(manager, options({ setup: { command: undefined, trusted: () => true } })),
-			ResumePreconditionError,
+			(error: unknown) =>
+				error instanceof ResumePreconditionError &&
+				error.problems.every((problem) => problem.code === "setup-hook-missing") &&
+				error.problems[0]?.checkout === clone &&
+				error.problems[0].subject.endsWith(" (the checkout the session runs in)"),
 		);
+
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
 	});
 
-	test("continuing in a matching checkout records nothing when the restore of another checkout cannot start", async () => {
+	test("continuing in a matching checkout leaves out another checkout whose restore cannot start (#4584)", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
 		const checkout = sandbox.path("node-b", "repo");
@@ -1621,19 +1592,22 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		renameSync(clone, checkout);
 		renameSync(second, sandbox.path("second-gone"));
 
-		await assert.rejects(
-			prepareSessionResume(
-				manager,
-				options({ launchCwd: checkout, setup: { command: undefined, trusted: () => false } }),
-			),
-			(error: unknown) =>
-				error instanceof ResumePreconditionError && error.problems[0]?.code === "setup-hook-missing",
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ launchCwd: checkout, setup: { command: undefined, trusted: () => false } }),
 		);
 
-		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(cwdOf(prepared), checkout);
+		assert.deepEqual(
+			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
+			[clone],
+		);
+		const warnings =
+			prepared.status === "ready" ? prepared.notices.filter((notice) => notice.type === "warning") : [];
+		assert.equal(warnings.filter((notice) => notice.message.includes(second)).length, 1);
 	});
 
-	test("continuing in a matching checkout records nothing when the restore of another checkout fails", async () => {
+	test("continuing in a matching checkout leaves out another checkout whose restore fails (#4584)", async () => {
 		const { clone } = await editedClone();
 		const { clone: keyed } = await sandbox.remoteWithClone("keyed", { "README.md": "keyed\n" });
 		sandbox.write(join(keyed, "deploy.key"), "PRIVATE\n");
@@ -1650,14 +1624,16 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		renameSync(clone, checkout);
 		renameSync(keyed, sandbox.path("keyed-gone"));
 
-		const error = await prepareSessionResume(manager, options({ launchCwd: checkout })).then(
-			() => assert.fail("the second restore must fail"),
-			(failure: Error) => failure,
-		);
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout }));
 
-		assert.ok(isWorkspaceDriftError(error));
-		assert.equal(error.restoreCode, "commits-unavailable");
-		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(cwdOf(prepared), checkout);
+		assert.deepEqual(
+			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
+			[clone],
+		);
+		const warnings =
+			prepared.status === "ready" ? prepared.notices.filter((notice) => notice.type === "warning") : [];
+		assert.equal(warnings.filter((notice) => notice.message.includes(keyed)).length, 1);
 	});
 
 	test("a matching checkout needs no setup hook of its own while another checkout without dependency inputs is restored", async () => {
@@ -1746,7 +1722,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 			warnings.map((notice) => notice.message),
 			[
 				`Resuming in ${checkout}, which differs from snapshot ${manager.getLatestWorktreeSnapshots().get(clone)!.id.slice(0, 12)} of ${clone}`,
-				`Continuing without restoring ${second}, which this session also recorded`,
+				`Continuing without restoring ${second} (snapshot ${manager.getLatestWorktreeSnapshots().get(second)!.id.slice(0, 12)}): it does not exist on this node, and the session continues in the checkout you chose, which restores nothing else`,
 			],
 		);
 	});
@@ -1784,5 +1760,639 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 			);
 			return true;
 		});
+	});
+});
+
+const noSetup = (trusted: (path: string) => boolean = () => false) => ({ command: undefined, trusted });
+
+/** Records a snapshot of a further clone `name` with an edited README, as a second checkout of `manager`'s session. */
+async function recordOtherCheckout(
+	manager: SessionManager,
+	name: string,
+	files: Record<string, string> = { "README.md": `${name}\n`, "Cargo.lock": "# lock\n" },
+): Promise<string> {
+	const { clone } = await sandbox.remoteWithClone(name, files);
+	sandbox.write(join(clone, "README.md"), `edited in ${name}\n`);
+	const capture = await captureWorktreeSnapshot(clone, {
+		settings,
+		blobs: manager.getSessionStore().snapshotBlobs,
+	});
+	if (capture.status !== "captured") throw new Error(capture.status);
+	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	return clone;
+}
+
+function warningsOf(prepared: PreparedSessionResume): string[] {
+	return prepared.status === "ready"
+		? prepared.notices.filter((notice) => notice.type === "warning").map((notice) => notice.message)
+		: [];
+}
+
+function restoredWorktrees(): string[] {
+	const worktrees = sandbox.path("host", "worktrees");
+	return existsSync(worktrees) ? readdirSync(worktrees) : [];
+}
+
+function warningsNaming(prepared: PreparedSessionResume, root: string): string[] {
+	return warningsOf(prepared).filter((message) => message.includes(root));
+}
+
+/** An outer clone and, inside it, a nested clone of another repository, each with an edited README and `files`. */
+async function nestedCheckouts(outerFiles: Record<string, string>, innerFiles: Record<string, string>) {
+	const { clone: outer } = await sandbox.remoteWithClone("outer", { "README.md": "outer\n", ...outerFiles });
+	const { remote } = await sandbox.remoteWithClone("inner-source", { "README.md": "inner\n", ...innerFiles });
+	const inner = join(outer, "inner");
+	await sandbox.git(sandbox.root, "clone", "-q", remote, inner);
+	for (const checkout of [outer, inner]) sandbox.write(join(checkout, "README.md"), "edited\n");
+	return { outer, inner };
+}
+
+/** A session that works in `inner`, a checkout nested in `outer`, and recorded a snapshot of both. */
+async function recordNestedSession(outer: string, inner: string): Promise<SessionManager> {
+	const manager = await recordSession(inner);
+	const capture = await captureWorktreeSnapshot(outer, { settings, blobs: manager.getSessionStore().snapshotBlobs });
+	if (capture.status !== "captured") throw new Error(capture.status);
+	await manager.appendWorktreeSnapshot(outer, capture.snapshot.id, capture.snapshot);
+	return manager;
+}
+
+describe("prepareSessionResume when a checkout other than the current one needs a restore (#4584)", () => {
+	test("an unchanged current checkout resumes when another recorded checkout is gone and no setup hook exists (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup() }));
+
+		assert.equal(prepared.status, "ready");
+		assert.equal(prepared.status === "ready" ? prepared.sessionManager : undefined, manager);
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("host")), false);
+		assert.equal(setupRuns(), 0);
+		const warnings = warningsNaming(prepared, second);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.equal(warningsOf(prepared).length, 1);
+		assert.ok(warnings[0]!.includes(manager.getLatestWorktreeSnapshots().get(second)!.id.slice(0, 12)), warnings[0]);
+		assert.match(warnings[0]!, /does not exist on this node/);
+		assert.match(warnings[0]!, /resume\.setupCommand/);
+	});
+
+	test("an unchanged current checkout resumes when another recorded checkout changed since its snapshot, leaving it as it is (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		sandbox.write(join(second, "README.md"), "changed after the snapshot\n");
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("host")), false);
+		assert.equal(setupRuns(), 0);
+		assert.equal(readFileSync(join(second, "README.md"), "utf8"), "changed after the snapshot\n");
+		assert.equal(warningsOf(prepared).length, 1);
+		assert.equal(warningsNaming(prepared, second).length, 1);
+		assert.match(warningsOf(prepared)[0]!, /changed since/);
+	});
+
+	test("sibling git worktrees that were changed or removed after quitting never refuse the resume (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const siblings = [sandbox.path("repo-slice-changed"), sandbox.path("repo-slice-removed")];
+		for (const [index, sibling] of siblings.entries()) {
+			await sandbox.git(clone, "worktree", "add", "-q", "-b", `slice-${index}`, sibling);
+			sandbox.write(join(sibling, "slice.txt"), `slice ${index}\n`);
+			const capture = await captureWorktreeSnapshot(sibling, {
+				settings,
+				blobs: manager.getSessionStore().snapshotBlobs,
+			});
+			if (capture.status !== "captured") throw new Error(capture.status);
+			await manager.appendWorktreeSnapshot(sibling, capture.snapshot.id, capture.snapshot);
+		}
+		sandbox.write(join(siblings[0]!, "slice.txt"), "changed after quitting\n");
+		await sandbox.git(clone, "worktree", "remove", "--force", siblings[1]!);
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(setupRuns(), 0);
+		assert.equal(readFileSync(join(siblings[0]!, "slice.txt"), "utf8"), "changed after quitting\n");
+		assert.deepEqual(
+			siblings.map((sibling) => warningsNaming(prepared, sibling).length),
+			[1, 1],
+		);
+		assert.equal(warningsOf(prepared).length, 2);
+	});
+
+	test("every other checkout that cannot be restored is named once in the warnings (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const removed = await recordOtherCheckout(manager, "removed");
+		const alsoRemoved = await recordOtherCheckout(manager, "also-removed");
+		const changed = await recordOtherCheckout(manager, "changed");
+		renameSync(removed, sandbox.path("removed-gone"));
+		renameSync(alsoRemoved, sandbox.path("also-removed-gone"));
+		sandbox.write(join(changed, "README.md"), "changed after the snapshot\n");
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(
+			[removed, alsoRemoved, changed].map((root) => warningsNaming(prepared, root).length),
+			[1, 1, 1],
+		);
+		assert.equal(warningsOf(prepared).length, 3);
+		assert.equal(setupRuns(), 0);
+	});
+
+	test("a checkout the session runs in that cannot be restored refuses the resume and every checkout's problem is listed (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(clone, sandbox.path("first-gone"));
+		renameSync(second, sandbox.path("second-gone"));
+		const io = new CountingGitIo();
+
+		await assert.rejects(prepareSessionResume(manager, options({ io, setup: noSetup() })), (error: unknown) => {
+			assert.ok(error instanceof ResumePreconditionError);
+			assert.deepEqual(
+				error.problems.map((problem) => [problem.code, problem.checkout]),
+				[
+					["setup-hook-missing", clone],
+					["setup-hook-missing", second],
+				],
+			);
+			assert.equal(error.problems[0]!.subject, `setup hook for ${clone} (the checkout the session runs in)`);
+			assert.equal(error.problems[1]!.subject, `setup hook for ${second}`);
+			assert.equal(error.hint.split(" Then: ").length, 1);
+			return true;
+		});
+		assert.equal(io.probes, 1);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("host")), false);
+	});
+
+	test("a missing Git is reported together with each checkout's missing setup hook (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(clone, sandbox.path("first-gone"));
+		renameSync(second, sandbox.path("second-gone"));
+		const io = new CountingGitIo(missingGit());
+
+		await assert.rejects(prepareSessionResume(manager, options({ io, setup: noSetup() })), (error: unknown) => {
+			assert.ok(error instanceof ResumePreconditionError);
+			assert.deepEqual(
+				error.problems.map((problem) => [problem.code, problem.checkout]),
+				[
+					["git-unavailable", undefined],
+					["setup-hook-missing", clone],
+					["setup-hook-missing", second],
+				],
+			);
+			assert.ok(isGitUnavailableError(error.cause));
+			return true;
+		});
+		assert.equal(io.probes, 1);
+	});
+
+	test("a missing setup hook for a checkout other than the one the session runs in is a warning, not a refusal (#4584)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "no lockfile here\n" });
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(clone, sandbox.path("first-gone"));
+		renameSync(second, sandbox.path("second-gone"));
+
+		const prepared = await prepareSessionResume(manager, options({ setup: noSetup() }));
+
+		assert.ok(cwdOf(prepared)?.startsWith(sandbox.path("host", "worktrees")), cwdOf(prepared));
+		assert.deepEqual(
+			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
+			[clone],
+		);
+		assert.equal(setupRuns(), 0);
+		assert.equal(warningsNaming(prepared, second).length, 1, warningsOf(prepared).join("\n"));
+	});
+
+	test("without Git a checkout other than the current one is skipped with the reason named (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ io: new CountingGitIo(missingGit()), launchCwd: clone }),
+		);
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("host")), false);
+		assert.equal(setupRuns(), 0);
+		const warnings = warningsNaming(prepared, second);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.match(warnings[0]!, /Git is unavailable here \(not-installed\)/);
+	});
+
+	test("a session that works outside every recorded checkout has no checkout whose restore can refuse the resume (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone, sandbox.root);
+		renameSync(clone, sandbox.path("first-gone"));
+
+		const prepared = await prepareSessionResume(manager, options({ setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), sandbox.root);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(warningsNaming(prepared, clone).length, 1);
+	});
+
+	test("a trusted restore of another checkout whose repository has no setup hook is removed again and skipped (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup(() => true) }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.deepEqual(restoredWorktrees(), []);
+		const warnings = warningsNaming(prepared, second);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.match(warnings[0]!, /\.atomic\/setup/);
+	});
+
+	test("a restore of another checkout that fails is skipped with its failure named, and the resume goes on (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const { clone: keyed } = await sandbox.remoteWithClone("keyed", { "README.md": "keyed\n" });
+		sandbox.write(join(keyed, "deploy.key"), "PRIVATE\n");
+		await sandbox.commitAll(keyed, "unpushed key");
+		const capture = await captureWorktreeSnapshot(keyed, {
+			settings,
+			blobs: manager.getSessionStore().snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(keyed, capture.snapshot.id, capture.snapshot);
+		renameSync(keyed, sandbox.path("keyed-gone"));
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.deepEqual(restoredWorktrees(), []);
+		const warnings = warningsNaming(prepared, keyed);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.match(warnings[0]!, /restoring it failed/);
+	});
+
+	test("a setup hook that fails in a restored checkout other than the current one is a warning, and the next resume runs it again (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ launchCwd: clone, setup: { command: nodeCommand("process.exit(3)"), trusted: () => false } }),
+		);
+
+		assert.equal(cwdOf(prepared), clone);
+		const restored = manager.getWorktreeRootMappings().map((mapping) => [resolve(mapping.from), mapping.to]);
+		assert.deepEqual(
+			restored.map(([from]) => from),
+			[second],
+		);
+		const warnings = warningsNaming(prepared, second);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.match(warnings[0]!, /setup-hook-failed/);
+		const restoredAt = manager.getWorktreeRootMappings().at(-1)!.to;
+		const snapshotId = manager.getLatestWorktreeSnapshots().get(second)!.id.slice(0, 12);
+		assert.ok(
+			warnings[0]!.startsWith(
+				`Continuing without the setup hook in ${restoredAt}, restored for ${second} (snapshot ${snapshotId}): `,
+			),
+			warnings[0],
+		);
+
+		const again = await prepareSessionResume(manager, options({ launchCwd: clone }));
+
+		assert.equal(cwdOf(again), clone);
+		assert.equal(setupRuns(), 1);
+		assert.deepEqual(warningsOf(again), []);
+	});
+
+	test("each other checkout whose setup hook fails is named with its own recorded path (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		const third = await recordOtherCheckout(manager, "third");
+		renameSync(second, sandbox.path("second-gone"));
+		renameSync(third, sandbox.path("third-gone"));
+
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ launchCwd: clone, setup: { command: nodeCommand("process.exit(3)"), trusted: () => false } }),
+		);
+
+		assert.equal(cwdOf(prepared), clone);
+		for (const root of [second, third]) {
+			const warnings = warningsNaming(prepared, root).filter((message) => message.includes("setup hook"));
+			assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+			assert.ok(warnings[0]!.includes(`, restored for ${root} (snapshot `), warnings[0]);
+		}
+	});
+
+	test("another clone at the recorded path of another checkout is left out with its mismatch named when no setup hook exists (#4584)", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-original"));
+		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("second.git"), second);
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(readFileSync(join(second, "README.md"), "utf8"), "second\n");
+		const warnings = warningsNaming(prepared, second);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.match(warnings[0]!, /it no longer matches the snapshot, and the snapshot has dependency inputs/);
+	});
+
+	test("only the nested checkout whose setup hook is missing is named when the checkouts containing the session's directory are gone (#4584)", async () => {
+		const { outer, inner } = await nestedCheckouts({ "README.md": "outer\n" }, { "package-lock.json": "{}\n" });
+		const manager = await recordNestedSession(outer, inner);
+		renameSync(outer, sandbox.path("outer-gone"));
+
+		await assert.rejects(prepareSessionResume(manager, options({ setup: noSetup() })), (error: unknown) => {
+			assert.ok(error instanceof ResumePreconditionError);
+			assert.deepEqual(
+				error.problems.map((problem) => [problem.code, problem.checkout]),
+				[["setup-hook-missing", inner]],
+			);
+			return true;
+		});
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("host")), false);
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"another checkout that Git fails to compare is skipped with its typed failure named (#4584)",
+		async () => {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone);
+			const second = await recordOtherCheckout(manager, "second");
+			sandbox.write(join(second, "README.md"), "changed after the snapshot\n");
+			chmodSync(join(second, "README.md"), 0o000);
+			cleanups.push(() => chmodSync(join(second, "README.md"), 0o644));
+
+			const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: noSetup() }));
+
+			assert.equal(cwdOf(prepared), clone);
+			assert.deepEqual(manager.getWorktreeRootMappings(), []);
+			const warnings = warningsNaming(prepared, second);
+			assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+			assert.match(warnings[0]!, /could not be compared with the snapshot/);
+			assert.match(warnings[0]!, /\(git-failed\)/);
+		},
+	);
+});
+
+describe("prepareSessionResume cases the other-checkout planning leaves as they are", () => {
+	test("a local resume right after quitting needs no Git, no setup hook and shows no warning", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		await recordOtherCheckout(manager, "second");
+		const io = new CountingGitIo();
+
+		const prepared = await prepareSessionResume(manager, options({ io, launchCwd: clone, setup: noSetup() }));
+
+		assert.equal(cwdOf(prepared), clone);
+		assert.equal(io.probes, 0);
+		assert.equal(setupRuns(), 0);
+		assert.equal(existsSync(sandbox.path("host")), false);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.deepEqual(prepared.status === "ready" ? prepared.notices : undefined, []);
+	});
+
+	test("the hook of the checkout the session runs in still refuses the resume when it fails", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		renameSync(clone, sandbox.path("first-gone"));
+
+		await assert.rejects(
+			prepareSessionResume(
+				manager,
+				options({ setup: { command: nodeCommand("process.exit(3)"), trusted: () => false } }),
+			),
+			ResumeSetupHookError,
+		);
+	});
+
+	test("cancelling while another checkout is restored rejects with the reason instead of skipping it", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+		const controller = new AbortController();
+		const pending = prepareSessionResume(
+			manager,
+			options({
+				launchCwd: clone,
+				signal: controller.signal,
+				setup: { command: SLEEPING_COMMAND, trusted: () => false },
+			}),
+		);
+		const logs = sandbox.path("host", "setup-logs");
+		for (let waited = 0; !(existsSync(logs) && readdirSync(logs).length > 0); waited += 50) {
+			if (waited > 20_000) assert.fail("the setup hook never started");
+			await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+		}
+		controller.abort(new Error("stop"));
+
+		await assert.rejects(pending, /stop/);
+	});
+
+	test("another clone at the recorded path of another checkout is restored into a fresh worktree when a setup hook exists", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-original"));
+		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("second.git"), second);
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone }));
+
+		assert.equal(cwdOf(prepared), clone);
+		const mapping = manager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(resolve(mapping.from), second);
+		assert.equal(readFileSync(join(mapping.to, "README.md"), "utf8"), "edited in second\n");
+		assert.equal(readFileSync(join(second, "README.md"), "utf8"), "second\n");
+		assert.equal(setupRuns(), 1);
+	});
+
+	test("a setting that is wrong for every checkout stops the resume also when only another checkout is compared", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		sandbox.write(join(second, "README.md"), "changed after the snapshot\n");
+
+		await assert.rejects(
+			prepareSessionResume(
+				manager,
+				options({ keepInPlace: new Set([clone]), settings: { ...settings, maxFileBytes: -1 } }),
+			),
+			(error: unknown) => (error as { name?: string }).name === "WorkspaceConfigError",
+		);
+	});
+
+	test("a failure that is not a typed one is never read as a problem of another checkout", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		sandbox.write(join(second, "README.md"), "changed after the snapshot\n");
+		const bug = new TypeError("not a typed failure");
+		setWorktreeSnapshotGit(async () => {
+			throw bug;
+		});
+
+		await assert.rejects(
+			prepareSessionResume(manager, options({ keepInPlace: new Set([clone]) })),
+			(error: unknown) => error === bug,
+		);
+	});
+
+	test("cancelling while another checkout is compared rejects with the signal's reason, even when it is a typed failure", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		sandbox.write(join(second, "README.md"), "changed after the snapshot\n");
+		const reason = missingGit();
+		const controller = new AbortController();
+		setWorktreeSnapshotGit(async () => {
+			controller.abort(reason);
+			throw reason;
+		});
+
+		await assert.rejects(
+			prepareSessionResume(manager, options({ keepInPlace: new Set([clone]), signal: controller.signal })),
+			(error: unknown) => error === reason,
+		);
+	});
+
+	test("cancelling while another checkout is restored rejects with the signal's reason, even when it is a typed failure, and removes the worktree", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second", {
+			"README.md": "second\n",
+			"Cargo.lock": "# lock\n",
+			".atomic/setup": "#!/bin/sh\n",
+		});
+		renameSync(second, sandbox.path("second-gone"));
+		const reason = missingGit();
+		const controller = new AbortController();
+		const prospective = sandbox.path("host", "worktrees");
+		const trusted = (worktree: string) => {
+			if (worktree !== prospective) controller.abort(reason);
+			return true;
+		};
+
+		await assert.rejects(
+			prepareSessionResume(
+				manager,
+				options({ launchCwd: clone, signal: controller.signal, setup: noSetup(trusted) }),
+			),
+			(error: unknown) => error === reason,
+		);
+
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"a checkout containing the session's directory that Git fails to compare refuses the resume",
+		async () => {
+			const { outer, inner } = await nestedCheckouts({ "README.md": "outer\n" }, { "README.md": "inner\n" });
+			const manager = await recordNestedSession(outer, inner);
+			chmodSync(join(outer, "README.md"), 0o000);
+			cleanups.push(() => chmodSync(join(outer, "README.md"), 0o644));
+
+			await assert.rejects(prepareSessionResume(manager, options({ setup: noSetup() })), (error: unknown) =>
+				isWorkspaceGitError(error),
+			);
+			assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		},
+	);
+
+	test("a setup ledger that cannot be read stops the resume instead of counting as a missing hook", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const second = await recordOtherCheckout(manager, "second");
+		renameSync(second, sandbox.path("second-gone"));
+		mkdirSync(sandbox.path("host"));
+		writeFileSync(sandbox.path("host", "setup-ledger"), "not a directory");
+
+		await assert.rejects(
+			prepareSessionResume(manager, options({ launchCwd: clone })),
+			(error: unknown) => (error as NodeJS.ErrnoException).code === "ENOTDIR",
+		);
+
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.deepEqual(readdirSync(sandbox.path("host", "worktrees")), []);
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"a hook that ran again but could not be recorded stops the resume instead of being read as a failed hook",
+		async () => {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone);
+			const second = await recordOtherCheckout(manager, "second");
+			renameSync(second, sandbox.path("second-gone"));
+			await prepareSessionResume(
+				manager,
+				options({ launchCwd: clone, setup: { command: nodeCommand("process.exit(3)"), trusted: () => false } }),
+			);
+			const ledger = sandbox.path("host", "setup-ledger");
+			chmodSync(ledger, 0o500);
+			cleanups.push(() => chmodSync(ledger, 0o700));
+
+			await assert.rejects(
+				prepareSessionResume(manager, options({ launchCwd: clone })),
+				(error: unknown) => (error as NodeJS.ErrnoException).code === "EACCES",
+			);
+		},
+	);
+
+	test("a checkout the session recorded inside the worktree store whose hook failed earlier is a warning that names it", async () => {
+		const { clone } = await editedClone();
+		const manager = await recordSession(clone);
+		const stored = await recordOtherCheckout(manager, "host/worktrees/second");
+		const snapshot = manager.getLatestWorktreeSnapshots().get(stored)!;
+		const failing = { command: nodeCommand("process.exit(3)"), trusted: () => false };
+		await assert.rejects(
+			ensureResumeSetup({
+				entryPoint: "cli",
+				worktree: stored,
+				envHash: snapshot.envHash,
+				storeDir: sandbox.path("host"),
+				config: failing,
+			}),
+			ResumeSetupHookError,
+		);
+
+		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone, setup: failing }));
+
+		assert.equal(cwdOf(prepared), clone);
+		const warnings = warningsNaming(prepared, stored);
+		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
+		assert.ok(
+			warnings[0]!.startsWith(
+				`Continuing without the setup hook in ${stored} (snapshot ${snapshot.id.slice(0, 12)}): `,
+			),
+			warnings[0],
+		);
 	});
 });

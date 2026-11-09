@@ -102,6 +102,7 @@ export type ResumePreconditionProblemRootExport = Assert<
 			readonly subject: string;
 			readonly why: string;
 			readonly fix: string;
+			readonly checkout?: string;
 		}
 	>
 >;

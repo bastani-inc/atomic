@@ -81,13 +81,19 @@ test("a rollback of two restored worktrees that both fail keeps both causes toge
 		await store.close();
 		await database.close();
 	});
-	const clones: string[] = [];
-	for (const name of ["first", "second"]) {
-		const { clone } = await sandbox.remoteWithClone(name, { "README.md": `${name}\n`, "package-lock.json": "{}\n" });
-		sandbox.write(join(clone, "README.md"), "edited\n");
-		clones.push(clone);
-	}
-	const manager = await SessionManager.create(store, clones[0]!);
+	const { clone: outer } = await sandbox.remoteWithClone("outer", {
+		"README.md": "outer\n",
+		"package-lock.json": "{}\n",
+	});
+	const { remote } = await sandbox.remoteWithClone("inner-source", {
+		"README.md": "inner\n",
+		"package-lock.json": "{}\n",
+	});
+	const inner = join(outer, "inner");
+	await sandbox.git(sandbox.root, "clone", "-q", remote, inner);
+	const clones = [outer, inner];
+	for (const clone of clones) sandbox.write(join(clone, "README.md"), "edited\n");
+	const manager = await SessionManager.create(store, inner);
 	await manager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
 	for (const clone of clones) {
 		const capture = await captureWorktreeSnapshot(clone, {
@@ -96,8 +102,8 @@ test("a rollback of two restored worktrees that both fail keeps both causes toge
 		});
 		if (capture.status !== "captured") throw new Error(capture.status);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-		renameSync(clone, `${clone}-gone`);
 	}
+	renameSync(outer, sandbox.path("outer-gone"));
 	removal.failure = new Error("worktree is busy");
 
 	const error = await prepareSessionResume(manager, {
@@ -112,7 +118,56 @@ test("a rollback of two restored worktrees that both fail keeps both causes toge
 	);
 
 	assert.ok(error instanceof ResumePreconditionError);
+	assert.deepEqual(
+		error.problems.map((problem) => problem.checkout),
+		clones,
+	);
 	const cause = (error as Error & { cleanupCause?: unknown }).cleanupCause;
 	assert.ok(cause instanceof AggregateError);
 	assert.deepEqual(cause.errors, [removal.failure, removal.failure]);
+});
+
+test("a restore of another checkout whose removal also fails is skipped with both failures named (#4584)", async () => {
+	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	const clones: string[] = [];
+	for (const name of ["current", "other"]) {
+		const { clone } = await sandbox.remoteWithClone(name, { "README.md": `${name}\n`, "package-lock.json": "{}\n" });
+		sandbox.write(join(clone, "README.md"), "edited\n");
+		clones.push(clone);
+	}
+	const manager = await SessionManager.create(store, clones[0]!);
+	await manager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
+	for (const clone of clones) {
+		const capture = await captureWorktreeSnapshot(clone, {
+			settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+			blobs: store.snapshotBlobs,
+		});
+		if (capture.status !== "captured") throw new Error(capture.status);
+		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	}
+	renameSync(clones[1]!, `${clones[1]}-gone`);
+	removal.failure = new Error("worktree is busy");
+
+	const prepared = await prepareSessionResume(manager, {
+		entryPoint: "cli",
+		launchCwd: clones[0]!,
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		storeDir: sandbox.path("host"),
+		setup: { command: undefined, trusted: () => true },
+	});
+
+	assert.equal(prepared.status, "ready");
+	const warnings = prepared.status === "ready" ? prepared.notices.filter((notice) => notice.type === "warning") : [];
+	assert.equal(warnings.length, 1);
+	assert.ok(warnings[0]!.message.includes(clones[1]!), warnings[0]!.message);
+	assert.ok(
+		warnings[0]!.message.endsWith("; removing what it restored also failed: worktree is busy"),
+		warnings[0]!.message,
+	);
+	assert.deepEqual(manager.getWorktreeRootMappings(), []);
 });
