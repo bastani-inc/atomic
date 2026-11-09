@@ -1,6 +1,6 @@
 # GPT-5.5 prompting and migration
 
-Use this reference when targeting `gpt-5.5`. Guidance checked on September 5, 2026 against [OpenAI's GPT-5.5 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.5). Snippets below are adaptations for prompt authors, not verbatim official quotes. Reevaluate legacy prompts against this model; do not assume [GPT-5.6](gpt_5_6.md) or [GPT-6](gpt_6.md) has the same defaults.
+Use this reference when targeting `gpt-5.5`. Guidance checked on November 9, 2026 against [OpenAI's GPT-5.5 guide](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.5). Snippets below are adaptations for prompt authors, not verbatim official quotes. Reevaluate legacy prompts against this model; do not assume [GPT-5.6](gpt_5_6.md) or [GPT-6](gpt_6.md) has the same defaults.
 
 ## When starting or migrating a complex workflow
 
@@ -91,7 +91,7 @@ Caveats: unsupported placeholder text is acceptable only when the user can revie
 
 ## When the task needs validation
 
-Observed behavior: GPT-5.5 benefits from concrete validation instructions, especially in coding, planning, and visual work. Generic “double-check” prompts are weaker than naming the check.
+Observed behavior: GPT-5.5 benefits from concrete validation instructions, especially in coding, planning, and visual work. OpenAI recommends giving it tools to check outputs and, for coding agents, asking for concrete validation commands.
 
 Prompt adjustment: identify relevant checks and what to report when they cannot run.
 

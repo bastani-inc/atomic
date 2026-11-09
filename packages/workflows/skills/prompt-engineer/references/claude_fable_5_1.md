@@ -1,6 +1,6 @@
 # Claude Fable 5.1 prompting
 
-Distilled from [Anthropic's Fable 5.1 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1), checked September 22, 2026. Existing Fable 5 prompts are a useful baseline. The snippets are adaptations, not verbatim source quotations. Select the adjustment for an observed failure rather than appending every example.
+Distilled from [Anthropic's Fable 5.1 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1), checked November 9, 2026. Existing Fable 5 prompts are a useful baseline. The snippets are adaptations, not verbatim source quotations, except where a quotation is marked. Select the adjustment for an observed failure rather than appending every example.
 
 ## When long tool sequences look silent
 
@@ -10,7 +10,7 @@ If the client hides progress output, a prompt cannot fix that. Otherwise remove 
 Before starting, briefly state what you will establish. Report material findings and blockers as you work. Close with a standalone recap of the whole request: what you found, what you changed, what you verified, and what remains open.
 ```
 
-If the interface hides tool results, add: "The user cannot see the full command output. Include any result they need to understand in your reply." Do not claim output is hidden unless that matches the interface.
+If the interface hides tool results, follow each hidden result with a note such as "The user cannot see the full command output. Include any result they need to understand in your reply." Send it as a turn-scoped system message where the host supports one. Do not claim output is hidden unless that matches the interface.
 
 ## When independent calls are issued one at a time
 
@@ -24,10 +24,10 @@ If subagents are already available, add: "While a delegated task runs, continue 
 
 ## When an unattended agent announces work instead of doing it
 
-Only for genuinely unattended execution, make the completion condition explicit. The source emphasizes saying the user is not watching when that is true.
+Only for genuinely unattended execution, make the completion condition explicit. Anthropic says the opening sentence of its block, which tells the model the user is not watching, "carries much of the effect. Keep it as written." The block below keeps that sentence verbatim (the first two sentences) and adapts the rest:
 
 ```text
-You are operating unattended; the user cannot answer routine check-ins. Carry out reversible work already authorized by the request rather than asking whether to begin it. If your last paragraph promises an available next step, take that step instead of ending there. Stop for required approvals, protected access, or a blocking decision. If the user requested analysis rather than a change, the deliverable is the assessment; do not apply a fix.
+You are operating autonomously. The user is not watching in real time and cannot answer questions mid-task, so asking 'Want me to…?' or 'Shall I…?' will block the work. Carry out reversible work already authorized by the request rather than asking whether to begin it. If your last paragraph promises an available next step, take that step instead of ending there. Stop for required approvals, protected access, or a blocking decision. If the user requested analysis rather than a change, the deliverable is the assessment; do not apply a fix.
 ```
 
 Define scope alongside persistence:
@@ -36,7 +36,7 @@ Define scope alongside persistence:
 Deliver the whole requested scope without silently narrowing or expanding it. If one part is blocked, finish independent parts and state exactly what remains and why. Before a state-changing command, verify that the evidence supports that particular action.
 ```
 
-Do not use unattended wording in a human-in-the-loop application. Preserve its required confirmations and the host's lifecycle and budget rules.
+Do not use unattended wording in a human-in-the-loop application. If the product needs specific confirmations, list them right after the opening sentence. The block can also make the model less likely to ask about ambiguous requests; check that trade-off. Preserve the host's lifecycle and budget rules.
 
 ## When a change grows extra features, tests, or rewrites
 
@@ -84,11 +84,11 @@ Give the summarizer an explicit retention contract:
 Preserve the user's requirements, permissions, prohibitions, preferences, and exact identifiers. Record decisions and their reasons, attempted approaches and outcomes, completed work and evidence, unresolved blockers, and the next unfinished steps. Keep hard-to-reconstruct names, paths, numbers, dates, and links exact. Condense prior explanations rather than dropping these constraints.
 ```
 
-The host owns history compaction; the prompt only controls what the summary keeps. Keep earlier turns unchanged, including thinking. To add a turn-scoped reminder, append it after the tool results in the current user message instead of rewriting an earlier copy, so the cached prefix stays valid.
+The host owns history compaction; the prompt only controls what the summary keeps. Keep earlier turns unchanged, including thinking: a thinking block is valid only while everything before it is unchanged, and most such edits also restart the prompt cache. To add a turn-scoped reminder, append a fresh copy instead of rewriting an earlier one. Because cache reads are cheap on Fable 5.1, Anthropic suggests experimenting with later compaction points.
 
 ## When a long deliverable exhausts the output budget
 
-At high effort, a long artifact can run out of output room before it is finished. State the real limit and prioritize the final artifact:
+At `xhigh` and especially `max` effort, the model can draft much of a long deliverable in thinking and then write it again. Anthropic's simplest fix is to run such requests at `high` and move up only where a quality gain is measured. At `xhigh` or `max`, set `max_tokens` to leave room for thinking and the reply, then state the real limit and prioritize the final artifact:
 
 ```text
 This request has a total output allowance of [actual output limit], including thinking and the answer. Reserve room for the complete requested deliverable. Settle its structure and difficult decisions without drafting the entire artifact twice. Return the artifact, not a reconstruction of private reasoning.
@@ -98,7 +98,9 @@ Replace the placeholder with the real limit; a prompt cannot raise it. For dense
 
 ## When legitimate coding work is refused
 
-For false-positive refusals on benign coding tasks, supply documentation for unfamiliar languages or libraries, describe the bug you want fixed, and avoid asking for large encoded outputs such as base64 dumps. These clarify a benign task; they do not bypass safeguards. Do not ask for internal reasoning.
+For false-positive refusals on benign coding tasks, Anthropic names three triggers. Instead of "Does this program compile without errors?", ask "Are there any bugs in this program?" Give documentation or context for lesser-known languages. Remove tools that return base64-encoded data into the model's context. These clarify a benign task; they do not bypass safeguards.
+
+Prompts, skills, and tool descriptions that ask the model to write its reasoning "might be declined with the `reasoning_extraction` category." Ask for a short explanation or a summary of the actions taken instead, or read summarized thinking blocks.
 
 ## Validate the prompt change
 

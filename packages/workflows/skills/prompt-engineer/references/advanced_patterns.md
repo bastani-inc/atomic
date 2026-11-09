@@ -45,7 +45,7 @@ Use programmatic tool calling only for bounded deterministic reduction such as f
 
 Delegate bounded independent work when the expected time or quality benefit exceeds coordination cost. Define ownership, expected evidence, and concurrency limits. Preserve required independent reviews.
 
-Calibrate additional delegation and verification to the target model. Opus 5 often needs redundant self-checking removed; Fable 5's guide recommends periodic independent verification for long work; Astra and Opus 4.8 may need encouragement to delegate. Do not turn any of these tendencies into a blanket rule for every task.
+Calibrate additional delegation and verification to the target model. Opus 5 often needs redundant self-checking removed; Fable 5's guide recommends periodic independent verification for long work; Astra and Opus 4.8 may need encouragement to delegate; Fable 5.2 delegates as much as the harness invites, so review standing delegation lines before adding more. Do not turn any of these tendencies into a blanket rule for every task.
 
 Keep orchestration asynchronous when the harness supports it, synthesize all returned work, and prevent agents from editing the same surface concurrently.
 
@@ -74,7 +74,7 @@ Quote grounding can focus retrieval in noisy inputs. Require only quotes that su
 
 Check the target model's thinking behavior before tuning. Effort names do not guarantee equal reasoning volume across versions. Where thinking shares the output allowance with the visible response, leave room for both. Change effort separately from prompt wording to identify the cause of regressions.
 
-Do not use visible chain-of-thought instructions or private-deliberation tags as a prompting technique. They are obsolete and can trigger Fable 5 safeguards. Ask for an answer supported by evidence, calculations, test results, or a concise decision rationale that does not solicit private deliberation.
+Do not use visible chain-of-thought instructions or private-deliberation tags as a prompting technique. They are obsolete, and on Fable 5.2, 5.1, and 5, Opus 5.5 and 5, and Sonnet 5.5, a prompt that asks the model to write out its reasoning might be declined. Ask for an answer supported by evidence, calculations, test results, or a concise decision rationale that does not solicit private deliberation.
 
 Keep earlier conversation items intact when replaying state. Caching and history-replay rules differ by model; read the model page before changing effort, system instructions, or the replayed prefix.
 

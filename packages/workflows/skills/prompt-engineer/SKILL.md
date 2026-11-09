@@ -30,9 +30,10 @@ Create or revise prompts for the user's target model. Keep the common prompt por
 | --- | --- | --- |
 | GPT-6.1 Sol | `references/gpt_6_1_sol.md` | Supported-effort migration, task and approval contracts, selective Astra-observed templates, tool and conversation compatibility |
 | GPT-6.1 Terra | `references/gpt_6_1_terra.md` | Visual, computer-use, and writing task contracts; start at `medium` effort (`none` supported); same-effort migration from GPT-5.6 Terra; selective Astra-observed templates |
-| GPT-6 Astra, Sol, Luna | `references/gpt_6.md` | OpenAI's official templates for approval pauses, skill-instruction conflicts, writing style, delegation, and verification; Sol/Luna effort sensitivity |
+| GPT-6 Astra, Luna (and existing GPT-6 Sol) | `references/gpt_6.md` | OpenAI's official templates for approval pauses, skill-instruction conflicts, writing style, delegation, and verification; Sol/Luna effort and tool-calling support |
 | GPT-5.6 Sol, Terra, Luna | `references/gpt_5_6.md` | Lean prompts, concise defaults, high-effort and pro-mode prompts, programmatic tool stages, cache-friendly ordering |
 | GPT-5.5 | `references/gpt_5_5.md` | Outcome-first baseline, retrieval limits, grounded drafts, explicit validation |
+| Claude Fable 5.2 (also Mythos 5.2) | `references/claude_fable_5_2.md` | Effort sweep from `high`, finishing long tasks, exact approval rules, code ownership, progress updates, delegation and accumulated caution, carried-over instructions, readable reports, refusals |
 | Claude Fable 5.1 | `references/claude_fable_5_1.md` | Progress visibility, batching, append-only reminders, completion within the output allowance |
 | Claude Fable 5 | `references/claude_fable_5.md` | Long-run completion, grounded progress, task-sized independent verification, refusal handling |
 | Claude Opus 5.5 | `references/claude_opus_5_5.md` | Always-on thinking, progress cadence, bounded unattended continuation, pasted-content boundaries |
@@ -54,6 +55,7 @@ For a migration, read both source and target pages when both are listed. For a c
 - Keep examples only when they improve measured behavior. Ensure they obey the written contract.
 - Require evidence for consequential claims, permit uncertainty, and define what happens when evidence is missing.
 - Request conclusions, evidence, observed behavior, and validation results. Do not ask the model to reconstruct private reasoning in response text.
+- For current Claude models, apply system-prompt and tool changes in new conversations. Mid-conversation changes belong in the newest turn or a mid-conversation system message, not an edited earlier prefix.
 - Calibrate verification and delegation to the model and task. Preserve required checks, real approval gates, and the harness's concurrency and execution rules.
 - Mentioning a tool or capability in a prompt does not provide it. Write prompts only for tools the host actually exposes.
 

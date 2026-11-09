@@ -1,6 +1,6 @@
 # Claude Sonnet 5 prompting
 
-Use this reference for Sonnet 5 effort and thinking behavior, tool triggering, and migration from Sonnet 4.6. Distilled from [Anthropic's Sonnet 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-sonnet-5), checked September 22, 2026. Existing Sonnet 4.6 prompts are a starting point. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
+Use this reference for Sonnet 5 effort and thinking behavior, tool triggering, and migration from Sonnet 4.6. Distilled from [Anthropic's Sonnet 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-sonnet-5), checked November 9, 2026. Existing Sonnet 4.6 prompts are a starting point. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
 
 ## Response length follows perceived complexity
 
@@ -58,7 +58,7 @@ Prose style may shift from a prior model's baseline; re-evaluate an inherited vo
 Use a warm, collaborative tone. Acknowledge the user's framing before answering.
 ```
 
-Sampling settings no longer provide output variety on Sonnet 5, so drive tone and variety through the prompt.
+Sampling settings no longer provide output variety on Sonnet 5: setting `temperature`, `top_p`, or `top_k` at all returns a 400 error. Drive tone and variety through the prompt.
 
 ## Design defaults toward one house style
 

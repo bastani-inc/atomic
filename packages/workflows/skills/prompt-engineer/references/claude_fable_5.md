@@ -1,6 +1,6 @@
 # Claude Fable 5 prompting
 
-Use this reference for long autonomous tasks, progress reliability, delegation, memory, and migration from Opus 4.8. Distilled from [Anthropic's Fable 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5), checked September 22, 2026. Apply model-specific changes to observed failures rather than importing every instruction into every task. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide.
+Use this reference for long autonomous tasks, progress reliability, delegation, memory, and migration from Opus 4.8. Distilled from [Anthropic's Fable 5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5), checked November 9, 2026. Apply model-specific changes to observed failures rather than importing every instruction into every task. The prompt snippets below are adaptations for reuse in your own prompts, not verbatim quotes from Anthropic's guide, except the one labeled as Anthropic's reassurance.
 
 ## Turns run much longer by default
 
@@ -66,8 +66,18 @@ Deep into a long session, Fable 5 can occasionally end a turn with a text-only s
 The user is not watching this unattended run in real time. Continue reversible actions already authorized by the request without routine check-ins. If the next step you describe is available and authorized, take it rather than ending on a promise. Stop when the task is complete, a required approval or budget boundary is reached, or no work can advance without a blocking decision or protected access.
 ```
 
-Bound automatic continuations rather than looping indefinitely on a task that is genuinely stuck; stop after a small number and surface it for review.
+If the harness re-prompts automatically, cap the number of continuations and surface a stuck task for review; that cap is harness policy, not part of Anthropic's guide.
 Use the unattended wording only when it is true; retain interactive approval gates. A task asking only for findings does not authorize a fix.
+
+## Context-budget countdowns trigger handoff offers
+
+In very long sessions the model can occasionally suggest a new session, offer to summarize and hand off, or trim its own work. Anthropic says this is most often triggered when the harness shows a remaining-token countdown. Avoid surfacing context-budget counts where possible. If the harness must show them, Anthropic's reassurance is:
+
+```text
+You have ample context remaining. Do not stop, summarize, or suggest a new session on account of context limits. Continue the work.
+```
+
+Use it only when the statement is true for the host.
 
 ## Delegation scales with explicit ownership, not implicit trust
 
@@ -105,17 +115,9 @@ Between tool calls, when you have content the user must read verbatim, call send
 
 Confirm the host actually implements such a tool before referring to it in a prompt.
 
-## Review filters lose recall on vague severity language
-
-Vague thresholds like "be conservative" can make the model investigate just as thoroughly but withhold findings below that unclear bar. If a downstream stage ranks or filters, tell the discovery stage its job is coverage; give a concrete bar (incorrect behavior, failing test, misleading result) for a single pass, and preserve any severity limit the user explicitly requested.
-
-```text
-Within the requested scope, report supported findings with their trigger, location, impact, and evidence. Label plausible but unverified concerns separately. If a later review pass will rank them, do not silently discard lower-severity findings; retain any severity limits the user explicitly set.
-```
-
 ## Requests for its reasoning can trigger refusals
 
-Fable 5 runs safety classifiers for offensive cybersecurity, biology and life-sciences content, and extraction of its reasoning. Benign work in these areas can still be refused. Do not ask the model to echo, transcribe, or reconstruct its private reasoning in the response; that request pattern can itself trigger a refusal. Ask for conclusions, citations, and validation evidence instead.
+Fable 5 runs safety classifiers for offensive cybersecurity, biology and life-sciences content, and extraction of its reasoning. Benign work in these areas can still be refused. Do not ask the model to echo, transcribe, or reconstruct its internal reasoning in the response; that request pattern can trigger the `reasoning_extraction` refusal category, and server-side fallback with `fallbacks: "default"` does not retry those refusals. Audit migrated skills and system prompts for show-your-thinking instructions. A short explanation of the answer or a summary of the actions taken is still fine; read thinking blocks when the application needs reasoning visibility.
 
 ## Validate the prompt change
 
