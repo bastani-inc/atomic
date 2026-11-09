@@ -454,7 +454,8 @@ jobs:
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -472,7 +473,32 @@ jobs:
         timeout-minutes: 4
         with:
           toolchain: 1.97.0
+      # Same staging as test.yml's release-archive job: Bun's own fetch of a compile
+      # target runtime has run at ~45 KB/s on these runners. Every tarball, restored or
+      # downloaded, is checked against the registry's sha512 before its runtime is used.
+      # A tag-scoped save only serves re-runs of this release.
+      - name: Restore Bun compile target tarballs
+        id: bun-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: bun-compile-target-${{ steps.bun.outputs.bun-version }}-linux-x64
+      - name: Stage Bun compile target runtimes
+        shell: bash
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
+          TARBALL_DIR: ${{ runner.temp }}/bun-compile-target-tarballs
+          BUN_COMPILE_PLATFORMS: linux-x64
+        run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
+      - name: Save Bun compile target tarballs
+        if: steps.bun-target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: ${{ steps.bun-target.outputs.cache-primary-key }}
       - name: Build Linux x64 archive
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
         run: ./scripts/build-binaries.sh --skip-deps --platform linux-x64
       - name: Smoke Linux release archive
         shell: bash
@@ -512,7 +538,8 @@ jobs:
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -534,8 +561,30 @@ jobs:
           merge-multiple: true
       - name: Hydrate release model data
         run: npm run hydrate:model-data
+      # Bun compile target runtimes, staged as in linux-binary-smoke.
+      - name: Restore Bun compile target tarballs
+        id: bun-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: bun-compile-target-${{ steps.bun.outputs.bun-version }}-windows-x64_windows-arm64
+      - name: Stage Bun compile target runtimes
+        shell: bash
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
+          TARBALL_DIR: ${{ runner.temp }}/bun-compile-target-tarballs
+          BUN_COMPILE_PLATFORMS: windows-x64 windows-arm64
+        run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
+      - name: Save Bun compile target tarballs
+        if: steps.bun-target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: ${{ steps.bun-target.outputs.cache-primary-key }}
       - name: Build Windows x64 archive
         shell: bash
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
         run: ./scripts/build-binaries.sh --skip-install --offline-model-data --platform windows-x64
       - name: Smoke Windows release archive
         shell: pwsh
@@ -564,6 +613,8 @@ jobs:
       # smoked x64 archive while the arm64 archive builds.
       - name: Build Windows arm64 archive
         shell: bash
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
         run: |
           mv packages/coding-agent/binaries/atomic-windows-x64.zip "$RUNNER_TEMP/atomic-windows-x64.zip"
           ./scripts/build-binaries.sh --skip-install --skip-package-build --offline-model-data --platform windows-arm64
@@ -596,7 +647,8 @@ jobs:
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -614,7 +666,29 @@ jobs:
         with:
           name: atomic-natives-${{ matrix.slug }}
           path: packages/natives/native
+      # Bun compile target runtimes, staged as in linux-binary-smoke.
+      - name: Restore Bun compile target tarballs
+        id: bun-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: bun-compile-target-${{ steps.bun.outputs.bun-version }}-${{ matrix.platform }}
+      - name: Stage Bun compile target runtimes
+        shell: bash
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
+          TARBALL_DIR: ${{ runner.temp }}/bun-compile-target-tarballs
+          BUN_COMPILE_PLATFORMS: ${{ matrix.platform }}
+        run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
+      - name: Save Bun compile target tarballs
+        if: steps.bun-target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: ${{ steps.bun-target.outputs.cache-primary-key }}
       - name: Build Linux musl archive
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
         run: ./scripts/build-binaries.sh --skip-deps --platform "${{ matrix.platform }}"
       - name: Smoke real musl release archive on stock Alpine
         run: ./scripts/test-musl-release-archive.sh "packages/coding-agent/binaries/atomic-${{ matrix.platform }}.tar.gz" "${{ matrix.platform }}"
@@ -645,7 +719,8 @@ jobs:
         with:
           ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -676,7 +751,29 @@ jobs:
           patchelf --version
       - name: Hydrate release model data
         run: npm run hydrate:model-data
+      # Bun compile target runtimes, staged as in linux-binary-smoke.
+      - name: Restore Bun compile target tarballs
+        id: bun-target
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: bun-compile-target-${{ steps.bun.outputs.bun-version }}-darwin-arm64_darwin-x64_linux-x64_linux-arm64_linux-x64-musl_linux-arm64-musl
+      - name: Stage Bun compile target runtimes
+        shell: bash
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
+          TARBALL_DIR: ${{ runner.temp }}/bun-compile-target-tarballs
+          BUN_COMPILE_PLATFORMS: darwin-arm64 darwin-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl
+        run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
+      - name: Save Bun compile target tarballs
+        if: steps.bun-target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/bun-compile-target-tarballs
+          key: ${{ steps.bun-target.outputs.cache-primary-key }}
       - name: Build release archives
+        env:
+          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-compile-targets
         run: ./scripts/build-binaries.sh --skip-install --offline-model-data --skip-windows
       - name: Validate package metadata and prepare payload
         env:
