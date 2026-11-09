@@ -5,6 +5,7 @@
 ### Changed
 
 - Updated the bundled agent-browser skill to upstream `v0.41.2`. Its discovery stub now explains that the core guide ends with a table of references and that `agent-browser skills get core --full` is only for when you need every reference at once, lists the new `webmcp-gen` specialized skill, and no longer grants the unpinned `npx agent-browser` command in `allowed-tools`.
+- Updated the bundled agent-desktop skill to upstream `v1.2.0`. It explains how to tell which row a repeated button belongs to (drill the row with `--root` and leave out `-i`), says that a `--root` drill adds its refs to the same snapshot id and replaces the refs it covers, and describes how refs are re-identified before an action: on Windows and Linux a ref for an element with identical twins is refused, and only `--headed mouse-click --xy`, which still needs your permission, can choose one. It also lists the new `details.kind` values for `STALE_REF` and `AMBIGUOUS_TARGET` and the `TIMEOUT` `resolution_identity_unknown` case, with the retry advice for each. Install guidance, the readiness check and permission handling are unchanged.
 
 ## [0.9.72] - 2026-11-08
 
