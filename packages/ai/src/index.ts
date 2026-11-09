@@ -36,6 +36,7 @@ export {
 	parseOAuthErrorBody,
 } from "./auth/oauth-refresh-errors.ts";
 export * from "./auth/types.ts";
+export * from "./cache-warming.ts";
 export type {
 	OAuthAuthInfo,
 	OAuthDeviceCodeInfo,

@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added the prompt cache warming policy as shared helpers, so every host that warms a prompt cache decides the same way: `getPromptCacheTtlMs()` (the lifetime of the entry a request writes, from the model's `promptCache` tier for the request's `cacheRetention`, then `PI_CACHE_RETENTION`, defaulting to `short`), `getCacheWarmingDelayMs()`, `isCacheWarmingReplayable()`, `getCacheWarmingRequestOptions()`, `evaluateCacheWarming()`, the `CACHE_WARMING_*` constants and the `CacheWarmingAction`, `CacheWarmingPhase` and `CacheWarmingDecision` types. They moved from the coding agent's cache warmer, which keeps resolving the model-specific default retention before it asks for the lifetime (upstream [#11857](https://github.com/earendil-works/pi/pull/11857))
+
 ## [0.9.72] - 2026-11-08
 
 GPT Image 2.6, typed Copilot failures, and thinking `off` that every provider honors.

@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
-import type { Api, Model, TranscriptContext } from "@bastani/pi-ai";
+import {
+	type Api,
+	getCacheWarmingDelayMs,
+	isCacheWarmingReplayable,
+	type Model,
+	type TranscriptContext,
+} from "@bastani/pi-ai";
 import { afterEach, describe, it, vi } from "vitest";
 import {
 	CacheWarmer,
 	formatCacheWarmingStatus,
 	formatCacheWarmingUsage,
-	getCacheWarmingDelayMs,
-	isReplayable,
+	getPromptCacheTtlMs,
 } from "../src/core/cache-warmer.js";
 import { type SessionEntry, SessionManager } from "../src/core/session-manager.js";
 
@@ -36,6 +41,7 @@ function sessionManager(entries: SessionEntry[] = []) {
 describe("cache warming", () => {
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.unstubAllEnvs();
 	});
 
 	it("schedules a refresh before TTL expiry and refuses short lifetimes", () => {
@@ -43,9 +49,33 @@ describe("cache warming", () => {
 		assert.equal(getCacheWarmingDelayMs(10_000), undefined);
 	});
 
+	it("resolves the cache lifetime from the request, the environment, then the model default", () => {
+		vi.stubEnv("PI_CACHE_RETENTION", "");
+		const openaiModel = {
+			...model,
+			id: "gpt-5.4-mini",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+		} as Model<Api>;
+		assert.equal(getPromptCacheTtlMs(model, undefined), 3_600_000);
+		assert.equal(getPromptCacheTtlMs(openaiModel, undefined), 300_000);
+		assert.equal(getPromptCacheTtlMs(model, { cacheRetention: "short" }), 300_000);
+		assert.equal(getPromptCacheTtlMs(model, { cacheRetention: "none" }), undefined);
+		assert.equal(getPromptCacheTtlMs(model, { env: { PI_CACHE_RETENTION: "short" } }), 300_000);
+		assert.equal(getPromptCacheTtlMs(openaiModel, { env: { PI_CACHE_RETENTION: "long" } }), 3_600_000);
+		assert.equal(getPromptCacheTtlMs(model, { env: { PI_CACHE_RETENTION: "none" } }), undefined);
+		assert.equal(getPromptCacheTtlMs(model, { env: { PI_CACHE_RETENTION: "unknown" } }), 3_600_000);
+		assert.equal(
+			getPromptCacheTtlMs(model, { cacheRetention: "short", env: { PI_CACHE_RETENTION: "long" } }),
+			300_000,
+		);
+		assert.equal(getPromptCacheTtlMs({ ...model, promptCache: undefined }, undefined), undefined);
+	});
+
 	it("does not replay budget-based Anthropic thinking", () => {
-		assert.equal(isReplayable(model, { reasoning: "high" }), false);
-		assert.equal(isReplayable(model, undefined), true);
+		assert.equal(isCacheWarmingReplayable(model, { reasoning: "high" }), false);
+		assert.equal(isCacheWarmingReplayable(model, undefined), true);
 	});
 
 	it("cancel stops an active run under owner cancellation", () => {
@@ -125,6 +155,85 @@ describe("cache warming", () => {
 		assert.equal(options.disableContinuation, true);
 		assert.equal(options.maxTokens, 1);
 		assert.equal(options.sessionId, "s");
+	});
+
+	it("does not start for a request that cannot be replayed safely", () => {
+		const warmer = new CacheWarmer({ streamSimple: vi.fn() }, sessionManager(), () => "idle");
+		warmer.start({ model, context, options: { cacheRetention: "short", reasoning: "high" } }, () => true);
+
+		assert.deepEqual(warmer.status, { state: "inactive", reason: "request cannot be replayed safely" });
+	});
+
+	describe("safety limits", () => {
+		function warmingRefreshes() {
+			const streamSimple = vi.fn(() => ({
+				result: async () => ({ stopReason: "stop", provider: "anthropic", model: model.id, usage: {} }),
+			}));
+			return {
+				streamSimple,
+				models: { streamSimple } as unknown as ConstructorParameters<typeof CacheWarmer>[0],
+			};
+		}
+
+		it("refreshes every 4m30s between runs until the 30-minute idle limit", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			const { streamSimple, models } = warmingRefreshes();
+			const warmer = new CacheWarmer(
+				models,
+				sessionManager(),
+				() => "idle",
+				async () => "warm",
+			);
+			warmer.start({ model, context, options: { cacheRetention: "short" } }, () => true);
+			warmer.onAgentSettled();
+
+			await vi.advanceTimersByTimeAsync(60 * 60_000);
+
+			assert.equal(streamSimple.mock.calls.length, 6);
+			assert.deepEqual(warmer.status, { state: "inactive", reason: "30-minute idle safety limit reached" });
+		});
+
+		it("refreshes every 4m30s during a run until the one-hour limit", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			const { streamSimple, models } = warmingRefreshes();
+			const warmer = new CacheWarmer(
+				models,
+				sessionManager(),
+				() => "streaming",
+				async () => "warm",
+			);
+			warmer.start({ model, context, options: { cacheRetention: "short" } }, () => true);
+
+			await vi.advanceTimersByTimeAsync(90 * 60_000);
+
+			assert.equal(streamSimple.mock.calls.length, 13);
+			assert.deepEqual(warmer.status, { state: "inactive", reason: "one-hour safety limit reached" });
+		});
+
+		it("stops when a run settles after the idle horizon has passed", () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			const warmer = new CacheWarmer({ streamSimple: vi.fn() }, sessionManager(), () => "idle");
+			warmer.start({ model, context, options: { cacheRetention: "short" } }, () => true);
+
+			vi.setSystemTime(30 * 60_000);
+			warmer.onAgentSettled();
+
+			assert.deepEqual(warmer.status, { state: "inactive", reason: "30-minute idle safety limit reached" });
+		});
+
+		it("stops at once when a settled run's next refresh falls past the idle horizon", () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			const warmer = new CacheWarmer({ streamSimple: vi.fn() }, sessionManager(), () => "idle");
+			warmer.start({ model, context, options: { cacheRetention: "long" } }, () => true);
+
+			warmer.onAgentSettled();
+
+			assert.deepEqual(warmer.status, { state: "inactive", reason: "30-minute idle safety limit reached" });
+		});
 	});
 
 	it("formats an inactive status without leaking economics", () => {
