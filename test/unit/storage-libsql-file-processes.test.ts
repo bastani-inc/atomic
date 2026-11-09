@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { SqliteDatabase } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { openLibsqlDatabase as openAdapterDatabase } from "../../packages/storage-libsql/libsql.js";
 import { openLibsqlDatabase } from "../fixtures/storage-libsql-wrapper.js";
@@ -63,47 +64,62 @@ test("several processes write one libSQL file at once without a failed statement
 	}
 }, 120_000);
 
-test(
-	"a write waits for another process that keeps committing past the busy timeout instead of failing with SQLITE_BUSY",
-	async () => {
-		const directory = makeLibsqlDirectory();
-		try {
-			const path = join(directory, "shared.sqlite");
-			const database = await openAdapterDatabase({ url: pathToFileURL(path).href });
-			try {
-				await database.exec("CREATE TABLE writes(n INTEGER NOT NULL)");
-				const other = spawnProcess(
-					[process.execPath, committer, path, String(COMMIT_HOLD_MS), String(COMMITTING_MS)],
-					{ stdout: "pipe", stderr: "pipe" },
-				);
-				const stderr = readStreamText(other.stderr);
-				const stdout = decodeStream(other.stdout!).getReader();
-				let output = "";
-				const readUntil = async (text: string) => {
-					while (!output.includes(text)) {
-						const { done, value } = await stdout.read();
-						if (done)
-							assert.fail(
-								`the committing process exited before it printed ${JSON.stringify(text)}: ${await stderr}`,
-							);
-						output += value;
-					}
-				};
-				await readUntil("committing\n");
-				// The lock changes hands every COMMIT_HOLD_MS: the write is behind a process that is making progress.
-				await database.run("INSERT INTO writes VALUES (1)");
-				await readUntil("committed ");
-				assert.equal(await other.exited, 0, await stderr);
-				assert.equal(Number((await database.get("SELECT COUNT(*) AS count FROM writes"))?.count), 1);
-			} finally {
-				await database.close();
-			}
-		} finally {
-			await removeLibsqlDirectory(directory);
-		}
+/** Each way a call takes a file's write lock outside a transaction it already holds; each writes row 1 to `writes`. */
+const LOCKING_WRITES: readonly {
+	readonly name: string;
+	readonly write: (database: SqliteDatabase) => Promise<unknown>;
+}[] = [
+	{ name: "a write", write: (database) => database.run("INSERT INTO writes VALUES (1)") },
+	// Schema setup runs this way, such as a writer's CREATE TABLE IF NOT EXISTS while others already write the file.
+	{ name: "an exec of one statement", write: (database) => database.exec("INSERT INTO writes VALUES (1)") },
+	{
+		name: "a transaction",
+		write: (database) => database.transaction((transaction) => transaction.run("INSERT INTO writes VALUES (1)")),
 	},
-	ADAPTER_BUSY_TIMEOUT_MS * 12,
-);
+];
+
+for (const { name, write } of LOCKING_WRITES)
+	test(
+		`${name} waits for another process that keeps committing past the busy timeout instead of failing with SQLITE_BUSY`,
+		async () => {
+			const directory = makeLibsqlDirectory();
+			try {
+				const path = join(directory, "shared.sqlite");
+				const database = await openAdapterDatabase({ url: pathToFileURL(path).href });
+				try {
+					await database.exec("CREATE TABLE writes(n INTEGER NOT NULL)");
+					const other = spawnProcess(
+						[process.execPath, committer, path, String(COMMIT_HOLD_MS), String(COMMITTING_MS)],
+						{ stdout: "pipe", stderr: "pipe" },
+					);
+					const stderr = readStreamText(other.stderr);
+					const stdout = decodeStream(other.stdout!).getReader();
+					let output = "";
+					const readUntil = async (text: string) => {
+						while (!output.includes(text)) {
+							const { done, value } = await stdout.read();
+							if (done)
+								assert.fail(
+									`the committing process exited before it printed ${JSON.stringify(text)}: ${await stderr}`,
+								);
+							output += value;
+						}
+					};
+					await readUntil("committing\n");
+					// The lock changes hands every COMMIT_HOLD_MS: the write is behind a process that is making progress.
+					await write(database);
+					await readUntil("committed ");
+					assert.equal(await other.exited, 0, await stderr);
+					assert.equal(Number((await database.get("SELECT COUNT(*) AS count FROM writes"))?.count), 1);
+				} finally {
+					await database.close();
+				}
+			} finally {
+				await removeLibsqlDirectory(directory);
+			}
+		},
+		ADAPTER_BUSY_TIMEOUT_MS * 12,
+	);
 
 test("opening a libSQL file another process is writing waits for its lock to switch the file to the write-ahead log (#4270)", async () => {
 	const directory = makeLibsqlDirectory();
