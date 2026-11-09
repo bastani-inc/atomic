@@ -1,5 +1,6 @@
 import type { Usage } from "@bastani/pi-ai/compat";
 import { getCompactionDiagnosticsDir } from "../config.js";
+import { awaitedToolTurnEntryId } from "./agent-session-detached-tools.ts";
 import type {
 	AgentSessionInternalSurface as AgentSession,
 	SessionCompactOptions,
@@ -7,6 +8,7 @@ import type {
 } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
+import { findBackgroundCompactionSafePoint, findUnansweredToolCall } from "./compaction/background-compaction.ts";
 import {
 	autoDetectCompactionQuery,
 	type CompactionBoundaryControl,
@@ -460,9 +462,19 @@ export async function _applyVerbatimCompaction(
 	this: AgentSession,
 	options: VerbatimCompactionApplyOptions,
 ): Promise<VerbatimCompactionResult | undefined> {
-	const planned = await planVerbatimCompaction.call(this, options, this.sessionManager.getBranch());
+	const branch = this.sessionManager.getBranch();
+	// A boundary folds the entries it covers into text. A call that has no result yet must stay a tool call for the
+	// result it is waiting on (a detached call's, #4580), so the boundary covers only what precedes its turn, as a
+	// background compaction does.
+	const awaited = awaitedToolTurnEntryId(this);
+	const waiting = findUnansweredToolCall(branch, awaited) !== undefined;
+	const covered = waiting ? branch.slice(0, findBackgroundCompactionSafePoint(branch, awaited) + 1) : branch;
+	const planned = await planVerbatimCompaction.call(this, options, covered);
 	if (!planned) return undefined;
-	const appended = await appendVerbatimBoundary.call(this, planned, { backupLabel: options.backupLabel });
+	const appended = await appendVerbatimBoundary.call(this, planned, {
+		backupLabel: options.backupLabel,
+		...(waiting ? { coveredThroughEntryId: covered[covered.length - 1].id } : {}),
+	});
 	return finishVerbatimCommit.call(this, planned, appended, options.reason);
 }
 

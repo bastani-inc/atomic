@@ -390,6 +390,8 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	takeDetachedToolCalls(): DetachedToolCall[];
 	/** Whether the transcript ends on a turn that issued a detachable call and has no answer from the model yet. */
 	hasPendingDetachedTurn(): boolean;
+	/** Whether the transcript still waits on the result of a call of a detachable tool: nothing may start a turn. */
+	isWaitingOnDetachedResults(): boolean;
 	/** Start again the detachable calls the transcript ends on without a result, with their original ids and arguments. */
 	redispatchDetachedToolCalls(): DetachedToolCall[];
 	/** Record detached calls' results; the turn that issued them continues once each of its detachable calls has one. */
@@ -557,6 +559,7 @@ export interface AgentSessionPublicSurface
 		| "setToolDetachment"
 		| "takeDetachedToolCalls"
 		| "hasPendingDetachedTurn"
+		| "isWaitingOnDetachedResults"
 		| "redispatchDetachedToolCalls"
 		| "resumeDetachedTurn"
 		| "refreshCurrentModelFromRegistry"

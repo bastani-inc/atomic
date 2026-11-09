@@ -12,6 +12,30 @@ export function storedTranscript(session: StageSessionRuntime): StageSessionRunt
 	return asAgentSession(session)?.sessionManager.buildSessionProjection().messages ?? session.messages;
 }
 
+/**
+ * How many entries the stage session's store holds. A position in `messages` stops marking where a prompt began once a
+ * compaction rewrites the context the model sees; this count does not (#4580). Undefined for a runtime that is not an
+ * `AgentSession`.
+ */
+export function storedEntryCount(session: StageSessionRuntime): number | undefined {
+	return storedEntries(session)?.length;
+}
+
+/** Whether the store gained an assistant message after its first `entryCount` entries, when it was counted at all. */
+export function storedAssistantMessageSince(session: StageSessionRuntime, entryCount: number | undefined): boolean {
+	if (entryCount === undefined) return false;
+	return (
+		storedEntries(session)
+			?.slice(entryCount)
+			.some((entry) => entry.type === "message" && entry.message.role === "assistant") === true
+	);
+}
+
+function storedEntries(session: StageSessionRuntime) {
+	const manager = asAgentSession(session)?.sessionManager;
+	return typeof manager?.getEntries === "function" ? manager.getEntries() : undefined;
+}
+
 /** The ids of the tool calls the transcript's last assistant message issued that have no result yet, in call order. */
 export function unansweredToolCallIds(messages: StageSessionRuntime["messages"]): string[] {
 	let index = messages.length - 1;

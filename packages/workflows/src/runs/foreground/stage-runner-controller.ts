@@ -7,6 +7,7 @@ import {
 	type DetachedToolCall,
 	type DetachedToolResult,
 	type ExtensionToolContext,
+	findToolDetachmentError,
 	isExtensionStartupFailure,
 	isTaskCleanupError,
 	isTransientExtensionStartupFailure,
@@ -101,6 +102,8 @@ import {
 	DetachedResultsNotSaved,
 	finalAnswerTo,
 	resultsAnsweringTranscript,
+	storedAssistantMessageSince,
+	storedEntryCount,
 	storedTranscript,
 	unansweredToolCallIds,
 } from "./stage-runner-reopen.js";
@@ -259,6 +262,9 @@ interface SessionCreationPauseResult {
 	readonly resumeMessage?: string;
 }
 
+/** How long a hand-back that found the session running waits for the run to settle before it looks again (#4580). */
+const SESSION_SETTLE_POLL_MS = 50;
+
 function isSessionCreationPauseResult(
 	value: StageSessionRuntime | SessionCreationPauseResult,
 ): value is SessionCreationPauseResult {
@@ -277,8 +283,13 @@ class StageSessionCreationCancelled extends Error {
  * operator's own text, so it is read literally, as an idle stage's resume message is sent.
  */
 function resumeMessageOptions(sdkOptions: PromptOptions | undefined): PromptOptions {
-	return { ...sdkOptions, expandPromptTemplates: false };
+	const options = { ...sdkOptions, expandPromptTemplates: false };
+	operatorMessageOptions.add(options);
+	return options;
 }
+
+/** The options {@link resumeMessageOptions} made, which tell the operator's own text from a stage's (#4580). */
+const operatorMessageOptions = new WeakSet<PromptOptions>();
 
 function stageUserMessageText(message: StageSessionRuntime["messages"][number]): string | undefined {
 	if (message.role !== "user") return undefined;
@@ -1158,12 +1169,20 @@ export class StageSessionController {
 			const unanswered = new Set(unansweredToolCallIds(storedTranscript(session)));
 			return awaited.filter((toolCallId) => unanswered.has(toolCallId));
 		};
-		try {
-			await resume.call(session, results);
-		} catch (error) {
-			if (stageReopenFailureCause(error) === "transient" && unsaved().length > 0)
-				throw new DetachedResultsNotSaved(error);
-			throw error;
+		for (;;) {
+			try {
+				await resume.call(session, results);
+				break;
+			} catch (error) {
+				// A run that started on the session meanwhile (#4580) ends before the results are handed back, not instead.
+				if (findToolDetachmentError(error)?.code === "session-busy") {
+					await this.untilSessionSettles(session);
+					continue;
+				}
+				if (stageReopenFailureCause(error) === "transient" && unsaved().length > 0)
+					throw new DetachedResultsNotSaved(error);
+				throw error;
+			}
 		}
 		// Only an `AgentSession` reads back what its store holds; another runtime's transcript is its own report.
 		const missing = asAgentSession(session) === undefined ? [] : unsaved();
@@ -1180,6 +1199,32 @@ export class StageSessionController {
 				{ code: "results-not-saved" },
 			);
 		this.opts.waiting?.resultsInTranscript();
+	}
+
+	/**
+	 * Wait until a run on the session has settled, or {@link SESSION_SETTLE_POLL_MS} has passed, so a hand-back that found the
+	 * session running can be tried again. The run's abort ends the wait with its reason.
+	 */
+	private async untilSessionSettles(session: StageSessionRuntime): Promise<void> {
+		const settled = Promise.withResolvers<void>();
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type === "agent_settled") settled.resolve();
+		});
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await raceAbort(
+				Promise.race([
+					settled.promise,
+					new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, SESSION_SETTLE_POLL_MS);
+					}),
+				]),
+				this.opts.signal,
+			);
+		} finally {
+			clearTimeout(timer);
+			unsubscribe();
+		}
 	}
 
 	/**
@@ -2540,6 +2585,12 @@ export class StageSessionController {
 					!this.disposed &&
 					this.opts.signal?.aborted !== true &&
 					!this.capturedStructuredOutputForAttempt();
+				// The attempt ended on a detached call whose result is still to come: a retry would move the transcript
+				// past it (#4580), and handing the result back continues the turn, so there is nothing to retry.
+				if (willRetry && activeSession.isWaitingOnDetachedResults?.() === true) {
+					this.reportHeldForDetachedResults(activeSession, "retry", error);
+					return { terminalScanStartIndex: terminalScanStartIndex ?? messagesBeforeAttempt.length };
+				}
 				// The continuation path resumes the same turn, so it needs the
 				// admitted prompt to stay; the re-prompt path re-sends it.
 				const willContinue = continuationSession !== undefined && admittedMessages;
@@ -2593,6 +2644,23 @@ export class StageSessionController {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Record, once per occurrence in the debug log, that a prompt or a retry was not sent because the session waits on a
+	 * detached call's result; for a retry, the error that would have been retried.
+	 */
+	private reportHeldForDetachedResults(session: StageSessionRuntime, held: "prompt" | "retry", error?: unknown): void {
+		const code = (error as { readonly code?: unknown } | undefined)?.code;
+		reportDebug("workflow", "stage-input-held-for-detached-results", {
+			runId: this.opts.runId,
+			stageId: this.opts.stageId,
+			stageName: this.opts.stageName,
+			sessionId: session.sessionId,
+			held,
+			...(error instanceof Error ? { errorName: error.name } : {}),
+			...(typeof code === "string" ? { errorCode: code } : {}),
+		});
 	}
 
 	private workflowAbortReason(): Error | DOMException | string {
@@ -3234,6 +3302,7 @@ export class StageSessionController {
 				continue;
 			}
 			const promptStartIndex = activeSession.messages.length;
+			const promptStartEntries = storedEntryCount(activeSession);
 			this.lastPromptStartIndex = promptStartIndex;
 			this.unresolvedContextOverflowMessage = undefined;
 			try {
@@ -3248,6 +3317,14 @@ export class StageSessionController {
 					if (nextText !== initialText)
 						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
 					await this.continueFromResults(activeSession, activeSession.resumeDetachedTurn, detachedResults);
+				} else if (activeSession.isWaitingOnDetachedResults?.() === true) {
+					// A prompt now would move the transcript past a call whose result is still to come (#4580). Handing the
+					// result back continues the turn, so this prompt, a retry or a continuation of an earlier one, is not sent.
+					this.reportHeldForDetachedResults(activeSession, "prompt");
+					// The operator's own text is not the stage's to drop: it joins the turn the result continues.
+					if (nextOptions !== undefined && operatorMessageOptions.has(nextOptions))
+						await activeSession.steer(nextText, undefined, { expandPromptTemplates: false });
+					return { terminalScanStartIndex: promptStartIndex };
 				} else await activeSession.prompt(nextText, nextOptions);
 				const pendingPauseAfterPrompt = this.pauseControl.currentResume();
 				if (pendingPauseAfterPrompt) {
@@ -3260,7 +3337,7 @@ export class StageSessionController {
 					continue;
 				}
 				this.throwUnresolvedContextOverflowIfPresent();
-				this.throwIfEmptyCompletion(activeSession, promptStartIndex);
+				this.throwIfEmptyCompletion(activeSession, promptStartIndex, promptStartEntries);
 				return { terminalScanStartIndex: promptStartIndex };
 			} catch (err) {
 				// The results come back with the reopened session; a pause holds that reopening.
@@ -3546,9 +3623,15 @@ export class StageSessionController {
 	 * (issue #3164). Cancellation wins: an aborted stage reports its abort reason
 	 * rather than a provider failure the retry loop would try to repair.
 	 */
-	private throwIfEmptyCompletion(activeSession: StageSessionRuntime, promptStartIndex: number): void {
+	private throwIfEmptyCompletion(
+		activeSession: StageSessionRuntime,
+		promptStartIndex: number,
+		promptStartEntries?: number,
+	): void {
 		if (this.structuredOutputCapture === undefined || this.structuredOutputCapture.called) return;
 		if (this.disposed || hasAssistantMessageSince(activeSession.messages, promptStartIndex)) return;
+		// A compaction during the prompt shortens `messages` below where the prompt began, so the store tells (#4580).
+		if (storedAssistantMessageSince(activeSession, promptStartEntries)) return;
 		if (this.opts.signal?.aborted) throw this.workflowAbortReason();
 		if (this.residency.startupWait.signal.aborted)
 			throw this.abortReason ?? new DOMException("stage aborted", "AbortError");

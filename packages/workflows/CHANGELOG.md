@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed schema-backed workflow stages that failed their first attempt with the 1/3 structured-output corrective error because the stage prompt never said to finish with `structured_output`, and the model ended its turn without calling it. Atomic now closes every schema-backed prompt with that instruction, and when a turn still ends without a successful call it runs the same inference itself from the stage's final answer, so prompts no longer need to mention the tool; corrective follow-ups and `fallbackModels` apply only when that inference fails too ([#4565](https://github.com/bastani-inc/atomic/issues/4565))
+- Fixed a workflow stage, and the run with it, failing when its conversation moved past a detached `bash` wait: a stage no longer prompts a session that still waits on a detached call's result (a retry after a compaction re-sent the continuation prompt and let the model carry on past the call), a compaction during a prompt no longer counts as an empty completion, a result handed back while the session is still running now waits for the run to settle instead of failing the stage, a message the operator resumes a paused stage with joins the turn the result continues instead of being dropped, and a stale call's late result is dropped so the stage keeps its finished result, including its `structured_output` ([#4580](https://github.com/bastani-inc/atomic/issues/4580))
 
 ## [0.9.72] - 2026-11-08
 

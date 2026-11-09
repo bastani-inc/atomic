@@ -10,6 +10,7 @@ import type {
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
+import { reportDebug } from "./debug.ts";
 import { type ErrorFieldValue, serializeErrorCause } from "./error-contract.ts";
 import type { ExtensionToolContext } from "./extensions/context-types.ts";
 import { sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
@@ -588,13 +589,99 @@ export function takeDetachedToolCalls(this: AgentSession): DetachedToolCall[] {
 	if (detached === undefined) return [];
 	const calls = [...detached.values()];
 	detached.clear();
-	return calls;
+	return calls.filter((call) => !settleStaleCall(this, call));
+}
+
+/**
+ * Settle a parked call whose turn the transcript has moved past: nothing waits on its result any more, so cancel its
+ * work and report it, so the host never waits for it. Says whether the call was dropped.
+ */
+function settleStaleCall(session: AgentSession, call: DetachedToolCall): boolean {
+	if (!transcriptMovedPast(session, call.toolCallId)) return false;
+	reportStaleDetachedCall(session, call);
+	call.abort(new DOMException("The transcript moved past this detached tool call", "AbortError"));
+	return true;
+}
+
+/** The reasons a detached call is dropped: its turn is no longer the one the transcript ends on. */
+type StaleDetachedCallReason = "transcript-moved";
+
+/** The debug record of a detached call the session dropped as stale: no exception, nothing for the host to handle. */
+function reportStaleDetachedCall(
+	session: AgentSession,
+	call: Pick<DetachedToolCall, "toolCallId" | "toolName">,
+	reason: StaleDetachedCallReason = "transcript-moved",
+): void {
+	reportDebug("workflow", "stale-detached-call", {
+		sessionId: session.sessionManager.getSessionId(),
+		toolCallId: call.toolCallId,
+		toolName: call.toolName,
+		reason,
+	});
+}
+
+/** Whether an assistant message of the session's history issued `toolCallId`, even one a compaction folded into text. */
+function wasIssued(session: AgentSession, toolCallId: string): boolean {
+	return session.sessionManager
+		.getBranch()
+		.some(
+			(entry) =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.content.some((block) => block.type === "toolCall" && block.id === toolCallId),
+		);
+}
+
+/**
+ * Whether `toolCallId` was issued by a turn the transcript no longer ends on, or already has its result: a call whose
+ * result nothing waits for. A call no message of the history issued is not one, so it reaches its host's checks.
+ */
+function transcriptMovedPast(session: AgentSession, toolCallId: string): boolean {
+	return wasIssued(session, toolCallId) && !trailingToolTurn(session).awaiting.has(toolCallId);
 }
 
 /** A call of a detachable tool in the transcript, with how its tool's work starts in this session. */
 interface DetachableCall {
 	readonly toolCall: ToolCall;
 	readonly work: DetachableWork;
+}
+
+/**
+ * The last assistant message of the transcript when it issued tool calls and nothing but results follows it, and the
+ * ids of its calls that have no result yet. Any later user or assistant message means a later turn already moved past
+ * the calls: only a transcript that ends on the turn is waiting.
+ */
+function trailingToolTurn(session: AgentSession): {
+	readonly assistant: AssistantMessage | undefined;
+	readonly awaiting: ReadonlySet<string>;
+	readonly entryId?: string;
+} {
+	const none = { assistant: undefined, awaiting: new Set<string>() };
+	const projection = session.sessionManager.buildSessionProjection();
+	const messages = projection.messages;
+	let index = messages.length - 1;
+	while (index >= 0 && messages[index]?.role !== "assistant") index--;
+	const assistant = messages[index] as AssistantMessage | undefined;
+	if (assistant?.stopReason !== "toolUse") return none;
+	const later = messages.slice(index + 1);
+	if (later.some((message) => message.role === "user" || message.role === "assistant")) return none;
+	const answered = new Set(
+		later.flatMap((message) => (message.role === "toolResult" ? [(message as ToolResultMessage).toolCallId] : [])),
+	);
+	const awaiting = new Set(
+		assistant.content.flatMap((block) => (block.type === "toolCall" && !answered.has(block.id) ? [block.id] : [])),
+	);
+	const entryId = projection.entries.find((entry) => entry.messages.includes(assistant))?.sourceEntry.id;
+	return { assistant, awaiting, ...(entryId === undefined ? {} : { entryId }) };
+}
+
+/**
+ * The id of the history entry of the turn that still waits for a call's result, or undefined when none does. A
+ * compaction keeps this turn out of what it folds into text, whatever entries came after it (#4580).
+ */
+export function awaitedToolTurnEntryId(session: AgentSession): string | undefined {
+	const { awaiting, entryId } = trailingToolTurn(session);
+	return awaiting.size > 0 ? entryId : undefined;
 }
 
 /**
@@ -607,18 +694,8 @@ function pendingDetachableCalls(session: AgentSession): {
 	readonly calls: readonly DetachableCall[];
 	readonly endsOnDetachableTurn: boolean;
 } {
-	const none = { assistant: undefined, calls: [], endsOnDetachableTurn: false };
-	const messages = session.sessionManager.buildSessionProjection().messages;
-	let index = messages.length - 1;
-	while (index >= 0 && messages[index]?.role !== "assistant") index--;
-	const assistant = messages[index] as AssistantMessage | undefined;
-	if (assistant?.stopReason !== "toolUse") return none;
-	const later = messages.slice(index + 1);
-	// A later turn already moved past the call; only a transcript that ends on it is waiting.
-	if (later.some((message) => message.role === "user" || message.role === "assistant")) return none;
-	const answered = new Set(
-		later.flatMap((message) => (message.role === "toolResult" ? [(message as ToolResultMessage).toolCallId] : [])),
-	);
+	const { assistant, awaiting } = trailingToolTurn(session);
+	if (assistant === undefined) return { assistant, calls: [], endsOnDetachableTurn: false };
 	const state = states.get(session);
 	const detachable = assistant.content.flatMap((block): DetachableCall[] => {
 		if (block.type !== "toolCall") return [];
@@ -629,7 +706,7 @@ function pendingDetachableCalls(session: AgentSession): {
 	});
 	return {
 		assistant,
-		calls: detachable.filter(({ toolCall }) => !answered.has(toolCall.id)),
+		calls: detachable.filter(({ toolCall }) => awaiting.has(toolCall.id)),
 		endsOnDetachableTurn: detachable.length > 0,
 	};
 }
@@ -649,6 +726,20 @@ export function hasPendingDetachedTurn(this: AgentSession): boolean {
 export function waitsOnDetachedResults(session: AgentSession): boolean {
 	if (!states.get(session)?.executes.size) return false;
 	return pendingDetachableCalls(session).calls.length > 0;
+}
+
+/**
+ * Whether this session must not start a turn of its own: its host set a detachment policy, so it hands back the results
+ * of the calls that detached, and its transcript waits on one. A turn that started now would move
+ * the transcript past the call; whatever would start it waits, and the turn the hand-back continues takes it up.
+ */
+export function holdsTurnsForDetachedResults(session: AgentSession): boolean {
+	return hasToolDetachment(session) && waitsOnDetachedResults(session);
+}
+
+/** Whether the transcript ends on a turn still waiting for the result of a call of a detachable tool. */
+export function isWaitingOnDetachedResults(this: AgentSession): boolean {
+	return waitsOnDetachedResults(this);
 }
 
 /**
@@ -845,11 +936,12 @@ function recordWithoutContinuing(session: AgentSession, answers: readonly Answer
  * Record the results of detached calls the transcript is waiting on, each as its own call's result right after its
  * call, then continue the turn that issued them once every detachable call of that turn has its result. Results may
  * arrive together or across several calls: until the last one arrives, the session records what it is given and
- * resolves without continuing. A result for a call that already has one, or repeated in `results`, is ignored. With
- * no new result, a transcript that ends on a detachable turn whose every call has its result continues that turn
- * (its process stopped before the model answered), and a turn still waiting on a call is left as it is. Each result
- * is finalized as an inline call's is: extension `tool_result` handlers, image normalization and the
- * oversized-output spill.
+ * resolves without continuing. A result for a call that already has one, repeated in `results`, or issued by a turn
+ * the transcript has moved past is ignored (the last one is reported in the debug log); a result for a call no
+ * message of the transcript issued throws `unknown-tool-call`. With no new result, a transcript that ends on a
+ * detachable turn whose every call has its result continues that turn (its process stopped before the model
+ * answered), and a turn still waiting on a call is left as it is. Each result is finalized as an inline call's is:
+ * extension `tool_result` handlers, image normalization and the oversized-output spill.
  */
 export async function resumeDetachedTurn(this: AgentSession, results: readonly DetachedToolResult[]): Promise<void> {
 	const sessionId = this.sessionManager.getSessionId();
@@ -866,20 +958,25 @@ export async function resumeDetachedTurn(this: AgentSession, results: readonly D
 			.buildSessionProjection()
 			.messages.flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])),
 	);
-	const pending = results.filter((result) => {
+	const given = results.filter((result) => {
 		if (recorded.has(result.toolCallId)) return false;
 		recorded.add(result.toolCallId);
 		return true;
 	});
-	const answers = pending.flatMap((result) => {
-		const toolCall = issued.get(result.toolCallId);
-		return toolCall === undefined ? [] : [{ toolCall, result }];
-	});
-	const unknown = pending.find((result) => !issued.has(result.toolCallId));
+	// A result for a turn the transcript moved past answers nothing: it is dropped, not refused, so a host that
+	// handed it back late goes on; only a call no message issued is refused.
+	const stale = given.filter((result) => !issued.has(result.toolCallId) && wasIssued(this, result.toolCallId));
+	const unknown = given.find((result) => !issued.has(result.toolCallId) && !stale.includes(result));
 	if (unknown !== undefined)
 		throw new ToolDetachmentError("unknown-tool-call", { sessionId, toolCallId: unknown.toolCallId });
-	if (pending.length === 0 && !(endsOnDetachableTurn && [...issued.keys()].every((id) => recorded.has(id)))) return;
 	const detached = states.get(this)?.detached;
+	for (const result of stale) {
+		detached?.delete(result.toolCallId);
+		reportStaleDetachedCall(this, result);
+	}
+	const pending = given.filter((result) => !stale.includes(result));
+	const answers = pending.map((result) => ({ toolCall: issued.get(result.toolCallId)!, result }));
+	if (pending.length === 0 && !(endsOnDetachableTurn && [...issued.keys()].every((id) => recorded.has(id)))) return;
 	for (const result of pending) detached?.delete(result.toolCallId);
 	// The turn continues only once every detachable call it issued has a result; until then the results wait for it.
 	if (calls.some(({ toolCall }) => !recorded.has(toolCall.id))) {
@@ -894,6 +991,7 @@ export const agentSessionDetachedToolMethods = {
 	setToolDetachment,
 	hasPendingDetachedTurn,
 	takeDetachedToolCalls,
+	isWaitingOnDetachedResults,
 	redispatchDetachedToolCalls,
 	resumeDetachedTurn,
 };

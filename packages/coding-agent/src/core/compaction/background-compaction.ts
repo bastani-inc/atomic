@@ -173,16 +173,14 @@ function isPassiveEntry(entry: SessionEntry): boolean {
 }
 
 /**
- * Path index of the last entry a background task may freeze, or -1 when nothing is safe.
- *
- * Walks the trailing run of tool calls and tool results backwards, tracking which calls have a
- * result, and cuts before the earliest assistant message in that run with an unanswered call: it and
- * everything after it stay out of the prefix (infinity's `safe_spawn_point`). Any other message ends
- * the run. A safe point never lands on a label, which a branched copy drops.
+ * Path index of the earliest assistant message of the trailing run of tool calls and tool results that has a call
+ * without a result, or undefined when every call of the run has one. Walks the run backwards, tracking which calls
+ * have a result; any other message ends the run. `awaitedEntryId` names a turn the context still waits on a result
+ * for whatever entries follow it, such as a custom message that was delivered meanwhile.
  */
-export function findBackgroundCompactionSafePoint(branch: readonly SessionEntry[]): number {
+export function findUnansweredToolCall(branch: readonly SessionEntry[], awaitedEntryId?: string): number | undefined {
 	const answered = new Set<string>();
-	let safe = branch.length;
+	let unanswered: number | undefined;
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index];
 		if (isPassiveEntry(entry)) continue;
@@ -192,9 +190,21 @@ export function findBackgroundCompactionSafePoint(branch: readonly SessionEntry[
 		}
 		const calls = toolCallIds(entry);
 		if (calls.length === 0) break;
-		if (calls.some((id) => !answered.has(id))) safe = index;
+		if (calls.some((id) => !answered.has(id))) unanswered = index;
 	}
-	let last = safe - 1;
+	const awaited = branch.findIndex((entry) => entry.id === awaitedEntryId);
+	return awaited >= 0 && (unanswered === undefined || awaited < unanswered) ? awaited : unanswered;
+}
+
+/**
+ * Path index of the last entry a background task may freeze, or -1 when nothing is safe.
+ *
+ * Cuts before the earliest assistant message of the trailing tool run with an unanswered call
+ * ({@link findUnansweredToolCall}): it and everything after it stay out of the prefix (infinity's
+ * `safe_spawn_point`). A safe point never lands on a label, which a branched copy drops.
+ */
+export function findBackgroundCompactionSafePoint(branch: readonly SessionEntry[], awaitedEntryId?: string): number {
+	let last = (findUnansweredToolCall(branch, awaitedEntryId) ?? branch.length) - 1;
 	while (last >= 0 && branch[last].type === "label") last--;
 	return last;
 }

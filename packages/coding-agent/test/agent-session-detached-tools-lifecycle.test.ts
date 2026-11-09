@@ -572,10 +572,9 @@ describe("which transcripts are waiting on a detached call (#4309)", () => {
 
 		assert.equal(reopened.session.hasPendingDetachedTurn(), false);
 		assert.deepEqual(reopened.session.redispatchDetachedToolCalls(), []);
-		await assert.rejects(
-			reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]),
-			(error: Error) => isToolDetachmentError(error) && error.code === "unknown-tool-call",
-		);
+		// The call's turn is behind the transcript (#4580): its result is dropped, not refused.
+		await reopened.session.resumeDetachedTurn([detachedResult("ci-1", "passed")]);
+		assert.deepEqual(toolResultIds(reopened.sessionManager), []);
 	});
 
 	test("calls of a tool the session does not have are not pending", async () => {
