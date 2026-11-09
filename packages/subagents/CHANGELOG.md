@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled agent-browser skill to upstream `v0.41.2`. Its discovery stub now explains that the core guide ends with a table of references and that `agent-browser skills get core --full` is only for when you need every reference at once, lists the new `webmcp-gen` specialized skill, and no longer grants the unpinned `npx agent-browser` command in `allowed-tools`.
+
 ## [0.9.72] - 2026-11-08
 
 Background subagents that wait let go of their sessions.
