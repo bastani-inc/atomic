@@ -280,9 +280,33 @@ test("shipped new-family AA evidence reaches the catalog routes that name each m
 		["mistral/mistral-large-4", "mistral-large-4", "2026-10-29"],
 		["openrouter/nvidia/nemotron-3.5-super-vl", "nemotron-3-5-super-vl", "2026-10-15"],
 		["openrouter/upstage/solar-mini4", "solar-mini4", "2026-09-22"],
+		["openrouter/deepseek/deepseek-v4.1-flash-1017", "deepseek-v4-1-flash-1017", "2026-10-17"],
 	];
 	for (const [id, slug, releaseDate] of routes) {
 		assert.match(catalogEvidence(catalog, [id]), new RegExp(`^\\| ${slug} \\|`, "mu"), id);
 		assert.equal(candidateReleaseDate(catalog, id), releaseDate, id);
+	}
+});
+
+test("DeepSeek V4.1 Flash 1017 IDs resolve to the 1017 rows, not the earlier V4.1 Flash rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	for (const id of [
+		"openrouter/deepseek/deepseek-v4.1-flash-1017",
+		"vercel-ai-gateway/deepseek/deepseek-v4.1-flash-1017",
+		"baseten/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+		"mistral/deepseek-v4-1-flash-1017",
+	]) {
+		const evidence = catalogEvidence(catalog, [id]);
+		for (const slug of [
+			"deepseek-v4-1-flash-1017",
+			"deepseek-v4-1-flash-1017-high",
+			"deepseek-v4-1-flash-1017-non-reasoning",
+		])
+			assert.match(evidence, new RegExp(`^\\| ${slug} \\|[^\\n]*\\| 2026-10-17 \\|`, "mu"), `${id} ${slug}`);
+		assert.doesNotMatch(evidence, /^\| deepseek-v4-1-flash(?:-non-reasoning)? \|/mu, id);
+		assert.equal(candidateReleaseDate(catalog, id), "2026-10-17", id);
 	}
 });

@@ -63,7 +63,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
 	const caption =
-		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, (\d+) Claude Fable 5\.2 rows accessed 2026-11-09, and (\d+) rows for 13 other new model families accessed 2026-11-09\.$/mu.exec(
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, (\d+) Claude Fable 5\.2 rows accessed 2026-11-09, and (\d+) rows for 14 other new model families accessed 2026-11-09\.$/mu.exec(
 			evals,
 		);
 	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
@@ -450,6 +450,9 @@ const OTHER_NEW_FAMILY_AA_ROWS: readonly string[] = [
 	"| reflection-beam | Beam 1.0 | 2026-10-16 | ∅ | 23.8 | 33.9 | 48.5 | 3 | 48.5 | 34.7 | 11.6 | 13.1 | ∅ | ∅ | 78 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 38.9 | ∅ |",
 	"| nemotron-3-5-super-vl | Nemotron 3.5 Super VL | 2026-10-15 | ∅ | 24.9 | 33.1 | 14.8 | 0 | 47.8 | 30.7 | 8 | 10.6 | ∅ | ∅ | 69 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 83.3 | ∅ |",
 	"| solar-mini4 | Solar Mini 4 | 2026-09-22 | ∅ | 18.4 | 29.6 | 22.3 | 1 | 47.6 | 25.8 | 5 | 1.4 | ∅ | ∅ | 83.3 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ |",
+	"| deepseek-v4-1-flash-1017 | DeepSeek V4.1 Flash 1017 (max) | 2026-10-17 | ∅ | 53.5 | 62.3 | 66.6 | 33.8 | 55.9 | 43.3 | 17.2 | 24 | ∅ | ∅ | 82.7 | ∅ | ∅ | ∅ | ∅ | ∅ | 80.6 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 44.4 | ∅ |",
+	"| deepseek-v4-1-flash-1017-high | DeepSeek V4.1 Flash 1017 (high) | 2026-10-17 | ∅ | 45.8 | ∅ | 68.5 | 28.8 | ∅ | ∅ | 14.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 79.7 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 44.4 | ∅ |",
+	"| deepseek-v4-1-flash-1017-non-reasoning | DeepSeek V4.1 Flash 1017 (non-reasoning) | 2026-10-17 | ∅ | 46.3 | ∅ | 48.8 | 9.1 | 38.5 | 11.5 | 4.4 | 0.3 | ∅ | ∅ | 57.3 | ∅ | ∅ | ∅ | ∅ | ∅ | 69.2 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | 44.4 | ∅ |",
 ];
 
 test("other new-family AA rows keep published values and leave revised-version columns unknown", async () => {
@@ -466,12 +469,12 @@ test("other new-family AA rows keep published values and leave revised-version c
 		assert.equal(cells.length, aa.header.length, `${cells[0]} has one cell per column`);
 		for (const index of revisedIndexes) assert.equal(cells[index], "∅", `${cells[0]} ${aa.header[index]}`);
 		assert.equal(cells[2]?.match(/^\d{4}-\d{2}-\d{2}$/u)?.length, 1, `${cells[0]} carries its release date`);
-		assert.ok(
-			evals.includes(`(https://artificialanalysis.ai/models/${cells[0]})`),
-			`${cells[0]} cites its model page`,
-		);
 	}
-	assert.equal(OTHER_NEW_FAMILY_AA_ROWS.length, 17);
+	assert.equal(OTHER_NEW_FAMILY_AA_ROWS.length, 20);
+	assert.match(
+		evals,
+		/^- Other new model families, 20 rows accessed 2026-11-09 from the \[leaderboard\]\(https:\/\/artificialanalysis\.ai\/leaderboards\/models\) and one model page per row at `https:\/\/artificialanalysis\.ai\/models\/<slug>`/mu,
+	);
 });
 
 test("refreshed AA cells carry the 2026-11-09 model-page values and name the refresh", async () => {
@@ -498,6 +501,17 @@ test("refreshed AA cells carry the 2026-11-09 model-page values and name the ref
 		["solar-pro4", "HLE", "29.8"],
 		["solar-pro4", "Crit", "6.3"],
 		["solar-pro4", "LCR", "70.7"],
+		["claude-sonnet-5-5", "Analyst", "57.5"],
+		["claude-sonnet-5-5-high", "PDF", "25.2"],
+		["claude-sonnet-5-5-medium", "PDF", "20.2"],
+		["claude-sonnet-5-5-low", "PDF", "16"],
+		["gpt-6-luna", "Analyst", "43.8"],
+		["gpt-6-luna-xhigh", "PDF", "18.6"],
+		["gpt-6-luna-high", "PDF", "18.2"],
+		["gpt-6-luna-medium", "PDF", "13.8"],
+		["gpt-6-luna-low", "PDF", "9"],
+		["gpt-6-luna-non-reasoning", "PDF", "5.8"],
+		["solar-pro4", "PDF", "7"],
 	];
 	for (const [slug, column, value] of refreshed) assert.equal(cell(slug, column), value, `${slug} ${column}`);
 	assert.match(evals, /^- Refreshed values, accessed 2026-11-09 from the \[leaderboard\]/mu);
