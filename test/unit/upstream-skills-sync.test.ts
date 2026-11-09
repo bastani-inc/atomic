@@ -41,8 +41,8 @@ const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: s
 ];
 const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
 
-// vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.0.2 (tree
-// 08884bafcd7a8d0a9a3757a7ab2ba238e1d5bf2a) is a discovery stub; its references are
+// vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.2.0 (tree
+// 4647b3cc9b929688002a9ae0f3bdd983898e049b) is a discovery stub; its references are
 // compiled into the CLI and printed by `agent-desktop skills get`, so only SKILL.md
 // is vendored. Its frontmatter is Atomic-owned and its body carries one documented
 // adaptation: the "Install and permissions" section. Removing that section must
@@ -51,14 +51,14 @@ const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df9383
 const agentDesktopUpstream = {
 	repo: "https://github.com/vercel-labs/agent-desktop",
 	path: "skills/agent-desktop",
-	ref: "refs/tags/v1.0.2",
-	treeSha: "08884bafcd7a8d0a9a3757a7ab2ba238e1d5bf2a",
+	ref: "refs/tags/v1.2.0",
+	treeSha: "4647b3cc9b929688002a9ae0f3bdd983898e049b",
 } as const;
-const agentDesktopSkillBodySha256 = "e074234497eda7166ecce350887e956be2a0915556be0019c4ab6ed8e6c82014";
-const agentDesktopUpstreamSkillBodySha256 = "684d063affa9883a2adc8f4c40a2e1ee97dc60d7d0ccb3fe39b3c12f3c0223e1";
+const agentDesktopSkillBodySha256 = "459f7f3d3b64332bb999bb2cbe6627aa744bc74747ff2f5f466637fb7e4284ac";
+const agentDesktopUpstreamSkillBodySha256 = "b175d7d504bdbf0d151c42c6894f666f0429dba48aebc220f1141f98627f7ee9";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.7.0 at aeeb3d8c30b5f95aeeb3e893b0f1a308af8fdb8f (engine 0.1.16)
+// skill-v4.8.1 at 924bbd194d02e5e15a227e75b5901fb0d7a4ecad (engine 0.1.19)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -114,6 +114,7 @@ scripts/VERSION
 scripts/command-metadata.json
 scripts/data/font-index-failures.json
 scripts/data/font-index.json
+scripts/engine-checksums.txt
 scripts/impeccable
 scripts/impeccable.cmd
 scripts/live-browser-dom.js
@@ -125,7 +126,14 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.16";
+const IMPECCABLE_ENGINE_VERSION = "0.1.19";
+const IMPECCABLE_ENGINE_ASSETS = [
+	"impeccable-darwin-arm64",
+	"impeccable-darwin-x64",
+	"impeccable-linux-x64",
+	"impeccable-linux-arm64",
+	"impeccable-windows-x64.exe",
+];
 
 function sha256(contents: string | Buffer): string {
 	return createHash("sha256").update(contents).digest("hex");
@@ -296,12 +304,13 @@ describe("synced upstream skill trees", () => {
 			"scripts/command-metadata.json",
 			"scripts/impeccable",
 			"scripts/impeccable.cmd",
+			"scripts/engine-checksums.txt",
 			"scripts/data/font-index.json",
 			"scripts/live-browser.js",
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.7\.0\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.8\.1\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -334,10 +343,11 @@ describe("synced upstream skill trees", () => {
 			"skills/impeccable/scripts/impeccable",
 			"skills/impeccable/scripts/impeccable.cmd",
 			"skills/impeccable/scripts/VERSION",
+			"skills/impeccable/scripts/engine-checksums.txt",
 		]);
 	});
 
-	test("ships the exact Impeccable 4.7.0 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.8.1 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
@@ -348,8 +358,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/pbakaus/impeccable"],
 			["github-path", ".pi/skills/impeccable"],
-			["github-ref", "refs/tags/skill-v4.7.0"],
-			["github-tree-sha", "f90e37ea2e9987475f4bdc263cf9d60499dba0ec"],
+			["github-ref", "refs/tags/skill-v4.8.1"],
+			["github-tree-sha", "33f5053739cd5a746d74a30d891e0da61b3f9829"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
@@ -391,22 +401,22 @@ describe("synced upstream skill trees", () => {
 		);
 	});
 
-	test("pins the unchanged agent-browser v0.39.2 discovery stub and provenance", () => {
+	test("pins the agent-browser v0.41.2 discovery stub and provenance", () => {
 		const skillRoot = join(subagentSkills, "agent-browser");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot), ["SKILL.md"]);
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(skillRoot, "SKILL.md"))));
 		assert.equal(
 			sha256(body.replace(/^\n/u, "")),
-			"62969c6661e7c3f62c155d23420bcf453e1786538a9d277398175330fb996a46",
+			"c626ad60ef89c45f580034fab99ccfb965c7019d9798f9934ffe9e9f2b07b6d8",
 		);
 		assert.match(frontmatter, /^name: agent-browser$/mu);
 		assert.match(frontmatter, /^hidden: true$/mu);
-		assert.match(frontmatter, /^allowed-tools: Bash\(agent-browser:\*\), Bash\(npx agent-browser:\*\)$/mu);
+		assert.match(frontmatter, /^allowed-tools: Bash\(agent-browser:\*\)$/mu);
 		for (const [key, value] of [
 			["github-repo", "https://github.com/vercel-labs/agent-browser"],
 			["github-path", "skills/agent-browser"],
-			["github-ref", "refs/tags/v0.39.2"],
-			["github-tree-sha", "82def67855a0d2aad7794207951820fa5422fdb0"],
+			["github-ref", "refs/tags/v0.41.2"],
+			["github-tree-sha", "29ba9c12789b1c54ab76ad40e2472e646d141b85"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
@@ -417,6 +427,33 @@ describe("synced upstream skill trees", () => {
 			packedPaths(join(root, "packages/subagents")).filter((path) => path.startsWith("skills/agent-browser/")),
 			["skills/agent-browser/SKILL.md"],
 		);
+	});
+
+	test("tracks the skill-creator scripts with the modes of anthropics/skills tree 3cf9a8db", () => {
+		const skillCreatorRoot = "packages/workflows/skills/skill-creator/";
+		const executableScripts = new Set(
+			[
+				"aggregate_benchmark",
+				"generate_report",
+				"improve_description",
+				"package_skill",
+				"quick_validate",
+				"run_eval",
+				"run_loop",
+			].map((name) => `scripts/${name}.py`),
+		);
+		const modes = new Map(
+			trackedModes(skillCreatorRoot).map((entry) => {
+				const [mode, path] = entry.split(" ");
+				return [path.slice(skillCreatorRoot.length), mode] as const;
+			}),
+		);
+		for (const script of executableScripts) {
+			assert.ok(modes.has(script), `untracked skill-creator script: ${script}`);
+		}
+		for (const [path, mode] of modes) {
+			assert.equal(mode, executableScripts.has(path) ? "100755" : "100644", `skill-creator mode drift: ${path}`);
+		}
 	});
 
 	test("ships the exact canonical LiteParse tree with no undocumented drift", () => {
@@ -441,7 +478,7 @@ describe("synced upstream skill trees", () => {
 		assert.doesNotMatch(readFileSync(join(liteparseSkill, "SKILL.md"), "utf8"), /effective-liteparse/u);
 	});
 
-	test("pins the agent-desktop v1.0.2 discovery stub with only its documented adaptation", () => {
+	test("pins the agent-desktop v1.2.0 discovery stub with only its documented adaptation", () => {
 		assert.deepEqual(collectFiles(agentDesktopSkill, [], agentDesktopSkill), ["SKILL.md"]);
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(agentDesktopSkill, "SKILL.md"))));
 		assert.equal(sha256(body), agentDesktopSkillBodySha256, "agent-desktop SKILL.md body drifted");
@@ -547,6 +584,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/VERSION",
 			"scripts/impeccable",
 			"scripts/impeccable.cmd",
+			"scripts/engine-checksums.txt",
 			"scripts/data/font-index.json",
 		]) {
 			assert.ok(
@@ -598,7 +636,33 @@ describe("synced upstream skill trees", () => {
 			"cmd policy precedes dispatch",
 		);
 		assert.match(posix, /engine-v\$version\/\$asset"\r?\n/u, "download stays pinned to the VERSION file");
-		assert.match(posix, /\$url\.sha256/u, "downloads stay checksum-verified");
+	});
+
+	test("keeps the pinned Impeccable engine verified against the shipped SHA-256 manifest", () => {
+		const scripts = join(workflowSkills, "impeccable/scripts");
+		const posix = readFileSync(join(scripts, "impeccable"), "utf8");
+		const windows = readFileSync(join(scripts, "impeccable.cmd"), "utf8");
+		const manifest = readFileSync(join(scripts, "engine-checksums.txt"), "utf8");
+		const digests = new Map<string, string>();
+		for (const line of manifest.split(/\r?\n/u)) {
+			if (line === "" || line.startsWith("#")) continue;
+			const [version, asset, digest, ...extra] = line.split(/\s+/u);
+			assert.deepEqual(extra, [], `malformed engine checksum line: ${line}`);
+			assert.equal(version, IMPECCABLE_ENGINE_VERSION, `engine checksum for another version: ${line}`);
+			digests.set(asset, digest);
+		}
+		for (const asset of IMPECCABLE_ENGINE_ASSETS) {
+			assert.match(digests.get(asset) ?? "", /^[0-9a-f]{64}$/u, `no SHA-256 pinned for ${asset}`);
+		}
+		assert.match(posix, /^manifest="\$dir\/engine-checksums\.txt"\r?$/mu, "sh launcher stopped reading the manifest");
+		assert.match(posix, /checksum mismatch downloading/u, "sh launcher stopped comparing the download");
+		assert.match(posix, /refusing the unverified download/u, "sh launcher stopped failing closed");
+		assert.match(
+			windows,
+			/^set "manifest=%~dp0engine-checksums\.txt"\r?$/mu,
+			"cmd launcher stopped reading the manifest",
+		);
+		assert.match(windows, /refusing the unverified download/u, "cmd launcher stopped failing closed");
 	});
 
 	test("initializes its fixture without mutating an ambient linked worktree", () => {

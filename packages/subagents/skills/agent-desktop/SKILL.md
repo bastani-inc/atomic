@@ -4,15 +4,15 @@ description: Operate native desktop applications on macOS, Windows and Linux thr
 hidden: true
 metadata:
     github-path: skills/agent-desktop
-    github-ref: refs/tags/v1.0.2
+    github-ref: refs/tags/v1.2.0
     github-repo: https://github.com/vercel-labs/agent-desktop
-    github-tree-sha: 08884bafcd7a8d0a9a3757a7ab2ba238e1d5bf2a
+    github-tree-sha: 4647b3cc9b929688002a9ae0f3bdd983898e049b
 name: agent-desktop
 ---
 
 # agent-desktop
 
-agent-desktop is a CLI that lets an AI agent observe and operate desktop apps through the OS accessibility tree. It is a tool, not an agent. Every command prints one JSON envelope (`ok`, `data` or `error`). The observe, act and verify loop runs in you.
+agent-desktop is a CLI that reads and operates desktop apps through the OS accessibility tree. Every command prints one JSON envelope (`ok`, `data` or `error`). It is a tool, not an agent: the observe, act and verify loop runs in you.
 
 ## Install and permissions
 
@@ -44,6 +44,8 @@ agent-desktop snapshot --root @s8f3k2p9:e3 -i --compact        # verify: re-read
 ```
 
 - A small app needs no skeleton. Take a full `snapshot -i`.
+- `-i` keeps interactive nodes only, so a row's static-text label is dropped. To tell which row a repeated button belongs to, drill that row's container with `--root` and leave out `-i`. On Windows and Linux that reads the row but does not make its button actionable: a button repeated in other rows is a twin in the window and its ref is refused (see Refs).
+- A `--root` drill adds its refs to the same snapshot id. Refs outside the drilled subtree, and the drilled root itself, stay valid; refs that were already inside it are replaced, so an old ref there returns `STALE_REF`.
 - Never skeleton a surface (`--surface menu`, `sheet`, `alert`). A surface is already focused.
 - An action that opens a menu, sheet or alert lists it in `data.surfaces`. Target that overlay next.
 - After an async step, use `wait` (see `commands-system.md`). A fixed sleep is a race.
@@ -53,8 +55,10 @@ agent-desktop snapshot --root @s8f3k2p9:e3 -i --compact        # verify: re-read
 - Output refs are qualified: `@<snapshot_id>:e<N>`, for example `@s8f3k2p9:e1`. Pass them to later commands as they are.
 - Refs are valid for one snapshot. After any UI change, re-drill the affected region or take a new snapshot.
 - Only addressable elements get refs. Static text and inert containers do not.
-- `STALE_REF`: the ref no longer matches the live UI. Take a fresh snapshot and use the new ref.
-- `AMBIGUOUS_TARGET`: more than one live element matches. Narrow the target with `find --role --name --exact` or `--root`, then use the new ref.
+- A command re-identifies the element before it acts. On macOS the ref carries the element's own address, so identical twins each keep their ref. On Windows and Linux a ref resolves only when it was the only element in the window its snapshot captured with its role, native id, name and description, counted even below a skeleton or depth cut, and exactly one live element still matches. Identical twins there have no ref path: only `--headed mouse-click --xy X,Y` can choose one, it takes the foreground, and a Linux Wayland session refuses it.
+- `STALE_REF`: the element is gone or no longer matches. `details.kind` is `saved_ref_absent`, or `retained_object_stale` on macOS. Take a fresh snapshot and use the new ref.
+- `AMBIGUOUS_TARGET`: an identical element appeared (`saved_ref_ambiguous`), or the ref was not proven unique at capture (`identity_not_unique`). Repeating the ref or re-snapshotting identical twins gives the same refusal; act on a control that is unique in the window. `identity_not_unique` also follows a snapshot that could not read the whole window in time: retake it with a larger `--timeout-ms`.
+- `TIMEOUT` with `details.kind: resolution_identity_unknown`: a live read did not answer, so identity is unproven. Nothing was sent; retry.
 - `SNAPSHOT_NOT_FOUND`: the snapshot id expired. Snapshot again.
 
 ## Delivery and retry

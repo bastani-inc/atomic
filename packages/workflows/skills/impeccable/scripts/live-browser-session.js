@@ -34,7 +34,10 @@
 
   function createLiveBrowserSessionState({ prefix, storage, idFactory }) {
     if (!prefix) throw new Error('prefix required');
-    const store = storage || root.localStorage;
+    let store = storage;
+    if (!store) {
+      try { store = root.localStorage; } catch { store = null; /* storage denied */ }
+    }
     const makeId = idFactory || function () {
       // CSPRNG default: session owner ids gate recovery handoff, and the
       // Math.random default was the same insecure-randomness class CodeQL
