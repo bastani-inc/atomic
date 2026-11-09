@@ -1,6 +1,5 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { asyncScope } from "../async-scope.ts";
 
 /**
  * How a tool call is ordered against the other calls of the same assistant message.
@@ -33,7 +32,7 @@ export function resolveToolConcurrency<TArgs>(
 export class ToolExecutionScheduler {
 	#lastExclusive: Promise<void> | undefined;
 	readonly #sharedSinceExclusive = new Set<Promise<void>>();
-	readonly #scope = new AsyncLocalStorage<{
+	readonly #scope = asyncScope<{
 		mode: ToolConcurrencyMode;
 		active: boolean;
 		children?: ToolExecutionScheduler;

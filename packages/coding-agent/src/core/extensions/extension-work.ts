@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { type AsyncScope, asyncScope } from "../async-scope.ts";
 import { withBuiltinDiagnostics } from "../builtin-diagnostics.ts";
 import {
 	drainSessionWork,
@@ -15,7 +15,7 @@ import type { ExtensionRuntime } from "./types.ts";
 const workBinding = Symbol.for("atomic.extension-work.v1");
 interface WorkBinding {
 	sealed: boolean;
-	cleanup: AsyncLocalStorage<{ active: boolean }>;
+	cleanup: AsyncScope<{ active: boolean }>;
 	revoked?: boolean;
 	run<T>(operation: () => Promise<T>): Promise<T>;
 	drain(): Promise<void>;
@@ -26,7 +26,7 @@ type OwnedRuntime = ExtensionRuntime & { [workBinding]?: WorkBinding };
 export function bindExtensionWork(runtime: ExtensionRuntime, owner: object): void {
 	(runtime as OwnedRuntime)[workBinding] ??= {
 		sealed: false,
-		cleanup: new AsyncLocalStorage<{ active: boolean }>(),
+		cleanup: asyncScope<{ active: boolean }>(),
 		run: (operation) => trackSessionWork(owner, () => trackSessionWork(runtime, operation)),
 		drain: () => drainSessionWork(runtime),
 		signal: () => sessionLifetime(owner),
