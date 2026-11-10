@@ -122,10 +122,12 @@ function getCacheControl(
 // Anthropic gates newer models on the `claude-cli/<version>` user agent alone and rejects an
 // older one with `claude_code_version_too_old`. `claude-fable-5-1` requires >= 2.1.251 (bisected
 // against the live API: 2.1.250 -> 400, 2.1.251 -> 200), Claude Opus 5.5 requires >= 2.1.280 and
-// `claude-fable-5-2` requires >= 2.1.290, the floors the API names in its rejections. This is
-// pinned to the highest published minimum among shipped models rather than the newest release. Raise it only when a model rejects this value; a caller can override it for
-// one client through the `headers` option, whose lowercase `user-agent` key is merged last.
-const claudeCodeVersion = "2.1.290";
+// `claude-fable-5-2` requires >= 2.1.290, the floors the API names in its rejections. This tracks
+// the latest published Claude Code release (`npm view @anthropic-ai/claude-code version`), which
+// stays above every shipped model's floor and matches what an up-to-date Claude Code sends. A
+// caller can override it for one client through the `headers` option, whose lowercase
+// `user-agent` key is merged last.
+const claudeCodeVersion = "2.1.322";
 
 // Claude Code 2.x tool names (canonical casing)
 // Source: https://cchistory.mariozechner.at/data/prompts-2.1.11.md
