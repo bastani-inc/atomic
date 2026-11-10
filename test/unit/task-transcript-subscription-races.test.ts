@@ -18,7 +18,6 @@ import { SessionManager } from "../../packages/coding-agent/src/core/session-man
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
-import type { TaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { readTaskTranscript } from "../../packages/coding-agent/src/core/tasks/transcript.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
@@ -26,7 +25,7 @@ import { initTheme } from "../../packages/coding-agent/src/modes/interactive/the
 import { createTestExtensionsResult, createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
 import { SubagentControlRuntime } from "../../packages/subagents/src/runs/inprocess/runner.js";
 import { taskFixture } from "../helpers/task-projection.js";
-import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
 // Only replace SDK discovery/construction: each run below uses the actual Agent,
 // AgentSession event queue, extension dispatch, persistence and subagent runner.
@@ -140,10 +139,10 @@ const liveText = (viewer: TaskAgentTranscriptPage) => stripVTControlCharacters(v
 
 /** A transcript page that follows `session` from an empty history, as a live task's first page reads. */
 async function followingPage(session: TaskTranscriptSource): Promise<TaskAgentTranscriptPage> {
-	const source = {
+	const source = transcriptOnlySource({
 		readTaskTranscript: () => ({ ok: true as const, value: { messages: [] } }),
 		followTaskTranscript: () => ({ session, historyOnly: false }),
-	} as unknown as TaskViewSource;
+	});
 	const page = new TaskAgentTranscriptPage(source, "task" as TaskId, taskTranscriptEnvironment(), () => {});
 	await page.load();
 	return page;

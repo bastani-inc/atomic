@@ -242,8 +242,11 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 		this.state.requestRender?.();
 		if (!source) return;
 		const update = () => {
-			if (this.taskRowsInChat) this.state.liveChat.upsertTasks(source.tasks, store);
-			this.state.transcriptComponent.invalidate();
+			// Without task rows the transcript shows nothing of the tasks; only the footer repaints.
+			if (this.taskRowsInChat) {
+				this.state.liveChat.upsertTasks(source.tasks, store);
+				this.state.transcriptComponent.invalidate();
+			}
 			this.state.requestRender?.();
 		};
 		this.unsubscribeTasks = source.subscribe(update);

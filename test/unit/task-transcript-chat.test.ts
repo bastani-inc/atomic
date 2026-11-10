@@ -189,7 +189,10 @@ test("a transcript read again on each change holds still while the reader is abo
 		session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
 	for (let i = 0; i < 250; i++) await append(i);
 	const reads: Array<string | undefined> = [];
-	let taskChanged = () => {};
+	const taskListeners = new Set<() => void>();
+	const taskChanged = () => {
+		for (const listener of taskListeners) listener();
+	};
 	const host = await openTranscript(session, {
 		source: (owner) =>
 			Object.assign(Object.create(owner) as TaskViewSource, {
@@ -198,7 +201,7 @@ test("a transcript read again on each change holds still while the reader is abo
 					return owner.readTaskTranscript(id, cursor);
 				},
 				subscribe: (listener: () => void) => {
-					taskChanged = listener;
+					taskListeners.add(listener);
 					return owner.subscribe(listener);
 				},
 			}),
@@ -248,7 +251,10 @@ test("a re-read that answers after the reader moved above the end leaves their r
 	for (let i = 0; i < 250; i++)
 		await session.appendMessage({ role: "user", content: `M-${String(i).padStart(3, "0")}`, timestamp: i });
 	let slow: PromiseWithResolvers<void> | undefined;
-	let taskChanged = () => {};
+	const taskListeners = new Set<() => void>();
+	const taskChanged = () => {
+		for (const listener of taskListeners) listener();
+	};
 	const host = await openTranscript(session, {
 		source: (owner) =>
 			Object.assign(Object.create(owner) as TaskViewSource, {
@@ -258,7 +264,7 @@ test("a re-read that answers after the reader moved above the end leaves their r
 					return read;
 				},
 				subscribe: (listener: () => void) => {
-					taskChanged = listener;
+					taskListeners.add(listener);
 					return owner.subscribe(listener);
 				},
 			}),

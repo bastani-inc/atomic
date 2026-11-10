@@ -90,6 +90,55 @@ export interface TaskViewSource {
 
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
 const sources = new WeakMap<OwnerTaskStore, TaskViewSource>();
+/** Each launched-task view by the task that launched them, under the view of every task. */
+const launchedViews = new WeakMap<TaskViewSource, Map<TaskId, TaskViewSource>>();
+/** The view of every task a launched-task view reads from. */
+const launchedViewRoots = new WeakMap<TaskViewSource, TaskViewSource>();
+
+/**
+ * The tasks `launcher` launched, from `source`: a subagent's own shells and the subagents it launched, as a
+ * subagent's chat lists them. Every task action goes to `source`. A view of a nested subagent reads the same tasks as
+ * its parent's view, and each task has one view, so a chat that compares its view keeps its open task list.
+ */
+export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId): TaskViewSource {
+	const root = launchedViewRoots.get(source) ?? source;
+	const views = launchedViews.get(root) ?? new Map<TaskId, TaskViewSource>();
+	launchedViews.set(root, views);
+	const existing = views.get(launcher);
+	if (existing !== undefined) return existing;
+	const launched = (tasks: readonly TaskRecord[]) => tasks.filter((task) => task.parentTaskId === launcher);
+	const sendTaskMessage = root.sendTaskMessage;
+	const view: TaskViewSource = {
+		get tasks() {
+			return launched(root.tasks);
+		},
+		get backgroundTasks() {
+			return launched(root.backgroundTasks);
+		},
+		get settlementOrder() {
+			return root.settlementOrder;
+		},
+		recentActivity: (id) => root.recentActivity(id),
+		activityOmitted: (id) => root.activityOmitted(id),
+		subscribe: (listener) => root.subscribe(listener),
+		foregroundTask: (id) => root.foregroundTask(id),
+		cancelTask: (id) => root.cancelTask(id),
+		stdinAvailable: (id) => root.stdinAvailable(id),
+		writeTaskInput: (id, text) => root.writeTaskInput(id, text),
+		readTaskOutput: (id, range) => root.readTaskOutput(id, range),
+		taskDetailText: (id) => root.taskDetailText(id),
+		readTaskTranscript: (id, cursor) => root.readTaskTranscript(id, cursor),
+		followTaskTranscript: (id) => root.followTaskTranscript(id),
+		extensionStatuses: (id) => root.extensionStatuses(id),
+		watchExtensionStatuses: (id, listener) => root.watchExtensionStatuses(id, listener),
+		...(sendTaskMessage === undefined
+			? {}
+			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
+	};
+	views.set(launcher, view);
+	launchedViewRoots.set(view, root);
+	return view;
+}
 
 function messageText(message: AgentMessage): string | undefined {
 	if (message.role !== "user" && message.role !== "assistant") return undefined;

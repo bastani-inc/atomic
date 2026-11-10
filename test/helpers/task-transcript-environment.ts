@@ -1,3 +1,4 @@
+import type { TaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.ts";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.ts";
 import {
 	type TaskTranscriptEnvironment,
@@ -15,4 +16,15 @@ export function taskTranscriptEnvironment(
 		style: themedChatHostStyle(),
 		...overrides,
 	};
+}
+
+/** A task view whose transcript members are `members` and which has no tasks of its own, as a subagent's page lists. */
+export function transcriptOnlySource(members: Partial<TaskViewSource>): TaskViewSource {
+	return {
+		tasks: [],
+		backgroundTasks: [],
+		settlementOrder: new Map(),
+		subscribe: () => () => {},
+		...members,
+	} as TaskViewSource;
 }

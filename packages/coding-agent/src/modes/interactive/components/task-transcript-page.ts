@@ -2,11 +2,17 @@ import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@eare
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
-import type { TaskTranscriptView, TaskViewResult, TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import {
+	launchedTaskViewSource,
+	type TaskTranscriptView,
+	type TaskViewResult,
+	type TaskViewSource,
+} from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { ScrollableComponentViewport } from "./chat-transcript.js";
+import { applyInputLabelToEditorTopRule } from "./input-label.ts";
 import { taskDisplayText } from "./task-row.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
@@ -47,6 +53,8 @@ export interface TaskTranscriptPage {
 	handleInput(data: string): boolean;
 	/** Whether the reader is typing, so a key such as Left edits instead of leaving. */
 	hasDraft(): boolean;
+	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
+	handlesBack(): boolean;
 	render(width: number, rows: number): string[];
 	invalidate(): void;
 	dispose(): void;
@@ -128,7 +136,12 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			isDisabled: () => source.sendTaskMessage === undefined,
 			onNearTop: () => this.loadEarlier(),
-			commands: { send: (text) => this.send(text) },
+			// A subagent's `/tasks` lists the tasks it launched, as a stage chat's lists the stage's own.
+			getTaskSource: () => launchedTaskViewSource(source, taskId),
+			commands: {
+				send: (text) => this.send(text),
+				handleSlashCommand: (text) => this.chat.openTasks(text.trim().split(/\s+/).slice(1).join(" ") || undefined),
+			},
 		});
 		this.restoreUndelivered();
 	}
@@ -194,16 +207,44 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
-		const handled = this.chat.handleInput(data);
+		// The subagent's own task list is modal while it is open, as in a stage chat.
+		const handled = this.chat.hasTaskInspector ? this.chat.handleTaskInput(data) : this.chat.handleInput(data);
 		this.requestRender();
 		return handled;
 	}
 
+	/** The chat box of a stage chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
-		const working = this.chat.renderWorkingStatus(width);
-		const editor = this.chat.renderEditor(width);
-		const bodyRows = Math.max(1, rows - working.length - editor.length);
-		return [...this.chat.renderBody(width, bodyRows), ...working, ...editor].slice(0, Math.max(1, rows));
+		const viewport = Math.max(1, rows);
+		if (this.chat.hasTaskInspector) {
+			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
+			const shownFooter = footer.slice(0, viewport - 1);
+			return [...this.chat.renderBody(width, viewport - shownFooter.length), ...shownFooter];
+		}
+		let remaining = viewport;
+		// The editor keeps its rows first, then the footer, then the status rows; the transcript takes what is left.
+		const reserve = (lines: string[], fromEnd = false): string[] => {
+			const shown = fromEnd ? lines.slice(Math.max(0, lines.length - remaining)) : lines.slice(0, remaining);
+			remaining -= shown.length;
+			return shown;
+		};
+		const editor = reserve(
+			applyInputLabelToEditorTopRule(this.env.style, "subagent", this.sessionName(), this.chat.renderEditor(width)),
+		);
+		const footer = reserve(this.chat.renderFooter(width));
+		const pending = reserve(this.chat.renderPendingMessages(width));
+		const working = reserve(this.chat.renderWorkingStatus(width), true);
+		const usage = reserve(this.chat.renderUsage(width));
+		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
+		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
+	}
+
+	/** What the subagent's session is called: its Intercom name, else its agent's name. */
+	private sessionName(): string | undefined {
+		return (
+			this.source.followTaskTranscript(this.taskId)?.session?.completionSource?.intercomTarget ??
+			this.source.tasks.find((task) => task.ref.taskId === this.taskId)?.agentName
+		);
 	}
 
 	invalidate(): void {
@@ -219,6 +260,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	hasDraft(): boolean {
 		return this.chat.hasInputText();
+	}
+
+	handlesBack(): boolean {
+		return this.chat.hasTaskInspector;
 	}
 
 	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
@@ -380,6 +425,10 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 	}
 
 	hasDraft(): boolean {
+		return false;
+	}
+
+	handlesBack(): boolean {
 		return false;
 	}
 
