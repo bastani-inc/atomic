@@ -202,6 +202,22 @@ describe("MissingSessionCwdError contract (earendil-works/pi#11060)", () => {
 		expect(viaText.cause).toEqual({ name: "Error", message: "disk gone" });
 	});
 
+	it("takes the cause a caller rebuilt over the serialized one, and keeps the fields", () => {
+		const serialized = serializeMissingSessionCwdError(
+			new MissingSessionCwdError(issue, { cause: new TypeError("serialized cause") }),
+		);
+		const rebuilt = new RangeError("rebuilt by the worker codec");
+
+		const rehydrated = rehydrateMissingSessionCwdError(serialized, rebuilt);
+
+		expect(rehydrated.cause).toBe(rebuilt);
+		expect(rehydrated.issue).toStrictEqual(issue);
+		expect(
+			rehydrateMissingSessionCwdError(serializeMissingSessionCwdError(new MissingSessionCwdError(issue)), rebuilt)
+				.cause,
+		).toBe(rebuilt);
+	});
+
 	it("refuses to rehydrate a malformed envelope", () => {
 		const valid = JSON.parse(JSON.stringify(serializeMissingSessionCwdError(new MissingSessionCwdError(issue))));
 		expect(isSerializedMissingSessionCwdError(valid)).toBe(true);

@@ -158,15 +158,22 @@ export function isSerializedMissingSessionCwdError(value: unknown): value is Ser
 	);
 }
 
-/** Rebuilds the {@link MissingSessionCwdError} a serialized one describes, with the same fields and cause. */
-export function rehydrateMissingSessionCwdError(serialized: SerializedMissingSessionCwdError): MissingSessionCwdError {
+/**
+ * Rebuilds the {@link MissingSessionCwdError} a serialized one describes, with the same fields. Its cause is `cause`, or
+ * the serialized cause rebuilt as a plain error that keeps its name and message.
+ */
+export function rehydrateMissingSessionCwdError(
+	serialized: SerializedMissingSessionCwdError,
+	cause?: Error,
+): MissingSessionCwdError {
 	const { sessionCwd, fallbackCwd, sessionFile } = serialized.fields;
 	const issue: SessionCwdIssue =
 		sessionFile === undefined ? { sessionCwd, fallbackCwd } : { sessionCwd, fallbackCwd, sessionFile };
+	if (cause !== undefined) return new MissingSessionCwdError(issue, { cause });
 	if (serialized.cause === undefined) return new MissingSessionCwdError(issue);
-	const cause = new Error(serialized.cause.message);
-	cause.name = serialized.cause.name;
-	return new MissingSessionCwdError(issue, { cause });
+	const rebuilt = new Error(serialized.cause.message);
+	rebuilt.name = serialized.cause.name;
+	return new MissingSessionCwdError(issue, { cause: rebuilt });
 }
 
 export function assertSessionCwdExists(sessionManager: SessionCwdSource, fallbackCwd: string): void {

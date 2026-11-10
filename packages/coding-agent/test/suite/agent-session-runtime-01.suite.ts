@@ -114,7 +114,6 @@ describe("AgentSessionRuntime characterization", () => {
 					sessionStore: { kind: "sqlite", path: join(tempDir, "sessions.sqlite") },
 				})
 			: undefined;
-		if (databaseStore) cleanups.push(() => databaseStore.close());
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
@@ -126,6 +125,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 		cleanups.push(async () => {
 			await runtime.dispose();
+			await databaseStore?.close();
 			faux.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
@@ -335,6 +335,42 @@ describe("AgentSessionRuntime characterization", () => {
 			expect(retried).toEqual({ cancelled: false });
 			expect(runtime.session.sessionId).toBe(exportedId);
 			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+		});
+
+		it("rejects an extension's ctx.switchSession() with the typed error and opens nothing", async () => {
+			let rejection: unknown;
+			const { runtime, tempDir } = await createRuntimeForTest((pi: ExtensionAPI) => {
+				pi.registerCommand("switch", {
+					description: "switches to the session whose id it is given",
+					handler: async (sessionId, ctx) => {
+						rejection = await ctx.switchSession(sessionId).catch((error: unknown) => error);
+					},
+				});
+			});
+			await runtime.session.bindExtensions({
+				commandContextActions: {
+					waitForIdle: async () => {},
+					newSession: (options) => runtime.newSession(options),
+					fork: (entryId, options) => runtime.fork(entryId, options),
+					navigateTree: (targetId, options) => runtime.session.navigateTree(targetId, options),
+					switchSession: (sessionId, options) => runtime.switchSession(sessionId, options),
+					reload: () => runtime.session.reload(),
+				},
+			});
+			const missing = join(tempDir, "renamed-away");
+			const source = await SessionManager.create(runtime.session.sessionManager.getSessionStore(), missing);
+			await source.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const openSessionId = runtime.session.sessionId;
+
+			await runtime.session.prompt(`/switch ${source.getSessionId()}`);
+
+			expect(rejection).toBeInstanceOf(MissingSessionCwdError);
+			expect((rejection as MissingSessionCwdError).code).toBe("session-cwd-missing");
+			expect((rejection as MissingSessionCwdError).issue).toMatchObject({
+				sessionCwd: missing,
+				fallbackCwd: tempDir,
+			});
+			expect(runtime.session.sessionId).toBe(openSessionId);
 		});
 
 		it("does not touch the store when the import fails for another reason", async () => {

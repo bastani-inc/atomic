@@ -21,6 +21,7 @@ import {
 	isGitUnavailableError,
 	isIntercomBrokerSuccessorTimeoutError,
 	isLlamaServerUnreachableError,
+	isMissingSessionCwdError,
 	isResumePreconditionError,
 	isSessionStartTimeoutError,
 	isShellTimeoutError,
@@ -32,6 +33,7 @@ import {
 	isWorkspaceBindingError,
 	isWriteSelectorError,
 	LlamaServerUnreachableError,
+	MissingSessionCwdError,
 	ResumePreconditionError,
 	SessionStartTimeoutError,
 	ShellTimeoutError,
@@ -44,6 +46,7 @@ import {
 	serializeFileToolError,
 	serializeGitHubCopilotError,
 	serializeIntercomBrokerError,
+	serializeMissingSessionCwdError,
 	serializeResumeError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
@@ -395,6 +398,17 @@ export const SERIALIZABLE_FAMILY_CASES: readonly FamilyCase[] = [
 		type: ResumePreconditionError,
 		guard: isResumePreconditionError,
 		facts: ownFacts(serializeResumeError),
+	},
+	{
+		family: "missing-session-cwd",
+		make: () =>
+			new MissingSessionCwdError(
+				{ sessionFile: "/sessions/s.jsonl", sessionCwd: "/renamed-from", fallbackCwd: "/renamed-to" },
+				{ cause: new Error("stat /renamed-from: no such file or directory") },
+			),
+		type: MissingSessionCwdError,
+		guard: isMissingSessionCwdError,
+		facts: ownFacts(serializeMissingSessionCwdError),
 	},
 	{
 		family: "blueprint",

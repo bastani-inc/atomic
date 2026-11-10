@@ -13,7 +13,9 @@ import {
 	IntercomBrokerError,
 	isGitProvisionError,
 	isSerializedBackgroundCompactionError,
+	isSerializedMissingSessionCwdError,
 	LlamaServerError,
+	MissingSessionCwdError,
 	parseSerializedDecisionError,
 	ResumeError,
 	rehydrateAgentRehydrateError,
@@ -25,6 +27,7 @@ import {
 	rehydrateGitProvisionError,
 	rehydrateIntercomBrokerError,
 	rehydrateLlamaServerError,
+	rehydrateMissingSessionCwdError,
 	rehydrateResumeError,
 	rehydrateSessionStartError,
 	rehydrateShellToolError,
@@ -43,6 +46,7 @@ import {
 	type SerializedGitHubCopilotError,
 	type SerializedGitProvisionError,
 	type SerializedIntercomBrokerError,
+	type SerializedMissingSessionCwdError,
 	type SerializedResumeError,
 	type SerializedSessionStartError,
 	type SerializedSubscriptionError,
@@ -63,6 +67,7 @@ import {
 	serializeFileToolError,
 	serializeGitHubCopilotError,
 	serializeIntercomBrokerError,
+	serializeMissingSessionCwdError,
 	serializeResumeError,
 	serializeSessionStartError,
 	serializeSubscriptionError,
@@ -304,6 +309,15 @@ export const SERIALIZABLE_ERROR_FAMILIES = {
 			return form;
 		},
 		rehydrate: rehydrateResumeError,
+	}),
+	"missing-session-cwd": family<MissingSessionCwdError, SerializedMissingSessionCwdError>({
+		is: instanceOf(MissingSessionCwdError),
+		serialize: (error) => {
+			const { cause: _cause, ...form } = serializeMissingSessionCwdError(error);
+			return form;
+		},
+		rehydrate: (form, cause) =>
+			isSerializedMissingSessionCwdError(form) ? rehydrateMissingSessionCwdError(form, cause) : undefined,
 	}),
 	blueprint: family<BlueprintError, SerializedBlueprintError>({
 		is: instanceOf(BlueprintError),

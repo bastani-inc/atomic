@@ -112,6 +112,7 @@ const REHYDRATION_FAMILIES: Readonly<Record<string, string>> = {
 	rehydrateTaskMessageError: "task-message",
 	rehydrateIntercomBrokerError: "intercom-broker",
 	rehydrateResumeError: "resume",
+	rehydrateMissingSessionCwdError: "missing-session-cwd",
 	rehydrateBlueprintError: "blueprint",
 	// Team profile errors are storage errors, and cross with the storage family.
 	rehydrateStorageError: "storage",
