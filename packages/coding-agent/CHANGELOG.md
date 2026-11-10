@@ -30,6 +30,7 @@
 
 - `cacheWarming` now defaults to `"idle"` instead of `"streaming"`: Atomic also keeps eligible prompt caches warm for up to 30 minutes between agent runs, but only when a refresh is expected to pay for itself. Set `"cacheWarming": "streaming"` in global settings for the previous behavior, or `"off"` to disable warming
 - The `/login` and `/logout` provider lists and the `/login <provider>` and `/logout <provider>` completions now show the preferred partners Radius and OpenRouter first, then all other providers alphabetically. In the provider lists, partners are marked with `✦`, the selected Radius row shimmers in the Radius logo colors and the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes)
+- Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema` and `@earendil-works/pi-telemetry` to 1.5.1; the intercom, subagents, web-access and workflows packages now require `@earendil-works/pi-tui` and `@earendil-works/pi-agent-core` `^1.5.1`
 
 ### Fixed
 
@@ -48,6 +49,10 @@
 - Fixed the compaction indicator vanishing while an extension, workflow or `ask_user_question` view hid and restored the Working row during compaction. The indicator, its reason and its cancel hint now stay on screen (or return) for as long as the session is compacting, whether the compaction is manual, automatic or runs mid-turn, and nothing stale remains when it ends while that view is open ([#4625](https://github.com/bastani-inc/atomic/issues/4625))
 - Fixed a GitHub Copilot response that is cut mid-stream after a long attempt being retried on the same model until the retries ran out, each retry spending several more minutes before it was cut again. When an attempt ran 5 minutes or more before its stream ended early, Atomic now retries the same model once more. A second such cut, with no successful response in between, stops retrying that model: the turn moves to the next `fallbackModels` entry when there is one, and otherwise ends with a message that suggests splitting the work into smaller steps, lowering the thinking effort or setting `fallbackModels`. Cuts after shorter attempts keep the usual `retry.maxRetries` budget, and partial output is still never replayed. The retry notice and the final error also show how long the attempt ran, whether the response had started and the request ID ([#4626](https://github.com/bastani-inc/atomic/issues/4626))
 - Fixed Anthropic `ping` events not counting as activity for `streamDeadlineMs`, so a model thinking silently while the server kept the connection alive was cut at the deadline ([#4626](https://github.com/bastani-inc/atomic/issues/4626))
+- Fixed Markdown rendering HTML comments (`<!-- ... -->`) as visible text (from pi-tui 1.5.1, [earendil-works/pi#11710](https://github.com/earendil-works/pi/issues/11710))
+- Fixed internal cursor markers leaking into terminal output, including with multiple markers or horizontally clipped content (from pi-tui 1.5.1, [earendil-works/pi#9441](https://github.com/earendil-works/pi/pull/9441))
+- Fixed Alacritty hyperlinks not being enabled when `TERM_PROGRAM` is unset; detection now also uses `TERM` and `ALACRITTY_WINDOW_ID` (from pi-tui 1.5.1, [earendil-works/pi#11767](https://github.com/earendil-works/pi/issues/11767))
+- Fixed codemode tool declarations throwing `URIError` for a local `$ref` with a malformed percent escape such as `#/$defs/%E0`, which failed every script that renders all tools; the reference now renders as `unknown` (from pi-codemode 1.5.1, [earendil-works/pi#11803](https://github.com/earendil-works/pi/issues/11803))
 
 ## [0.9.74] - 2026-11-09
 
