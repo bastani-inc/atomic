@@ -146,20 +146,24 @@ InteractiveModeBase.prototype.showWorkingLoaderNow = function (this: Interactive
 	this.ui.requestRender();
 };
 
+function remountCompactionIndicator(mode: InteractiveModeBase): void {
+	const loader = mode.autoCompactionLoader;
+	if (!loader || !mode.compactionActive || mode.statusContainer.children.includes(loader)) return;
+	mode.statusContainer.addChild(loader);
+}
+
 InteractiveModeBase.prototype.setWorkingVisible = function (this: InteractiveModeBase, visible: boolean): void {
 	this.workingVisible = visible;
 	if (!visible) {
 		this.stopWorkingLoader();
-		this.ui.requestRender();
-		return;
-	}
-	if (this.session.isStreaming && !this.loadingAnimation) {
+	} else if (this.session.isStreaming && !this.loadingAnimation && !this.compactionActive) {
 		this.statusContainer.clear();
 		const loader = this.createWorkingLoader();
 		this.loadingAnimation = loader;
 		this.workingIndicatorEmbedded = this.setEditorWorkingStatusIndicator?.(loader) ?? false;
 		if (!this.workingIndicatorEmbedded) this.statusContainer.addChild(loader);
 	}
+	remountCompactionIndicator(this);
 	this.ui.requestRender();
 };
 
