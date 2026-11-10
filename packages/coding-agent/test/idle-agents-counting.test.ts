@@ -405,6 +405,10 @@ function liveObjects(): Record<keyof typeof COUNTED, number> {
 /** The test walks the vitest worker's whole heap seven times; in a loaded full-suite run that outlasts the default budget. */
 const HEAP_WALK_TEST_TIMEOUT_MS = 90_000;
 
+function wholeCountPerAgent(delta: number, agents: number): number {
+	return Math.round(delta / agents) || 0;
+}
+
 /**
  * On Node before 24, AsyncLocalStorage runs on promise hooks, and the engine then keeps one more promise while the
  * call's promise adopts the tool's.
@@ -455,7 +459,7 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 
 			const agents = AGENTS_PER_WAVE * 2;
 			const perAgent = (counts: Record<keyof typeof COUNTED, number>, name: keyof typeof COUNTED) =>
-				Math.round((counts[name] - before[name]) / agents);
+				wholeCountPerAgent(counts[name] - before[name], agents);
 			const history = (await h.store.store.load(released.at(-1) as string)).entries;
 			const historyBytes = Buffer.byteLength(JSON.stringify(history));
 			assert.equal(perAgent(idle, "AbortSignal"), 0);
@@ -480,7 +484,7 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 			assert.deepEqual(delivered.sort(), later.map((toolCallId) => `ci:${toolCallId}`).sort());
 			await settledHandles();
 			const finishedPromises = queryObjects(Promise, { format: "count" }) as number;
-			assert.equal(Math.round((finishedPromises - before.Promise) / agents), 0);
+			assert.equal(wholeCountPerAgent(finishedPromises - before.Promise, agents), 0);
 		},
 		HEAP_WALK_TEST_TIMEOUT_MS,
 	);
@@ -524,9 +528,9 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 			const added = {
 				historyBytes: Buffer.byteLength(JSON.stringify((await h.store.inner.load(last)).entries)) - 2,
 				headerBytes: Buffer.byteLength(JSON.stringify(await h.store.inner.readHeader(last))),
-				buffers: Math.round((after.ArrayBuffer - before.ArrayBuffer) / agents),
-				promises: Math.round((after.Promise - before.Promise) / agents),
-				abortSignals: Math.round((after.AbortSignal - before.AbortSignal) / agents),
+				buffers: wholeCountPerAgent(after.ArrayBuffer - before.ArrayBuffer, agents),
+				promises: wholeCountPerAgent(after.Promise - before.Promise, agents),
+				abortSignals: wholeCountPerAgent(after.AbortSignal - before.AbortSignal, agents),
 				bytes: (after.bytes - before.bytes) / agents,
 				inMemory: (after.held.inMemory - before.held.inMemory) / agents,
 				onDisk: (after.held.onDisk - before.held.onDisk) / agents,
