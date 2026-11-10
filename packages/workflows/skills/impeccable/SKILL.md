@@ -1,13 +1,13 @@
 ---
 name: impeccable
 description: "Use when the user wants to design, redesign, shape, critique, audit, polish, simplify, harden, animate, or otherwise improve a frontend interface: websites, landing pages, dashboards, product UI, components, forms, settings, onboarding, empty states, and native iOS or Android screens. Handles UX review, hierarchy, layout, typography, color, motion, UX copy, accessibility, responsive behavior, edge cases, and capturing or documenting design systems (DESIGN.md, tokens). Also for making bland UI bolder, loud UI quieter, or ambitious visual effects. Not for backend-only or non-UI tasks."
-version: 4.8.1
+version: 4.8.2
 license: Apache 2.0
 metadata:
     github-repo: https://github.com/pbakaus/impeccable
     github-path: .pi/skills/impeccable
-    github-ref: refs/tags/skill-v4.8.1
-    github-tree-sha: 33f5053739cd5a746d74a30d891e0da61b3f9829
+    github-ref: refs/tags/skill-v4.8.2
+    github-tree-sha: 130fde11eff1474bfa3b3efb82a3f206e350e0f9
 allowed-tools:
   - Bash(npx impeccable *)
   - Bash(.pi/skills/impeccable/scripts/impeccable *)

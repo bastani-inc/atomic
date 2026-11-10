@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled Impeccable skill to 4.8.2 with engine 0.1.21. In Live Mode, accepting a variant on a page without hot reload keeps it styled until you reload, and variants accepted in different sessions no longer pick up each other's styles. Live captures keep the page's fonts when a font URL has no file extension, when a font face comes from an `@import` or a matching `@media` or `@supports` rule, and when a cross-origin stylesheet redirects. `generate-image` sends its requests, with your `OPENAI_API_KEY`, to `OPENAI_BASE_URL` when that variable is set. Atomic's telemetry and update-check defaults remain off.
+
 ## [0.9.75] - 2026-11-10
 
 Workflow stages report suspension clearly, design runs get reference images, and resumes build blueprints.

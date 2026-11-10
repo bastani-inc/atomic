@@ -58,7 +58,7 @@ const agentDesktopSkillBodySha256 = "459f7f3d3b64332bb999bb2cbe6627aa744bc74747f
 const agentDesktopUpstreamSkillBodySha256 = "b175d7d504bdbf0d151c42c6894f666f0429dba48aebc220f1141f98627f7ee9";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
-// skill-v4.8.1 at 924bbd194d02e5e15a227e75b5901fb0d7a4ecad (engine 0.1.19)
+// skill-v4.8.2 at 035c8f319edd019936525a062fe99e83ca8d12c6 (engine 0.1.21)
 // prior skill-v4.1.1 `.agents` distribution at 5a149f3fdb1b5793f10567233b1dcab98fc305fd
 //
 // `scripts/bin/<os>-<arch>/` is deliberately absent: the engine binary is
@@ -126,7 +126,7 @@ scripts/modern-screenshot.umd.js
 	.trim()
 	.split("\n");
 const impeccableExecutables = new Set(["scripts/impeccable"]);
-const IMPECCABLE_ENGINE_VERSION = "0.1.19";
+const IMPECCABLE_ENGINE_VERSION = "0.1.21";
 const IMPECCABLE_ENGINE_ASSETS = [
 	"impeccable-darwin-arm64",
 	"impeccable-darwin-x64",
@@ -310,7 +310,7 @@ describe("synced upstream skill trees", () => {
 			"scripts/live-browser-ignores.js",
 			"scripts/modern-screenshot.umd.js",
 		]);
-		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.8\.1\r?$/m);
+		assert.match(readFileSync(join(workflowSkills, "impeccable/SKILL.md"), "utf8"), /^version: 4\.8\.2\r?$/m);
 		assert.equal(
 			readFileSync(join(workflowSkills, "impeccable/scripts/VERSION"), "utf8").trim(),
 			IMPECCABLE_ENGINE_VERSION,
@@ -347,7 +347,7 @@ describe("synced upstream skill trees", () => {
 		]);
 	});
 
-	test("ships the exact Impeccable 4.8.1 tree with the pi distribution's launcher paths and modes", () => {
+	test("ships the exact Impeccable 4.8.2 tree with the pi distribution's launcher paths and modes", () => {
 		const skillRoot = join(workflowSkills, "impeccable");
 		assert.deepEqual(collectFiles(skillRoot, [], skillRoot).sort(), [...impeccableTree]);
 		// The `.pi` distribution names the launcher by its pi-native skill path and
@@ -358,8 +358,8 @@ describe("synced upstream skill trees", () => {
 		for (const [key, value] of [
 			["github-repo", "https://github.com/pbakaus/impeccable"],
 			["github-path", ".pi/skills/impeccable"],
-			["github-ref", "refs/tags/skill-v4.8.1"],
-			["github-tree-sha", "33f5053739cd5a746d74a30d891e0da61b3f9829"],
+			["github-ref", "refs/tags/skill-v4.8.2"],
+			["github-tree-sha", "130fde11eff1474bfa3b3efb82a3f206e350e0f9"],
 		] as const) {
 			assert.ok(frontmatter.split("\n").includes(`    ${key}: ${value}`));
 		}
