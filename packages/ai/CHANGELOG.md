@@ -4,6 +4,16 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.76] - 2026-11-10
+
+Claude Fable 5.2 works with an Anthropic subscription login.
+
+- **Fable 5.2 over Claude subscriptions.** `claude-fable-5-2` no longer fails with `claude_code_version_too_old` when you sign in with an Anthropic subscription, because OAuth requests now identify as the latest Claude Code release (`2.1.322`) ([#4634](https://github.com/bastani-inc/atomic/pull/4634), upstream [#11969](https://github.com/earendil-works/pi/issues/11969)).
+
+### Fixed
+
+- Claude Fable 5.2 (`claude-fable-5-2`) works with an Anthropic subscription login. The Claude Code version sent on OAuth requests is now `2.1.322`, the latest Claude Code release, so Anthropic no longer rejects them with `claude_code_version_too_old` ([#4634](https://github.com/bastani-inc/atomic/pull/4634), upstream [#11969](https://github.com/earendil-works/pi/issues/11969))
+
 ## [0.9.76-alpha.1] - 2026-11-10
 
 Claude Fable 5.2 works with an Anthropic subscription login.
