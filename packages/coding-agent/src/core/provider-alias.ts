@@ -11,6 +11,7 @@ import {
 	type StreamOptions,
 	type TranscriptContext,
 } from "@bastani/pi-ai";
+import { refreshGitHubCopilotAccountModelLists } from "@bastani/pi-ai/providers/github-copilot";
 
 export interface ProviderAliasConfig {
 	id: string;
@@ -158,6 +159,9 @@ export function createProviderAlias(config: ProviderAliasConfig, resolve: () => 
 				options?.signal,
 			),
 	};
+	if (config.provider === "github-copilot") {
+		alias.refreshModels = refreshGitHubCopilotAccountModelLists;
+	}
 	if (source.fetchDeferred) {
 		alias.fetchDeferred = (model, handle, options) =>
 			aliasStream(

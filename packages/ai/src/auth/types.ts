@@ -18,6 +18,13 @@ export interface ApiKeyCredential {
 	type: "api_key";
 	key?: string;
 	env?: ProviderEnv;
+	/**
+	 * GitHub Copilot only: the model IDs the key's account lists in its model picker, saved by a model
+	 * refresh that read the account's list with this key. A replaced key starts without them.
+	 */
+	availableModelIds?: string[];
+	/** GitHub Copilot only: the fast model IDs the key's account lists. Saved with `availableModelIds`. */
+	fastModelIds?: string[];
 }
 
 /** OAuth token data returned by extension compatibility flows. */

@@ -30,7 +30,7 @@ const DEFAULT_MAX_TOKENS = 8_192;
 /** Atomic's default cap on a resized image's base64 payload, which an account's own image limit may lower. */
 const DEFAULT_MAX_IMAGE_BASE64_BYTES = 4.5 * 1024 * 1024;
 
-/** Copilot advertises entitlements as string ID arrays on the OAuth credential; ignore any other shape. */
+/** Copilot advertises entitlements as string ID arrays on the stored credential; ignore any other shape. */
 function advertisedModelIds(value: unknown): ReadonlySet<string> | undefined {
 	if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) return undefined;
 	return new Set(value);
@@ -239,20 +239,24 @@ async function accountModelListRequest(
 	return undefined;
 }
 
-/** Whether a login's saved list names exactly these IDs. */
+/** Whether a credential's saved list names exactly these IDs. */
 function savesSameIds(saved: unknown, ids: readonly string[]): boolean {
 	const savedIds = advertisedModelIds(saved);
 	return savedIds !== undefined && savedIds.size === new Set(ids).size && ids.every((id) => savedIds.has(id));
 }
 
 /**
- * Save to an OAuth login the model lists it keeps, read from the account's list this refresh just
- * read with it. The login otherwise renews them only with its token, so a refresh with a still-valid
- * token could discover a model the login's older lists hide.
+ * Save to the OAuth login or API key that read an account's list the model lists it keeps, parsed from
+ * that response. A login otherwise renews them only with its token, so a refresh with a still-valid token
+ * could discover a model the login's older lists hide; a key has no other way to learn them.
+ *
+ * A key whose list names no usable model keeps what it saved before: hiding every model on a list that
+ * may not be the account's real one would leave nothing to select.
  */
-async function saveLoginModelLists(context: RefreshModelsContext, raw: unknown, baseUrl: string): Promise<void> {
-	if (context.credential?.type !== "oauth" || !context.updateCredential) return;
+async function saveAccountModelLists(context: RefreshModelsContext, raw: unknown, baseUrl: string): Promise<void> {
+	if (!context.updateCredential) return;
 	const { availableModelIds, fastModelIds } = parseGitHubCopilotAccountModelLists(raw, baseUrl);
+	if (context.credential?.type === "api_key" && availableModelIds.length === 0) return;
 	await context.updateCredential((current) =>
 		savesSameIds(current.availableModelIds, availableModelIds) && savesSameIds(current.fastModelIds, fastModelIds)
 			? undefined
@@ -260,22 +264,10 @@ async function saveLoginModelLists(context: RefreshModelsContext, raw: unknown, 
 	);
 }
 
-/**
- * Read the account's model list with the effective OAuth or API-key credential and return the chat
- * models `catalog` lacks (see {@link parseGitHubCopilotDiscoveredModels}). An OAuth login reads the
- * host its token names; an API key reads the provider's configured host, the one its requests use.
- *
- * Returns undefined when the list cannot be read: without a usable credential, or when the host
- * refuses the token (400, 401, 403 or 404). That is not an empty list, so a caller keeps the models it
- * found before. Other failures throw.
- *
- * An OAuth login's saved model lists, which decide what the login is offered, are renewed from the
- * same response through `context.updateCredential`, so what a refresh discovers is offered at once.
- */
-export async function discoverGitHubCopilotModels(
-	catalog: readonly AnyModel[],
+/** The account's `GET /models` response and the host that answered it, or undefined when the host refuses the token. */
+async function readAccountModelList(
 	context: RefreshModelsContext,
-): Promise<Model<Api>[] | undefined> {
+): Promise<{ raw: unknown; baseUrl: string } | undefined> {
 	const request = await accountModelListRequest(context);
 	if (!request) return undefined;
 	const response = await fetch(`${request.baseUrl.replace(/\/+$/, "")}/models`, {
@@ -289,10 +281,43 @@ export async function discoverGitHubCopilotModels(
 	});
 	if ([400, 401, 403, 404].includes(response.status)) return undefined;
 	if (!response.ok) throw new Error(`GitHub Copilot model list request failed: ${response.status}`);
-	const raw: unknown = await response.json();
-	const models = parseGitHubCopilotDiscoveredModels(raw, catalog);
-	await saveLoginModelLists(context, raw, request.baseUrl);
+	return { raw: await response.json(), baseUrl: request.baseUrl };
+}
+
+/**
+ * Read the account's model list with the effective OAuth or API-key credential and return the chat
+ * models `catalog` lacks (see {@link parseGitHubCopilotDiscoveredModels}). An OAuth login reads the
+ * host its token names; an API key reads the provider's configured host, the one its requests use.
+ *
+ * Returns undefined when the list cannot be read: without a usable credential, or when the host
+ * refuses the token (400, 401, 403 or 404). That is not an empty list, so a caller keeps the models it
+ * found before. Other failures throw.
+ *
+ * The model lists that decide what the login or stored API key is offered are renewed from the same
+ * response through `context.updateCredential`, so what a refresh discovers is offered at once. Nothing
+ * is saved when the list cannot be read, so a credential that never had lists hides no model.
+ */
+export async function discoverGitHubCopilotModels(
+	catalog: readonly AnyModel[],
+	context: RefreshModelsContext,
+): Promise<Model<Api>[] | undefined> {
+	const list = await readAccountModelList(context);
+	if (!list) return undefined;
+	const models = parseGitHubCopilotDiscoveredModels(list.raw, catalog);
+	await saveAccountModelLists(context, list.raw, list.baseUrl);
 	return models;
+}
+
+/**
+ * Renew only the model lists of a stored API key, which a provider alias of GitHub Copilot uses to
+ * filter by its own account. The alias has no catalog of its own to publish, so this reads and saves
+ * the lists and returns nothing. An alias's OAuth login keeps the lists it saved when it signed in or
+ * renewed its token.
+ */
+export async function refreshGitHubCopilotAccountModelLists(context: RefreshModelsContext): Promise<void> {
+	if (!context.allowNetwork || context.credential?.type !== "api_key") return;
+	const list = await readAccountModelList(context);
+	if (list) await saveAccountModelLists(context, list.raw, list.baseUrl);
 }
 
 /** Copilot's account endpoint has no version prefix, but System One requires it. */
@@ -333,24 +358,25 @@ export function githubCopilotProvider(): Provider<GitHubCopilotApi> {
 		},
 		models: [...Object.values(GITHUB_COPILOT_MODELS), ...Object.values(GITHUB_COPILOT_CLASSIFIER_MODELS)],
 		filterModels: (models, credential) => {
-			const oauth = credential?.type === "oauth" ? credential : undefined;
-			const entitledFastModelIds = advertisedModelIds(oauth?.fastModelIds);
-			const availableModelIds = advertisedModelIds(oauth?.availableModelIds);
+			const entitledFastModelIds = advertisedModelIds(credential?.fastModelIds);
+			const availableModelIds = advertisedModelIds(credential?.availableModelIds);
 			return models.filter((model) => {
 				// Picker entitlements list chat models, not classifiers.
 				if (isModelType(model, "classifier")) return true;
-				// The login's saved lists decide for every model, discovered ones included: discovered models are
-				// cached per provider, not per login. A refresh that reads the account's list renews the lists of
-				// the same login (see `discoverGitHubCopilotModels`), so they never predate what it found.
-				// A fast ID the login lists is entitled whether or not it is a picker entry.
+				// The saved lists of the login or API key decide for every model, discovered ones included:
+				// discovered models are cached per provider, not per credential. A refresh that reads the
+				// account's list renews the lists of the same credential (see `discoverGitHubCopilotModels`), so
+				// they never predate what it found.
+				// A fast ID the credential lists is entitled whether or not it is a picker entry.
 				if (entitledFastModelIds?.has(model.id) === true) return true;
-				// Fast-ness comes from the explicit route metadata, never from the `-fast` suffix. A login that
-				// lists its fast IDs offers only those; without such a list (an API key), the account's own
-				// model list already decided which fast models exist.
+				// Fast-ness comes from the explicit route metadata, never from the `-fast` suffix. A credential
+				// that lists its fast IDs offers only those; without such a list, the account's own model list
+				// already decided which fast models exist.
 				if (model.fastRoute !== undefined) return entitledFastModelIds === undefined;
-				// A login without a stored model list (an older login) keeps the catalog so it is never left
-				// with no models; `Models.refresh()` with network access re-reads the list once (see
-				// `needsRefresh`), and the account list applies from then on.
+				// A credential without a saved model list (an older login, or a key whose list was never read,
+				// is refused or comes from the environment) keeps the catalog so it is never left with no models;
+				// `Models.refresh()` with network access reads the list (see `needsRefresh` and
+				// `discoverGitHubCopilotModels`), and the account list applies from then on.
 				return availableModelIds?.has(model.id) ?? true;
 			});
 		},
