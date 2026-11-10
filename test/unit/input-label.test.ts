@@ -6,6 +6,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";
 import {
 	applyInputLabelToEditorTopRule,
+	buildInputLabel,
 	INPUT_LABEL_MIN_COLUMNS,
 	type InputLabelStyle,
 } from "../../packages/coding-agent/src/modes/interactive/components/input-label.js";
@@ -37,6 +38,10 @@ describe("the shared chat input label (#4640)", () => {
 		assert.ok(output[0]?.includes(`\x1b[1m${TEXT}subagent-worker-aabcf28b-1${OFF}\x1b[22m`), "the name is bold");
 		assert.ok(output[0]?.includes(`${MUTED}] ${OFF}`), "the closing bracket is muted");
 		assert.ok(output[0]?.includes(`${RULE_COLOR}${"─".repeat(41)}`), "the rest of the rule keeps its colour");
+		assert.equal(
+			output[0],
+			`${RULE_COLOR}\x1b[0m${MUTED}[subagent: ${OFF}\x1b[1m${TEXT}subagent-worker-aabcf28b-1${OFF}\x1b[22m${MUTED}] ${OFF}${RULE_COLOR}${"─".repeat(41)}\x1b[0m`,
+		);
 		assert.deepEqual(output.slice(1), source.slice(1), "only the top rule changes");
 		assert.equal(source[0], rule(80), "the rendered lines are not modified in place");
 	});
@@ -56,6 +61,9 @@ describe("the shared chat input label (#4640)", () => {
 		const wide = applyInputLabelToEditorTopRule(style, "subagent", "审查-é-👩‍💻-".repeat(6), [rule(44), "❯"]);
 		assert.match(plain(wide[0]), /^\[subagent: .+…\] ─*$/);
 		assert.equal(visibleWidth(plain(wide[0])), 44);
+		const scrolled = `${"─".repeat(20)} ↑ 5 more ${"─".repeat(30)}`;
+		const scrolledLong = applyInputLabelToEditorTopRule(style, "subagent", "y".repeat(40), [scrolled, "❯"]);
+		assert.equal(plain(scrolledLong[0]), `[subagent: ${"y".repeat(34)}…] ─ ↑ 5 more ─`);
 		const fits = applyInputLabelToEditorTopRule(style, "subagent", "审查-é-👩‍💻", [rule(60), "❯"]);
 		assert.match(plain(fits[0]), /^\[subagent: 审查-é-👩‍💻\] ─+$/);
 		assert.equal(visibleWidth(plain(fits[0])), 60);
@@ -100,12 +108,32 @@ describe("the shared chat input label (#4640)", () => {
 		const labeled = applyInputLabelToEditorTopRule(style, "subagent", "worker", draft);
 		assert.equal(plain(labeled[0]), `[subagent: worker] ${"─".repeat(61)}`);
 		assert.deepEqual(labeled.slice(1), draft.slice(1));
-		for (const top of ["", "❯ not a rule", `${"─".repeat(40)}x`, `╭${"─".repeat(78)}╮`]) {
+		for (const top of [
+			"",
+			"❯ not a rule",
+			`${"─".repeat(40)}x`,
+			`╭${"─".repeat(78)}╮`,
+			`x${"─".repeat(30)} ↑ 5 more ${"─".repeat(30)}`,
+			`${"─".repeat(30)} ↑ 5 more ${"─".repeat(30)}x`,
+		]) {
 			assert.deepEqual(applyInputLabelToEditorTopRule(style, "subagent", "worker", [top, "❯"]), [top, "❯"]);
 		}
 		assert.deepEqual(applyInputLabelToEditorTopRule(style, "subagent", undefined, draft), draft);
 		assert.deepEqual(applyInputLabelToEditorTopRule(style, "subagent", "", draft), draft);
 		assert.deepEqual(applyInputLabelToEditorTopRule(style, "subagent", "worker", []), []);
+	});
+
+	test("continues a rule in the colour it opens with, and in none when it opens with none (#4640)", () => {
+		const late = `${"─".repeat(40)}\x1b[31m${"─".repeat(40)}\x1b[0m`;
+		const [labeled] = applyInputLabelToEditorTopRule(style, "subagent", "worker", [late, "❯"]);
+		assert.ok(labeled?.startsWith(`\x1b[0m${MUTED}[subagent: `), "a colour that does not open the rule is not taken");
+		assert.ok(labeled?.endsWith(`] ${OFF}${"─".repeat(61)}\x1b[0m`));
+	});
+
+	test("builds a label only when a column is left for the name (#4640)", () => {
+		assert.equal(buildInputLabel(style, "worker", 0, "[stage: ", "]"), undefined);
+		const shown = (columns: number) => plain(buildInputLabel(style, "worker", columns, "[stage: ", "]")?.plain);
+		assert.deepEqual([shown(1), shown(6)], ["[stage: …]", "[stage: worker]"]);
 	});
 
 	test("one label implementation serves the stage kind too (#4640)", () => {

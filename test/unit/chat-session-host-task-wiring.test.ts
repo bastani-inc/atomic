@@ -195,3 +195,27 @@ test("a task message that fails after the chat closed /tasks shows its reason in
 		setKeybindings(previous);
 	}
 });
+
+test("a chat that shows task rows adds and repaints them as its tasks change (#4640)", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	const host = new ChatSessionHost(hostOptions({ getTaskSource: () => ownerTaskViewSource(fixture.store) }));
+	const rows = () =>
+		host
+			.renderBody(30, 30)
+			.map((row) => stripVTControlCharacters(row))
+			.filter((row) => row.includes("worker"));
+	try {
+		assert.deepEqual(rows(), []);
+		await fixture.start("Investigate the parser failure in module alpha");
+		assert.equal(rows().length, 1);
+		assert.doesNotMatch(rows()[0] ?? "", /\[/, "a row with a label of its own has no task id");
+		await fixture.start("Investigate the parser failure in module beta");
+		const both = rows();
+		assert.equal(both.length, 2);
+		for (const row of both) assert.match(row, /\[[0-9a-f]{6}\]/, "rows whose labels read alike name their task ids");
+	} finally {
+		host.dispose();
+		await fixture.dispose();
+	}
+});

@@ -140,7 +140,7 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
 			commands: {
 				send: (text) => this.send(text),
-				handleSlashCommand: (text) => this.chat.openTasks(text.trim().split(/\s+/).slice(1).join(" ") || undefined),
+				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
 			},
 		});
 		this.restoreUndelivered();

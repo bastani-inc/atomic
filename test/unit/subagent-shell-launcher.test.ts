@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { afterEach, describe, test } from "vitest";
+import { afterEach, describe, test, vi } from "vitest";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import {
 	ChildTaskWaits,
@@ -15,7 +15,7 @@ import type {
 	TaskRecord,
 	TaskResult,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import type { TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { TaskSubscription, type TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	executeSupervisedCommand,
 	type SupervisedCommandOwner,
@@ -96,6 +96,24 @@ describe("a subagent's shells name the subagent that launched them (#4640)", () 
 		);
 		const resumed = await startAgent(host, "child-a");
 		assert.equal(owner.bind("child-a", route, new ChildTaskWaits()).parentTaskId, resumed.taskId);
+	});
+
+	test("looking the subagent up leaves no task watch open, and a closed owner names none (#4640)", async () => {
+		const host = ownerHost();
+		const owner = createChildCommandTaskOwner(() => host);
+		const child = await startAgent(host, "child-a");
+		const disposed = vi.spyOn(TaskSubscription.prototype, "dispose");
+		try {
+			owner.bind("child-a", route, new ChildTaskWaits());
+			owner.bind("child-b", route, new ChildTaskWaits());
+			assert.equal(disposed.mock.calls.length, 2);
+		} finally {
+			disposed.mockRestore();
+		}
+		child.finish({ kind: "cancelled", cause: "user" });
+		await settled(host, child.taskId);
+		assert.ok((await host.close("session-close")).ok);
+		assert.equal(owner.bind("child-a", route, new ChildTaskWaits()).parentTaskId, undefined);
 	});
 
 	test("a shell launched through the binding records the subagent as its parent task (#4640)", async () => {

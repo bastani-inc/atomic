@@ -134,8 +134,9 @@ function subagentPage(
 	source: TaskViewSource,
 	taskId = "child",
 	env: TaskTranscriptEnvironment = environment(),
+	requestRender: () => void = () => {},
 ): TaskAgentTranscriptPage {
-	return new TaskAgentTranscriptPage(source, taskId as TaskId, env, () => {});
+	return new TaskAgentTranscriptPage(source, taskId as TaskId, env, requestRender);
 }
 
 function select(component: { handleInput(data: string): boolean }, render: () => string[], pattern: RegExp): void {
@@ -150,6 +151,19 @@ function select(component: { handleInput(data: string): boolean }, render: () =>
 async function type(page: { handleInput(data: string): boolean }, value: string): Promise<void> {
 	for (const char of value) page.handleInput(char);
 	await flush();
+}
+
+/** A chat host whose working status takes two rows, of which a short viewport keeps the last. */
+class TwoRowWorkingChat extends ChatSessionHost {
+	override renderPendingMessages(): string[] {
+		return ["PENDING"];
+	}
+	override renderWorkingStatus(): string[] {
+		return ["WORKING-1", "WORKING-2"];
+	}
+	override renderFooter(): string[] {
+		return ["FOOTER"];
+	}
 }
 
 /** A chat host whose status rows are named, so their order and budget are visible. */
@@ -273,6 +287,18 @@ describe("a subagent's chat box rows (#4640)", () => {
 		page.dispose();
 	});
 
+	test("keeps the last row of a working status that does not fit (#4640)", async () => {
+		const page = subagentPage(
+			treeSource(),
+			"child",
+			environment({ createChat: (opts) => new TwoRowWorkingChat(opts) }),
+		);
+		await page.load();
+		assert.deepEqual(plain(page.render(80, 6)).slice(0, 2), ["PENDING", "WORKING-2"]);
+		assert.deepEqual(plain(page.render(80, 7)).slice(0, 3), ["PENDING", "WORKING-1", "WORKING-2"]);
+		page.dispose();
+	});
+
 	test("counts only the subagent's own running tasks in its footer (#4640)", async () => {
 		const page = subagentPage(treeSource());
 		await page.load();
@@ -334,6 +360,51 @@ describe("/tasks in a subagent's chat (#4640)", () => {
 		assert.doesNotMatch(list, /title-parent-shell|title-grandchild-shell/);
 		assert.equal(page.chat.inputText(), "", "/tasks is not left in the composer or sent to the subagent");
 		page.dispose();
+	});
+
+	test("the subagent's open list takes the chat box's rows, with its footer under it (#4640)", async () => {
+		let renders = 0;
+		const page = subagentPage(treeSource(), "child", environment(), () => {
+			renders++;
+		});
+		await page.load();
+		await type(page, "/tasks");
+		page.handleInput(ENTER);
+		await flush();
+		const rows = plain(page.render(80, 24));
+		assert.equal(rows.length, 24);
+		assert.deepEqual(labelRows(rows), [], "the composer is hidden while the list is open");
+		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.match(rows.at(-2) ?? "", /Esc back/);
+		const [only, ...rest] = plain(page.render(80, 1));
+		assert.deepEqual(rest, []);
+		assert.notEqual(only, "Tasks  2 background tasks running · /tasks", "one row goes to the list, not the footer");
+		const before = renders;
+		page.handleInput("\x1b[B");
+		assert.ok(renders > before, "a key on the list repaints");
+		page.dispose();
+	});
+
+	test("/tasks with a task id selects that task of the subagent, whose own page has no chat footer (#4640)", async () => {
+		for (const [command, selected] of [
+			["/tasks", "title-grandchild"],
+			["/tasks child-shell", "title-child-shell"],
+			["/tasks  child-shell", "title-child-shell"],
+		] as const) {
+			const page = subagentPage(treeSource());
+			await page.load();
+			await type(page, command);
+			page.handleInput(ENTER);
+			await flush();
+			const list = plain(page.render(80, 24));
+			assert.match(list.find((row) => row.includes("│ › ")) ?? "", new RegExp(`│ › ${selected} `));
+			page.handleInput(ENTER);
+			await flush();
+			const detail = plain(page.render(80, 24));
+			assert.match(detail.join("\n"), new RegExp(`› ${selected}\\b`));
+			assert.doesNotMatch(detail.at(-1) ?? "", /^Tasks |Stryker/, "a task's own page has no chat footer");
+			page.dispose();
+		}
 	});
 
 	test("Escape on the subagent's list returns to its chat, and Left or Escape on a task returns to the list (#4640)", async () => {

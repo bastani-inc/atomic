@@ -35,6 +35,20 @@ export function ruleOpenColor(line: string): string {
 	return line.match(/^(\x1b\[[0-9;]*m)/)?.[1] ?? "";
 }
 
+function inputLabel(
+	style: InputLabelStyle,
+	name: string,
+	maxNameWidth: number,
+	prefix: string,
+	suffix: string,
+): InputLabel {
+	const shown = truncateToWidth(name, maxNameWidth, "…");
+	return {
+		plain: prefix + shown + suffix,
+		styled: style.textMuted(prefix) + BOLD + style.text(shown) + NORMAL_INTENSITY + style.textMuted(suffix),
+	};
+}
+
 /** `prefix`, `name` truncated with an ellipsis to `maxNameWidth` columns, then `suffix`; nothing when no column fits. */
 export function buildInputLabel(
 	style: InputLabelStyle,
@@ -43,12 +57,7 @@ export function buildInputLabel(
 	prefix: string,
 	suffix: string,
 ): InputLabel | undefined {
-	if (maxNameWidth < 1) return undefined;
-	const shown = visibleWidth(name) <= maxNameWidth ? name : truncateToWidth(name, maxNameWidth, "…");
-	return {
-		plain: prefix + shown + suffix,
-		styled: style.textMuted(prefix) + BOLD + style.text(shown) + NORMAL_INTENSITY + style.textMuted(suffix),
-	};
+	return maxNameWidth < 1 ? undefined : inputLabel(style, name, maxNameWidth, prefix, suffix);
 }
 
 function decorateEditorTopLine(
@@ -64,8 +73,7 @@ function decorateEditorTopLine(
 	const prefix = `${inputLabelMarker(kind)} `;
 	const overflowWidth = overflow === undefined ? 0 : visibleWidth(overflow);
 	const maxNameWidth = Math.max(1, width - overflowWidth - visibleWidth(prefix) - visibleWidth(EDITOR_SUFFIX) - 2);
-	const label = buildInputLabel(style, name, maxNameWidth, prefix, EDITOR_SUFFIX);
-	if (label === undefined) return undefined;
+	const label = inputLabel(style, name, maxNameWidth, prefix, EDITOR_SUFFIX);
 	const labelWidth = visibleWidth(label.plain);
 	if (labelWidth + overflowWidth >= width) return undefined;
 	const fillWidth = width - labelWidth - overflowWidth;
@@ -88,8 +96,8 @@ function decorateEditorTopLine(
  * Names the session a chat input sends to in the editor's top rule, as `[kind: name]`. Call it on the editor's
  * rendered lines: decorating the rule while the editor renders would stop it recognising the rule as a border and
  * put the `❯` prompt on it. Only the first line is decorated, a plain `─` rule or a scrolled `↑ N more` rule, whose
- * indicator stays; later rules never are. A rule that is labeled already, or narrower than
- * {@link INPUT_LABEL_MIN_COLUMNS}, is left as it is; draft text that names a label does not count as one.
+ * indicator stays; later rules never are. A labeled rule is no longer plain, so it is never labeled twice, and draft
+ * text that names a label does not count as one. A rule narrower than {@link INPUT_LABEL_MIN_COLUMNS} is left as it is.
  */
 export function applyInputLabelToEditorTopRule(
 	style: InputLabelStyle,
@@ -101,7 +109,6 @@ export function applyInputLabelToEditorTopRule(
 	const topLine = lines[0];
 	if (!name || topLine === undefined) return lines;
 	const plain = stripAnsi(topLine);
-	if (plain.includes(inputLabelMarker(kind))) return lines;
 	const overflow = EDITOR_OVERFLOW_RE.exec(plain)?.[2];
 	if (!/^─+$/.test(plain) && overflow === undefined) return lines;
 	const decorated = decorateEditorTopLine(style, kind, name, topLine, plain, overflow);
