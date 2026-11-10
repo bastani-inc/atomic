@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.75-alpha.1] - 2026-11-10
+
+Workflow stages report suspension clearly, design runs get reference images, and resumes build blueprints.
+
+- **Clear suspended stages.** A released stage now shows `suspended (tool: <name>)` or `suspended (between turns)`, and its chat shows a tool call it still waits on as pending instead of interrupted ([#4589](https://github.com/bastani-inc/atomic/issues/4589)).
+- **Design reference images.** `open-claude-design` renders one reference image per visual direction when an image model is available, feeds them into HTML generation and links them in `spec.html`; pick the model with `image_model` ([#4590](https://github.com/bastani-inc/atomic/issues/4590)).
+- **Resumes that never fail on setup.** Workflow resumes and pooled children build the restored worktree's blueprints, and a missing or failing blueprint is recorded as a notice while the run continues ([#4588](https://github.com/bastani-inc/atomic/issues/4588)).
+- **Current prompting and design skills.** `prompt-engineer` gains a Claude Fable 5.2 guide and rechecked model guides, and the bundled Impeccable and `unslop` skills are refreshed ([#4612](https://github.com/bastani-inc/atomic/issues/4612)).
+
+**Breaking change:** replace `waiting` with `suspended` in stage-status values, and read `suspendedCount` and `suspendedStages` instead of `waitingCount` and `waitingStages` in `workflow status` output.
+
 ### Breaking Changes
 
 - Released workflow stages now use `suspended` instead of `waiting` in `StageStatus` and status output. Migration: replace `waiting` with `suspended` in stage-status values, comparisons, switches and status-keyed maps, and read `suspendedCount` and `suspendedStages` instead of `waitingCount` and `waitingStages` in `workflow status` listings. The old JSON field names are not returned. `statusFilter: "waiting"` remains accepted as a deprecated alias of `suspended`, and saved journals, snapshots and stores recorded with `waiting` remain readable as `suspended` ([#4589](https://github.com/bastani-inc/atomic/issues/4589))
