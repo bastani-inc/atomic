@@ -649,6 +649,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		const state = await this.client.getState();
 		if (super.session.sessionManager.isPersisted())
 			await super.switchSession(state.sessionId, {
+				cwdOverride,
 				sessionDirectory: state.sessionLocation ? dirname(state.sessionLocation) : undefined,
 			});
 		await this.initializeFromEngine();

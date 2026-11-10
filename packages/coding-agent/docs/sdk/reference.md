@@ -794,6 +794,16 @@ await sm.createBranchedSession(leafId);       // Extract path to new file
 
 All of them extend `ResumeError` (`isResumeError`, `findResumeError`), and cross worker and process boundaries as themselves (`serializeResumeError`, `rehydrateResumeError`). A snapshot that cannot be restored stays a `WorkspaceDriftError` with the restore failure as its `cause`. A blueprint never stops a resume, so none of these errors is raised for one; see the blueprint errors below. Cancelling a resume through its `AbortSignal` rejects with the signal's reason, never with one of these errors.
 
+#### Missing session directory
+
+`runtime.switchSession()` and `runtime.importFromJsonl()` check a session's recorded working directory, whether the session lives in a JSONL file or in database storage. They reject with a `MissingSessionCwdError` when it does not exist on this machine and no worktree snapshot restored one. Nothing was opened, and an import leaves no copy in storage.
+
+| Class | `code` | When | Fields | What to do |
+|---|---|---|---|---|
+| `MissingSessionCwdError` | `session-cwd-missing` | The session's working directory does not exist. `retryable` is `false`. | `sessionCwd` (the recorded directory), `fallbackCwd` (the runtime's directory), `sessionFile` (only for a session kept in a file), `hint` | Retry with `{ cwdOverride }` (`switchSession`) or `importFromJsonl(path, cwdOverride)` to run the session in another directory, or fork it there with `SessionManager.forkTo(cwd, store)`. |
+
+`isMissingSessionCwdError(error)` recognizes it, including an error that crossed a process boundary as a plain object with the same `name`, `code` and `issue`. `serializeMissingSessionCwdError(error)` returns a `SerializedMissingSessionCwdError`, and `rehydrateMissingSessionCwdError(serialized)` rebuilds it; `isSerializedMissingSessionCwdError(value)` checks an envelope before you do. The RPC client does this for the `switch_session` and `import_session` commands, so the error reaches the host as itself. Its message names both directories and is the text print and RPC modes show. Interactive mode answers it with a prompt to continue in the current directory, fork the session there, or cancel; see [Sessions](/sessions#resuming-and-deleting-sessions).
+
 #### Blueprint errors
 
 A blueprint step that fails, a blueprint that is invalid, or a build that cannot read its ledger never rejects a resume. The error is carried in the build outcome (`runBlueprintBuild`, `setUpResumedBlueprints`) and reported as a warning. All of them extend `BlueprintError` (`isBlueprintError`, `findBlueprintError`) and cross worker and process boundaries as themselves (`serializeBlueprintError`, `rehydrateBlueprintError`). None is retryable.
@@ -1258,6 +1268,17 @@ type DebugFields
 type DebugValue
 type DebugErrorCode
 type DebugSettingSource
+
+// Session working directory
+MissingSessionCwdError
+isMissingSessionCwdError
+serializeMissingSessionCwdError
+rehydrateMissingSessionCwdError
+isSerializedMissingSessionCwdError
+type SerializedMissingSessionCwdError
+type MissingSessionCwdErrorCode
+type MissingSessionCwdFields
+type SessionCwdIssue
 
 // Event subscriptions (session.subscribe, ctx.subscribe, ctx.events)
 type EventSource

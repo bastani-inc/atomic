@@ -62,11 +62,7 @@ import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from ".
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import type { ResumeNotice } from "./core/resume/session-resume.ts";
-import {
-	getMissingSessionCwdIssue,
-	getMissingStoredSessionCwdIssue,
-	MissingSessionCwdError,
-} from "./core/session-cwd.ts";
+import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
@@ -670,8 +666,7 @@ export async function main(argv: string[], options?: MainOptions) {
 		console.error(chalk.red(`Error: ${message}`));
 		process.exit(1);
 	}
-	const missingSessionCwdIssue =
-		getMissingSessionCwdIssue(sessionManager, cwd) ?? getMissingStoredSessionCwdIssue(sessionManager, cwd);
+	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
 		startupEarlyInputCapture?.consume();
 		startupEarlyInputCapture = undefined;

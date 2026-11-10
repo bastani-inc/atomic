@@ -871,6 +871,14 @@ If an extension cancelled the switch:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": true}}
 ```
 
+If the session's recorded working directory does not exist on this machine, the command fails before it opens anything, with the typed error `MissingSessionCwdError`, in any session storage. The response carries `errorCode: "missing_session_cwd"` and the error's `name`, `code`, `message`, `hint` and `fields` (`sessionCwd`, `fallbackCwd` and, for a session kept in a file, `sessionFile`) in `errorDetails`. Send the command again with `cwdOverride` set to run the session in another directory:
+
+```json
+{"type": "response", "command": "switch_session", "success": false, "error": "Stored session working directory does not exist: /old/project\nCurrent working directory: /new/project", "errorCode": "missing_session_cwd", "errorDetails": {"name": "MissingSessionCwdError", "code": "session-cwd-missing", "message": "Stored session working directory does not exist: /old/project\nCurrent working directory: /new/project", "hint": "Open the session from its original working directory, or continue or fork it when asked.", "retryable": false, "fields": {"sessionCwd": "/old/project", "fallbackCwd": "/new/project"}}}
+```
+
+`import_session` fails the same way when the imported session's working directory is missing, and stores nothing; repeat it with `cwdOverride`.
+
 #### start_pending_recovery
 
 Recover work an earlier process left unfinished in the current session. Send it after you have shown the transcript, at startup or after `switch_session`.

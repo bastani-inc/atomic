@@ -4,6 +4,7 @@ import {
 } from "../../core/compaction/background-compaction-errors.ts";
 import { DebugError, serializeDebugError } from "../../core/debug-errors.ts";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
+import { isMissingSessionCwdError, serializeMissingSessionCwdError } from "../../core/session-cwd.ts";
 import type { RpcCommand, RpcExtensionUIRequest, RpcResponse } from "./rpc-types.ts";
 
 export type RpcOutputRecord = RpcResponse | RpcExtensionUIRequest | object;
@@ -57,6 +58,17 @@ export function createRpcErrorResponse(
 			error: message,
 			errorCode: "background_compaction",
 			errorDetails: serializeBackgroundCompactionError(cause),
+		};
+	}
+	if (isMissingSessionCwdError(cause)) {
+		return {
+			id,
+			type: "response",
+			command,
+			success: false,
+			error: message,
+			errorCode: "missing_session_cwd",
+			errorDetails: serializeMissingSessionCwdError(cause),
 		};
 	}
 	return { id, type: "response", command, success: false, error: message };

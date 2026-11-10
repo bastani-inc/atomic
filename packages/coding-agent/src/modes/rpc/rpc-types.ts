@@ -39,6 +39,7 @@ import type { ModelFallbackReason } from "../../core/model-resolver-types.ts";
 import type { CredentialSynchronizationOperation } from "../../core/model-runtime.js";
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
+import type { SerializedMissingSessionCwdError } from "../../core/session-cwd.ts";
 import type { SessionEntry, SessionInfo, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
@@ -518,7 +519,10 @@ export type RpcErrorDetails =
 	  }
 	| { errorCode: "debug_error"; errorDetails: SerializedDebugError }
 	// A rejected background compaction command keeps its typed error (#4330)
-	| { errorCode: "background_compaction"; errorDetails: SerializedBackgroundCompactionError };
+	| { errorCode: "background_compaction"; errorDetails: SerializedBackgroundCompactionError }
+	// A resume or import whose session's working directory is gone keeps its typed error, so the host can offer
+	// to continue or fork instead of reporting a failure
+	| { errorCode: "missing_session_cwd"; errorDetails: SerializedMissingSessionCwdError };
 
 // ============================================================================
 // RPC Events (stdout)

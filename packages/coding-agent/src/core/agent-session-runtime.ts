@@ -31,7 +31,7 @@ import {
 	sessionResumeOptions,
 } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
-import { assertSessionCwdExists, getMissingSessionCwdIssue, MissingSessionCwdError } from "./session-cwd.ts";
+import { assertSessionCwdExists, findMissingSessionCwdIssue, MissingSessionCwdError } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	drainSessionWork,
@@ -682,7 +682,8 @@ export class AgentSessionRuntime {
 				sessionId,
 			);
 			const sessionManager = await this.resumeWorktree(opened, options?.sessionDirectory);
-			assertSessionCwdExists(sessionManager, this.cwd);
+			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
+			if (missingCwd !== undefined) throw new MissingSessionCwdError(missingCwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
@@ -803,7 +804,7 @@ export class AgentSessionRuntime {
 			const sessionManager = await this.resumeWorktree(
 				await this.session.sessionManager.importFromJsonl(resolvedPath, cwdOverride),
 			);
-			const missingCwd = getMissingSessionCwdIssue(sessionManager, this.cwd);
+			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
 			if (missingCwd !== undefined) {
 				const failure = new MissingSessionCwdError(missingCwd);
 				await this.discardImportedSession(sessionManager, failure);

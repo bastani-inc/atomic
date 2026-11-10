@@ -15,6 +15,7 @@ import {
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { MissingSessionCwdError } from "../../src/core/session-cwd.ts";
 import { SessionEntryError, SessionManager } from "../../src/core/session-manager.ts";
+import { resolveSessionStore } from "../../src/core/session-storage.ts";
 import { StorageRollbackError } from "../../src/core/storage/errors.ts";
 import type {
 	ExtensionAPI,
@@ -43,7 +44,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 	async function createRuntimeForTest(
 		extensionFactory: ExtensionFactory,
-		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean },
+		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean; databaseStore?: boolean },
 	) {
 		const tempDir =
 			options?.cwd ?? join(tmpdir(), `pi-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -108,10 +109,18 @@ describe("AgentSessionRuntime characterization", () => {
 				diagnostics: services.diagnostics,
 			};
 		};
+		const databaseStore = options?.databaseStore
+			? await resolveSessionStore(tempDir, {
+					sessionStore: { kind: "sqlite", path: join(tempDir, "sessions.sqlite") },
+				})
+			: undefined;
+		if (databaseStore) cleanups.push(() => databaseStore.close());
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: await SessionManager.create(tempDir, join(tempDir, "sessions")),
+			sessionManager: databaseStore
+				? await SessionManager.create(databaseStore, tempDir)
+				: await SessionManager.create(tempDir, join(tempDir, "sessions")),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -253,6 +262,79 @@ describe("AgentSessionRuntime characterization", () => {
 			expect(failure).toBeInstanceOf(StorageRollbackError);
 			expect((failure as StorageRollbackError).cause).toBeInstanceOf(MissingSessionCwdError);
 			expect((failure as StorageRollbackError).rollbackCause).toBe(removalFailure);
+		});
+
+		it("reports a session file's missing cwd when resuming it, and runs it in the current cwd on request", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const missing = join(tempDir, "renamed-away");
+			const source = await SessionManager.create(missing, join(tempDir, "old-sessions"));
+			await source.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const sourceId = source.getSessionId();
+			await source.getSessionStore().close();
+
+			const failure = await runtime
+				.switchSession(sourceId, { sessionDirectory: join(tempDir, "old-sessions") })
+				.catch((e: unknown) => e);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toMatchObject({ sessionCwd: missing, fallbackCwd: tempDir });
+			expect((failure as MissingSessionCwdError).issue.sessionFile).toBeDefined();
+
+			const result = await runtime.switchSession(sourceId, {
+				sessionDirectory: join(tempDir, "old-sessions"),
+				cwdOverride: tempDir,
+			});
+
+			expect(result).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe(sourceId);
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+		});
+
+		it("reports the missing cwd of a session kept in database storage, which has no session file", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {}, { databaseStore: true });
+			const store = runtime.session.sessionManager.getSessionStore();
+			const missing = join(tempDir, "renamed-away");
+			const source = await SessionManager.create(store, missing);
+			await source.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const sourceId = source.getSessionId();
+			const openSessionId = runtime.session.sessionId;
+
+			const failure = await runtime.switchSession(sourceId).catch((e: unknown) => e);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toEqual({ sessionCwd: missing, fallbackCwd: tempDir });
+			expect(runtime.session.sessionId).toBe(openSessionId);
+
+			const result = await runtime.switchSession(sourceId, { cwdOverride: tempDir });
+
+			expect(result).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe(sourceId);
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+			expect((await store.readHeader(sourceId))?.cwd).toBe(missing);
+		});
+
+		it("leaves no record in database storage when an import cannot run, so a retry imports it once", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {}, { databaseStore: true });
+			const store = runtime.session.sessionManager.getSessionStore();
+			const exportDirectory = join(tempDir, "exports");
+			const missing = join(tempDir, "renamed-away");
+			const exported = await SessionManager.create(missing, exportDirectory);
+			await exported.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const exportedId = exported.getSessionId();
+			const exportPath = exported.getSessionFile() ?? "";
+			await exported.getSessionStore().close();
+
+			const failure = await runtime.importFromJsonl(exportPath).catch((e: unknown) => e);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toEqual({ sessionCwd: missing, fallbackCwd: tempDir });
+			expect(await store.readHeader(exportedId)).toBeUndefined();
+
+			const retried = await runtime.importFromJsonl(exportPath, tempDir);
+
+			expect(retried).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe(exportedId);
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
 		});
 
 		it("does not touch the store when the import fails for another reason", async () => {
