@@ -186,6 +186,7 @@ export {
 	GitHubCopilotRateLimitError,
 	GitHubCopilotServiceUnavailableError,
 	GitHubCopilotStreamEndedEarlyError,
+	type GitHubCopilotStreamSnapshot,
 	type GitHubCopilotUnrecognizedReason,
 	GitHubCopilotUnrecognizedResponseError,
 	getGitHubCopilotError,
@@ -648,7 +649,14 @@ export {
 	getSkillCatalog,
 	loadProjectContextFiles,
 } from "./core/resource-loader.ts";
-export { nextRetryDecision, type RetryDecision, type RetryPolicySettings } from "./core/retry-policy.ts";
+export {
+	isLongStreamCut,
+	LONG_STREAM_CUT_MS,
+	MAX_LONG_STREAM_CUT_RETRIES,
+	nextRetryDecision,
+	type RetryDecision,
+	type RetryPolicySettings,
+} from "./core/retry-policy.ts";
 // SDK for programmatic usage
 export {
 	AgentSessionRuntime,

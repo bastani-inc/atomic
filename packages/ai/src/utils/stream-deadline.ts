@@ -150,15 +150,22 @@ function scheduleDeadline(callback: () => void, delayMs: number): () => void {
  * use that callback to abort the request signal, which interrupts the pending
  * provider read and runs the source's cleanup before fallback starts.
  *
- * A deadline of `undefined` delegates straight to the source and adds no timer.
+ * A source can mark some items as keep-alives, such as the `ping` events Anthropic's streaming API sends while a
+ * model thinks silently (#4626). `isKeepAlive` accepts those items: each one restarts the timer, because the
+ * connection is alive, and is then dropped instead of yielded.
+ *
+ * A deadline of `undefined` adds no timer and passes the source through, still dropping keep-alives.
  */
-export async function* withStreamDeadline<T>(
+export async function* withStreamDeadline<T, K extends T = never>(
 	source: AsyncIterable<T>,
 	deadlineMs: number | undefined,
 	onDeadline?: () => void,
-): AsyncGenerator<T, void, undefined> {
+	isKeepAlive?: (item: T) => item is K,
+): AsyncGenerator<Exclude<T, K>, void, undefined> {
 	if (deadlineMs === undefined) {
-		yield* source;
+		for await (const item of source) {
+			if (isKeepAlive?.(item) !== true) yield item as Exclude<T, K>;
+		}
 		return;
 	}
 
@@ -209,7 +216,8 @@ export async function* withStreamDeadline<T>(
 				closed = true;
 				return;
 			}
-			yield result.value;
+			if (isKeepAlive?.(result.value) === true) continue;
+			yield result.value as Exclude<T, K>;
 		}
 	} finally {
 		closeSource();

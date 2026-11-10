@@ -14,7 +14,7 @@ import {
 	isUnrecognizedModelFailure,
 	normalizeModelFailureSignal,
 } from "./model-fallback-failures.ts";
-import { nextRetryDecision } from "./retry-policy.ts";
+import { isLongStreamCut, LONG_STREAM_CUT_ADVICE, nextRetryDecision, repeatsLongStreamCut } from "./retry-policy.ts";
 import { settingsWriteOwner } from "./settings-write-ownership.ts";
 
 function modelLabel(model: Model<Api> | undefined): string {
@@ -369,6 +369,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 		// The fallback model is told which model it is.
 		await this._recordSystemPromptForModelSwitch();
 		this._retryAttempt = 0;
+		this._longStreamCutRetries = 0;
 
 		const fallbackGeneration = this._fallbackOriginGeneration;
 		setTimeout(() => {
@@ -390,6 +391,7 @@ export async function _trySwitchToFallbackModel(this: AgentSession, message: Ass
 					}
 				}
 				this._retryAttempt = 0;
+				this._longStreamCutRetries = 0;
 				this._resolveRetry();
 			});
 		}, 0);
@@ -423,6 +425,7 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 			});
 		}
 		this._retryAttempt = 0;
+		this._longStreamCutRetries = 0;
 		this._resolveRetry();
 		return false;
 	}
@@ -439,23 +442,34 @@ export async function _handleRetryableError(this: AgentSession, message: Assista
 	// main chat and workflow stages cannot drift apart on the same settings. The
 	// counter still advances on the exhausting attempt, so `_trySwitchToFallbackModel`
 	// closes the retry lifecycle before the fallback lifecycle opens.
-	const decision = nextRetryDecision(settings, this._retryAttempt, canRetrySameModel, message);
+	const decision = nextRetryDecision(
+		settings,
+		this._retryAttempt,
+		canRetrySameModel,
+		message,
+		this._longStreamCutRetries,
+	);
 	this._retryAttempt += 1;
 	if (decision === undefined) {
 		if (canAdvanceToFallback && (await this._trySwitchToFallbackModel(message))) {
 			return true;
 		}
-		// Max retries exceeded, emit final failure and reset
+		// Retries exhausted, or a repeated long stream cut that another attempt would only repeat: emit the final
+		// failure and reset. The repeated cut says what to do instead of retrying again.
 		this._emit({
 			type: "auto_retry_end",
 			success: false,
 			attempt: this._retryAttempt - 1,
-			finalError: message.errorMessage,
+			finalError: repeatsLongStreamCut(message, this._longStreamCutRetries)
+				? [message.errorMessage, LONG_STREAM_CUT_ADVICE].filter(Boolean).join("\n\n")
+				: message.errorMessage,
 		});
 		this._retryAttempt = 0;
+		this._longStreamCutRetries = 0;
 		this._resolveRetry(); // Resolve so waitForRetry() completes
 		return false;
 	}
+	if (isLongStreamCut(message)) this._longStreamCutRetries += 1;
 
 	const delayMs = decision.delayMs;
 
@@ -506,6 +520,7 @@ function finishCancelledRetry(this: AgentSession): void {
 	if (this._retryAttempt === 0) return;
 	const attempt = this._retryAttempt;
 	this._retryAttempt = 0;
+	this._longStreamCutRetries = 0;
 	this._emit({ type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" });
 }
 

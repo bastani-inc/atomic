@@ -1,6 +1,7 @@
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
 import { clampThinkingLevel } from "../models.ts";
 import { githubCopilotEmptyResponse, recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
+import { GitHubCopilotStreamAttempt } from "../providers/github-copilot-stream-attempt.ts";
 import type {
 	Api,
 	AssistantMessage,
@@ -203,6 +204,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamAttempt = new GitHubCopilotStreamAttempt();
 		let startEmitted = false;
 
 		try {
@@ -250,8 +252,12 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
+			const createRequest = (requestParams: ResponseCreateParamsStreaming) => {
+				streamAttempt.begin();
+				return client.responses.create(requestParams, requestOptions).withResponse();
+			};
 			const sendRequest = (requestParams: ResponseCreateParamsStreaming) =>
-				retryProviderRequest(() => client.responses.create(requestParams, requestOptions).withResponse(), {
+				retryProviderRequest(() => createRequest(requestParams), {
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
@@ -266,7 +272,10 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 					startEmitted = true;
 					stream.push({ type: "start", partial: output });
 				}
-				return readResponsePreamble(withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort));
+				streamAttempt.respond(response.headers);
+				return readResponsePreamble(
+					streamAttempt.observe(withStreamDeadline(data, streamDeadline.deadlineMs, streamDeadline.abort)),
+				);
 			};
 			let requestedServiceTier = resolveOpenAIRequestServiceTier(model, options?.serviceTier);
 			let openaiStream: Awaited<ReturnType<typeof openStream>>;
@@ -321,7 +330,7 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 			} else {
 				output.errorMessage = errorMessage;
 			}
-			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, startEmitted);
+			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {

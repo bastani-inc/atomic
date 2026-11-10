@@ -197,6 +197,8 @@ class AgentSessionBase {
 	protected _lastSummarizedMessageId: string | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
+	/** Retries made after an attempt whose stream was cut after a long run, for the current model and turn. */
+	protected _longStreamCutRetries = 0;
 	protected _retryPromise: Promise<void> | undefined = undefined;
 	protected _retryResolve: (() => void) | undefined = undefined;
 	protected _bashAbortControllers = new Map<string | symbol, Set<AbortController>>();

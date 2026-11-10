@@ -17,6 +17,7 @@ import {
 } from "../env-api-keys.ts";
 import { calculateCost } from "../models.ts";
 import { recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
+import { GitHubCopilotStreamAttempt } from "../providers/github-copilot-stream-attempt.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -913,6 +914,17 @@ const ANTHROPIC_MESSAGE_EVENTS: ReadonlySet<string> = new Set([
 	"content_block_stop",
 ]);
 
+/** The `ping` events Anthropic's streaming API sends to keep a quiet connection alive: activity, not message events. */
+interface AnthropicPing {
+	readonly type: "ping";
+}
+
+const ANTHROPIC_PING: AnthropicPing = { type: "ping" };
+
+function isAnthropicPing(event: RawMessageStreamEvent | AnthropicPing): event is AnthropicPing {
+	return event.type === "ping";
+}
+
 function flushSseEvent(state: SseDecoderState): ServerSentEvent | null {
 	if (!state.event && state.data.length === 0) {
 		return null;
@@ -1068,7 +1080,7 @@ function streamedErrorType(body: NonNullable<unknown>): ErrorType | undefined {
 async function* iterateAnthropicEvents(
 	response: Response,
 	signal?: AbortSignal,
-): AsyncGenerator<RawMessageStreamEvent> {
+): AsyncGenerator<RawMessageStreamEvent | AnthropicPing> {
 	if (!response.body) {
 		throw new Error("Attempted to iterate over an Anthropic response with no body");
 	}
@@ -1080,6 +1092,11 @@ async function* iterateAnthropicEvents(
 		if (sse.event === "error") {
 			const body = parseStreamedErrorBody(sse.data);
 			throw new Anthropic.APIError(undefined, body, sse.data, response.headers, streamedErrorType(body));
+		}
+
+		if (sse.event === "ping") {
+			yield ANTHROPIC_PING;
+			continue;
 		}
 
 		if (!ANTHROPIC_MESSAGE_EVENTS.has(sse.event ?? "")) {
@@ -1137,7 +1154,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
-		let streamStarted = false;
+		const streamAttempt = new GitHubCopilotStreamAttempt();
 
 		let inputTransformations: AnthropicInputTransformation[] | undefined;
 
@@ -1208,7 +1225,10 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			};
 			const send = (body: ThreadedParams) =>
 				retryProviderRequest(
-					() => client.beta.messages.create({ ...body, stream: true }, requestOptions).asResponse(),
+					() => {
+						streamAttempt.begin();
+						return client.beta.messages.create({ ...body, stream: true }, requestOptions).asResponse();
+					},
 					{
 						maxRetries: options?.maxRetries,
 						maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -1265,7 +1285,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			}
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
-			streamStarted = true;
+			streamAttempt.respond(response.headers);
 
 			// Stream state per Anthropic block index, kept off the content blocks so it never reaches partials.
 			const openBlocks = new Map<number, { contentIndex: number; arguments?: ToolCallArgumentsStream }>();
@@ -1274,10 +1294,13 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 				return open === undefined ? undefined : { ...open, block: output.content[open.contentIndex]! };
 			};
 
-			for await (const event of withStreamDeadline(
-				iterateAnthropicEvents(response, streamDeadline.signal),
-				streamDeadline.deadlineMs,
-				streamDeadline.abort,
+			for await (const event of streamAttempt.observe(
+				withStreamDeadline(
+					iterateAnthropicEvents(response, streamDeadline.signal),
+					streamDeadline.deadlineMs,
+					streamDeadline.abort,
+					isAnthropicPing,
+				),
 			)) {
 				await options?.onProviderStreamEvent?.(event, model);
 				if (event.type === "message_start") {
@@ -1528,7 +1551,7 @@ export const stream: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = error instanceof Error ? withCauseDetail(error) : JSON.stringify(error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
-			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamStarted);
+			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {

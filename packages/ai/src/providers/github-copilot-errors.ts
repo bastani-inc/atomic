@@ -1,6 +1,7 @@
 import type { AssistantMessage, JsonObject } from "../types.ts";
 import { type AssistantMessageDiagnostic, appendAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import type { GitHubCopilotStreamSnapshot } from "./github-copilot-stream-attempt.ts";
 
 /** Stable codes of every GitHub Copilot request failure. Public API: never renamed or reused. */
 export type GitHubCopilotErrorCode =
@@ -43,7 +44,7 @@ export type GitHubCopilotErrorName =
 	| "GitHubCopilotEmptyResponseError"
 	| "GitHubCopilotUnrecognizedResponseError";
 
-export type GitHubCopilotErrorFieldValue = string | number | null;
+export type GitHubCopilotErrorFieldValue = string | number | boolean | null;
 export type GitHubCopilotErrorFields = Readonly<Record<string, GitHubCopilotErrorFieldValue>>;
 
 /** The request a failure belongs to, and what the provider reported about it. No prompt text, tokens or bodies. */
@@ -132,7 +133,8 @@ const HINTS: Readonly<Record<GitHubCopilotErrorCode, string>> = {
 	"invalid-request": "Check the model's thinking level and any models.json overrides for this model.",
 	"authentication-failed": "Run /login to sign in to GitHub Copilot again, or check COPILOT_GITHUB_TOKEN.",
 	"service-unavailable": "Retry later; Atomic retries the request when retries are enabled.",
-	"stream-ended-early": "Retry the request; Atomic retries it when retries are enabled.",
+	"stream-ended-early":
+		"If the stream keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model with the fallbackModels setting.",
 	"empty-response": "Retry the request; Atomic retries it when retries are enabled.",
 	"unrecognized-response": "Retry the request, and report it if it keeps happening.",
 };
@@ -150,13 +152,15 @@ const INVALID_REQUEST_HINTS: Readonly<Partial<Record<GitHubCopilotInvalidRequest
 	"integration-id": "Remove the Copilot-Integration-Id header override from models.json.",
 };
 
-function failureMessage(code: GitHubCopilotErrorCode, modelId: string, hint: string): string {
-	return `${WHAT_FAILED[code]}: ${modelId} (${code}). ${hint}`;
+function failureMessage(code: GitHubCopilotErrorCode, modelId: string, hint: string, circumstances?: string): string {
+	return `${WHAT_FAILED[code]}: ${modelId} (${code}). ${circumstances === undefined ? "" : `${circumstances}. `}${hint}`;
 }
 
 interface GitHubCopilotErrorOptions {
 	readonly hint?: string;
 	readonly cause?: unknown;
+	/** What the failure observed, as one sentence without its final period; it follows the code in the message. */
+	readonly circumstances?: string;
 }
 
 /** Base of every GitHub Copilot request failure. Catch this to handle the whole family. */
@@ -175,7 +179,7 @@ export class GitHubCopilotError extends Error {
 	constructor(code: GitHubCopilotErrorCode, context: GitHubCopilotErrorContext, options?: GitHubCopilotErrorOptions) {
 		const hint = options?.hint ?? HINTS[code];
 		super(
-			failureMessage(code, context.modelId, hint),
+			failureMessage(code, context.modelId, hint, options?.circumstances),
 			options?.cause === undefined ? undefined : { cause: options.cause },
 		);
 		this.code = code;
@@ -320,13 +324,49 @@ export class GitHubCopilotServiceUnavailableError extends GitHubCopilotError {
 	}
 }
 
-/** The response stream stopped before its finish reason or terminal event. Retryable. */
+/** What a stream that ended early observed, as the sentence that follows its code in the message. */
+function streamEndedEarlyCircumstances(
+	requestId: string | undefined,
+	durationMs: number | undefined,
+	startedContent: boolean | undefined,
+): string | undefined {
+	const facts = [
+		...(durationMs === undefined ? [] : [`Attempt ran ${(durationMs / 1000).toFixed(1)} s`]),
+		...(startedContent === undefined ? [] : [startedContent ? "response started" : "no response events arrived"]),
+		...(requestId === undefined ? [] : [`request ID ${requestId}`]),
+	];
+	return facts.length === 0 ? undefined : facts.join(", ");
+}
+
+/**
+ * The response stream stopped before its finish reason or terminal event. Retryable. `durationMs` is how long the attempt
+ * ran before it ended and `startedContent` whether any provider stream event had arrived; both are undefined when the
+ * error was built without them. The provider's `x-request-id` is `requestId`.
+ */
 export class GitHubCopilotStreamEndedEarlyError extends GitHubCopilotError {
 	override readonly name = "GitHubCopilotStreamEndedEarlyError" as const;
 	declare readonly code: "stream-ended-early";
+	readonly durationMs: number | undefined;
+	readonly startedContent: boolean | undefined;
 
-	constructor(context: GitHubCopilotErrorContext, options?: { readonly cause?: unknown }) {
-		super("stream-ended-early", context, options);
+	constructor(
+		context: GitHubCopilotErrorContext,
+		options?: { readonly cause?: unknown; readonly durationMs?: number; readonly startedContent?: boolean },
+	) {
+		super("stream-ended-early", context, {
+			cause: options?.cause,
+			circumstances: streamEndedEarlyCircumstances(context.requestId, options?.durationMs, options?.startedContent),
+		});
+		this.durationMs = options?.durationMs;
+		this.startedContent = options?.startedContent;
+	}
+
+	override fields(): GitHubCopilotErrorFields {
+		return {
+			...super.fields(),
+			durationMs: this.durationMs ?? null,
+			startedContent: this.startedContent ?? null,
+		};
 	}
 }
 
@@ -535,6 +575,11 @@ function numberField(fields: GitHubCopilotErrorFields, key: string): number | un
 	return typeof value === "number" ? value : undefined;
 }
 
+function booleanField(fields: GitHubCopilotErrorFields, key: string): boolean | undefined {
+	const value = fields[key];
+	return typeof value === "boolean" ? value : undefined;
+}
+
 function contextFromFields(fields: GitHubCopilotErrorFields): GitHubCopilotErrorContext {
 	return {
 		modelId: stringField(fields, "modelId") ?? "",
@@ -561,6 +606,14 @@ function isSerializedCause(value: unknown, depth = 0): value is SerializedGitHub
 	);
 }
 
+/** The fields that hold a boolean; every other field holds a string, a number or null. */
+const BOOLEAN_FIELD_KEYS: ReadonlySet<string> = new Set(["startedContent"]);
+
+function isSerializedFieldValue(key: string, field: unknown): boolean {
+	if (field === null || typeof field === "string" || typeof field === "number") return true;
+	return typeof field === "boolean" && BOOLEAN_FIELD_KEYS.has(key);
+}
+
 function isSerializedError(value: unknown): value is SerializedGitHubCopilotError {
 	if (!isJsonRecord(value) || !isJsonRecord(value.fields)) return false;
 	return (
@@ -569,9 +622,7 @@ function isSerializedError(value: unknown): value is SerializedGitHubCopilotErro
 		typeof value.message === "string" &&
 		typeof value.hint === "string" &&
 		typeof value.retryable === "boolean" &&
-		Object.values(value.fields).every(
-			(field) => field === null || typeof field === "string" || typeof field === "number",
-		) &&
+		Object.entries(value.fields).every(([key, field]) => isSerializedFieldValue(key, field)) &&
 		isSerializedCause(value.cause)
 	);
 }
@@ -632,7 +683,11 @@ export function deserializeGitHubCopilotError(value: unknown): GitHubCopilotErro
 		case "GitHubCopilotServiceUnavailableError":
 			return new GitHubCopilotServiceUnavailableError(context, { cause });
 		case "GitHubCopilotStreamEndedEarlyError":
-			return new GitHubCopilotStreamEndedEarlyError(context, { cause });
+			return new GitHubCopilotStreamEndedEarlyError(context, {
+				cause,
+				durationMs: numberField(fields, "durationMs"),
+				startedContent: booleanField(fields, "startedContent"),
+			});
 		case "GitHubCopilotEmptyResponseError":
 			return new GitHubCopilotEmptyResponseError(context, { cause });
 		case "GitHubCopilotUnrecognizedResponseError": {
@@ -888,8 +943,8 @@ function statusFailure(
 export interface GitHubCopilotFailureContext {
 	readonly modelId: string;
 	readonly api: string;
-	/** True once Copilot answered with HTTP success and the response stream started. */
-	readonly streamStarted: boolean;
+	/** What the request observed once Copilot answered with HTTP success; undefined when no response arrived. */
+	readonly stream?: GitHubCopilotStreamSnapshot;
 	/** The provider's raw finish or stop reason, when the stream reported one. */
 	readonly finishReason?: string;
 }
@@ -950,19 +1005,27 @@ export function classifyGitHubCopilotFailure(
 	if (providerError instanceof SyntaxError || providerError.error !== undefined) {
 		return new GitHubCopilotUnrecognizedResponseError("malformed-body", context, { cause: providerError });
 	}
-	return failure.streamStarted ? new GitHubCopilotStreamEndedEarlyError(context, { cause: providerError }) : undefined;
+	if (failure.stream === undefined) return undefined;
+	return new GitHubCopilotStreamEndedEarlyError(
+		{ ...context, requestId: context.requestId ?? failure.stream.requestId },
+		{ cause: providerError, durationMs: failure.stream.durationMs, startedContent: failure.stream.startedContent },
+	);
 }
 
 /**
  * Type a failed Copilot assistant message at the provider boundary: classify `error` and record it on `output`,
  * keeping the provider's text after the typed message. A cancelled message is left alone.
  */
-export function recordGitHubCopilotFailure(output: AssistantMessage, error: unknown, streamStarted: boolean): void {
+export function recordGitHubCopilotFailure(
+	output: AssistantMessage,
+	error: unknown,
+	stream: GitHubCopilotStreamSnapshot | undefined,
+): void {
 	if (output.stopReason !== "error") return;
 	const typed = classifyGitHubCopilotFailure(error, {
 		modelId: output.model,
 		api: output.api,
-		streamStarted,
+		stream,
 		finishReason: output.rawStopReason,
 	});
 	if (typed !== undefined) recordGitHubCopilotError(output, typed, output.errorMessage);

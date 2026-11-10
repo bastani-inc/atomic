@@ -239,11 +239,25 @@ Every error carries `code`, `retryable`, `hint`, `modelId`, `api`, `status`, `pr
 | `GitHubCopilotInvalidRequestError` | `invalid-request` | Copilot rejected the request, for example a thinking level the model does not list, or an unknown `Copilot-Integration-Id` header | `reason`: `reasoning-effort`, `integration-id`, `rejected` | No | Yes | Pick a supported thinking level, or check `models.json` overrides |
 | `GitHubCopilotAuthenticationError` | `authentication-failed` | HTTP 401 or 403 | None | No | Yes | Run `/login`, or check `COPILOT_GITHUB_TOKEN` |
 | `GitHubCopilotServiceUnavailableError` | `service-unavailable` | HTTP 408, 5xx or 529, or a server error in the stream | None | Yes | Yes, after retries | Retry later |
-| `GitHubCopilotStreamEndedEarlyError` | `stream-ended-early` | The response stopped before its finish reason or final event | None | Yes | Yes, after retries | Retry |
+| `GitHubCopilotStreamEndedEarlyError` | `stream-ended-early` | The response stopped before its finish reason or final event, for example when the remote side closes the connection mid-stream, or no stream event arrives within [`streamDeadlineMs`](/settings#message-delivery) | `durationMs`, `startedContent` | Yes; one more time at most after a [long attempt](#streams-cut-after-a-long-attempt) | Yes, after retries | Retry; if it keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model |
 | `GitHubCopilotEmptyResponseError` | `empty-response` | The model finished with no text and no tool call | None | Yes | Yes, after retries | Retry |
 | `GitHubCopilotUnrecognizedResponseError` | `unrecognized-response` | An HTTP status, stream error code, or body Atomic does not recognize | `reason`: `unknown-status`, `unknown-error-event`, `malformed-body` | Yes, up to the retry limit | Yes, after retries | Retry, and report it if it persists |
 
 All of them extend `GitHubCopilotError`. The same decisions apply in the main chat, in subagents, and in workflow stages, which find the error through the failed message they wrap. An `invalid-request` or `unrecognized-response` whose response text reads as a context overflow is still treated as one.
+
+#### Streams cut after a long attempt
+
+A `stream-ended-early` error says what the attempt saw, so a cut stream can be reported and compared across attempts. `requestId` is the response's `x-request-id`, `durationMs` is how long the attempt ran before the stream ended, and `startedContent` is whether any stream event, such as a message start, a content block or a delta, had arrived. The message shows the same facts:
+
+```text
+GitHub Copilot response stream ended early: claude-opus-5.5 (stream-ended-early). Attempt ran 312.4 s, response started, request ID <id>. If the stream keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model with the fallbackModels setting.
+```
+
+A response can be cut at about the same point on every attempt, for example during long thinking at a high thinking level or while writing one very large tool call. Retrying then repeats the same wait. Atomic therefore treats an attempt that ran 5 minutes or more before its stream ended early as a long attempt:
+
+- A long cut gets one more retry on the same model. Cuts after shorter attempts keep the usual [`retry.maxRetries`](/settings#retry) budget.
+- A second long cut, with no successful response in between, stops retrying that model. When `fallbackModels` has another candidate, the turn continues there; a candidate can be the same model with a lower thinking level, such as `github-copilot/claude-opus-5.5:medium`. Otherwise the turn ends with the error and this advice: split the work into smaller steps, lower the thinking effort, or set `fallbackModels`.
+- The partial output of a cut attempt is never replayed. Each retry restarts the turn.
 
 Messages stream error events follow their provider error type, not a cut-off-stream fallback. A streamed `invalid_request_error` is non-retryable; `rate_limit_error`, `overloaded_error` and `api_error` are retryable. An unknown event type becomes `unrecognized-response`.
 

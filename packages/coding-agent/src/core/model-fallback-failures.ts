@@ -7,7 +7,12 @@
  * expose it to the raw-TypeScript companion packages without a cycle.
  */
 
-import { findGitHubCopilotError, type GitHubCopilotError, type GitHubCopilotErrorCode } from "@bastani/pi-ai";
+import {
+	findGitHubCopilotError,
+	type GitHubCopilotError,
+	type GitHubCopilotErrorCode,
+	GitHubCopilotStreamEndedEarlyError,
+} from "@bastani/pi-ai";
 import { isExtensionStartupFailure } from "./extension-startup-failure.ts";
 
 const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
@@ -734,6 +739,16 @@ function githubCopilotSignal(error: unknown): ModelFallbackFailureSignal | undef
 	const copilotError: GitHubCopilotError | undefined = findGitHubCopilotError(error);
 	if (copilotError === undefined) return undefined;
 	return makeSignal(GITHUB_COPILOT_FAILURE_KINDS[copilotError.code], copilotError, signalSource(error, undefined));
+}
+
+/**
+ * How long the attempt ran, in milliseconds, before its response stream ended early. It is read from the typed GitHub
+ * Copilot failure, never from message text: on the error, anywhere in its cause chain, or in the diagnostics of a
+ * failed assistant message. Undefined for any other failure, and for a stream-cut error that carries no duration.
+ */
+export function streamCutDurationMs(error: unknown): number | undefined {
+	const copilotError = findGitHubCopilotError(error);
+	return copilotError instanceof GitHubCopilotStreamEndedEarlyError ? copilotError.durationMs : undefined;
 }
 
 export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailureSignal {
