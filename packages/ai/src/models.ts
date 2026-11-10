@@ -122,12 +122,14 @@ export interface RefreshModelsContext {
 	 */
 	baseUrl?: string;
 	/**
-	 * Network phase with an OAuth credential only: save account data the refresh read with that login,
-	 * such as the model lists its availability filter checks. `update` receives the stored login and
-	 * returns its replacement, or undefined to leave it unchanged. Nothing is written once the store no
-	 * longer holds the token this refresh used, so a renewed login or another account is never changed.
+	 * Network phase with a stored OAuth login or API key: save account data the refresh read with that
+	 * credential, such as the model lists its availability filter checks. `update` receives the stored
+	 * credential, always of the type `credential` has, and returns its replacement, or undefined to leave
+	 * it unchanged. Nothing is written once the store no longer holds the token or key this refresh
+	 * used, so a renewed login, a replaced key or another account is never changed. A key the store holds
+	 * as an environment reference or command, or one that comes from the environment, is never matched.
 	 */
-	updateCredential?(update: (current: OAuthCredential) => OAuthCredential | undefined): Promise<void>;
+	updateCredential?(update: (current: Credential) => Credential | undefined): Promise<void>;
 }
 
 export interface ModelsRefreshOptions {
@@ -417,6 +419,12 @@ export interface CreateModelsOptions {
 	identity?: ClientIdentity;
 }
 
+/** Whether `stored` still holds the token or key `used`, the secret a refresh authenticated with. */
+function holdsSameSecret(stored: Credential, used: Credential): boolean {
+	if (stored.type === "oauth") return used.type === "oauth" && stored.access === used.access;
+	return used.type === "api_key" && stored.key === used.key;
+}
+
 function mergeHeaders(
 	base: ProviderHeaders | undefined,
 	override: ProviderHeaders | undefined,
@@ -615,7 +623,7 @@ class ModelsImpl implements MutableModels {
 		signal: AbortSignal,
 	): Promise<void> {
 		const stored = await this.modelsStore.read(provider.id, { signal });
-		const login = allowNetwork && credential?.type === "oauth" ? credential : undefined;
+		const refreshed = allowNetwork ? credential : undefined;
 		await provider.refreshModels({
 			credential,
 			stored: stored ? withKnownModelTypes(structuredClone(stored)) : undefined,
@@ -624,21 +632,23 @@ class ModelsImpl implements MutableModels {
 			force: allowNetwork ? force : undefined,
 			signal,
 			baseUrl: provider.baseUrl,
-			...(login ? { updateCredential: (update) => this.updateRefreshLogin(provider.id, login, update, signal) } : {}),
+			...(refreshed
+				? { updateCredential: (update) => this.updateRefreshCredential(provider.id, refreshed, update, signal) }
+				: {}),
 		});
 	}
 
 	/** See `RefreshModelsContext.updateCredential`. */
-	private async updateRefreshLogin(
+	private async updateRefreshCredential(
 		providerId: string,
-		login: OAuthCredential,
-		update: (current: OAuthCredential) => OAuthCredential | undefined,
+		refreshed: Credential,
+		update: (current: Credential) => Credential | undefined,
 		signal: AbortSignal,
 	): Promise<void> {
 		try {
 			await this.credentials.modify(
 				providerId,
-				async (current) => (current?.type === "oauth" && current.access === login.access ? update(current) : undefined),
+				async (current) => (current !== undefined && holdsSameSecret(current, refreshed) ? update(current) : undefined),
 				{ signal },
 			);
 		} catch (error) {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Credential } from "@bastani/pi-ai";
 import { GITHUB_COPILOT_MODELS } from "@bastani/pi-ai/providers/github-copilot.models";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
+import { listModels } from "../src/cli/list-models.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import {
 	findInitialModel,
@@ -86,14 +87,17 @@ afterEach(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 });
 
-function stubNetwork(modelList: () => Response = () => Response.json(ACCOUNT_MODELS)): void {
+function stubNetwork(
+	modelList: (authorization: string | null) => Response = () => Response.json(ACCOUNT_MODELS),
+): void {
 	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 		const request = input instanceof Request ? input : new Request(input, init);
 		if (request.url.startsWith("https://pi.dev/")) return new Response("not found", { status: 404 });
 		if (request.url.endsWith("/models")) {
 			modelListUrls.push(request.url);
-			modelListAuthorizations.push(request.headers.get("Authorization"));
-			return modelList();
+			const authorization = request.headers.get("Authorization");
+			modelListAuthorizations.push(authorization);
+			return modelList(authorization);
 		}
 		throw new Error(`Unexpected request: ${request.url}`);
 	});
@@ -397,3 +401,287 @@ function deferredStartupModel(modelRuntime: ModelRuntime, modelId: string) {
 		modelRuntime,
 	});
 }
+
+const CATALOG_IDS = Object.keys(GITHUB_COPILOT_MODELS);
+/** A second real catalog model, which the account lists below leave out. */
+const UNLISTED_CATALOG_MODEL_ID = CATALOG_IDS.find((id) => id !== CATALOG_MODEL_ID) ?? "";
+
+function accountList(...ids: string[]): { object: string; data: Array<Record<string, unknown>> } {
+	return { object: "list", data: ids.map((id) => accountEntry(id)) };
+}
+
+/** Discover an account's models from `list`, then leave the runtime without a network. */
+async function discoverList(credential: Credential, list: unknown): Promise<ModelRuntime> {
+	stubNetwork(() => Response.json(list));
+	const modelRuntime = await runtime(credential);
+	const result = await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
+	assert.equal(result.errors.get(PROVIDER), undefined);
+	vi.restoreAllMocks();
+	return modelRuntime;
+}
+
+function sorted(ids: readonly string[]): string[] {
+	return [...ids].sort();
+}
+
+describe("GitHub Copilot availability by an API key's account list (#4627)", () => {
+	const LISTED = [CATALOG_MODEL_ID, "example-model"];
+
+	it("hides the catalog models an API key's account list omits and keeps the listed and discovered ones (#4627)", async () => {
+		const modelRuntime = await discoverList(API_KEY, accountList(...LISTED));
+
+		assert.ok(UNLISTED_CATALOG_MODEL_ID);
+		assert.deepEqual(sorted(await availableIds(modelRuntime)), sorted(LISTED));
+		assert.equal(modelRuntime.getModel(PROVIDER, "example-model")?.discovered, true);
+		assert.equal(modelRuntime.getModel(PROVIDER, CATALOG_MODEL_ID)?.discovered, undefined);
+	});
+
+	it("applies the account's list to the model snapshot, --list-models and scoped models (#4627)", async () => {
+		const modelRuntime = await discoverList(API_KEY, accountList(...LISTED));
+
+		assert.deepEqual(sorted(modelRuntime.getAvailableSnapshot().map((model) => model.id)), sorted(LISTED));
+
+		const lines: string[] = [];
+		vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+			lines.push(String(line));
+		});
+		await listModels(modelRuntime, undefined, SettingsManager.inMemory({}));
+		const listed = lines.map((line) => line.split("\t")[0]).slice(1);
+		assert.deepEqual(sorted(listed), sorted(LISTED.map((id) => `${PROVIDER}/${id}`)));
+
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const scoped = await resolveModelScope(
+			[`${PROVIDER}/*`, `${PROVIDER}/${UNLISTED_CATALOG_MODEL_ID}`],
+			modelRuntime,
+		);
+		assert.deepEqual(sorted(scoped.map((entry) => entry.model.id)), sorted(LISTED));
+	});
+
+	it("keeps an API key's lists across a restart without the network (#4627)", async () => {
+		await discoverList(API_KEY, accountList(...LISTED));
+		const fetchSpy = blockNetwork();
+
+		const restarted = await restart();
+
+		assert.deepEqual(sorted(await availableIds(restarted)), sorted(LISTED));
+		assert.equal(fetchSpy.mock.calls.length, 0);
+	});
+
+	it("offers an API key what an OAuth login is offered from the same account list (#4627)", async () => {
+		const list = accountList(...LISTED, "example-model-fast");
+		const loginIds = await availableIds(await discoverList(oauthLogin(["example-model-fast"]), list));
+		const apiKeyIds = await availableIds(await discoverList(API_KEY, list));
+
+		assert.deepEqual(sorted(apiKeyIds), sorted(loginIds));
+		assert.ok(apiKeyIds.includes("example-model-fast"));
+		assert.equal(apiKeyIds.includes(UNLISTED_CATALOG_MODEL_ID), false);
+	});
+
+	it.each([
+		["refused with 400", () => new Response("refused", { status: 400 })],
+		["refused with 401", () => new Response("refused", { status: 401 })],
+		["refused with 403", () => new Response("refused", { status: 403 })],
+		["refused with 404", () => new Response("refused", { status: 404 })],
+		["unavailable (503)", () => new Response("unavailable", { status: 503 })],
+		[
+			"unreachable",
+			(): Response => {
+				throw new Error("network down");
+			},
+		],
+	])(
+		"hides nothing while the account's list cannot be fetched (%s), then hides once it is read (#4627)",
+		async (_label, failure) => {
+			stubNetwork(failure);
+			const modelRuntime = await runtime(API_KEY);
+			await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
+
+			assertIncludesAll(await availableIds(modelRuntime), CATALOG_IDS);
+			assert.deepEqual(
+				modelRuntime.getAvailableSnapshot().filter((model) => model.provider === PROVIDER).length,
+				CATALOG_IDS.length,
+			);
+
+			vi.restoreAllMocks();
+			stubNetwork(() => Response.json(accountList(...LISTED)));
+			await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
+
+			assert.deepEqual(sorted(await availableIds(modelRuntime)), sorted(LISTED));
+		},
+	);
+
+	it("hides nothing offline before the account's list was ever read (#4627)", async () => {
+		const fetchSpy = blockNetwork();
+
+		const modelRuntime = await runtime(API_KEY);
+
+		assertIncludesAll(await availableIds(modelRuntime), CATALOG_IDS);
+		assert.equal(fetchSpy.mock.calls.length, 0);
+	});
+
+	it("keeps the lists it read when a later refresh is refused, until a new key replaces the credential (#4627)", async () => {
+		await discoverList(API_KEY, accountList(...LISTED));
+		stubNetwork(() => new Response("expired", { status: 401 }));
+		const modelRuntime = await restart();
+		await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
+
+		assert.deepEqual(sorted(await availableIds(modelRuntime)), sorted(LISTED));
+
+		vi.restoreAllMocks();
+		blockNetwork();
+		const otherKey: Credential = { type: "api_key", key: "github_pat_other_token" };
+		assertIncludesAll(await availableIds(await runtime(otherKey)), CATALOG_IDS);
+	});
+
+	it("does not write the lists when the stored key is not the one the refresh read (#4627)", async () => {
+		stubNetwork(() => {
+			writeFileSync(
+				join(agentDir, "auth.json"),
+				JSON.stringify({ [PROVIDER]: { type: "api_key", key: "github_pat_other_token" } }),
+			);
+			return Response.json(accountList(...LISTED));
+		});
+		const modelRuntime = await runtime(API_KEY);
+		await modelRuntime.refresh({ providers: [PROVIDER], allowNetwork: true });
+		vi.restoreAllMocks();
+		blockNetwork();
+
+		assertIncludesAll(await availableIds(await restart()), CATALOG_IDS);
+	});
+
+	it.each([
+		["a list with no model", { object: "list", data: [] }],
+		[
+			"a list whose models are all hidden from the picker",
+			{ object: "list", data: [accountEntry("example-model", { picker: false })] },
+		],
+	])("hides nothing on %s (#4627)", async (_label, list) => {
+		const modelRuntime = await discoverList(API_KEY, list);
+
+		assertIncludesAll(await availableIds(modelRuntime), CATALOG_IDS);
+	});
+
+	it("keeps the lists of an OAuth login that reads the account's list (#4627)", async () => {
+		const modelRuntime = await discoverList(oauthLogin(["example-model-fast"]), accountList(...LISTED));
+
+		assert.deepEqual(sorted(await availableIds(modelRuntime)), sorted(LISTED));
+	});
+
+	it("keeps an OAuth login's catalog while it has no saved list (#4627)", async () => {
+		const olderLogin: Credential = {
+			type: "oauth",
+			access: OAUTH_ACCESS,
+			refresh: "refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+		};
+		blockNetwork();
+
+		assertIncludesAll(await availableIds(await runtime(olderLogin)), CATALOG_IDS);
+	});
+});
+
+describe("GitHub Copilot provider aliases and the account's list (#4627)", () => {
+	const ALIAS = "copilot-work";
+	const SOURCE_KEY = "github_pat_source_token";
+	const ALIAS_KEY = "github_pat_alias_token";
+	const SOURCE_LIST = accountList(CATALOG_MODEL_ID, "example-model");
+	const ALIAS_LIST = accountList(UNLISTED_CATALOG_MODEL_ID, "example-model");
+	const listsByToken = (lists: Record<string, unknown>) => (authorization: string | null) => {
+		const list = lists[authorization?.replace("Bearer ", "") ?? ""];
+		return list === undefined ? new Response("refused", { status: 401 }) : Response.json(list);
+	};
+
+	async function aliasRuntime(credentials: Record<string, Credential>): Promise<ModelRuntime> {
+		writeFileSync(join(agentDir, "auth.json"), JSON.stringify(credentials));
+		const modelRuntime = await restart();
+		modelRuntime.registerProvider(ALIAS, { aliasOf: PROVIDER });
+		await modelRuntime.whenRegistrationRefreshesSettled();
+		return modelRuntime;
+	}
+
+	async function aliasIds(modelRuntime: ModelRuntime): Promise<string[]> {
+		return (await modelRuntime.getAvailable(ALIAS)).map((model) => model.id);
+	}
+
+	it("filters each provider by the list its own credential reads (#4627)", async () => {
+		stubNetwork(listsByToken({ [SOURCE_KEY]: SOURCE_LIST, [ALIAS_KEY]: ALIAS_LIST }));
+		const modelRuntime = await aliasRuntime({
+			[PROVIDER]: { type: "api_key", key: SOURCE_KEY },
+			[ALIAS]: { type: "api_key", key: ALIAS_KEY },
+		});
+
+		const result = await modelRuntime.refresh({ providers: [PROVIDER, ALIAS], allowNetwork: true });
+
+		assert.equal(result.errors.size, 0);
+		assert.deepEqual(sorted(modelListAuthorizations), sorted([`Bearer ${SOURCE_KEY}`, `Bearer ${ALIAS_KEY}`]));
+		assert.deepEqual(sorted(await availableIds(modelRuntime)), sorted([CATALOG_MODEL_ID, "example-model"]));
+		assert.deepEqual(sorted(await aliasIds(modelRuntime)), sorted([UNLISTED_CATALOG_MODEL_ID, "example-model"]));
+
+		vi.restoreAllMocks();
+		blockNetwork();
+		const restarted = await restart();
+		restarted.registerProvider(ALIAS, { aliasOf: PROVIDER });
+		await restarted.whenRegistrationRefreshesSettled();
+		assert.deepEqual(sorted(await aliasIds(restarted)), sorted([UNLISTED_CATALOG_MODEL_ID, "example-model"]));
+	});
+
+	it("hides nothing for an alias whose list cannot be fetched while its source's list applies (#4627)", async () => {
+		stubNetwork(listsByToken({ [SOURCE_KEY]: SOURCE_LIST }));
+		const modelRuntime = await aliasRuntime({
+			[PROVIDER]: { type: "api_key", key: SOURCE_KEY },
+			[ALIAS]: { type: "api_key", key: ALIAS_KEY },
+		});
+
+		await modelRuntime.refresh({ providers: [PROVIDER, ALIAS], allowNetwork: true });
+
+		assert.deepEqual(sorted(await availableIds(modelRuntime)), sorted([CATALOG_MODEL_ID, "example-model"]));
+		assertIncludesAll(await aliasIds(modelRuntime), [...CATALOG_IDS, "example-model"]);
+	});
+
+	it("reads an alias's list when its source has no credential of its own (#4627)", async () => {
+		stubNetwork(listsByToken({ [ALIAS_KEY]: ALIAS_LIST }));
+		const modelRuntime = await aliasRuntime({ [ALIAS]: { type: "api_key", key: ALIAS_KEY } });
+
+		await modelRuntime.refresh({ providers: [ALIAS], allowNetwork: true });
+
+		assert.deepEqual(modelListAuthorizations, [`Bearer ${ALIAS_KEY}`]);
+		assert.deepEqual(sorted(await aliasIds(modelRuntime)), sorted([UNLISTED_CATALOG_MODEL_ID]));
+	});
+
+	it("reads no Copilot list for an alias of another provider (#4627)", async () => {
+		stubNetwork(listsByToken({ "sk-test": SOURCE_LIST }));
+		writeFileSync(
+			join(agentDir, "auth.json"),
+			JSON.stringify({ "openai-work": { type: "api_key", key: "sk-test" } }),
+		);
+		const modelRuntime = await restart();
+		modelRuntime.registerProvider("openai-work", { aliasOf: "openai" });
+		await modelRuntime.whenRegistrationRefreshesSettled();
+
+		await modelRuntime.refresh({ providers: ["openai-work"], allowNetwork: true });
+
+		assert.deepEqual(modelListUrls, []);
+		assert.ok((await modelRuntime.getAvailable("openai-work")).length > 0);
+	});
+
+	it("leaves an OAuth alias to its saved lists and reads no list for it (#4627)", async () => {
+		const aliasAccess = "tid=alias;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com";
+		stubNetwork(listsByToken({ [SOURCE_KEY]: SOURCE_LIST }));
+		const modelRuntime = await aliasRuntime({
+			[PROVIDER]: { type: "api_key", key: SOURCE_KEY },
+			[ALIAS]: {
+				type: "oauth",
+				access: aliasAccess,
+				refresh: "alias-refresh-token",
+				expires: Number.MAX_SAFE_INTEGER,
+				availableModelIds: [UNLISTED_CATALOG_MODEL_ID],
+				fastModelIds: [],
+			},
+		});
+
+		await modelRuntime.refresh({ providers: [PROVIDER, ALIAS], allowNetwork: true });
+
+		assert.deepEqual(modelListAuthorizations, [`Bearer ${SOURCE_KEY}`]);
+		assert.deepEqual(sorted(await aliasIds(modelRuntime)), [UNLISTED_CATALOG_MODEL_ID]);
+	});
+});

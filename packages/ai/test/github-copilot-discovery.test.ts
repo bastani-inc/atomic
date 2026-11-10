@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, it, vi } from "vitest";
-import type { Credential, OAuthCredential } from "../src/auth/types.ts";
+import type { ApiKeyCredential, Credential, OAuthCredential } from "../src/auth/types.ts";
 import { streamSimple } from "../src/compat.ts";
 import type { Provider, RefreshModelsContext } from "../src/models.ts";
 import {
 	discoverGitHubCopilotModels,
 	githubCopilotProvider,
 	parseGitHubCopilotDiscoveredModels,
+	refreshGitHubCopilotAccountModelLists,
 } from "../src/providers/github-copilot.ts";
 import type { Api, Model } from "../src/types.ts";
+import { isModelType } from "../src/utils/model-operations.ts";
 
 /** A recorded `GET /models` response with account fields removed and every model renamed. */
 const recordedModels: { data: Array<Record<string, unknown>> } = JSON.parse(
@@ -55,6 +57,11 @@ function refreshContext(credential: Credential, baseUrl?: string): RefreshModels
 		signal: new AbortController().signal,
 		...(baseUrl ? { baseUrl } : {}),
 	};
+}
+
+/** The recorded list with `changes` applied to every entry. */
+function withEveryEntry(changes: Record<string, unknown>): { data: Array<Record<string, unknown>> } {
+	return { data: recordedModels.data.map((entry) => ({ ...entry, ...changes })) };
 }
 
 function stubModelList(response: () => Response): Request[] {
@@ -399,6 +406,7 @@ describe("discoverGitHubCopilotModels", () => {
 		assert.equal(models?.length, 7);
 		assert.equal(requests.length, 1);
 		assert.equal(requests[0]?.url, "https://api.githubcopilot.com/models");
+		assert.equal(requests[0]?.headers.get("Accept"), "application/json");
 		assert.equal(requests[0]?.headers.get("Authorization"), "Bearer github-token");
 		assert.equal(requests[0]?.headers.get("Copilot-Integration-Id"), "copilot-developer-cli");
 		assert.equal(requests[0]?.headers.get("X-GitHub-Api-Version"), "2026-06-01");
@@ -431,7 +439,7 @@ describe("discoverGitHubCopilotModels", () => {
 			availableModelIds: ["example-static-model"],
 			fastModelIds: [],
 		};
-		const updates: Array<(current: OAuthCredential) => OAuthCredential | undefined> = [];
+		const updates: Array<(current: Credential) => Credential | undefined> = [];
 		await discoverGitHubCopilotModels([staticModel], {
 			...refreshContext(login),
 			updateCredential: async (update) => {
@@ -459,6 +467,120 @@ describe("discoverGitHubCopilotModels", () => {
 		assert.equal(saved && updates[0]?.(saved), undefined);
 	});
 
+	it("saves the account's model lists to the stored API key that read them (#4627)", async () => {
+		stubModelList(() => Response.json(recordedModels));
+		const key: ApiKeyCredential = { type: "api_key", key: "github-token" };
+		const updates: Array<(current: Credential) => Credential | undefined> = [];
+		await discoverGitHubCopilotModels([staticModel], {
+			...refreshContext(key, "https://api.githubcopilot.com"),
+			updateCredential: async (update) => {
+				updates.push(update);
+			},
+		});
+
+		assert.equal(updates.length, 1);
+		const saved = updates[0]?.(key);
+		assert.deepEqual(saved, {
+			...key,
+			availableModelIds: [
+				"example-static-model",
+				"example-static-model-fast",
+				"example-model",
+				"example-chat-model",
+				"example-reasoning-model",
+				"example-messages-model",
+				"example-legacy-model",
+				"example-unrouted-model",
+			],
+			fastModelIds: ["example-static-model-fast", "example-model-fast"],
+		});
+		assert.equal(saved && updates[0]?.(saved), undefined);
+		const withStaleLists = {
+			...key,
+			availableModelIds: ["example-static-model"],
+			fastModelIds: ["example-model-fast"],
+		};
+		assert.notEqual(updates[0]?.(withStaleLists), undefined);
+		assert.notEqual(
+			updates[0]?.({ ...(saved as ApiKeyCredential), fastModelIds: ["example-model-fast"] }),
+			undefined,
+		);
+		const savedIds = (saved as ApiKeyCredential).availableModelIds ?? [];
+		assert.notEqual(
+			updates[0]?.({
+				...(saved as ApiKeyCredential),
+				availableModelIds: [...savedIds.slice(1), "example-other-model"],
+			}),
+			undefined,
+		);
+		assert.notEqual(
+			updates[0]?.({ ...(saved as ApiKeyCredential), availableModelIds: [...savedIds, "example-extra-model"] }),
+			undefined,
+		);
+	});
+
+	it("reads the list from a host URL with trailing slashes and stops when the refresh is aborted (#4627)", async () => {
+		let readSignal: AbortSignal | undefined;
+		const requests = stubModelList(() => Response.json(recordedModels));
+		const fetchSpy = vi.mocked(globalThis.fetch);
+		const respond = fetchSpy.getMockImplementation();
+		fetchSpy.mockImplementation(async (input, init) => {
+			readSignal = init?.signal ?? undefined;
+			return respond ? respond(input, init) : new Response("", { status: 500 });
+		});
+		const controller = new AbortController();
+
+		await discoverGitHubCopilotModels([staticModel], {
+			...refreshContext({ type: "api_key", key: "github-token" }, "https://api.githubcopilot.com//"),
+			signal: controller.signal,
+		});
+
+		assert.equal(requests[0]?.url, "https://api.githubcopilot.com/models");
+		assert.equal(readSignal?.aborted, false);
+		controller.abort();
+		assert.equal(readSignal?.aborted, true);
+	});
+
+	it.each([
+		["a list with no model", { data: [] }],
+		["a list whose models are all hidden from the picker", withEveryEntry({ model_picker_enabled: false })],
+	])("saves nothing to an API key on %s, which would hide every model (#4627)", async (_label, list) => {
+		stubModelList(() => Response.json(list));
+		const updates: unknown[] = [];
+		const context = {
+			...refreshContext({ type: "api_key", key: "github-token" }, "https://api.githubcopilot.com"),
+			updateCredential: async (update: unknown) => {
+				updates.push(update);
+			},
+		};
+
+		await discoverGitHubCopilotModels([staticModel], context);
+		await refreshGitHubCopilotAccountModelLists(context);
+
+		assert.deepEqual(updates, []);
+	});
+
+	it("saves an OAuth login's empty list, as it always has (#4627)", async () => {
+		stubModelList(() => Response.json({ data: [] }));
+		const login: OAuthCredential = {
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.business.githubcopilot.com",
+			refresh: "refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+		};
+		const updates: Array<(current: Credential) => Credential | undefined> = [];
+
+		await discoverGitHubCopilotModels([staticModel], {
+			...refreshContext(login),
+			updateCredential: async (update) => {
+				updates.push(update);
+			},
+		});
+
+		assert.equal(updates.length, 1);
+		assert.deepEqual(updates[0]?.(login), { ...login, availableModelIds: [], fastModelIds: [] });
+	});
+
 	it.each([400, 401, 403, 404])(
 		"reports no list, not an empty one, when the host refuses the token (%i)",
 		async (status) => {
@@ -484,6 +606,75 @@ describe("discoverGitHubCopilotModels", () => {
 			signal: new AbortController().signal,
 		});
 		assert.equal(models, undefined);
+		assert.equal(requests.length, 0);
+	});
+});
+
+describe("refreshGitHubCopilotAccountModelLists", () => {
+	const key: ApiKeyCredential = { type: "api_key", key: "github-token" };
+
+	function recordingContext(credential: Credential, overrides: Partial<RefreshModelsContext> = {}) {
+		const updates: Array<(current: Credential) => Credential | undefined> = [];
+		const context: RefreshModelsContext = {
+			...refreshContext(credential, "https://api.githubcopilot.com"),
+			updateCredential: async (update) => {
+				updates.push(update);
+			},
+			...overrides,
+		};
+		return { context, updates };
+	}
+
+	it("reads the list with the API key and saves its lists, returning nothing to publish (#4627)", async () => {
+		const requests = stubModelList(() => Response.json(recordedModels));
+		const { context, updates } = recordingContext(key);
+
+		assert.equal(await refreshGitHubCopilotAccountModelLists(context), undefined);
+
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0]?.url, "https://api.githubcopilot.com/models");
+		assert.equal(requests[0]?.headers.get("Authorization"), "Bearer github-token");
+		assert.equal(updates.length, 1);
+		assert.deepEqual((updates[0]?.(key) as ApiKeyCredential).fastModelIds, [
+			"example-static-model-fast",
+			"example-model-fast",
+		]);
+	});
+
+	it("saves nothing when the host refuses the key or the list cannot be read (#4627)", async () => {
+		stubModelList(() => new Response("refused", { status: 401 }));
+		const refused = recordingContext(key);
+		await refreshGitHubCopilotAccountModelLists(refused.context);
+		assert.deepEqual(refused.updates, []);
+
+		vi.restoreAllMocks();
+		stubModelList(() => new Response("unavailable", { status: 503 }));
+		const unavailable = recordingContext(key);
+		await assert.rejects(
+			refreshGitHubCopilotAccountModelLists(unavailable.context),
+			/GitHub Copilot model list request failed: 503/,
+		);
+		assert.deepEqual(unavailable.updates, []);
+	});
+
+	it("makes no request without network access, without a key or for an OAuth login (#4627)", async () => {
+		const requests = stubModelList(() => Response.json(recordedModels));
+		const login: OAuthCredential = {
+			type: "oauth",
+			access: "tid=test;exp=9999999999;proxy-ep=proxy.individual.githubcopilot.com",
+			refresh: "refresh-token",
+			expires: Number.MAX_SAFE_INTEGER,
+		};
+
+		await refreshGitHubCopilotAccountModelLists(recordingContext(key, { allowNetwork: false }).context);
+		await refreshGitHubCopilotAccountModelLists(recordingContext({ type: "api_key" }).context);
+		await refreshGitHubCopilotAccountModelLists(recordingContext(login).context);
+		await refreshGitHubCopilotAccountModelLists({
+			publish: async () => true,
+			allowNetwork: true,
+			signal: new AbortController().signal,
+		});
+
 		assert.equal(requests.length, 0);
 	});
 });
@@ -520,6 +711,79 @@ describe("GitHub Copilot availability of discovered models", () => {
 				.filterModels?.([ordinary, fast, unlinkedFast], { ...login, fastModelIds: [] })
 				?.map((model) => model.id),
 			["example-model"],
+		);
+	});
+
+	it("hides the models an API key's saved lists omit, catalog and discovered alike (#4627)", () => {
+		const catalogOnly = { ...staticModel, id: "example-unlisted-static-model" };
+		const key: ApiKeyCredential = {
+			type: "api_key",
+			key: "k",
+			availableModelIds: ["example-static-model", "example-model"],
+			fastModelIds: ["example-model-fast"],
+		};
+		const everyModel = [staticModel, catalogOnly, ordinary, discovered("example-chat-model"), fast, unlinkedFast];
+
+		assert.deepEqual(
+			provider.filterModels?.(everyModel, key)?.map((model) => model.id),
+			["example-static-model", "example-model", "example-model-fast"],
+		);
+	});
+
+	it("offers an API key with an empty fast list no fast route, and with no fast list every fast route (#4627)", () => {
+		const route = {
+			...staticModel,
+			id: "example-static-model-fast",
+			fastRoute: { baseModelId: "example-static-model", upstreamModelId: "example-static-model-fast" },
+		};
+		const base: ApiKeyCredential = { type: "api_key", key: "k", availableModelIds: ["example-static-model"] };
+
+		assert.deepEqual(
+			provider.filterModels?.([staticModel, route], { ...base, fastModelIds: [] })?.map((model) => model.id),
+			["example-static-model"],
+		);
+		assert.deepEqual(
+			provider.filterModels?.([staticModel, route], base)?.map((model) => model.id),
+			["example-static-model", "example-static-model-fast"],
+		);
+	});
+
+	it("keeps every classifier model for an API key whose lists name none (#4627)", () => {
+		const classifiers = (provider.getAllModels?.() ?? []).filter((model) => isModelType(model, "classifier"));
+		const key: ApiKeyCredential = {
+			type: "api_key",
+			key: "k",
+			availableModelIds: ["example-model"],
+			fastModelIds: [],
+		};
+
+		assert.ok(classifiers.length > 0);
+		for (const classifier of classifiers) {
+			assert.deepEqual(provider.filterModels?.([classifier as unknown as Model<Api>], key), [classifier]);
+		}
+	});
+
+	it("keeps the whole catalog for an API key without saved lists or with malformed ones (#4627)", () => {
+		const models = [staticModel, ordinary, fast];
+		const all = ["example-static-model", "example-model", "example-model-fast"];
+
+		assert.deepEqual(
+			provider.filterModels?.(models, { type: "api_key", key: "k" })?.map((model) => model.id),
+			all,
+		);
+		assert.deepEqual(
+			provider.filterModels?.(models, undefined)?.map((model) => model.id),
+			all,
+		);
+		assert.deepEqual(
+			provider
+				.filterModels?.(models, {
+					type: "api_key",
+					key: "k",
+					availableModelIds: "not-a-list" as unknown as string[],
+				})
+				?.map((model) => model.id),
+			all,
 		);
 	});
 });

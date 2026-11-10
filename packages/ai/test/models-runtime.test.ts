@@ -619,6 +619,194 @@ describe("Models runtime", () => {
 		assert.deepEqual(await credentials.read("oauth-dynamic"), otherLogin);
 	});
 
+	it("lets a network refresh update the stored API key it used, but not a key that replaced it (#4627)", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const key: Credential = { type: "api_key", key: "stored-key" };
+		const otherKey: Credential = { type: "api_key", key: "other-key" };
+		await credentials.modify("keyed", async () => key);
+		let replaceKeyDuringRefresh = false;
+		const offered: Array<Credential | undefined> = [];
+		const updated: Credential[] = [];
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "keyed",
+				auth: { apiKey: envKeyAuth(undefined) },
+				refreshModels: async (context) => {
+					if (!context.allowNetwork) {
+						assert.equal(context.updateCredential, undefined);
+						return;
+					}
+					if (replaceKeyDuringRefresh) await credentials.modify("keyed", async () => otherKey);
+					await context.updateCredential?.((current) => {
+						offered.push(current);
+						return { ...current, availableModelIds: ["read-by-refresh"] };
+					});
+					updated.push((await credentials.read("keyed"))!);
+				},
+			}),
+		);
+
+		assert.equal((await models.refresh()).errors.size, 0);
+		assert.deepEqual(offered, [key]);
+		assert.deepEqual(updated, [{ ...key, availableModelIds: ["read-by-refresh"] }]);
+
+		replaceKeyDuringRefresh = true;
+		assert.equal((await models.refresh()).errors.size, 0);
+		assert.deepEqual(offered, [key]);
+		assert.deepEqual(updated.at(-1), otherKey);
+	});
+
+	it.each([
+		["with a model source", true],
+		["without a model source", false],
+	])(
+		"renews a stored login that lacks data only a refresh restores, %s (#4627)",
+		async (_label, hasModelSource) => {
+			const credentials = new InMemoryCredentialStore();
+			await credentials.modify("repaired", async () => ({
+				type: "oauth",
+				access: "valid",
+				refresh: "refresh",
+				expires: Number.MAX_SAFE_INTEGER,
+			}));
+			const models = createModels({ credentials });
+			models.setProvider(
+				testProvider({
+					id: "repaired",
+					auth: {
+						oauth: testOAuth({
+							needsRefresh: (current) => current.availableModelIds === undefined,
+							refresh: async (current) => ({ ...current, availableModelIds: ["restored"] }),
+						}),
+					},
+					refreshModels: hasModelSource ? async () => {} : undefined,
+				}),
+			);
+
+			assert.equal((await models.refresh()).errors.size, 0);
+			assert.deepEqual(await credentials.read("repaired"), {
+				type: "oauth",
+				access: "valid",
+				refresh: "refresh",
+				expires: Number.MAX_SAFE_INTEGER,
+				availableModelIds: ["restored"],
+			});
+		},
+	);
+
+	it("saves nothing to the stored API key once the refresh was aborted (#4627)", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const key: Credential = { type: "api_key", key: "stored-key" };
+		await credentials.modify("keyed", async () => key);
+		const controller = new AbortController();
+		let saving: Promise<void> | undefined;
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "keyed",
+				auth: { apiKey: envKeyAuth(undefined) },
+				refreshModels: async (context) => {
+					if (!context.allowNetwork) return;
+					controller.abort();
+					saving = context.updateCredential?.((current) => ({ ...current, availableModelIds: ["read-by-refresh"] }));
+					await saving;
+				},
+			}),
+		);
+
+		const result = await models.refresh({ signal: controller.signal });
+		await saving?.catch(() => {});
+
+		assert.equal(result.aborted, true);
+		assert.deepEqual(await credentials.read("keyed"), key);
+	});
+
+	it("never lets a refresh that used an environment key update the stored credential (#4627)", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const stored: Credential = { type: "api_key", key: "stored-key" };
+		await credentials.modify("keyed", async () => stored);
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "keyed",
+				auth: {
+					apiKey: {
+						name: "Test API key",
+						resolve: async () => ({ auth: { apiKey: "environment-key" }, source: "env" }),
+					},
+				},
+				refreshModels: async (context) => {
+					await context.updateCredential?.((current) => ({ ...current, availableModelIds: ["read-by-refresh"] }));
+				},
+			}),
+		);
+
+		assert.equal((await models.refresh()).errors.size, 0);
+		assert.deepEqual(await credentials.read("keyed"), stored);
+	});
+
+	it.each([
+		["a key with the login's token", { type: "api_key", key: "same-secret" }],
+		["a key-less API key", { type: "api_key" }],
+	] satisfies Array<[string, Credential]>)(
+		"never lets a refresh update a stored API key with an OAuth login's token, replaced by %s (#4627)",
+		async (_label, replacement) => {
+			const credentials = new InMemoryCredentialStore();
+			const login: OAuthCredential = {
+				type: "oauth",
+				access: "same-secret",
+				refresh: "refresh",
+				expires: Number.MAX_SAFE_INTEGER,
+			};
+			await credentials.modify("mixed", async () => login);
+			const models = createModels({ credentials });
+			models.setProvider(
+				testProvider({
+					id: "mixed",
+					auth: { apiKey: envKeyAuth(undefined), oauth: testOAuth() },
+					refreshModels: async (context) => {
+						if (!context.allowNetwork) return;
+						await credentials.modify("mixed", async () => replacement);
+						await context.updateCredential?.((current) => ({
+							...current,
+							availableModelIds: ["read-by-refresh"],
+						}));
+					},
+				}),
+			);
+
+			assert.equal((await models.refresh()).errors.size, 0);
+			assert.deepEqual(await credentials.read("mixed"), replacement);
+		},
+	);
+
+	it("lets a refresh that used an environment key finish when nothing is stored (#4627)", async () => {
+		const credentials = new InMemoryCredentialStore();
+		const offered: boolean[] = [];
+		const models = createModels({ credentials });
+		models.setProvider(
+			testProvider({
+				id: "ambient",
+				auth: {
+					apiKey: {
+						name: "Test API key",
+						resolve: async () => ({ auth: { apiKey: "environment-key" }, source: "env" }),
+					},
+				},
+				refreshModels: async (context) => {
+					if (!context.allowNetwork) return;
+					offered.push(context.updateCredential !== undefined);
+					await context.updateCredential?.((current) => ({ ...current, availableModelIds: ["read-by-refresh"] }));
+				},
+			}),
+		);
+
+		assert.equal((await models.refresh()).errors.size, 0);
+		assert.deepEqual(offered, [true]);
+		assert.equal(await credentials.read("ambient"), undefined);
+	});
+
 	it("completes model refresh after OAuth rotation takes longer than the request deadline (#3429)", async () => {
 		vi.useFakeTimers();
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
