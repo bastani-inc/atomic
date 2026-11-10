@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.9.75] - 2026-11-10
+
+Woken subagents build blueprints, and the bundled computer-use skills are current.
+
+- **Blueprints on wake.** A released subagent woken on another machine builds the blueprints of the worktrees it restores, and a missing or failing blueprint never stops the wake ([#4588](https://github.com/bastani-inc/atomic/issues/4588)).
+- **Current browser and desktop skills.** agent-browser `v0.41.2` lists the new `webmcp-gen` skill and drops the unpinned `npx` grant; agent-desktop `v1.2.0` explains how to pick the right row among repeated elements and how stale or ambiguous refs are reported.
+
+### Changed
+
+- Updated the bundled agent-browser skill to upstream `v0.41.2`. Its discovery stub now explains that the core guide ends with a table of references and that `agent-browser skills get core --full` is only for when you need every reference at once, lists the new `webmcp-gen` specialized skill, and no longer grants the unpinned `npx agent-browser` command in `allowed-tools`.
+- Updated the bundled agent-desktop skill to upstream `v1.2.0`. It explains how to tell which row a repeated button belongs to (drill the row with `--root` and leave out `-i`), says that a `--root` drill adds its refs to the same snapshot id and replaces the refs it covers, and describes how refs are re-identified before an action: on Windows and Linux a ref for an element with identical twins is refused, and only `--headed mouse-click --xy`, which still needs your permission, can choose one. It also lists the new `details.kind` values for `STALE_REF` and `AMBIGUOUS_TARGET` and the `TIMEOUT` `resolution_identity_unknown` case, with the retry advice for each. Install guidance, the readiness check and permission handling are unchanged.
+- Waking a released subagent on another machine now builds the blueprints of the worktrees it restores instead of running the resume setup hook, and a blueprint that is missing or fails never stops the wake ([#4588](https://github.com/bastani-inc/atomic/issues/4588))
+
 ## [0.9.75-alpha.1] - 2026-11-10
 
 ### Changed
