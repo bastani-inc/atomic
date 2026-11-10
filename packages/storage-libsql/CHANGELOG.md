@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.75-alpha.1] - 2026-11-10
+
 ### Fixed
 
 - A `file:` database no longer fails a write with `SQLITE_BUSY: database is locked` while other processes keep committing to the file. SQLite's busy handler polls for the lock with growing sleeps, so a writer behind others that took the lock in turn could miss every poll and fail after the 5-second busy timeout although the lock changed hands hundreds of times meanwhile. A statement outside a transaction, an `exec` of one statement such as a `CREATE TABLE IF NOT EXISTS`, a batch, or the start of a transaction that waited out the busy timeout now runs again, on new connections, as long as another connection committed during its wait; it fails only after a whole busy timeout in which nobody committed. Several statements in one `exec` do not run again.
