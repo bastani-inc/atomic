@@ -210,6 +210,7 @@ Common controls:
 Surface behavior:
 
 - **Graph vs. stage chat** - Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage.
+- **Run state** - The graph header puts the run's state before its stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked`, followed by the exit reason when the workflow gave one and shortened to fit; `❚❚ paused`; `○ quit`; or `● resumed` while a resumed run is live, so you know more stages will appear. `↑ N` counts blocked stages. The stage switcher (`/`), `/workflow status`, and the `/workflow connect` picker show the same state.
 - **Hierarchy chord** - `ctrl+x` is the workflow hierarchy chord: in an attached stage chat it means **return to graph**, and in the graph it means **return to main chat**. The workflow surface handles `ctrl+x` before configurable editor or tool actions, including while a composer draft, primitive prompt, custom question, stage switcher, or legacy prompt card owns input.
 - **Stage input label** - Attached stage chats show `[stage: name]` on the composer top rule, a mounted question's top rule, and awaiting-input prompt borders so you can tell which stage owns the input. Long names truncate with `…`.
 - **Draft preservation** - Leaving a stage preserves unsent composer and prompt drafts and keeps pending custom questions unresolved so they reappear when you attach again.

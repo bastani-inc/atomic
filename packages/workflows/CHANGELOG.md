@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Updated the bundled Impeccable skill to 4.8.2 with engine 0.1.21. In Live Mode, accepting a variant on a page without hot reload keeps it styled until you reload, and variants accepted in different sessions no longer pick up each other's styles. Live captures keep the page's fonts when a font URL has no file extension, when a font face comes from an `@import` or a matching `@media` or `@supports` rule, and when a cross-origin stylesheet redirects. `generate-image` sends its requests, with your `OPENAI_API_KEY`, to `OPENAI_BASE_URL` when that variable is set. Atomic's telemetry and update-check defaults remain off.
+- The `/workflow` graph page now says why no more stages appear and when they will again. Its header puts the run's state before the stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked` with the exit reason when the workflow gave one (shortened to fit), `❚❚ paused`, `○ quit`, or `● resumed` while a resumed run is live. It also counts blocked stages as `↑ N`. The compact graph widget, the stage switcher, `/workflow status` and the `/workflow connect` picker show the same state, and the picker now marks a quit run `○ quit` like `/workflow status` instead of `❚❚` ([#4643](https://github.com/bastani-inc/atomic/issues/4643))
 
 ## [0.9.75] - 2026-11-10
 

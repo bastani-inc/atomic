@@ -3,6 +3,8 @@
  *
  * Visual contract (DESIGN.md §5 Picker Rows):
  *  - Rounded box, `borderActive` border, `backgroundPanel` interior.
+ *  - A blocked, paused, quit or resumed run titles the top border with its
+ *    run-level state, e.g. `╭─ ↑ blocked ───╮`.
  *  - Header row: leading "stages" caption (dim) + right-aligned key·label
  *    hint (`↑↓ select · ↵ open stage chat · esc close`) in dim.
  *  - Default row: `paddingLeft: 1`, `paddingRight: 2`, icon + name, status
@@ -15,6 +17,7 @@ import { type StageDisplayStatus, stageDisplayStatus } from "../shared/stage-dis
 import type { StageSnapshot } from "../shared/store-types.js";
 import { BOLD, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { type RunStateIndicator, runStateColor } from "./run-state-indicator.js";
 import { statusColor, statusIcon } from "./status-helpers.js";
 import { sliceColumns, truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -27,6 +30,7 @@ export interface SwitcherOpts {
 	width: number;
 	theme: GraphTheme;
 	canOpenStageChat?: (stage: StageSnapshot) => boolean;
+	runState?: RunStateIndicator;
 }
 
 export function filterStages(stages: readonly StageSnapshot[], query: string): StageSnapshot[] {
@@ -72,6 +76,19 @@ function statusText(status: StageDisplayStatus): string {
 	return status === "awaiting_input" ? "awaiting" : status === "completed" ? "complete" : status.replace(/_/g, " ");
 }
 
+function topBorder(
+	innerWidth: number,
+	border: string,
+	runState: RunStateIndicator | undefined,
+	theme: GraphTheme,
+): string {
+	if (runState === undefined) return `${border}╭${"─".repeat(innerWidth)}╮${RESET}`;
+	const title = truncateToWidth(` ${runState.text} `, innerWidth - 1, "");
+	const titleFg = hexToAnsi(runStateColor(runState, theme));
+	const rule = "─".repeat(innerWidth - 1 - visibleWidth(title));
+	return `${border}╭─${RESET}${titleFg}${title}${RESET}${border}${rule}╮${RESET}`;
+}
+
 export function renderSwitcher(stages: readonly StageSnapshot[], state: SwitcherState, opts: SwitcherOpts): string[] {
 	const { width, theme } = opts;
 	const filtered = filterStages(stages, state.query);
@@ -90,8 +107,7 @@ export function renderSwitcher(stages: readonly StageSnapshot[], state: Switcher
 
 	const lines: string[] = [];
 
-	// Top border
-	lines.push(`${border}╭${"─".repeat(innerWidth)}╮${RESET}`);
+	lines.push(topBorder(innerWidth, border, opts.runState, theme));
 
 	// Header row: "  STAGES  query   …   ↑↓ select · ↵ open stage chat · esc close "
 	const leftLabelText = "  STAGES";

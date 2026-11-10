@@ -407,7 +407,7 @@ test("renderSessionPicker uses the awaiting-input glyph and info colour for a pr
 	);
 });
 
-test("renderSessionPicker keeps paused quit treatment when the run carries a pending prompt", () => {
+test("renderSessionPicker keeps the quit treatment when the run carries a pending prompt (#4643)", () => {
 	const theme = deriveGraphTheme({});
 	const quit: RunSnapshot = {
 		...makeRun({
@@ -432,7 +432,8 @@ test("renderSessionPicker keeps paused quit treatment when the run carries a pen
 	const state = createSessionPickerState();
 	const rendered = renderSessionPicker({ width: 100, theme, rows, state, allRuns: [other, quit] }).join("\n");
 	const plain = rendered.replace(/\x1b\[[0-9;]*m/g, "");
-	assert.match(plain, new RegExp(`${statusIcon(quit.status)}\\s+${quit.id}`));
+	assert.match(plain, new RegExp(`${statusIcon("pending")}\\s+${quit.id}`));
+	assert.match(plain, /resume-me\s+○ quit\s/);
 	assert.ok(rendered.includes(hexToAnsi(statusColor(quit.status, theme))));
 	assert.doesNotMatch(plain, new RegExp(statusIcon("awaiting_input")));
 	assert.equal(rendered.includes(hexToAnsi(statusColor("awaiting_input", theme))), false);
