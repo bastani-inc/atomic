@@ -20,6 +20,7 @@ import {
 	TrustSelectorComponent,
 	theme,
 } from "./interactive-mode-deps.ts";
+import type { MissingCwdForkSource } from "./interactive-mode-surface.ts";
 import { showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
@@ -358,28 +359,71 @@ InteractiveModeBase.prototype.handleResumeSession = async function (
 			return { cancelled: true };
 		}
 		if (error instanceof MissingSessionCwdError) {
-			const selectedCwd = await this.promptForMissingSessionCwd(error);
-			if (!selectedCwd) {
-				this.showStatus("Resume cancelled");
-				return { cancelled: true };
+			switch (await this.promptForMissingSessionCwd(error)) {
+				case "continue": {
+					const result = await this.runtimeHost.switchSession(sessionId, {
+						cwdOverride: error.issue.fallbackCwd,
+						sessionDirectory,
+						withSession: options?.withSession,
+						projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
+					});
+					if (!result.cancelled) finishMissingCwdResume(this, `Resumed session in ${error.issue.fallbackCwd}`);
+					return result;
+				}
+				case "fork":
+					return this.switchToForkedSession({ sessionId, sessionDirectory }, error.issue.fallbackCwd, options);
+				case undefined:
+					this.showStatus("Resume cancelled");
+					return { cancelled: true };
 			}
-			const result = await this.runtimeHost.switchSession(sessionId, {
-				cwdOverride: selectedCwd,
-				sessionDirectory,
-				withSession: options?.withSession,
-				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
-			});
-			if (result.cancelled) {
-				return result;
-			}
-			this.renderCurrentSessionState();
-			if (this.firstRunNoticeVisible) {
-				this.clearFirstRunOnboardingUi();
-			}
-			this.showStatus("Resumed session in current cwd");
-			this.startSessionRecovery("resume");
-			return result;
 		}
 		return this.handleFatalRuntimeError("Failed to resume session", error);
 	}
+};
+
+function finishMissingCwdResume(mode: InteractiveModeBase, status: string): void {
+	mode.renderCurrentSessionState();
+	if (mode.firstRunNoticeVisible) {
+		mode.clearFirstRunOnboardingUi();
+	}
+	mode.showStatus(status);
+	mode.startSessionRecovery("resume");
+}
+
+async function forkIntoActiveStore(
+	mode: InteractiveModeBase,
+	source: MissingCwdForkSource,
+	cwd: string,
+): Promise<SessionManager> {
+	const store = mode.sessionManager.getSessionStore();
+	if ("exportPath" in source) return SessionManager.forkFrom(source.exportPath, cwd, store);
+	const stored = await mode.sessionManager.openSessionById(source.sessionId, undefined, source.sessionDirectory);
+	try {
+		return await stored.forkTo(cwd, store);
+	} finally {
+		if (stored.getSessionStore() !== store) await stored.getSessionStore().close();
+	}
+}
+
+/**
+ * Fork a session whose stored cwd is gone into `cwd`, in the store the current session lives in, and switch to the
+ * fork. An extension that cancels the switch leaves no copy behind.
+ */
+InteractiveModeBase.prototype.switchToForkedSession = async function (
+	this: InteractiveModeBase,
+	source: MissingCwdForkSource,
+	cwd: string,
+	options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
+): Promise<{ cancelled: boolean }> {
+	const forkId = (await forkIntoActiveStore(this, source, cwd)).getSessionId();
+	const result = await this.runtimeHost.switchSession(forkId, {
+		withSession: options?.withSession,
+		projectTrustContextFactory: (forkCwd) => this.createProjectTrustContext(forkCwd),
+	});
+	if (result.cancelled) {
+		await this.sessionManager.deleteSession(forkId);
+		return result;
+	}
+	finishMissingCwdResume(this, `Forked into new session ${forkId} in ${cwd}`);
+	return result;
 };

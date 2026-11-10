@@ -3,16 +3,19 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	SessionImportFileNotFoundError,
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { MissingSessionCwdError } from "../../src/core/session-cwd.ts";
 import { SessionEntryError, SessionManager } from "../../src/core/session-manager.ts";
+import { StorageRollbackError } from "../../src/core/storage/errors.ts";
 import type {
 	ExtensionAPI,
 	ExtensionFactory,
@@ -184,6 +187,84 @@ describe("AgentSessionRuntime characterization", () => {
 		assert.equal(readFileSync(storedPath, "utf8"), storedSession);
 		assert.notEqual(runtime.session.sessionFile, storedPath);
 		assert.match(readFileSync(runtime.session.sessionFile!, "utf8"), /"id":"imported"/);
+	});
+
+	describe("importing a session whose cwd no longer exists (earendil-works/pi#11060)", () => {
+		async function writeMissingCwdExport(tempDir: string) {
+			const importPath = join(tempDir, "import", "orphan.jsonl");
+			mkdirSync(join(tempDir, "import"), { recursive: true });
+			writeFileSync(
+				importPath,
+				`${JSON.stringify({ type: "session", version: 4, id: "orphan", createdAt: new Date().toISOString(), cwd: join(tempDir, "renamed-away") })}\n`,
+			);
+			return importPath;
+		}
+
+		async function listIds(runtime: { session: { sessionManager: SessionManager } }): Promise<string[]> {
+			const ids: string[] = [];
+			for await (const summary of runtime.session.sessionManager.getSessionStore().list({ includeInternal: true })) {
+				ids.push(summary.id);
+			}
+			return ids.sort();
+		}
+
+		it("leaves no copy behind, so a retry with a cwd override imports it once", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const importPath = await writeMissingCwdExport(tempDir);
+			const store = runtime.session.sessionManager.getSessionStore();
+			const idsBefore = await listIds(runtime);
+
+			await expect(runtime.importFromJsonl(importPath)).rejects.toBeInstanceOf(MissingSessionCwdError);
+
+			expect(await store.readHeader("orphan")).toBeUndefined();
+			expect(await listIds(runtime)).toEqual(idsBefore);
+
+			const retried = await runtime.importFromJsonl(importPath, tempDir);
+
+			expect(retried).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe("orphan");
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+			expect((await store.readHeader("orphan"))?.id).toBe("orphan");
+		});
+
+		it("keeps the missing-cwd error and the session that was already open when nothing was imported", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const importPath = await writeMissingCwdExport(tempDir);
+			const openSessionId = runtime.session.sessionId;
+
+			const failure = await runtime.importFromJsonl(importPath).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toMatchObject({
+				sessionCwd: join(tempDir, "renamed-away"),
+				fallbackCwd: tempDir,
+			});
+			expect(runtime.session.sessionId).toBe(openSessionId);
+		});
+
+		it("reports a copy it could not remove together with the missing cwd that caused the removal", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const importPath = await writeMissingCwdExport(tempDir);
+			const removalFailure = new Error("storage refused the delete");
+			vi.spyOn(runtime.session.sessionManager, "deleteSession").mockRejectedValueOnce(removalFailure);
+
+			const failure = await runtime.importFromJsonl(importPath).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(StorageRollbackError);
+			expect((failure as StorageRollbackError).cause).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as StorageRollbackError).rollbackCause).toBe(removalFailure);
+		});
+
+		it("does not touch the store when the import fails for another reason", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const deleteSession = vi.spyOn(runtime.session.sessionManager, "deleteSession");
+
+			await expect(runtime.importFromJsonl(join(tempDir, "nope.jsonl"))).rejects.toBeInstanceOf(
+				SessionImportFileNotFoundError,
+			);
+
+			expect(deleteSession).not.toHaveBeenCalled();
+		});
 	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {

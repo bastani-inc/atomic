@@ -80,13 +80,23 @@ test("dismissing the dirty-checkout prompt cancels (#4329)", async () => {
 	assert.equal(selector.stopped, 1);
 });
 
-test("the missing-cwd prompt continues in the current directory or cancels", async () => {
+test("the missing-cwd prompt offers continue, fork and cancel and maps each answer (earendil-works/pi#11060)", async () => {
 	const issue = { sessionCwd: "/gone", fallbackCwd: "/here" };
-	selector.pick = (options) => options[0];
-	assert.equal(await promptForMissingSessionCwd(issue, settings), "/here");
-	assert.deepEqual(selector.shown[0]?.options, ["Continue", "Cancel"]);
-	selector.pick = (options) => options[1];
-	assert.equal(await promptForMissingSessionCwd(issue, settings), undefined);
+	const answers: (string | undefined)[] = [];
+	for (const index of [0, 1, 2]) {
+		selector.pick = (options) => options[index];
+		answers.push(await promptForMissingSessionCwd(issue, settings));
+	}
 	selector.pick = () => undefined;
-	assert.equal(await promptForMissingSessionCwd(issue, settings), undefined);
+	answers.push(await promptForMissingSessionCwd(issue, settings));
+	assert.deepEqual(answers, ["continue", "fork", undefined, undefined]);
+	assert.deepEqual(selector.shown[0], {
+		title: "Session cwd does not exist: /gone",
+		options: [
+			"Continue in /here (asks again next time)",
+			"Fork into /here (new session ID, original kept)",
+			"Cancel",
+		],
+	});
+	assert.equal(selector.stopped, 4);
 });

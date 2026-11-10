@@ -30,6 +30,7 @@
 
 - `cacheWarming` now defaults to `"idle"` instead of `"streaming"`: Atomic also keeps eligible prompt caches warm for up to 30 minutes between agent runs, but only when a refresh is expected to pay for itself. Set `"cacheWarming": "streaming"` in global settings for the previous behavior, or `"off"` to disable warming
 - The `/login` and `/logout` provider lists and the `/login <provider>` and `/logout <provider>` completions now show the preferred partners Radius and OpenRouter first, then all other providers alphabetically. In the provider lists, partners are marked with `✦`, the selected Radius row shimmers in the Radius logo colors and the selected OpenRouter row glows in OpenRouter's brand color (lime on dark themes, violet on light themes)
+- When a session's working directory no longer exists, for example after the project folder was renamed, interactive mode now offers `Continue`, `Fork` or `Cancel` instead of only continuing. `Continue` runs the session in the current directory without storing the choice, as before; `Fork` copies it into the current directory as a new session with a new ID, like `--fork`, so the next resume no longer asks. This applies at startup (`--session`, `--resume`), to `/resume`, to `/import` and to `ctx.switchSession()` from extensions ([earendil-works/pi#11060](https://github.com/earendil-works/pi/issues/11060))
 - Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema` and `@earendil-works/pi-telemetry` to 1.5.1; the intercom, subagents, web-access and workflows packages now require `@earendil-works/pi-tui` and `@earendil-works/pi-agent-core` `^1.5.1`
 
 ### Fixed
@@ -53,6 +54,7 @@
 - Fixed internal cursor markers leaking into terminal output, including with multiple markers or horizontally clipped content (from pi-tui 1.5.1, [earendil-works/pi#9441](https://github.com/earendil-works/pi/pull/9441))
 - Fixed Alacritty hyperlinks not being enabled when `TERM_PROGRAM` is unset; detection now also uses `TERM` and `ALACRITTY_WINDOW_ID` (from pi-tui 1.5.1, [earendil-works/pi#11767](https://github.com/earendil-works/pi/issues/11767))
 - Fixed codemode tool declarations throwing `URIError` for a local `$ref` with a malformed percent escape such as `#/$defs/%E0`, which failed every script that renders all tools; the reference now renders as `unknown` (from pi-codemode 1.5.1, [earendil-works/pi#11803](https://github.com/earendil-works/pi/issues/11803))
+- Fixed `/import` of a session whose working directory no longer exists storing the session before asking what to do: continuing then failed with `Session already exists`, and cancelling left the session in storage. An import that cannot run now stores nothing ([earendil-works/pi#11060](https://github.com/earendil-works/pi/issues/11060))
 
 ## [0.9.74] - 2026-11-09
 

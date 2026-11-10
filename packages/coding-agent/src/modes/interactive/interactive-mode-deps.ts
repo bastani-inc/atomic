@@ -95,7 +95,12 @@ export {
 export { DefaultPackageManager } from "../../core/package-manager.ts";
 export { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-names.ts";
 export type { ResourceDiagnostic } from "../../core/resource-loader.ts";
-export { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
+export {
+	formatMissingSessionCwdPrompt,
+	getMissingSessionCwdOptions,
+	type MissingSessionCwdChoice,
+	MissingSessionCwdError,
+} from "../../core/session-cwd.ts";
 export { type SessionContext, SessionManager } from "../../core/session-manager.ts";
 export { BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../core/slash-commands.js";
 export type { SourceInfo } from "../../core/source-info.ts";

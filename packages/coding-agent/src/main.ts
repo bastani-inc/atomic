@@ -107,6 +107,7 @@ import {
 	applyInheritedWorkflowSessionClassification,
 	cliResumeTrust,
 	openCliSession,
+	openSessionInCurrentCwdOrExit,
 	promptForDirtyCheckout,
 	promptForMissingSessionCwd,
 	refreshSessionStorage,
@@ -675,11 +676,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		startupEarlyInputCapture?.consume();
 		startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
-			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
-			if (!selectedCwd) {
-				process.exit(0);
-			}
-			sessionManager = await sessionManager.openSessionById(sessionManager.getSessionId(), selectedCwd);
+			const choice = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
+			sessionManager = await openSessionInCurrentCwdOrExit(sessionManager, missingSessionCwdIssue, choice);
 		} else {
 			console.error(chalk.red(new MissingSessionCwdError(missingSessionCwdIssue).message));
 			process.exit(1);

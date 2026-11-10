@@ -10,6 +10,8 @@ import {
 	type ExtensionUIDialogOptions,
 	formatMissingSessionCwdPrompt,
 	getEditorTheme,
+	getMissingSessionCwdOptions,
+	type MissingSessionCwdChoice,
 	type MissingSessionCwdError,
 } from "./interactive-mode-deps.ts";
 import { isStartupTrustHeld } from "./interactive-startup-trust.ts";
@@ -76,12 +78,13 @@ InteractiveModeBase.prototype.showExtensionConfirm = async function (
 InteractiveModeBase.prototype.promptForMissingSessionCwd = async function (
 	this: InteractiveModeBase,
 	error: MissingSessionCwdError,
-): Promise<string | undefined> {
-	const confirmed = await this.showExtensionConfirm(
-		"Session cwd not found",
+): Promise<MissingSessionCwdChoice | undefined> {
+	const options = getMissingSessionCwdOptions(error.issue);
+	const label = await this.showExtensionSelector(
 		formatMissingSessionCwdPrompt(error.issue),
+		options.map((option) => option.label),
 	);
-	return confirmed ? error.issue.fallbackCwd : undefined;
+	return options.find((option) => option.label === label)?.value;
 };
 
 InteractiveModeBase.prototype.showExtensionInput = function (

@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
-import { getMissingSessionCwdIssue, MissingSessionCwdError } from "../src/core/session-cwd.ts";
+import {
+	formatMissingSessionCwdPrompt,
+	getMissingSessionCwdIssue,
+	getMissingSessionCwdOptions,
+	MissingSessionCwdError,
+} from "../src/core/session-cwd.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 
 function createTempDir(name: string): string {
@@ -87,5 +92,27 @@ describe("session cwd handling", () => {
 			}),
 		).rejects.toBeInstanceOf(MissingSessionCwdError);
 		expect(createRuntimeCalled).toBe(false);
+	});
+});
+
+describe("missing session cwd prompt (earendil-works/pi#11060)", () => {
+	const issue = { sessionFile: "/sessions/s.jsonl", sessionCwd: "/proj", fallbackCwd: "/proj2" };
+
+	it("names the stored cwd and nothing else in the prompt text", () => {
+		expect(formatMissingSessionCwdPrompt(issue)).toBe("Session cwd does not exist: /proj");
+	});
+
+	it("offers continue, fork and cancel in that order, naming the current cwd", () => {
+		expect(getMissingSessionCwdOptions(issue)).toEqual([
+			{ label: "Continue in /proj2 (asks again next time)", value: "continue" },
+			{ label: "Fork into /proj2 (new session ID, original kept)", value: "fork" },
+			{ label: "Cancel", value: undefined },
+		]);
+	});
+
+	it("keeps the non-interactive error text unchanged", () => {
+		expect(new MissingSessionCwdError(issue).message).toBe(
+			"Stored session working directory does not exist: /proj\nSession file: /sessions/s.jsonl\nCurrent working directory: /proj2",
+		);
 	});
 });

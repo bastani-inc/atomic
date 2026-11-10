@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { _processAgentEvent } from "../src/core/agent-session-events.ts";
 import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
@@ -14,6 +14,7 @@ import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.ts";
 import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { SessionConflictError } from "../src/core/storage/session/errors.js";
+import { JsonlSessionStore } from "../src/core/storage/session/jsonl-session-store.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import type { SessionRecordHeader, SessionWriteOptions } from "../src/core/storage/session/types.js";
 import { createSessionManager } from "../src/main-session.ts";
@@ -282,6 +283,130 @@ test("fork listings resolve canonical parent IDs to the parent's display path", 
 		);
 		assert.equal(child.getHeader()?.parentSessionId, parent.getSessionId());
 	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("forking an export into a store the caller owns writes there and leaves the store open (earendil-works/pi#11060)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "session-manager-fork-into-store-"));
+	const projectCwd = join(directory, "project");
+	try {
+		const exported = await SessionManager.create(directory, join(directory, "exports"));
+		await exported.appendMessage(message("exported"));
+		const store = new MemorySessionStore();
+		let closed = 0;
+		const close = store.close.bind(store);
+		store.close = async () => {
+			closed += 1;
+			await close();
+		};
+
+		const forked = await SessionManager.forkFrom(exported.getSessionFile()!, projectCwd, store);
+
+		assert.equal(forked.getSessionStore(), store);
+		assert.equal(forked.getSessionDir(), "", "a store without a directory leaves the directory empty");
+		assert.equal(forked.getCwd(), projectCwd);
+		assert.notEqual(forked.getSessionId(), exported.getSessionId());
+		assert.equal(forked.getHeader()?.parentSessionId, exported.getSessionId());
+		assert.deepEqual((await store.load(forked.getSessionId())).entries, exported.getEntries());
+		assert.equal(closed, 0);
+
+		const failing = new ControlledStore();
+		failing.failure = new SessionConflictError(forked.getSessionId(), 0, 1);
+		let failingClosed = 0;
+		failing.close = async () => {
+			failingClosed += 1;
+		};
+		await assert.rejects(
+			SessionManager.forkFrom(exported.getSessionFile()!, projectCwd, failing),
+			SessionConflictError,
+		);
+		assert.equal(failingClosed, 0, "a store the caller passed in stays the caller's to close");
+		await exported.getSessionStore().close();
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("forking an export into a JSONL store or directory keeps the session in that directory (earendil-works/pi#11060)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "session-manager-fork-into-directory-"));
+	const projectCwd = join(directory, "project");
+	try {
+		const exported = await SessionManager.create(directory, join(directory, "exports"));
+		await exported.appendMessage(message("exported"));
+		const target = join(directory, "target");
+		const nested = await SessionManager.create("/elsewhere", join(target, "nested"));
+		await nested.appendMessage(message("nested"));
+		await nested.getSessionStore().close();
+
+		const intoDirectory = await SessionManager.forkFrom(exported.getSessionFile()!, projectCwd, target);
+		assert.equal(intoDirectory.getSessionDir(), target);
+		assert.equal(dirname(intoDirectory.getSessionFile()!), target);
+		const listed: string[] = [];
+		for await (const summary of intoDirectory.getSessionStore().list({})) listed.push(summary.id);
+		assert.deepEqual(
+			listed,
+			[intoDirectory.getSessionId()],
+			"the directory is the store, without its subdirectories",
+		);
+
+		const store = await JsonlSessionStore.open(join(directory, "store"), {
+			exactDirectory: true,
+			scanExisting: false,
+		});
+		const intoStore = await SessionManager.forkFrom(exported.getSessionFile()!, projectCwd, store);
+		assert.equal(intoStore.getSessionStore(), store);
+		assert.equal(intoStore.getSessionDir(), join(directory, "store"));
+		assert.equal(dirname(intoStore.getSessionFile()!), join(directory, "store"));
+
+		await intoDirectory.getSessionStore().close();
+		await store.close();
+		await exported.getSessionStore().close();
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("a fork that fails to write closes the store it opened for a directory but not one it was given (earendil-works/pi#11060)", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "session-manager-fork-failure-"));
+	const projectCwd = join(directory, "project");
+	try {
+		const exported = await SessionManager.create(directory, join(directory, "exports"));
+		await exported.appendMessage(message("exported"));
+		const target = join(directory, "target");
+		const create = vi
+			.spyOn(JsonlSessionStore.prototype, "create")
+			.mockRejectedValue(new SessionConflictError("any", 0, 1));
+		const close = vi.spyOn(JsonlSessionStore.prototype, "close");
+		await exported.getSessionStore().close();
+		close.mockClear();
+
+		await assert.rejects(
+			SessionManager.forkFrom(exported.getSessionFile()!, projectCwd, target),
+			SessionConflictError,
+		);
+		const closedLocations = () => close.mock.contexts.map((store) => store.descriptor.location);
+		assert.deepEqual(closedLocations().filter((location) => location === target).length, 1);
+
+		const given = await JsonlSessionStore.open(join(directory, "given"), {
+			exactDirectory: true,
+			scanExisting: false,
+		});
+		close.mockClear();
+		await assert.rejects(
+			SessionManager.forkFrom(exported.getSessionFile()!, projectCwd, given),
+			SessionConflictError,
+		);
+		assert.equal(
+			closedLocations().includes(given.descriptor.location),
+			false,
+			"a store the caller passed in stays the caller's to close",
+		);
+		create.mockRestore();
+		close.mockRestore();
+		await given.close();
+	} finally {
+		vi.restoreAllMocks();
 		await rm(directory, { recursive: true, force: true });
 	}
 });
