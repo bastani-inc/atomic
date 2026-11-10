@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionImportFileNotFoundError } from "../src/core/agent-session-runtime.ts";
+import { type MissingSessionCwdChoice, MissingSessionCwdError } from "../src/core/session-cwd.ts";
 import type { SessionEntry } from "../src/core/session-manager.ts";
 import { formatWorktreeRestoreNotice, formatWorktreeRestoreWarning } from "../src/core/session-worktree-snapshots.ts";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
@@ -30,7 +31,8 @@ type ImportCommandContext = {
 	handleRuntimeSessionChange: () => Promise<void>;
 	renderCurrentSessionState: () => void;
 	handleFatalRuntimeError: (prefix: string, error: unknown) => Promise<never>;
-	promptForMissingSessionCwd: (error: unknown) => Promise<string | undefined>;
+	promptForMissingSessionCwd: (error: unknown) => Promise<MissingSessionCwdChoice | undefined>;
+	switchToForkedSession: (source: { exportPath: string }, cwd: string) => Promise<{ cancelled: boolean }>;
 	getPathCommandArgument: (text: string, command: PathCommand) => string | undefined;
 };
 
@@ -87,6 +89,7 @@ describe("InteractiveMode /import parsing", () => {
 				throw new Error("unexpected fatal error");
 			}),
 			promptForMissingSessionCwd: vi.fn(async () => undefined),
+			switchToForkedSession: vi.fn(async () => ({ cancelled: false })),
 			getPathCommandArgument: interactiveModePrototype.getPathCommandArgument,
 		};
 
@@ -121,6 +124,7 @@ describe("InteractiveMode /import parsing", () => {
 				throw new Error("unexpected fatal error");
 			}),
 			promptForMissingSessionCwd: vi.fn(async () => undefined),
+			switchToForkedSession: vi.fn(async () => ({ cancelled: false })),
 			getPathCommandArgument: interactiveModePrototype.getPathCommandArgument,
 		};
 
@@ -171,6 +175,7 @@ describe("InteractiveMode /import parsing", () => {
 				throw new Error("unexpected fatal error");
 			}),
 			promptForMissingSessionCwd: vi.fn(async () => undefined),
+			switchToForkedSession: vi.fn(async () => ({ cancelled: false })),
 			getPathCommandArgument: interactiveModePrototype.getPathCommandArgument,
 		};
 
@@ -209,6 +214,7 @@ describe("InteractiveMode /import parsing", () => {
 			renderCurrentSessionState: vi.fn(),
 			handleFatalRuntimeError,
 			promptForMissingSessionCwd: vi.fn(async () => undefined),
+			switchToForkedSession: vi.fn(async () => ({ cancelled: false })),
 			getPathCommandArgument: interactiveModePrototype.getPathCommandArgument,
 		};
 
@@ -217,5 +223,100 @@ describe("InteractiveMode /import parsing", () => {
 		expect(showError).toHaveBeenCalledWith("Failed to import session: File not found: /tmp/missing-session.jsonl");
 		expect(showStatus).not.toHaveBeenCalled();
 		expect(handleFatalRuntimeError).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode /import with a missing session cwd (earendil-works/pi#11060)", () => {
+	const missingCwd = new MissingSessionCwdError({ sessionCwd: "/renamed-from", fallbackCwd: "/renamed-to" });
+
+	function missingCwdContext(
+		choice: MissingSessionCwdChoice | undefined,
+		overrides: Partial<ImportCommandContext> = {},
+	) {
+		const importFromJsonl = vi.fn(async (_path: string, cwdOverride?: string) => {
+			if (cwdOverride === undefined) throw missingCwd;
+			return { cancelled: false };
+		});
+		const showStatus = vi.fn();
+		const switchToForkedSession = vi.fn(async () => ({ cancelled: false }));
+		const renderCurrentSessionState = vi.fn();
+		const context: ImportCommandContext = {
+			statusContainer: { clear: vi.fn() },
+			runtimeHost: { importFromJsonl, takeResumeNotices: () => [] },
+			sessionManager: sessionWithoutRestores(),
+			showError: vi.fn(),
+			showWarning: vi.fn(),
+			showStatus,
+			showExtensionConfirm: vi.fn(async () => true),
+			handleRuntimeSessionChange: vi.fn(async () => {}),
+			renderCurrentSessionState,
+			handleFatalRuntimeError: vi.fn(async () => {
+				throw new Error("unexpected fatal error");
+			}),
+			promptForMissingSessionCwd: vi.fn(async () => choice),
+			switchToForkedSession,
+			getPathCommandArgument: interactiveModePrototype.getPathCommandArgument,
+			...overrides,
+		};
+		return { context, importFromJsonl, showStatus, switchToForkedSession, renderCurrentSessionState };
+	}
+
+	it("prompts with the missing-cwd error", async () => {
+		const { context } = missingCwdContext(undefined);
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		expect(context.promptForMissingSessionCwd).toHaveBeenCalledWith(missingCwd);
+	});
+
+	it("continues the import in the current cwd", async () => {
+		const { context, importFromJsonl, showStatus, switchToForkedSession, renderCurrentSessionState } =
+			missingCwdContext("continue");
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		expect(importFromJsonl.mock.calls).toEqual([["exported.jsonl"], ["exported.jsonl", "/renamed-to"]]);
+		expect(switchToForkedSession).not.toHaveBeenCalled();
+		expect(renderCurrentSessionState).toHaveBeenCalledTimes(1);
+		expect(showStatus).toHaveBeenCalledWith("Session imported from: exported.jsonl");
+	});
+
+	it("reports a cancelled continued import and does not show it as imported", async () => {
+		const { context, importFromJsonl, showStatus, renderCurrentSessionState } = missingCwdContext("continue");
+		importFromJsonl.mockRejectedValueOnce(missingCwd).mockResolvedValueOnce({ cancelled: true });
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		expect(showStatus.mock.calls).toEqual([["Import cancelled"]]);
+		expect(renderCurrentSessionState).not.toHaveBeenCalled();
+	});
+
+	it("forks the export into the current cwd without importing it", async () => {
+		const { context, importFromJsonl, showStatus, switchToForkedSession } = missingCwdContext("fork");
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		expect(switchToForkedSession).toHaveBeenCalledWith({ exportPath: "exported.jsonl" }, "/renamed-to");
+		expect(importFromJsonl.mock.calls).toEqual([["exported.jsonl"]]);
+		expect(showStatus).not.toHaveBeenCalled();
+	});
+
+	it("reports an import cancelled by an extension after the fork", async () => {
+		const { context, showStatus, switchToForkedSession } = missingCwdContext("fork");
+		switchToForkedSession.mockResolvedValueOnce({ cancelled: true });
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		expect(showStatus.mock.calls).toEqual([["Import cancelled"]]);
+	});
+
+	it("cancels without importing or forking", async () => {
+		const { context, importFromJsonl, showStatus, switchToForkedSession } = missingCwdContext(undefined);
+
+		await interactiveModePrototype.handleImportCommand.call(context, "/import exported.jsonl");
+
+		expect(importFromJsonl.mock.calls).toEqual([["exported.jsonl"]]);
+		expect(switchToForkedSession).not.toHaveBeenCalled();
+		expect(showStatus.mock.calls).toEqual([["Import cancelled"]]);
 	});
 });

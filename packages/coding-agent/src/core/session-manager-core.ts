@@ -1041,7 +1041,7 @@ export class SessionManager {
 	static async forkFrom(
 		sourcePath: string,
 		targetCwd: string,
-		sessionDir?: string,
+		sessionDir?: string | SessionStore,
 		options?: NewSessionOptions,
 	): Promise<SessionManager> {
 		const sourceStore = await JsonlSessionStore.open(dirname(resolvePath(sourcePath)), {
@@ -1056,11 +1056,17 @@ export class SessionManager {
 		}
 		const { entries, blobs } = takeInlineToolOutput(source.entries, source.header.id);
 		const store =
-			sessionDir === undefined
-				? await resolveSessionStore(targetCwd)
-				: await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false });
-		return SessionManager.constructWithStore(store, true, async () => {
-			const manager = new SessionManager(store, targetCwd, sessionDir ?? "", {
+			typeof sessionDir === "string"
+				? await JsonlSessionStore.open(sessionDir, { exactDirectory: true, scanExisting: false })
+				: (sessionDir ?? (await resolveSessionStore(targetCwd)));
+		const directory =
+			typeof sessionDir === "string"
+				? sessionDir
+				: sessionDir instanceof JsonlSessionStore
+					? sessionDir.descriptor.location
+					: "";
+		return SessionManager.constructWithStore(store, store !== sessionDir, async () => {
+			const manager = new SessionManager(store, targetCwd, directory, {
 				...options,
 				parentSession: source.header.id,
 			});

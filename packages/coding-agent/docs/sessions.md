@@ -101,7 +101,17 @@ Each session records the working directory it was created in and never changes i
 
 `atomic --session <id>` from another directory opens a session whose working directory lies inside a checkout it recorded a [worktree snapshot](/worktree-snapshots) of as itself, without offering a fork: it continues in that checkout when it still matches the snapshot, and otherwise in a fresh worktree restored from it. Other sessions are offered as a fork into the current directory.
 
-If a session's working directory no longer exists, interactive mode offers to continue in the current directory instead; other modes exit with an error that names both directories.
+If a session's working directory no longer exists, for example after the project folder was renamed, interactive mode asks how to open it:
+
+- **Continue** runs the session in the current directory. Atomic does not store that choice, so it asks again the next time you open the session.
+- **Fork** copies the session into the current directory as a new session with a new ID, like `--fork`. The original stays unchanged, and the copy records the current directory, so opening it does not ask again. The copy is stored in the same session storage the original was opened from.
+- **Cancel** leaves the current session open, or exits at startup.
+
+This applies to `--session`, `--resume`, `/resume` and `/import`, for sessions in the default database and in JSONL files alike. `/import` of a session whose working directory is missing stores nothing until you choose, so cancelling or forking leaves no imported copy behind.
+
+An extension that calls `ctx.switchSession()` is asked the same way only when Atomic runs the session in the same process as the terminal. In the default interactive mode, where extensions run in a separate process, the call rejects with a `MissingSessionCwdError`, as it does in print and RPC modes; those modes exit with an error that names both directories.
+
+Known limitation: at startup in the default interactive mode, choosing **Continue** ends with `Stored session working directory does not exist`. Choose **Fork** instead, or start Atomic from a directory that exists and open the session with `/resume`, where **Continue** works.
 
 A session that recorded [worktree snapshots](/worktree-snapshots) is checked against its last snapshot when it resumes. When its checkout drifted, or does not exist on this machine, Atomic restores the snapshot into a fresh worktree under `~/.atomic/agent/worktree-snapshots/`, prints one line naming it, and runs the session there. `/session snapshot` shows the recorded snapshots and how they differ from the current tree.
 

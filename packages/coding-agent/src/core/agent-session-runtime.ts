@@ -31,7 +31,7 @@ import {
 	sessionResumeOptions,
 } from "./resume/session-resume.ts";
 import type { CreateAgentSessionResult } from "./sdk.ts";
-import { assertSessionCwdExists } from "./session-cwd.ts";
+import { assertSessionCwdExists, findMissingSessionCwdIssue, MissingSessionCwdError } from "./session-cwd.ts";
 import { sessionLifecycleCreation, sessionLifecycleScopes } from "./session-lifecycle-scope.ts";
 import {
 	drainSessionWork,
@@ -682,7 +682,8 @@ export class AgentSessionRuntime {
 				sessionId,
 			);
 			const sessionManager = await this.resumeWorktree(opened, options?.sessionDirectory);
-			assertSessionCwdExists(sessionManager, this.cwd);
+			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
+			if (missingCwd !== undefined) throw new MissingSessionCwdError(missingCwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
@@ -803,7 +804,12 @@ export class AgentSessionRuntime {
 			const sessionManager = await this.resumeWorktree(
 				await this.session.sessionManager.importFromJsonl(resolvedPath, cwdOverride),
 			);
-			assertSessionCwdExists(sessionManager, this.cwd);
+			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
+			if (missingCwd !== undefined) {
+				const failure = new MissingSessionCwdError(missingCwd);
+				await this.discardImportedSession(sessionManager, failure);
+				throw failure;
+			}
 			await this.teardownCurrent("resume", sessionManager.getSessionId());
 			await this.apply(
 				await this.createRuntime({
@@ -815,6 +821,19 @@ export class AgentSessionRuntime {
 			);
 			return { cancelled: false };
 		});
+	}
+
+	/**
+	 * Drops the record an import wrote for a session that cannot run in this cwd, so that retrying with a cwd override
+	 * or forking it finds no copy of the id. A failed removal replaces `failure` with a
+	 * {@link StorageRollbackError} that keeps both.
+	 */
+	private async discardImportedSession(imported: SessionManager, failure: MissingSessionCwdError): Promise<void> {
+		try {
+			await this.session.sessionManager.deleteSession(imported.getSessionId());
+		} catch (cause) {
+			throw new StorageRollbackError(failure, cause as StorageFailureCause);
+		}
 	}
 
 	/**

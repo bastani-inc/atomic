@@ -1,13 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { ImageContent } from "@bastani/pi-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
-import {
-	isSerializedBackgroundCompactionError,
-	rehydrateBackgroundCompactionError,
-} from "../../core/compaction/background-compaction-errors.ts";
-import { rehydrateDebugError } from "../../core/debug-errors.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
-import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import type { BashOutputChannel } from "../../core/tools/bash.js";
 import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
@@ -37,6 +31,7 @@ import {
 } from "./rpc-client-process.js";
 import { collectRpcEvents, runUserBashWithUpdates, waitForRpcIdle } from "./rpc-client-waits.ts";
 import { DEFAULT_REQUEST_TIMEOUT_MS, LONG_LIVED_COMMANDS, RESTART_CANCELLED_MESSAGE } from "./rpc-command-timeouts.ts";
+import { assertRpcSuccess } from "./rpc-error-decoding.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
 import { GenerationBuffer } from "./rpc-generation-buffer.ts";
 import { RpcPendingRequests } from "./rpc-pending-requests.ts";
@@ -658,27 +653,8 @@ export class RpcClient extends RpcClientApi {
 		}
 		return response;
 	}
-	private assertSuccess(response: RpcResponse): void {
-		if (response.success) return;
-		if (response.errorCode === "debug_error") throw rehydrateDebugError(response.errorDetails);
-		if (response.errorCode === "credential_synchronization" && response.errorDetails) {
-			throw new CredentialSynchronizationError(
-				response.errorDetails.providerId,
-				response.errorDetails.operation,
-				undefined,
-				{ cause: new Error(response.error) },
-			);
-		}
-		if (
-			response.errorCode === "background_compaction" &&
-			isSerializedBackgroundCompactionError(response.errorDetails)
-		) {
-			throw rehydrateBackgroundCompactionError(response.errorDetails);
-		}
-		throw new Error(response.error);
-	}
 	protected data<T>(response: RpcResponse): T {
-		this.assertSuccess(response);
+		assertRpcSuccess(response);
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
 	}

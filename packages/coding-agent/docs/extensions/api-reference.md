@@ -426,6 +426,8 @@ if (result.cancelled) {
 Options:
 - `withSession`: run post-switch work against a fresh replacement-session context. Do not use captured old `pi` / command `ctx`; see [Session replacement lifecycle and footguns](#session-replacement-lifecycle-and-footguns).
 
+If the session's recorded working directory does not exist, nothing is opened and the call rejects with a `MissingSessionCwdError` (`code: "session-cwd-missing"`; check it with `isMissingSessionCwdError`). Atomic asks the user whether to continue in the current directory or fork the session there only when it runs the session in the terminal's own process; the default interactive mode runs extensions in a separate process, so the rejection reaches your code. See [Sessions](/sessions#resuming-and-deleting-sessions).
+
 To discover available sessions, use the static `SessionManager.list()` or `SessionManager.listAll()` methods:
 
 ```typescript

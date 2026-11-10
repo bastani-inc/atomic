@@ -2297,6 +2297,7 @@ When a child workflow fails on a typed error, in this process or on a pooled wor
 | `task-message` | `TaskMessageError`, `TaskMessageTimeoutError` | `isTaskMessageError` |
 | `intercom-broker` | [`IntercomBrokerError`](/intercom/operations) and its subclasses `IntercomBrokerSuccessorTimeoutError`, `IntercomBrokerProtocolError`, `IntercomBrokerUpgradeError` and `IntercomBrokerStopTimeoutError` | `isIntercomBrokerError` |
 | `resume` | [`ResumeError`](/guides/resume-on-any-machine#what-can-stop-a-resume) and its subclasses `ResumeNotFoundError`, `ResumePreconditionError`, `ResumeCatalogUnavailableError`, `ResumeCatalogTimeoutError` | `isResumeError` |
+| `missing-session-cwd` | [`MissingSessionCwdError`](/sdk/reference#missing-session-directory) | `isMissingSessionCwdError` |
 | `blueprint` | [`BlueprintError`](/sdk/reference#blueprint-errors) and its subclasses `BlueprintInvalidError`, `BlueprintStepFailedError`, `BlueprintStepTimedOutError`, `BlueprintUsesUnsupportedError`, `BlueprintBuildFailedError` | `isBlueprintError` |
 | `worker-pool`, `workflow-infrastructure`, `journal`, `worker-placement`, `task-cleanup` | The [worker pool errors](#worker-pool-errors), journal lease errors, shared placement and setup errors (`WorkerPlacementConfigError`, `SharedPoolSetupError`, `WorkspaceRestoreUnavailableError`, `StaleStageLeaseError`) and `TaskCleanupError` | Each class's guard |
 | `storage`, `journal-store`, `fork` | Storage errors (team profile errors among them), journal store errors and [fork errors](#fork-errors) | Each family's guard |

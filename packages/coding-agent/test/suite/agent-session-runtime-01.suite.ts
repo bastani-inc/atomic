@@ -3,16 +3,20 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../../test/helpers/temporary-agent-dir.js";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	SessionImportFileNotFoundError,
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { MissingSessionCwdError } from "../../src/core/session-cwd.ts";
 import { SessionEntryError, SessionManager } from "../../src/core/session-manager.ts";
+import { resolveSessionStore } from "../../src/core/session-storage.ts";
+import { StorageRollbackError } from "../../src/core/storage/errors.ts";
 import type {
 	ExtensionAPI,
 	ExtensionFactory,
@@ -40,7 +44,7 @@ describe("AgentSessionRuntime characterization", () => {
 
 	async function createRuntimeForTest(
 		extensionFactory: ExtensionFactory,
-		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean },
+		options?: { cwd?: string; bootstrapModel?: boolean; bootstrapThinkingLevel?: boolean; databaseStore?: boolean },
 	) {
 		const tempDir =
 			options?.cwd ?? join(tmpdir(), `pi-runtime-suite-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -105,15 +109,23 @@ describe("AgentSessionRuntime characterization", () => {
 				diagnostics: services.diagnostics,
 			};
 		};
+		const databaseStore = options?.databaseStore
+			? await resolveSessionStore(tempDir, {
+					sessionStore: { kind: "sqlite", path: join(tempDir, "sessions.sqlite") },
+				})
+			: undefined;
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: await SessionManager.create(tempDir, join(tempDir, "sessions")),
+			sessionManager: databaseStore
+				? await SessionManager.create(databaseStore, tempDir)
+				: await SessionManager.create(tempDir, join(tempDir, "sessions")),
 		});
 		await runtime.session.bindExtensions({});
 
 		cleanups.push(async () => {
 			await runtime.dispose();
+			await databaseStore?.close();
 			faux.unregister();
 			if (existsSync(tempDir)) {
 				rmSync(tempDir, { recursive: true, force: true });
@@ -184,6 +196,193 @@ describe("AgentSessionRuntime characterization", () => {
 		assert.equal(readFileSync(storedPath, "utf8"), storedSession);
 		assert.notEqual(runtime.session.sessionFile, storedPath);
 		assert.match(readFileSync(runtime.session.sessionFile!, "utf8"), /"id":"imported"/);
+	});
+
+	describe("importing a session whose cwd no longer exists (earendil-works/pi#11060)", () => {
+		async function writeMissingCwdExport(tempDir: string) {
+			const importPath = join(tempDir, "import", "orphan.jsonl");
+			mkdirSync(join(tempDir, "import"), { recursive: true });
+			writeFileSync(
+				importPath,
+				`${JSON.stringify({ type: "session", version: 4, id: "orphan", createdAt: new Date().toISOString(), cwd: join(tempDir, "renamed-away") })}\n`,
+			);
+			return importPath;
+		}
+
+		async function listIds(runtime: { session: { sessionManager: SessionManager } }): Promise<string[]> {
+			const ids: string[] = [];
+			for await (const summary of runtime.session.sessionManager.getSessionStore().list({ includeInternal: true })) {
+				ids.push(summary.id);
+			}
+			return ids.sort();
+		}
+
+		it("leaves no copy behind, so a retry with a cwd override imports it once", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const importPath = await writeMissingCwdExport(tempDir);
+			const store = runtime.session.sessionManager.getSessionStore();
+			const idsBefore = await listIds(runtime);
+
+			await expect(runtime.importFromJsonl(importPath)).rejects.toBeInstanceOf(MissingSessionCwdError);
+
+			expect(await store.readHeader("orphan")).toBeUndefined();
+			expect(await listIds(runtime)).toEqual(idsBefore);
+
+			const retried = await runtime.importFromJsonl(importPath, tempDir);
+
+			expect(retried).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe("orphan");
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+			expect((await store.readHeader("orphan"))?.id).toBe("orphan");
+		});
+
+		it("keeps the missing-cwd error and the session that was already open when nothing was imported", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const importPath = await writeMissingCwdExport(tempDir);
+			const openSessionId = runtime.session.sessionId;
+
+			const failure = await runtime.importFromJsonl(importPath).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toMatchObject({
+				sessionCwd: join(tempDir, "renamed-away"),
+				fallbackCwd: tempDir,
+			});
+			expect(runtime.session.sessionId).toBe(openSessionId);
+		});
+
+		it("reports a copy it could not remove together with the missing cwd that caused the removal", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const importPath = await writeMissingCwdExport(tempDir);
+			const removalFailure = new Error("storage refused the delete");
+			vi.spyOn(runtime.session.sessionManager, "deleteSession").mockRejectedValueOnce(removalFailure);
+
+			const failure = await runtime.importFromJsonl(importPath).catch((error: unknown) => error);
+
+			expect(failure).toBeInstanceOf(StorageRollbackError);
+			expect((failure as StorageRollbackError).cause).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as StorageRollbackError).rollbackCause).toBe(removalFailure);
+		});
+
+		it("reports a session file's missing cwd when resuming it, and runs it in the current cwd on request", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const missing = join(tempDir, "renamed-away");
+			const source = await SessionManager.create(missing, join(tempDir, "old-sessions"));
+			await source.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const sourceId = source.getSessionId();
+			await source.getSessionStore().close();
+
+			const failure = await runtime
+				.switchSession(sourceId, { sessionDirectory: join(tempDir, "old-sessions") })
+				.catch((e: unknown) => e);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toMatchObject({ sessionCwd: missing, fallbackCwd: tempDir });
+			expect((failure as MissingSessionCwdError).issue.sessionFile).toBeDefined();
+
+			const result = await runtime.switchSession(sourceId, {
+				sessionDirectory: join(tempDir, "old-sessions"),
+				cwdOverride: tempDir,
+			});
+
+			expect(result).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe(sourceId);
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+		});
+
+		it("reports the missing cwd of a session kept in database storage, which has no session file", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {}, { databaseStore: true });
+			const store = runtime.session.sessionManager.getSessionStore();
+			const missing = join(tempDir, "renamed-away");
+			const source = await SessionManager.create(store, missing);
+			await source.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const sourceId = source.getSessionId();
+			const openSessionId = runtime.session.sessionId;
+
+			const failure = await runtime.switchSession(sourceId).catch((e: unknown) => e);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toEqual({ sessionCwd: missing, fallbackCwd: tempDir });
+			expect(runtime.session.sessionId).toBe(openSessionId);
+
+			const result = await runtime.switchSession(sourceId, { cwdOverride: tempDir });
+
+			expect(result).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe(sourceId);
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+			expect((await store.readHeader(sourceId))?.cwd).toBe(missing);
+		});
+
+		it("leaves no record in database storage when an import cannot run, so a retry imports it once", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {}, { databaseStore: true });
+			const store = runtime.session.sessionManager.getSessionStore();
+			const exportDirectory = join(tempDir, "exports");
+			const missing = join(tempDir, "renamed-away");
+			const exported = await SessionManager.create(missing, exportDirectory);
+			await exported.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const exportedId = exported.getSessionId();
+			const exportPath = exported.getSessionFile() ?? "";
+			await exported.getSessionStore().close();
+
+			const failure = await runtime.importFromJsonl(exportPath).catch((e: unknown) => e);
+
+			expect(failure).toBeInstanceOf(MissingSessionCwdError);
+			expect((failure as MissingSessionCwdError).issue).toEqual({ sessionCwd: missing, fallbackCwd: tempDir });
+			expect(await store.readHeader(exportedId)).toBeUndefined();
+
+			const retried = await runtime.importFromJsonl(exportPath, tempDir);
+
+			expect(retried).toEqual({ cancelled: false });
+			expect(runtime.session.sessionId).toBe(exportedId);
+			expect(runtime.session.sessionManager.getCwd()).toBe(tempDir);
+		});
+
+		it("rejects an extension's ctx.switchSession() with the typed error and opens nothing", async () => {
+			let rejection: unknown;
+			const { runtime, tempDir } = await createRuntimeForTest((pi: ExtensionAPI) => {
+				pi.registerCommand("switch", {
+					description: "switches to the session whose id it is given",
+					handler: async (sessionId, ctx) => {
+						rejection = await ctx.switchSession(sessionId).catch((error: unknown) => error);
+					},
+				});
+			});
+			await runtime.session.bindExtensions({
+				commandContextActions: {
+					waitForIdle: async () => {},
+					newSession: (options) => runtime.newSession(options),
+					fork: (entryId, options) => runtime.fork(entryId, options),
+					navigateTree: (targetId, options) => runtime.session.navigateTree(targetId, options),
+					switchSession: (sessionId, options) => runtime.switchSession(sessionId, options),
+					reload: () => runtime.session.reload(),
+				},
+			});
+			const missing = join(tempDir, "renamed-away");
+			const source = await SessionManager.create(runtime.session.sessionManager.getSessionStore(), missing);
+			await source.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+			const openSessionId = runtime.session.sessionId;
+
+			await runtime.session.prompt(`/switch ${source.getSessionId()}`);
+
+			expect(rejection).toBeInstanceOf(MissingSessionCwdError);
+			expect((rejection as MissingSessionCwdError).code).toBe("session-cwd-missing");
+			expect((rejection as MissingSessionCwdError).issue).toMatchObject({
+				sessionCwd: missing,
+				fallbackCwd: tempDir,
+			});
+			expect(runtime.session.sessionId).toBe(openSessionId);
+		});
+
+		it("does not touch the store when the import fails for another reason", async () => {
+			const { runtime, tempDir } = await createRuntimeForTest(() => {});
+			const deleteSession = vi.spyOn(runtime.session.sessionManager, "deleteSession");
+
+			await expect(runtime.importFromJsonl(join(tempDir, "nope.jsonl"))).rejects.toBeInstanceOf(
+				SessionImportFileNotFoundError,
+			);
+
+			expect(deleteSession).not.toHaveBeenCalled();
+		});
 	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {

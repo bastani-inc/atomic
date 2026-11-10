@@ -709,6 +709,17 @@ export {
 	withResourceAdmission,
 } from "./core/sdk.ts";
 export {
+	isMissingSessionCwdError,
+	isSerializedMissingSessionCwdError,
+	MissingSessionCwdError,
+	type MissingSessionCwdErrorCode,
+	type MissingSessionCwdFields,
+	rehydrateMissingSessionCwdError,
+	type SerializedMissingSessionCwdError,
+	type SessionCwdIssue,
+	serializeMissingSessionCwdError,
+} from "./core/session-cwd.ts";
+export {
 	type BranchSummaryEntry,
 	buildContextEntries,
 	buildSessionContext,

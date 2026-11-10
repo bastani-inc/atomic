@@ -210,7 +210,7 @@ Directory reads show a depth-2 tree sorted by most-recent modification time, wit
 
 These are the only internal URL schemes. `read`, `search`, `write`, `find` and `bash` share one list, and any other `scheme://` is not an Atomic resource: `read`, `search` and `write` report it as unsupported and `bash` leaves it as text. `find` accepts the schemes that resolve to filesystem paths (`skill://`, `local://`, `artifact://`).
 
-A cancelled `read` throws the same `FileToolAbortedError` as a cancelled `edit` or `write` (see [Edit and write errors](#edit-and-write-errors)). Filesystem failures such as `ENOENT` or `EACCES` are the filesystem's own errors.
+A cancelled `read` or `find` throws the same `FileToolAbortedError` as a cancelled `edit` or `write` (see [Edit and write errors](#edit-and-write-errors)). Filesystem failures such as `ENOENT` or `EACCES` are the filesystem's own errors.
 
 Workspace-scoped selectors reject lexical and symlink escapes outside the workspace or skill root. Existing non-SQLite `.db` and `.sqlite` files remain plain files. Archive writes reject directory targets ending in `/` and return the resolved archive path. SQLite writes return source-path metadata.
 

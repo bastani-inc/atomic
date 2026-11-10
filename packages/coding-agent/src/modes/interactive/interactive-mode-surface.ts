@@ -35,6 +35,7 @@ import type {
 	Markdown,
 	MarkdownTheme,
 	Message,
+	MissingSessionCwdChoice,
 	MissingSessionCwdError,
 	Model,
 	OAuthSelectPrompt,
@@ -52,6 +53,11 @@ import type {
 } from "./interactive-mode-deps.ts";
 import type { InteractiveSubmission } from "./interactive-submission.ts";
 import type { BlockedStatus } from "./program-status-reporter.ts";
+
+/** The session a fork for a missing cwd copies: one the active store holds, or a JSONL export outside it. */
+export type MissingCwdForkSource =
+	| { readonly sessionId: string; readonly sessionDirectory?: string }
+	| { readonly exportPath: string };
 
 declare module "./interactive-mode-base.ts" {
 	interface InteractiveModeBase {
@@ -208,7 +214,7 @@ declare module "./interactive-mode-base.ts" {
 			blocked?: BlockedStatus,
 		): Promise<string | undefined>;
 		showExtensionConfirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
-		promptForMissingSessionCwd(error: MissingSessionCwdError): Promise<string | undefined>;
+		promptForMissingSessionCwd(error: MissingSessionCwdError): Promise<MissingSessionCwdChoice | undefined>;
 		showExtensionInput(
 			title: string,
 			placeholder?: string,
@@ -360,6 +366,11 @@ declare module "./interactive-mode-base.ts" {
 			sessionId: string,
 			options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 			sessionDirectory?: string,
+		): Promise<{ cancelled: boolean }>;
+		switchToForkedSession(
+			source: MissingCwdForkSource,
+			cwd: string,
+			options?: Parameters<ExtensionCommandContext["switchSession"]>[1],
 		): Promise<{ cancelled: boolean }>;
 		getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[];
 		getLogoutProviderOptions(): AuthSelectorProvider[];

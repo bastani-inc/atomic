@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { SqliteExecutor } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { boundaryTransitionError } from "../../packages/workflows/src/durable/boundary-lifecycle.js";
 import { validateCheckpointInvocationFingerprint } from "../../packages/workflows/src/durable/boundary-topology.js";
@@ -399,6 +399,21 @@ async function seedRoot(f: Fixture, g: ReturnType<typeof generator>, children: n
 	});
 }
 
+async function validateWithBoth(
+	f: Fixture,
+	index: PoolCheckpointIndex,
+	work: PoolWork,
+	mutation: PoolCheckpointMutation,
+) {
+	const read = index.begin("root");
+	const decided = await f.database.transaction(async (tx) => ({
+		expected: await outcome(originalValidatePoolMutation(tx, f.tables, "root", work, mutation)),
+		actual: await outcome(validatePoolMutation(tx, f.tables, "root", work, mutation, read)),
+	}));
+	read.commit();
+	return decided;
+}
+
 test("the indexed validator accepts and rejects exactly what the full-history validator does", async () => {
 	for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
 		const f = await journalFixture();
@@ -407,29 +422,22 @@ test("the indexed validator accepts and rejects exactly what the full-history va
 			const g = generator(seed, children);
 			let index = new PoolCheckpointIndex();
 			await seedRoot(f, g, children);
+			const transactions = vi.spyOn(f.database, "transaction");
 			const decisions = new Map<string, number>();
 			for (let step = 0; step < 400; step++) {
 				const target = g.r.int(children);
 				const { work } = child(target);
 				const batch = Array.from({ length: g.r.chance(0.2) ? 3 : 1 }, () => g.mutation(target));
-				const expected = await Promise.all(
-					batch.map((mutation) =>
-						outcome(
-							f.database.transaction((tx) => originalValidatePoolMutation(tx, f.tables, "root", work, mutation)),
-						),
-					),
-				);
 				// Several reads in one group commit, as concurrent pool commits are.
-				const actual = await Promise.all(
-					batch.map(async (mutation) => {
-						const read = index.begin("root");
-						const result = await outcome(
-							f.database.transaction((tx) => validatePoolMutation(tx, f.tables, "root", work, mutation, read)),
-						);
-						read.commit();
-						return result;
-					}),
+				const transactionCount = transactions.mock.calls.length;
+				const decided = await Promise.all(batch.map((mutation) => validateWithBoth(f, index, work, mutation)));
+				assert.equal(
+					transactions.mock.calls.length - transactionCount,
+					batch.length,
+					`seed ${seed} step ${step}: each validator pair shares one transaction`,
 				);
+				const expected = decided.map((result) => result.expected);
+				const actual = decided.map((result) => result.actual);
 				assert.deepEqual(actual, expected, `seed ${seed} step ${step}`);
 				for (const result of expected) decisions.set(result, (decisions.get(result) ?? 0) + 1);
 				await f.database.transaction(async (tx) => {
@@ -485,17 +493,8 @@ function toolMutation(index: number, nodeId: string): PoolCheckpointMutation {
 	};
 }
 
-/** Validate with both validators; the index read is committed only when `commit` holds, as the pool queue does. */
 async function compare(f: Fixture, index: PoolCheckpointIndex, target: number, mutation: PoolCheckpointMutation) {
-	const { work } = child(target);
-	const expected = await outcome(
-		f.database.transaction((tx) => originalValidatePoolMutation(tx, f.tables, "root", work, mutation)),
-	);
-	const read = index.begin("root");
-	const actual = await outcome(
-		f.database.transaction((tx) => validatePoolMutation(tx, f.tables, "root", work, mutation, read)),
-	);
-	read.commit();
+	const { expected, actual } = await validateWithBoth(f, index, child(target).work, mutation);
 	assert.equal(actual, expected);
 	return actual;
 }

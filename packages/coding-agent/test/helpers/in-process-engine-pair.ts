@@ -5,6 +5,8 @@ import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
 import { toJsonEvent } from "../../src/modes/json-event.ts";
 import { RpcClientApi, type RpcCommandBody } from "../../src/modes/rpc/rpc-client-api.ts";
 import { createRpcCommandHandler } from "../../src/modes/rpc/rpc-command-handler.ts";
+import { assertRpcSuccess } from "../../src/modes/rpc/rpc-error-decoding.ts";
+import { createRpcErrorResponse } from "../../src/modes/rpc/rpc-responses.ts";
 import type { RpcCommand, RpcResponse } from "../../src/modes/rpc/rpc-types.ts";
 import { createHarness, type Harness, type HarnessOptions } from "../suite/harness.ts";
 
@@ -79,22 +81,18 @@ class InProcessEngineClient extends RpcClientApi {
 	private nextId = 0;
 	private readonly toEngine: LaggedPipe<RpcCommand>;
 	private readonly toHost: LaggedPipe<RpcResponse | JsonAgentSessionEvent>;
-	private readonly failures = new Map<RpcCommand["type"], string>();
+	private readonly failures = new Map<RpcCommand["type"], { message: string; cause?: unknown }>();
+	readonly commandsReceived: RpcCommand[] = [];
 	private handle: (command: RpcCommand) => Promise<RpcResponse | undefined> = async () => undefined;
 
 	constructor(delays: { toEngineMs: () => number; toHostMs: () => number }) {
 		super();
 		this.toHost = new LaggedPipe((record) => this.receive(record), delays.toHostMs);
 		this.toEngine = new LaggedPipe((command) => {
+			this.commandsReceived.push(command);
 			const failure = this.failures.get(command.type);
 			if (failure !== undefined) {
-				this.toHost.write({
-					type: "response",
-					id: command.id,
-					command: command.type,
-					success: false,
-					error: failure,
-				});
+				this.toHost.write(createRpcErrorResponse(command.id, command.type, failure.message, failure.cause));
 				return;
 			}
 			void this.handle(command).then((response) => {
@@ -103,10 +101,13 @@ class InProcessEngineClient extends RpcClientApi {
 		}, delays.toEngineMs);
 	}
 
-	/** Make the engine answer every command of this type with an error, or stop doing so when no message is given. */
-	failCommand(type: RpcCommand["type"], message: string | undefined): void {
+	/**
+	 * Make the engine answer every command of this type with an error, or stop doing so when no message is given. The
+	 * response is built as the engine builds it for `cause`, so a typed cause keeps its error code.
+	 */
+	failCommand(type: RpcCommand["type"], message: string | undefined, cause?: unknown): void {
 		if (message === undefined) this.failures.delete(type);
-		else this.failures.set(type, message);
+		else this.failures.set(type, { message, cause });
 	}
 
 	/** Hold the first record bound for the host that `matches` accepts, and every later one, until released. */
@@ -149,7 +150,7 @@ class InProcessEngineClient extends RpcClientApi {
 	}
 
 	protected data<T>(response: RpcResponse): T {
-		if (!response.success) throw new Error(response.error);
+		assertRpcSuccess(response);
 		return (response as Extract<RpcResponse, { success: true; data: unknown }>).data as T;
 	}
 
@@ -197,7 +198,9 @@ export interface EngineHostPair {
 	/** Wait until nothing is in flight between host and engine and both sides have handled it. */
 	drain: () => Promise<void>;
 	/** Make the engine answer every command of this type with an error, or stop doing so when no message is given. */
-	failCommand: (type: RpcCommand["type"], message: string | undefined) => void;
+	failCommand: (type: RpcCommand["type"], message: string | undefined, cause?: unknown) => void;
+	/** The commands the engine received from the host, in order. */
+	commandsReceived: readonly RpcCommand[];
 	/**
 	 * Hold the first record bound for the host that `matches` accepts, and every later one, so the host lags the engine
 	 * from that record on. `releaseHostTraffic()` then hands them over in one pass, as one read of the engine's output.
@@ -210,6 +213,8 @@ export interface EngineHostPair {
 export async function createEngineHostPair(
 	options: HarnessOptions & {
 		engineExtensions?: ExtensionFactory[];
+		/** Runtime methods the engine's command handler can call beyond the stub's session, services and notices. */
+		engineRuntimeHost?: Partial<Pick<AgentSessionRuntime, "switchSession" | "importFromJsonl">>;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
@@ -221,6 +226,7 @@ export async function createEngineHostPair(
 			session: engine.session,
 			services: { agentDir: engine.tempDir },
 			takeResumeNotices: () => [],
+			...options.engineRuntimeHost,
 		} as unknown as AgentSessionRuntime,
 		getSession: () => engine.session,
 		rebindSession: async () => {},
@@ -249,7 +255,8 @@ export async function createEngineHostPair(
 		runtime,
 		engineOutput: (record) => client.engineOutput(record as RpcResponse),
 		drain: () => client.drain(),
-		failCommand: (type, message) => client.failCommand(type, message),
+		failCommand: (type, message, cause) => client.failCommand(type, message, cause),
+		commandsReceived: client.commandsReceived,
 		holdHostTrafficFrom: (matches) => client.holdHostTrafficFrom(matches),
 		releaseHostTraffic: () => client.releaseHostTraffic(),
 		setLag: (next) => {

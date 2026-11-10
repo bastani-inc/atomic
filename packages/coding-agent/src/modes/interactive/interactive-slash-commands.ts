@@ -205,18 +205,25 @@ InteractiveModeBase.prototype.handleImportCommand = async function (
 		finishSuccessfulImport();
 	} catch (error: unknown) {
 		if (error instanceof MissingSessionCwdError) {
-			const selectedCwd = await this.promptForMissingSessionCwd(error);
-			if (!selectedCwd) {
-				this.showStatus("Import cancelled");
-				return;
+			switch (await this.promptForMissingSessionCwd(error)) {
+				case "continue": {
+					const result = await this.runtimeHost.importFromJsonl(inputPath, error.issue.fallbackCwd);
+					if (result.cancelled) {
+						this.showStatus("Import cancelled");
+						return;
+					}
+					finishSuccessfulImport();
+					return;
+				}
+				case "fork": {
+					const result = await this.switchToForkedSession({ exportPath: inputPath }, error.issue.fallbackCwd);
+					if (result.cancelled) this.showStatus("Import cancelled");
+					return;
+				}
+				case undefined:
+					this.showStatus("Import cancelled");
+					return;
 			}
-			const result = await this.runtimeHost.importFromJsonl(inputPath, selectedCwd);
-			if (result.cancelled) {
-				this.showStatus("Import cancelled");
-				return;
-			}
-			finishSuccessfulImport();
-			return;
 		}
 		if (error instanceof SessionImportFileNotFoundError) {
 			this.showError(`Failed to import session: ${error.message}`);

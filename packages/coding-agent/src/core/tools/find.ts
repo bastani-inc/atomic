@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
+import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
@@ -12,6 +13,7 @@ import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { FileToolAbortedError } from "./file-tool-errors.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput } from "./render-utils.ts";
@@ -53,6 +55,23 @@ interface FindTarget {
 	pattern: string;
 	exactPathInput: boolean;
 	inputPath: string;
+}
+function cleanFdLine(rawLine: string): string {
+	return rawLine.replace(/\r$/, "").trim();
+}
+/**
+ * fd before 10.5.1 never matches `--full-path` globs on Windows, and workarounds for that break on fd 10.5.1, so on
+ * Windows fd lists every entry and minimatch matches path patterns. The options keep fd's glob behavior: `*` matches
+ * dotfiles, `+(a|b)` is literal, and an all-lowercase pattern matches case-insensitively (smart case). A trailing
+ * `/**` becomes `/**\/*` because minimatch's `src/**` also matches `src` itself and fd's does not.
+ */
+function createWindowsPathMatcher(pattern: string): Minimatch {
+	return new Minimatch(pattern.replace(/\/\*\*$/, "/**/*"), {
+		platform: "win32",
+		dot: true,
+		noext: true,
+		nocase: pattern === pattern.toLowerCase(),
+	});
 }
 function normalizeLimit(limit: number | undefined): number {
 	return limit === undefined || !Number.isFinite(limit)
@@ -411,7 +430,7 @@ export function createFindToolDefinition(
 		async execute(_toolCallId, params: FindToolInput, signal?: AbortSignal, _onUpdate?, ctx?: ExtensionContext) {
 			return new Promise((resolve, reject) => {
 				if (signal?.aborted) {
-					reject(new Error("Operation aborted"));
+					reject(new FileToolAbortedError(signal.reason));
 					return;
 				}
 				let settled = false;
@@ -425,7 +444,7 @@ export function createFindToolDefinition(
 				};
 				const onAbort = () => {
 					stopChild?.();
-					settle(() => reject(new Error("Operation aborted")));
+					settle(() => reject(new FileToolAbortedError(signal?.reason)));
 				};
 				signal?.addEventListener("abort", onAbort, { once: true });
 				const { limit, hidden, gitignore, timeout } = params;
@@ -503,7 +522,7 @@ export function createFindToolDefinition(
 									return;
 								}
 								if (signal?.aborted) {
-									settle(() => reject(new Error("Operation aborted")));
+									settle(() => reject(new FileToolAbortedError(signal.reason)));
 									return;
 								}
 								const remaining = effectiveLimit - relativized.length;
@@ -557,7 +576,7 @@ export function createFindToolDefinition(
 									continue;
 								}
 								if (signal?.aborted) {
-									settle(() => reject(new Error("Operation aborted")));
+									settle(() => reject(new FileToolAbortedError(signal.reason)));
 									return;
 								}
 								const visible = results.filter((p) => hidden !== false || !containsHiddenSegment(p));
@@ -669,7 +688,7 @@ export function createFindToolDefinition(
 							downloadFailure = status.error;
 						});
 						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
+							settle(() => reject(new FileToolAbortedError(signal.reason)));
 							return;
 						}
 						if (!fdPath) {
@@ -681,34 +700,34 @@ export function createFindToolDefinition(
 						const relativized: string[] = [...exactFileResults];
 						const deadline = Date.now() + timeoutMs;
 						const runFdForTarget = async (target: FindTarget, remaining: number): Promise<boolean> => {
-							const args: string[] = [
-								"--glob",
-								"--color=never",
-								"--no-require-git",
-								"--max-results",
-								String(remaining + 1),
-							];
+							const args: string[] = ["--color=never", "--no-require-git"];
 							if (hidden !== false) args.push("--hidden");
 							if (gitignore === false) args.push("--no-ignore");
 							if (!findTargetMentionsNodeModules(target)) args.push("--exclude", "node_modules");
+							const isPathPattern = target.pattern.includes("/");
 							let fdPattern = target.pattern;
-							if (target.pattern.includes("/")) {
-								args.push("--full-path");
-								if (
-									!target.pattern.startsWith("/") &&
-									!target.pattern.startsWith("**/") &&
-									target.pattern !== "**"
-								)
-									fdPattern = `**/${target.pattern}`;
-								// fd matches full paths with native separators on Windows.
-								if (process.platform === "win32") fdPattern = fdPattern.replaceAll("/", String.raw`[/\\]`);
+							if (
+								isPathPattern &&
+								!target.pattern.startsWith("/") &&
+								!target.pattern.startsWith("**/") &&
+								target.pattern !== "**"
+							)
+								fdPattern = `**/${target.pattern}`;
+							const windowsPathMatcher =
+								process.platform === "win32" && isPathPattern ? createWindowsPathMatcher(fdPattern) : undefined;
+							if (windowsPathMatcher) {
+								args.push("--", "", target.searchPath);
+							} else {
+								args.push("--glob", "--max-results", String(remaining + 1));
+								if (isPathPattern) args.push("--full-path");
+								args.push("--", fdPattern, target.searchPath);
 							}
-							args.push("--", fdPattern, target.searchPath);
 							const remainingMs = deadline - Date.now();
 							if (remainingMs <= 0) {
 								timedOut = true;
 								return false;
 							}
+							if (signal?.aborted) return false;
 							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
 								const child = spawn(fdPath, args, {
 									env: createChildProcessEnvironment(),
@@ -731,7 +750,11 @@ export function createFindToolDefinition(
 								child.stderr?.on("data", (chunk) => {
 									stderr += chunk.toString();
 								});
-								rl.on("line", (line) => lines.push(line));
+								rl.on("line", (rawLine) => {
+									if (windowsPathMatcher && !windowsPathMatcher.match(cleanFdLine(rawLine))) return;
+									lines.push(rawLine);
+									if (windowsPathMatcher && lines.length > Math.max(0, remaining)) stopChild?.();
+								});
 								child.on("error", (error) => {
 									cleanup();
 									rejectTarget(new Error(`Failed to run fd: ${error.message}`));
@@ -739,7 +762,7 @@ export function createFindToolDefinition(
 								child.on("close", (code) => {
 									cleanup();
 									if (signal?.aborted) {
-										rejectTarget(new Error("Operation aborted"));
+										rejectTarget(new FileToolAbortedError(signal.reason));
 										return;
 									}
 									if (!timedOut && code !== 0 && lines.length === 0) {
@@ -747,7 +770,7 @@ export function createFindToolDefinition(
 										return;
 									}
 									for (const rawLine of lines.slice(0, remaining)) {
-										const line = rawLine.replace(/\r$/, "").trim();
+										const line = cleanFdLine(rawLine);
 										if (line) {
 											const found =
 												statSync(path.resolve(target.searchPath, line), {
@@ -794,7 +817,7 @@ export function createFindToolDefinition(
 						);
 					} catch (e) {
 						if (signal?.aborted) {
-							settle(() => reject(new Error("Operation aborted")));
+							settle(() => reject(new FileToolAbortedError(signal.reason)));
 							return;
 						}
 						const error = e instanceof Error ? e : new Error(String(e));

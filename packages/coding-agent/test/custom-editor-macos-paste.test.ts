@@ -297,3 +297,34 @@ describe("CustomEditor macOS empty paste routing", () => {
 		});
 	});
 });
+
+function bigPaste(tag: string): string {
+	return Array.from({ length: 12 }, (_, line) => `${tag}${line}`).join("\n");
+}
+
+describe("CustomEditor paste markers", () => {
+	beforeAll(() => {
+		initTheme("dark");
+	});
+
+	it("renumbers short paste markers without a size suffix after backspace (earendil-works/pi#11923)", () => {
+		const editor = createEditor();
+		let submitted = "";
+		editor.onSubmit = (text) => {
+			submitted = text;
+		};
+		const firstPaste = bigPaste("alpha");
+		const secondPaste = bigPaste("beta");
+
+		editor.handleInput(`\x1b[200~${firstPaste}\x1b[201~`);
+		editor.handleInput(`\x1b[200~${secondPaste}\x1b[201~`);
+		editor.handleInput("\x15");
+		for (const character of "[paste #1][paste #2]") editor.handleInput(character);
+		editor.handleInput("\x1b[D");
+		editor.handleInput("\x7f");
+
+		expect(editor.getText()).toBe("[paste #1]");
+		editor.handleInput("\r");
+		expect(submitted).toBe(secondPaste);
+	});
+});

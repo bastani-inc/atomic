@@ -20,7 +20,12 @@ import {
 	type ResumeNotice,
 	sessionResumeOptions,
 } from "./core/resume/session-resume.ts";
-import { formatMissingSessionCwdPrompt, type SessionCwdIssue } from "./core/session-cwd.ts";
+import {
+	formatMissingSessionCwdPrompt,
+	getMissingSessionCwdOptions,
+	type MissingSessionCwdChoice,
+	type SessionCwdIssue,
+} from "./core/session-cwd.ts";
 import { ownedSessionManagerStores } from "./core/session-lifecycle-work.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { classifiedWorkflowMetadata, workflowSessionMetadataFromEnv } from "./core/session-manager-classification.ts";
@@ -436,13 +441,41 @@ function promptStartupSelector(
 export async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
-): Promise<string | undefined> {
-	const option = await promptStartupSelector(
+): Promise<MissingSessionCwdChoice | undefined> {
+	const options = getMissingSessionCwdOptions(issue);
+	const label = await promptStartupSelector(
 		formatMissingSessionCwdPrompt(issue),
-		["Continue", "Cancel"],
+		options.map((option) => option.label),
 		settingsManager,
 	);
-	return option === "Continue" ? issue.fallbackCwd : undefined;
+	return options.find((option) => option.label === label)?.value;
+}
+
+/**
+ * Opens a session whose stored cwd is missing in the current cwd, as `choice` asks. `continue` runs it there without
+ * storing the choice. `fork` copies it into the current cwd as a new session in the store it came from, like `--session
+ * <id>` does for a session of another project, and leaves the original untouched. Cancelling exits the process.
+ */
+export async function openSessionInCurrentCwdOrExit(
+	sessionManager: SessionManager,
+	issue: SessionCwdIssue,
+	choice: MissingSessionCwdChoice | undefined,
+): Promise<SessionManager> {
+	switch (choice) {
+		case "continue":
+			return sessionManager.openSessionById(sessionManager.getSessionId(), issue.fallbackCwd);
+		case "fork":
+			return forkIntoCurrentCwd(sessionManager, issue.fallbackCwd);
+		case undefined:
+			process.exit(0);
+	}
+}
+
+async function forkIntoCurrentCwd(sessionManager: SessionManager, cwd: string): Promise<SessionManager> {
+	const forked = await forkSessionOrExit(sessionManager.getSessionId(), cwd, sessionManager.getSessionStore());
+	const store = ownedSessionManagerStores.get(sessionManager);
+	if (store !== undefined) ownedSessionManagerStores.set(forked, store);
+	return forked;
 }
 
 const DIRTY_CHECKOUT_OPTIONS: readonly (readonly [string, DirtyCheckoutChoice])[] = [
