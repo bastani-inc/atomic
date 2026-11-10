@@ -381,6 +381,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 					attempt: this._retryAttempt,
 				});
 				this._retryAttempt = 0;
+				this._longStreamCutRetries = 0;
 			}
 		}
 	}
@@ -395,6 +396,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		if (this._retryAttempt > 0) {
 			const attempt = this._retryAttempt;
 			this._retryAttempt = 0;
+			this._longStreamCutRetries = 0;
 			this._emit({ type: "auto_retry_end", success: false, attempt, finalError: this._persistenceFailure });
 		}
 		this._resolveRetry();

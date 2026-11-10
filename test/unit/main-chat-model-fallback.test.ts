@@ -939,7 +939,7 @@ test("a Copilot model unavailable to the client integration names the model and 
 	recordGitHubCopilotFailure(
 		failed,
 		Object.assign(new Error(`400 ${body.message}`), { status: 400, error: body }),
-		false,
+		undefined,
 	);
 	const guidance =
 		"GitHub Copilot model unavailable: claude-opus-4.8-fast (model-unavailable). Copilot does not offer this model to Atomic's integration. Pick another model, or run /login to refresh the model list.";

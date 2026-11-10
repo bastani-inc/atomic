@@ -13,6 +13,7 @@ import type {
 } from "openai/resources/chat/completions.js";
 import { calculateCost, clampThinkingLevel } from "../models.ts";
 import { githubCopilotEmptyResponse, recordGitHubCopilotFailure } from "../providers/github-copilot-errors.ts";
+import { GitHubCopilotStreamAttempt } from "../providers/github-copilot-stream-attempt.ts";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -394,7 +395,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 		};
 
 		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
-		let streamStarted = false;
+		const streamAttempt = new GitHubCopilotStreamAttempt();
 
 		try {
 			const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
@@ -438,7 +439,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				maxRetries: 0,
 			};
 			const { data: openaiStream, response } = await retryProviderRequest(
-				() => client.chat.completions.create(params, requestOptions).withResponse(),
+				() => {
+					streamAttempt.begin();
+					return client.chat.completions.create(params, requestOptions).withResponse();
+				},
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
@@ -447,7 +451,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
-			streamStarted = true;
+			streamAttempt.respond(response.headers);
 
 			// Stream state of a tool call, kept off the content block so it never reaches partials: JSON arguments, or
 			// the input of a grammar (custom) tool.
@@ -612,7 +616,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				return { block, state };
 			};
 
-			for await (const chunk of withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort)) {
+			for await (const chunk of streamAttempt.observe(
+				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
+			)) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				if (!chunk || typeof chunk !== "object") continue;
 
@@ -786,7 +792,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (rawMetadata && !output.errorMessage.includes(String(rawMetadata))) {
 				output.errorMessage += `\n${rawMetadata}`;
 			}
-			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamStarted);
+			if (model.provider === "github-copilot") recordGitHubCopilotFailure(output, error, streamAttempt.snapshot());
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
 		} finally {

@@ -11,6 +11,7 @@ import {
 	GitHubCopilotError,
 	type GitHubCopilotErrorCode,
 	type GitHubCopilotErrorContext,
+	type GitHubCopilotErrorFieldValue,
 	type GitHubCopilotFailureContext,
 	GitHubCopilotInvalidRequestError,
 	type GitHubCopilotInvalidRequestReason,
@@ -42,6 +43,7 @@ import {
 	recordGitHubCopilotFailure,
 	serializeGitHubCopilotError,
 } from "../src/providers/github-copilot-errors.ts";
+import type { GitHubCopilotStreamSnapshot } from "../src/providers/github-copilot-stream-attempt.ts";
 import type { AssistantMessage } from "../src/types.ts";
 
 const context: GitHubCopilotErrorContext = {
@@ -53,7 +55,8 @@ const context: GitHubCopilotErrorContext = {
 	detail: "fixture detail",
 };
 
-const failure: GitHubCopilotFailureContext = { modelId: "grok-4.7", api: "openai-responses", streamStarted: false };
+const failure: GitHubCopilotFailureContext = { modelId: "grok-4.7", api: "openai-responses" };
+const streamStarted: GitHubCopilotStreamSnapshot = { durationMs: 1200, startedContent: true };
 
 interface ClassCase {
 	readonly error: GitHubCopilotError;
@@ -62,12 +65,16 @@ interface ClassCase {
 	readonly retryable: boolean;
 	readonly hint: string;
 	readonly what: string;
-	readonly extraFields: Record<string, string | number | null>;
+	readonly extraFields: Record<string, string | number | boolean | null>;
+	/** What the message says between its code and its hint, without the final period. */
+	readonly circumstances?: string;
 	readonly guard: (value: unknown) => boolean;
 }
 
 const MODEL_HINT = "Pick another model, or run /login to refresh the models this account can use.";
 const RETRY_HINT = "Retry the request; Atomic retries it when retries are enabled.";
+const STREAM_ENDED_EARLY_HINT =
+	"If the stream keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model with the fallbackModels setting.";
 
 const CLASS_CASES: readonly ClassCase[] = [
 	{
@@ -211,13 +218,14 @@ const CLASS_CASES: readonly ClassCase[] = [
 		guard: isGitHubCopilotServiceUnavailableError,
 	},
 	{
-		error: new GitHubCopilotStreamEndedEarlyError(context),
+		error: new GitHubCopilotStreamEndedEarlyError(context, { durationMs: 312_400, startedContent: true }),
 		name: "GitHubCopilotStreamEndedEarlyError",
 		code: "stream-ended-early",
 		retryable: true,
-		hint: RETRY_HINT,
+		hint: STREAM_ENDED_EARLY_HINT,
 		what: "GitHub Copilot response stream ended early",
-		extraFields: {},
+		extraFields: { durationMs: 312_400, startedContent: true },
+		circumstances: "Attempt ran 312.4 s, response started, request ID req-1",
 		guard: isGitHubCopilotStreamEndedEarlyError,
 	},
 	{
@@ -295,7 +303,11 @@ describe("GitHub Copilot error family (#4324)", () => {
 		assert.equal(error.code, testCase.code);
 		assert.equal(error.retryable, testCase.retryable);
 		assert.equal(error.hint, testCase.hint);
-		assert.equal(error.message, `${testCase.what}: gemini-4-argon (${testCase.code}). ${testCase.hint}`);
+		const circumstances = testCase.circumstances === undefined ? "" : `${testCase.circumstances}. `;
+		assert.equal(
+			error.message,
+			`${testCase.what}: gemini-4-argon (${testCase.code}). ${circumstances}${testCase.hint}`,
+		);
 		assert.deepEqual(error.fields(), { ...BASE_FIELDS, ...testCase.extraFields });
 		assert.equal(isGitHubCopilotError(error), true);
 		assert.equal(isRetryableGitHubCopilotError(error), testCase.retryable);
@@ -897,7 +909,7 @@ describe("GitHub Copilot failure classification at the provider boundary (#4324)
 	});
 
 	it("classifies failures after the stream started without an HTTP status", () => {
-		const started = { ...failure, streamStarted: true };
+		const started = { ...failure, stream: streamStarted };
 		const filterStop = new Error("x");
 		const filtered = classifyGitHubCopilotFailure(filterStop, {
 			...started,
@@ -946,7 +958,7 @@ describe("GitHub Copilot failure classification at the provider boundary (#4324)
 		["google-generative-ai", "content_filter", false],
 	] as const)("on %s, a %s stop is a content-filter refusal: %s", (api, finishReason, filtered) => {
 		const stop = new Error("The model refused to complete the request");
-		const error = classifyGitHubCopilotFailure(stop, { modelId: "m", api, streamStarted: true, finishReason });
+		const error = classifyGitHubCopilotFailure(stop, { modelId: "m", api, stream: streamStarted, finishReason });
 		assert.equal(error instanceof GitHubCopilotContentFilterError, filtered);
 		assert.equal(error?.code, filtered ? "content-filtered" : "stream-ended-early");
 		assert.equal(error?.retryable, !filtered);
@@ -1079,11 +1091,11 @@ describe("GitHub Copilot failure classification at the provider boundary (#4324)
 			undefined,
 		);
 		const textStatus = Object.assign(new Error("500 boom"), { status: "500" });
-		const afterStart = classifyGitHubCopilotFailure(textStatus, { ...failure, streamStarted: true });
+		const afterStart = classifyGitHubCopilotFailure(textStatus, { ...failure, stream: streamStarted });
 		assert.ok(afterStart instanceof GitHubCopilotStreamEndedEarlyError);
 		assert.equal(afterStart.status, undefined);
 		assert.equal(afterStart.detail, "500 boom");
-		const wrapped = classifyGitHubCopilotFailure("thrown text", { ...failure, streamStarted: true });
+		const wrapped = classifyGitHubCopilotFailure("thrown text", { ...failure, stream: streamStarted });
 		assert.ok(wrapped instanceof GitHubCopilotStreamEndedEarlyError);
 		assert.equal(wrapped.detail, "thrown text");
 		assert.equal((wrapped.cause as Error).cause, "thrown text");
@@ -1292,12 +1304,12 @@ describe("GitHub Copilot failures on assistant messages (#4324)", () => {
 
 	it("types only failed messages, never cancelled ones", () => {
 		const aborted = assistant({ stopReason: "aborted", errorMessage: "Request was aborted" });
-		recordGitHubCopilotFailure(aborted, Object.assign(new Error("x"), { status: 500 }), true);
+		recordGitHubCopilotFailure(aborted, Object.assign(new Error("x"), { status: 500 }), streamStarted);
 		assert.equal(aborted.diagnostics, undefined);
 		assert.equal(aborted.errorMessage, "Request was aborted");
 
 		const failed = assistant({ errorMessage: "500 boom", rawStopReason: undefined });
-		recordGitHubCopilotFailure(failed, Object.assign(new Error("500 boom"), { status: 500 }), false);
+		recordGitHubCopilotFailure(failed, Object.assign(new Error("500 boom"), { status: 500 }), undefined);
 		const typed = getGitHubCopilotError(failed);
 		assert.ok(typed instanceof GitHubCopilotServiceUnavailableError);
 		assert.equal(typed.modelId, "gemini-4-argon");
@@ -1308,11 +1320,11 @@ describe("GitHub Copilot failures on assistant messages (#4324)", () => {
 			errorMessage: "Provider finish_reason: content_filter",
 			rawStopReason: "content_filter",
 		});
-		recordGitHubCopilotFailure(filtered, new Error("Provider finish_reason: content_filter"), true);
+		recordGitHubCopilotFailure(filtered, new Error("Provider finish_reason: content_filter"), streamStarted);
 		assert.ok(getGitHubCopilotError(filtered) instanceof GitHubCopilotContentFilterError);
 
 		const network = assistant({ errorMessage: "fetch failed" });
-		recordGitHubCopilotFailure(network, new Error("fetch failed"), false);
+		recordGitHubCopilotFailure(network, new Error("fetch failed"), undefined);
 		assert.equal(network.diagnostics, undefined);
 		assert.equal(network.errorMessage, "fetch failed");
 	});
@@ -1468,5 +1480,200 @@ describe("GitHub Copilot rehydration validates what it rebuilds (#4324)", () => 
 			assert.equal(findGitHubCopilotError(new Error("wrapped", { cause: broken })), undefined);
 			assert.equal(isGitHubCopilotError(broken), false);
 		}
+	});
+});
+
+describe("stream-ended-early diagnostics (#4626)", () => {
+	const cutAfterMinutes = (minutes: number): GitHubCopilotStreamSnapshot => ({
+		requestId: "req-snapshot",
+		durationMs: minutes * 60_000,
+		startedContent: true,
+	});
+	const bare: GitHubCopilotErrorContext = { modelId: "claude-opus-5.5", api: "anthropic-messages" };
+
+	it("carries the attempt's request ID, duration and progress when a started stream is cut (#4626)", () => {
+		const cut = new TypeError("terminated");
+
+		const error = classifyGitHubCopilotFailure(cut, {
+			modelId: "claude-opus-5.5",
+			api: "anthropic-messages",
+			stream: cutAfterMinutes(6),
+		});
+
+		assert.ok(error instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(error.code, "stream-ended-early");
+		assert.equal(error.retryable, true);
+		assert.equal(error.requestId, "req-snapshot");
+		assert.equal(error.durationMs, 360_000);
+		assert.equal(error.startedContent, true);
+		assert.equal(error.cause, cut);
+		assert.equal(error.fields().requestId, "req-snapshot");
+		assert.equal(error.fields().durationMs, 360_000);
+		assert.equal(error.fields().startedContent, true);
+	});
+
+	it("reports a cut before any event as not started, and leaves the request ID unknown when Copilot sent none (#4626)", () => {
+		const error = classifyGitHubCopilotFailure(new TypeError("terminated"), {
+			modelId: "claude-opus-5.5",
+			api: "openai-completions",
+			stream: { durationMs: 900, startedContent: false },
+		});
+
+		assert.ok(error instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(error.requestId, undefined);
+		assert.equal(error.durationMs, 900);
+		assert.equal(error.startedContent, false);
+	});
+
+	it("prefers the request ID a failure itself carries over the attempt's (#4626)", () => {
+		const failed = Object.assign(new Error("stream stopped"), {
+			headers: new Headers({ "x-request-id": "from-failure" }),
+		});
+
+		const error = classifyGitHubCopilotFailure(failed, {
+			modelId: "claude-opus-5.5",
+			api: "anthropic-messages",
+			stream: cutAfterMinutes(1),
+		});
+
+		assert.ok(error instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(error.requestId, "from-failure");
+	});
+
+	it("does not call a failure before any response a stream cut (#4626)", () => {
+		const error = classifyGitHubCopilotFailure(new TypeError("fetch failed"), {
+			modelId: "claude-opus-5.5",
+			api: "anthropic-messages",
+		});
+
+		assert.equal(error, undefined);
+	});
+
+	it("gives other failures after the stream started no stream-cut fields (#4626)", () => {
+		const error = classifyGitHubCopilotFailure(Object.assign(new Error("slow down"), { status: 429 }), {
+			modelId: "claude-opus-5.5",
+			api: "anthropic-messages",
+			stream: cutAfterMinutes(6),
+		});
+
+		assert.ok(error instanceof GitHubCopilotRateLimitError);
+		assert.equal(error.requestId, undefined);
+		assert.equal("durationMs" in error.fields(), false);
+	});
+
+	it("names the duration, progress and request ID in the message, ahead of the hint (#4626)", () => {
+		const error = new GitHubCopilotStreamEndedEarlyError(
+			{ ...bare, requestId: "req-7" },
+			{ durationMs: 312_400, startedContent: true },
+		);
+
+		assert.equal(
+			error.message,
+			"GitHub Copilot response stream ended early: claude-opus-5.5 (stream-ended-early). " +
+				"Attempt ran 312.4 s, response started, request ID req-7. " +
+				"If the stream keeps ending early, split the work into smaller steps, lower the thinking effort, or add a fallback model with the fallbackModels setting.",
+		);
+	});
+
+	it.each([
+		[{ durationMs: 0, startedContent: false }, "Attempt ran 0.0 s, no response events arrived"],
+		[{ durationMs: 1_200 }, "Attempt ran 1.2 s"],
+		[{ startedContent: true }, "response started"],
+		[{ startedContent: false }, "no response events arrived"],
+		[{}, undefined],
+		[undefined, undefined],
+	])("says only what it knows when built with %j (#4626)", (options, expected) => {
+		const error = new GitHubCopilotStreamEndedEarlyError(bare, options);
+
+		const detail = expected === undefined ? "" : `${expected}. `;
+		assert.equal(
+			error.message,
+			`GitHub Copilot response stream ended early: claude-opus-5.5 (stream-ended-early). ${detail}${error.hint}`,
+		);
+	});
+
+	it("names the request ID alone when it is all it knows (#4626)", () => {
+		const error = new GitHubCopilotStreamEndedEarlyError({ ...bare, requestId: "req-1" });
+
+		assert.equal(error.durationMs, undefined);
+		assert.equal(error.startedContent, undefined);
+		assert.match(error.message, /\(stream-ended-early\)\. request ID req-1\. /);
+	});
+
+	it("holds a hint that is right whether retries remain or are used up (#4626)", () => {
+		const { hint } = new GitHubCopilotStreamEndedEarlyError(bare);
+
+		assert.doesNotMatch(hint, /retries are enabled/);
+		assert.match(hint, /split the work into smaller steps/);
+		assert.match(hint, /lower the thinking effort/);
+		assert.match(hint, /fallbackModels/);
+	});
+
+	it("keeps the cut's fields across a process boundary and a saved message (#4626)", () => {
+		const output = assistant({ api: "anthropic-messages", model: "claude-opus-5.5" });
+		recordGitHubCopilotFailure(output, new TypeError("terminated"), cutAfterMinutes(6));
+
+		const reloaded = JSON.parse(JSON.stringify(output)) as AssistantMessage;
+		const rebuilt = getGitHubCopilotError(reloaded);
+
+		assert.ok(rebuilt instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(rebuilt.requestId, "req-snapshot");
+		assert.equal(rebuilt.durationMs, 360_000);
+		assert.equal(rebuilt.startedContent, true);
+		assert.equal(rebuilt.message, getGitHubCopilotError(output)?.message);
+		assert.equal(rebuilt.retryable, true);
+	});
+
+	it("rebuilds a relayed cut that predates its fields without them (#4626)", () => {
+		const legacy = serializeGitHubCopilotError(new GitHubCopilotStreamEndedEarlyError(bare));
+		const { durationMs: _durationMs, startedContent: _startedContent, ...fields } = legacy.fields;
+
+		const rebuilt = deserializeGitHubCopilotError({ ...legacy, fields });
+
+		assert.ok(rebuilt instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(rebuilt.durationMs, undefined);
+		assert.equal(rebuilt.startedContent, undefined);
+	});
+
+	it("accepts a boolean only in the field that holds one (#4626)", () => {
+		const wire = serializeGitHubCopilotError(new GitHubCopilotStreamEndedEarlyError(bare, { startedContent: true }));
+
+		assert.ok(deserializeGitHubCopilotError(wire) instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(deserializeGitHubCopilotError({ ...wire, fields: { ...wire.fields, durationMs: true } }), undefined);
+	});
+
+	it("ignores a stream-cut field of the wrong type when it rebuilds the error (#4626)", () => {
+		const wire = serializeGitHubCopilotError(
+			new GitHubCopilotStreamEndedEarlyError(bare, { durationMs: 5_000, startedContent: true }),
+		);
+
+		const rebuilt = deserializeGitHubCopilotError({
+			...wire,
+			fields: { ...wire.fields, durationMs: "5000", startedContent: "yes" },
+		});
+
+		assert.ok(rebuilt instanceof GitHubCopilotStreamEndedEarlyError);
+		assert.equal(rebuilt.durationMs, undefined);
+		assert.equal(rebuilt.startedContent, undefined);
+	});
+
+	it("rejects a serialized error whose boolean field holds something else (#4626)", () => {
+		const wire = serializeGitHubCopilotError(new GitHubCopilotStreamEndedEarlyError(bare, { startedContent: true }));
+
+		for (const startedContent of [{}, [], ["yes"]]) {
+			assert.equal(
+				deserializeGitHubCopilotError({ ...wire, fields: { ...wire.fields, startedContent } }),
+				undefined,
+			);
+		}
+	});
+
+	it("types the new fields (#4626)", () => {
+		const error = new GitHubCopilotStreamEndedEarlyError(bare);
+
+		expectTypeOf(error.durationMs).toEqualTypeOf<number | undefined>();
+		expectTypeOf(error.startedContent).toEqualTypeOf<boolean | undefined>();
+		expectTypeOf<GitHubCopilotErrorFieldValue>().toEqualTypeOf<string | number | boolean | null>();
+		expectTypeOf<GitHubCopilotFailureContext["stream"]>().toEqualTypeOf<GitHubCopilotStreamSnapshot | undefined>();
 	});
 });

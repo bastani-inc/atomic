@@ -55,6 +55,7 @@ export { normalizeProviderId } from "./provider-id.ts";
 export * from "./providers/faux.ts";
 export * from "./providers/github-copilot-capabilities.ts";
 export * from "./providers/github-copilot-errors.ts";
+export * from "./providers/github-copilot-stream-attempt.ts";
 export * from "./session-resources.ts";
 export * from "./types.ts";
 export * from "./utils/diagnostics.ts";

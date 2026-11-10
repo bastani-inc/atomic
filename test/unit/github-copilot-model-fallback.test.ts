@@ -223,7 +223,10 @@ describe("typed GitHub Copilot failures drive retry and fallback (#4324)", () =>
 					errorMessage: "The model refused to complete the request",
 					timestamp: 0,
 				} as unknown as AssistantMessage;
-				recordGitHubCopilotFailure(refused, new Error("The model refused to complete the request"), true);
+				recordGitHubCopilotFailure(refused, new Error("The model refused to complete the request"), {
+					durationMs: 10,
+					startedContent: true,
+				});
 				assert.equal(normalizeModelFailureSignal(refused).kind, "content_filter", stop);
 				const live = session({ fallbackOnContentFilter });
 				assert.equal(_isRetryableError.call(live as never, refused), sameModel, stop);
