@@ -108,6 +108,22 @@ export {
 	serializeIntercomRecipientGoneError,
 	subagentEndedCode,
 } from "./broker/recipient-gone-errors.js";
+export {
+	HOSTED_SESSION_ERROR_CODES,
+	HostedSessionRequestError,
+	IntercomHostedSessionError,
+	type IntercomHostedSessionErrorCode,
+	type IntercomHostedSessionErrorFields,
+	isHostedSessionErrorCode,
+	isHostedSessionRequestError,
+	isIntercomHostedSessionError,
+	isNotHostedSessionError,
+	NotHostedSessionError,
+	readSerializedIntercomHostedSessionError,
+	rehydrateIntercomHostedSessionError,
+	type SerializedIntercomHostedSessionError,
+	serializeIntercomHostedSessionError,
+} from "./broker/hosted-session-errors.js";
 
 type LifecycleSnapshot<K extends keyof ForwardedEventMap> = {
 	event: ForwardedEventMap[K];

@@ -23,6 +23,8 @@ import type {
 	IntercomDeliveryMode,
 	DeliveryFailureReasonCode,
 	ReleasedChildRefusal,
+	HostedSessionAssignment,
+	HostedSessionFrameItem,
 } from "../types.js";
 import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
@@ -41,6 +43,15 @@ import {
 	rehydrateIntercomRecipientGoneError,
 	type SubagentEndedOutcome,
 } from "./recipient-gone-errors.js";
+import {
+	HostedSessionRequestError,
+	hostedSessionErrorFor,
+	type IntercomHostedSessionError,
+	readHostedSessionRefusal,
+	readSerializedIntercomHostedSessionError,
+	rehydrateIntercomHostedSessionError,
+} from "./hosted-session-errors.js";
+import { HOSTED_SESSION_FRAME_MAX, readHostedSessionAssignments, validateHostSessionsFrame } from "./hosted-sessions.js";
 import { normalizeGroups } from "../group.js";
 import {
 	BROKER_RETIRING_CODE,
@@ -58,6 +69,7 @@ import { IntercomBrokerProtocolError, IntercomRoutingChangedError, IntercomRouti
 import {
 	BROKER_PROTOCOL,
 	type BrokerProtocolRange,
+	HOSTED_SESSIONS_PROTOCOL,
 	isBrokerProtocolRange,
 	LEGACY_BROKER_PROTOCOL,
 	protocolRangeOf,
@@ -168,6 +180,8 @@ export interface SendOptions {
   expectedRecipientId?: string;
   /** Broker-authorized recipient identity for an ask, delivered before its recipient can reply. */
   onReplyTarget?: (sessionId: string) => void;
+  /** #4642: send as this session, which this connection hosts (`hostSessions`). */
+  hostedSender?: string;
 }
 
 export interface IntercomClientOptions {
@@ -267,6 +281,15 @@ export type {
 	IntercomReleasedReplyErrorFields,
 	SerializedIntercomReleasedReplyError,
 } from "./released-reply-errors.js";
+export {
+	HostedSessionRequestError,
+	IntercomHostedSessionError,
+	isHostedSessionRequestError,
+	isIntercomHostedSessionError,
+	isNotHostedSessionError,
+	NotHostedSessionError,
+} from "./hosted-session-errors.js";
+export type { IntercomHostedSessionErrorCode } from "./hosted-session-errors.js";
 
 function readReleasedChildRefusal(value: unknown): ReleasedChildRefusal | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
@@ -283,10 +306,10 @@ export interface SendResult {
   reason?: string;
 	reasonCode?: DeliveryFailureReasonCode;
 	/**
-	 * #4386: the typed refusal of a reply to a released subagent. #4639: why a subagent with no live session is gone.
-	 * Its `code` is `reasonCode`.
+	 * #4386: the typed refusal of a reply to a released subagent. #4642: of a hosted sender. #4639: why a subagent with
+	 * no live session is gone. Its `code` is `reasonCode`.
 	 */
-	error?: IntercomReleasedReplyError | IntercomRecipientGoneError;
+	error?: IntercomReleasedReplyError | IntercomHostedSessionError | IntercomRecipientGoneError;
 	target?: string;
   position?: number;
   /** How a queued workflow target relates to the run's stages (#4359). */
@@ -466,6 +489,10 @@ export class IntercomClient extends EventEmitter {
     reject: (error: Error) => void;
   }>();
   private pendingRestoringRecipientRequests = new Map<string, { resolve(): void; reject(error: Error): void }>();
+  private pendingHostedSessionRequests = new Map<
+    string,
+    { resolve(sessions: readonly HostedSessionAssignment[]): void; reject(error: Error): void }
+  >();
   private disconnecting = false;
   private disconnectError: Error | null = null;
   private healthCheck: { socket: net.Socket; result: Promise<Error | undefined> } | undefined;
@@ -523,6 +550,7 @@ export class IntercomClient extends EventEmitter {
     for (const pending of this.pendingLists.values()) pending.reject(error);
     for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
     for (const pending of this.pendingRestoringRecipientRequests.values()) pending.reject(error);
+    for (const pending of this.pendingHostedSessionRequests.values()) pending.reject(error);
     for (const pending of this.pendingPresence.values()) pending.reject(error);
     for (const pending of this.pendingMemberships.values()) pending.reject(error);
     for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
@@ -533,6 +561,7 @@ export class IntercomClient extends EventEmitter {
     this.pendingGroupLists.clear();
     this.pendingSupervisorAuthorizations.clear();
     this.pendingRestoringRecipientRequests.clear();
+    this.pendingHostedSessionRequests.clear();
     this.pendingPresence.clear();
     this.pendingMemberships.clear();
     this.pendingLiveWorkflowStageRoutes.clear();
@@ -988,11 +1017,18 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "message": {
-        const { from, message, channel } = brokerMessage;
-        if (!isSessionInfo(from) || !isMessage(message) || (channel !== undefined && channel !== "supervisor")) {
+        const { from, message, channel, hostedRecipient } = brokerMessage;
+        if (
+          !isSessionInfo(from) ||
+          !isMessage(message) ||
+          (channel !== undefined && channel !== "supervisor") ||
+          (hostedRecipient !== undefined && typeof hostedRecipient !== "string")
+        ) {
           throw new Error("Invalid message event");
         }
-        this.emit("message", from, message, channel);
+        // #4642: a message for a session this connection hosts goes to its own listeners, never to this session's.
+        if (hostedRecipient !== undefined) this.emit("hosted_message", hostedRecipient, from, message, channel);
+        else this.emit("message", from, message, channel);
         break;
       }
 		case "pending_stage_message": {
@@ -1173,6 +1209,20 @@ export class IntercomClient extends EventEmitter {
         this.emit("released_child_reply", notice);
         break;
       }
+      case "hosted_sessions_ack": {
+        const { requestId, refusal, sessions } = brokerMessage;
+        const parsedRefusal = refusal === undefined ? undefined : readHostedSessionRefusal(refusal as JsonWireValue);
+        const assignments = sessions === undefined ? [] : readHostedSessionAssignments(sessions as JsonWireValue);
+        if (typeof requestId !== "string" || (refusal !== undefined && parsedRefusal === undefined) || assignments === undefined) {
+          throw new Error("Invalid hosted_sessions_ack message");
+        }
+        const pending = this.pendingHostedSessionRequests.get(requestId);
+        if (!pending) return;
+        this.pendingHostedSessionRequests.delete(requestId);
+        if (parsedRefusal === undefined) pending.resolve(assignments);
+        else pending.reject(hostedSessionErrorFor(parsedRefusal));
+        break;
+      }
       case "released_children_ack": {
         const { requestId, refusal } = brokerMessage;
         const parsed = refusal === undefined ? undefined : readReleasedChildRefusal(refusal);
@@ -1211,7 +1261,9 @@ export class IntercomClient extends EventEmitter {
       case "delivery_failed": {
 		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
 		const wireError = brokerMessage.error as JsonWireValue | undefined;
-		const error = readSerializedIntercomReleasedReplyError(wireError);
+		const releasedReplyError = readSerializedIntercomReleasedReplyError(wireError);
+		const hostedSessionError = releasedReplyError === undefined ? readSerializedIntercomHostedSessionError(wireError) : undefined;
+		const error = releasedReplyError ?? hostedSessionError;
 		const wireRecipientError = brokerMessage.recipientError as JsonWireValue | undefined;
 		const recipientError = readSerializedIntercomRecipientGoneError(wireRecipientError);
 		if (
@@ -1230,7 +1282,8 @@ export class IntercomClient extends EventEmitter {
 			delivered: false,
 			reason,
 			...(reasonCode === undefined ? {} : { reasonCode }),
-			...(error === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(error) }),
+			...(releasedReplyError === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(releasedReplyError) }),
+			...(hostedSessionError === undefined ? {} : { error: rehydrateIntercomHostedSessionError(hostedSessionError) }),
 			...(recipientError === undefined
 				? {}
 				: { reasonCode: recipientError.code, error: rehydrateIntercomRecipientGoneError(recipientError) }),
@@ -1673,14 +1726,87 @@ export class IntercomClient extends EventEmitter {
    * with, which would end the connection with a protocol error over a frame type it does not know. Without a
    * registration the request fails as it always did, as not connected.
    */
-  private requireBrokerProtocol(feature: string): void {
+  private requireBrokerProtocol(feature: string, requiredProtocol = VERIFIED_REGISTRATION_PROTOCOL): void {
     const broker = this._brokerProtocol;
-    if (this._sessionId === null || broker.max >= VERIFIED_REGISTRATION_PROTOCOL) return;
+    if (this._sessionId === null || broker.max >= requiredProtocol) return;
     throw new IntercomBrokerProtocolError({
       feature,
       brokerProtocolMin: broker.min,
       brokerProtocolMax: broker.max,
-      requiredProtocol: VERIFIED_REGISTRATION_PROTOCOL,
+      requiredProtocol,
+    });
+  }
+
+  /**
+   * #4642: host sessions on this connection, in frames of at most 500. Each is listed and addressed like a connected
+   * session; messages for it arrive as `hosted_message` (recipient id, sender, message, channel), and
+   * `send(..., { hostedSender })` sends as it. They leave when `unhostSessions` removes them or this connection
+   * closes. Every item is validated before any frame is sent: an invalid one fails the call with a
+   * `HostedSessionRequestError` naming its key and hosts nothing from its frame or any later one. Resolves with each
+   * key's broker id and, for an item with a live workflow-stage route the broker refused, the refusal code; the
+   * session stays hosted and addressable by name. Needs a broker of protocol 3.
+   */
+  async hostSessions(sessions: readonly HostedSessionFrameItem[]): Promise<HostedSessionAssignment[]> {
+    this.requireBrokerProtocol("host_sessions", HOSTED_SESSIONS_PROTOCOL);
+    const frames: HostedSessionFrameItem[][] = [];
+    for (let start = 0; start < sessions.length; start += HOSTED_SESSION_FRAME_MAX) {
+      const frame = sessions.slice(start, start + HOSTED_SESSION_FRAME_MAX);
+      // Validated exactly as the broker reads it: what JSON keeps of the frame.
+      const wire: JsonWireValue = JSON.parse(JSON.stringify(frame));
+      const validation = validateHostSessionsFrame(wire);
+      if (!validation.ok) throw hostedSessionErrorFor(validation.refusal);
+      frames.push(frame);
+    }
+    const assigned: HostedSessionAssignment[] = [];
+    for (const frame of frames) assigned.push(...(await this.hostedSessionRequest({ type: "host_sessions", sessions: frame })));
+    return assigned;
+  }
+
+  /**
+   * #4642: remove sessions this connection hosts, in frames of at most 500. A frame naming a session this connection
+   * does not host fails with `NotHostedSessionError` and removes nothing from that frame.
+   */
+  async unhostSessions(sessionIds: readonly string[]): Promise<void> {
+    this.requireBrokerProtocol("unhost_sessions", HOSTED_SESSIONS_PROTOCOL);
+    if (sessionIds.length === 0) throw new HostedSessionRequestError("invalid_hosted_frame");
+    for (let start = 0; start < sessionIds.length; start += HOSTED_SESSION_FRAME_MAX) {
+      await this.hostedSessionRequest({
+        type: "unhost_sessions",
+        sessionIds: sessionIds.slice(start, start + HOSTED_SESSION_FRAME_MAX),
+      });
+    }
+  }
+
+  private hostedSessionRequest(frame: Record<string, unknown>): Promise<HostedSessionAssignment[]> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingHostedSessionRequests.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Hosted-session request timeout")).then(reject);
+      }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
+      this.pendingHostedSessionRequests.set(requestId, {
+        resolve: (sessions) => {
+          clearTimeout(timeout);
+          resolve([...sessions]);
+        },
+        reject: (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        },
+      });
+      try {
+        writeMessage(socket, { ...frame, requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingHostedSessionRequests.delete(requestId);
+        reject(toError(error));
+      }
     });
   }
 
@@ -2010,6 +2136,7 @@ export class IntercomClient extends EventEmitter {
       ...(options.onReplyTarget === undefined ? {} : { resolveReplyTarget: true as const }),
 			// #3760: this client understands `send_held`, so the broker may hold the send for a subagent being restored.
 			...(type === "send" ? { awaitRestoringRecipient: true as const } : {}),
+			...(options.hostedSender === undefined ? {} : { hostedSender: options.hostedSender }),
 			message,
 			attemptId: acquired.attempt.attemptId,
 			...extra,

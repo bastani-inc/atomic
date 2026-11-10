@@ -21,7 +21,9 @@ const previousRelease = join(repoRoot, "test/fixtures/intercom-0.9.71");
 const { createMessageReader } = await import("../../packages/intercom/broker/framing.js");
 const { queryIntercomBroker } = await import("../../packages/intercom/broker/control.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
-const { PROTOCOL_2_FRAME_TYPES } = await import("../../packages/intercom/broker/socket-writes.js");
+const { PROTOCOL_2_FRAME_TYPES, PROTOCOL_3_FRAME_TYPES } = await import(
+	"../../packages/intercom/broker/socket-writes.js"
+);
 
 type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
@@ -103,7 +105,7 @@ async function brokerRunning(): Promise<number> {
 		const query = await queryIntercomBroker(agentDir);
 		assert.equal(query.state, "running");
 		if (query.state === "running") {
-			assert.deepEqual(query.report.protocol, { min: 1, max: 2 });
+			assert.deepEqual(query.report.protocol, { min: 1, max: 3 });
 			pid = query.report.pid;
 		}
 	}, WAIT);
@@ -205,21 +207,21 @@ describe("the 0.9.71 Intercom client against this version's broker (#4538)", () 
 		);
 	});
 
-	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2 it is never sent", () => {
+	test("every frame type this version's broker writes is one the 0.9.71 client handles, or one of protocol 2 or 3 it is never sent (#4642)", () => {
 		const written = unionTypes(join(repoRoot, "packages/intercom/types.ts"), "BrokerMessage");
 		const answeredOnlyToTheBrokerWatchdogOrAControlClient = new Set(["health", "shutdown_ack"]);
-		const protocol2: ReadonlySet<string> = PROTOCOL_2_FRAME_TYPES;
+		const newer: ReadonlySet<string> = new Set([...PROTOCOL_2_FRAME_TYPES, ...PROTOCOL_3_FRAME_TYPES]);
 		assert.ok(written.size > 20, [...written].join(", "));
 		assert.deepEqual(
 			[...written].filter(
 				(type) =>
 					!PREVIOUS_CLIENT_HANDLES.has(type) &&
-					!protocol2.has(type) &&
+					!newer.has(type) &&
 					!answeredOnlyToTheBrokerWatchdogOrAControlClient.has(type),
 			),
 			[],
 		);
-		for (const type of PROTOCOL_2_FRAME_TYPES) assert.equal(PREVIOUS_CLIENT_HANDLES.has(type), false, type);
+		for (const type of newer) assert.equal(PREVIOUS_CLIENT_HANDLES.has(type), false, type);
 	});
 
 	test(

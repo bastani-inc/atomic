@@ -43,6 +43,24 @@ export interface BrokerConnectedSession {
   supervisorOwnerToken?: string;
   /** #3761: the recipient confirms each message once it has saved it; `delivered` waits for that confirmation. */
   readonly acknowledgesReceipt?: true;
+  /** #4642: the session id of the connection hosting this session, whose `socket` it shares. */
+  readonly hostedBy?: string;
+}
+
+/** A message frame for `recipient`; the connection hosting a hosted recipient learns which of its sessions it is for. */
+export function messageFrameFor(
+  recipient: BrokerConnectedSession,
+  from: SessionInfo,
+  message: Message,
+  channel?: "supervisor",
+): Extract<BrokerMessage, { type: "message" }> {
+  return {
+    type: "message",
+    from,
+    message,
+    ...(channel === undefined ? {} : { channel }),
+    ...(recipient.hostedBy === undefined ? {} : { hostedRecipient: recipient.info.id }),
+  };
 }
 
 /** Immutable registration authority plus normalized memberships used when an accepted ask is rebound. */
@@ -696,9 +714,7 @@ export function handleBrokerSend(
 		) {
 			return;
 		}
-    const outbound = supervisorSend
-      ? ({ type: "message", from: fromSession.info, message, channel: "supervisor" } as const)
-      : ({ type: "message", from: fromSession.info, message } as const);
+    const outbound = messageFrameFor(target, fromSession.info, message, supervisorSend ? "supervisor" : undefined);
     const failDelivery = (): void => {
 	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
       write(socket, {

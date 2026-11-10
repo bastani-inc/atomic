@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Added hosted sessions: `IntercomClient.hostSessions` lists and routes many lightweight sessions over one broker connection, with typed `HostedSessionRequestError` and `NotHostedSessionError` refusals. The broker now speaks Intercom protocol 1 to 3, so the next session of this version replaces an older running broker ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
+### Fixed
+
+- Fixed each finished workflow stage that was released from memory keeping its own broker connection open for the rest of the session: released stages now share one connection per session, keeping their names, `closed · reply: post-mortem only` listing, post-mortem asks and plain-send relay ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
 ## [0.9.77] - 2026-11-11
 
 Messages to ended, released or replaced sessions arrive or fail with a reason.

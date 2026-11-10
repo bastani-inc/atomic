@@ -160,6 +160,11 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			join(tempDir, "broker", "recipient-gone-errors.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/recipient-gone-errors.ts"), "utf-8"),
 		);
+		for (const file of ["hosted-session-errors.ts", "hosted-sessions.ts"])
+			writeFileSync(
+				join(tempDir, "broker", file),
+				readFileSync(resolve(repoRoot, "packages/intercom/broker", file), "utf-8"),
+			);
 		writeFileSync(
 			join(tempDir, "broker", "released-reply-errors.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-reply-errors.ts"), "utf-8"),

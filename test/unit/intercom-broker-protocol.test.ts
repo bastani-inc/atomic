@@ -8,6 +8,7 @@ import {
 	BROKER_PROTOCOL,
 	type BrokerProtocolRange,
 	decideBrokerProtocol,
+	HOSTED_SESSIONS_PROTOCOL,
 	isBrokerProtocolRange,
 	LEGACY_BROKER_PROTOCOL,
 	protocolRangeOf,
@@ -15,8 +16,10 @@ import {
 } from "../../packages/intercom/broker/protocol-version.js";
 import type { BrokerOutboundFrame } from "../../packages/intercom/broker/socket-writes.js";
 import {
+	clientHostsSessions,
 	holdWrites,
 	PROTOCOL_2_FRAME_TYPES,
+	PROTOCOL_3_FRAME_TYPES,
 	recordClientProtocol,
 	releaseHeldWrites,
 	writeMessageIfOpen,
@@ -29,10 +32,11 @@ useTemporaryAgentDir();
 const range = (min: number, max: number): BrokerProtocolRange => ({ min, max });
 
 describe("deciding what to do with a running broker (#4538)", () => {
-	test("this version speaks protocol 1, the 0.9.71 wire, through protocol 2, and a broker without a range is protocol 1", () => {
-		assert.deepEqual(BROKER_PROTOCOL, range(1, 2));
+	test("this version speaks protocol 1, the 0.9.71 wire, through protocol 3, and a broker without a range is protocol 1 (#4642)", () => {
+		assert.deepEqual(BROKER_PROTOCOL, range(1, 3));
 		assert.deepEqual(LEGACY_BROKER_PROTOCOL, range(1, 1));
 		assert.equal(VERIFIED_REGISTRATION_PROTOCOL, 2);
+		assert.equal(HOSTED_SESSIONS_PROTOCOL, 3);
 		assert.deepEqual(protocolRangeOf(undefined), LEGACY_BROKER_PROTOCOL);
 		assert.deepEqual(protocolRangeOf(range(3, 5)), range(3, 5));
 	});
@@ -195,6 +199,28 @@ describe("frames a broker writes to a client of protocol 1 (#4538)", () => {
 			for (const frame of PROTOCOL_2_FRAMES) assert.equal(writeMessageIfOpen(socket, frame), true, frame.type);
 			assert.equal(frames.length, PROTOCOL_2_FRAMES.length);
 		}
+	});
+
+	test("only a client of protocol 3 hosts sessions and is written their answers (#4642)", () => {
+		const ack: BrokerOutboundFrame = { type: "hosted_sessions_ack", requestId: "r1", sessions: [] };
+		assert.deepEqual([...PROTOCOL_3_FRAME_TYPES], ["hosted_sessions_ack"]);
+		for (const [protocol, hosts] of [
+			[undefined, false],
+			[LEGACY_BROKER_PROTOCOL, false],
+			[range(1, 2), false],
+			[range(1, 3), true],
+			[range(3, 7), true],
+		] as const) {
+			const { socket, frames } = recordingSocket();
+			if (protocol !== undefined) recordClientProtocol(socket, protocol);
+			assert.equal(clientHostsSessions(socket), hosts, JSON.stringify(protocol));
+			assert.equal(writeMessageIfOpen(socket, ack), hosts, JSON.stringify(protocol));
+			assert.equal(frames.length, hosts ? 1 : 0);
+		}
+		const { socket } = recordingSocket();
+		recordClientProtocol(socket, range(1, 3));
+		recordClientProtocol(socket, range(1, 2));
+		assert.equal(clientHostsSessions(socket), false, "a client recorded again at protocol 2 no longer hosts");
 	});
 
 	test("a socket no client protocol was recorded for keeps receiving every frame", () => {

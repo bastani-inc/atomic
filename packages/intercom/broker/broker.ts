@@ -9,6 +9,7 @@ import { dirname } from "path";
 import { randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
 import {
+  clientHostsSessions,
   discardHeldWrites,
   flushHeldWrites,
   type HeldWrite,
@@ -55,6 +56,8 @@ import type {
 	WorkflowRunParentAnnouncement,
 	PendingStageRouteRefusalCode,
 	ReleasedChildRefusal,
+	HostedSessionAssignment,
+	HostedSessionRefusal,
 } from "../types.js";
 import {
 	formatWorkflowStageTarget,
@@ -62,11 +65,12 @@ import {
 	withWorkflowStageTargetFinalSegment,
 } from "../workflow-stage-target.js";
 import { DELIVERED_MESSAGE_MAX_ENTRIES, DeliveredMessageCache } from "./delivered-message-cache.js";
-import { isMessage } from "./client-message-validation.js";
+import { isMessage, isSessionRegistration } from "./client-message-validation.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 import {
 	deliveryTargetIdentity,
 	handleBrokerSend,
+	messageFrameFor,
 	type BrokerConnectedSession,
 	type PendingStageRoute,
 	type ReleasedAskerReplyRouter,
@@ -100,6 +104,8 @@ import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from 
 import { DepartedChildren, type HeldSendRefusal, validateEndedChildrenFrame } from "./departed-children.js";
 import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
 import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
+import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
+import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
@@ -235,42 +241,6 @@ interface PendingReleasedReplyAck {
   readonly route: ReleasedAskerReplyRoute;
 }
 
-function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const session = value as Record<string, unknown>;
-
-  if (
-    typeof session.cwd !== "string"
-    || typeof session.model !== "string"
-    || typeof session.pid !== "number"
-    || typeof session.startedAt !== "number"
-    || typeof session.lastActivity !== "number"
-  ) {
-    return false;
-  }
-
-  if (session.name !== undefined && typeof session.name !== "string") {
-    return false;
-  }
-
-  if (session.group !== undefined && typeof session.group !== "string") {
-    return false;
-  }
-
-  if (session.replyCapability !== undefined && session.replyCapability !== "live" && session.replyCapability !== "terminal") return false;
-  if (session.recipientPurpose !== undefined &&
-    session.recipientPurpose !== "agent" && session.recipientPurpose !== "control") {
-    return false;
-  }
-  if (session.groups !== undefined &&
-    (!Array.isArray(session.groups) || !session.groups.every((group) => typeof group === "string"))) {
-    return false;
-  }
-  return session.status === undefined || typeof session.status === "string";
-}
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const registration = value as Record<string, unknown>;
@@ -380,6 +350,8 @@ function isWorkflowPossibleStageAnnouncements(
 
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
+  /** #4642: the sessions each connection hosts, by the hosting session's id. */
+  private hostedSessions = new Map<string, Set<string>>();
   private unclassifiedConnections = new Map<net.Socket, number>();
   private server: net.Server;
   private readonly instanceId = randomUUID();
@@ -877,6 +849,75 @@ class IntercomBroker {
 		return entries;
 	}
 
+  /** The preconditions of a live workflow-stage route a registrant may hold, checked before any alias is taken. */
+  private liveWorkflowStageRouteRefusal(
+    registrant: ConnectedSession | undefined,
+    runId: string,
+    stageKeys: readonly string[],
+    capability: string,
+  ): LiveWorkflowStageRouteRefusalCode | undefined {
+    if (!stageKeys.every((stageKey) => !stageKey.includes("/") && !stageKey.includes("*"))) return "invalid_stage_key";
+    const ownerRegistration = this.pendingStageRoutes.get(runId);
+    if (ownerRegistration === undefined) return "owner_missing";
+    if (registrant === undefined || !isAgentRecipient(registrant.info)) return "registrant_not_agent";
+    if (ownerRegistration.capability !== capability) return "capability_mismatch";
+    const registrantGroup = registrant.registrationGroup ?? registrant.info.group ?? "default";
+    if (!invocationOwnsGroup(ownerRegistration.group, registrantGroup)) return "group_mismatch";
+    return undefined;
+  }
+
+  /** #4642: a hosted session takes its live workflow-stage aliases as a connected stage would; a refusal keeps it hosted. */
+  private registerHostedLiveRoute(
+    hosted: ConnectedSession,
+    route: NonNullable<ParsedHostedSession["liveRoute"]>,
+  ): LiveWorkflowStageRouteRefusalCode | undefined {
+    return (
+      this.liveWorkflowStageRouteRefusal(hosted, route.runId, route.stageKeys, route.capability) ??
+      this.registerLiveWorkflowStageRoute(hosted.info.id, randomUUID(), route.runId, route.stageKeys, route.capability)
+    );
+  }
+
+  /** #4642: register one session hosted by `hostId`, listed and addressed like a connected one, on the host's socket. */
+  private hostSession(hostId: string, socket: net.Socket, item: ParsedHostedSession): ConnectedSession {
+    const id = randomUUID();
+    const initialGroups = normalizeGroups(item.session.groups, item.session.group);
+    const legacyGroup = normalizeGroup(item.session.group ?? initialGroups.values().next().value);
+    const info: SessionInfo = { ...item.session, id };
+    setSessionGroups(info, initialGroups, legacyGroup);
+    const name = info.name?.trim();
+    const hosted: ConnectedSession = {
+      socket,
+      info,
+      registrationGroup: legacyGroup,
+      ...(name ? { registrationName: name } : {}),
+      ...(item.returnAddress === undefined ? {} : { registrationReturnAddress: item.returnAddress }),
+      hostedBy: hostId,
+    };
+    this.sessions.set(id, hosted);
+    let hosts = this.hostedSessions.get(hostId);
+    if (hosts === undefined) {
+      hosts = new Set();
+      this.hostedSessions.set(hostId, hosts);
+    }
+    hosts.add(id);
+    this.broadcastToMemberships({ type: "session_joined", session: info }, sessionGroups(info), id);
+    return hosted;
+  }
+
+  /** #4642: a send as a session this connection does not host is refused with `NotHostedSessionError`. */
+  private refuseHostedSender(socket: net.Socket, clientMessage: SendClientMessage, hostedSender: string): void {
+    const message = clientMessage.message;
+    const error = new NotHostedSessionError({ sessionId: hostedSender });
+    writeMessageIfOpen(socket, {
+      type: "delivery_failed",
+      messageId: isMessage(message) ? message.id : "unknown",
+      ...(typeof clientMessage.attemptId === "string" ? { attemptId: clientMessage.attemptId } : {}),
+      reason: error.message,
+      reasonCode: error.code,
+      error: serializeIntercomHostedSessionError(error),
+    });
+  }
+
   private acknowledgeLiveWorkflowStageRoute(requestId: string): void {
     const activation = this.liveWorkflowStageRouteActivations.get(requestId);
     if (activation === undefined || activation.pendingRequestIds.size > 0) return;
@@ -1328,7 +1369,7 @@ class IntercomBroker {
 		}
 		if (pending.message.expectsReply === true && pending.resolveReplyTarget === true && pending.attemptId !== undefined)
 			writeMessageIfOpen(pending.senderSocket, { type: "question_target", messageId: pending.messageId, attemptId: pending.attemptId, sessionId: target.info.id });
-		const frame: BrokerMessage = { type: "message", from: pending.sender, message: pending.message };
+		const frame: BrokerMessage = messageFrameFor(target, pending.sender, pending.message);
 		const signature = pending.signature;
 		const finish = (recipient: ConnectedSession, sender: ReceiptSender | undefined): void => {
 			const notify = (message: BrokerMessage): void => {
@@ -1435,7 +1476,7 @@ class IntercomBroker {
 			// The write itself is the writability check, so a stage that dropped between
 			// the owner's answer and this loop is not reported as delivered and a retried
 			// send re-forwards to it.
-			if (!writeMessageIfOpen(targetSession.socket, { type: "message", from: pending.sender, message: pending.message }))
+			if (!writeMessageIfOpen(targetSession.socket, messageFrameFor(targetSession, pending.sender, pending.message)))
 				continue;
 			delivered.push(target);
 		}
@@ -2032,6 +2073,64 @@ class IntercomBroker {
         break;
       }
 
+      case "host_sessions": {
+        const host = this.sessions.get(currentId);
+        if (
+          host === undefined ||
+          host.hostedBy !== undefined ||
+          typeof clientMessage.requestId !== "string" ||
+          !clientHostsSessions(socket)
+        ) {
+          throw new Error("Invalid host_sessions message");
+        }
+        const requestId = clientMessage.requestId;
+        const validation = validateHostSessionsFrame(clientMessage.sessions);
+        if (!validation.ok) {
+          writeMessageIfOpen(socket, { type: "hosted_sessions_ack", requestId, refusal: validation.refusal });
+          break;
+        }
+        const assignments: HostedSessionAssignment[] = [];
+        const presences: Promise<void>[] = [];
+        for (const item of validation.sessions) {
+          const hosted = this.hostSession(currentId, socket, item);
+          const presence = this.multiNode?.sessionRegistered(hosted);
+          if (presence !== undefined) presences.push(presence);
+          const liveRouteRefusal = item.liveRoute === undefined ? undefined : this.registerHostedLiveRoute(hosted, item.liveRoute);
+          assignments.push({
+            key: item.key,
+            sessionId: hosted.info.id,
+            ...(liveRouteRefusal === undefined ? {} : { liveRouteRefusal }),
+          });
+        }
+        // Multi-node: the answer waits until other brokers can resolve the hosted sessions, as `registered` does.
+        const answer = (): void => {
+          writeMessageIfOpen(socket, { type: "hosted_sessions_ack", requestId, sessions: assignments });
+        };
+        if (presences.length === 0) answer();
+        else void Promise.all(presences).then(answer);
+        break;
+      }
+
+      case "unhost_sessions": {
+        if (typeof clientMessage.requestId !== "string" || !this.sessions.has(currentId)) {
+          throw new Error("Invalid unhost_sessions message");
+        }
+        const validation = validateUnhostSessionsFrame(clientMessage.sessionIds);
+        const hosted = this.hostedSessions.get(currentId);
+        const refusal: HostedSessionRefusal | undefined = validation.ok
+          ? validation.sessionIds
+              .filter((sessionId) => hosted?.has(sessionId) !== true)
+              .map((sessionId) => ({ code: "not_hosted_by_connection" as const, sessionId }))[0]
+          : validation.refusal;
+        if (!validation.ok || refusal !== undefined) {
+          writeMessageIfOpen(socket, { type: "hosted_sessions_ack", requestId: clientMessage.requestId, refusal });
+          break;
+        }
+        for (const sessionId of validation.sessionIds) this.disconnectSession(sessionId);
+        writeMessageIfOpen(socket, { type: "hosted_sessions_ack", requestId: clientMessage.requestId });
+        break;
+      }
+
       case "reserve_released_children": {
         const owner = this.sessions.get(currentId);
         if (owner === undefined || typeof clientMessage.requestId !== "string") {
@@ -2341,35 +2440,18 @@ class IntercomBroker {
           });
           this.endRefusedConnection(socket, currentId, setId);
         };
-        if (!clientMessage.stageKeys.every((stageKey) => !stageKey.includes("/") && !stageKey.includes("*"))) {
-          // A stage name containing "/" or "*" cannot be a canonical path segment, but throwing
-          // here reaches the framing reader's onError and destroys the stage session's whole
-          // broker connection. Refuse orderly like every neighbouring rejection; host clients
-          // filter such name keys and register the stage-id key instead.
-          refuse("invalid_stage_key");
-          return;
-        }
-        const ownerRegistration = this.pendingStageRoutes.get(clientMessage.runId);
-        const registeringSession = this.sessions.get(currentId);
-        if (ownerRegistration === undefined) {
-          refuse("owner_missing");
-          return;
-        }
-        if (registeringSession === undefined || !isAgentRecipient(registeringSession.info)) {
-          refuse("registrant_not_agent");
-          return;
-        }
-        if (ownerRegistration.capability !== clientMessage.capability) {
-          refuse("capability_mismatch");
-          return;
-        }
-        if (
-          !invocationOwnsGroup(
-            ownerRegistration.group,
-            registeringSession.registrationGroup ?? registeringSession.info.group ?? "default",
-          )
-        ) {
-          refuse("group_mismatch");
+        // A stage name containing "/" or "*" cannot be a canonical path segment, but throwing
+        // here reaches the framing reader's onError and destroys the stage session's whole
+        // broker connection. Refuse orderly like every neighbouring rejection; host clients
+        // filter such name keys and register the stage-id key instead.
+        const precondition = this.liveWorkflowStageRouteRefusal(
+          this.sessions.get(currentId),
+          clientMessage.runId,
+          clientMessage.stageKeys,
+          clientMessage.capability,
+        );
+        if (precondition !== undefined) {
+          refuse(precondition);
           return;
         }
         const refusal = this.registerLiveWorkflowStageRoute(
@@ -2421,7 +2503,17 @@ class IntercomBroker {
 
 		case "send":
 		case "supervisor_send": {
-			this.dispatchSend(socket, clientMessage, currentId);
+			const hostedSender = clientMessage.hostedSender;
+			if (hostedSender === undefined) {
+				this.dispatchSend(socket, clientMessage, currentId);
+				break;
+			}
+			if (typeof hostedSender !== "string") throw new Error("Invalid hostedSender");
+			if (this.hostedSessions.get(currentId)?.has(hostedSender) !== true) {
+				this.refuseHostedSender(socket, clientMessage, hostedSender);
+				break;
+			}
+			this.dispatchSend(socket, clientMessage, hostedSender);
 			break;
 		}
 
@@ -2930,6 +3022,10 @@ class IntercomBroker {
   private disconnectSession(sessionId: string): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
+    // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.
+    for (const hostedId of [...(this.hostedSessions.get(sessionId) ?? [])]) this.disconnectSession(hostedId);
+    this.hostedSessions.delete(sessionId);
+    if (departed.hostedBy !== undefined) this.hostedSessions.get(departed.hostedBy)?.delete(sessionId);
 
     this.restoringRecipients.dropSender(sessionId);
     this.departedChildren.dropSender(sessionId);
@@ -2952,7 +3048,7 @@ class IntercomBroker {
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
-      if (pending.ownerSessionId === sessionId || pending.socket === departed.socket) {
+      if (pending.ownerSessionId === sessionId || (departed.hostedBy === undefined && pending.socket === departed.socket)) {
         this.settleReleasedReply(messageId, "uncertain");
       }
     }
@@ -3040,6 +3136,8 @@ class IntercomBroker {
   /** Deliver a broadcast once to each session represented in any given group. */
   private broadcastToMemberships(msg: BrokerMessage, groups: ReadonlySet<string>, exclude?: string): void {
     for (const [id, session] of this.sessions) {
+      // #4642: a hosted session shares its host's socket and needs no copy of its own.
+      if (session.hostedBy !== undefined) continue;
       if (id !== exclude && [...groups].some((group) => hasGroup(sessionGroups(session.info), group))) {
         writeMessageIfOpen(session.socket, msg);
       }
@@ -3082,6 +3180,7 @@ class IntercomBroker {
       session.socket.end();
     }
     this.sessions.clear();
+    this.hostedSessions.clear();
     this.pendingStageRoutes.clear();
     this.pendingStageAcknowledgments.clear();
     this.liveWorkflowStageRoutes.clear();

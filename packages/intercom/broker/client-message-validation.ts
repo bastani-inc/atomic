@@ -52,3 +52,41 @@ export function isSessionInfo(value: unknown): value is SessionInfo {
   if (session.group !== undefined && typeof session.group !== "string") return false;
   return session.status === undefined || typeof session.status === "string";
 }
+
+/** A `register` frame's session: everything but the id the broker assigns. */
+export function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const session = value as Record<string, unknown>;
+
+  if (
+    typeof session.cwd !== "string"
+    || typeof session.model !== "string"
+    || typeof session.pid !== "number"
+    || typeof session.startedAt !== "number"
+    || typeof session.lastActivity !== "number"
+  ) {
+    return false;
+  }
+
+  if (session.name !== undefined && typeof session.name !== "string") {
+    return false;
+  }
+
+  if (session.group !== undefined && typeof session.group !== "string") {
+    return false;
+  }
+
+  if (session.replyCapability !== undefined && session.replyCapability !== "live" && session.replyCapability !== "terminal") return false;
+  if (session.recipientPurpose !== undefined &&
+    session.recipientPurpose !== "agent" && session.recipientPurpose !== "control") {
+    return false;
+  }
+  if (session.groups !== undefined &&
+    (!Array.isArray(session.groups) || !session.groups.every((group) => typeof group === "string"))) {
+    return false;
+  }
+  return session.status === undefined || typeof session.status === "string";
+}
