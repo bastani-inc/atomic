@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
 import { crc32, deflateSync } from "node:zlib";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	Container,
 	getCapabilities,
 	getKeybindings,
-	type Image,
+	Image,
 	isViewportTUI,
 	resetCapabilitiesCache,
 	ScrollView,
@@ -550,6 +551,57 @@ describe("interactive TUI renderer", () => {
 			tui.stop();
 			restoreOffline();
 			resetCapabilitiesCache();
+		}
+	});
+
+	test.sequential("draws fullscreen Kitty images after the rows they cover outside WezTerm (earendil-works/pi#11835)", () => {
+		vi.stubEnv("WEZTERM_PANE", "");
+		vi.stubEnv("TERM_PROGRAM", "ghostty");
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		const terminal = new RecordingTerminal();
+		terminal.columns = 40;
+		terminal.rows = 8;
+		const tui = createFullscreenTui({ showHardwareCursor: false, logDirectory: tmpdir(), terminal });
+		const image = new Image(
+			createPng(90, 54).toString("base64"),
+			"image/png",
+			{ fallbackColor: (text: string) => text },
+			{ maxWidthCells: 10 },
+		);
+		const coveredRow = 1;
+		let coveredRowText = "";
+		const imageBlock = {
+			render: (width: number) =>
+				image.render(width).map((line, row) => (row === coveredRow ? coveredRowText : line)),
+			invalidate: () => image.invalidate(),
+		};
+		const layout = new Container();
+		layout.addChild(new Text("before", 0, 0));
+		layout.addChild(imageBlock);
+		layout.addChild(new Text("after", 0, 0));
+		tui.setLayoutRoot(layout);
+		tui.start();
+		try {
+			tui.renderNow();
+			expect(image.render(terminal.columns).length).toBeGreaterThan(coveredRow + 1);
+			const firstFrame = terminal.writes.join("");
+			const transmitIndex = firstFrame.indexOf("\x1b_Ga=T");
+			expect(transmitIndex).toBeGreaterThan(-1);
+			expect(transmitIndex).toBeGreaterThan(firstFrame.indexOf("after"));
+			expect(transmitIndex).toBeGreaterThan(firstFrame.lastIndexOf("\x1b[2K"));
+
+			const updateStart = terminal.writes.length;
+			coveredRowText = "changed under the image";
+			tui.renderNow();
+			const update = terminal.writes.slice(updateStart).join("");
+			const changedRowIndex = update.indexOf("changed under the image");
+			expect(changedRowIndex).toBeGreaterThan(-1);
+			expect(update.indexOf("\x1b_Ga=p")).toBeGreaterThan(changedRowIndex);
+		} finally {
+			tui.stop();
+			resetCapabilitiesCache();
+			vi.unstubAllEnvs();
 		}
 	});
 });

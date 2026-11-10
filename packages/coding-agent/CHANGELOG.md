@@ -55,6 +55,9 @@
 - Fixed Alacritty hyperlinks not being enabled when `TERM_PROGRAM` is unset; detection now also uses `TERM` and `ALACRITTY_WINDOW_ID` (from pi-tui 1.5.1, [earendil-works/pi#11767](https://github.com/earendil-works/pi/issues/11767))
 - Fixed codemode tool declarations throwing `URIError` for a local `$ref` with a malformed percent escape such as `#/$defs/%E0`, which failed every script that renders all tools; the reference now renders as `unknown` (from pi-codemode 1.5.1, [earendil-works/pi#11803](https://github.com/earendil-works/pi/issues/11803))
 - Fixed `/import` of a session whose working directory no longer exists storing the session before asking what to do: continuing then failed with `Session already exists`, and cancelling left the session in storage. An import that cannot run now stores nothing ([earendil-works/pi#11060](https://github.com/earendil-works/pi/issues/11060))
+- Fixed `console.*` output and thrown non-Error values in codemode scripts showing `NaN`, `Infinity` and `-Infinity` as `null`; they now print as `text()` prints them (from pi-codemode 1.5.1, [earendil-works/pi#11901](https://github.com/earendil-works/pi/issues/11901))
+- Fixed deleting a paste marker with Backspace in the prompt editor corrupting later short markers such as `[paste #2]`, which made Enter submit the marker text instead of the pasted content (from pi-tui 1.5.1, [earendil-works/pi#11923](https://github.com/earendil-works/pi/issues/11923))
+- Fixed fullscreen Kitty images showing only their first row in terminals whose image layer stores images in the cells they cover, such as Orca and WezTerm. Fullscreen now draws Kitty images after clearing and writing the rows they cover on every terminal (from pi-tui 1.5.1, [earendil-works/pi#11835](https://github.com/earendil-works/pi/issues/11835))
 
 ## [0.9.74] - 2026-11-09
 

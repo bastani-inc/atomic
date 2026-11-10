@@ -68,6 +68,40 @@ test("codemode separates text items and groups console calls after other output"
 	}
 });
 
+test("codemode console prints NaN and Infinity like text() (earendil-works/pi#11901)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const result = await runScript(harness, 'console.log("avg", 0 / 0, 1 / 0, -1 / 0, { a: 1 }); text(0 / 0);');
+		assert.equal(result.isError, false);
+		assert(
+			getMessageText(result).endsWith(
+				'NaN\n<console_output>\navg NaN Infinity -Infinity {"a":1}\n</console_output>',
+			),
+			getMessageText(result),
+		);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("codemode reports a thrown NaN as NaN (earendil-works/pi#11901)", async () => {
+	const harness = await createHarness({
+		extensionFactories: [createCodemodeExtension()],
+		initialActiveToolNames: ["codemode"],
+	});
+	try {
+		const result = await runScript(harness, "throw NaN");
+		assert.match(getMessageText(result), /Script failed/);
+		assert.match(getMessageText(result), /\bNaN\b/);
+		assert.doesNotMatch(getMessageText(result), /\bnull\b/);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("codemode executes nested tools in a worker and persists successful branch-local store writes", async () => {
 	const harness = await createHarness({
 		extensionFactories: [
