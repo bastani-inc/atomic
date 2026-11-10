@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- Added the `@bastani/pi-ai/session-resources` subpath export, so `registerSessionResourceCleanup` and `cleanupSessionResources` can be imported to release provider resources when a session ends (upstream [#11961](https://github.com/earendil-works/pi/pull/11961))
+
 ## [0.9.76] - 2026-11-10
 
 Claude Fable 5.2 works with an Anthropic subscription login.
