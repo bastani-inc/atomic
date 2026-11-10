@@ -101,7 +101,7 @@ ctx.ui.setStatus("my-ext", undefined);  // Clear
 // Working loader customization (active from accepted prompt startup through the agent turn)
 ctx.ui.setWorkingMessage("Thinking deeply...");
 ctx.ui.setWorkingMessage();  // Restore default
-ctx.ui.setWorkingVisible(false);  // Hide the built-in working indicator entirely
+ctx.ui.setWorkingVisible(false);  // Hide the built-in working indicator entirely; the compaction indicator stays visible
 ctx.ui.setWorkingVisible(true);   // Show the built-in working indicator
 
 // Working indicator customization (same lifecycle; see TUI Pattern 4b)

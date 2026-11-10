@@ -281,7 +281,8 @@ export interface ExtensionUIContext {
 
 	/**
 	 * Show or hide the built-in row during the active Working lifecycle.
-	 * This customizes presentation only; it does not start or stop work.
+	 * This customizes presentation only; it does not start or stop work, and it
+	 * never hides the compaction indicator.
 	 */
 	setWorkingVisible(visible: boolean): void;
 
