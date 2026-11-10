@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema` and `@earendil-works/pi-telemetry` to 1.5.2; the intercom, subagents, web-access and workflows packages now require `@earendil-works/pi-tui` and `@earendil-works/pi-agent-core` `^1.5.2`
+
 ### Fixed
 
 - Fixed the llama.cpp setup guide telling you to verify the installation with `llama cli --version`; it now uses the unified `llama --version` entry point (upstream [#11958](https://github.com/earendil-works/pi/pull/11958))

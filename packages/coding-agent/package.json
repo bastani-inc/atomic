@@ -91,9 +91,9 @@
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
     "@bastani/pi-ai": "0.0.0",
-    "@earendil-works/pi-agent-core": "1.5.1",
-    "@earendil-works/pi-codemode": "1.5.1",
-    "@earendil-works/pi-tui": "1.5.1",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-codemode": "1.5.2",
+    "@earendil-works/pi-tui": "1.5.2",
     "@modelcontextprotocol/ext-apps": "^2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@mozilla/readability": "^0.6.0",

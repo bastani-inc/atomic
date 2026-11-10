@@ -84,7 +84,7 @@
   "peerDependencies": {
     "@bastani/atomic": "*",
     "@bastani/atomic-natives": "*",
-    "@earendil-works/pi-tui": "^1.5.1",
+    "@earendil-works/pi-tui": "^1.5.2",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
