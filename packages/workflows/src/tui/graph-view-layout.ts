@@ -1,6 +1,5 @@
 import { type Component, ScrollView, VStack } from "@earendil-works/pi-tui";
 import {
-	getScrollbarGeometry,
 	getScrollViewBox,
 	type LayoutBox,
 	type LayoutFrame,
@@ -87,6 +86,7 @@ export class GraphViewLayout {
 	private bodyContentRows = 0;
 	private lastBodyWidth: number | undefined;
 	private scrollbar: ScrollbarGeometry | undefined;
+	private scrollbarShown = false;
 	private draggingScrollbar: { grabOffset: number } | undefined;
 
 	constructor(callbacks: GraphViewLayoutCallbacks) {
@@ -95,10 +95,10 @@ export class GraphViewLayout {
 		const margin = new CallbackComponent(() => [""]);
 		const header = new CallbackComponent((width) => this.callbacks.renderHeader(width));
 		const body = new CallbackComponent((width) => {
-			// The ScrollView reserves its scrollbar column from the width it hands
-			// the body, so this is the only place the real body width is known.
-			this.lastBodyWidth = width;
-			return this.renderBody(width);
+			// The body draws its own scrollbar column, so this is the only place the real content width is known.
+			const contentWidth = this.scrollbarShown ? Math.max(1, width - 1) : width;
+			this.lastBodyWidth = contentWidth;
+			return this.renderBody(contentWidth, width);
 		});
 		const footer = new CallbackComponent((width) => this.callbacks.renderFooter(width));
 		this.scrollView = new ScrollView(body, {
@@ -138,7 +138,7 @@ export class GraphViewLayout {
 			frame = this.renderPass(safeWidth, safeHeight, measuredWidth, requestedTop);
 		}
 		const bodyBox = getScrollViewBox(frame, this.scrollView);
-		this.scrollbar = bodyBox ? getScrollbarGeometry(bodyBox) : undefined;
+		this.scrollbar = bodyBox === undefined ? undefined : this.bodyScrollbarGeometry(bodyBox);
 		if (!this.scrollbar) this.draggingScrollbar = undefined;
 		const wrappedRows = Array.from({ length: safeHeight }, () => false);
 		collectWrappedRows(frame.root, safeHeight, wrappedRows);
@@ -168,7 +168,7 @@ export class GraphViewLayout {
 		this.bodyContentRows = this.contentRowsFor(measureWidth);
 		this.scrollView.updateLayout(this.bodyContentRows, this.bodyViewportRows, requestRender);
 		if (restoreTop !== undefined && this.scrollView.scrollTop < restoreTop) this.scrollView.scrollTo(restoreTop);
-		this.scrollView.setScrollbar(this.bodyContentRows > this.bodyViewportRows ? "always" : "hidden");
+		this.scrollbarShown = this.bodyContentRows > this.bodyViewportRows;
 		this.callbacks.beforeFrame?.(this.scrollView, this.bodyViewportRows, this.bodyContentRows, safeWidth);
 		return renderLayoutFrame(this.root, safeWidth, safeHeight, requestRender);
 	}
@@ -263,14 +263,55 @@ export class GraphViewLayout {
 		this.root.invalidate();
 	}
 
-	private renderBody(width: number): string[] {
+	private thumb(trackHeight: number): {
+		readonly offset: number;
+		readonly height: number;
+		readonly maxScrollTop: number;
+	} {
+		const height = Math.max(
+			Math.min(2, trackHeight),
+			Math.min(trackHeight, Math.round((trackHeight * trackHeight) / this.bodyContentRows)),
+		);
+		const maxScrollTop = Math.max(0, this.bodyContentRows - trackHeight);
+		const offset =
+			maxScrollTop === 0 ? 0 : Math.round((this.scrollView.scrollTop / maxScrollTop) * (trackHeight - height));
+		return { offset, height, maxScrollTop };
+	}
+
+	/**
+	 * The geometry of the scrollbar the body draws itself: pi-tui would splice its own into every composed row by
+	 * grapheme, which cost each frame of a scrolling graph more than drawing the graph (#4642).
+	 */
+	private bodyScrollbarGeometry(bodyBox: LayoutBox): ScrollbarGeometry | undefined {
+		if (!this.scrollbarShown || bodyBox.rect.width <= 0 || bodyBox.rect.height <= 0) return undefined;
+		const thumb = this.thumb(bodyBox.rect.height);
+		return {
+			column: bodyBox.rect.x + bodyBox.rect.width - 1,
+			trackTop: bodyBox.rect.y,
+			trackHeight: bodyBox.rect.height,
+			thumbTop: bodyBox.rect.y + thumb.offset,
+			thumbHeight: thumb.height,
+			maxScrollTop: thumb.maxScrollTop,
+		};
+	}
+
+	private renderBody(width: number, boxWidth: number): string[] {
 		const contentRows = this.bodyContentRows;
 		const lines = new Array<string>(contentRows);
 		const top = Math.max(0, Math.min(contentRows, this.scrollView.scrollTop));
 		const rows = Math.max(0, Math.min(this.bodyViewportRows, contentRows - top));
 		const visible = this.callbacks.renderBody(width, top, rows, contentRows);
+		const thumb = this.scrollbarShown && boxWidth > width ? this.thumb(this.bodyViewportRows) : undefined;
+		const thumbCell = this.scrollView.scrollbarThumbStyle(this.scrollView.isScrollbarActive ? "█" : "┃");
+		const trackCell = this.scrollView.scrollbarTrackStyle("│");
 		for (let index = 0; index < visible.length && index < rows; index++) {
-			lines[top + index] = visible[index]!;
+			const line = visible[index]!;
+			if (thumb === undefined) {
+				lines[top + index] = line;
+				continue;
+			}
+			const cell = index >= thumb.offset && index < thumb.offset + thumb.height ? thumbCell : trackCell;
+			lines[top + index] = `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}${cell}`;
 		}
 		// pi-tui scans upward from scrollTop for an image that crosses the
 		// viewport edge. A non-empty sentinel stops that scan at the first

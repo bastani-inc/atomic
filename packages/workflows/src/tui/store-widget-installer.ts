@@ -247,8 +247,16 @@ export function installStoreWidget(
 			};
 		},
 		getPreviewLines: (snap, now) => buildThemedWidgetLines(snap, undefined, 120, now),
-		render: (snap, { theme, width, now }) =>
-			buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now, layout),
+		// A frame reads the store as it is now, frozen per store version, so frames between store changes reuse each
+		// run's expanded graph instead of expanding every stage again (#4642).
+		render: (_snap, { theme, width, now }) =>
+			buildThemedWidgetLines(
+				readGraphStoreSnapshot(storeInstance),
+				theme as PiTheme | undefined,
+				width,
+				now,
+				layout,
+			),
 		getNextRefreshDelayMs: (snap, now) => nextWidgetRefreshDelayMs(snap, now),
 		// #1856: a store mutation that leaves the rendered card byte-identical
 		// must not broadcast a host-wide render (each one becomes terminal

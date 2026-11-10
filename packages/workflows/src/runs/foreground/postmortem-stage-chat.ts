@@ -36,9 +36,10 @@ import type {
 	StageControlHandle,
 	StageControlRegistry,
 } from "./stage-control-registry.js";
-import { StageQueuedUserMessageBuffer } from "./stage-queued-user-messages.js";
+import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageUserMessagePreparation } from "./stage-runner-types.js";
+import { StageSessionHolds } from "./stage-session-holds.js";
 
 /** Why a terminal stage could not be revived as an interactive post-mortem chat. */
 export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session" | "closed";
@@ -223,7 +224,11 @@ export function createPostMortemStageHandle(
 	// Same runtime queue projection the live handle keeps, so a retained-session
 	// chat rehydrates its pending rows on reattach too.
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
-	const unsubscribeQueuedUserMessages = context.subscribe((event) => queuedUserMessages.record(event));
+	const holds = new StageSessionHolds();
+	const unsubscribeQueuedUserMessages = context.subscribe((event) => {
+		queuedUserMessages.record(event);
+		holds.observe(event);
+	});
 	return {
 		runId,
 		stageId: stage.id,
@@ -251,29 +256,37 @@ export function createPostMortemStageHandle(
 		queuedUserMessages() {
 			return queuedUserMessages.snapshot();
 		},
-		async ensureAttached() {
-			await ensureAttached();
+		ensureAttached() {
+			return holds.operation(ensureAttached);
 		},
-		async sendUserMessage(text, options, beforeDelivery) {
-			throwIfClosed();
-			const preparation = messagePreparation();
-			const admitDelivery = (): void => {
+		sendUserMessage(text, options, beforeDelivery) {
+			return holds.operation(async () => {
 				throwIfClosed();
-				beforeDelivery?.();
-			};
-			return context.__sendUserMessage(text, options, admitDelivery, preparation);
+				const preparation = messagePreparation();
+				const admitDelivery = (): void => {
+					throwIfClosed();
+					beforeDelivery?.();
+				};
+				return context.__sendUserMessage(text, options, admitDelivery, preparation);
+			});
 		},
-		async prompt(text: string) {
-			await ensureAttached();
-			await context.prompt(text);
+		prompt(text: string) {
+			return holds.operation(async () => {
+				await ensureAttached();
+				await context.prompt(text);
+			});
 		},
-		async steer(text: string) {
-			await ensureAttached();
-			await context.steer(text);
+		steer(text: string) {
+			return holds.operation(async () => {
+				await ensureAttached();
+				await context.steer(text);
+			});
 		},
-		async followUp(text: string) {
-			await ensureAttached();
-			await context.followUp(text);
+		followUp(text: string) {
+			return holds.operation(async () => {
+				await ensureAttached();
+				await context.followUp(text);
+			});
 		},
 		async pause() {
 			throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
@@ -282,17 +295,37 @@ export function createPostMortemStageHandle(
 			throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
 		},
 		subscribe(listener: AgentSessionEventListener) {
-			return context.subscribe(listener);
+			return holds.subscription(context.subscribe(listener));
 		},
 		subscribeDeliveryActivity(listener) {
-			return context.__subscribeDeliveryActivity(listener);
+			return holds.subscription(context.__subscribeDeliveryActivity(listener));
 		},
 		async dispose() {
 			if (disposed) return;
 			disposed = true;
+			holds.clear();
 			unsubscribeQueuedUserMessages();
 			queuedUserMessages.clear();
 			await context.__dispose();
+		},
+		releaseGate: {
+			async savedForReopen() {
+				if (disposed) return undefined;
+				const store = context.__persistedSessionStore() ?? sessionStore;
+				const savedSessionId = context.__sessionMeta().sessionId ?? sessionId;
+				if (store === undefined) return undefined;
+				return (await isReopenableSession(store, savedSessionId)) ? store : undefined;
+			},
+			idle() {
+				return (
+					!disposed &&
+					!holds.held &&
+					stageQueuedUserMessageCount(queuedUserMessages.snapshot()) === 0 &&
+					(context.__sessionMeta().sessionId === undefined || context.__idleForRelease())
+				);
+			},
+			holdsTaken: () => holds.holdsTaken,
+			onHoldLifted: (listener) => holds.onLifted(listener),
 		},
 	};
 }

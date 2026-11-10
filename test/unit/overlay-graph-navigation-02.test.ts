@@ -163,22 +163,26 @@ describe("GraphView keyboard navigation", () => {
 	});
 	it("reserves the scrollbar column only while the body overflows", () => {
 		let overflowing = true;
+		let bodyWidth: number | undefined;
 		const layout = new GraphViewLayout({
 			renderHeader: () => ["", "", ""],
-			renderBody: (_width, _top, rows) => Array.from({ length: rows }, () => ""),
+			renderBody: (width, _top, rows) => {
+				bodyWidth = width;
+				return Array.from({ length: rows }, () => "");
+			},
 			renderFooter: () => ["", "", ""],
 			bodyContentHeight: (_width, rows) => (overflowing ? rows + 1 : rows),
 		});
 		try {
 			const overflowingFrame = layout.render(96, 20);
 			assert.ok(overflowingFrame.bodyBox);
-			assert.equal(overflowingFrame.bodyBox.children[0]?.rect.width, 95);
+			assert.equal(bodyWidth, 95);
 			assert.equal(overflowingFrame.scrollbar?.column, 95);
 
 			overflowing = false;
 			const fittedFrame = layout.render(96, 20);
 			assert.ok(fittedFrame.bodyBox);
-			assert.equal(fittedFrame.bodyBox.children[0]?.rect.width, 96);
+			assert.equal(bodyWidth, 96);
 			assert.equal(fittedFrame.scrollbar, undefined);
 		} finally {
 			layout.dispose();

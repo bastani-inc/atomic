@@ -34,6 +34,12 @@ The workflow page explains stalled runs, and the bundled Impeccable skill is cur
 - The `/workflow` graph page now says why no more stages appear and when they will again. Its header puts the run's state before the stage counts and colors the ORCHESTRATOR pill to match: `↑ blocked` with the exit reason when the workflow gave one (shortened to fit), `❚❚ paused`, `○ quit`, or `● resumed` while a resumed run is live. It also counts blocked stages as `↑ N`. The compact graph widget, the stage switcher, `/workflow status` and the `/workflow connect` picker show the same state, and the picker now marks a quit run `○ quit` like `/workflow status` instead of `❚❚` ([#4643](https://github.com/bastani-inc/atomic/issues/4643))
 - The `workflow` tool's guidance now refines the choice between a workflow and inline work with session memory (`history://` sessions and workflow runs) and your stated preferences ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
 
+### Fixed
+
+- Fixed finished workflow stages that you attached to, messaged or asked over Intercom staying in memory until the session ended: a reopened stage goes back to its saved transcript once its chat is closed and its turn has ended, and the next attach, message or ask reopens it under the same Intercom name ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Fixed the workflow graph overlay and the progress widget slowing down as runs finish more stages: the graph no longer redraws its scrollbar through every row, node lookups no longer rescan the run, and widget frames reuse the run's expanded graph until the run changes ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Fixed starting each stage of a long run walking every earlier stage when nothing in the run is paused or blocked ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
 ## [0.9.75] - 2026-11-10
 
 Workflow stages report suspension clearly, design runs get reference images, and resumes build blueprints.

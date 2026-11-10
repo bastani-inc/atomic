@@ -782,15 +782,19 @@ describe("completed stage session release", () => {
 			const { runId, stageId } = ids!;
 			const handle = registry.get(runId, stageId)!;
 
-			const delivery = handle.sendUserMessage?.("racing message");
+			let disposalsWhenDelivered: number | undefined;
+			const delivery = handle.sendUserMessage?.("racing message").then((action) => {
+				disposalsWhenDelivered = fixture.disposals();
+				return action;
+			});
 			check.proceed();
 			await running;
 			await delivery;
 
-			assert.equal(registry.get(runId, stageId), handle, "the release backed off");
-			assert.equal(fixture.disposals(), 0);
+			assert.equal(disposalsWhenDelivered, 0, "the release backed off until the message settled");
 			assert.deepEqual(fixture.sessions[0]!.prompts, ["workflow prompt", "racing message"]);
 			await registry.releaseIdle(runId);
+			assert.equal(registry.get(runId, stageId), undefined);
 			assert.equal(fixture.disposals(), 1, "once the message settled the session is released");
 		});
 
