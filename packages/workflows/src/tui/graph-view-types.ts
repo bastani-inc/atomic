@@ -70,4 +70,10 @@ export interface GraphViewOpts {
 	 * user detaches. Runtime-only: queue state never enters a store snapshot.
 	 */
 	getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
+	/**
+	 * A value that differs whenever any stage's live queue count differs, read on every repaint in time proportional
+	 * to the stages the host holds live, never to the stages of the run (#4642). A change re-reads every count and
+	 * sizes the cards again; counts are otherwise read when the layout is built.
+	 */
+	getQueuedStageSignature?: () => string;
 }

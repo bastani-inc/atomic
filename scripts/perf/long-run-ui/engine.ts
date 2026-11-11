@@ -62,6 +62,8 @@ export interface EngineConfig {
 	readonly checkpoints: readonly number[];
 	/** How long the stage's tool call takes, so stages overlap as real ones do. */
 	readonly toolDelayMs: number;
+	/** Characters of the text every stage ends with, which the workflow keeps for each finished stage. */
+	readonly resultBytes: number;
 	/** Where transcripts and the run journal live: SQLite files as in production, or memory. */
 	readonly store: "sqlite" | "memory";
 }
@@ -95,8 +97,8 @@ export interface EngineSample {
 	readonly activityBytesSent: number;
 }
 
-const COMPLETION_TEXT =
-	"Reviewed the module and updated the failing case; the assertion now covers the boundary path. ".repeat(12);
+const COMPLETION_SENTENCE =
+	"Reviewed the module and updated the failing case; the assertion now covers the boundary path. ";
 const TOOL_RESULT_TEXT = "test result: ok. 148 passed; 0 failed; 3 ignored; finished in 21.38s".repeat(5);
 const REOPEN_MARKER = "[reopened]";
 const BUILTINS = { workflows: false, subagents: false, intercom: false, mcp: false, "web-access": false } as const;
@@ -136,6 +138,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 const config = JSON.parse(process.argv[2] ?? "{}") as EngineConfig;
+const COMPLETION_TEXT = COMPLETION_SENTENCE.repeat(Math.ceil(config.resultBytes / COMPLETION_SENTENCE.length)).slice(
+	0,
+	config.resultBytes,
+);
 const workDir = mkdtempSync(join(tmpdir(), "atomic-long-run-ui-"));
 const agentDir = join(workDir, "agent");
 // Nothing here may reach the user's own sessions, journal or settings.

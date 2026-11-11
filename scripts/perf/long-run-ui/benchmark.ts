@@ -15,7 +15,7 @@
  * 1. reopens `--reopen` finished stages, cycling through attach-then-detach, attach-then-hide, message and Intercom ask;
  * 2. samples heap, RSS, live sessions, registry entries and active handles after a full collection;
  * 3. measures an idle window and a busy window (reopened stages answering asks while keys arrive) of `--keys` keys,
- *    each `--windows` times (default 3), and reports the median of every statistic, since one window on a shared host
+ *    each `--windows` times (default 5), and reports the median of every statistic, since one window on a shared host
  *    varies by more than the frames it measures;
  * 4. writes a CPU profile of each window and a heap snapshot when `--profile-dir` is given.
  *
@@ -23,6 +23,9 @@
  * memory (`--store memory`); the engine runs with its own temporary agent directory and never opens the user's.
  *
  *   bun run scripts/perf/long-run-ui/benchmark.ts --runs 2 --lanes 1 --label after --out /tmp/long-run-after.json
+ *
+ * `--result-bytes` sets the size of the text every stage ends with (default 1,100): the heap a finished stage may add
+ * is a fixed part plus that text kept twice, so a larger result checks that it is not kept more often than that.
  *
  * `--assert` fails the run unless the criteria of `criteria.ts` hold. The first checkpoint is measured after a discarded
  * warm-up window and is the baseline: frame time and key latency at 200 or more finished stages stay within 20% of it
@@ -59,6 +62,7 @@ interface Options {
 	readonly keyIntervalMs: number;
 	readonly probes: number;
 	readonly toolDelayMs: number;
+	readonly resultBytes: number;
 	readonly store: "sqlite" | "memory";
 	readonly width: number;
 	readonly rows: number;
@@ -100,13 +104,14 @@ function parseOptions(argv: readonly string[]): Options {
 		keyIntervalMs: count("key-interval-ms", 33),
 		probes: count("probes", 3),
 		toolDelayMs: count("tool-delay-ms", 5),
+		resultBytes: Math.max(1, count("result-bytes", 1_100)),
 		store,
 		width: count("width", 120),
 		rows: count("rows", 12),
 		...(profileDir === undefined ? {} : { profileDir }),
 		...(out === undefined ? {} : { out }),
 		assert: argv.includes("--assert"),
-		windows: Math.max(1, count("windows", 3)),
+		windows: Math.max(1, count("windows", 5)),
 	};
 }
 
@@ -437,6 +442,7 @@ async function main(): Promise<void> {
 		stages,
 		checkpoints: options.checkpoints,
 		toolDelayMs: options.toolDelayMs,
+		resultBytes: options.resultBytes,
 		store: options.store,
 	};
 	if (options.profileDir !== undefined) mkdirSync(options.profileDir, { recursive: true });
@@ -499,7 +505,10 @@ async function main(): Promise<void> {
 	const ended = await done;
 	const final = await host.request({ type: "bench_sample" }, "bench_sample_result");
 	await host.close();
-	const criteria = evaluateCriteria(checkpoints);
+	const criteria = evaluateCriteria(checkpoints, {
+		resultBytes: options.resultBytes,
+		heldStagesMax: options.runs * options.lanes,
+	});
 	const report = {
 		label: options.label,
 		runtime:

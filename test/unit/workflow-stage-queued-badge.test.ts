@@ -25,6 +25,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { makeTestTui } from "./overlay-graph-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -91,6 +92,114 @@ function makeHandle(
 		emit: (event: AgentSessionEvent) => queuedUserMessages.record(event),
 	};
 }
+
+describe("a repaint reads queue counts in time that does not follow the stage count (#4642)", () => {
+	function runOfStages(count: number) {
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-1",
+			name: "long-run",
+			inputs: {},
+			status: "running",
+			stages: [],
+			toolNodes: [],
+			startedAt: 1,
+		});
+		for (let index = 0; index < count; index++) {
+			store.recordStageStart("run-1", {
+				id: `stage-${index}`,
+				name: `stage-${index}`,
+				status: "completed",
+				parentIds: index === 0 ? [] : [`stage-${index - 1}`],
+				toolEvents: [],
+				model: "faux/model",
+				startedAt: 1,
+			});
+		}
+		return store;
+	}
+
+	test("a repaint reads the counts of the cards in view, and only a changed signature reads every stage's", () => {
+		const perRepaint: number[] = [];
+		const onChange: number[] = [];
+		for (const stages of [10, 200, 800]) {
+			const store = runOfStages(stages);
+			let reads = 0;
+			let signature = "";
+			const view = new GraphView({
+				piKeybindings: s5aKeybindings(),
+				mode: "overlay",
+				runId: "run-1",
+				store,
+				graphTheme: deriveGraphTheme({}),
+				piTui: makeTestTui(24),
+				getStageQueuedMessageCount: () => {
+					reads += 1;
+					return 0;
+				},
+				getQueuedStageSignature: () => signature,
+			});
+			try {
+				view.render(120);
+				view.render(120);
+				const before = reads;
+				view.render(120);
+				perRepaint.push(reads - before);
+
+				signature = "run-1/stage-3:1";
+				const beforeChange = reads;
+				view.render(120);
+				onChange.push(reads - beforeChange);
+			} finally {
+				view.dispose();
+			}
+		}
+		assert.ok(perRepaint[0]! <= 10, `10 stages: ${perRepaint[0]} reads per repaint`);
+		assert.ok(
+			perRepaint[2]! <= perRepaint[0]!,
+			`800 stages read no more per repaint than 10 do: ${perRepaint.join(", ")}`,
+		);
+		assert.ok(onChange[2]! >= 800, `a queue change re-reads every stage once: ${onChange.join(", ")}`);
+	});
+
+	test("the pane's signature follows the live handles' queues and nothing else", () => {
+		const store = runOfStages(200);
+		const registry = createStageControlRegistry();
+		const { handle, emit } = makeHandle("run-1", "stage-7");
+		registry.register(handle);
+		let signatureReads = 0;
+		const forRun = registry.forRun.bind(registry);
+		registry.forRun = (runId: string) => {
+			signatureReads += 1;
+			return forRun(runId);
+		};
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.render(120);
+			const first = signatureReads;
+			assert.ok(first >= 1);
+			pane.render(120);
+			assert.equal(signatureReads - first, 1, "one registry read per run on a repaint, whatever the stage count");
+
+			emit({ type: "queue_update", steering: ["later"], followUp: [] } as AgentSessionEvent);
+			assert.match(
+				stripAnsi(pane.render(120).join("\n")),
+				/✉ 1/,
+				"the queued message appears without a store change",
+			);
+			emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+			assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /✉/);
+		} finally {
+			pane.dispose();
+		}
+	});
+});
 
 describe("graph queued-message badge", () => {
 	test("paints the queued count for a stage the user is not attached to", () => {

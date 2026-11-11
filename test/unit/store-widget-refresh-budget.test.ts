@@ -19,16 +19,16 @@ function run(id: string): RunSnapshot {
 	return { id, name: id, inputs: {}, status: "running", stages: [], toolNodes: [], startedAt: 1 };
 }
 
-/** Each widget refresh reads the store's runs once; this one makes every read cost `costMs` of `clock`. */
+/** Each widget refresh reads the store's graph snapshot once; this one makes every read cost `costMs` of `clock`. */
 function costlyStore(costMs: number) {
 	const store = createStore();
 	let now = 1_000;
 	let refreshes = 0;
-	const runs = store.runs.bind(store);
-	store.runs = () => {
+	const graphSnapshot = store.graphSnapshot.bind(store);
+	store.graphSnapshot = () => {
 		refreshes++;
 		now += costMs;
-		return runs();
+		return graphSnapshot();
 	};
 	return {
 		store,
