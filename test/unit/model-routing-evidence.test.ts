@@ -542,6 +542,10 @@ test("Gemini 4 Carbon published results keep score, qualifier and source", async
 	assert.match(sources, /\[AutomationBench\]\(https:\/\/zapier\.com\/benchmarks\)/u);
 	assert.match(
 		sources,
+		/\[Gemini 4 Carbon report page\]\(https:\/\/zapier\.com\/benchmarks\/gemini-carbon-4-report\)/u,
+	);
+	assert.match(
+		sources,
 		/\[Gemini 4 Carbon results page\]\(https:\/\/arcprize\.org\/results\/google-gemini-4-carbon\)/u,
 	);
 	assert.match(sources, /vendor-reported/u);
