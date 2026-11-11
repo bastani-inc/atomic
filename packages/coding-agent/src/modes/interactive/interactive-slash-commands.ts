@@ -312,6 +312,7 @@ InteractiveModeBase.prototype.handleShareCommand = async function (this: Interac
 			proc.stderr?.on("data", (data) => {
 				stderr += data.toString();
 			});
+			proc.on("error", (error) => resolve({ stdout, stderr: stderr || error.message, code: null }));
 			proc.on("close", (code) => resolve({ stdout, stderr, code }));
 		});
 

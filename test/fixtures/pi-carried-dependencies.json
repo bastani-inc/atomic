@@ -1,6 +1,6 @@
 {
 	"source": "earendil-works/pi",
-	"commit": "fd0f8d35f",
+	"commit": "473515f9c",
 	"manifests": {
 		"package.json": [
 			"@biomejs/biome",
