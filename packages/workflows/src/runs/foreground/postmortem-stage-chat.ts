@@ -301,6 +301,7 @@ export function createPostMortemStageHandle(
 			await context.__dispose();
 		},
 		releaseGate: {
+			releaseWhenIdle: true,
 			async savedForReopen() {
 				if (disposed) return undefined;
 				const store = context.__persistedSessionStore() ?? sessionStore;

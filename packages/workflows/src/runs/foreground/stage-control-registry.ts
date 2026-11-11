@@ -189,6 +189,11 @@ export interface StageControlHandle {
 
 export interface StageSessionReleaseGate {
 	/**
+	 * Set by a handle no workflow body holds, such as one reopened from a saved transcript: nothing but its own
+	 * holds keeps its session, so it is released whenever the last of them ends, however it was registered.
+	 */
+	readonly releaseWhenIdle?: true;
+	/**
 	 * The store holding the stage's saved transcript once the stage is complete and that
 	 * transcript reopens without the live session; undefined until then.
 	 */
@@ -540,7 +545,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				createEntry(handle.runId, handle.stageId, handle, {
 					controlsDependencies: true,
 					permanent: true,
-					releaseWanted: false,
+					releaseWanted: handle.releaseGate?.releaseWhenIdle === true,
 				}),
 			);
 			if (displaced !== undefined) stopWatching(displaced);

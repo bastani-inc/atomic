@@ -173,4 +173,36 @@ describe("the release gate of a reopened stage (#4642)", () => {
 		await assert.rejects(handle.prompt("after close"));
 		assert.equal(lifted, 0);
 	});
+	test("a handle registered for a completed run's inspection is released once its chat closes (#4642)", async () => {
+		const stage = await savedStage();
+		const handle = stage.reopen();
+		stage.registry.register(handle);
+		stage.registry.detachControl(stage.runId, stage.stageId, handle);
+		assert.equal(stage.registry.get(stage.runId, stage.stageId), handle);
+
+		const closeChat = handle.subscribe(() => {});
+		await handle.sendUserMessage?.("still there?");
+		assert.equal(stage.fixture.sessions.length, 2, "the chat opened the stage's session");
+		assert.equal(stage.fixture.disposals(), 1, "the chat keeps the session while it is mounted");
+		closeChat();
+
+		await vi.waitFor(
+			() => {
+				assert.equal(stage.fixture.disposals(), 2, "the session went back to its saved transcript");
+				assert.equal(stage.registry.get(stage.runId, stage.stageId), undefined);
+			},
+			{ timeout: SETTLE_MS, interval: 5 },
+		);
+	});
+
+	test("a registered handle nobody used stays registered, holding no session (#4642)", async () => {
+		const stage = await savedStage();
+		const handle = stage.reopen();
+		stage.registry.register(handle);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		assert.equal(stage.registry.get(stage.runId, stage.stageId), handle);
+		assert.equal(stage.fixture.sessions.length, 1);
+		await stage.registry.clear();
+	});
 });
