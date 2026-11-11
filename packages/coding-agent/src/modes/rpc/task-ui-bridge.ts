@@ -13,7 +13,12 @@ import type { EngineHostRenderSettings } from "../interactive-engine/protocol.ts
 
 /** The UI a task inspector mounts in: its custom UI, and the chat render settings its transcripts inherit. */
 export type TaskInspectorUi = Pick<ExtensionUIContext, "custom"> &
-	Partial<Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "setToolsExpanded" | "notify">>;
+	Partial<
+		Pick<
+			ExtensionUIContext,
+			"getChatRenderSettings" | "getToolsExpanded" | "setToolsExpanded" | "notify" | "getFooterDataProvider"
+		>
+	>;
 
 /** The engine's custom UI, with the render settings of the host chat that opened the inspector. */
 export type EngineTaskInspectorMount = Pick<ExtensionUIContext, "custom"> & {
@@ -26,7 +31,7 @@ export type EngineTaskInspectorMount = Pick<ExtensionUIContext, "custom"> & {
  * inspector only, as an attached stage chat keeps its own.
  */
 export function engineTaskInspectorUi(
-	ui: Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "notify">,
+	ui: Pick<ExtensionUIContext, "getChatRenderSettings" | "getToolsExpanded" | "notify" | "getFooterDataProvider">,
 	mount: EngineTaskInspectorMount,
 ): TaskInspectorUi {
 	let toggled: boolean | undefined;
@@ -38,6 +43,7 @@ export function engineTaskInspectorUi(
 		setToolsExpanded: (expanded) => {
 			toggled = expanded;
 		},
+		getFooterDataProvider: () => ui.getFooterDataProvider(),
 		notify: (message, type) => ui.notify(message, type),
 	};
 }
@@ -155,6 +161,7 @@ export async function showTaskInspector(ui: TaskInspectorUi, store: OwnerTaskSto
 						...(ui.setToolsExpanded
 							? { setToolsExpanded: (expanded: boolean) => ui.setToolsExpanded?.(expanded) }
 							: {}),
+						...(ui.getFooterDataProvider ? { footerData: ui.getFooterDataProvider() } : {}),
 						...(ui.notify ? { notify: (message: string) => ui.notify?.(message, "warning") } : {}),
 					};
 					return {

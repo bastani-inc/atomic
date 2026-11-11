@@ -2,10 +2,10 @@ import type { AgentSession } from "../../core/agent-session.js";
 import type { SessionStats } from "../../core/agent-session-types.js";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 
-const trackedSessions = new WeakMap<AgentSession, EngineSessionStats>();
+const trackedSessions = new WeakMap<object, EngineSessionStats>();
 
 /** The engine's latest session stats for an isolated host session, or undefined before the first reply. */
-export function getEngineSessionStats(session: AgentSession): SessionStats | undefined {
+export function getEngineSessionStats(session: object): SessionStats | undefined {
 	return trackedSessions.get(session)?.current;
 }
 

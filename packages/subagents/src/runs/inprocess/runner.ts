@@ -1665,6 +1665,12 @@ export class SubagentControlRuntime {
 				subscribe: (listener) => transcriptSession.subscribe(listener),
 				getStreamingMessage: () => observedStreamingMessage,
 				getCompactionReason: compactionReasonReader(transcriptSession),
+				chatSession: transcriptSession,
+				isRunning: () => transcriptSession.isStreaming,
+				getQueuedMessages: () => ({
+					steering: transcriptSession.getSteeringMessages(),
+					followUp: transcriptSession.getFollowUpMessages(),
+				}),
 			});
 			const initialModelId = modelIdForSession(session) ?? candidateModelId;
 			effectiveModelId = initialModelId;

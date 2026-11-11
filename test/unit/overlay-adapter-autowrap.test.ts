@@ -51,10 +51,18 @@ async function registerIsolatedTests(): Promise<void> {
 	const { formatModelLabel, MODEL_LABEL_SEPARATOR } = await import(
 		"../../packages/coding-agent/src/core/model-label.js"
 	);
+	// The stage's input label is the shared chat-input label (#4640).
+	const { applyInputLabelToEditorTopRule, buildInputLabel, INPUT_LABEL_MIN_COLUMNS, inputLabelMarker, ruleOpenColor } =
+		await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
 	mock.module("@bastani/atomic", () => ({
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,
+		applyInputLabelToEditorTopRule,
+		buildInputLabel,
+		INPUT_LABEL_MIN_COLUMNS,
+		inputLabelMarker,
+		ruleOpenColor,
 		classifyChatCommand: () => assert.fail("graph overlay checks must not classify stage-chat commands"),
 		createSessionSkillAutocompleteProvider: () =>
 			assert.fail("graph overlay checks must not create skill completion"),

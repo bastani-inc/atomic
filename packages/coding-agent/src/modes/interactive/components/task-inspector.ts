@@ -330,9 +330,15 @@ export class TaskInspector implements Component {
 		this.requestRender();
 		return true;
 	}
-	/** A transcript is a chat: Escape, or Left with nothing typed, goes back; every other key belongs to it. */
+	/**
+	 * A transcript is a chat: Escape, or Left with nothing typed, goes back; every other key belongs to it. While its own
+	 * task list is open, back keys belong to that list, which returns to the chat.
+	 */
 	private handleTranscriptInput(data: string, transcript: TaskTranscriptPage): boolean {
-		if (matchesKey(data, "escape") || (matchesKey(data, "left") && !transcript.hasDraft())) {
+		if (
+			!transcript.handlesBack() &&
+			(matchesKey(data, "escape") || (matchesKey(data, "left") && !transcript.hasDraft()))
+		) {
 			this.closeTranscript();
 			this.detailGeneration++;
 			this.scroll = 0;

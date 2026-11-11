@@ -7,11 +7,10 @@ import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contract
 import type {
 	TaskTranscriptView,
 	TaskViewResult,
-	TaskViewSource,
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
 const taskId = "task-1" as TaskId;
 
@@ -32,10 +31,10 @@ class TaskTranscriptReader {
 		this.compactionReason = compactionReason;
 	}
 
-	readonly source = {
+	readonly source = transcriptOnlySource({
 		readTaskTranscript: () => transcriptPage(this.compactionReason),
 		followTaskTranscript: () => undefined,
-	} as unknown as TaskViewSource;
+	});
 
 	async open(): Promise<{ text(): string; close(): void }> {
 		initTheme("dark");

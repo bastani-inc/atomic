@@ -246,6 +246,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					{
 						custom: (factory, options) => this.showExtensionCustom(factory, options),
 						getChatRenderSettings: ui.getChatRenderSettings,
+						getFooterDataProvider: ui.getFooterDataProvider,
 						getToolsExpanded: ui.getToolsExpanded,
 						setToolsExpanded: ui.setToolsExpanded,
 						notify: ui.notify,

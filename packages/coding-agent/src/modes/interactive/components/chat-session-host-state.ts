@@ -1,6 +1,7 @@
 import type { Component, EditorComponent, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import { LiveChatEntriesController } from "./chat-message-renderer.ts";
@@ -34,6 +35,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	readonly commands: ChatSessionHostCommands;
 	readonly requestRender: (() => void) | undefined;
 	readonly getAgentSession: (() => AgentSession | undefined) | undefined;
+	readonly getChatBoxSession: (() => ChatBoxSession | undefined) | undefined;
 	readonly getSessionMessages: (() => AgentSession["messages"] | undefined) | undefined;
 	readonly getTaskSource: (() => TaskViewSource | undefined) | undefined;
 	readonly isStreamingOverride: (() => boolean) | undefined;
@@ -119,6 +121,7 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 		});
 		this.requestRender = opts.requestRender;
 		this.getAgentSession = opts.getAgentSession;
+		this.getChatBoxSession = opts.getChatBoxSession;
 		this.getSessionMessages = opts.getSessionMessages;
 		this.getTaskSource = opts.getTaskSource;
 		this.isStreamingOverride = opts.isStreaming;

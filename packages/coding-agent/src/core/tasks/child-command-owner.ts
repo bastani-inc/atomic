@@ -1,7 +1,7 @@
 import type { SupervisedCommandOwner } from "../tools/bash-pty-native.js";
 import type { AgentTaskHost } from "./agent-adapter.js";
 import type { TaskId, YieldReason } from "./contracts.js";
-import type { TaskSupervisor, WaitLease } from "./supervisor.js";
+import { type TaskSupervisor, taskTranscriptSource, type WaitLease } from "./supervisor.js";
 
 export type TaskCompletionMessage = {
 	customType: string;
@@ -113,6 +113,23 @@ export function childCommandRouteCount(host: AgentTaskHost): number {
 }
 
 /**
+ * The running task in `host`'s owner whose session is `childId`: the subagent whose shells it launches. A finished
+ * subagent has none, since its owner accepts a task's children only while it runs.
+ */
+function runningSubagentTask(host: AgentTaskHost, childId: string): TaskId | undefined {
+	const watched = host.watchOwnerTasks();
+	if (!watched.ok) return undefined;
+	const tasks = watched.value.snapshot.tasks;
+	watched.value.dispose();
+	return tasks.find((task) => {
+		if (task.execution.kind !== "running") return false;
+		const lease = host.resolveTask(task.ref.taskId);
+		const transcript = lease.ok ? taskTranscriptSource(lease.value) : lease;
+		return transcript.ok && transcript.value.session.getSessionId() === childId;
+	})?.ref.taskId;
+}
+
+/**
  * Resolve the parent's live owner per bind so session replacement is followed like the parent's own shells. A child's
  * route is dropped from the owner it was bound to, which stays known while the child is bound: unbinding needs no
  * live parent, so a child closing after its parent closed or was retired still leaves nothing behind.
@@ -137,6 +154,8 @@ export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): C
 			return {
 				supervisor,
 				owner,
+				// The subagent's own `/tasks` lists the shells that name it.
+				parentTaskId: runningSubagentTask(host, childId),
 				ownsTask: (taskId) => routes.launchedByChild(taskId, childId),
 				onCommandStarted: (taskId) => routes.recordLaunch(taskId, childId),
 				waitForTask: (taskId, budgetMs, onRegistered) =>

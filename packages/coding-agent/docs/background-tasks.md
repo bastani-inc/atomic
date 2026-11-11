@@ -210,7 +210,9 @@ The cadence is fixed when the task starts, and a running task's `/tasks` detail 
 | Transcript | Scrolls like a workflow stage chat: it opens at the latest message and follows new output; PageUp/PageDown move one viewport; Ctrl+Home/Ctrl+End jump to the top and to the latest message; Ctrl+Up/Ctrl+Down jump between prompts; the mouse wheel scrolls (Alt+wheel five times faster). Earlier retained history loads as you scroll toward the top. |
 | Transcript display | A transcript opens with the chat's thinking and tool-output settings. Ctrl+T toggles thinking blocks, as in the chat, and Ctrl+O toggles the transcript's tool output. |
 | Message the agent | Type in the transcript's prompt and press Enter to send the text to the agent through Intercom. Up/Down, Home/End and Left/Right edit the prompt. |
-| Go back | Escape returns from transcript to detail, then from detail to the list. Left does the same when the prompt is empty. |
+| Subagent chat | A subagent's transcript has the chat box of a workflow stage chat. The prompt's top rule names the subagent's session, for example `[subagent: subagent-worker-aabcf28b-1]`: its Intercom name, or its agent name when it has none. Long names end in `…`, and terminals narrower than 40 columns show no name. While the subagent runs in this session, its usage meter and model line appear around the prompt, along with the working line and any queued messages. The footer counts the subagent's own running tasks. |
+| Subagent's tasks | Type `/tasks` in a subagent's transcript to list that subagent's own tasks: the shells it ran and the subagents it launched, not the parent's. In a nested subagent's transcript, `/tasks` lists that subagent's tasks. Escape or Left on that list returns to the subagent's chat. |
+| Go back | Escape returns from transcript to detail, then from detail to the list. Left does the same when the prompt is empty. While a subagent's own task list is open, Escape and Left go back within that list first. |
 | Stop | On a task's detail page, `x` requests cancellation; confirm with `y`, or keep running with `n` or Escape. A bound `app.tasks.cancel` key also works from the list. |
 | Shell input | Select Input when offered; Enter sends the text plus a newline; Escape leaves input mode. |
 
@@ -296,6 +298,7 @@ Subagents can run background `bash` and `powershell` commands too. Their shell t
 
 - The subagent can wait on and `kill` the shells it launched, but not the parent's own tasks or another subagent's.
 - The parent can inspect, wait on, and stop those shells from its own `/tasks`, `bash({ action: "wait", id })`, or `kill({ id })`.
+- `/tasks` typed in the subagent's own transcript lists the shells it launched while it ran.
 - While the subagent is still running, a background shell's completion notice goes to the subagent. After the subagent finishes, the notice goes to the parent.
 - Shells keep running after the subagent finishes. They stop when the parent's session or workflow stage closes, or when a workflow stage pauses.
 

@@ -1,12 +1,19 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@earendil-works/pi-tui";
+import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
-import type { TaskTranscriptView, TaskViewResult, TaskViewSource } from "../../../core/tasks/task-view-source.js";
+import {
+	launchedTaskViewSource,
+	type TaskTranscriptView,
+	type TaskViewResult,
+	type TaskViewSource,
+} from "../../../core/tasks/task-view-source.js";
 import { theme } from "../theme/theme.js";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
 import { ScrollableComponentViewport } from "./chat-transcript.js";
+import { applyInputLabelToEditorTopRule } from "./input-label.ts";
 import { taskDisplayText } from "./task-row.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "./transcript-follow-indicator.ts";
 
@@ -19,6 +26,8 @@ export interface TaskTranscriptEnvironment {
 	readonly editorFactory?: ChatSessionHostOpts["editorFactory"];
 	readonly style: ChatSessionHostStyle;
 	readonly getChatRenderSettings?: ChatSessionHostOpts["getChatRenderSettings"];
+	/** What the transcript chat's footer reads of git and providers; without it the footer counts tasks only. */
+	readonly footerData?: ChatSessionHostOpts["footerData"];
 	readonly getToolsExpanded?: () => boolean;
 	readonly setToolsExpanded?: (expanded: boolean) => void;
 	/** Tells the reader about a message that failed after they left its transcript and the task pages. */
@@ -47,6 +56,8 @@ export interface TaskTranscriptPage {
 	handleInput(data: string): boolean;
 	/** Whether the reader is typing, so a key such as Left edits instead of leaving. */
 	hasDraft(): boolean;
+	/** Whether the page takes Escape and Left itself, as while its own task list is open. */
+	handlesBack(): boolean;
 	render(width: number, rows: number): string[];
 	invalidate(): void;
 	dispose(): void;
@@ -73,6 +84,16 @@ function keybindingsOf(candidate: unknown): Pick<KeybindingsManager, "matches"> 
 	return typeof keybindings?.matches === "function"
 		? (keybindings as Pick<KeybindingsManager, "matches">)
 		: getKeybindings();
+}
+
+/** The subagent's footer shows its own session: the extension statuses of the chat that opened it are not its own. */
+function withoutExtensionStatuses(data: ReadonlyFooterDataProvider): ReadonlyFooterDataProvider {
+	return {
+		getGitBranch: (cwd) => data.getGitBranch(cwd),
+		getAvailableProviderCount: () => data.getAvailableProviderCount(),
+		onBranchChange: (callback, cwd) => data.onBranchChange(callback, cwd),
+		getExtensionStatuses: () => new Map(),
+	};
 }
 
 async function settled<T>(read: T | Promise<T>): Promise<T> {
@@ -123,12 +144,19 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			editorTheme: env.editorTheme,
 			editorFactory: env.editorFactory,
 			getChatRenderSettings: env.getChatRenderSettings,
+			...(env.footerData === undefined ? {} : { footerData: withoutExtensionStatuses(env.footerData) }),
+			getChatBoxSession: () => this.followed?.chatSession,
 			requestRender,
 			taskRowsInChat: false,
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
 			isDisabled: () => source.sendTaskMessage === undefined,
 			onNearTop: () => this.loadEarlier(),
-			commands: { send: (text) => this.send(text) },
+			// A subagent's `/tasks` lists the tasks it launched, as a stage chat's lists the stage's own.
+			getTaskSource: () => launchedTaskViewSource(source, taskId),
+			commands: {
+				send: (text) => this.send(text),
+				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),
+			},
 		});
 		this.restoreUndelivered();
 	}
@@ -194,16 +222,44 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			this.requestRender();
 			return true;
 		}
-		const handled = this.chat.handleInput(data);
+		// The subagent's own task list is modal while it is open, as in a stage chat.
+		const handled = this.chat.hasTaskInspector ? this.chat.handleTaskInput(data) : this.chat.handleInput(data);
 		this.requestRender();
 		return handled;
 	}
 
+	/** The chat box of a stage chat: the transcript, then pending, working, usage, the named editor and the footer. */
 	render(width: number, rows: number): string[] {
-		const working = this.chat.renderWorkingStatus(width);
-		const editor = this.chat.renderEditor(width);
-		const bodyRows = Math.max(1, rows - working.length - editor.length);
-		return [...this.chat.renderBody(width, bodyRows), ...working, ...editor].slice(0, Math.max(1, rows));
+		const viewport = Math.max(1, rows);
+		if (this.chat.hasTaskInspector) {
+			const footer = this.chat.taskInspectorFullscreen ? [] : this.chat.renderFooter(width);
+			const shownFooter = footer.slice(0, viewport - 1);
+			return [...this.chat.renderBody(width, viewport - shownFooter.length), ...shownFooter];
+		}
+		let remaining = viewport;
+		// The editor keeps its rows first, then the footer, then the status rows; the transcript takes what is left.
+		const reserve = (lines: string[], fromEnd = false): string[] => {
+			const shown = fromEnd ? lines.slice(Math.max(0, lines.length - remaining)) : lines.slice(0, remaining);
+			remaining -= shown.length;
+			return shown;
+		};
+		const editor = reserve(
+			applyInputLabelToEditorTopRule(this.env.style, "subagent", this.sessionName(), this.chat.renderEditor(width)),
+		);
+		const footer = reserve(this.chat.renderFooter(width));
+		const pending = reserve(this.chat.renderPendingMessages(width));
+		const working = reserve(this.chat.renderWorkingStatus(width), true);
+		const usage = reserve(this.chat.renderUsage(width));
+		const body = remaining > 0 ? this.chat.renderBody(width, remaining) : [];
+		return [...body, ...pending, ...working, ...usage, ...editor, ...footer];
+	}
+
+	/** What the subagent's session is called: its Intercom name, else its agent's name. */
+	private sessionName(): string | undefined {
+		return (
+			this.source.followTaskTranscript(this.taskId)?.session?.completionSource?.intercomTarget ??
+			this.source.tasks.find((task) => task.ref.taskId === this.taskId)?.agentName
+		);
 	}
 
 	invalidate(): void {
@@ -219,6 +275,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 
 	hasDraft(): boolean {
 		return this.chat.hasInputText();
+	}
+
+	handlesBack(): boolean {
+		return this.chat.hasTaskInspector;
 	}
 
 	private adoptLatestPage(page: TaskViewResult<TaskTranscriptView>): void {
@@ -243,10 +303,19 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.followed = session;
 		if (session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
+		this.hydrateRunningTurn(session);
 		this.unsubscribe = session.subscribe?.((event) => {
 			this.chat.applyAgentEvent(event);
 			this.requestRender();
 		});
+	}
+
+	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
+	private hydrateRunningTurn(session: TaskTranscriptSource): void {
+		if (session.isRunning?.() === true) this.chat.beginExternalPromptLifecycle();
+		const queued = session.getQueuedMessages?.();
+		if (queued === undefined) return;
+		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });
 	}
 
 	private loadEarlier(): void {
@@ -380,6 +449,10 @@ export class TaskCommandOutputPage implements TaskTranscriptPage {
 	}
 
 	hasDraft(): boolean {
+		return false;
+	}
+
+	handlesBack(): boolean {
 		return false;
 	}
 

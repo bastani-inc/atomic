@@ -9,13 +9,12 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
-import type { TaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { AssistantMessageComponent } from "../../packages/coding-agent/src/modes/interactive/components/assistant-message.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
-import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
 const assistant = (text: string): AssistantMessage => ({
 	role: "assistant",
@@ -176,10 +175,10 @@ test("live transcript keeps earlier pages and scroll position while new state ar
 });
 
 function followedPage(session: TaskTranscriptSource, messages: AgentMessage[] = []) {
-	const source = {
+	const source = transcriptOnlySource({
 		readTaskTranscript: () => ({ ok: true as const, value: { messages } }),
 		followTaskTranscript: () => ({ session, historyOnly: false }),
-	} as unknown as TaskViewSource;
+	});
 	return new TaskAgentTranscriptPage(source, "task" as TaskId, taskTranscriptEnvironment(), () => {});
 }
 

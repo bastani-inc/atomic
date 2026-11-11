@@ -10,6 +10,7 @@ import type {
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { BashResult } from "../../../core/bash-executor.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import type { TaskViewSource } from "../../../core/tasks/task-view-source.js";
 import type { ChatMessageEntry, ChatMessageRenderOptions } from "./chat-message-renderer.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";
@@ -84,6 +85,11 @@ export interface ChatSessionHostOpts<TExtraEntry extends ChatTranscriptEntryLike
 	commands?: ChatSessionHostCommands;
 	requestRender?: () => void;
 	getAgentSession?: () => AgentSession | undefined;
+	/**
+	 * The usage meter's and footer's session when `getAgentSession` has none: a task's live session, which the chat
+	 * shows without owning it. It never makes the chat the session's host (no task owner, interrupt or compaction).
+	 */
+	getChatBoxSession?: () => ChatBoxSession | undefined;
 	/**
 	 * The session's messages when `getAgentSession` has no session in this process, such as a workflow
 	 * stage on a local worker: a compaction redraws the transcript from them.

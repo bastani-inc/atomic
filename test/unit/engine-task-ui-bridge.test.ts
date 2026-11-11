@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { type Component, getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
@@ -8,6 +9,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskMessageDelivery } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { formatCwdForFooter } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { EngineHostRenderSettings } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
@@ -169,6 +171,12 @@ test("engine task picker opens inline and detail uses an opaque fullscreen overl
 
 type ChatRenderSettings = ReturnType<ExtensionUIContext["getChatRenderSettings"]>;
 const renderSettings = (settings: Partial<ChatRenderSettings>) => settings as ChatRenderSettings;
+const footerData: ReturnType<ExtensionUIContext["getFooterDataProvider"]> = {
+	getGitBranch: () => "main",
+	getExtensionStatuses: () => new Map(),
+	getAvailableProviderCount: () => 1,
+	onBranchChange: () => () => {},
+};
 
 test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O there changes only its own (#4521)", () => {
 	let engineExpanded = false;
@@ -179,11 +187,13 @@ test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O the
 		{
 			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: true, toolOutputExpanded: engineExpanded }),
 			getToolsExpanded: () => engineExpanded,
+			getFooterDataProvider: () => footerData,
 			notify: (message, type) => notices.push(`${type}:${message}`),
 		},
 		{ custom, getHostRenderSettings: () => host },
 	);
 	assert.equal(ui.custom, custom);
+	assert.equal(ui.getFooterDataProvider?.(), footerData, "the engine's footer data reaches its transcripts (#4640)");
 	ui.notify?.("Intercom did not deliver the message", "warning");
 	assert.deepEqual(notices, ["warning:Intercom did not deliver the message"], "notices reach the engine's chat");
 	engineExpanded = true;
@@ -210,6 +220,7 @@ test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O the
 		{
 			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }),
 			getToolsExpanded: () => true,
+			getFooterDataProvider: () => footerData,
 			notify: () => {},
 		},
 		{ custom, getHostRenderSettings: () => ({ ...host!, toolOutputExpanded: true }) },
@@ -219,6 +230,7 @@ test("the engine's /tasks opens with the host chat's tool output, and Ctrl+O the
 		{
 			getChatRenderSettings: () => renderSettings({ hideThinkingBlock: false }),
 			getToolsExpanded: () => true,
+			getFooterDataProvider: () => footerData,
 			notify: () => {},
 		},
 		{ custom },
@@ -277,6 +289,59 @@ test("a task message that fails after /tasks closed is reported once through the
 			notices[0]?.message ?? "",
 			/Intercom did not deliver the message: worker-1 \(delivery-refused\): gone/,
 		);
+	} finally {
+		await fixture.dispose();
+		setKeybindings(previousKeys);
+	}
+});
+
+test("the main /tasks gives a running subagent's transcript the chat's footer data and its own session's footer (#4640)", async () => {
+	initTheme("dark");
+	const previousKeys = getKeybindings();
+	setKeybindings(new KeybindingsManager());
+	const fixture = taskFixture();
+	const cwd = resolve("/work/subagent");
+	const footerCwd = formatCwdForFooter(cwd, process.env.HOME || process.env.USERPROFILE);
+	const transcript = SessionManager.inMemory(cwd);
+	await transcript.appendMessage({ role: "user", content: "Check the parser", timestamp: 0 });
+	let component: Component | undefined;
+	const custom = ((factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
+		new Promise<void>((resolve) => {
+			const tui = { terminal: { rows: 24, columns: 100 }, requestRender: () => {} };
+			component = factory(tui as never, theme, new KeybindingsManager(), () => resolve()) as Component;
+		})) as ExtensionUIContext["custom"];
+	const flush = async () => {
+		for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+	};
+	const model = { provider: "faux", id: "worker-model", reasoning: false, contextWindow: 1000 };
+	try {
+		await fixture.start("Check the parser");
+		fixture.runners[0]!.context.bindTranscript({
+			getSessionId: () => transcript.getSessionId(),
+			getEntries: () => transcript.getEntries(),
+			subscribe: () => () => {},
+			chatSession: {
+				state: { model, thinkingLevel: "off" },
+				model,
+				sessionManager: transcript,
+				getContextUsage: () => undefined,
+				modelRuntime: { isUsingOAuth: () => false },
+				isStreaming: false,
+			} as never,
+		});
+		const shown = showTaskInspector({ custom, getFooterDataProvider: () => footerData }, fixture.store);
+		await flush();
+		for (const key of ["\r", "\r"]) {
+			component?.handleInput?.(key);
+			await flush();
+		}
+		const rows = (component?.render(100) ?? []).map((row) => stripVTControlCharacters(row));
+		assert.ok(
+			rows.some((row) => row.startsWith(`worker-model • ${footerCwd} (main)`)),
+			rows.join("\n"),
+		);
+		component?.handleInput?.("\x03");
+		await shown;
 	} finally {
 		await fixture.dispose();
 		setKeybindings(previousKeys);

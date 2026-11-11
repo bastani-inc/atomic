@@ -20,7 +20,7 @@ import {
 } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "../../packages/coding-agent/src/modes/interactive/components/transcript-follow-indicator.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
-import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
+import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
 
 const id = "task-1" as TaskId;
 const ok = (text: string, nextCursor?: string): TaskViewResult<TaskTranscriptView> => ({
@@ -28,12 +28,12 @@ const ok = (text: string, nextCursor?: string): TaskViewResult<TaskTranscriptVie
 	value: { messages: [{ role: "user", content: text, timestamp: 1 }], nextCursor },
 });
 const source = (overrides: Partial<TaskViewSource> = {}): TaskViewSource =>
-	({
+	transcriptOnlySource({
 		readTaskTranscript: () => ok("latest"),
 		followTaskTranscript: () => undefined,
 		readTaskOutput: async () => ({ ok: true, value: { text: "output", omitted: false } }),
 		...overrides,
-	}) as TaskViewSource;
+	});
 const flush = async () => {
 	for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 };

@@ -1,13 +1,20 @@
+import {
+	applyInputLabelToEditorTopRule,
+	buildInputLabel,
+	INPUT_LABEL_MIN_COLUMNS,
+	type InputLabel,
+	type InputLabelStyle,
+	inputLabelMarker,
+	ruleOpenColor,
+} from "@bastani/atomic";
 import { RESET } from "./color-utils.js";
 import { paint, stripAnsi } from "./stage-chat-view-render-helpers.js";
-import { truncateToWidth, visibleWidth } from "./text-helpers.js";
+import { visibleWidth } from "./text-helpers.js";
 
 /** Supported terminal floor for injecting `[stage: name]` into an input rule. */
-export const STAGE_INPUT_LABEL_MIN_COLUMNS = 40;
+export const STAGE_INPUT_LABEL_MIN_COLUMNS = INPUT_LABEL_MIN_COLUMNS;
 
-const STAGE_LABEL_MARKER = "[stage:";
-const EDITOR_PREFIX = "[stage: ";
-const EDITOR_SUFFIX = "] ";
+const STAGE_LABEL_MARKER = inputLabelMarker("stage");
 const WIDGET_PREFIX = "[stage: ";
 const WIDGET_SUFFIX = "]";
 const AWAITING_PREFIX = " [stage: ";
@@ -20,6 +27,13 @@ export interface StageInputLabelTheme {
 	readonly text: string;
 }
 
+function stageLabelStyle(theme: StageInputLabelTheme): InputLabelStyle {
+	return {
+		textMuted: (text) => paint(text, theme.textMuted),
+		text: (text) => paint(text, theme.text),
+	};
+}
+
 function resolvedStageName(stageName: string | undefined): string | undefined {
 	if (stageName === undefined || stageName.length === 0) return undefined;
 	return stageName;
@@ -29,92 +43,30 @@ function lineHasStageLabel(line: string): boolean {
 	return stripAnsi(line).includes(STAGE_LABEL_MARKER);
 }
 
-function leadingAnsi(line: string): string {
-	return line.match(/^(\x1b\[[0-9;]*m)/)?.[1] ?? "";
-}
-
 function buildStageInputLabel(
 	theme: StageInputLabelTheme,
 	stageName: string,
 	maxNameWidth: number,
 	prefix: string,
 	suffix: string,
-): { plain: string; styled: string } | undefined {
-	if (maxNameWidth < 1) return undefined;
-	const truncatedName = truncateToWidth(stageName, maxNameWidth, "…");
-	if (truncatedName.length === 0) return undefined;
-	const plain = prefix + truncatedName + suffix;
-	return {
-		plain,
-		styled:
-			paint(prefix, theme.textMuted) +
-			paint(truncatedName, theme.text, { bold: true }) +
-			paint(suffix, theme.textMuted),
-	};
-}
-
-const EDITOR_OVERFLOW_RE = /^(─*)( ↑ \d+ more )(─*)$/;
-
-function editorOverflowPlain(plain: string): string | undefined {
-	return EDITOR_OVERFLOW_RE.exec(plain)?.[2];
-}
-
-function decorateEditorTopLine(
-	theme: StageInputLabelTheme,
-	name: string,
-	line: string,
-	plain: string,
-	overflow: string | undefined,
-): string | undefined {
-	const width = visibleWidth(plain);
-	if (width < STAGE_INPUT_LABEL_MIN_COLUMNS) return undefined;
-	const overflowWidth = overflow === undefined ? 0 : visibleWidth(overflow);
-	const maxNameWidth = Math.max(
-		1,
-		width - overflowWidth - visibleWidth(EDITOR_PREFIX) - visibleWidth(EDITOR_SUFFIX) - 2,
-	);
-	const label = buildStageInputLabel(theme, name, maxNameWidth, EDITOR_PREFIX, EDITOR_SUFFIX);
-	if (!label) return undefined;
-	const labelWidth = visibleWidth(label.plain);
-	if (labelWidth + overflowWidth >= width) return undefined;
-	const fillWidth = Math.max(0, width - labelWidth - overflowWidth);
-	const openColor = leadingAnsi(line);
-	if (overflow === undefined) {
-		return openColor + RESET + label.styled + openColor + "─".repeat(fillWidth) + RESET;
-	}
-	const leftFill = Math.floor(fillWidth / 2);
-	const rightFill = fillWidth - leftFill;
-	return (
-		openColor + RESET + label.styled + openColor + "─".repeat(leftFill) + overflow + "─".repeat(rightFill) + RESET
-	);
+): InputLabel | undefined {
+	return buildInputLabel(stageLabelStyle(theme), stageName, maxNameWidth, prefix, suffix);
 }
 
 /**
- * Inject `[stage: name]` into the editor's current top border. Duplicate
- * detection inspects that decorated rule only, so draft text containing
- * `[stage:` cannot suppress the label. Scrolled `↑ N more` top borders keep
- * their overflow indicator and receive the label in the leading dash run.
- * Later rules, including the bottom border, are never selected.
+ * Inject `[stage: name]` into the editor's current top border, through the
+ * label every chat input shares (see `applyInputLabelToEditorTopRule`).
+ * Duplicate detection inspects that decorated rule only, so draft text
+ * containing `[stage:` cannot suppress the label. Scrolled `↑ N more` top
+ * borders keep their overflow indicator and receive the label in the leading
+ * dash run. Later rules, including the bottom border, are never selected.
  */
 export function applyStageLabelToEditorTopRule(
 	theme: StageInputLabelTheme,
 	stageName: string | undefined,
 	editorLines: readonly string[],
 ): string[] {
-	const name = resolvedStageName(stageName);
-	if (!name || editorLines.length === 0) return [...editorLines];
-	const topLine = editorLines[0] ?? "";
-	if (lineHasStageLabel(topLine)) return [...editorLines];
-
-	const plain = stripAnsi(topLine);
-	const overflow = editorOverflowPlain(plain);
-	if (!/^─+$/.test(plain) && overflow === undefined) return [...editorLines];
-
-	const decorated = decorateEditorTopLine(theme, name, topLine, plain, overflow);
-	if (decorated === undefined) return [...editorLines];
-	const result = [...editorLines];
-	result[0] = decorated;
-	return result;
+	return applyInputLabelToEditorTopRule(stageLabelStyle(theme), "stage", stageName, editorLines);
 }
 
 type WidgetTopRule =
@@ -171,7 +123,7 @@ export function applyStageLabelToWidgetTopRule(
 	const labelWidth = visibleWidth(label.plain);
 	if (openWidth + labelWidth + closeWidth >= rule.width) return [...widgetLines];
 	const fillWidth = Math.max(0, rule.width - openWidth - labelWidth - closeWidth);
-	const openColor = leadingAnsi(topLine);
+	const openColor = ruleOpenColor(topLine);
 	const newTopLine =
 		rule.kind === "pure"
 			? openColor + RESET + label.styled + openColor + "─".repeat(fillWidth) + RESET
@@ -216,7 +168,7 @@ export function applyStageLabelToAwaitingInputTopRule(
 	const combined = titleStyled + label.styled;
 	if (visibleWidth(combined) > innerWidth) return [...lines];
 	const fillLen = Math.max(0, innerWidth - visibleWidth(combined));
-	const openColor = leadingAnsi(line);
+	const openColor = ruleOpenColor(line);
 	const result = [...lines];
 	result[unlabeledIndex] = `${openColor}╭${RESET}${combined}${openColor}${"─".repeat(fillLen)}╮${RESET}`;
 	return result;

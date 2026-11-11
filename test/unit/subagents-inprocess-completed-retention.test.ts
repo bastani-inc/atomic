@@ -87,3 +87,46 @@ test("a completed in-process child keeps its transcript but not its session (#36
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("a running in-process child offers its live session to a chat of its task, and a completed one offers none (#4640)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-chat-session-"));
+	clearSubagentControls();
+	try {
+		const bound: TaskTranscriptSource[] = [];
+		let cleanup: Promise<Cleanup> | undefined;
+		const hooks: TaskExecutionHooks = {
+			signal: new AbortController().signal,
+			reportActivity() {},
+			bindTranscript: (source) => void bound.push(source),
+			onExecution(execution) {
+				cleanup = execution.cleanup;
+			},
+			yieldTaskWait() {},
+			isParentObserving: () => false,
+		};
+
+		await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
+			cwd: root,
+			runId: "live-chat-session",
+			sessionDir: root,
+			taskExecution: hooks,
+			testSession: { output: "child answer" },
+		});
+		await cleanup;
+
+		const liveIndex = bound.findIndex((source) => source.subscribe !== undefined);
+		const live = bound[liveIndex];
+		const settled = bound.slice(liveIndex + 1);
+		assert.ok(live?.chatSession, "the running child's session reaches its task's chat");
+		assert.equal(live.isRunning?.(), live.chatSession.isStreaming, "a turn is under way as the session says");
+		assert.deepEqual(live.getQueuedMessages?.(), { steering: [], followUp: [] });
+		assert.ok(settled.length > 0, "the completed child's transcript replaced the live one");
+		for (const source of settled) {
+			for (const member of ["chatSession", "isRunning", "getQueuedMessages"])
+				assert.equal(Object.hasOwn(source, member), false, `a completed child offers no ${member}`);
+		}
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});

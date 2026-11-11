@@ -304,3 +304,31 @@ test("the registry sizes count remembered run schedules and drop them when a chi
 	forgetRunMembership("sizes-run", 1);
 	assert.equal(subagentTaskRegistrySizes().schedules, before.schedules);
 });
+
+test("a task's transcript passes on its session's chat session, running state and queue, and only when it has them (#4640)", async () => {
+	const chatSession = { isStreaming: true } as unknown as NonNullable<TaskTranscriptSource["chatSession"]>;
+	const queued = { steering: ["a"], followUp: ["b"] };
+	let running = true;
+	const session: TaskTranscriptSource = {
+		getSessionId: () => "child-session-1",
+		getEntries: () => [],
+		chatSession,
+		isRunning() {
+			return this === session && running;
+		},
+		getQueuedMessages() {
+			return this === session ? queued : { steering: [], followUp: [] };
+		},
+	};
+	const live = await launch({ runId: "transcript-chat-session", session });
+	const source = live.transcript();
+	assert.equal(source?.chatSession, chatSession);
+	assert.equal(source?.isRunning?.(), true);
+	running = false;
+	assert.equal(source?.isRunning?.(), false);
+	assert.deepEqual(source?.getQueuedMessages?.(), queued);
+
+	const bare = (await launch({ runId: "transcript-no-chat-session", session: fakeSession() })).transcript();
+	for (const member of ["chatSession", "isRunning", "getQueuedMessages"])
+		assert.equal(Object.hasOwn(bare ?? {}, member), false, `a transcript without ${member} offers none`);
+});

@@ -83,6 +83,8 @@ export interface SupervisedCommandOwner {
 	/** Narrow a shared owner to the tasks this binding launched. */
 	ownsTask?: (taskId: TaskId) => boolean;
 	onCommandStarted?: (taskId: TaskId) => void;
+	/** The task that launches these commands in the owner: a subagent running shells in its parent's owner. */
+	parentTaskId?: TaskId;
 }
 
 export function lookupOwnedTask(context: SupervisedCommandOwner, id: string): TaskLease {
@@ -248,6 +250,7 @@ export async function executeSupervisedCommand(
 			terminal: pty ? { kind: "pty", columns: options.cols ?? 120, rows: options.rows ?? 40 } : { kind: "pipe" },
 			...(options.timeout === undefined ? {} : { executionTimeoutMs: options.timeout * 1000 }),
 			...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
+			...(context.parentTaskId === undefined ? {} : { parentTaskId: context.parentTaskId }),
 		},
 		crypto.randomUUID() as OperationId,
 		options.signal,

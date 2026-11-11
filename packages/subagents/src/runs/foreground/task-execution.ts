@@ -318,6 +318,9 @@ function taskTranscriptSource(
 		...(session.subscribe ? { subscribe: session.subscribe.bind(session) } : {}),
 		...(session.getStreamingMessage ? { getStreamingMessage: session.getStreamingMessage.bind(session) } : {}),
 		...(session.getCompactionReason ? { getCompactionReason: session.getCompactionReason.bind(session) } : {}),
+		...(session.chatSession ? { chatSession: session.chatSession } : {}),
+		...(session.isRunning ? { isRunning: session.isRunning.bind(session) } : {}),
+		...(session.getQueuedMessages ? { getQueuedMessages: session.getQueuedMessages.bind(session) } : {}),
 		...(intercomTarget === undefined ? {} : { completionSource: { runId, intercomTarget } }),
 		...(intercomTarget === undefined || intercomEvents === undefined
 			? {}
