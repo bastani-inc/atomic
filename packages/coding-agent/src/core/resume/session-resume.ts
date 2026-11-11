@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { type GitUnavailableError, isGitUnavailableError } from "../../utils/git-errors.ts";
+import { failureDebugFields, reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,
@@ -87,6 +88,8 @@ export interface PrepareSessionResumeOptions {
 	 * released session is woken ({@link continueSessionWhereItWorked}).
 	 */
 	readonly onNotices?: (notices: readonly ResumeNotice[]) => void;
+	/** Told each slow step the resume starts (checking checkouts, restoring one, building blueprints), for a progress line. */
+	readonly onProgress?: (message: string) => void;
 }
 
 export type PreparedSessionResume =
@@ -206,6 +209,73 @@ async function reuseLaunchCheckout(
 	};
 }
 
+/**
+ * Moves a session that a resume restored into a worktree, and that has not worked in it since, back to the checkout it
+ * was restored from, when that checkout is on this node and its repository holds the snapshot's commit (#4660). The
+ * session continues there as the checkout is now, even when it changed since the snapshot. Undefined keeps the session
+ * in its worktree: the worktree is not one Atomic restored, it changed or recorded another snapshot since, or the
+ * checkout it came from is gone or is another clone.
+ */
+async function returnToStartingCheckout(
+	sessionManager: SessionManager,
+	match: SessionSnapshotMatch,
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<Extract<CheckoutReuse, { kind: "reused" }> | undefined> {
+	if (!isInside(storeDir, match.root)) return undefined;
+	const restore = sessionManager
+		.getWorktreeRootMappings()
+		.findLast((mapping) => resolve(mapping.to) === resolve(match.root));
+	if (restore === undefined || restore.snapshotId !== match.snapshot.id) return undefined;
+	const checkout = resolve(restore.from);
+	const cwd = resolve(checkout, relative(match.root, match.cwd));
+	if (isInside(storeDir, checkout) || !existsSync(cwd)) return undefined;
+	// When the checkout cannot be examined, the project the session started in is still where it goes back to.
+	const examined = await orFallBack(options, "return-to-checkout-verify", undefined, async () => ({
+		holdsCommit: await holdsSnapshotCommit(match.snapshot, checkout, options.signal),
+		matches: !(await worktreeNeedsRestore(match.snapshot, checkout, options)),
+	}));
+	if (examined !== undefined && !examined.holdsCommit) return undefined;
+	const matches = examined?.matches;
+	const snapshotId = match.snapshot.id.slice(0, 12);
+	return {
+		kind: "reused",
+		cwd,
+		matches: matches ?? false,
+		mapping: {
+			from: match.root,
+			to: checkout,
+			snapshotId: match.snapshot.id,
+			tree: match.snapshot.tree,
+			restoredAt: new Date().toISOString(),
+		},
+		notice: {
+			type: "info",
+			message: `Resuming in ${checkout}, the checkout this session was restored from, instead of the worktree ${match.root}.${matches === undefined ? "" : matches ? ` It matches snapshot ${snapshotId}.` : ` It has changed since snapshot ${snapshotId}; that snapshot was not restored.`}`,
+		},
+	};
+}
+
+/**
+ * Runs an optional improvement of where a resume continues. When it fails on a checkout, with a typed resume,
+ * workspace or Git failure, the resume goes on with `fallback`, the behaviour it had without the improvement; the
+ * reason goes to the debug log. A cancellation, and any failure that is not about a checkout, still end the resume.
+ */
+async function orFallBack<T>(
+	options: Pick<PrepareSessionResumeOptions, "signal">,
+	step: string,
+	fallback: T,
+	attempt: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await attempt();
+	} catch (error) {
+		if (options.signal?.aborted || !isCheckoutFailure(error)) throw error;
+		reportDebug("storage", "resume-checkout-fallback", { step, ...failureDebugFields(error) });
+		return fallback;
+	}
+}
+
 /** Whether the checkout at `root` has uncommitted or untracked changes, which a resume must not overwrite unasked. */
 async function hasLocalChanges(root: string, signal: AbortSignal | undefined): Promise<boolean> {
 	return (await gitText(["status", "--porcelain"], { cwd: root, signal })).length > 0;
@@ -213,7 +283,11 @@ async function hasLocalChanges(root: string, signal: AbortSignal | undefined): P
 
 /**
  * Gets a resumed session's checkouts ready on this node before its runtime starts, and returns the session opened
- * where it continues. When the checkout the session works in is missing or changed here, a checkout of the same
+ * where it continues. When the checkout the session works in changed here but is still the one it worked in (its
+ * repository holds the snapshot's commit, or Atomic restored it here), the session continues in it as it is, silently
+ * (#4660). A session a resume moved into a restored worktree, and that has not worked in it since, returns to
+ * the checkout it was restored from when that checkout is here. When the checkout the session works in is missing or
+ * belongs to another clone here, a checkout of the same
  * repository the resume started in is used as-is if it matches (and, if it differs, only when the user chooses it).
  * The checkout the session works in is the only one the resume cannot go without: when it must be restored, the
  * precondition of restoring the recorded checkouts, that Git can run, is checked first, and an unmet one refuses the
@@ -236,14 +310,47 @@ export async function prepareSessionResume(
 		return { status: "ready", sessionManager, notices: [], blueprintNotices: [], blueprintContext: unchanged };
 	}
 	const notices: ResumeNotice[] = [];
+	const checkoutCount = currentWorktreeSnapshots(sessionManager).size;
+	options.onProgress?.(
+		`Checking ${checkoutCount === 1 ? "1 checkout" : `${checkoutCount} checkouts`} against the session's snapshots`,
+	);
+	const verified = new Map<string, Promise<boolean>>();
+	const verifyOnce = (snapshot: WorktreeSnapshot, root: string): Promise<boolean> => {
+		const key = `${snapshot.id}\0${resolve(root)}`;
+		let verification = verified.get(key);
+		if (verification === undefined) {
+			verification = worktreeNeedsRestore(snapshot, root, options);
+			verified.set(key, verification);
+		}
+		return verification;
+	};
 	const match = latestSessionSnapshot(sessionManager);
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
-	if (
+	const needsRestore =
+		match !== undefined && !options.keepInPlace?.has(match.root) && (await verifyOnce(match.snapshot, match.root));
+	const project =
+		match !== undefined && !needsRestore && !options.keepInPlace?.has(match.root)
+			? await orFallBack(options, "return-to-checkout", undefined, () =>
+					returnToStartingCheckout(sessionManager, match, storeDir, options),
+				)
+			: undefined;
+	if (project !== undefined) {
+		await recordReuse(sessionManager, project.mapping);
+		return continueInChosenCheckout(sessionManager, project, storeDir, options);
+	}
+	const keepsOwnCheckout =
 		match !== undefined &&
-		!options.keepInPlace?.has(match.root) &&
-		(await worktreeNeedsRestore(match.snapshot, match.root, options))
-	) {
+		needsRestore &&
+		(await isDirectory(match.root)) &&
+		(await orFallBack(options, "own-checkout", new Set([match.root]), () =>
+			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options),
+		).then((worked) => worked.has(match.root)));
+	const resume: PrepareSessionResumeOptions =
+		match !== undefined && keepsOwnCheckout
+			? { ...options, keepInPlace: new Set([...(options.keepInPlace ?? []), match.root]) }
+			: options;
+	if (match !== undefined && !keepsOwnCheckout && needsRestore) {
 		git = { unavailable: await io.probeGit(options.signal) };
 		const reuse = git.unavailable === undefined ? await reuseLaunchCheckout(match, options) : undefined;
 		if (reuse?.kind === "cancelled") return { status: "cancelled" };
@@ -260,13 +367,14 @@ export async function prepareSessionResume(
 	const candidates = await restoreCandidates(
 		checkouts,
 		mapRestoredPath(sessionManager.getCwd(), checkouts.getWorktreeRootMappings()),
-		options,
+		resume,
+		verifyOnce,
 	);
 	if (candidates.targets.length > 0) git ??= { unavailable: await io.probeGit(options.signal) };
-	const plan = planRestores(sessionManager, candidates, options, git?.unavailable);
+	const plan = planRestores(sessionManager, candidates, resume, git?.unavailable);
 	notices.push(...plan.left.values());
 	const recordedBefore = sessionManager.getWorktreeRootMappings().length;
-	const resumed = await restorePlanned(sessionManager, plan, reused, storeDir, options);
+	const resumed = await restorePlanned(sessionManager, plan, reused, storeDir, resume);
 	const cwd = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
 	const opened = await openResumedSession(sessionManager, cwd, resumed.restored, options.sessionDirectory);
 	notices.push(...opened.notices, ...resumed.failed);
@@ -277,6 +385,9 @@ export async function prepareSessionResume(
 			.map((mapping) => resolve(mapping.to))
 			.filter((root) => isInside(storeDir, root)),
 	);
+	if (restoredNow.size > 0 && options.blueprints !== "skip") {
+		options.onProgress?.("Setting up the blueprints of restored worktrees");
+	}
 	const blueprints = await setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
 	notices.push(...blueprints.notices);
 	await recordBlueprintContext(opened.sessionManager, blueprints.context);
@@ -455,19 +566,24 @@ async function restoreCandidates(
 	sessionManager: SessionCheckouts,
 	cwd: string,
 	options: PrepareSessionResumeOptions,
+	needsRestore: (snapshot: WorktreeSnapshot, root: string) => Promise<boolean>,
 ): Promise<{ readonly targets: RestoreTarget[]; readonly left: Map<string, ResumeNotice> }> {
 	const targets: RestoreTarget[] = [];
 	const left = new Map<string, ResumeNotice>();
-	for (const [root, snapshot] of currentWorktreeSnapshots(sessionManager)) {
-		if (options.keepInPlace?.has(root)) continue;
+	const checkouts = [...currentWorktreeSnapshots(sessionManager)].filter(([root]) => !options.keepInPlace?.has(root));
+	const comparisons = await settleBounded(checkouts, VERIFY_CONCURRENCY, ([root, snapshot]) =>
+		needsRestore(snapshot, root),
+	);
+	for (const [index, [root, snapshot]] of checkouts.entries()) {
 		const runsHere = isInside(root, cwd);
-		try {
-			if (!(await worktreeNeedsRestore(snapshot, root, options))) continue;
-		} catch (error) {
+		const comparison = comparisons[index]!;
+		if (comparison.status === "rejected") {
+			const error: unknown = comparison.reason;
 			if (runsHere || options.signal?.aborted || !isCheckoutFailure(error)) throw error;
 			left.set(root, notRestored(root, snapshot, `it could not be compared with the snapshot: ${error.message}`));
 			continue;
 		}
+		if (!comparison.value) continue;
 		const absent = !(await isDirectory(root));
 		if (!runsHere && !absent && (await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options)).has(root)) {
 			left.set(
@@ -485,6 +601,31 @@ async function restoreCandidates(
 	return { targets, left };
 }
 
+/** How many recorded checkouts a resume compares with their snapshots at once. */
+const VERIFY_CONCURRENCY = 4;
+
+/** `map` over `items`, at most `limit` at a time, each outcome settled in the order of `items`. */
+async function settleBounded<T, R>(
+	items: readonly T[],
+	limit: number,
+	map: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+	const outcomes: PromiseSettledResult<R>[] = [];
+	let next = 0;
+	const work = async (): Promise<void> => {
+		while (next < items.length) {
+			const index = next++;
+			try {
+				outcomes[index] = { status: "fulfilled", value: await map(items[index]!) };
+			} catch (reason) {
+				outcomes[index] = { status: "rejected", reason };
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, work));
+	return outcomes;
+}
+
 /**
  * Restores what `plan` says into fresh worktrees with #4245's {@link resumeSessionWorktree}, recording each restore on
  * `sessionManager`, and returns the mappings it recorded. The checkouts the session works in are restored together,
@@ -500,6 +641,9 @@ async function restorePlanned(
 ): Promise<{ restored: WorktreeRootMapping[]; failed: ResumeNotice[] }> {
 	const outcome = { restored: [] as WorktreeRootMapping[], failed: [] as ResumeNotice[] };
 	const restore = async (targets: readonly RestoreTarget[], pending: WorktreeRootMapping | undefined) => {
+		for (const target of targets) {
+			options.onProgress?.(`Restoring ${target.root} from snapshot ${target.snapshot.id.slice(0, 12)}`);
+		}
 		const restoring = new Set(targets.map((target) => target.root));
 		const resumed = await resumeSessionWorktree(sessionManager, {
 			settings: options.settings,

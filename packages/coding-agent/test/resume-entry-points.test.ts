@@ -113,6 +113,13 @@ async function recordSessionWithSnapshot(selection: StorageSelection, files: Rec
 	return { clone, sessionId: manager.getSessionId() };
 }
 
+/** Node B's own clone of the session's repository at the session's recorded path, which never held node A's snapshot. */
+async function anotherCloneAtRecordedPath(clone: string): Promise<void> {
+	renameSync(clone, sandbox.path("node-a-offline"));
+	await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), clone);
+	sandbox.write(join(clone, "README.md"), "node B's own checkout at the same path\n");
+}
+
 /** A session recorded "on node A" in `selection`, whose checkout then disappears from this machine. */
 async function sessionRecordedElsewhere(selection: StorageSelection, files: Record<string, string> = {}) {
 	const recorded = await recordSessionWithSnapshot(selection, files);
@@ -1343,7 +1350,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 	test("a session whose recorded path holds a different tree here continues in a restored worktree, like the CLI", async () => {
 		const selection = sqliteSelection("shared");
 		const { clone, sessionId } = await recordSessionWithSnapshot(selection);
-		sandbox.write(join(clone, "README.md"), "node B's own checkout at the same path\n");
+		await anotherCloneAtRecordedPath(clone);
 		const store = await storeFor(selection);
 		const session = await createOn({
 			settingsManager: settings(),
@@ -1362,7 +1369,7 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 	test("a session whose recorded path holds a different tree fails typed with nothing written when Git is missing", async () => {
 		const selection = sqliteSelection("shared");
 		const { clone, sessionId } = await recordSessionWithSnapshot(selection);
-		sandbox.write(join(clone, "README.md"), "node B's own checkout at the same path\n");
+		await anotherCloneAtRecordedPath(clone);
 		const store = await storeFor(selection);
 		const sessionManager = await SessionManager.open(store, sessionId);
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
