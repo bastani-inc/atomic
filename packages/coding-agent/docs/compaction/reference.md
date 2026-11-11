@@ -89,7 +89,7 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
 
 The entry's `tokensBefore` is the provider-aware whole-context count used for budgeting and the Compacted from display. `details.stats.tokensBefore`, `tokensAfter`, and `percentReduction` are heuristic estimates of the compactable region plus the kept tail. Those stats can differ from the entry count, and `percentReduction` is negative when the reconstructed estimate is larger. The display count is not stored again under `details.tokensBefore`.
 
-`details.rung` is `"planned"` for successful model compaction, `"extension"` for a `session_before_compact` override, or `"fresh"` when older context was discarded. `details.backend` and `details.model` identify the successful compactor. A policy-refusal fallback records `backend: "summary"`, the same model that refused, and file lists in `details.summary`. Its card says `summary (pi fallback)`. `details.plannerModel` identifies a borrowed chat planner:
+`details.rung` is `"planned"` for successful model compaction, `"extension"` for a `session_before_compact` override, or `"fresh"` when older context was discarded. `details.backend` and `details.model` identify the successful compactor. A policy-refusal fallback records `backend: "summary"`, the same model that refused, and file lists in `details.summary`. Its card is headed `Context compacted · summary (fallback)`. `details.plannerModel` identifies a borrowed chat planner:
 
 ```json
 "details": {

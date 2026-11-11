@@ -68,7 +68,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 				this.view.rung === "fresh"
 					? "✻ Context cleared (compaction degraded)"
 					: this.view.backend === "summary"
-						? "✻ Context compacted · summary (pi fallback)"
+						? "✻ Context compacted · summary (fallback)"
 						: "✻ Context compacted",
 			),
 		);

@@ -27,7 +27,8 @@ test("labels policy-refusal summaries and the compaction model (#3470)", () => {
 		},
 	});
 	const text = stripVTControlCharacters(component.render(160).join("\n"));
-	assert.match(text, /summary \(pi fallback\)/);
+	assert.match(text, /Context compacted · summary \(fallback\)/);
+	assert.doesNotMatch(text, /pi fallback/);
 	assert.match(text, /provider\/model/);
 });
 
