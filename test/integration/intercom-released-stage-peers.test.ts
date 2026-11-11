@@ -6,7 +6,10 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
-import type { IntercomClient as IntercomClientType } from "../../packages/intercom/broker/client.js";
+import type {
+	IntercomClient as IntercomClientType,
+	ReleasedChildReply,
+} from "../../packages/intercom/broker/client.js";
 import type { JsonWireValue } from "../../packages/intercom/broker/framing.js";
 import type {
 	ReleasedStageAnnouncement,
@@ -788,3 +791,83 @@ test("a hosted session's message to a pending workflow stage carries its trimmed
 	assert.equal(request.senderRegistrationName, "released-name");
 	assert.equal(request.senderReturnAddress, "released-session:released-stage");
 });
+
+test("a released subagent's reply sent as a hosted session keeps waiting for its owner when another session of that connection is removed (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const childName = `released-asker-${randomUUID()}`;
+	const owner = new IntercomClient();
+	await owner.connect(registration(`owner-${randomUUID()}`, group), undefined, randomUUID(), undefined, group);
+	cleanups.push(() => owner.disconnect());
+	const handoffs: ReleasedChildReply[] = [];
+	owner.on("released_child_reply", (handoff: ReleasedChildReply) => handoffs.push(handoff));
+	const { capability, supervisorSessionId } = await owner.authorizeSupervisorChild(childName);
+	const child = new IntercomClient();
+	await child.connect(
+		registration(childName, group),
+		{ capability, supervisorSessionId },
+		undefined,
+		undefined,
+		group,
+	);
+	cleanups.push(() => child.disconnect());
+	const childSessionId = child.sessionId!;
+
+	const host = await connectAsker(group);
+	const received: string[] = [];
+	host.client.on("hosted_message", (_recipient: string, _from: SessionInfo, message: Message) =>
+		received.push(message.id),
+	);
+	const [replier, other] = await host.client.hostSessions([
+		{ key: "replier", session: { ...registration("hosted-replier", group), status: RELEASED_STAGE_STATUS } },
+		{ key: "other", session: { ...registration("hosted-other", group), status: RELEASED_STAGE_STATUS } },
+	]);
+	const questionId = randomUUID();
+	const asked = await child.send("hosted-replier", { messageId: questionId, text: "Which file?", expectsReply: true });
+	assert.equal(asked.delivered, true, asked.reason);
+	await until(() => received.includes(questionId), "the hosted session never received the question");
+	await owner.reserveReleasedChildren([{ childName, wake: true }]);
+	await child.disconnect();
+	await until(
+		async () => !(await owner.listSessions(group)).some((session) => session.name === childName),
+		"the released child never left",
+	);
+
+	let settled = false;
+	const reply = host.client
+		.send(childSessionId, {
+			text: "src/config.ts",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: childSessionId,
+			hostedSender: replier!.sessionId,
+		})
+		.finally(() => {
+			settled = true;
+		});
+	await until(() => handoffs.length === 1, "the reply was never handed to the owner");
+
+	await host.client.unhostSessions([other!.sessionId]);
+	await host.client.listSessions(group);
+	assert.equal(settled, false, "removing another hosted session does not settle the reply waiting on its owner");
+	const bystander = new IntercomClient();
+	await bystander.connect(registration("bystander", group), undefined, undefined, undefined, group);
+	await bystander.disconnect();
+	await until(
+		async () => !(await host.client.listSessions(group)).some((session) => session.name === "bystander"),
+		"the bystander never left",
+	);
+	assert.equal(settled, false, "another connection leaving does not settle it either");
+
+	owner.acknowledgeReleasedChildReply(handoffs[0]!, true);
+	const delivered = await reply;
+	assert.equal(delivered.delivered, true, delivered.reason);
+	assert.equal(handoffs[0]!.message.content.text, "src/config.ts");
+});
+
+async function until(condition: () => boolean | Promise<boolean>, failure: string): Promise<void> {
+	const deadline = Date.now() + POLL_TIMEOUT_MS;
+	while (!(await condition())) {
+		if (Date.now() > deadline) throw new Error(failure);
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+	}
+}
