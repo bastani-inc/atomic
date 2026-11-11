@@ -122,7 +122,7 @@ Both safety keys are matched by physical identity rather than by the configured 
 
 If the engine is unresponsive, an abort or replacement has waited over one second, or replacement failed, Ctrl+C terminates and replaces it. This takes precedence over custom UI bindings. A failed replacement remains recoverable with another Ctrl+C; Atomic does not keep retrying automatically.
 
-After an unexpected engine stop, Atomic closes its custom UI and makes one automatic restart attempt. A failed restart leaves the editor usable and reports `Interactive engine restart failed: …`. A submission that never started returns as an exact draft, including pasted content and queued submissions in order. Accepted work is not offered for automatic retry.
+After an unexpected engine stop, Atomic closes its custom UI and makes one automatic restart attempt. A restart that succeeds shows no message; with debug logging on, its cause is written to the debug log. A failed restart leaves the editor usable and reports `Interactive engine restart failed: …`. A submission that never started returns as an exact draft, including pasted content and queued submissions in order. Accepted work is not offered for automatic retry.
 
 If a saved tool call has no recorded result, reopening the session shows that its result is unavailable. **Inspect files or external systems before retrying: the tool may already have had side effects.**
 

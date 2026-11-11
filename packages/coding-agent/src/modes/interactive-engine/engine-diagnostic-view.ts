@@ -1,3 +1,4 @@
+import { reportDebug } from "../../core/debug.ts";
 import { stripAnsi } from "../../utils/ansi.js";
 import { type ActivityWatchdogDiagnostic, shouldRenderEngineDiagnosticAsChatError } from "./activity-watchdog.ts";
 
@@ -18,8 +19,9 @@ export function renderDiagnosticStatus(message: string, view: Pick<EngineDiagnos
  * Host presentation policy for interactive-engine diagnostics.
  *
  * Engine recovery is operational status, not a failure: the engine-death
- * teardown has already remounted the editor and restored focus, so the notice is
- * a calm status line rather than a red chat error. Heartbeat-watchdog gaps stay
+ * teardown has already remounted the editor and restored focus, so a replacement
+ * that succeeds is silent and its reason goes to the debug log. A replacement
+ * that fails is a concrete failure and still surfaces. Heartbeat-watchdog gaps stay
  * internal. Concrete engine failures still surface as chat errors.
  */
 export function renderEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic, view: EngineDiagnosticView): void {
@@ -29,7 +31,7 @@ export function renderEngineDiagnostic(diagnostic: ActivityWatchdogDiagnostic, v
 	}
 	if (diagnostic.source === "recovery") {
 		view.stopWorkingLoader();
-		view.showStatus(diagnostic.message);
+		reportDebug("engine", "interactive-engine-recovery", { message: diagnostic.message });
 		return;
 	}
 	if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) view.showError(diagnostic.message);
