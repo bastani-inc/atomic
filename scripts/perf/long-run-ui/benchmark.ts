@@ -14,13 +14,23 @@
  * starting stages and the driver:
  * 1. reopens `--reopen` finished stages, cycling through attach-then-detach, attach-then-hide, message and Intercom ask;
  * 2. samples heap, RSS, live sessions, registry entries and active handles after a full collection;
- * 3. measures an idle window and a busy window (reopened stages answering asks while keys arrive) of `--keys` keys;
+ * 3. measures an idle window and a busy window (reopened stages answering asks while keys arrive) of `--keys` keys,
+ *    each `--windows` times (default 3), and reports the median of every statistic, since one window on a shared host
+ *    varies by more than the frames it measures;
  * 4. writes a CPU profile of each window and a heap snapshot when `--profile-dir` is given.
  *
  * Transcripts and the run journal live in SQLite files in a temporary directory (`--store sqlite`, the default) or in
  * memory (`--store memory`); the engine runs with its own temporary agent directory and never opens the user's.
  *
  *   bun run scripts/perf/long-run-ui/benchmark.ts --runs 2 --lanes 1 --label after --out /tmp/long-run-after.json
+ *
+ * `--assert` fails the run unless the criteria of `criteria.ts` hold. The first checkpoint is measured after a discarded
+ * warm-up window and is the baseline: frame time and key latency at 200 or more finished stages stay within 20% of it
+ * (plus a small timer-noise floor), no session or registry entry is left open, and heap grows by an index-sized amount
+ * per finished stage.
+ *
+ * The default viewport is 12 rows, so that the 10-stage baseline already fills it: a graph draws only the rows in view,
+ * and a baseline that leaves the viewport half empty is cheaper than any later checkpoint by construction.
  *
  * Take frame and key numbers from a run without `--profile-dir`: the profiler and the heap snapshots slow the frames
  * that follow them.
@@ -36,6 +46,7 @@ import {
 	serializeInteractiveEngineFrame,
 } from "../../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
 import { attachJsonlLineReader } from "../../../packages/coding-agent/src/modes/rpc/jsonl.js";
+import { evaluateCriteria } from "./criteria.js";
 import type { BenchControl, EngineConfig, EngineSample, RenderTimes, ReopenPath } from "./engine.js";
 
 interface Options {
@@ -53,6 +64,9 @@ interface Options {
 	readonly rows: number;
 	readonly profileDir?: string;
 	readonly out?: string;
+	/** Fail when the criteria of `criteria.ts` do not hold. */
+	readonly assert: boolean;
+	readonly windows: number;
 }
 
 function parseOptions(argv: readonly string[]): Options {
@@ -66,7 +80,7 @@ function parseOptions(argv: readonly string[]): Options {
 		if (!Number.isInteger(parsed) || parsed < 0) throw new Error(`--${name} must be a whole number, got ${raw}`);
 		return parsed;
 	};
-	const checkpoints = (value("checkpoints") ?? "10,50,100,200,300")
+	const checkpoints = (value("checkpoints") ?? "10,50,100,200,400,600")
 		.split(",")
 		.map(Number)
 		.sort((left, right) => left - right);
@@ -88,9 +102,11 @@ function parseOptions(argv: readonly string[]): Options {
 		toolDelayMs: count("tool-delay-ms", 5),
 		store,
 		width: count("width", 120),
-		rows: count("rows", 40),
+		rows: count("rows", 12),
 		...(profileDir === undefined ? {} : { profileDir }),
 		...(out === undefined ? {} : { out }),
+		assert: argv.includes("--assert"),
+		windows: Math.max(1, count("windows", 3)),
 	};
 }
 
@@ -277,6 +293,41 @@ class SimulatedHost {
 	}
 }
 
+type Stats = ReturnType<typeof stats>;
+
+function medianOf(values: readonly number[]): number {
+	return percentile(values, 50);
+}
+
+function medianStats(all: readonly Stats[]): Stats {
+	const field = (read: (stat: Stats) => number): number => Number(medianOf(all.map(read)).toFixed(3));
+	return {
+		n: all.reduce((total, stat) => total + stat.n, 0),
+		p50: field((stat) => stat.p50),
+		p95: field((stat) => stat.p95),
+		p99: field((stat) => stat.p99),
+		max: field((stat) => stat.max),
+	};
+}
+
+/** The windows of one checkpoint as one: every statistic is the median of that statistic across them. */
+function medianWindow(all: readonly WindowResult[]): WindowResult {
+	const pick = (read: (window: WindowResult) => Stats): Stats => medianStats(all.map(read));
+	return {
+		engineRenderMs: {
+			widget: pick((window) => window.engineRenderMs.widget),
+			pane: pick((window) => window.engineRenderMs.pane),
+		},
+		roundTripMs: {
+			widget: pick((window) => window.roundTripMs.widget),
+			pane: pick((window) => window.roundTripMs.pane),
+		},
+		keyLatencyMs: pick((window) => window.keyLatencyMs),
+		keysUnanswered: Math.max(...all.map((window) => window.keysUnanswered)),
+		engineLoopLagMs: pick((window) => window.engineLoopLagMs),
+	};
+}
+
 interface WindowResult {
 	readonly engineRenderMs: { readonly widget: ReturnType<typeof stats>; readonly pane: ReturnType<typeof stats> };
 	readonly roundTripMs: { readonly widget: ReturnType<typeof stats>; readonly pane: ReturnType<typeof stats> };
@@ -413,10 +464,18 @@ async function main(): Promise<void> {
 			options.profileDir === undefined
 				? undefined
 				: join(options.profileDir, `${options.label}-${checkpoint}-${window}.cpuprofile`);
+		// The first checkpoint is the baseline the later ones are compared with: let the code warm up, then measure.
+		if (checkpoint === options.checkpoints[0]) await measureWindow(host, options, 0);
 		const idleProfile = profile("idle");
-		const idle = await measureWindow(host, options, 0, idleProfile);
+		const idleWindows: WindowResult[] = [];
+		for (let repeat = 0; repeat < options.windows; repeat++)
+			idleWindows.push(await measureWindow(host, options, 0, repeat === 0 ? idleProfile : undefined));
+		const idle = medianWindow(idleWindows);
 		const busyProfile = profile("busy");
-		const busy = await measureWindow(host, options, options.probes, busyProfile);
+		const busyWindows: WindowResult[] = [];
+		for (let repeat = 0; repeat < options.windows; repeat++)
+			busyWindows.push(await measureWindow(host, options, options.probes, repeat === 0 ? busyProfile : undefined));
+		const busy = medianWindow(busyWindows);
 		if (idleProfile !== undefined) profiles[`${checkpoint}-idle`] = summarizeProfile(idleProfile);
 		if (busyProfile !== undefined) profiles[`${checkpoint}-busy`] = summarizeProfile(busyProfile);
 		if (options.profileDir !== undefined) {
@@ -440,6 +499,7 @@ async function main(): Promise<void> {
 	const ended = await done;
 	const final = await host.request({ type: "bench_sample" }, "bench_sample_result");
 	await host.close();
+	const criteria = evaluateCriteria(checkpoints);
 	const report = {
 		label: options.label,
 		runtime:
@@ -448,6 +508,7 @@ async function main(): Promise<void> {
 				: `bun ${(globalThis as { Bun?: { version: string } }).Bun!.version}`,
 		options,
 		checkpoints,
+		criteria,
 		afterRunsEnded: final.sample,
 		runResults: ended.results,
 		...(Object.keys(profiles).length === 0 ? {} : { cpuProfileSelfTime: profiles }),
@@ -456,6 +517,10 @@ async function main(): Promise<void> {
 	const text = JSON.stringify(report, null, 2);
 	if (options.out !== undefined) writeFileSync(options.out, `${text}\n`);
 	process.stdout.write(`${table(report.label, checkpoints)}\n`);
+	if (options.assert && !criteria.passed) {
+		process.stderr.write(`${criteria.failures.map((failure) => `FAILED: ${failure}`).join("\n")}\n`);
+		process.exitCode = 1;
+	}
 }
 
 function table(label: string, rows: readonly CheckpointResult[]): string {

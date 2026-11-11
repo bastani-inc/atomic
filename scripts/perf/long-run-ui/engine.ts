@@ -109,7 +109,7 @@ function collect(): void {
 }
 
 async function settle(): Promise<void> {
-	for (let round = 0; round < 4; round++) {
+	for (let round = 0; round < 12; round++) {
 		collect();
 		for (let tick = 0; tick < 5; tick++) await new Promise((resolve) => setTimeout(resolve, 10));
 	}
