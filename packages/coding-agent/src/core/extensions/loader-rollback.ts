@@ -77,6 +77,7 @@ function rollbackContext(cwd: string) {
 		hasUI: () => false,
 		getCwd: () => cwd,
 		getSessionManager: unavailable,
+		getProjectHistory: unavailable,
 		getModelRegistry: unavailable,
 		getModel: () => undefined,
 		getScopedModels: () => [],

@@ -724,6 +724,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_workflowStageAwaitingFirstPrompt: boolean;
 	_agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	_parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
+	_inheritedHistory: import("./tools/history-protocol.ts").ProjectHistory | undefined;
 	_resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	_childTaskWaits: import("./tasks/child-command-owner.js").ChildTaskWaits;
 	_taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;

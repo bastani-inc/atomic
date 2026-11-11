@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The subagent orchestration guidance now refines the choice between a workflow and inline work with session memory (`history://` sessions and workflow runs) and your stated preferences ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
+
 ## [0.9.75] - 2026-11-10
 
 Woken subagents build blueprints, and the bundled computer-use skills are current.

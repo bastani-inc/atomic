@@ -277,6 +277,7 @@ class AgentSessionBase {
 	protected _workflowStageAwaitingFirstPrompt = false;
 	protected _agentTaskHost: import("./tasks/agent-adapter.js").AgentTaskHost | undefined;
 	protected _parentCommandTaskOwner: import("./tasks/child-command-owner.js").ChildCommandTaskOwner | undefined;
+	protected _inheritedHistory: import("./tools/history-protocol.ts").ProjectHistory | undefined;
 	protected _resourceAdmission: import("./sdk-types.ts").ResourceAdmission | undefined;
 	protected _childTaskWaits = new ChildTaskWaits();
 	protected _taskCompletionOutbox: import("./tasks/completion.js").TaskCompletionOutbox | undefined;
@@ -352,6 +353,7 @@ class AgentSessionBase {
 		this._workspace = config.workspace;
 		this._subagentPolicy = config.subagentPolicy;
 		this._parentCommandTaskOwner = config.parentCommandTaskOwner;
+		this._inheritedHistory = config.inheritedHistory;
 		this._resourceAdmission = config.resourceAdmission;
 		let removeExecutionEndedListener: (() => void) | undefined;
 		try {

@@ -8,6 +8,7 @@ import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
 import {
+	buildSessionMemoryGuideline,
 	buildSystemPrompt,
 	buildSystemPromptSections,
 	diffSystemPromptSections,
@@ -157,6 +158,14 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 	const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 	const previousBase = this._baseSystemPromptOptions;
 	const previousForcedPrompt = previousBase?.forceSystemPrompt;
+	const hiddenTools = validToolNames.filter((name) => isToolDeclarationHidden(this, name));
+	const subagentSessionMemory =
+		this._subagentPolicy !== undefined && loaderSystemPrompt
+			? buildSessionMemoryGuideline(
+					validToolNames.filter((name) => !hiddenTools.includes(name)),
+					this._cwd,
+				)
+			: undefined;
 
 	this._baseSystemPromptOptions = normalizeBuildSystemPromptOptions({
 		cwd: this._cwd,
@@ -167,10 +176,11 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		customPrompt: loaderSystemPrompt,
 		appendSystemPrompt,
 		selectedTools: validToolNames,
-		hiddenTools: validToolNames.filter((name) => isToolDeclarationHidden(this, name)),
+		hiddenTools,
 		excludedTools: this._excludedToolNames ? Array.from(this._excludedToolNames) : undefined,
 		toolSnippets,
 		toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
+		...(subagentSessionMemory === undefined ? {} : { sections: { session_memory: `- ${subagentSessionMemory}` } }),
 	});
 	if (this._systemPromptTransform) {
 		this._baseSystemPromptOptions.forceSystemPrompt = this._systemPromptTransform(

@@ -22,7 +22,7 @@ import {
 	type SessionStore,
 	type SessionSummary,
 } from "../src/core/storage/session/types.js";
-import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter, type WorkflowRunHistory } from "../src/core/tools/history-protocol.js";
 import { createToolDefinition } from "../src/core/tools/index.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
@@ -721,5 +721,105 @@ describe.each(BACKENDS)("history:// completeness over $name (#4252)", (backend) 
 		} finally {
 			await close();
 		}
+	});
+});
+
+describe("history:// in a session whose own transcript is kept apart from the project's sessions (#4648)", () => {
+	async function opened() {
+		const project = new MemorySessionStore();
+		const own = new MemorySessionStore();
+		await project.create(header("earlier-session", PROJECT, BASE), [
+			entry("e", "we chose the retry budget of three attempts", BASE + 1000),
+		]);
+		await project.create(
+			{
+				...header("stage-session", PROJECT, BASE + DAY),
+				internal: true,
+				workflow: { runId: "run-new", stageId: "s1", stageName: "build" },
+			},
+			[entry("s", "the stage pinned the toolchain", BASE + DAY + 1000)],
+		);
+		await own.create(header(CURRENT_ID, PROJECT, BASE + 2 * DAY), [
+			entry("c", "the subagent's own scratch note", BASE + 2 * DAY + 1000),
+		]);
+		const history: WorkflowRunHistory = {
+			listRuns: async () => [runSummary("run-new", BASE + DAY, "ship-release")],
+			getRun: async (runId) => ({
+				runId,
+				name: "ship-release",
+				status: "completed",
+				startedAt: BASE + DAY,
+				inputs: { target: "the 2.0 launch" },
+				stages: [{ id: "s1", name: "build", status: "completed", sessionId: "stage-session" }],
+			}),
+		};
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			currentSessionId: CURRENT_ID,
+			sessionStore: () => own,
+			projectSessionStore: () => project,
+			workflows: () => history,
+		});
+		const ctx = { internalResourceRouter: router, cwd: PROJECT } as InternalResourceContext;
+		const read = async (path: string) =>
+			text(await createReadToolDefinition(PROJECT).execute("read", { path }, undefined, undefined, ctx as never));
+		const search = async (pattern: string, paths: string) =>
+			text(
+				await createSearchToolDefinition(PROJECT).execute(
+					"search",
+					{ pattern, paths },
+					undefined,
+					undefined,
+					ctx as never,
+				),
+			);
+		return { read, search };
+	}
+
+	it("lists and reads the project's sessions, and reads its own transcript from its own store (#4648)", async () => {
+		const { read } = await opened();
+		const listing = await read("history://sessions");
+		assertIncludes(listing, "history://sessions/earlier-session");
+		assertExcludes(listing, `history://sessions/${CURRENT_ID}`);
+		assertIncludes(await read("history://sessions/earlier-session"), "retry budget of three attempts");
+		assertIncludes(await read(`history://sessions/${CURRENT_ID}`), "the subagent's own scratch note");
+		assertIncludes(await read("history://sessions/stage-session"), "the stage pinned the toolchain");
+	});
+
+	it("searches the project's sessions, its own transcript, and runs with their stage transcripts (#4648)", async () => {
+		const { search } = await opened();
+		assertIncludes(await search("retry budget", "history://sessions"), "history://sessions/earlier-session:");
+		assertIncludes(await search("scratch note", `history://sessions/${CURRENT_ID}`), "scratch note");
+		assertIncludes(await search("pinned the toolchain", "history://workflows"), "history://sessions/stage-session:");
+		const both = await search("retry budget|2.0 launch", "history://");
+		assertIncludes(both, "history://sessions/earlier-session:");
+		assertIncludes(both, "history://workflows/run-new:");
+		assertExcludes(both, "not searched");
+	});
+
+	it("lists the project's sessions also when no current session is named (#4648)", async () => {
+		const project = new MemorySessionStore();
+		await project.create(header("earlier-session", PROJECT, BASE), [entry("e", "an earlier decision", BASE + 1000)]);
+		const router = createHistoryRouter({
+			cwd: PROJECT,
+			sessionStore: () => new MemorySessionStore(),
+			projectSessionStore: () => project,
+			workflows: () => undefined,
+		});
+		assertIncludes(String(await router.read?.("history://sessions")), "history://sessions/earlier-session");
+	});
+
+	it("links a stage's run only in this project's view of its transcript (#4648)", async () => {
+		const { read } = await opened();
+		assertIncludes(await read("history://sessions/stage-session"), "(history://workflows/run-new)");
+		const everywhere = await read("history://sessions/stage-session?project=all");
+		assertIncludes(everywhere, "the stage pinned the toolchain");
+		assertExcludes(everywhere, "history://workflows/run-new");
+	});
+
+	it("reads workflow runs through a source that can only list and read them (#4648)", async () => {
+		const { read } = await opened();
+		assertIncludes(await read("history://workflows"), "history://workflows/run-new | ");
+		assertIncludes(await read("history://workflows/run-new"), "transcript history://sessions/stage-session");
 	});
 });

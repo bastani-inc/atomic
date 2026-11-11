@@ -24,6 +24,7 @@ import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { normalizeBuildSystemPromptOptions } from "../system-prompt.ts";
 import { presentQuestionnaire } from "../tools/ask-user-question/ask-user-question.js";
+import type { ProjectHistory } from "../tools/history-protocol.ts";
 import {
 	assertExtensionAction,
 	bindExtensionWork,
@@ -212,6 +213,7 @@ export class ExtensionRunner {
 	private orchestrationContext: OrchestrationContext | undefined;
 	private subagentPolicy: SubagentChildPolicy | undefined;
 	private taskHostBinding: (() => import("../tasks/agent-adapter.js").AgentTaskHost) | undefined;
+	private inheritedHistory: ProjectHistory | undefined;
 	/** @internal Attach dispatch receipts to the owning session before startup. */
 	bindWorkOwner(owner: object): void {
 		bindExtensionWork(this.runtime, owner);
@@ -234,6 +236,20 @@ export class ExtensionRunner {
 	/** The run-control implementation registered by the current extension generation, if any. */
 	getWorkflowRunControl(): WorkflowRunControl | undefined {
 		return this.runtime.workflowRunControlHub.current();
+	}
+	/** The history of the session that launched this one: a workflow stage's or a subagent's launching session. */
+	bindInheritedHistory(history: ProjectHistory | undefined): void {
+		this.inheritedHistory = history;
+	}
+	/**
+	 * Where history:// reads this project's history: sessions from the launching session's store, else this session's;
+	 * workflow runs through this session's run control, else the launching session's.
+	 */
+	getProjectHistory(): ProjectHistory {
+		return {
+			sessionStore: () => this.inheritedHistory?.sessionStore() ?? this.sessionManager.getSessionStore(),
+			workflows: () => this.getWorkflowRunControl() ?? this.inheritedHistory?.workflows(),
+		};
 	}
 	/** Observe this generation's workflow activity: snapshot first, then FIFO changes. */
 	observeWorkflowActivity(observer: WorkflowActivityObserver): WorkflowActivitySubscription {
@@ -899,7 +915,7 @@ export class ExtensionRunner {
 			getChildSessionOptions: (options) => this.runtime.getChildSessionOptions?.(options) ?? options,
 			getExtensionPaths: () => this.getExtensionPaths(),
 			observeWorkflowActivity: (observer) => this.runtime.workflowActivityHub.observeWorkflowActivity(observer),
-			getWorkflowRunControl: () => this.getWorkflowRunControl(),
+			getProjectHistory: () => this.getProjectHistory(),
 			...(this.taskHostBinding ? { getAgentTaskHost: this.taskHostBinding } : {}),
 			getUIContext: () => this.uiContext,
 			getMode: () => this.mode,

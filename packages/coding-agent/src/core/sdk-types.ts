@@ -135,6 +135,11 @@ export interface CreateAgentSessionOptions {
 	 */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
 	/**
+	 * Internal: the launching session's project history. Supplied by the parent's child-session options, so
+	 * `history://` in a workflow stage or a subagent reads the project's sessions and workflow runs.
+	 */
+	inheritedHistory?: import("./tools/history-protocol.ts").ProjectHistory;
+	/**
 	 * Capacity policy for this session and its managed commands. Omitted, the session draws its own permit from the
 	 * enclosing `withResourceAdmission` scope, if any. `null` means it holds none, even inside such a scope. Child
 	 * options from `getChildSessionOptions()` carry the parent's admission, or `null` when the parent holds none.
