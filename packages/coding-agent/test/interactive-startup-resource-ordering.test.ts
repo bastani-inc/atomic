@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { test } from "vitest";
-import type { ExtensionUIContext } from "../src/core/extensions/index.ts";
-import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import type { ExtensionUIContext } from "../src/core/extensions/index.js";
+import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import {
 	releaseStartupChatOutput,
 	StartupChatContainer,
-} from "../src/modes/interactive/interactive-startup-chat-container.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { attachInteractiveEngineHost } from "../src/modes/interactive-engine/extension-ui-bridge.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-types.ts";
-import { createShowLoadedResourcesThis } from "./interactive-mode-status-resources-helpers.ts";
+} from "../src/modes/interactive/interactive-startup-chat-container.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { attachInteractiveEngineHost } from "../src/modes/interactive-engine/extension-ui-bridge.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../src/modes/rpc/rpc-types.js";
+import { createShowLoadedResourcesThis } from "./interactive-mode-status-resources-helpers.js";
 
 initTheme("dark");
 

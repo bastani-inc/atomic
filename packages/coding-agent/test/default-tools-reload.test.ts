@@ -15,9 +15,9 @@ import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { isSyntheticPath } from "../src/core/source-info.js";
-import { TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.ts";
+import { TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.js";
 import { getDefaultToolNames } from "../src/core/tools/index.js";
-import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
+import { appendTestCompaction } from "./verbatim-compaction-test-helpers.js";
 
 const NO_BUILTINS = { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false } as const;
 

@@ -15,23 +15,23 @@ import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { parseArgs } from "../src/cli/args.js";
-import type { AgentSession } from "../src/core/agent-session.ts";
+import type { AgentSession } from "../src/core/agent-session.js";
 import {
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionRuntime,
-} from "../src/core/agent-session-runtime.ts";
-import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { RESUME_CATALOG_TIMEOUT_MS } from "../src/core/resume/not-found.ts";
-import { sessionResumeOptions } from "../src/core/resume/session-resume.ts";
-import type { CreateAgentSessionOptions } from "../src/core/sdk-types.ts";
-import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { resolveSessionStore } from "../src/core/session-storage.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { isSyntheticPath } from "../src/core/source-info.ts";
+} from "../src/core/agent-session-runtime.js";
+import { createAgentSessionFromServices, createAgentSessionServices } from "../src/core/agent-session-services.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { RESUME_CATALOG_TIMEOUT_MS } from "../src/core/resume/not-found.js";
+import { sessionResumeOptions } from "../src/core/resume/session-resume.js";
+import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
+import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { resolveSessionStore } from "../src/core/session-storage.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { isSyntheticPath } from "../src/core/source-info.js";
 import {
 	StorageAdapterLoadError,
 	StorageConfigError,
@@ -39,10 +39,10 @@ import {
 	StorageUnavailableError,
 } from "../src/core/storage/errors.js";
 import { resolveAdapterOptions, type StorageSelection } from "../src/core/storage/provider.js";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import type { SessionStore } from "../src/core/storage/session/types.ts";
-import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
-import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
+import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import {
 	type GitUnavailableError,
 	isGitUnavailableError,
@@ -54,17 +54,17 @@ import {
 	setWorktreeSnapshotGit,
 	withWorktreeRootMappings,
 	workspace,
-} from "../src/index.ts";
+} from "../src/index.js";
 import {
 	cliSessionStorageSelection,
 	closeStoreAfter,
 	createResumeProgress,
 	openCliSession,
 	startupResumeDiagnostics,
-} from "../src/main-session.ts";
-import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.ts";
-import { forThisHost } from "./helpers/blueprint-fixtures.ts";
-import { appendLineCommand, nodeCommand, shellPath } from "./helpers/hook-commands.ts";
+} from "../src/main-session.js";
+import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
+import { forThisHost } from "./helpers/blueprint-fixtures.js";
+import { appendLineCommand, nodeCommand, shellPath } from "./helpers/hook-commands.js";
 
 useTemporaryAgentDir();
 
