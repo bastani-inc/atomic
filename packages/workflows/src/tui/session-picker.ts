@@ -29,14 +29,11 @@ import { workflowRunResumeCandidate } from "../shared/workflow-artifacts.js";
 import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type IdentifierLine, wrapIdentifierLines } from "./run-identity-rows.js";
+import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 const ESCAPE_CODE = 0x1b;
-
-function isQuitRun(run: RunSnapshot): boolean {
-	return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
-}
 const DOUBLE_ESCAPE_SEQUENCE = String.fromCharCode(ESCAPE_CODE, ESCAPE_CODE);
 
 // ---------------------------------------------------------------------------
@@ -287,9 +284,13 @@ function renderRunRow(
 	const border = hexToAnsi(theme.border);
 	const panelBg = hexBg(theme.bg);
 	const run = row.run;
-	const indicatorStatus = isQuitRun(run) ? run.status : runIndicatorStatus(run, allRuns);
-	const icon = statusIcon(indicatorStatus);
-	const iconColor = hexToAnsi(statusColor(indicatorStatus, theme));
+	const runState = runStateIndicator(run);
+	const quitState = runState?.kind === "quit" ? runState : undefined;
+	const indicatorStatus = runIndicatorStatus(run, allRuns);
+	const icon = quitState?.glyph ?? statusIcon(indicatorStatus);
+	const iconColor = hexToAnsi(
+		quitState === undefined ? statusColor(indicatorStatus, theme) : runStateColor(quitState, theme),
+	);
 	const dim = hexToAnsi(theme.dim);
 	const text = hexToAnsi(theme.text);
 	const muted = hexToAnsi(theme.textMuted);
@@ -314,13 +315,16 @@ function renderRunRow(
 
 	const elapsed = fmtElapsed(run, now);
 	const elapsedCol = elapsed.padStart(8, " ");
-	const rightPlain = `${elapsedCol} `;
+	const stateText = runState === undefined ? "" : `${runState.text}  `;
+	const stateStyled =
+		runState === undefined ? "" : `${hexToAnsi(runStateColor(runState, theme))}${runState.text}${RESET}${panelBg}  `;
+	const rightPlain = `${stateText}${elapsedCol} `;
 	const rightBudget = Math.max(1, inner - 5);
 	const rightVisible = truncateToWidth(rightPlain, rightBudget, "…");
 	const right =
 		visibleWidth(rightVisible) < visibleWidth(rightPlain)
 			? `${dim}${rightVisible}${RESET}${panelBg}`
-			: `${muted}${elapsedCol}${RESET}${panelBg} `;
+			: `${stateStyled}${muted}${elapsedCol}${RESET}${panelBg} `;
 	const nameBudget = Math.max(1, inner - 3 - visibleWidth(rightVisible) - 1);
 	const name = truncateToWidth(run.name, nameBudget, "…");
 

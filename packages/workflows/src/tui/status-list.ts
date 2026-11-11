@@ -38,6 +38,7 @@ import { chatWidth, ELLIPSIS, progressStrip, renderRoundedBox } from "./chat-sur
 import { BOLD, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { wrapIdentifierLines } from "./run-identity-rows.js";
+import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { fmtDuration, statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -272,20 +273,18 @@ function runAccent(run: RunSnapshot, theme: GraphTheme | undefined, indicatorSta
 }
 
 function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
-	if (isQuitRun(run)) return { text: "○ quit", fg: theme?.warning };
+	const runState = runStateIndicator(run);
+	if (runState !== undefined)
+		return { text: runState.text, fg: theme === undefined ? undefined : runStateColor(runState, theme) };
 	switch (effectiveRunStatus(run)) {
 		case "completed":
 			return { text: "✓ completed", fg: theme?.success };
 		case "running":
 			return { text: "● running", fg: theme?.warning };
-		case "paused":
-			return { text: "❚❚ paused", fg: theme?.warning };
 		case "skipped":
 			return { text: "⊘ skipped", fg: theme?.dim };
 		case "cancelled":
 			return { text: "⊘ cancelled", fg: theme?.dim };
-		case "blocked":
-			return { text: "↑ blocked", fg: theme?.dim };
 		case "failed":
 			return { text: "✗ failed", fg: theme?.error };
 		case "killed":

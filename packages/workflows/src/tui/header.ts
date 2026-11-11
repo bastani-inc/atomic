@@ -12,6 +12,8 @@
  *  - Subtitle sits beside the pill in `textMuted`.
  *  - Counts on the right: `✓ <n>`, `● <n>`, `○ <n>`, `✗ <n>` in their
  *    status colours, separated by `2ch` of chrome.
+ *  - A blocked, paused, quit or resumed run leads the counts with its
+ *    run-level state and colours the pill to match.
  *
  * Two entry points share the same chrome:
  *   - {@link renderHeader}      run-specific (carries `RunSnapshot`)
@@ -23,6 +25,8 @@ import { stageDisplayStatus } from "../shared/stage-display-status.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { BOLD, fillBackground, hexBg, hexToAnsi, RESET } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
+import { type RunStateIndicator, runStateColor, runStateIndicator } from "./run-state-indicator.js";
+import { statusColor, statusIcon } from "./status-helpers.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
 export interface HeaderOpts {
@@ -57,11 +61,43 @@ interface PillStyle {
 	label: string;
 }
 
-function pillFor(run: RunSnapshot, theme: GraphTheme): PillStyle {
+const LEFT_EDGE_PAD = 1;
+const RIGHT_EDGE_PAD = 2;
+const BADGE_GAP = 2;
+const SUBTITLE_GUTTER = 2;
+/** `: x…` — the narrowest truncated reason that still shows one character. */
+const MIN_TRUNCATED_REASON = 4;
+
+function pillFor(run: RunSnapshot, runState: RunStateIndicator | undefined, theme: GraphTheme): PillStyle {
+	if (runState !== undefined) return { border: runStateColor(runState, theme), label: "ORCHESTRATOR" };
 	if (run.status === "failed") return { border: theme.error, label: "ORCHESTRATOR" };
 	if (run.status === "completed") return { border: theme.success, label: "ORCHESTRATOR" };
 	if (run.status === "killed") return { border: theme.dim, label: "ORCHESTRATOR" };
 	return { border: theme.accent, label: "ORCHESTRATOR" };
+}
+
+/**
+ * The run-level badge. A blocked run's exit reason takes the room the pill and
+ * count badges leave, after the run name keeps up to half of it.
+ */
+function runStateBadge(
+	runState: RunStateIndicator,
+	subtitle: string,
+	label: string,
+	countBadges: readonly BandBadge[],
+	width: number,
+	theme: GraphTheme,
+): BandBadge {
+	const fg = runStateColor(runState, theme);
+	if (runState.reason === undefined) return { text: runState.text, fg };
+	const pillWidth = visibleWidth(` ${label} `) + 2;
+	const badgesWidth = visibleWidth([runState.text, ...countBadges.map((b) => b.text)].join(" ".repeat(BADGE_GAP)));
+	const room = width - LEFT_EDGE_PAD - pillWidth - RIGHT_EDGE_PAD - badgesWidth;
+	const subtitleRoom = Math.min(visibleWidth(subtitle) + SUBTITLE_GUTTER + BADGE_GAP, Math.floor(room / 2));
+	const reasonWidth = room - subtitleRoom;
+	const reason = `: ${runState.reason}`;
+	if (visibleWidth(reason) > reasonWidth && reasonWidth < MIN_TRUNCATED_REASON) return { text: runState.text, fg };
+	return { text: `${runState.text}${truncateToWidth(reason, reasonWidth, "…")}`, fg };
 }
 
 /**
@@ -139,8 +175,8 @@ export function renderBandHeader(opts: BandHeaderOpts): string[] {
 	const rightW = visibleWidth(rightVisible);
 	const rightStyled = badges.map((b) => `${hexToAnsi(b.fg)}${b.text}${RESET}${chromeBg}`).join(`${chromeBg}  `);
 
-	const leftEdgePad = 1;
-	const rightEdgePad = 2;
+	const leftEdgePad = LEFT_EDGE_PAD;
+	const rightEdgePad = RIGHT_EDGE_PAD;
 
 	// Subtitle slot — quieter than the pill. Two-space gutter keeps the
 	// pill from kissing the subtitle. Budget with terminal cell widths so
@@ -177,7 +213,8 @@ export function renderBandHeader(opts: BandHeaderOpts): string[] {
  */
 export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 	const { width, theme } = opts;
-	const pill = pillFor(run, theme);
+	const runState = runStateIndicator(run);
+	const pill = pillFor(run, runState, theme);
 
 	const counts = {
 		pending: 0,
@@ -198,10 +235,13 @@ export function renderHeader(run: RunSnapshot, opts: HeaderOpts): string[] {
 	if (counts.running > 0) badges.push({ text: `● ${counts.running}`, fg: theme.warning });
 	if (counts.awaiting_input > 0) badges.push({ text: `↵ ${counts.awaiting_input}`, fg: theme.info });
 	if (counts.paused > 0) badges.push({ text: `❚❚ ${counts.paused}`, fg: theme.warning });
+	if (counts.blocked > 0)
+		badges.push({ text: `${statusIcon("blocked")} ${counts.blocked}`, fg: statusColor("blocked", theme) });
 	if (counts.suspended > 0) badges.push({ text: `◷ ${counts.suspended}`, fg: theme.dim });
 	if (counts.pending > 0) badges.push({ text: `○ ${counts.pending}`, fg: theme.dim });
 	if (counts.skipped > 0) badges.push({ text: `⊘ ${counts.skipped}`, fg: theme.dim });
 	if (counts.failed > 0) badges.push({ text: `✗ ${counts.failed}`, fg: theme.error });
+	if (runState !== undefined) badges.unshift(runStateBadge(runState, run.name, pill.label, badges, width, theme));
 
 	return renderBandHeader({
 		label: pill.label,

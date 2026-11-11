@@ -7,6 +7,7 @@ import type { GraphViewOpts } from "./graph-view-types.js";
 import { renderHeader, renderOutlinePill } from "./header.js";
 import { isKeybindingsLike } from "./keybindings-adapter.js";
 import { NODE_H } from "./layout.js";
+import { runStateColor, runStateIndicator } from "./run-state-indicator.js";
 import { renderSwitcher } from "./switcher.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 import { renderToolDetailLines } from "./tool-detail.js";
@@ -82,14 +83,20 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const displayStages = this._displayStages(run);
 		const headerLines = renderHeader({ ...run, stages: displayStages }, { width, theme: this.graphTheme });
 		const counts = this._counts(displayStages);
+		const dim = hexToAnsi(this.graphTheme.dim);
+		const runState = runStateIndicator(run);
+		const runStateLead =
+			runState === undefined
+				? ""
+				: `${hexToAnsi(runStateColor(runState, this.graphTheme))}${runState.text}${RESET}${dim} · `;
 		const trailer =
-			`${hexToAnsi(this.graphTheme.dim)}` +
+			`${dim}${runStateLead}` +
 			`${counts.completed}/${displayStages.length} done` +
 			(counts.running > 0 ? ` · ${counts.running} running` : "") +
 			(counts.failed > 0 ? ` · ${counts.failed} failed` : "") +
 			(counts.blocked > 0 ? ` · ${counts.blocked} blocked` : "") +
 			RESET;
-		return [...headerLines, ` ${trailer}`];
+		return [...headerLines, truncateToWidth(` ${trailer}`, width, "…")];
 	}
 
 	protected _renderOverlay(width: number): string[] {
@@ -317,6 +324,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 		const switcherLines = renderSwitcher(this._displayStages(run), this.switcherState, {
 			width: switcherWidth,
 			theme: this.graphTheme,
+			runState: runStateIndicator(run),
 			canOpenStageChat: (stage) => this._stageChatTarget(stage) !== undefined,
 		});
 		const insertAt = Math.max(bodyStart, bodyStart + Math.min(2, Math.floor((bodyRows - switcherLines.length) / 3)));
