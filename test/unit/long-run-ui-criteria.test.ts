@@ -294,6 +294,7 @@ describe("the long-run UI benchmark criteria (#4642)", () => {
 		for (const storeChangeCost of [
 			[],
 			[{ finished: 10, usPerChange: 100, windows: [100] }],
+			[{ finished: 600, usPerChange: 100, windows: [100] }],
 			cost([], []),
 			cost([100, 100], [100]),
 			[
@@ -304,5 +305,13 @@ describe("the long-run UI benchmark criteria (#4642)", () => {
 			assert.deepEqual(evaluateCriteria(points, { storeChangeCost }).failures, [
 				"the store-change cost was not measured in paired windows at both the first and the last checkpoint",
 			]);
+		assert.ok(
+			evaluateCriteria([checkpoint(10)], {
+				storeChangeCost: [{ finished: 10, usPerChange: 100, windows: [100] }],
+			}).failures.includes(
+				"the store-change cost was not measured in paired windows at both the first and the last checkpoint",
+			),
+			"one checkpoint is not compared with itself",
+		);
 	});
 });

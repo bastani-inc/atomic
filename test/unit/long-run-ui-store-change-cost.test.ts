@@ -147,7 +147,13 @@ describe("store-change work does not grow with the stages a run finished (#4642)
 	test("root activity after a stage change re-projects one node and looks no stage up in the ownership sets (#4642)", async () => {
 		const measure = async (finished: number): Promise<{ fresh: number; lookups: number }> => {
 			const store = createStore();
-			const stages = seedLongRun(store, finished);
+			const unsuccessful: Record<string, StageSnapshot["status"]> = {
+				[stageId(0, 1)]: "failed",
+				[stageId(1, 1)]: "skipped",
+			};
+			const stages = seedLongRun(store, finished, (entry) =>
+				unsuccessful[entry.id] === undefined ? entry : { ...entry, status: unsuccessful[entry.id]! },
+			);
 			const runtime = workflowObservationRuntime(store);
 			const published: WorkflowRootActivity[] = [];
 			const bridge = createWorkflowObservation(
@@ -184,6 +190,7 @@ describe("store-change work does not grow with the stages a run finished (#4642)
 		const long = await measure(600);
 		const short = await measure(10);
 		assert.equal(long.fresh, 1);
+		assert.equal(long.lookups, 2, "the one running stage is looked up in each ownership set");
 		assert.deepEqual(long, short);
 	});
 
@@ -332,8 +339,12 @@ describe("store-change work does not grow with the stages a run finished (#4642)
 			];
 			for (let step = 0; step < 200; step++) {
 				const run = store.run(RUN_ID)!;
-				const target = pick(run.stages)!;
-				if (next() < 0.15)
+				const target = pick(store.run(RUN_ID)!.stages)!;
+				if (next() < 0.03) {
+					const reordered = [...run.stages].reverse().map((entry) => ({ ...entry, toolEvents: [] }));
+					store.recordRunStart({ ...run, stages: reordered, toolNodes: [...run.toolNodes] });
+				} else if (next() < 0.05) store.recordToolNodeEnd(RUN_ID, "tool:1", { status: "completed" });
+				else if (next() < 0.15)
 					store.recordStageStart(RUN_ID, {
 						id: `added-${step}`,
 						name: `added-${step}`,
@@ -344,7 +355,12 @@ describe("store-change work does not grow with the stages a run finished (#4642)
 				else {
 					target.status = pick(statuses)!;
 					if (next() < 0.2)
-						target.pendingPrompt = { id: `prompt-${step}`, kind: "confirm", message: "go?", createdAt: step };
+						target.pendingPrompt = {
+							id: `prompt-${step}`,
+							kind: pick(["confirm", "input", "select"] as const)!,
+							message: "go?",
+							createdAt: step,
+						};
 					else delete target.pendingPrompt;
 					store.recordStageStart(RUN_ID, target);
 				}

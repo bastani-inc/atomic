@@ -19,6 +19,7 @@ import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { runFailureClassification } from "../../shared/workflow-failures-classifier.js";
 import { safeExecutorAggregateErrorItems } from "./executor-abort.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
+import type { StageModelFallbackMeta } from "./stage-runner-types.js";
 
 export const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE =
 	"Workflow run completed without creating any workflow stages or durable tool nodes. Create tracked execution with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), ctx.workflow(), or ctx.tool().";
@@ -171,6 +172,40 @@ export interface RunFailureMetadata {
  */
 export function announceSettledStageEdit(store: Store, runId: string, stage: StageSnapshot): void {
 	if (isTerminalStageStatus(stage.status)) store.editRun(runId, () => ({ stageIds: [stage.id] }));
+}
+
+/** Copies a stage session's model fallback metadata onto its stage; true when a field graph snapshots show changed. */
+export function applyModelFallbackMetaToStage(stage: StageSnapshot, meta: StageModelFallbackMeta): boolean {
+	const { model, thinkingLevel, rateLimits, routerSelection, warnings } = stage;
+	if (meta.model !== undefined) stage.model = meta.model;
+	if (meta.thinkingLevel !== undefined) stage.thinkingLevel = meta.thinkingLevel;
+	else delete stage.thinkingLevel;
+	if (meta.attemptedModels !== undefined) stage.attemptedModels = meta.attemptedModels;
+	if (meta.modelAttempts !== undefined) stage.modelAttempts = meta.modelAttempts;
+	if (meta.rateLimits !== undefined) stage.rateLimits = meta.rateLimits;
+	if (meta.routerSelection !== undefined) stage.routerSelection = meta.routerSelection;
+	if (meta.warnings !== undefined) {
+		if (meta.warnings.length > 0) stage.warnings = meta.warnings;
+		else delete stage.warnings;
+	}
+	return (
+		model !== stage.model ||
+		thinkingLevel !== stage.thinkingLevel ||
+		rateLimits !== stage.rateLimits ||
+		routerSelection !== stage.routerSelection ||
+		warnings !== stage.warnings
+	);
+}
+
+/** Copies a stage session's id and file onto its stage; true when either changed. */
+export function applySessionMetaToStage(
+	stage: StageSnapshot,
+	meta: { readonly sessionId: string | undefined; readonly sessionFile: string | undefined },
+): boolean {
+	const { sessionId, sessionFile } = stage;
+	if (meta.sessionId !== undefined) stage.sessionId = meta.sessionId;
+	if (meta.sessionFile !== undefined) stage.sessionFile = meta.sessionFile;
+	return sessionId !== stage.sessionId || sessionFile !== stage.sessionFile;
 }
 
 /**

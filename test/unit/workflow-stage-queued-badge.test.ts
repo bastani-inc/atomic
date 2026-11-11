@@ -240,10 +240,18 @@ describe("a repaint reads queue counts in time that does not follow the stage co
 			pane.render(120);
 			releaseB();
 			releaseC();
-			queueOne("b:1,run-1/c");
+			const releaseSwapped = queueOne("b:1,run-1/c");
 			queueReads = 0;
 			pane.render(120);
 			assert.ok(queueReads >= 203, `the swap re-read every stage's queue count: ${queueReads} reads`);
+			releaseSwapped();
+			const releaseQueuedC = queueOne("c");
+			pane.render(120);
+			releaseQueuedC();
+			queueOne("b");
+			queueReads = 0;
+			pane.render(120);
+			assert.ok(queueReads >= 203, `a queue that moved to another stage re-read every count: ${queueReads} reads`);
 		} finally {
 			pane.dispose();
 		}
