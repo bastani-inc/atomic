@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
-import type { ToolDefinition } from "../src/core/extensions/index.ts";
-import type { SessionManager } from "../src/core/session-manager.ts";
-import { TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.ts";
+import type { ToolDefinition } from "../src/core/extensions/index.js";
+import type { SessionManager } from "../src/core/session-manager.js";
+import { TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.js";
 import {
 	reportUnavailableTools,
 	showUnavailableToolsNotice,
-} from "../src/modes/interactive/interactive-unavailable-tools.ts";
-import { createHarness, type Harness } from "./suite/harness.ts";
-import { createTestResourceLoader } from "./utilities.ts";
+} from "../src/modes/interactive/interactive-unavailable-tools.js";
+import { createHarness, type Harness } from "./suite/harness.js";
+import { createTestResourceLoader } from "./utilities.js";
 
 const harnesses: Harness[] = [];
 afterEach(async () => {

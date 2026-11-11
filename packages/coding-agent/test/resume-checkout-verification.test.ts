@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { prepareSessionResume, sessionResumeOptions } from "../src/core/resume/session-resume.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
-import type { VerifyWorktreeOptions } from "../src/core/worktree-snapshot/restore.ts";
-import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
+import { prepareSessionResume, sessionResumeOptions } from "../src/core/resume/session-resume.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import type { VerifyWorktreeOptions } from "../src/core/worktree-snapshot/restore.js";
+import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 const verification = vi.hoisted(() => ({ calls: 0, inFlight: 0, maxInFlight: 0 }));
 

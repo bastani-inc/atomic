@@ -227,7 +227,7 @@ test("the notice for a lost child spells out its facts, relaunch call and where 
 		"Background subagent `impl-auth` (worker) did not survive the restart and could not be restored: its session file is missing. It is gone: do not send it Intercom messages or wait for its result. " +
 			"Facts: agent worker; task: Implement the auth refactor; run run-9, child run-9:2; cwd /repo/packages/app; worktree /repo wt/run-9-2 (branch atomic/run-9-2); session child-session-id; session file /tmp/atomic-subagent-session-x/run-9/run-2/child.jsonl. " +
 			'To relaunch it: `subagent({ agent: "worker", task: "Implement the auth refactor", cwd: "/repo wt/run-9-2" })`. ' +
-			'Inspect what it left behind with `git -C "/repo wt/run-9-2" status` and `git -C "/repo wt/run-9-2" log abc1234..atomic/run-9-2`; relaunching in its worktree continues from that work.',
+			"Inspect what it left behind with `git -C '/repo wt/run-9-2' status` and `git -C '/repo wt/run-9-2' log abc1234..atomic/run-9-2`; relaunching in its worktree continues from that work.",
 	);
 });
 
@@ -340,4 +340,18 @@ test("one child whose restoration throws does not take the others' notices with 
 		);
 	}
 	assert.equal(subagentChildRestoreNotices(outcomes).length, 2);
+});
+
+test("the inspection commands for a lost child quote a worktree path so the shell reads it literally (#4660)", () => {
+	const record = lostRecord({
+		worktree: {
+			repo: "/repo",
+			path: "/work/$team/it's `id` $(whoami)",
+			branch: "atomic/run-9-2",
+			baseCommit: "abc1234",
+			syntheticPaths: [],
+		},
+	});
+	const [notice] = subagentChildRestoreNotices([unrestorable(record)]);
+	assert.ok(notice?.includes(`git -C '/work/$team/it'\\''s \`id\` $(whoami)' status`), notice);
 });

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
+import type { SessionEntry } from "../src/core/session-manager.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 const scans = vi.hoisted(() => ({ branchWalks: 0, branchEntries: 0, nameEntries: 0 }));
 

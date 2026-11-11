@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { Container } from "@earendil-works/pi-tui";
 import { describe, it, vi } from "vitest";
-import type { SessionRecoveryReport } from "../src/core/agent-session-types.ts";
-import type { SessionRecoveryReason } from "../src/core/extensions/types.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import type { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
-import { formatSessionRecoveryStatus } from "../src/modes/interactive/interactive-session-runtime.ts";
-import { createRpcInputScheduler } from "../src/modes/rpc/rpc-input-scheduler.ts";
+import type { SessionRecoveryReport } from "../src/core/agent-session-types.js";
+import type { SessionRecoveryReason } from "../src/core/extensions/types.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import type { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
+import { formatSessionRecoveryStatus } from "../src/modes/interactive/interactive-session-runtime.js";
+import { createRpcInputScheduler } from "../src/modes/rpc/rpc-input-scheduler.js";
 
 const EMPTY_REPORT: SessionRecoveryReport = { replayed: 0, dropped: 0, completions: 0, notices: [] };
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { isToolDeactivationEntryData, TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.ts";
+import { isToolDeactivationEntryData, TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.js";
 
 test("only a list of tool names is a recorded deactivation (#4660)", () => {
 	assert.equal(TOOL_DEACTIVATION_ENTRY_TYPE, "atomic.tool-deactivation");
