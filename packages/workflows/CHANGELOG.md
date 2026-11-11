@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
+Long workflow runs use less memory and stay fast as stages finish.
+
+- **Released stages.** Finished stages you attached to, messaged or asked return to their saved transcript once closed and reopen under the same Intercom name on demand ([#4642](https://github.com/bastani-inc/atomic/issues/4642)).
+- **Faster graph and progress.** The graph overlay, progress widget, stage starts and store updates no longer rework every finished stage on each change ([#4642](https://github.com/bastani-inc/atomic/issues/4642)).
+
 ### Fixed
 
 - Fixed finished workflow stages that you attached to, messaged or asked over Intercom staying in memory until the session ended: a reopened stage, including one of a completed run you opened for inspection, goes back to its saved transcript once its chat is closed and its turn has ended, and the next attach, message or ask reopens it under the same Intercom name ([#4642](https://github.com/bastani-inc/atomic/issues/4642))

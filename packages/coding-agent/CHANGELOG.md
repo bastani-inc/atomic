@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
+Resuming long sessions is faster, says what it is doing, and keeps your tools and checkout.
+
+- **Faster, visible resume.** Long sessions reach a usable prompt sooner (about 10.4 s down to 6.3 s on a 200,000-entry session), and slow steps are listed on the terminal before the TUI appears ([#4660](https://github.com/bastani-inc/atomic/issues/4660)).
+- **Sessions stay where you left them.** Resume no longer moves a session into a snapshot worktree when its own checkout only changed since the snapshot, and a session moved there earlier returns to its checkout ([#4660](https://github.com/bastani-inc/atomic/issues/4660)).
+- **Tools survive resume.** `subagent`, `workflow`, `todo` and MCP tools come back after a turn ran without them, tools you left out stay out, and startup names any tool that is missing, also under **Missing** in `/tools` ([#4660](https://github.com/bastani-inc/atomic/issues/4660), upstream [#12054](https://github.com/earendil-works/pi/pull/12054)).
+- **Lighter long workflow runs.** Activity frames share frozen graph nodes instead of copying the whole graph for every observer, so long runs stay responsive; copy a node before changing it ([#4642](https://github.com/bastani-inc/atomic/issues/4642)).
+- **Provider and export fixes.** llama.cpp defaults to `llama serve`'s port 9931, Anthropic threads follow the endpoint, `/export` HTML links are clickable, and the standalone binary resolves extension dependencies declared through `main` or `exports` (upstream [#12001](https://github.com/earendil-works/pi/pull/12001), [#12004](https://github.com/earendil-works/pi/pull/12004), [#11987](https://github.com/earendil-works/pi/issues/11987), [#12052](https://github.com/earendil-works/pi/pull/12052), [#12046](https://github.com/earendil-works/pi/pull/12046)).
+- **Simpler `/tasks` details.** The "Foreground wait" action and `app.tasks.foreground` keybinding are gone; they never changed how a task ran ([#4662](https://github.com/bastani-inc/atomic/issues/4662)).
+
 ### Added
 
 - Resuming lists its slow steps on the terminal before the TUI appears (`Loading the session history (0.6 s)…`, `Checking 6 checkouts against the session's snapshots…`, `Restoring … from snapshot …`), a history of 100,000 entries or more before it is read, and any other step that blocks the terminal as soon as it ends; quick resumes stay silent ([#4660](https://github.com/bastani-inc/atomic/issues/4660))

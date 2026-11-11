@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
+Background subagents survive a reboot, and the ones that cannot be restored are easy to relaunch.
+
+- **Reboot-safe sessions.** Child sessions now live under the agent directory instead of the system temporary directory, so a reboot before resume no longer loses them ([#4660](https://github.com/bastani-inc/atomic/issues/4660)).
+- **Actionable restore notices.** Each child is reported on its own, unexpected failures are retried on the next resume, and the notice includes a ready `subagent` call to relaunch it in its worktree ([#4660](https://github.com/bastani-inc/atomic/issues/4660)).
+
 ### Fixed
 
 - Fixed background subagents being lost when a machine rebooted before their parent session was resumed: a parent on the default SQLite session store kept its children's sessions in the system temporary directory, which a reboot clears. They now live under the agent directory (`subagent-sessions/<parent session id>`), and a recorded session file that is gone is reported by its path instead of as a session-store loss ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
