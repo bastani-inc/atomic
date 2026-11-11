@@ -9,10 +9,7 @@ import type {
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
 import { announceSettledStageEdit } from "../../packages/workflows/src/runs/foreground/executor-lifecycle.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
-import {
-	createGraphStoreSnapshot,
-	isPublishedSnapshotArray,
-} from "../../packages/workflows/src/shared/graph-store-snapshot.js";
+import { createGraphStoreSnapshot } from "../../packages/workflows/src/shared/graph-store-snapshot.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { workflowObservationRuntime } from "../../packages/workflows/src/shared/store-factory.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
@@ -23,6 +20,7 @@ import {
 	WorkflowActivityProjector,
 	workflowActivityNodeKey,
 } from "../../packages/workflows/src/shared/workflow-activity.js";
+import { isPublishedSnapshotArray } from "../../packages/workflows/src/shared/workflow-run-ownership.js";
 
 const RUN_ID = "run-4642";
 const LANES = 3;

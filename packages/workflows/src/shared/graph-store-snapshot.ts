@@ -13,6 +13,7 @@ import type {
 } from "./store-types.js";
 import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "./tool-payload-bounds.js";
 import type { WorkflowOutputValues, WorkflowSerializableValue } from "./types.js";
+import { markPublishedSnapshotArray } from "./workflow-run-ownership.js";
 
 export const COMPACT_RESULT_FIELD_LIMIT = 1024;
 const COMPACT_EXIT_OUTPUT_LIMIT = COMPACT_RESULT_FIELD_LIMIT * 4;
@@ -284,23 +285,10 @@ function toolNodeUnchanged(node: ToolNodeSnapshot, projected: ProjectedToolNode)
 	return sameSourceShape(node, projected.shape) && node.parentIds.length === projected.parentCount;
 }
 
-/**
- * Snapshot arrays that are never changed after they are published. JavaScriptCore freezes an array, asks whether it is
- * frozen and reads it element by element (about 90, 50 and 8 ns per element against 1 ns for a plain array), so
- * freezing a run's stages on every store change cost as much as the change itself at a few hundred stages (#4642).
- * The stage and run objects in them stay frozen; lookups index these arrays as they index frozen ones.
- */
-const publishedSnapshotArrays = new WeakSet<readonly object[]>();
-
-/** Whether `items` is an array of a graph snapshot, which no one changes once it is published. */
-export function isPublishedSnapshotArray(items: readonly object[]): boolean {
-	return publishedSnapshotArrays.has(items);
-}
-
 /** Freezes a compact run whose stages and tool nodes are frozen already, without walking or freezing their arrays. */
 function freezeCompactRun(run: RunSnapshot): void {
 	for (const [key, value] of Object.entries(run)) {
-		if (key === "stages" || key === "toolNodes") publishedSnapshotArrays.add(value as readonly object[]);
+		if (key === "stages" || key === "toolNodes") markPublishedSnapshotArray(value as readonly object[]);
 		else deepFreezeGraphValue(value);
 	}
 	Object.freeze(run);

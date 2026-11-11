@@ -1,4 +1,3 @@
-import { isPublishedSnapshotArray } from "./graph-store-snapshot.js";
 import type { RunSnapshot, StageSnapshot } from "./store-types.js";
 
 /** Child run selected by a boundary's status-authoritative ownership metadata. */
@@ -101,6 +100,25 @@ function index<T extends { readonly id: string }>(
 		cache.set(items, byId);
 	}
 	return byId;
+}
+
+/**
+ * Snapshot arrays that are never changed after they are published. JavaScriptCore freezes an array, asks whether it is
+ * frozen and reads it element by element (about 90, 50 and 8 ns per element against 1 ns for a plain array), so
+ * freezing a run's stages on every store change cost as much as the change itself at a few hundred stages (#4642).
+ * The graph snapshot builder leaves its stage and tool-node arrays unfrozen and lists them here; the stage and run
+ * objects in them stay frozen, and lookups index these arrays as they index frozen ones.
+ */
+const publishedSnapshotArrays = new WeakSet<readonly object[]>();
+
+/** Lists an array a graph snapshot publishes; the caller never changes it afterwards. */
+export function markPublishedSnapshotArray(items: readonly object[]): void {
+	publishedSnapshotArrays.add(items);
+}
+
+/** Whether `items` is an array of a graph snapshot, which no one changes once it is published. */
+export function isPublishedSnapshotArray(items: readonly object[]): boolean {
+	return publishedSnapshotArrays.has(items);
 }
 
 /**
