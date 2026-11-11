@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { describe, test } from "vitest";
+import { describe, test, vi } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { isSessionRegistration } from "../../packages/intercom/broker/client-message-validation.js";
 import type { JsonWireValue } from "../../packages/intercom/broker/framing.js";
 import {
 	HOSTED_SESSION_ERROR_CODES,
@@ -23,7 +24,12 @@ import {
 	validateHostSessionsFrame,
 	validateUnhostSessionsFrame,
 } from "../../packages/intercom/broker/hosted-sessions.js";
+import {
+	ReleasedReplyAnsweredError,
+	serializeIntercomReleasedReplyError,
+} from "../../packages/intercom/broker/released-reply-errors.js";
 import * as intercom from "../../packages/intercom/index.js";
+import { IntercomBrokerTimeoutError } from "../../packages/intercom/recoverable-disconnect.js";
 
 const session = {
 	name: "subagent-chat-1",
@@ -306,6 +312,163 @@ describe("hosted-session errors (#4642)", () => {
 	});
 });
 
+/** A chain of `depth` causes, the outermost first. */
+function causeChain(depth: number): Error {
+	let cause: Error | undefined;
+	for (let level = depth; level >= 1; level--)
+		cause = new Error(`level ${level}`, cause === undefined ? {} : { cause });
+	return cause!;
+}
+
+function causeDepth(cause: { readonly cause?: object } | undefined): number {
+	let depth = 0;
+	for (let current = cause; current !== undefined; current = current.cause as { cause?: object } | undefined) depth++;
+	return depth;
+}
+
+describe("hosted-session errors on the wire (#4642)", () => {
+	test("each code has its own hint, which ends the message", () => {
+		const errors = HOSTED_SESSION_ERROR_CODES.map((code) => hostedSessionErrorFor({ code }));
+		assert.equal(new Set(errors.map((error) => error.hint)).size, HOSTED_SESSION_ERROR_CODES.length);
+		for (const error of errors) {
+			assert.ok(error.hint.length > 0);
+			assert.ok(error.message.endsWith(error.hint));
+		}
+	});
+
+	test("the family base keeps its own name, and a plain error with it is one of the family", () => {
+		const base = new IntercomHostedSessionError("invalid_hosted_frame");
+		assert.equal(base.name, "IntercomHostedSessionError");
+		const structural = Object.assign(new Error("x"), {
+			name: "IntercomHostedSessionError",
+			code: "invalid_hosted_frame",
+		});
+		assert.equal(isIntercomHostedSessionError(structural), true);
+		const rehydrated = rehydrateIntercomHostedSessionError(serializeIntercomHostedSessionError(base));
+		assert.equal(rehydrated.constructor, IntercomHostedSessionError);
+		assert.equal(rehydrated.name, "IntercomHostedSessionError");
+	});
+
+	test("a serialized error carries only the fields it has and reads back exactly as sent", () => {
+		assert.deepEqual(serializeIntercomHostedSessionError(new NotHostedSessionError({ sessionId: "s1" })).fields, {
+			sessionId: "s1",
+		});
+		assert.deepEqual(
+			serializeIntercomHostedSessionError(new HostedSessionRequestError("invalid_hosted_session", { key: "k" }))
+				.fields,
+			{ key: "k" },
+		);
+		for (const error of [
+			new NotHostedSessionError({ sessionId: "s1" }),
+			new HostedSessionRequestError("invalid_hosted_session", { key: "k" }),
+			new HostedSessionRequestError("invalid_hosted_frame"),
+			new NotHostedSessionError({ sessionId: "s2" }, { cause: causeChain(2) }),
+		]) {
+			const wire: JsonWireValue = JSON.parse(JSON.stringify(serializeIntercomHostedSessionError(error)));
+			assert.deepEqual(readSerializedIntercomHostedSessionError(wire), wire);
+		}
+	});
+
+	test("a cause is read four levels deep at most, and a malformed one anywhere in them refuses the error", () => {
+		const valid: { [key: string]: JsonWireValue } = JSON.parse(
+			JSON.stringify(serializeIntercomHostedSessionError(new NotHostedSessionError({ sessionId: "s1" }))),
+		);
+		const nested = (depth: number, innermost: JsonWireValue = { name: "Error", message: `level ${depth}` }) => {
+			let cause: JsonWireValue = innermost;
+			for (let level = depth - 1; level >= 1; level--) cause = { name: "Error", message: `level ${level}`, cause };
+			return cause;
+		};
+		assert.equal(causeDepth(readSerializedIntercomHostedSessionError({ ...valid, cause: nested(2) })?.cause), 2);
+		assert.equal(causeDepth(readSerializedIntercomHostedSessionError({ ...valid, cause: nested(6) })?.cause), 4);
+		assert.equal(
+			causeDepth(readSerializedIntercomHostedSessionError({ ...valid, cause: nested(5, { name: 1 }) })?.cause),
+			4,
+			"a malformed cause below the fourth level is never read",
+		);
+		for (const malformed of [nested(2, { name: 1, message: "m" }), nested(3, null), nested(2, { message: "m" })]) {
+			assert.equal(readSerializedIntercomHostedSessionError({ ...valid, cause: malformed }), undefined);
+		}
+	});
+
+	test("a serialized error or refusal that is not one is not read", () => {
+		const valid = serializeIntercomHostedSessionError(new NotHostedSessionError({ sessionId: "s1" }));
+		for (const invalid of [null, [], { ...valid, name: 1 }, { ...valid, fields: [] }, { ...valid, cause: null }]) {
+			assert.equal(
+				readSerializedIntercomHostedSessionError(invalid as JsonWireValue),
+				undefined,
+				JSON.stringify(invalid),
+			);
+		}
+		assert.equal(readHostedSessionRefusal(null), undefined);
+		assert.equal(readHostedSessionRefusal([]), undefined);
+		assert.deepEqual(readHostedSessionRefusal({ code: "not_hosted_by_connection", sessionId: "s1" }), {
+			code: "not_hosted_by_connection",
+			sessionId: "s1",
+		});
+		assert.deepEqual(readHostedSessionRefusal({ code: "invalid_hosted_frame" }), { code: "invalid_hosted_frame" });
+	});
+
+	test("a live route that is not an object refuses its item", () => {
+		for (const liveRoute of [null, "route", ["run", ["stage"], "cap"]]) {
+			assert.deepEqual(
+				validateHostSessionsFrame([{ key: "a", session, liveRoute }] as JsonWireValue),
+				refused("invalid_hosted_session", "a"),
+				JSON.stringify(liveRoute),
+			);
+		}
+	});
+});
+
+describe("a hosted session's registration is checked as a register frame's (#4642)", () => {
+	const registration = { cwd: "/repo", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+
+	test("a registration with every optional field valid is accepted", () => {
+		assert.equal(isSessionRegistration(registration), true);
+		assert.equal(
+			isSessionRegistration({
+				...registration,
+				name: "n",
+				group: "g",
+				groups: ["g", "h"],
+				status: "idle",
+				replyCapability: "terminal",
+				recipientPurpose: "agent",
+			}),
+			true,
+		);
+		for (const field of [{ replyCapability: "live" }, { recipientPurpose: "control" }, { groups: [] }] as const) {
+			assert.equal(isSessionRegistration({ ...registration, ...field }), true, JSON.stringify(field));
+		}
+	});
+
+	test("anything that is not an object, or lacks a required field, is refused", () => {
+		const arrayWithFields = Object.assign([], registration);
+		for (const value of [null, undefined, "session", 7, arrayWithFields]) {
+			assert.equal(isSessionRegistration(value), false, String(value));
+		}
+		for (const field of ["cwd", "model", "pid", "startedAt", "lastActivity"] as const) {
+			const { [field]: _left, ...rest } = registration;
+			assert.equal(isSessionRegistration(rest), false, `without ${field}`);
+			assert.equal(isSessionRegistration({ ...registration, [field]: true }), false, `${field} of the wrong type`);
+		}
+	});
+
+	test("an optional field of the wrong kind is refused", () => {
+		for (const field of [
+			{ name: 1 },
+			{ group: 1 },
+			{ replyCapability: "always" },
+			{ recipientPurpose: "observer" },
+			{ groups: "g" },
+			{ groups: [1] },
+			{ groups: ["g", 1] },
+			{ status: 1 },
+		]) {
+			assert.equal(isSessionRegistration({ ...registration, ...field }), false, JSON.stringify(field));
+		}
+	});
+});
+
 interface WrittenFrame {
 	readonly type: string;
 	readonly requestId: string;
@@ -477,5 +640,190 @@ describe("hosting sessions through the client (#4642)", () => {
 		for (const ack of malformed) {
 			assert.throws(() => internals.handleBrokerMessage(ack), /Invalid hosted_sessions_ack message/);
 		}
+	});
+});
+
+interface PendingInternals {
+	readonly pendingHostedSessionRequests: Map<string, object>;
+	failPending(error: Error): void;
+}
+
+const pendingOf = (client: IntercomClient): PendingInternals => client as unknown as PendingInternals;
+
+describe("hosted-session requests settle once and leave nothing behind (#4642)", () => {
+	test("a client that never registered fails as not connected, before any protocol check", async () => {
+		const client = new IntercomClient();
+		for (const request of [() => client.hostSessions(items(1)), () => client.unhostSessions(["id-k0"])]) {
+			await assert.rejects(request(), (error: Error) => {
+				assert.notEqual(error.name, "IntercomBrokerProtocolError");
+				assert.equal(error.message, "Not connected");
+				return true;
+			});
+		}
+	});
+
+	test("a broker too old for hosting names the refused request", async () => {
+		const { client } = hostingClient({ min: 1, max: 2 });
+		for (const [feature, request] of [
+			["host_sessions", () => client.hostSessions(items(1))],
+			["unhost_sessions", () => client.unhostSessions(["id-k0"])],
+		] as const) {
+			await assert.rejects(request(), (error: Error & { feature?: string }) => error.feature === feature);
+		}
+	});
+
+	test("exactly one frame's worth of sessions, or of removals, goes out as one frame", async () => {
+		const { client, frames } = hostingClient({ min: 1, max: 3 }, (frame) =>
+			frame.type === "host_sessions"
+				? assignAll(frame)
+				: { type: "hosted_sessions_ack", requestId: frame.requestId },
+		);
+		assert.equal((await client.hostSessions(items(HOSTED_SESSION_FRAME_MAX))).length, HOSTED_SESSION_FRAME_MAX);
+		await client.unhostSessions(Array.from({ length: HOSTED_SESSION_FRAME_MAX }, (_, index) => `id-k${index}`));
+		assert.deepEqual(
+			frames.map((frame) => [frame.type, frame.sessions?.length ?? frame.sessionIds?.length]),
+			[
+				["host_sessions", HOSTED_SESSION_FRAME_MAX],
+				["unhost_sessions", HOSTED_SESSION_FRAME_MAX],
+			],
+		);
+	});
+
+	test("an ack that assigns nothing resolves with no assignments, and one for no request is ignored", async () => {
+		const { client, internals } = hostingClient({ min: 1, max: 3 }, (frame) => ({
+			type: "hosted_sessions_ack",
+			requestId: frame.requestId,
+		}));
+		assert.deepEqual(await client.hostSessions(items(1)), []);
+		assert.doesNotThrow(() =>
+			internals.handleBrokerMessage({ type: "hosted_sessions_ack", requestId: "unknown", sessions: [] }),
+		);
+		assert.equal(pendingOf(client).pendingHostedSessionRequests.size, 0);
+	});
+
+	test("an answered or refused request clears its timer and its pending entry", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client } = hostingClient({ min: 1, max: 3 }, (frame) =>
+				frame.type === "host_sessions"
+					? assignAll(frame)
+					: {
+							type: "hosted_sessions_ack",
+							requestId: frame.requestId,
+							refusal: { code: "not_hosted_by_connection", sessionId: "foreign" },
+						},
+			);
+			await client.hostSessions(items(1));
+			assert.equal(vi.getTimerCount(), 0);
+			await assert.rejects(client.unhostSessions(["foreign"]), NotHostedSessionError);
+			assert.equal(vi.getTimerCount(), 0);
+			assert.equal(pendingOf(client).pendingHostedSessionRequests.size, 0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a request whose frame cannot be written fails with that error and leaves nothing pending", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client, internals } = hostingClient({ min: 1, max: 3 });
+			const broken = new Error("socket write failed");
+			internals.socket.write = () => {
+				throw broken;
+			};
+			await assert.rejects(client.hostSessions(items(1)), (error: Error) => error === broken);
+			assert.equal(vi.getTimerCount(), 0);
+			assert.equal(pendingOf(client).pendingHostedSessionRequests.size, 0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a request still pending when the connection fails is rejected with the connection's failure", async () => {
+		const { client } = hostingClient({ min: 1, max: 3 });
+		const hosting = client.hostSessions(items(1));
+		const gone = new Error("connection closed");
+		pendingOf(client).failPending(gone);
+		await assert.rejects(hosting, (error: Error) => error === gone);
+		assert.equal(pendingOf(client).pendingHostedSessionRequests.size, 0);
+	});
+
+	test("a request the broker never answers fails as a broker timeout and is no longer pending", async () => {
+		vi.useFakeTimers();
+		try {
+			const { client, internals } = hostingClient({ min: 1, max: 3 });
+			Object.assign(internals.socket, { destroy() {} });
+			const hosting = assert.rejects(client.hostSessions(items(1)), (error: Error) => {
+				assert.ok(error instanceof IntercomBrokerTimeoutError);
+				assert.equal(error.message, "Hosted-session request timeout");
+				return true;
+			});
+			await vi.advanceTimersByTimeAsync(10_000);
+			await hosting;
+			assert.equal(pendingOf(client).pendingHostedSessionRequests.size, 0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("messages and delivery failures of hosted sessions (#4642)", () => {
+	const from = { id: "asker", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 };
+	const message = { id: "m1", timestamp: 1, content: { text: "hi" } };
+
+	test("a supervisor message is delivered with its channel; a malformed sender, message or channel is refused", () => {
+		const { client, internals } = hostingClient({ min: 1, max: 3 });
+		const channels: (string | undefined)[] = [];
+		client.on("message", (_from: object, _message: object, channel?: string) => channels.push(channel));
+		internals.handleBrokerMessage({ type: "message", from, message, channel: "supervisor" });
+		assert.deepEqual(channels, ["supervisor"]);
+		for (const malformed of [
+			{ type: "message", from: { id: "asker" }, message },
+			{ type: "message", from, message: { id: "m1" } },
+			{ type: "message", from, message, channel: "other" },
+		]) {
+			assert.throws(() => internals.handleBrokerMessage(malformed as JsonWireValue), /Invalid message event/);
+		}
+		assert.deepEqual(channels, ["supervisor"]);
+	});
+
+	function failingSends(error?: JsonWireValue, reasonCode?: string) {
+		return hostingClient({ min: 1, max: 3 }, (frame) => {
+			const sent = frame as WrittenFrame & { message: { id: string }; attemptId: string };
+			return {
+				type: "delivery_failed",
+				messageId: sent.message.id,
+				attemptId: sent.attemptId,
+				reason: "refused",
+				...(reasonCode === undefined ? {} : { reasonCode }),
+				...(error === undefined ? {} : { error }),
+			};
+		});
+	}
+
+	test("a send refused for its hosted sender fails with NotHostedSessionError", async () => {
+		const wire: JsonWireValue = JSON.parse(
+			JSON.stringify(serializeIntercomHostedSessionError(new NotHostedSessionError({ sessionId: "stage-1" }))),
+		);
+		const { client } = failingSends(wire, "not_hosted_by_connection");
+		const sent = await client.send("asker", { text: "answer", hostedSender: "stage-1" });
+		assert.equal(sent.delivered, false);
+		assert.equal(sent.reasonCode, "not_hosted_by_connection");
+		assert.ok(sent.error instanceof NotHostedSessionError);
+		assert.equal(sent.error.sessionId, "stage-1");
+	});
+
+	test("a released-subagent refusal still arrives as its own typed error, and a failure without one has none", async () => {
+		const fields = { messageId: "m", questionId: "q", childName: "child" };
+		const wire: JsonWireValue = JSON.parse(
+			JSON.stringify(serializeIntercomReleasedReplyError(new ReleasedReplyAnsweredError(fields))),
+		);
+		const answered = await failingSends(wire, "released_reply_answered").client.send("asker", { text: "late" });
+		assert.ok(answered.error instanceof ReleasedReplyAnsweredError);
+		assert.equal(answered.error.questionId, "q");
+
+		const plain = await failingSends().client.send("asker", { text: "x" });
+		assert.equal(plain.delivered, false);
+		assert.equal(Object.hasOwn(plain, "error"), false);
 	});
 });

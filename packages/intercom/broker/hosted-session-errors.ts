@@ -1,6 +1,8 @@
 import type { HostedSessionRefusal, HostedSessionRefusalCode } from "../types.js";
 import type { JsonWireValue } from "./framing.js";
+import { isWireObject } from "./hosted-sessions.js";
 import { rehydrateErrorCause, type SerializedErrorCause, serializeErrorCause } from "./released-child-errors.js";
+import { readCause } from "./released-reply-errors.js";
 
 export type IntercomHostedSessionErrorCode = HostedSessionRefusalCode;
 
@@ -147,23 +149,8 @@ export function rehydrateIntercomHostedSessionError(
 	if (serialized.name === REQUEST_NAME)
 		return new HostedSessionRequestError(serialized.code, serialized.fields, options);
 	const error = new IntercomHostedSessionError(serialized.code, serialized.fields, options);
-	if (serialized.name !== BASE_NAME) Object.defineProperty(error, "name", { value: serialized.name });
+	Object.defineProperty(error, "name", { value: serialized.name });
 	return error;
-}
-
-type WireObject = { readonly [key: string]: JsonWireValue };
-
-const isWireObject = (value: JsonWireValue | undefined): value is WireObject =>
-	typeof value === "object" && value !== null && !Array.isArray(value);
-
-const MAX_CAUSE_DEPTH = 4;
-
-function readCause(value: JsonWireValue | undefined, depth: number): SerializedErrorCause | undefined | false {
-	if (value === undefined) return undefined;
-	if (!isWireObject(value) || typeof value.name !== "string" || typeof value.message !== "string") return false;
-	const next = depth < MAX_CAUSE_DEPTH ? readCause(value.cause, depth + 1) : undefined;
-	if (next === false) return false;
-	return { name: value.name, message: value.message, ...(next === undefined ? {} : { cause: next }) };
 }
 
 /** Validate a refusal read off the wire; `undefined` when it is not one. */

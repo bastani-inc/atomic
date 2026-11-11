@@ -23,7 +23,7 @@ export type UnhostSessionsFrameValidation =
 
 type WireObject = { readonly [key: string]: JsonWireValue };
 
-const isWireObject = (value: JsonWireValue | undefined): value is WireObject =>
+export const isWireObject = (value: JsonWireValue | undefined): value is WireObject =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
 const isNonEmptyString = (value: JsonWireValue | undefined): value is string =>

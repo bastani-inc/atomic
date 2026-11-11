@@ -119,7 +119,6 @@ function askPrompt(from: SessionInfo, message: Message): string {
  */
 export class ReleasedStagePeers {
 	private readonly peers = new Map<string, ReleasedStagePeer>();
-	private readonly bySessionId = new Map<string, ReleasedStagePeer>();
 	private readonly hostAddress = `released-stages:${randomUUID()}`;
 	private client: IntercomClient | null = null;
 	private connecting: Promise<IntercomClient> | null = null;
@@ -159,14 +158,13 @@ export class ReleasedStagePeers {
 	async disconnectAll(): Promise<void> {
 		this.epoch += 1;
 		this.peers.clear();
-		this.bySessionId.clear();
-		if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+		clearTimeout(this.reconnectTimer ?? undefined);
 		this.reconnectTimer = null;
 		this.reconnectAttempt = 0;
 		const client = this.client;
 		this.client = null;
 		// An attempt still connecting sees the new epoch and closes its own connection.
-		if (this.connecting !== null) await Promise.allSettled([this.connecting]);
+		await Promise.allSettled([this.connecting]);
 		await client?.disconnect();
 	}
 
@@ -197,13 +195,12 @@ export class ReleasedStagePeers {
 						const peer = byKey.get(key);
 						if (peer === undefined || peer.hostedOn !== client) continue;
 						peer.sessionId = sessionId;
-						this.bySessionId.set(sessionId, peer);
 					}
 					return undefined;
 				},
 				(error) => {
-					for (const peer of chunk)
-						if (peer.hostedOn === client && peer.sessionId === undefined) peer.hostedOn = undefined;
+					// Hosting them again on this connection is up to the next attempt.
+					for (const peer of chunk) if (peer.hostedOn === client) peer.hostedOn = undefined;
 					return toError(error);
 				},
 			);
@@ -253,10 +250,7 @@ export class ReleasedStagePeers {
 		const { hostedOn, sessionId } = peer;
 		peer.hostedOn = undefined;
 		peer.sessionId = undefined;
-		if (sessionId === undefined) return;
-		if (this.bySessionId.get(sessionId) === peer) this.bySessionId.delete(sessionId);
-		if (hostedOn === undefined || hostedOn !== this.client) return;
-		await hostedOn.unhostSessions([sessionId]);
+		if (sessionId !== undefined && hostedOn === this.client) await hostedOn.unhostSessions([sessionId]);
 	}
 
 	private connect(): Promise<IntercomClient> {
@@ -265,7 +259,7 @@ export class ReleasedStagePeers {
 			const attempt = this.connectOnce();
 			this.connecting = attempt;
 			const settled = (): void => {
-				if (this.connecting === attempt) this.connecting = null;
+				this.connecting = null;
 			};
 			attempt.then(settled, settled);
 		}
@@ -280,15 +274,10 @@ export class ReleasedStagePeers {
 		client.on("hosted_message", (recipient: string, from: SessionInfo, message: Message, channel?: "supervisor") => {
 			if (this.client === client) this.receive(client, recipient, from, message, channel);
 		});
+		// Peers keep naming the closed connection until they are hosted on the next one; nothing it sends is read.
 		client.on("disconnected", () => {
 			if (this.client !== client) return;
 			this.client = null;
-			this.bySessionId.clear();
-			for (const peer of this.peers.values()) {
-				if (peer.hostedOn !== client) continue;
-				peer.hostedOn = undefined;
-				peer.sessionId = undefined;
-			}
 			this.scheduleReconnect();
 		});
 		client.on("error", () => {
@@ -317,7 +306,7 @@ export class ReleasedStagePeers {
 			await client.disconnect();
 			throw error;
 		}
-		if (epoch !== this.epoch || this.peers.size === 0) {
+		if (epoch !== this.epoch) {
 			await client.disconnect();
 			throw new IntercomClientDisconnectedError();
 		}
@@ -350,7 +339,8 @@ export class ReleasedStagePeers {
 		message: Message,
 		channel: "supervisor" | undefined,
 	): void {
-		const peer = this.bySessionId.get(recipient);
+		// Broker session ids are never reused, so at most one peer has this one.
+		const peer = [...this.peers.values()].find((candidate) => candidate.sessionId === recipient);
 		// A session this connection no longer hosts: the broker told its askers it left.
 		if (peer === undefined) return;
 		if (message.expectsReply !== true || channel !== undefined) {

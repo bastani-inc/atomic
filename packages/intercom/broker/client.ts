@@ -1211,7 +1211,7 @@ export class IntercomClient extends EventEmitter {
       }
       case "hosted_sessions_ack": {
         const { requestId, refusal, sessions } = brokerMessage;
-        const parsedRefusal = refusal === undefined ? undefined : readHostedSessionRefusal(refusal as JsonWireValue);
+        const parsedRefusal = readHostedSessionRefusal(refusal as JsonWireValue | undefined);
         const assignments = sessions === undefined ? [] : readHostedSessionAssignments(sessions as JsonWireValue);
         if (typeof requestId !== "string" || (refusal !== undefined && parsedRefusal === undefined) || assignments === undefined) {
           throw new Error("Invalid hosted_sessions_ack message");
@@ -1262,7 +1262,7 @@ export class IntercomClient extends EventEmitter {
 		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
 		const wireError = brokerMessage.error as JsonWireValue | undefined;
 		const releasedReplyError = readSerializedIntercomReleasedReplyError(wireError);
-		const hostedSessionError = releasedReplyError === undefined ? readSerializedIntercomHostedSessionError(wireError) : undefined;
+		const hostedSessionError = readSerializedIntercomHostedSessionError(wireError);
 		const error = releasedReplyError ?? hostedSessionError;
 		const wireRecipientError = brokerMessage.recipientError as JsonWireValue | undefined;
 		const recipientError = readSerializedIntercomRecipientGoneError(wireRecipientError);
@@ -1777,17 +1777,14 @@ export class IntercomClient extends EventEmitter {
     }
   }
 
+  /** Its callers are async: a connection that is not active rejects their promise. */
   private hostedSessionRequest(frame: Record<string, unknown>): Promise<HostedSessionAssignment[]> {
-    let socket: net.Socket;
-    try {
-      socket = this.requireActiveSocket();
-    } catch (error) {
-      return Promise.reject(toError(error));
-    }
+    const socket = this.requireActiveSocket();
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
+      // Every other way the request settles clears this timer, so it only ever finds the request still pending.
       const timeout = setTimeout(() => {
-        if (!this.pendingHostedSessionRequests.delete(requestId)) return;
+        this.pendingHostedSessionRequests.delete(requestId);
         void this.requestTimeout(socket, new Error("Hosted-session request timeout")).then(reject);
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingHostedSessionRequests.set(requestId, {
@@ -2136,7 +2133,8 @@ export class IntercomClient extends EventEmitter {
       ...(options.onReplyTarget === undefined ? {} : { resolveReplyTarget: true as const }),
 			// #3760: this client understands `send_held`, so the broker may hold the send for a subagent being restored.
 			...(type === "send" ? { awaitRestoringRecipient: true as const } : {}),
-			...(options.hostedSender === undefined ? {} : { hostedSender: options.hostedSender }),
+			// The frame is JSON: an undefined sender is left out of it.
+			hostedSender: options.hostedSender,
 			message,
 			attemptId: acquired.attempt.attemptId,
 			...extra,

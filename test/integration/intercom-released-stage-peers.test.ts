@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
-import type net from "node:net";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, test } from "vitest";
 import type { IntercomClient as IntercomClientType } from "../../packages/intercom/broker/client.js";
+import type { JsonWireValue } from "../../packages/intercom/broker/framing.js";
 import type {
 	ReleasedStageAnnouncement,
 	ReleasedStagePeers as ReleasedStagePeersType,
@@ -34,6 +35,8 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { HostedSessionRequestError, NotHostedSessionError, isNotHostedSessionError } = await import(
 	"../../packages/intercom/broker/hosted-session-errors.js"
 );
+const { createMessageReader, writeMessage } = await import("../../packages/intercom/broker/framing.js");
+const { getBrokerSocketPath } = await import("../../packages/intercom/broker/paths.js");
 
 let broker: ChildProcess | undefined;
 
@@ -450,4 +453,338 @@ test("an ask to a released stage's workflow path reaches its hosted session (#46
 	assert.equal(asked.delivered, true);
 	assert.equal(asked.reply?.content.text, "stage-0 answers: any blockers?");
 	assert.deepEqual(fixture.answered, ["stage-0"]);
+});
+
+/** A connection that speaks the broker protocol frame by frame, as a client this repository does not ship might. */
+interface RawConnection {
+	send(frame: Record<string, JsonWireValue>): void;
+	/** The next frame of `type` the broker writes. */
+	next(type: string): Promise<{ readonly [key: string]: JsonWireValue }>;
+	/** Settles when the broker ends the connection. */
+	readonly closed: Promise<void>;
+}
+
+async function rawConnection(
+	group: string,
+	options: { readonly protocolMax?: number; readonly register?: boolean; readonly recipientPurpose?: "control" } = {},
+): Promise<RawConnection> {
+	const socket = net.createConnection(getBrokerSocketPath());
+	const frames: { readonly [key: string]: JsonWireValue }[] = [];
+	const waiters: (() => void)[] = [];
+	const closed = new Promise<void>((resolveClosed) => socket.once("close", () => resolveClosed()));
+	socket.on("error", () => {});
+	socket.on(
+		"data",
+		createMessageReader(
+			(frame) => {
+				frames.push(frame as { readonly [key: string]: JsonWireValue });
+				for (const wake of waiters.splice(0)) wake();
+			},
+			() => socket.destroy(),
+		),
+	);
+	cleanups.push(async () => {
+		socket.destroy();
+	});
+	await new Promise<void>((resolveConnect) => socket.once("connect", () => resolveConnect()));
+	const connection: RawConnection = {
+		send: (frame) => writeMessage(socket, frame),
+		async next(type) {
+			const deadline = Date.now() + POLL_TIMEOUT_MS;
+			for (;;) {
+				const index = frames.findIndex((frame) => frame.type === type);
+				if (index !== -1) return frames.splice(index, 1)[0]!;
+				if (Date.now() > deadline) throw new Error(`the broker never wrote ${type}`);
+				await new Promise<void>((wake) => {
+					waiters.push(wake);
+					setTimeout(wake, 25);
+				});
+			}
+		},
+		closed,
+	};
+	if (options.register !== false) {
+		connection.send({
+			type: "register",
+			session: {
+				...registration(`raw-${randomUUID()}`, group),
+				...(options.recipientPurpose === undefined ? {} : { recipientPurpose: options.recipientPurpose }),
+			} as unknown as JsonWireValue,
+			protocol: { min: 1, max: options.protocolMax ?? 3 },
+			registrationGroup: group,
+		});
+		await connection.next("registered");
+	}
+	return connection;
+}
+
+async function endsConnection(connection: RawConnection): Promise<boolean> {
+	return Promise.race([
+		connection.closed.then(() => true),
+		new Promise<boolean>((resolveTimeout) => setTimeout(() => resolveTimeout(false), POLL_TIMEOUT_MS)),
+	]);
+}
+
+test("the broker itself refuses a malformed host or removal frame with its refusal code (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const raw = await rawConnection(group);
+	const nameless = { key: "nameless", session: registration(undefined, group) as unknown as JsonWireValue };
+
+	raw.send({ type: "host_sessions", requestId: "empty", sessions: [] });
+	assert.deepEqual(await raw.next("hosted_sessions_ack"), {
+		type: "hosted_sessions_ack",
+		requestId: "empty",
+		refusal: { code: "invalid_hosted_frame" },
+	});
+	raw.send({ type: "host_sessions", requestId: "nameless", sessions: [nameless] });
+	assert.deepEqual(await raw.next("hosted_sessions_ack"), {
+		type: "hosted_sessions_ack",
+		requestId: "nameless",
+		refusal: { code: "invalid_hosted_session", key: "nameless" },
+	});
+	raw.send({ type: "unhost_sessions", requestId: "none", sessionIds: [] });
+	assert.deepEqual(await raw.next("hosted_sessions_ack"), {
+		type: "hosted_sessions_ack",
+		requestId: "none",
+		refusal: { code: "invalid_hosted_frame" },
+	});
+	const asker = await connectAsker(group);
+	assert.deepEqual(await asker.listed(), [], "nothing was hosted");
+});
+
+test("a send as a session the connection does not host is refused for that attempt, whatever its message (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const raw = await rawConnection(group);
+	const message = { id: "m-1", timestamp: 1, content: { text: "spoofed" } };
+
+	raw.send({ type: "send", to: "anyone", message, attemptId: "attempt-2", hostedSender: "not-mine" });
+	const refused = await raw.next("delivery_failed");
+	assert.equal(refused.messageId, "m-1");
+	assert.equal(refused.attemptId, "attempt-2");
+	assert.equal(refused.reasonCode, "not_hosted_by_connection");
+
+	raw.send({ type: "send", to: "anyone", message: { text: "no id" }, attemptId: 5, hostedSender: "not-mine" });
+	const unnamed = await raw.next("delivery_failed");
+	assert.equal(unnamed.messageId, "unknown");
+	assert.equal(Object.hasOwn(unnamed, "attemptId"), false, "an attempt id that is not one is not echoed");
+});
+
+test("a live route asked for by a control session is refused as registrant_not_agent (#4642)", async () => {
+	const runId = randomUUID();
+	const group = `workflow:${runId}`;
+	const owner = new IntercomClient();
+	await owner.connect(
+		{ ...registration(undefined, group), recipientPurpose: "control" },
+		undefined,
+		undefined,
+		undefined,
+		group,
+	);
+	cleanups.push(() => owner.disconnect());
+	await owner.registerPendingStageRouteAcknowledged(runId, group, "the-capability", []);
+	const control = await rawConnection(group, { recipientPurpose: "control" });
+
+	control.send({
+		type: "register_live_workflow_stage_route",
+		requestId: "control-route",
+		runId,
+		stageKeys: ["reviewer"],
+		capability: "the-capability",
+	});
+
+	const refusal = await control.next("registration_failed");
+	assert.equal(refusal.code, "registrant_not_agent");
+	assert.equal(await endsConnection(control), true);
+});
+
+test("a hosting request the broker cannot accept ends that connection and no other (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const session = { key: "k", session: registration("stage", group) as unknown as JsonWireValue };
+	const requests: {
+		readonly label: string;
+		readonly options?: Parameters<typeof rawConnection>[1];
+		readonly frame: Record<string, JsonWireValue>;
+	}[] = [
+		{
+			label: "before registering",
+			options: { register: false },
+			frame: { type: "host_sessions", requestId: "r", sessions: [session] },
+		},
+		{
+			label: "removal before registering",
+			options: { register: false },
+			frame: { type: "unhost_sessions", requestId: "r", sessionIds: ["x"] },
+		},
+		{
+			label: "from a protocol-2 client",
+			options: { protocolMax: 2 },
+			frame: { type: "host_sessions", requestId: "r", sessions: [session] },
+		},
+		{ label: "without a request id", frame: { type: "host_sessions", sessions: [session] } },
+		{ label: "removal without a request id", frame: { type: "unhost_sessions", sessionIds: ["x"] } },
+		{
+			label: "a sender that is not an id",
+			frame: {
+				type: "send",
+				to: "anyone",
+				message: { id: "m", timestamp: 1, content: { text: "x" } },
+				attemptId: "a",
+				hostedSender: 7,
+			},
+		},
+	];
+	for (const request of requests) {
+		const raw = await rawConnection(group, request.options);
+		raw.send(request.frame);
+		assert.equal(await endsConnection(raw), true, request.label);
+	}
+	const asker = await connectAsker(group);
+	assert.deepEqual(await asker.listed(), [], "nothing was hosted");
+});
+
+test("a hosted session whose live route is refused stays hosted under its name, with the refusal reported (#4642)", async () => {
+	const runId = randomUUID();
+	const group = `workflow:${runId}`;
+	const owner = new IntercomClient();
+	await owner.connect(
+		{ ...registration(undefined, group), recipientPurpose: "control" },
+		undefined,
+		undefined,
+		undefined,
+		group,
+	);
+	cleanups.push(() => owner.disconnect());
+	await owner.registerPendingStageRouteAcknowledged(runId, group, "the-capability", []);
+	const host = await connectAsker(group);
+	const hosted = (
+		name: string,
+		liveRoute: { runId: string; capability: string; stageKeys?: string[] },
+		sessionGroup = group,
+	) => ({
+		key: name,
+		session: { ...registration(name, sessionGroup), status: RELEASED_STAGE_STATUS },
+		liveRoute: { stageKeys: [name], ...liveRoute },
+	});
+
+	const assigned = await host.client.hostSessions([
+		hosted("routed", { runId, capability: "the-capability" }),
+		hosted("wrong-capability", { runId, capability: "another" }),
+		hosted("no-owner", { runId: randomUUID(), capability: "the-capability" }),
+		hosted("path-key", { runId, capability: "the-capability", stageKeys: ["a/b"] }),
+		hosted("glob-key", { runId, capability: "the-capability", stageKeys: ["a*"] }),
+		hosted("one-bad-key", { runId, capability: "the-capability", stageKeys: ["fine", "a/b"] }),
+		hosted("other-group", { runId, capability: "the-capability" }, "workflow:elsewhere"),
+	]);
+
+	assert.deepEqual(
+		assigned.map(({ key, liveRouteRefusal }) => [key, liveRouteRefusal ?? "none"]),
+		[
+			["routed", "none"],
+			["wrong-capability", "capability_mismatch"],
+			["no-owner", "owner_missing"],
+			["path-key", "invalid_stage_key"],
+			["glob-key", "invalid_stage_key"],
+			["one-bad-key", "invalid_stage_key"],
+			["other-group", "group_mismatch"],
+		],
+	);
+	const { group: _group, ...groupsOnly } = registration("groups-only-routed", group);
+	const [routedByGroups] = await host.client.hostSessions([
+		{
+			key: "groups-only-routed",
+			session: { ...groupsOnly, groups: [group], status: RELEASED_STAGE_STATUS },
+			liveRoute: { runId, capability: "the-capability", stageKeys: ["groups-only-routed"] },
+		},
+	]);
+	assert.equal(routedByGroups?.liveRouteRefusal, undefined, "its first group is its registration group");
+	assert.deepEqual(
+		(await host.listed()).map((session) => session.name).sort(),
+		["glob-key", "groups-only-routed", "no-owner", "one-bad-key", "path-key", "routed", "wrong-capability"],
+		"every refused session stays hosted; the one in another group is listed there",
+	);
+});
+
+test("a hosted session is listed in its groups as given, trimmed, without a single group of its own (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const host = await connectAsker(group);
+	const { group: _group, ...withoutGroup } = registration("groups-only", group);
+	await host.client.hostSessions([
+		{ key: "groups-only", session: { ...withoutGroup, groups: [group], status: RELEASED_STAGE_STATUS } },
+		{ key: "padded", session: { ...registration("padded", `  ${group}  `), status: RELEASED_STAGE_STATUS } },
+	]);
+
+	const listed = await host.listed();
+	assert.deepEqual(listed.map((session) => [session.name, session.group]).sort(), [
+		["groups-only", group],
+		["padded", group],
+	]);
+});
+
+test("a removed hosted session is no longer the connection's to send as (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const host = await connectAsker(group);
+	const [assignment] = await host.client.hostSessions([
+		{ key: "removed", session: { ...registration("removed", group), status: RELEASED_STAGE_STATUS } },
+	]);
+
+	await host.client.unhostSessions([assignment!.sessionId]);
+
+	assert.deepEqual(await host.listed(), []);
+	const sent = await host.client.send(host.client.sessionId!, { text: "as it", hostedSender: assignment!.sessionId });
+	assert.equal(sent.delivered, false);
+	assert.ok(sent.error instanceof NotHostedSessionError);
+	assert.equal(sent.error.sessionId, assignment!.sessionId);
+});
+
+test("a hosted session's message to a pending workflow stage carries its trimmed name and return address (#4642)", async () => {
+	const runId = randomUUID();
+	const group = `workflow:${runId}`;
+	const capability = randomUUID();
+	const owner = new IntercomClient();
+	await owner.connect(
+		{ ...registration(undefined, group), recipientPurpose: "control" },
+		undefined,
+		undefined,
+		undefined,
+		group,
+	);
+	cleanups.push(() => owner.disconnect());
+	const seen = new Promise<{ senderRegistrationName?: string; senderReturnAddress?: string }>((resolveSeen) => {
+		owner.on(
+			"pending_stage_message",
+			(request: { requestId: string; senderRegistrationName?: string; senderReturnAddress?: string }) => {
+				owner.respondPendingStageMessage(request.requestId, { outcome: "queued", position: 1 });
+				resolveSeen(request);
+			},
+		);
+	});
+	await owner.registerPendingStageRouteAcknowledged(runId, group, capability, [
+		{
+			stageId: "next",
+			stageName: "next",
+			target: `workflow:${runId}/next`,
+			lifecycle: "pending",
+			routeEligible: true,
+			recipientPurpose: "agent",
+			group,
+		},
+	]);
+	const host = await connectAsker(group);
+	const [assignment] = await host.client.hostSessions([
+		{
+			key: "released",
+			session: { ...registration("  released-name  ", group), status: RELEASED_STAGE_STATUS },
+			returnAddress: "released-session:released-stage",
+		},
+	]);
+
+	const sent = await host.client.send(`workflow:${runId}/next`, {
+		text: "for the next stage",
+		hostedSender: assignment!.sessionId,
+	});
+
+	assert.equal(sent.queued, true, JSON.stringify(sent));
+	const request = await seen;
+	assert.equal(request.senderRegistrationName, "released-name");
+	assert.equal(request.senderReturnAddress, "released-session:released-stage");
 });
