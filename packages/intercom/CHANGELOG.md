@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
 ### Added
 
 - Added hosted sessions: `IntercomClient.hostSessions` lists and routes many lightweight sessions over one broker connection, with typed `HostedSessionRequestError` and `NotHostedSessionError` refusals. The broker now speaks Intercom protocol 1 to 3, so the next session of this version replaces an older running broker ([#4642](https://github.com/bastani-inc/atomic/issues/4642))

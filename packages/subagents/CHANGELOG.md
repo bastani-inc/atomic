@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
 ### Fixed
 
 - Fixed background subagents being lost when a machine rebooted before their parent session was resumed: a parent on the default SQLite session store kept its children's sessions in the system temporary directory, which a reboot clears. They now live under the agent directory (`subagent-sessions/<parent session id>`), and a recorded session file that is gone is reported by its path instead of as a session-store loss ([#4660](https://github.com/bastani-inc/atomic/issues/4660))

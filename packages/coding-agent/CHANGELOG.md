@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
+Resuming long sessions is faster and keeps your tools and subagents, long workflow runs stay responsive, and interrupting a response is calmer.
+
+- **Faster, more faithful resume.** Resume shows its slow steps before the TUI appears, keeps the tools a session last ran with, brings back `subagent`, `workflow`, `todo` and MCP tools that were missing for a turn, stays in your own checkout instead of a snapshot worktree, and reaches a usable prompt sooner on long histories. Background subagents survive a reboot, and one that cannot be restored is reported with a ready call to relaunch it ([#4660](https://github.com/bastani-inc/atomic/issues/4660), [#4664](https://github.com/bastani-inc/atomic/pull/4664)).
+- **Long workflow runs stay light.** The graph overlay and progress widget no longer slow down as stages finish, finished stages you reopened leave memory again once their chat closes, and released stages share one Intercom connection per session ([#4642](https://github.com/bastani-inc/atomic/issues/4642), [#4659](https://github.com/bastani-inc/atomic/pull/4659)).
+- **Calmer interrupts and Ctrl+C.** Ctrl+C clears typed text before stopping work and exits only on a second press from an empty, idle editor, and an interrupted response ends with a muted `Interrupted by user` line instead of a red error ([#4670](https://github.com/bastani-inc/atomic/pull/4670)).
+- **Simpler `/tasks` details.** The "Foreground wait" action, which never changed how a task ran, is gone ([#4662](https://github.com/bastani-inc/atomic/issues/4662), [#4665](https://github.com/bastani-inc/atomic/pull/4665)).
+- **Upstream fixes.** MCP tools loaded by `tool_search` survive resume and `/reload`, `/export` links are clickable, the standalone binary resolves extension dependencies declared in `main` or `exports`, llama.cpp defaults to port 9931, and Anthropic message threads follow the `api.anthropic.com` endpoint ([#4663](https://github.com/bastani-inc/atomic/pull/4663)).
+
 ### Added
 
 - Resuming lists its slow steps on the terminal before the TUI appears (`Loading the session history (0.6 s)…`, `Checking 6 checkouts against the session's snapshots…`, `Restoring … from snapshot …`), a history of 100,000 entries or more before it is read, and any other step that blocks the terminal as soon as it ends; quick resumes stay silent ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
@@ -10,8 +20,8 @@
 ### Changed
 
 - Workflow activity frames from `ctx.observeWorkflowActivity` and `session.workflows.observe`, and `workflow_activity_changed` events, share their root graph's nodes as deep-frozen objects instead of cloning every node for every observer, so a change to a long run no longer costs a copy of its whole graph. Each frame still has its own root, graph and `nodes` array; copy a node before changing it ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
-- Ctrl+C clears the editor first when it has text, even while a response is streaming; with an empty editor it stops running work at once, as Escape does. On an empty, idle editor the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits. Clearing text or stopping work never counts toward exiting, so a quick second press after clearing no longer quits Atomic.
-- A response you interrupt with Escape or Ctrl+C ends with a muted `Interrupted by user` line instead of a red provider message such as "This operation was aborted" or "Aborted after 2 retry attempts".
+- Ctrl+C clears the editor first when it has text, even while a response is streaming; with an empty editor it stops running work at once, as Escape does. On an empty, idle editor the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits. Clearing text or stopping work never counts toward exiting, so a quick second press after clearing no longer quits Atomic ([#4670](https://github.com/bastani-inc/atomic/pull/4670))
+- A response you interrupt with Escape or Ctrl+C ends with a muted `Interrupted by user` line instead of a red provider message such as "This operation was aborted" or "Aborted after 2 retry attempts" ([#4670](https://github.com/bastani-inc/atomic/pull/4670))
 
 ### Fixed
 
@@ -29,7 +39,7 @@
 ### Removed
 
 - Removed the "Foreground wait" action and the `app.tasks.foreground` keybinding from the `/tasks` detail page. It only showed a passing `yielded` or `settled` line and briefly dropped the task from the running-tasks count; it never changed how the task ran or what the agent was told ([#4662](https://github.com/bastani-inc/atomic/issues/4662))
-- Removed the "Loading remote component…" line that briefly appeared while an interactive component drew its first frame.
+- Removed the "Loading remote component…" line that briefly appeared while an interactive component drew its first frame ([#4670](https://github.com/bastani-inc/atomic/pull/4670))
 
 ## [0.9.78] - 2026-11-11
 

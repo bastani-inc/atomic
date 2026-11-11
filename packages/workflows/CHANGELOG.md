@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.79-alpha.1] - 2026-11-11
+
 ### Fixed
 
 - Fixed finished workflow stages that you attached to, messaged or asked over Intercom staying in memory until the session ended: a reopened stage, including one of a completed run you opened for inspection, goes back to its saved transcript once its chat is closed and its turn has ended, and the next attach, message or ask reopens it under the same Intercom name ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
