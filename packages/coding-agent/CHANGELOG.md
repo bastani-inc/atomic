@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed the llama.cpp setup guide telling you to verify the installation with `llama cli --version`; it now uses the unified `llama --version` entry point (upstream [#11958](https://github.com/earendil-works/pi/pull/11958))
+- Fixed `/share` crashing Atomic when the `gh` command fails to start while creating the gist; it now shows the error (upstream [#12025](https://github.com/earendil-works/pi/pull/12025))
 
 ## [0.9.76] - 2026-11-10
 
