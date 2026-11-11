@@ -67,6 +67,8 @@ interface FixtureOptions {
 
 	onSupervisorSend?: () => void;
 	supervisorSendGate?: Promise<void>;
+	/** What the broker answered the supervisor send; delivered by default. */
+	supervisorSendResult?: { delivered: boolean; queued?: true; reason?: string; target?: string; position?: number };
 }
 
 function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) {
@@ -122,7 +124,7 @@ function fixture(kind: "intercom" | "supervisor", options: FixtureOptions = {}) 
 			sent.push({ to, message, supervisor: true });
 			options.onSupervisorSend?.();
 			await options.supervisorSendGate;
-			return { id: message.messageId ?? "sent", delivered: true };
+			return { id: message.messageId ?? "sent", ...(options.supervisorSendResult ?? { delivered: true }) };
 		},
 	};
 	const pi = {
@@ -672,6 +674,82 @@ describe("registered blocking intercom tools", () => {
 
 		assert.equal(result.isError, false);
 		assert.equal(result.content[0]?.text, "Message sent to parent");
+	});
+
+	test("contact_supervisor progress_update to a supervisor stage without a live session is queued, not failed (#4639)", async () => {
+		const queued = fixture("supervisor", {
+			supervisorSendResult: { delivered: false, queued: true, target: "workflow:run/stage", position: 1 },
+		});
+		const updated = await queued.tool.execute(
+			"call",
+			{ reason: "progress_update", message: "Halfway" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(updated.isError, false);
+		assert.equal(
+			updated.content[0]?.text,
+			"Progress update queued for supervisor parent: its workflow stage has no live session now and receives it when it reopens",
+		);
+		const queuedResult = updated as unknown as { content: Array<{ type: string }>; details: object };
+		assert.equal(queuedResult.content[0]?.type, "text");
+		assert.deepEqual(queuedResult.details, { messageId: "sent", delivered: false, queued: true });
+		const delivered = fixture("supervisor");
+		const sent = (await delivered.tool.execute(
+			"call",
+			{ reason: "progress_update", message: "Halfway" },
+			undefined,
+			undefined,
+			context,
+		)) as unknown as { content: Array<{ type: string; text: string }>; details: object };
+		assert.equal(sent.content[0]?.type, "text");
+		assert.equal(sent.content[0]?.text, "Progress update sent to supervisor parent");
+		assert.deepEqual(sent.details, { messageId: "sent", delivered: true });
+		const refused = fixture("supervisor", {
+			supervisorSendResult: { delivered: false, reason: "Session not found" },
+		});
+		const failed = await refused.tool.execute(
+			"call",
+			{ reason: "progress_update", message: "Halfway" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(failed.isError, true);
+		assert.equal(failed.content[0]?.text, 'Message to "parent" was not delivered: Session not found');
+	});
+
+	test("contact_supervisor need_decision queued for a supervisor stage waits for the stage's reply (#4639)", async () => {
+		const current = fixture("supervisor", {
+			supervisorSendResult: { delivered: false, queued: true, target: "workflow:run/stage", position: 1 },
+		});
+		const execution = current.tool.execute(
+			"call",
+			{ reason: "need_decision", message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		await sleep(20);
+		assert.equal(current.sent.length, 1, "the question went out");
+		current.reply("Use A");
+		const result = await execution;
+		assert.equal(result.isError, false, result.content[0]?.text);
+		assert.match(result.content[0]?.text ?? "", /Reply from supervisor:\*\*\nUse A/);
+
+		const refused = fixture("supervisor", {
+			supervisorSendResult: { delivered: false, reason: "Session not found" },
+		});
+		const failed = await refused.tool.execute(
+			"call",
+			{ reason: "need_decision", message: "Choose" },
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(failed.isError, true);
+		assert.equal(failed.content[0]?.text, 'Message to "parent" was not delivered: Session not found');
 	});
 
 	// #2840: cancelling the child cannot retract an already accepted progress update.

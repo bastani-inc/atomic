@@ -216,7 +216,9 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             const result = await connectedClient.sendToSupervisor(sendTo, {
               text: formatChildOrchestratorMessage("update", metadata, message),
             });
-            if (!result.delivered) {
+            // #4639: a supervisor that is a workflow stage without a live session gets it when its stage reopens.
+            const queued = result.queued === true;
+            if (!result.delivered && !queued) {
               const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
                 content: [{ type: "text", text: `Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}` }],
@@ -232,9 +234,14 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
               subagent: { runId: metadata.runId, agent: metadata.agent, index: metadata.index },
             });
             return {
-              content: [{ type: "text", text: `Progress update sent to supervisor ${metadata.orchestratorTarget}` }],
+              content: [{
+                type: "text",
+                text: queued
+                  ? `Progress update queued for supervisor ${metadata.orchestratorTarget}: its workflow stage has no live session now and receives it when it reopens`
+                  : `Progress update sent to supervisor ${metadata.orchestratorTarget}`,
+              }],
               isError: false,
-              details: { messageId: result.id, delivered: true },
+              details: queued ? { messageId: result.id, delivered: false, queued: true } : { messageId: result.id, delivered: true },
             };
           } catch (error) {
             return {
@@ -265,7 +272,9 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
             text: requestText,
             expectsReply: true,
           });
-          if (!sendResult.delivered) {
+          // #4639: a question queued for a supervisor stage without a live session is asked when the stage reopens; its
+          // reply ends this wait as a delivered question's does.
+          if (!sendResult.delivered && sendResult.queued !== true) {
             const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
             wait.cancel(new Error(`Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}`));
             return {

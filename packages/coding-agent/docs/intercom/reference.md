@@ -114,7 +114,7 @@ The background subagents that the run's stages launched stay addressable too. Wh
 
 ### Released subagents
 
-A [released subagent](/subagents#released-subagents) stays addressable through the session that launched it: that session asks the broker to hold sends to the child's name and ids, and the broker tells it to wake the child when one arrives. Only that session owns the child's hold. The owner is the session that reserved the child first, or the one that authorized it as its supervisor when launching it. A session that reconnects with the same Intercom session id stays the owner. Another session cannot reserve, drop or acknowledge the child.
+A [released subagent](/subagents#released-subagents) stays addressable through the session that launched it: that session asks the broker to hold sends to the child's name and ids, and the broker tells it to wake the child when one arrives. Only that session owns the child's hold. The owner is the session that reserved the child first, or the one that authorized it as its supervisor when launching it. A session that reconnects with the same Intercom session id stays the owner. If the owner's connection closes while it keeps a released child, as a [suspended](/workflows/operations#suspended-stages) workflow stage's does, the broker keeps the child's hold for the owner's Atomic session: sends wait up to 20 seconds and then get `recipient_owner_suspended` (see [Subagents with no live session](#subagents-with-no-live-session)). When a session of the same Atomic session reconnects and reserves its released children again, it takes the child over and wakes it for the sends waiting then. Such holds end with their workflow run. Another session cannot reserve, drop or acknowledge the child.
 
 A background subagent waiting on an `ask`, or on `contact_supervisor` with `need_decision` or `interview_request`, is released like any other waiting subagent when its broker uses local routing or [multi-node routing](/intercom/operations#running-intercom-across-machines). While multi-node routing is still starting or is unavailable, the subagent stays live and receives the reply as before. Its question stays open while it holds no session.
 
@@ -150,6 +150,23 @@ SDK integrations can import these classes, their guards, `IntercomReleasedChildE
 | `UnknownReleasedChildError` | `unknown_released_child` | A wake acknowledgement names a child that no session has reserved. | Reserve the child first. |
 
 With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, a child reserved through one broker stays with its owner. A reservation that another session makes for it through a different broker is withdrawn as soon as the shared store refuses it.
+
+### Subagents with no live session
+
+When a subagent's session ends or loses its connection and the subagent is not released, the broker holds sends and asks to its name, Atomic session ID and Intercom session ID for up to 20 seconds. A subagent that reconnects under its launching session's authorization receives each held message once, in order. The session that launched the subagent reports how its run ended, and the broker answers held and later senders with a typed error instead of `Session not found`. The launching session makes the report again whenever it reconnects, and it ends when the subagent registers again. If the launching session's connection closes, as a [suspended](/workflows/operations#suspended-stages) workflow stage's does, what it reported stays for its Atomic session, and the session takes it over when it reconnects. A subagent that disconnects after its launching session did waits up to 20 seconds for that report, then the sender gets `recipient_disconnected`. Both end with the workflow run. Only the launching session and senders in the subagent's group are held or told anything.
+
+The send result's `error` is an `IntercomRecipientGoneError` and `reasonCode` is its `code`. It carries `target` (as the send addressed it), `childName`, `childId` when the launching session reported it, a `hint` and `retryable`. Check `isIntercomRecipientGoneError`, `isSubagentRecipientEndedError`, `isSubagentRecipientDisconnectedError`, `isSubagentRecipientOwnerSuspendedError` or `isRetryableIntercomRecipientGoneError`, never the message. SDK integrations can import these, `IntercomRecipientGoneErrorCode`, and `serializeIntercomRecipientGoneError` / `rehydrateIntercomRecipientGoneError` from `@bastani/intercom`. An Intercom client older than this release receives only the error's message as the send's reason.
+
+| Class | `code` | When | `retryable` | What to do |
+| --- | --- | --- | --- | --- |
+| `SubagentRecipientEndedError` | `recipient_completed` | The subagent's last run completed. | `false` | Its launching session continues it with `subagent({ action: "resume", id: "<childId>", message })`. |
+| `SubagentRecipientEndedError` | `recipient_failed` | The subagent's last run failed. | `false` | Same as above. |
+| `SubagentRecipientEndedError` | `recipient_stopped` | The subagent was paused, quit or interrupted, or its workflow stage paused. | `false` | Same as above. |
+| `SubagentRecipientEndedError` | `recipient_cancelled` | The subagent was cancelled for good, or its workflow stage ended. | `false` | Launch a fresh subagent if its work is still needed. |
+| `SubagentRecipientDisconnectedError` | `recipient_disconnected` | The subagent disconnected, did not reconnect within 20 seconds, and its launching session did not say why. | `true` | Check `subagent({ action: "status" })` in its launching session, or try again shortly. |
+| `SubagentRecipientOwnerSuspendedError` | `recipient_owner_suspended` | The subagent is released and the session that launched it, which wakes it, is suspended or disconnected; the send waited 20 seconds, or could not wait. | `true` | Try again once that session is back, or send to its workflow stage target (`workflow:<rootRunId>/<stage>`), which queues the message until the stage reopens. |
+
+A launching session reports at most 500 subagents per request; a malformed report is refused with the `ReleasedChildReservationError` codes above, and a report naming a subagent another session owns with `not_owner`.
 
 ### Groups
 

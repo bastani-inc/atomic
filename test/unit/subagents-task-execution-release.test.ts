@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { type AgentWake, AgentWakeDispatcher, type DetachedToolCall, type DetachedToolResult } from "@bastani/atomic";
-import { afterEach, test } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
@@ -10,6 +10,10 @@ import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/
 import { taskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import {
+	type EndedChildMark,
+	SUBAGENT_MARK_ENDED_CHILDREN_EVENT,
+} from "../../packages/subagents/src/runs/foreground/released-child-reservations.js";
 import {
 	subagentWakeKey,
 	subagentWakeNamespace,
@@ -291,6 +295,52 @@ test("a released child's wake is not sent when its sink does not know the child'
 	assert.ok(outcome.ok && outcome.value.kind === "settled");
 	assert.deepEqual(launched.wakes, []);
 	assert.equal(launched.dispatcher.stats().unobservedFailures, 0);
+});
+
+test("a named child whose run ended is reported to its owner's Intercom with why and its resume id; others are not (#4639)", async () => {
+	const events = createEventBus();
+	const reported: EndedChildMark[][] = [];
+	events.on(SUBAGENT_MARK_ENDED_CHILDREN_EVENT, (payload) => {
+		reported.push((payload as { children: EndedChildMark[] }).children);
+	});
+	const completed = await launch({
+		runId: "ended-ok",
+		options: { intercomSessionName: "worker-ended", intercomEvents: events, intercomGroup: "lane" },
+	});
+	assert.ok(completed.records.some((record) => record.state === "terminal" && record.terminalStatus === "ok"));
+	assert.deepEqual(
+		reported.map((children) =>
+			children.map(({ childName, group, outcome, childId }) => ({ childName, group, outcome, childId })),
+		),
+		[[{ childName: "worker-ended", group: "lane", outcome: "completed", childId: "ended-ok:0" }]],
+		"one report, once the run ended; the running records report nothing",
+	);
+
+	reported.length = 0;
+	await launch({
+		runId: "ended-released",
+		released: { waitingOn: [WAIT], calls: [] },
+		options: { intercomSessionName: "worker-released", intercomEvents: events },
+	});
+	await launch({
+		runId: "ended-ownerless",
+		sink: "none",
+		options: { intercomSessionName: "w", intercomEvents: events },
+	});
+	await launch({ runId: "ended-unnamed", options: { intercomEvents: events } });
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		await launch({ runId: "ended-no-intercom", options: { intercomSessionName: "worker-quiet" } });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(
+			logged.mock.calls.filter(([text]) => String(text).includes("Subagent end report failed")),
+			[],
+			"without Intercom there is nothing to report to, so nothing fails",
+		);
+	} finally {
+		logged.mockRestore();
+	}
+	assert.deepEqual(reported, [], "a released, ownerless, unnamed or Intercom-less child is not reported");
 });
 
 test("the registry sizes count remembered run schedules and drop them when a child ends for good (#4326)", () => {

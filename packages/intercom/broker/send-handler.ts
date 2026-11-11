@@ -37,6 +37,8 @@ export interface BrokerConnectedSession {
 	readonly registrationReturnAddress?: string;
   /** Broker-bound supervisor relationship established by a capability. */
   supervisorId?: string;
+  /** #4639: the supervisor's host session, as it registered: where its next session takes its subagents over. */
+  readonly supervisorReturnAddress?: string;
   /** Private issuer identity used to restore child capabilities after reconnects. */
   supervisorOwnerToken?: string;
   /** #3761: the recipient confirms each message once it has saved it; `delivered` waits for that confirmation. */
@@ -181,6 +183,12 @@ export function handleBrokerSend(
 	/** #4079: whether the sender's read-only `list` peek may inspect a group; names a hidden target's group. */
 	canPeekGroup?: (sender: BrokerConnectedSession, group: string) => boolean,
 	routeReleasedAskerReply?: ReleasedAskerReplyRouter,
+	/**
+	 * #4639: the `workflow:` target a workflow-stage session's name or id stands for, when this sender may reach that
+	 * stage; consulted only for a target nothing else resolved, so the stage is reached through its current session or
+	 * its run's queue even after the session that held the name was replaced or released.
+	 */
+	resolveWorkflowStageAlias?: (sender: BrokerConnectedSession, alias: string) => string | undefined,
 ): void {
   const message = clientMessage.message;
   const messageId = wireMessageId(message);
@@ -380,6 +388,38 @@ export function handleBrokerSend(
         (info) => sessions.get(info.id)?.registrationReturnAddress,
       )
     : nameOrIdResolution;
+  // #4639: a supervisor that is a workflow stage whose session was released or replaced is reached through its stage,
+  // as a plain send: the stage's next session is not the session the supervisor channel was authorized for.
+  const stageTarget =
+    resolution.kind === "not_found" && workflowTarget === undefined && !requirePendingReply &&
+    expectedRecipientId === undefined
+      ? resolveWorkflowStageAlias?.(fromSession, trimmedTo)
+      : undefined;
+  if (stageTarget !== undefined) {
+    handleBrokerSend(
+      socket,
+      { ...clientMessage, type: "send", to: stageTarget, logicalTarget: stageTarget },
+      currentId,
+      sessions,
+      deliveredMessages,
+      write,
+      supervisorCache,
+      pendingQuestions,
+      routePendingStage,
+      resolveLiveWorkflowStage,
+      canControlLiveWorkflowStage,
+      resolveLegacyWorkflowStageTarget,
+      writeConfirmed,
+      isNonAgentWorkflowTarget,
+      holdForRestoringRecipient,
+      receipts,
+      routeRemote,
+      canPeekGroup,
+      routeReleasedAskerReply,
+      resolveWorkflowStageAlias,
+    );
+    return;
+  }
   if (
     routeRemote !== undefined &&
     resolution.kind === "not_found" &&
@@ -437,6 +477,7 @@ export function handleBrokerSend(
           undefined,
           canPeekGroup,
           routeReleasedAskerReply,
+          resolveWorkflowStageAlias,
         ),
     });
     return;
@@ -506,6 +547,7 @@ export function handleBrokerSend(
 					routeRemote,
 					canPeekGroup,
 					routeReleasedAskerReply,
+					resolveWorkflowStageAlias,
 				);
 			},
 		});

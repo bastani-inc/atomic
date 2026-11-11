@@ -27,7 +27,7 @@ import type { IntercomEventBus, RunSyncOptions, SingleResult, SubagentToolResult
 import { getSingleResultOutput } from "../../shared/utils.js";
 import { launchRequestedModel } from "../shared/model-fallback.js";
 import { scheduleReleasedReplyTimeouts } from "./released-child-replies.js";
-import { reserveReleasedChildTargets } from "./released-child-reservations.js";
+import { endedChildMark, markEndedChildren, reserveReleasedChildTargets } from "./released-child-reservations.js";
 import {
 	forwardDetachedResults,
 	routeReleasedChildShellCompletions,
@@ -427,7 +427,7 @@ export async function runAgentTask(input: {
 		releasedIntercomId?: string,
 	) => {
 		const worktree = runWorktreeRecord(input.options.runId, input.options.index ?? 0);
-		input.recordChild?.record({
+		const record: SubagentChildRecordInput = {
 			runId: input.options.runId,
 			index: input.options.index ?? 0,
 			agent: input.agent,
@@ -459,7 +459,14 @@ export async function runAgentTask(input: {
 					: {}),
 			inherited: subagentChildInheritance(input.options),
 			...subagentChildModelChoice(input.options, agentConfig),
-		});
+		};
+		input.recordChild?.record(record);
+		// #4639: once its session is gone, a send to the child is told why it ended and how to resume it.
+		const events = input.options.intercomEvents;
+		if (input.recordChild !== undefined && events !== undefined) {
+			const ended = endedChildMark({ ...record, childId: subagentChildId(record.runId, record.index) });
+			if (ended !== undefined) void markEndedChildren(events, [ended]);
+		}
 	};
 	let dispatched = false;
 	let admittedTaskId: TaskId | undefined;

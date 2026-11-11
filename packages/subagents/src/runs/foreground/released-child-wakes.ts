@@ -15,6 +15,7 @@ import { releasedReplyTimeoutId, releasedReplyToolResult } from "./released-chil
 import {
 	acknowledgeReleasedChildWake,
 	INTERCOM_CONNECTED_EVENT,
+	markEndedChildrenOf,
 	type ReleasedChildHoldFailure,
 	reserveReleasedChildrenOf,
 	SUBAGENT_HOLD_FAILURE_EVENT,
@@ -136,6 +137,7 @@ export function bindReleasedChildWakes(
 	const reserveAll = () => {
 		indexSubagentChildOwner(ctx);
 		void reserveReleasedChildrenOf(events, ownerSessionId);
+		void markEndedChildrenOf(events, ownerSessionId);
 	};
 	reserveAll();
 	const restore = async (record: SubagentChildRecord, request: SubagentChildResumeRequest) => {

@@ -1,4 +1,9 @@
 import type { LiveWorkflowStageRouteRefusalCode } from "./live-route-refusal.js";
+import type {
+	IntercomRecipientGoneErrorCode,
+	SerializedIntercomRecipientGoneError,
+	SubagentEndedOutcome,
+} from "./broker/recipient-gone-errors.js";
 import type { SerializedIntercomReleasedReplyError } from "./broker/released-reply-errors.js";
 
 export interface SessionInfo {
@@ -154,13 +159,25 @@ export type ReleasedReplyRefusalCode = "released_reply_answered" | "released_rep
  * Why a send or ask was refused, for callers that branch on it; the free-text `reason` stays for people.
  * `recipient_not_restored`: the sender was held for a subagent that was being restored or woken, and the hold ended
  * first. `recipient_parked`: the subagent's owner keeps it parked (paused or quit) and never wakes it for a send.
+ * The `IntercomRecipientGoneErrorCode`s (#4639) reach a client only inside `delivery_failed.recipientError`, never as
+ * its wire `reasonCode`, which older clients validate against the codes they know.
  */
 export type DeliveryFailureReasonCode =
 	| "message_id_conflict"
 	| "session_not_found"
 	| "recipient_not_restored"
 	| "recipient_parked"
-	| ReleasedReplyRefusalCode;
+	| ReleasedReplyRefusalCode
+	| IntercomRecipientGoneErrorCode;
+
+/** One subagent in a `mark_ended_children` frame: its owner reports how its last run ended (#4639). */
+export interface EndedChildFrame {
+	childName: string;
+	group?: string;
+	aliases?: string[];
+	outcome: SubagentEndedOutcome;
+	childId?: string;
+}
 
 /** One released subagent in a `reserve_released_children` frame. */
 export interface ReleasedChildReservationFrame {
@@ -279,6 +296,11 @@ export type ClientMessage =
   | { type: "reserve_released_children"; requestId: string; children: ReleasedChildReservationFrame[] }
   /** #4326: end the reservations this connection made for these child names. */
   | { type: "drop_released_children"; requestId: string; childNames: string[]; gone?: string; refusal?: string }
+  /**
+   * #4639: this connection reports how subagents it launched ended, so a send to one with no live session is refused
+   * with why and what to do next. Sent only to a broker that advertised `marksEndedChildren`.
+   */
+  | { type: "mark_ended_children"; requestId: string; children: EndedChildFrame[] }
   /** #4326: the owner is waking this child; the broker extends the sends held for it once per wake. */
   | { type: "acknowledge_released_child_wake"; requestId: string; childName: string }
   /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
@@ -390,6 +412,8 @@ export type BrokerMessage =
 			claimsWorkflowInvocations?: true;
 			/** #3983: this broker accepts `saving`; absent on older brokers, which drop a client that sends it. */
 			extendsSaves?: true;
+			/** #4639: this broker accepts `mark_ended_children`; absent on older brokers, which drop a client that sends it. */
+			marksEndedChildren?: true;
 			/** Broker routing mode at registration, for deciding whether a reply wait may release. */
 			multiNodeRouting?: BrokerMultiNodeStatus["status"];
 			/** #4538: the wire protocol versions this broker accepts; absent on brokers of protocol 1. */
@@ -458,6 +482,11 @@ export type BrokerMessage =
 			attemptId?: string;
 			/** #4386: the typed refusal of a reply to a released subagent; its `code` equals `reasonCode`. */
 			error?: SerializedIntercomReleasedReplyError;
+			/**
+			 * #4639: why a subagent with no live session is gone. Carried apart from `error` and `reasonCode`, which older
+			 * clients validate strictly; they read only `reason`, which is this error's message.
+			 */
+			recipientError?: SerializedIntercomRecipientGoneError;
 	  }
 	| { type: "broker_status"; requestId: string; report: BrokerStatusReport }
 	| { type: "shutdown_ack"; requestId: string };

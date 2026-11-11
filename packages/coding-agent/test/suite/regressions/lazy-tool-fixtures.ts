@@ -157,6 +157,10 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-child-errors.ts"), "utf-8"),
 		);
 		writeFileSync(
+			join(tempDir, "broker", "recipient-gone-errors.ts"),
+			readFileSync(resolve(repoRoot, "packages/intercom/broker/recipient-gone-errors.ts"), "utf-8"),
+		);
+		writeFileSync(
 			join(tempDir, "broker", "released-reply-errors.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-reply-errors.ts"), "utf-8"),
 		);

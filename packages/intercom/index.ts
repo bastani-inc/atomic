@@ -20,18 +20,21 @@ import {
 	isAwaitIntercomPeerRequest,
 	isAcknowledgeReleasedChildWakeRequest,
 	isDropReleasedChildrenRequest,
+	isMarkEndedChildrenRequest,
 	isReleaseRestoringChildRequest,
 	isReserveReleasedChildrenRequest,
 	isReserveRestoringChildRequest,
 	planIntercomRecoveryReplay,
 	type AcknowledgeReleasedChildWakeRequest,
 	type DropReleasedChildrenRequest,
+	type MarkEndedChildrenRequest,
 	type ReleaseRestoringChildRequest,
 	type ReserveReleasedChildrenRequest,
 	type ReserveRestoringChildRequest,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_MARK_ENDED_CHILDREN_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
@@ -80,6 +83,31 @@ export {
 	type SerializedIntercomReleasedReplyError,
 	serializeIntercomReleasedReplyError,
 } from "./broker/released-reply-errors.js";
+export {
+	INTERCOM_RECIPIENT_GONE_ERROR_CODES,
+	IntercomRecipientGoneError,
+	type IntercomRecipientGoneErrorCode,
+	type IntercomRecipientGoneErrorFields,
+	isIntercomRecipientGoneError,
+	isIntercomRecipientGoneErrorCode,
+	isRetryableIntercomRecipientGoneError,
+	isSubagentRecipientDisconnectedError,
+	isSubagentRecipientEndedError,
+	isSubagentRecipientOwnerSuspendedError,
+	readSerializedIntercomRecipientGoneError,
+	rehydrateIntercomRecipientGoneError,
+	type SerializedIntercomRecipientGoneError,
+	SUBAGENT_ENDED_OUTCOMES,
+	type SubagentEndedOutcome,
+	type SubagentRecipientDisconnectedCode,
+	SubagentRecipientDisconnectedError,
+	type SubagentRecipientEndedCode,
+	type SubagentRecipientOwnerSuspendedCode,
+	SubagentRecipientEndedError,
+	SubagentRecipientOwnerSuspendedError,
+	serializeIntercomRecipientGoneError,
+	subagentEndedCode,
+} from "./broker/recipient-gone-errors.js";
 
 type LifecycleSnapshot<K extends keyof ForwardedEventMap> = {
 	event: ForwardedEventMap[K];
@@ -813,14 +841,18 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		});
 	});
 	// A reservation lives on the connection that made it: without a loaded Intercom there is nothing to drop or to
-	// extend, and loading it just to say so would only report a failure at shutdown.
+	// extend, and loading it just to say so would only report a failure at shutdown. #4639: an ended child's report
+	// lives on the connection too; the owner reports again whenever Intercom connects.
 	for (const [eventName, isRequest] of [
 		[SUBAGENT_DROP_RELEASED_CHILDREN_EVENT, isDropReleasedChildrenRequest],
 		[SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, isAcknowledgeReleasedChildWakeRequest],
+		[SUBAGENT_MARK_ENDED_CHILDREN_EVENT, isMarkEndedChildrenRequest],
 	] as const) {
 		pi.events.on(eventName, (payload) => {
 			if (!isRequest(payload) || payload.completion) return;
-			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest = { ...payload };
+			const forwarded: DropReleasedChildrenRequest | AcknowledgeReleasedChildWakeRequest | MarkEndedChildrenRequest = {
+				...payload,
+			};
 			const handle = loadedHeavy;
 			payload.completion = !handle
 				? Promise.resolve()

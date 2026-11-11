@@ -271,7 +271,7 @@ A launch that continues in the background names the timeout that will stop it:
 Command is still running (task task-1-0-3). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.
 ```
 
-When the timeout stops the command, a `wait` on it returns an error ending `Task <id> was cancelled (timed out after 300 seconds).`, and its completion notice reads `Background shell timed out after 300 seconds` with `Stop reason: execution-timeout (timed out after 300 seconds)`. A test suite that can run longer than five minutes needs an explicit `timeout`, for example `timeout: 3600`.
+When the timeout stops the command, a `wait` on it returns an error ending `Task <id> was cancelled (timed out after 300 seconds).`, and its completion notice reads `Background shell timed out after 300 seconds` with `Stop reason: execution-timeout (timed out after 300 seconds)`. A test suite that can run longer than five minutes needs an explicit `timeout`, for example `timeout: 3600`. 3600 seconds is the longest timeout: a launch or notice at that limit says to split a longer run into shorter commands instead of asking for a larger timeout.
 
 Observe an existing task without running its command again:
 

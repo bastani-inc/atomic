@@ -97,6 +97,9 @@ import {
 	validateReleasedChildFrame,
 } from "./released-children.js";
 import { type HeldSend, RestoringRecipients, type RestoringRecipientWake } from "./restoring-recipients.js";
+import { DepartedChildren, type HeldSendRefusal, validateEndedChildrenFrame } from "./departed-children.js";
+import { WorkflowStageAliases } from "./workflow-stage-aliases.js";
+import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } from "./recipient-gone-errors.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
@@ -397,13 +400,17 @@ class IntercomBroker {
     console.error("Intercom broker released-asker reply route capacity reached; dropped routes are counted in broker_status");
   });
   private releasedReplyAcks = new Map<string, PendingReleasedReplyAck>();
-  private restoringRecipients = new RestoringRecipients((held, reason, reasonCode) =>
-    this.failHeldSend(held, reason, reasonCode),
+  private restoringRecipients = new RestoringRecipients((held, reason, reasonCode, error) =>
+    error === undefined ? this.failHeldSend(held, reason, reasonCode) : this.failHeldSendWith(held, error),
   );
+  /** #4639: subagents whose session is gone, held for until they return or their owner says why they ended. */
+  private departedChildren = new DepartedChildren((refusals) => this.refuseHeldSends(refusals));
   private pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   private pendingStageAcknowledgments = new Map<string, PendingStageAcknowledgment>();
 	private pendingStageNotificationAcknowledgments = new Map<string, PendingStageNotificationAcknowledgment>();
   private liveWorkflowStageRoutes = new Map<string, LiveWorkflowStageRouteRegistration>();
+  /** #4639: the names and ids each stage's sessions registered under, so they keep reaching the stage. */
+  private workflowStageAliases = new WorkflowStageAliases();
   private workflowRosters = new Map<string, WorkflowRosterRegistration>();
   private liveWorkflowStageRouteActivations = new Map<string, LiveWorkflowStageRouteActivation>();
   /**
@@ -981,6 +988,7 @@ class IntercomBroker {
     for (const target of targets) {
       this.liveWorkflowStageRoutes.set(target, { sessionId: currentId, capability, runId });
     }
+    this.recordWorkflowStageAliases(currentId, runId, registrant?.target ?? targets[0]);
     const pendingRequestIds = new Set(
       [...this.pendingStageAcknowledgments]
 				.filter(([, pending]) => {
@@ -1012,6 +1020,31 @@ class IntercomBroker {
     return undefined;
   }
 
+	/** #4639: the stage session's names and ids reach its stage at `target` for as long as the run's route lives. */
+	private recordWorkflowStageAliases(sessionId: string, runId: string, target: string | undefined): void {
+		const session = this.sessions.get(sessionId);
+		if (session === undefined || target === undefined) return;
+		const group = normalizeGroup(session.registrationGroup ?? session.info.group);
+		const aliases = [session.info.name, session.registrationName, session.info.id, session.registrationReturnAddress];
+		this.workflowStageAliases.record({ runId, target, group }, aliases.filter((alias): alias is string => alias !== undefined));
+	}
+
+	/**
+	 * #4639: the `workflow:` target a stage session's name or id stands for, to a sender that may reach the stage: one
+	 * in the stage's group, or one that controls its run. Anyone else finds nothing, as before.
+	 */
+	private resolveWorkflowStageAlias = (sender: ConnectedSession, alias: string): string | undefined => {
+		const stage = this.workflowStageAliases.resolve(alias);
+		if (stage === undefined) return undefined;
+		const route = this.pendingStageRoutes.get(stage.runId);
+		if (route === undefined) {
+			this.workflowStageAliases.forgetRun(stage.runId);
+			return undefined;
+		}
+		const reachable = hasGroup(sessionGroups(sender.info), stage.group) || this.canControlWorkflowInvocation(sender, route.group);
+		return reachable ? stage.target : undefined;
+	};
+
 	private routePendingStage = (route: PendingStageRoute): boolean => {
 		const ownerMatch = this.pendingStageOwnerForTarget(route.target);
 		if (ownerMatch === undefined) return false;
@@ -1019,6 +1052,7 @@ class IntercomBroker {
 		const owner = this.sessions.get(ownerRegistration.sessionId);
 		if (owner === undefined) {
 			this.pendingStageRoutes.delete(runId);
+			this.workflowStageAliases.forgetRun(runId);
 			return false;
 		}
     if (route.liveTargetId === undefined && !this.canControlWorkflowInvocation(route.from, ownerRegistration.group)) {
@@ -1793,6 +1827,9 @@ class IntercomBroker {
 				? { registrationReturnAddress: clientMessage.returnAddress }
 				: {}),
           ...(supervisorId ? { supervisorId } : {}),
+          ...(supervisorId && this.sessions.get(supervisorId)?.registrationReturnAddress !== undefined
+            ? { supervisorReturnAddress: this.sessions.get(supervisorId)?.registrationReturnAddress }
+            : {}),
           ...(typeof clientMessage.supervisorOwnerToken === "string"
             ? { supervisorOwnerToken: clientMessage.supervisorOwnerToken }
             : {}),
@@ -1819,6 +1856,7 @@ class IntercomBroker {
             brokerStatus: true as const,
             claimsWorkflowInvocations: true as const,
             extendsSaves: true as const,
+            marksEndedChildren: true as const,
             multiNodeRouting: this.multiNodeStatus,
             protocol: { ...BROKER_PROTOCOL },
           });
@@ -1851,6 +1889,10 @@ class IntercomBroker {
               : undefined,
           ))
             this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+          // #4639: a subagent whose session dropped is back under its owner's authorization; its held sends follow.
+          if (registered !== undefined && supervisorId !== undefined)
+            for (const send of this.departedChildren.registered(registered, sessionGroups(info), supervisorId))
+              this.dispatchSend(send.socket, send.clientMessage, send.senderId);
         };
         // Multi-node S5: brokers on other hosts find this session through its presence lease, so registration
         // completes once the lease is written (or bounded attempts found it still held elsewhere). The session is
@@ -1985,6 +2027,7 @@ class IntercomBroker {
           aliases,
           { dormant: clientMessage.dormant === true },
         );
+        this.dispatchHeldSends(this.departedChildren.supersede(currentId, childName));
         writeMessageIfOpen(socket, { type: "restoring_recipient_ack", requestId: clientMessage.requestId });
         break;
       }
@@ -1994,6 +2037,8 @@ class IntercomBroker {
         if (owner === undefined || typeof clientMessage.requestId !== "string") {
           throw new Error("Invalid reserve_released_children message");
         }
+        // #4639: a host session back after its connection closed takes over the released children it kept.
+        this.adoptOrphans(currentId, owner);
         const validation = validateReleasedChildFrame(clientMessage.children);
         const refusal = validation.ok ? this.releasedChildrenRefusal(owner, validation.children) : validation.refusal;
         if (!validation.ok || refusal !== undefined) {
@@ -2003,7 +2048,29 @@ class IntercomBroker {
         for (const child of validation.children) {
           this.reserveReleasedChild(currentId, owner.registrationGroup, child);
           this.releasedAskerReplies.attach(child.childName, currentId);
+          this.dispatchHeldSends(this.departedChildren.supersede(currentId, child.childName));
         }
+        writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
+        break;
+      }
+
+      case "mark_ended_children": {
+        const owner = this.sessions.get(currentId);
+        if (owner === undefined || typeof clientMessage.requestId !== "string") {
+          throw new Error("Invalid mark_ended_children message");
+        }
+        this.adoptOrphans(currentId, owner);
+        const validation = validateEndedChildrenFrame(clientMessage.children, owner.registrationGroup);
+        const refusal = validation.ok
+          ? this.releasedChildrenRefusal(owner, validation.children.map((child) => ({ ...child, wake: false })))
+          : validation.refusal;
+        if (!validation.ok || refusal !== undefined) {
+          writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId, refusal });
+          break;
+        }
+        const marked = this.departedChildren.mark(currentId, validation.children);
+        this.refuseHeldSends(marked.refused);
+        this.dispatchHeldSends(marked.evicted);
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
         break;
       }
@@ -2021,6 +2088,7 @@ class IntercomBroker {
         ) {
           throw new Error("Invalid drop_released_children message");
         }
+        this.adoptOrphans(currentId, owner);
         const childNames = clientMessage.childNames as string[];
         const refusal = childNames
           .map((childName) => this.releasedChildOwnerRefusal(owner, childName))
@@ -2043,6 +2111,7 @@ class IntercomBroker {
         if (owner === undefined || typeof clientMessage.requestId !== "string" || typeof clientMessage.childName !== "string") {
           throw new Error("Invalid acknowledge_released_child_wake message");
         }
+        this.adoptOrphans(currentId, owner);
         const childName = clientMessage.childName;
         const valid = isValidChildName(childName);
         const refusal: ReleasedChildRefusal | undefined = valid ? this.releasedChildOwnerRefusal(owner, childName) : undefined;
@@ -2446,6 +2515,7 @@ class IntercomBroker {
       this.routeRemote,
       (sender, group) => this.canInspectSelectedGroup(sender, group),
       this.routeReleasedAskerReply,
+      this.resolveWorkflowStageAlias,
     );
   }
 
@@ -2573,7 +2643,7 @@ class IntercomBroker {
       pid: process.pid,
       sessions: this.sessions.size,
       reservations: this.restoringRecipients.size,
-      heldSends: this.restoringRecipients.heldSendCount,
+      heldSends: this.restoringRecipients.heldSendCount + this.departedChildren.heldSendCount,
       droppedReleasedReplyRoutes: this.releasedAskerReplies.droppedRoutes,
       ...(setting === undefined
         ? {}
@@ -2695,12 +2765,48 @@ class IntercomBroker {
       held,
       clientMessage.awaitRestoringRecipient === true,
     );
-    if (admission.kind === "none") return false;
-    if (admission.kind === "refused") this.failHeldSend(held, admission.reason, admission.reasonCode);
+    if (admission.kind === "none")
+      return this.holdForDepartedChild(held, target, from, clientMessage.awaitRestoringRecipient === true);
+    if (admission.kind === "refused" && admission.error !== undefined) this.failHeldSendWith(held, admission.error);
+    else if (admission.kind === "refused") this.failHeldSend(held, admission.reason, admission.reasonCode);
     else writeMessageIfOpen(socket, { type: "send_held", messageId, ...(attemptId === undefined ? {} : { attemptId }), timeoutMs: admission.timeoutMs });
     if (admission.kind === "held" && admission.wake !== undefined) this.wakeRestoringRecipientOwner(admission.wake);
     return true;
   };
+
+  /** #4639: a subagent whose session is gone: hold the send for its return or its owner's verdict, or refuse it with why. */
+  private holdForDepartedChild(held: HeldSend, target: string, from: ConnectedSession, canHold: boolean): boolean {
+    const admission = this.departedChildren.admit(target, { id: from.info.id, info: from.info }, held, canHold);
+    if (admission.kind === "none") return false;
+    if (admission.kind === "refused") this.refuseHeldSends([{ held, error: admission.error }]);
+    else
+      writeMessageIfOpen(held.socket, {
+        type: "send_held",
+        messageId: held.messageId,
+        ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
+        timeoutMs: admission.timeoutMs,
+      });
+    return true;
+  }
+
+  private dispatchHeldSends(sends: readonly HeldSend[]): void {
+    for (const send of sends) this.dispatchSend(send.socket, send.clientMessage, send.senderId);
+  }
+
+  /** #4639: refuse held sends with the typed error naming why their subagent is gone; its message is the reason. */
+  private refuseHeldSends(refusals: readonly HeldSendRefusal[]): void {
+    for (const { held, error } of refusals) this.failHeldSendWith(held, error);
+  }
+
+  private failHeldSendWith(held: HeldSend, error: IntercomRecipientGoneError): void {
+    writeMessageIfOpen(held.socket, {
+      type: "delivery_failed",
+      messageId: held.messageId,
+      ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
+      reason: error.message,
+      recipientError: serializeIntercomRecipientGoneError(error),
+    });
+  }
 
   /** #4326: the child is released; its owner rehydrates it, and it takes the held sends in order when it registers. */
   private wakeRestoringRecipientOwner(wake: RestoringRecipientWake): void {
@@ -2815,13 +2921,25 @@ class IntercomBroker {
     }
   }
 
+  /** #4639: a session back after its connection closed takes over what its host session kept: released children and answers. */
+  private adoptOrphans(ownerSessionId: string, owner: ConnectedSession): void {
+    this.restoringRecipients.adoptOrphans(ownerSessionId, owner.registrationReturnAddress);
+    this.dispatchHeldSends(this.departedChildren.adoptOrphans(ownerSessionId, owner.registrationReturnAddress));
+  }
+
   private disconnectSession(sessionId: string): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
 
     this.restoringRecipients.dropSender(sessionId);
+    this.departedChildren.dropSender(sessionId);
     // #3760: a departed owner restores nothing more; what it held goes through ordinary routing once it is gone.
-    const unreserved = this.restoringRecipients.dropOwner(sessionId);
+    // #4639: a session whose connection closes while it keeps released children, as a suspended stage's does, keeps
+    // them: sends to them are held until its host session connects again and reserves them.
+    const unreserved = [
+      ...this.restoringRecipients.dropOwner(sessionId, departed.registrationReturnAddress),
+      ...this.departedChildren.dropOwner(sessionId, departed.registrationReturnAddress),
+    ];
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
     const unanswered = this.pendingQuestions.takeForSender(sessionId);
@@ -2846,11 +2964,40 @@ class IntercomBroker {
     } else {
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
     }
+    // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An
+    // owner already away, as a suspended workflow stage's session is, says so through its host session when it is back.
+    const ownerAway = departed.supervisorId !== undefined && !this.sessions.has(departed.supervisorId);
+    if (
+      !parked &&
+      childName !== undefined &&
+      departed.supervisorId !== undefined &&
+      (!ownerAway || departed.supervisorReturnAddress !== undefined)
+    ) {
+      const aliases = [sessionId, departed.registrationReturnAddress].filter((alias): alias is string => alias !== undefined);
+      unreserved.push(...this.departedChildren.depart({
+        ownerSessionId: departed.supervisorId,
+        childName,
+        group: normalizeGroup(departed.registrationGroup),
+        aliases,
+        ...(ownerAway && departed.supervisorReturnAddress !== undefined
+          ? { ownerHostSession: departed.supervisorReturnAddress }
+          : {}),
+      }));
+    }
 
+    const endedInvocations = new Set<string>();
     for (const [runId, owner] of this.pendingStageRoutes) {
       if (owner.sessionId !== sessionId) continue;
       this.pendingStageRoutes.delete(runId);
       this.workflowRosters.delete(runId);
+      this.workflowStageAliases.forgetRun(runId);
+      endedInvocations.add(normalizeGroup(owner.group));
+    }
+    // #4639: once no route of a run is left, the released children its stages kept while away go with it.
+    for (const invocation of endedInvocations) {
+      if ([...this.pendingStageRoutes.values()].some((route) => normalizeGroup(route.group) === invocation)) continue;
+      unreserved.push(...this.restoringRecipients.dropOrphans((group) => invocationOwnsGroup(invocation, group)));
+      unreserved.push(...this.departedChildren.dropOrphans((group) => invocationOwnsGroup(invocation, group)));
     }
     for (const [requestId, pending] of this.pendingStageAcknowledgments) {
       if (pending.ownerSessionId !== sessionId) continue;
