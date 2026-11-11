@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.78] - 2026-11-11
+
+GitHub Copilot users get Gemini 4 Carbon and Claude Fable 5.2, and automatic model routing can rank Gemini 4 Carbon.
+
+- **New Copilot models.** `github-copilot/gemini-4-carbon` and `github-copilot/claude-fable-5.2` are always available, even with a catalog built before models.dev listed them, and Fable 5.2 offers only the thinking levels it accepts ([#4653](https://github.com/bastani-inc/atomic/pull/4653)).
+- **Routing evidence for Gemini 4.** `model: "auto"` can now choose Gemini 4 Carbon at high, medium or low effort from recorded benchmark results, and Gemini 4 Argon's results are rechecked and extended ([#4654](https://github.com/bastani-inc/atomic/issues/4654), [#4656](https://github.com/bastani-inc/atomic/pull/4656)).
+
+### Added
+
+- GitHub Copilot: `github-copilot/gemini-4-carbon` and `github-copilot/claude-fable-5.2` are always in the built-in model catalog, also when the catalog was built before models.dev listed them ([#4653](https://github.com/bastani-inc/atomic/pull/4653))
+
+### Changed
+
+- Recorded Gemini 4 Carbon results in the evals snapshot used by automatic model routing, so `model: "auto"` can rank `gemini-4-carbon`: Artificial Analysis rows at high, medium and low effort, Terminal-Bench-Science, Zapier AutomationBench and ARC Prize results at each effort, and the results Google reports in its model card. Rechecked Gemini 4 Argon against Artificial Analysis (no published value changed) and added its ARC Prize results and the newer-version results Google reports for it in the Gemini 4 Carbon model card ([#4654](https://github.com/bastani-inc/atomic/issues/4654), [#4656](https://github.com/bastani-inc/atomic/pull/4656))
+
+### Fixed
+
+- Claude Fable 5.2 no longer offers a `minimal` thinking level; like Fable 5.1 it accepts `low`, `medium`, `high`, `xhigh` and `max` ([#4653](https://github.com/bastani-inc/atomic/pull/4653))
+
 ## [0.9.78-alpha.1] - 2026-11-11
 
 GitHub Copilot users get Gemini 4 Carbon and Claude Fable 5.2, and automatic model routing can rank Gemini 4 Carbon.
