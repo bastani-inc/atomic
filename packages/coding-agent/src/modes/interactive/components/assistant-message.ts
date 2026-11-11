@@ -231,17 +231,18 @@ export class AssistantMessageComponent extends Container {
 }
 
 /**
- * The line shown under a response the user interrupted. A generic abort, whatever the provider called it ("Request
- * was aborted", "This operation was aborted", an AbortError), reads as a calm "Interrupted", the way the user asked
- * for it; a specific reason, such as the retry count, is kept.
+ * The line shown under an interrupted response: "Interrupted by user" for every interrupt, whatever the provider or
+ * retry loop called it. Only an abort Atomic itself caused with an explanation, such as a dismissed question, keeps
+ * that explanation.
  */
 export function interruptedNotice(errorMessage: string | undefined): string {
+	const text = errorMessage?.trim() ?? "";
 	if (
-		!errorMessage ||
-		/^(?:operation|request|this operation) was aborted\.?$|^operation aborted$|^aborterror\b|^the operation was aborted/i.test(
-			errorMessage.trim(),
+		text === "" ||
+		/^(?:(?:the |this )?(?:operation|request) (?:was )?aborted|operation aborted|aborterror\b.*|aborted after \d+ retry attempts?|interrupted(?: by user)?)\.?$/i.test(
+			text,
 		)
 	)
-		return "Interrupted";
-	return errorMessage;
+		return "Interrupted by user";
+	return text;
 }

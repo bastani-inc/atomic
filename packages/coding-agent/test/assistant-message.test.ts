@@ -271,12 +271,13 @@ describe("AssistantMessageComponent", () => {
 		}
 	});
 
-	test("a response the user interrupted ends with a muted Interrupted line, not the provider's abort error", () => {
+	test("an interrupted response ends with a muted 'Interrupted by user' line, whatever the provider or retry loop called it", () => {
 		initTheme("dark");
 		for (const errorMessage of [
 			undefined,
 			"Request was aborted",
 			"This operation was aborted",
+			"The operation was aborted.",
 			"Operation aborted",
 		]) {
 			const component = new AssistantMessageComponent(
@@ -284,13 +285,17 @@ describe("AssistantMessageComponent", () => {
 			);
 			const lines = component.render(80);
 			const last = lines.filter((line) => stripAnsi(line).trim() !== "").at(-1) ?? "";
-			assert.equal(stripAnsi(last).trim(), "Interrupted", String(errorMessage));
-			assert.equal(last.includes(theme.fg("error", "Interrupted")), false, "not drawn as an error");
+			assert.equal(stripAnsi(last).trim(), "Interrupted by user", String(errorMessage));
+			assert.equal(last.includes(theme.fg("error", "Interrupted by user")), false, "not drawn as an error");
 		}
 		const retried = new AssistantMessageComponent(
 			createAssistantMessage([], { stopReason: "aborted", errorMessage: "Aborted after 2 retry attempts" }),
 		);
-		assert.ok(retried.render(80).some((line) => stripAnsi(line).includes("Aborted after 2 retry attempts")));
+		const retriedText = retried
+			.render(80)
+			.map((line) => stripAnsi(line).trim())
+			.filter(Boolean);
+		assert.deepEqual(retriedText.slice(-1), ["Interrupted by user"], "an interrupt during retries reads the same");
 	});
 
 	test("renders neutral truncation wording for a length stop", () => {

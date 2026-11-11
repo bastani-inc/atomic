@@ -280,15 +280,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				let errorMessage: string | undefined;
 				if (this.streamingMessage.stopReason === "aborted") {
 					const existingAbortMessage =
-						interruptedNotice(this.streamingMessage.errorMessage) === "Interrupted"
+						interruptedNotice(this.streamingMessage.errorMessage) === "Interrupted by user"
 							? undefined
 							: this.streamingMessage.errorMessage;
-					const retryAttempt = this.session.retryAttempt;
-					errorMessage =
-						existingAbortMessage ??
-						(retryAttempt > 0
-							? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-							: "Operation aborted");
+					errorMessage = existingAbortMessage ?? "Interrupted by user";
 					this.streamingMessage.errorMessage = errorMessage;
 				}
 				this.streamingComponent.updateContent(this.streamingMessage, false);
