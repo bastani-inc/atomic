@@ -341,6 +341,30 @@ describe("a stage is released when its last hold ends, once its release was aske
 		assert.equal(fake.disposals(), 1);
 	});
 
+	test("a lease taken and released while the transcript check runs does not leave the idle stage registered (#4642)", async () => {
+		const registry = createStageControlRegistry();
+		const gate = fakeGate();
+		const fake = gatedHandle("a", gate);
+		const committed = registry.acquireDetached(RUN, "a", () => fake.handle);
+		assert.equal(committed.commit(), true);
+
+		gate.pendingSave = Promise.withResolvers<void>();
+		const releasing = registry.releaseIdle(RUN);
+		await settled();
+		assert.equal(gate.savedCalls, 1, "the transcript check is pending");
+
+		const lease = registry.acquireDetached(RUN, "a", () => gatedHandle("other", fakeGate()).handle);
+		await lease.release();
+		assert.equal(registry.get(RUN, "a"), fake.handle, "the pending check has not decided yet");
+
+		gate.pendingSave.resolve();
+		await releasing;
+		await settled();
+
+		assert.equal(registry.get(RUN, "a"), undefined, "the lease's release was not lost");
+		assert.equal(fake.disposals(), 1);
+	});
+
 	test("claiming a provisional detached handle makes it outlive the lease that created it", async () => {
 		const registry = createStageControlRegistry();
 		const gate = fakeGate({ idle: false });

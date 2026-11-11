@@ -344,6 +344,8 @@ export function createStageControlRegistry(): StageControlRegistry {
 		/** Ends the wait for the claimer to use the handle, so a claim nobody follows with a hold does not pin it. */
 		claimTimer?: ReturnType<typeof setTimeout>;
 		releasing?: Promise<void>;
+		/** A release was asked for while a transcript check was running: its outcome may be stale, so check again. */
+		releaseAgain?: boolean;
 		stopWatching?: () => void;
 	};
 
@@ -459,10 +461,30 @@ export function createStageControlRegistry(): StageControlRegistry {
 	}
 
 	function releaseIdleEntry(runId: string, stageId: string, entry: RegistryEntry): Promise<void> {
-		entry.releasing ??= releaseUnlessUsed(runId, stageId, entry).finally(() => {
+		if (entry.releasing !== undefined) {
+			entry.releaseAgain = true;
+			return entry.releasing;
+		}
+		entry.releasing = releaseUntilSettled(runId, stageId, entry).finally(() => {
 			entry.releasing = undefined;
 		});
 		return entry.releasing;
+	}
+
+	/**
+	 * A release asked for during a transcript check joins that check, which may already have judged the stage busy
+	 * (a lease was held meanwhile), so a request that joined it makes the check run again once it ends.
+	 */
+	async function releaseUntilSettled(runId: string, stageId: string, entry: RegistryEntry): Promise<void> {
+		do {
+			entry.releaseAgain = false;
+			await releaseUnlessUsed(runId, stageId, entry);
+		} while (releaseRequestedAgain(entry) && _byRun.get(runId)?.get(stageId) === entry);
+	}
+
+	/** Read after an await: a release that joined the check may have set it meanwhile. */
+	function releaseRequestedAgain(entry: RegistryEntry): boolean {
+		return entry.releaseAgain === true;
 	}
 
 	async function releaseUnlessUsed(runId: string, stageId: string, entry: RegistryEntry): Promise<void> {

@@ -3,8 +3,14 @@ import { afterEach, test, vi } from "vitest";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
 import { HostedSessionRequestError } from "../../packages/intercom/broker/hosted-session-errors.js";
 import { HOSTED_SESSION_FRAME_MAX } from "../../packages/intercom/broker/hosted-sessions.js";
+import { IntercomHostedSessionTimeoutError } from "../../packages/intercom/hosted-session-timeout-error.js";
 import { IntercomClientDisconnectedError } from "../../packages/intercom/recoverable-disconnect.js";
-import { type ReleasedStageAnnouncement, ReleasedStagePeers } from "../../packages/intercom/released-stage-peers.js";
+import {
+	RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX,
+	type ReleasedStageAnnouncement,
+	ReleasedStagePeers,
+	type ReleasedStageReconnectFailure,
+} from "../../packages/intercom/released-stage-peers.js";
 import type { HostedSessionFrameItem } from "../../packages/intercom/types.js";
 
 const RECONNECT_WINDOW_MS = 60_000;
@@ -27,7 +33,14 @@ interface FakeConnections {
 }
 
 /** Peers whose connections are real clients with the broker calls stubbed; the first `failures` connects fail. */
-function fakeConnections(options: { readonly failures?: number; readonly connect?: () => Promise<void> } = {}) {
+function fakeConnections(
+	options: {
+		readonly failures?: number;
+		readonly connect?: () => Promise<void>;
+		readonly host?: (attempt: number, client: IntercomClient) => Promise<void>;
+		readonly report?: (failure: ReleasedStageReconnectFailure) => void;
+	} = {},
+) {
 	const connects: string[] = [];
 	const hosted: HostedSessionFrameItem[][] = [];
 	const disconnects: number[] = [];
@@ -36,6 +49,7 @@ function fakeConnections(options: { readonly failures?: number; readonly connect
 		prepare: async () => {},
 		cwd: () => "/workspace",
 		relay: () => {},
+		report: options.report,
 		createClient: (returnAddress) => {
 			const client = new IntercomClient(returnAddress);
 			clients.push(client);
@@ -48,6 +62,7 @@ function fakeConnections(options: { readonly failures?: number; readonly connect
 			});
 			vi.spyOn(client, "hostSessions").mockImplementation(async (sessions) => {
 				hosted.push([...sessions]);
+				await options.host?.(attempt, client);
 				return sessions.map((session) => ({ key: session.key, sessionId: `broker-${session.key}` }));
 			});
 			vi.spyOn(client, "disconnect").mockImplementation(async () => {
@@ -189,4 +204,47 @@ test("an announcement the broker would refuse is rejected alone and hosts nothin
 		[["run-4642\0stage-1"]],
 	);
 	await peers.disconnectAll();
+});
+
+test("a hosting request that times out closes its connection before hosting again, so no name is hosted twice on one connection (#4642)", async () => {
+	vi.useFakeTimers();
+	const { peers, hosted, disconnects, clients } = fakeConnections({
+		host: async (attempt) => {
+			if (attempt === 0)
+				throw new IntercomHostedSessionTimeoutError({
+					requestType: "host_sessions",
+					sessionCount: 1,
+					timeoutMs: 5_000,
+					elapsedMs: 5_001,
+				});
+		},
+	});
+
+	await assert.rejects(peers.adopt(route(0)), IntercomHostedSessionTimeoutError);
+	assert.deepEqual(disconnects, [0], "the connection whose hosting outcome is unknown is closed");
+	await vi.advanceTimersByTimeAsync(RECONNECT_WINDOW_MS);
+
+	assert.equal(clients.length, 2, "hosting is tried again on a new connection");
+	assert.equal(hosted.length, 2);
+	const hostedOnFirst = vi.mocked(clients[0]!.hostSessions).mock.calls.length;
+	assert.equal(hostedOnFirst, 1, "the timed-out connection was never asked to host again");
+});
+
+test("a broker that drops every connection while hosting stops being retried after the attempt limit (#4642)", async () => {
+	vi.useFakeTimers();
+	const reports: ReleasedStageReconnectFailure[] = [];
+	const { peers, connects } = fakeConnections({
+		host: async (_attempt, client) => {
+			client.emit("disconnected");
+			throw new IntercomClientDisconnectedError();
+		},
+		report: (failure) => reports.push(failure),
+	});
+
+	await assert.rejects(peers.adopt(route(0)));
+	await vi.advanceTimersByTimeAsync(RECONNECT_WINDOW_MS * (RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX + 5));
+
+	assert.equal(connects.length, RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX + 1, "the first connection plus the limit");
+	assert.equal(reports.at(-1)?.retrying, false);
+	assert.equal(vi.getTimerCount(), 0, "no reconnect is left scheduled");
 });

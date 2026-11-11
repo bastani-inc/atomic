@@ -4,6 +4,7 @@ import type { JsonWireValue } from "./broker/framing.js";
 import { hostedSessionErrorFor } from "./broker/hosted-session-errors.js";
 import { HOSTED_SESSION_FRAME_MAX, validateHostSessionsFrame } from "./broker/hosted-sessions.js";
 import { normalizeGroup } from "./group.js";
+import { isIntercomHostedSessionTimeoutError } from "./hosted-session-timeout-error.js";
 import { formatAttachments, resolveIntercomPresenceName, toError } from "./intercom-utils.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import { IntercomClientDisconnectedError } from "./recoverable-disconnect.js";
@@ -221,6 +222,9 @@ export class ReleasedStagePeers {
 				(error) => {
 					// Hosting them again on this connection is up to the next attempt.
 					for (const peer of chunk) if (peer.hostedOn === client) peer.hostedOn = undefined;
+					// A timed-out request may still have hosted its sessions. Closing the connection removes whatever it
+					// hosted, so the next attempt cannot leave two sessions under one name.
+					if (isIntercomHostedSessionTimeoutError(error)) this.dropConnection(client);
 					return toError(error);
 				},
 			);
@@ -331,13 +335,28 @@ export class ReleasedStagePeers {
 			throw new IntercomClientDisconnectedError();
 		}
 		this.client = client;
-		this.reconnectAttempt = 0;
 		return client;
+	}
+
+	/** Closes a connection whose hosting outcome is unknown; its broker sessions leave with it. */
+	private dropConnection(client: IntercomClient): void {
+		if (this.client !== client) return;
+		this.client = null;
+		void client.disconnect().catch(() => {});
 	}
 
 	/** One timer for every peer: reconnects, then hosts every peer the broker does not have yet. */
 	private scheduleReconnect(): void {
 		if (this.reconnectTimer !== null || this.peers.size === 0) return;
+		if (this.reconnectAttempt >= RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX) {
+			this.deps.report?.({
+				error: new IntercomClientDisconnectedError(),
+				retrying: false,
+				attempt: this.reconnectAttempt,
+				peers: this.peers.size,
+			});
+			return;
+		}
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.reconnectAttempt += 1;
@@ -351,7 +370,10 @@ export class ReleasedStagePeers {
 	}
 
 	private reconnectFailed(failure: Error | undefined): void {
-		if (failure === undefined) return;
+		if (failure === undefined) {
+			this.reconnectAttempt = 0;
+			return;
+		}
 		const retrying =
 			isRetryableHostingFailure(failure) && this.reconnectAttempt < RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX;
 		this.deps.report?.({ error: failure, retrying, attempt: this.reconnectAttempt, peers: this.peers.size });

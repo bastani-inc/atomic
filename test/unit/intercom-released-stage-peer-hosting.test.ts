@@ -586,7 +586,7 @@ describe("the shared connection (#4642)", () => {
 		assert.equal(hostCalls, 2);
 		assert.deepEqual(
 			reported.map(({ error, retrying, attempt, peers: count }) => ({ error, retrying, attempt, count })),
-			[{ error: refusal, retrying: false, attempt: 0, count: 1 }],
+			[{ error: refusal, retrying: false, attempt: 1, count: 1 }],
 		);
 		assert.equal(vi.getTimerCount(), 0, "no further attempt is scheduled");
 		await vi.advanceTimersByTimeAsync(10 * 60_000);
