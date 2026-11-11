@@ -19,7 +19,8 @@
  *    varies by more than the frames it measures;
  * 4. measures `--churn-windows` churn windows (default 5): `--churn-keys` keys (default 60), one every
  *    `--churn-key-interval-ms` (default 8, so they land while stages start rather than after) arrive while the lanes
- *    start and finish `--churn` stages (default one per lane), after a full collection, and the median of every
+ *    start and finish `--churn` stages (default one per lane, and at least six, so a window sees several stages
+ *    start whatever the lane count), after a full collection, and the median of every
  *    statistic is reported. The first checkpoint has one more churn window first, discarded as warm-up. Each churn
  *    window adds its stages, so the table reports the finished stages the checkpoint's churn windows ran from and to;
  * 5. writes a CPU profile of each window and a heap snapshot when `--profile-dir` is given.
@@ -128,7 +129,7 @@ function parseOptions(argv: readonly string[]): Options {
 		keys: count("keys", 60),
 		keyIntervalMs: count("key-interval-ms", 33),
 		probes: count("probes", 3),
-		churn: Math.max(1, count("churn", runs * lanes)),
+		churn: Math.max(1, count("churn", Math.max(MIN_CHURN_STAGES, runs * lanes))),
 		churnWindows: Math.max(1, count("churn-windows", 5)),
 		churnKeys: Math.max(1, count("churn-keys", 60)),
 		churnKeyIntervalMs: Math.max(1, count("churn-key-interval-ms", 8)),
@@ -146,6 +147,8 @@ function parseOptions(argv: readonly string[]): Options {
 }
 
 const HOST_FRAME_MS = 16;
+/** Stages a churn window starts at least: with fewer, its slowest keys depend on one or two stage starts. */
+const MIN_CHURN_STAGES = 6;
 const REOPEN_PATHS: readonly ReopenPath[] = ["attach", "message", "ask", "hidden"];
 const GRAPH_KEYS = ["\x1b[B", "\x1b[B", "\x1b[A", "\x1b[A"];
 const ENGINE_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "engine.ts");
