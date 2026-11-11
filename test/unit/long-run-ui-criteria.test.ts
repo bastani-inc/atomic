@@ -7,6 +7,7 @@ import {
 	type MeasuredCheckpoint,
 	NOISE_FLOOR_MS,
 	RESULT_COPIES_PER_FINISHED_STAGE_MAX,
+	type StoreChangeCostSample,
 } from "../../scripts/perf/long-run-ui/criteria.js";
 
 interface Overrides extends Partial<MeasuredCheckpoint["sample"]> {
@@ -14,6 +15,8 @@ interface Overrides extends Partial<MeasuredCheckpoint["sample"]> {
 	pane?: number;
 	idleKey?: number;
 	busyKey?: number;
+	churnKeyP50?: number;
+	churnKeyP95?: number;
 }
 
 function checkpoint(finished: number, overrides: Overrides = {}): MeasuredCheckpoint {
@@ -29,19 +32,31 @@ function checkpoint(finished: number, overrides: Overrides = {}): MeasuredCheckp
 			keyLatencyMs: { p50: overrides.idleKey ?? 3 },
 		},
 		busy: { keyLatencyMs: { p50: overrides.busyKey ?? 4 } },
+		churn: { keyLatencyMs: { p50: overrides.churnKeyP50 ?? 0.5, p95: overrides.churnKeyP95 ?? 30 } },
 	};
 }
 
 const RESULT_BYTES = 1_100;
 const HELD_STAGES = 2;
 
+/** Store-change cost flat at 100 µs per change at the first and last checkpoints of `points`. */
+function flatStoreChangeCost(points: readonly MeasuredCheckpoint[]): StoreChangeCostSample[] {
+	const first = points[0]?.finished ?? 10;
+	const last = points.at(-1)?.finished ?? first;
+	return [
+		{ finished: first, usPerChange: 100, windows: [100, 100, 100] },
+		{ finished: last, usPerChange: 100, windows: [100, 100, 100] },
+	];
+}
+
 function evaluateCriteria(
 	points: readonly MeasuredCheckpoint[],
-	options: { resultBytes?: number; heldStagesMax?: number } = {},
+	options: { resultBytes?: number; heldStagesMax?: number; storeChangeCost?: readonly StoreChangeCostSample[] } = {},
 ) {
 	return evaluateWith(points, {
 		resultBytes: options.resultBytes ?? RESULT_BYTES,
 		heldStagesMax: options.heldStagesMax ?? HELD_STAGES,
+		storeChangeCost: options.storeChangeCost ?? flatStoreChangeCost(points),
 	});
 }
 
@@ -214,5 +229,80 @@ describe("the long-run UI benchmark criteria (#4642)", () => {
 			"fewer than two checkpoints from 200 finished stages on, so heap growth per stage cannot be measured",
 		]);
 		assert.throws(() => evaluateCriteria([]), /measured no checkpoint/);
+	});
+
+	test("churn key latency p50 and p95 at the last checkpoint are held to 20% of the baseline with no noise floor (#4642)", () => {
+		for (const [field, baseline, name] of [
+			["churnKeyP50", 0.5, "churn key latency p50"],
+			["churnKeyP95", 30, "churn key latency p95"],
+		] as const) {
+			const atLimit = evaluateCriteria([...flat.slice(0, 4), checkpoint(600, { [field]: baseline * 1.2 })]);
+			assert.deepEqual(atLimit.failures, [], `${name} at exactly 20% over the baseline passes`);
+
+			const over = evaluateCriteria([...flat.slice(0, 4), checkpoint(600, { [field]: baseline * 1.2 + 0.001 })]);
+			assert.equal(over.passed, false, `${name} a thousandth of a millisecond over 20% fails`);
+			assert.deepEqual(over.failures, [
+				`${name} is ${baseline * 1.2 + 0.001} ms at 600 finished stages; the 10-stage baseline ${baseline} ms allows ${(baseline * 1.2).toFixed(3)} ms`,
+			]);
+
+			const underFloor = evaluateCriteria([
+				...flat.slice(0, 4),
+				checkpoint(600, { [field]: baseline * 1.2 + NOISE_FLOOR_MS / 2 }),
+			]);
+			assert.equal(underFloor.passed, false, `${name} is not given the ${NOISE_FLOOR_MS} ms noise floor`);
+		}
+	});
+
+	test("churn key latency is compared at the last checkpoint, not at the middle ones (#4642)", () => {
+		const middle = evaluateCriteria([
+			checkpoint(10),
+			checkpoint(200, { churnKeyP95: 90 }),
+			checkpoint(400, { churnKeyP50: 9 }),
+			checkpoint(600),
+		]);
+		assert.deepEqual(middle.failures, []);
+		const last = evaluateCriteria([checkpoint(10), checkpoint(200), checkpoint(600, { churnKeyP95: 90 })]);
+		assert.match(last.failures[0]!, /^churn key latency p95 is 90 ms at 600 finished stages/);
+	});
+
+	test("the CPU time of a store change at the last checkpoint is held to 20% of the baseline's, window by window (#4642)", () => {
+		const cost = (baseline: readonly number[], longest: readonly number[]): StoreChangeCostSample[] => [
+			{ finished: 10, usPerChange: 100, windows: baseline },
+			{ finished: 600, usPerChange: 120, windows: longest },
+		];
+		const points = [...flat.slice(0, 4), checkpoint(600)];
+		assert.deepEqual(
+			evaluateCriteria(points, { storeChangeCost: cost([100, 50, 200], [120, 60, 240]) }).failures,
+			[],
+		);
+		assert.deepEqual(
+			evaluateCriteria(points, { storeChangeCost: cost([100, 50, 200], [120.01, 60.01, 240.01]) }).failures,
+			[
+				"a store change costs 1.200 times as much CPU at 600 finished stages as at 10 (median of 3 paired windows, 120 µs against 100 µs); at most 1.2 times is allowed",
+			],
+		);
+		assert.equal(
+			evaluateCriteria(points, { storeChangeCost: cost([100, 100, 100], [100, 300, 300]) }).passed,
+			false,
+			"the median of the paired ratios, not of each side, is compared",
+		);
+		assert.equal(
+			evaluateCriteria(points, { storeChangeCost: cost([100, 50, 200], [300, 60, 240]) }).passed,
+			true,
+			"one disturbed window does not fail the run",
+		);
+		for (const storeChangeCost of [
+			[],
+			[{ finished: 10, usPerChange: 100, windows: [100] }],
+			cost([], []),
+			cost([100, 100], [100]),
+			[
+				{ finished: 10, usPerChange: 100, windows: [100] },
+				{ finished: 400, usPerChange: 100, windows: [100] },
+			],
+		])
+			assert.deepEqual(evaluateCriteria(points, { storeChangeCost }).failures, [
+				"the store-change cost was not measured in paired windows at both the first and the last checkpoint",
+			]);
 	});
 });

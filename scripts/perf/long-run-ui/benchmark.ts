@@ -17,7 +17,19 @@
  * 3. measures an idle window and a busy window (reopened stages answering asks while keys arrive) of `--keys` keys,
  *    each `--windows` times (default 5), and reports the median of every statistic, since one window on a shared host
  *    varies by more than the frames it measures;
- * 4. writes a CPU profile of each window and a heap snapshot when `--profile-dir` is given.
+ * 4. measures `--churn-windows` churn windows (default 5): `--churn-keys` keys (default 60), one every
+ *    `--churn-key-interval-ms` (default 8, so they land while stages start rather than after) arrive while the lanes
+ *    start and finish `--churn` stages (default one per lane), after a full collection, and the median of every
+ *    statistic is reported. The first checkpoint has one more churn window first, discarded as warm-up. Each churn
+ *    window adds its stages, so the table reports the finished stages the checkpoint's churn windows ran from and to;
+ * 5. writes a CPU profile of each window and a heap snapshot when `--profile-dir` is given.
+ *
+ * After the runs end, `store-change-cost.ts` measures in a process of its own the CPU time one store change costs the
+ * engine's workflow surfaces at the first and the last checkpoint's finished-stage counts, without sessions: what a
+ * churn window's key latency adds to the cost of starting a stage.
+ *
+ * Before the measured runs start, a throwaway run finishes `--warmup-stages` stages (default 10 per lane) and the store
+ * drops it, so the 10-stage baseline is measured with the code that starts and finishes stages already warm.
  *
  * Transcripts and the run journal live in SQLite files in a temporary directory (`--store sqlite`, the default) or in
  * memory (`--store memory`); the engine runs with its own temporary agent directory and never opens the user's.
@@ -29,8 +41,9 @@
  *
  * `--assert` fails the run unless the criteria of `criteria.ts` hold. The first checkpoint is measured after a discarded
  * warm-up window and is the baseline: frame time and key latency, as the median from 200 finished stages on and as the median of the largest half of those checkpoints, stay within 20% of it
- * (plus a small timer-noise floor), no session or registry entry is left open, and heap grows by an index-sized amount
- * per finished stage.
+ * (plus a small timer-noise floor); churn key latency p50 and p95 and the store-change cost at the last checkpoint stay
+ * within 20% of it with no noise floor; no session or registry entry is left open, and heap grows by an index-sized
+ * amount per finished stage.
  *
  * The default viewport is 12 rows, so that the 10-stage baseline already fills it: a graph draws only the rows in view,
  * and a baseline that leaves the viewport half empty is cheaper than any later checkpoint by construction.
@@ -49,8 +62,9 @@ import {
 	serializeInteractiveEngineFrame,
 } from "../../../packages/coding-agent/src/modes/interactive-engine/protocol.js";
 import { attachJsonlLineReader } from "../../../packages/coding-agent/src/modes/rpc/jsonl.js";
-import { evaluateCriteria } from "./criteria.js";
+import { evaluateCriteria, pairedCostRatio } from "./criteria.js";
 import type { BenchControl, EngineConfig, EngineSample, RenderTimes, ReopenPath } from "./engine.js";
+import type { StoreChangeCost, StoreChangeCostOptions } from "./store-change-cost.js";
 
 interface Options {
 	readonly label: string;
@@ -63,6 +77,13 @@ interface Options {
 	readonly probes: number;
 	/** Stages the lanes may start while keys arrive in each churn window. */
 	readonly churn: number;
+	/** Measured churn windows per checkpoint; their median is reported. */
+	readonly churnWindows: number;
+	/** Keys sent in each churn window, and the milliseconds between them: dense, so they land while stages start. */
+	readonly churnKeys: number;
+	readonly churnKeyIntervalMs: number;
+	/** Stages a throwaway run finishes before the measured runs start. */
+	readonly warmupStages: number;
 	readonly toolDelayMs: number;
 	readonly resultBytes: number;
 	readonly store: "sqlite" | "memory";
@@ -96,16 +117,22 @@ function parseOptions(argv: readonly string[]): Options {
 	const out = value("out");
 	const store = value("store") ?? "sqlite";
 	if (store !== "sqlite" && store !== "memory") throw new Error(`--store must be sqlite or memory, got ${store}`);
+	const runs = Math.max(1, count("runs", 2));
+	const lanes = Math.max(1, count("lanes", 3));
 	return {
 		label: value("label") ?? "run",
-		runs: Math.max(1, count("runs", 2)),
-		lanes: Math.max(1, count("lanes", 3)),
+		runs,
+		lanes,
 		checkpoints,
 		reopen: count("reopen", 8),
 		keys: count("keys", 60),
 		keyIntervalMs: count("key-interval-ms", 33),
 		probes: count("probes", 3),
-		churn: count("churn", 12),
+		churn: Math.max(1, count("churn", runs * lanes)),
+		churnWindows: Math.max(1, count("churn-windows", 5)),
+		churnKeys: Math.max(1, count("churn-keys", 60)),
+		churnKeyIntervalMs: Math.max(1, count("churn-key-interval-ms", 8)),
+		warmupStages: count("warmup-stages", 10 * runs * lanes),
 		toolDelayMs: count("tool-delay-ms", 5),
 		resultBytes: Math.max(1, count("result-bytes", 1_100)),
 		store,
@@ -368,14 +395,49 @@ async function measureWindow(host: SimulatedHost, options: Options, probes: numb
 	return result;
 }
 
-/** Keys arrive while the lanes keep starting and finishing stages, up to `options.churn` of them. */
-async function measureChurnWindow(host: SimulatedHost, options: Options, profile?: string): Promise<WindowResult> {
+/**
+ * Keys arrive while the lanes keep starting and finishing stages, up to `options.churn` of them, after a full
+ * collection, so a collection the previous window left pending does not land in this one. Resolves with the window
+ * and the finished stages once the lanes are idle again.
+ */
+async function measureChurnWindow(
+	host: SimulatedHost,
+	options: Options,
+	profile?: string,
+): Promise<{ readonly window: WindowResult; readonly finished: number }> {
+	await host.request({ type: "bench_collect" }, "bench_collected");
 	const churned = host.waitFor((line) => line.type === "bench_churn_done");
 	host.control({ type: "bench_churn_start", stages: options.churn });
-	const window = await measureWindow(host, options, 0, profile);
+	const window = await measureWindow(
+		host,
+		{ ...options, keys: options.churnKeys, keyIntervalMs: options.churnKeyIntervalMs },
+		0,
+		profile,
+	);
 	host.control({ type: "bench_churn_stop" });
-	await churned;
-	return window;
+	const done = await churned;
+	return { window, finished: done.finished ?? Number.NaN };
+}
+
+const STORE_CHANGE_COST_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "store-change-cost.ts");
+
+/** Runs `store-change-cost.ts` in a process of its own and reads the costs it prints. */
+function measureStoreChangeCost(options: StoreChangeCostOptions): Promise<StoreChangeCost[]> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [STORE_CHANGE_COST_SCRIPT, JSON.stringify(options)], {
+			stdio: ["ignore", "pipe", "inherit"],
+		});
+		let output = "";
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => {
+			output += chunk;
+		});
+		child.once("error", reject);
+		child.once("exit", (code) => {
+			if (code !== 0) reject(new Error(`store-change-cost.ts exited with ${code}`));
+			else resolve(JSON.parse(output) as StoreChangeCost[]);
+		});
+	});
 }
 
 interface CheckpointResult {
@@ -384,8 +446,10 @@ interface CheckpointResult {
 	readonly sample: EngineSample;
 	readonly idle: WindowResult;
 	readonly busy: WindowResult;
-	/** Key latency while the lanes start and finish stages. Reported with the table, not asserted: its tail still grows with the stage count. */
+	/** Key latency while the lanes start and finish stages, the median of the checkpoint's churn windows. */
 	readonly churn: WindowResult;
+	/** Finished stages before the checkpoint's first measured churn window and after its last. */
+	readonly churnFinished: { readonly from: number; readonly to: number };
 }
 
 /** Self time per function of a CPU profile, the costliest first. */
@@ -450,7 +514,8 @@ function summarizeHeap(path: string): { readonly name: string; readonly count: n
 
 async function main(): Promise<void> {
 	const options = parseOptions(process.argv.slice(2));
-	const stages = (options.checkpoints.at(-1) ?? 10) + 10 + options.churn * (options.checkpoints.length + 1);
+	const stages =
+		(options.checkpoints.at(-1) ?? 10) + 10 + options.churn * (options.checkpoints.length * options.churnWindows + 1);
 	const config: EngineConfig = {
 		runs: options.runs,
 		lanes: options.lanes,
@@ -459,6 +524,7 @@ async function main(): Promise<void> {
 		toolDelayMs: options.toolDelayMs,
 		resultBytes: options.resultBytes,
 		store: options.store,
+		warmupStages: options.warmupStages,
 	};
 	if (options.profileDir !== undefined) mkdirSync(options.profileDir, { recursive: true });
 	const host = new SimulatedHost(config, options);
@@ -497,9 +563,17 @@ async function main(): Promise<void> {
 		for (let repeat = 0; repeat < options.windows; repeat++)
 			busyWindows.push(await measureWindow(host, options, options.probes, repeat === 0 ? busyProfile : undefined));
 		const busy = medianWindow(busyWindows);
-		if (checkpoint === options.checkpoints[0]) await measureChurnWindow(host, options);
+		let churnFrom = reached.finished ?? checkpoint;
+		if (checkpoint === options.checkpoints[0]) churnFrom = (await measureChurnWindow(host, options)).finished;
 		const churnProfile = profile("churn");
-		const churn = await measureChurnWindow(host, options, churnProfile);
+		const churnWindows: WindowResult[] = [];
+		let churnTo = churnFrom;
+		for (let repeat = 0; repeat < options.churnWindows; repeat++) {
+			const measured = await measureChurnWindow(host, options, repeat === 0 ? churnProfile : undefined);
+			churnWindows.push(measured.window);
+			churnTo = measured.finished;
+		}
+		const churn = medianWindow(churnWindows);
 		if (churnProfile !== undefined) profiles[`${checkpoint}-churn`] = summarizeProfile(churnProfile);
 		if (idleProfile !== undefined) profiles[`${checkpoint}-idle`] = summarizeProfile(idleProfile);
 		if (busyProfile !== undefined) profiles[`${checkpoint}-busy`] = summarizeProfile(busyProfile);
@@ -515,6 +589,7 @@ async function main(): Promise<void> {
 			idle,
 			busy,
 			churn,
+			churnFinished: { from: churnFrom, to: churnTo },
 		};
 		checkpoints.push(result);
 		process.stderr.write(
@@ -525,9 +600,21 @@ async function main(): Promise<void> {
 	const ended = await done;
 	const final = await host.request({ type: "bench_sample" }, "bench_sample_result");
 	await host.close();
+	const first = checkpoints[0];
+	const last = checkpoints.at(-1);
+	const storeChangeCost =
+		first === undefined || last === undefined
+			? []
+			: await measureStoreChangeCost({
+					runs: options.runs,
+					lanes: options.lanes,
+					finished: [...new Set([first.finished, last.finished])],
+					resultBytes: options.resultBytes,
+				});
 	const criteria = evaluateCriteria(checkpoints, {
 		resultBytes: options.resultBytes,
 		heldStagesMax: options.runs * options.lanes,
+		storeChangeCost,
 	});
 	const report = {
 		label: options.label,
@@ -537,6 +624,7 @@ async function main(): Promise<void> {
 				: `bun ${(globalThis as { Bun?: { version: string } }).Bun!.version}`,
 		options,
 		checkpoints,
+		storeChangeCost,
 		criteria,
 		afterRunsEnded: final.sample,
 		runResults: ended.results,
@@ -545,26 +633,33 @@ async function main(): Promise<void> {
 	};
 	const text = JSON.stringify(report, null, 2);
 	if (options.out !== undefined) writeFileSync(options.out, `${text}\n`);
-	process.stdout.write(`${table(report.label, checkpoints)}\n`);
+	process.stdout.write(`${table(report.label, checkpoints, storeChangeCost)}\n`);
 	if (options.assert && !criteria.passed) {
 		process.stderr.write(`${criteria.failures.map((failure) => `FAILED: ${failure}`).join("\n")}\n`);
 		process.exitCode = 1;
 	}
 }
 
-function table(label: string, rows: readonly CheckpointResult[]): string {
+function table(label: string, rows: readonly CheckpointResult[], storeChangeCost: readonly StoreChangeCost[]): string {
 	const mb = (bytes: number) => (bytes / 2 ** 20).toFixed(1);
 	const handles = (sample: EngineSample) =>
 		Object.values(sample.activeResources).reduce((sum, count) => sum + count, 0);
 	return [
 		`### ${label}`,
 		"",
-		"| finished | reopened | heap MiB | RSS MiB | live sessions | registry | handles | widget render p50/p95 ms | pane render p50/p95 ms | key p50/p95 ms idle | key p50/p95 ms busy | key p50/p95 ms churn |",
-		`|${"---|".repeat(12)}`,
+		"| finished | reopened | heap MiB | RSS MiB | live sessions | registry | handles | widget render p50/p95 ms | pane render p50/p95 ms | key p50/p95 ms idle | key p50/p95 ms busy | key p50/p95 ms churn | churn finished |",
+		`|${"---|".repeat(13)}`,
 		...rows.map(
 			(row) =>
-				`| ${row.finished} | ${row.reopened} | ${mb(row.sample.heapUsedBytes)} | ${mb(row.sample.rssBytes)} | ${row.sample.liveSessions} | ${row.sample.registryEntries} | ${handles(row.sample)} | ${row.idle.engineRenderMs.widget.p50}/${row.idle.engineRenderMs.widget.p95} | ${row.idle.engineRenderMs.pane.p50}/${row.idle.engineRenderMs.pane.p95} | ${row.idle.keyLatencyMs.p50}/${row.idle.keyLatencyMs.p95} | ${row.busy.keyLatencyMs.p50}/${row.busy.keyLatencyMs.p95} | ${row.churn.keyLatencyMs.p50}/${row.churn.keyLatencyMs.p95} |`,
+				`| ${row.finished} | ${row.reopened} | ${mb(row.sample.heapUsedBytes)} | ${mb(row.sample.rssBytes)} | ${row.sample.liveSessions} | ${row.sample.registryEntries} | ${handles(row.sample)} | ${row.idle.engineRenderMs.widget.p50}/${row.idle.engineRenderMs.widget.p95} | ${row.idle.engineRenderMs.pane.p50}/${row.idle.engineRenderMs.pane.p95} | ${row.idle.keyLatencyMs.p50}/${row.idle.keyLatencyMs.p95} | ${row.busy.keyLatencyMs.p50}/${row.busy.keyLatencyMs.p95} | ${row.churn.keyLatencyMs.p50}/${row.churn.keyLatencyMs.p95} | ${row.churnFinished.from}–${row.churnFinished.to} |`,
 		),
+		"",
+		"| finished | store change µs CPU | graph snapshot µs | activity publication µs | median ratio to the first, paired windows |",
+		"|---|---|---|---|---|",
+		...storeChangeCost.map((cost) => {
+			const ratio = storeChangeCost[0] === undefined ? Number.NaN : pairedCostRatio(storeChangeCost[0], cost);
+			return `| ${cost.finished} | ${cost.usPerChange} | ${cost.graphSnapshotUs} | ${cost.activityUs} | ${ratio.toFixed(3)} |`;
+		}),
 	].join("\n");
 }
 

@@ -66,6 +66,11 @@ export interface EngineConfig {
 	readonly resultBytes: number;
 	/** Where transcripts and the run journal live: SQLite files as in production, or memory. */
 	readonly store: "sqlite" | "memory";
+	/**
+	 * Stages a throwaway run finishes, and the store then drops, before the measured runs start, so the first
+	 * checkpoint is measured with the code that starts and finishes stages already warm.
+	 */
+	readonly warmupStages: number;
 }
 
 export type ReopenPath = "attach" | "hidden" | "message" | "ask";
@@ -80,6 +85,7 @@ export type BenchControl =
 	| { type: "bench_heap_snapshot"; path: string }
 	| { type: "bench_churn_start"; stages: number }
 	| { type: "bench_churn_stop" }
+	| { type: "bench_collect" }
 	| { type: "bench_continue" };
 
 export interface RenderTimes {
@@ -395,6 +401,46 @@ const definition = workflow({
 
 const runResults: Promise<{ readonly status: string; readonly error?: string }>[] = [];
 
+/** Runs `stages` stages over the configured lanes in a run of its own, then drops that run from the store. */
+async function warmUp(stages: number): Promise<void> {
+	if (stages <= 0) return;
+	let remaining = stages;
+	const warmUpRun = workflow({
+		name: "long-run-ui-warm-up",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await Promise.all(
+				Array.from({ length: config.lanes }, async (_, lane) => {
+					for (let step = 0; remaining > 0; step++) {
+						remaining -= 1;
+						allowTurns(1);
+						const stage = ctx.stage(`warm-up-${lane}-step-${step}`, { customTools: [runCommand] });
+						await stage.prompt(`Run the tests of module ${lane}.${step} and summarize the failures.`);
+					}
+				}),
+			);
+			return {};
+		},
+	});
+	const runId = crypto.randomUUID();
+	const result = await run(
+		warmUpRun,
+		{},
+		{
+			runId,
+			cwd: workDir,
+			store,
+			adapters,
+			stageControlRegistry: registry,
+			journal: config.store === "memory" ? { memory: true } : { path: journalPath },
+		},
+	);
+	if (result.status !== "completed") throw new Error(`the warm-up run ended ${result.status}`);
+	store.removeRun(runId);
+}
+
 function startRuns(): void {
 	for (const runId of runIds) {
 		runResults.push(
@@ -514,6 +560,7 @@ async function runProbes(count: number): Promise<void> {
 async function handleControl(message: BenchControl): Promise<void> {
 	switch (message.type) {
 		case "bench_start":
+			await warmUp(config.warmupStages);
 			startRuns();
 			return;
 		case "bench_open_overlay":
@@ -589,6 +636,10 @@ async function handleControl(message: BenchControl): Promise<void> {
 		case "bench_churn_stop":
 			churnUntil = started;
 			announceChurnWhenIdle();
+			return;
+		case "bench_collect":
+			collect();
+			control({ type: "bench_collected" });
 			return;
 		case "bench_continue": {
 			checkpointIndex += 1;

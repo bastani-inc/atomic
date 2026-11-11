@@ -15,6 +15,17 @@ export interface MeasuredCheckpoint {
 		readonly keyLatencyMs: { readonly p50: number };
 	};
 	readonly busy: { readonly keyLatencyMs: { readonly p50: number } };
+	/** Keys sent while the lanes start and finish stages, the median of each statistic over the checkpoint's windows. */
+	readonly churn: { readonly keyLatencyMs: { readonly p50: number; readonly p95: number } };
+}
+
+/** CPU time one store change costs the engine's workflow surfaces with `finished` finished stages (`store-change-cost.ts`). */
+export interface StoreChangeCostSample {
+	readonly finished: number;
+	/** The median over windows of the mean per change, in microseconds. */
+	readonly usPerChange: number;
+	/** The mean per change of each window, in microseconds; windows of different counts alternate, so the i-th ones pair up. */
+	readonly windows: readonly number[];
 }
 
 /** Finished stages from which a checkpoint is compared with the baseline. */
@@ -53,6 +64,15 @@ export interface CriteriaReport {
 
 type Metric = readonly [name: string, read: (checkpoint: MeasuredCheckpoint) => number];
 
+/**
+ * Key latency while stages start and finish, compared at the last checkpoint with the baseline as measured: no noise
+ * floor is added. Each is the median over several windows, after a warm-up window at the baseline.
+ */
+const CHURN_METRICS: readonly Metric[] = [
+	["churn key latency p50", (checkpoint) => checkpoint.churn.keyLatencyMs.p50],
+	["churn key latency p95", (checkpoint) => checkpoint.churn.keyLatencyMs.p95],
+];
+
 const METRICS: readonly Metric[] = [
 	["widget frame p50", (checkpoint) => checkpoint.idle.engineRenderMs.widget.p50],
 	["graph overlay frame p50", (checkpoint) => checkpoint.idle.engineRenderMs.pane.p50],
@@ -68,12 +88,22 @@ function median(values: readonly number[]): number {
 	return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
 }
 
+/** The median of the ratios of `sample`'s windows to the baseline's windows they ran back to back with. */
+export function pairedCostRatio(baseline: StoreChangeCostSample, sample: StoreChangeCostSample): number {
+	return median(sample.windows.map((cost, index) => cost / baseline.windows[index]!));
+}
+
 /**
  * Checks, against the first checkpoint (measured after a discarded warm-up window):
  * - frame time and key latency, both as the median over the checkpoints from {@link LONG_RUN_STAGES} finished stages
  *   on and as the median of the largest half of them, stay within {@link MAX_REGRESSION_RATIO} of it, plus
  *   {@link NOISE_FLOOR_MS}. Work that grows with the stage count moves the largest checkpoints most, so they show it
  *   even when the median over all does not; one checkpoint that the host's scheduler disturbed does not fail the run;
+ * - key latency while stages start and finish (the churn windows), its p50 and its p95, stay within
+ *   {@link MAX_REGRESSION_RATIO} of it at the last checkpoint, with no noise floor;
+ * - the CPU time one store change costs the engine's workflow surfaces (`store-change-cost.ts`) at the last
+ *   checkpoint's finished-stage count stays within {@link MAX_REGRESSION_RATIO} of its cost at the first one's, as the
+ *   median of the ratios of windows measured back to back, so a load change on the host moves both sides of a ratio;
  * - no checkpoint holds more live sessions or registry entries than the stages a workflow body still holds;
  * - heap grows by at most {@link heapBytesPerFinishedStageMax} per finished stage between the first and the last
  *   checkpoint from {@link LONG_RUN_STAGES} finished stages on, after the code and its caches have warmed up.
@@ -84,6 +114,8 @@ export function evaluateCriteria(
 		readonly resultBytes: number;
 		/** Stages a workflow body may still hold live, one per concurrent lane (`ctx.stage` keeps its session). */
 		readonly heldStagesMax: number;
+		/** The store-change cost at the first and the last checkpoint's finished-stage counts. */
+		readonly storeChangeCost: readonly StoreChangeCostSample[];
 	},
 ): CriteriaReport {
 	const [baseline, ...later] = checkpoints;
@@ -113,6 +145,37 @@ export function evaluateCriteria(
 			}
 		}
 	}
+	if (lastLong !== undefined) {
+		for (const [name, read] of CHURN_METRICS) {
+			const allowed = read(baseline) * (1 + MAX_REGRESSION_RATIO);
+			if (!(read(lastLong) <= allowed))
+				failures.push(
+					`${name} is ${read(lastLong)} ms at ${lastLong.finished} finished stages; the ${baseline.finished}-stage baseline ${read(baseline)} ms allows ${allowed.toFixed(3)} ms`,
+				);
+		}
+	}
+	const last = checkpoints.at(-1);
+	const costAt = (finished: number | undefined) =>
+		options.storeChangeCost.find((sample) => sample.finished === finished);
+	const baselineCost = costAt(baseline.finished);
+	const lastCost = costAt(last?.finished);
+	if (
+		baselineCost === undefined ||
+		lastCost === undefined ||
+		last === baseline ||
+		baselineCost.windows.length === 0 ||
+		baselineCost.windows.length !== lastCost.windows.length
+	)
+		failures.push(
+			"the store-change cost was not measured in paired windows at both the first and the last checkpoint",
+		);
+	else {
+		const ratio = pairedCostRatio(baselineCost, lastCost);
+		if (!(ratio <= 1 + MAX_REGRESSION_RATIO))
+			failures.push(
+				`a store change costs ${ratio.toFixed(3)} times as much CPU at ${last?.finished} finished stages as at ${baseline.finished} (median of ${lastCost.windows.length} paired windows, ${lastCost.usPerChange} µs against ${baselineCost.usPerChange} µs); at most ${1 + MAX_REGRESSION_RATIO} times is allowed`,
+			);
+	}
 	for (const checkpoint of checkpoints) {
 		if (checkpoint.sample.liveSessions > options.heldStagesMax)
 			failures.push(
@@ -124,15 +187,14 @@ export function evaluateCriteria(
 			);
 	}
 	const [from] = long;
-	const last = long.at(-1);
 	let heapBytesPerFinishedStage: number | undefined;
-	if (from !== undefined && last !== undefined && last.finished > from.finished) {
+	if (from !== undefined && lastLong !== undefined && lastLong.finished > from.finished) {
 		heapBytesPerFinishedStage =
-			(last.sample.heapUsedBytes - from.sample.heapUsedBytes) / (last.finished - from.finished);
+			(lastLong.sample.heapUsedBytes - from.sample.heapUsedBytes) / (lastLong.finished - from.finished);
 		const allowedPerStage = heapBytesPerFinishedStageMax(options.resultBytes);
 		if (heapBytesPerFinishedStage > allowedPerStage)
 			failures.push(
-				`heap grows ${Math.round(heapBytesPerFinishedStage)} bytes per finished stage from ${from.finished} to ${last.finished}; at most ${allowedPerStage} is allowed for results of ${options.resultBytes} bytes`,
+				`heap grows ${Math.round(heapBytesPerFinishedStage)} bytes per finished stage from ${from.finished} to ${lastLong.finished}; at most ${allowedPerStage} is allowed for results of ${options.resultBytes} bytes`,
 			);
 	} else
 		failures.push(
