@@ -504,7 +504,7 @@ test("a child that cannot be restored is told gone under the capability its hold
 		assert.deepEqual(parent.authorizations, ["subagent-worker-early3-1"]);
 		assert.deepEqual(parent.holds.at(-1), {
 			release: "fresh-capability-1",
-			gone: "its session no longer exists in the session store",
+			gone: `its session file is missing: ${original.childSessionFile}`,
 		});
 	} finally {
 		await resumedHost.close("session-close");
@@ -677,7 +677,7 @@ test("a child whose session is gone is reported gone to the resumed agent instea
 		assert.deepEqual(parent.authorizations, ["subagent-worker-gone1-1"]);
 		assert.deepEqual(parent.holds, [
 			{ reserve: "fresh-capability-1", aliases: [original.childSessionId], group: "lane-group" },
-			{ release: "fresh-capability-1", gone: "its session no longer exists in the session store" },
+			{ release: "fresh-capability-1", gone: `its session file is missing: ${original.childSessionFile}` },
 		]);
 		const [notice] = subagentChildRestoreNotices(outcomes);
 		assert.match(notice!, /`subagent-worker-gone1-1` \(worker\) did not survive the restart/);

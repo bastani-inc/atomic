@@ -1,9 +1,7 @@
 /** Subagent Tool: foreground orchestration extension. */
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	APP_NAME,
 	type ExtensionAPI,
 	type ExtensionContext,
 	keyHintIfBound,
@@ -54,6 +52,7 @@ import { resumeAwaitingSubagentChildren } from "../runs/foreground/subagent-run-
 import { getArtifactsDir } from "../shared/artifacts.js";
 import { formatDuration, shortenPath } from "../shared/formatters.js";
 import { resolveCurrentSessionId } from "../shared/session-identity.js";
+import { subagentSessionRoot } from "../shared/session-root.js";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.js";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.js";
 import { registerSlashCommands } from "../slash/slash-commands.js";
@@ -148,14 +147,6 @@ import { createSubagentStartupMaintenance } from "./startup-maintenance.js";
 
 export { loadConfig } from "./config.js";
 
-function getSubagentSessionRoot(parentSessionFile: string | null): string {
-	if (parentSessionFile) {
-		const baseName = path.basename(parentSessionFile, ".jsonl");
-		const sessionsDir = path.dirname(parentSessionFile);
-		return path.join(sessionsDir, baseName);
-	}
-	return fs.mkdtempSync(path.join(os.tmpdir(), `${APP_NAME}-subagent-session-`));
-}
 function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
@@ -311,7 +302,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			state,
 			config,
 			tempArtifactsDir,
-			getSubagentSessionRoot,
+			getSubagentSessionRoot: subagentSessionRoot,
 			expandTilde,
 			discoverAgents,
 		};
