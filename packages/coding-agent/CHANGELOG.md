@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.9.77] - 2026-11-11
+
+Subagent chats look and scope like stage chats, agents recall project history, and background shells explain why they stopped.
+
+- **Subagent chat box.** A subagent's transcript in `/tasks` gets a workflow stage's chat box, with its own usage, model, footer and `/tasks` list, so you can follow and manage one subagent without the parent's tasks in the way ([#4640](https://github.com/bastani-inc/atomic/issues/4640), [#4646](https://github.com/bastani-inc/atomic/pull/4646)).
+- **Project memory by default.** Workflow stages and subagents read and search the project's sessions and workflow runs through `history://`, and agents consult earlier runs and your stated preferences before choosing workflow versus inline, verification and estimates ([#4648](https://github.com/bastani-inc/atomic/issues/4648), [#4649](https://github.com/bastani-inc/atomic/pull/4649)).
+- **Reliable background shells.** Subagents keep their shells when their workflow stage is released or replaced, and a shell that ends now says why, including the execution timeout that stopped it ([#4639](https://github.com/bastani-inc/atomic/issues/4639), [#4650](https://github.com/bastani-inc/atomic/pull/4650)).
+- **Upstream fixes.** `/share` reports a failed `gh` start instead of crashing, the llama.cpp guide uses `llama --version`, and the pi packages move to 1.5.2 ([#4638](https://github.com/bastani-inc/atomic/pull/4638), [#4647](https://github.com/bastani-inc/atomic/pull/4647)).
+
+### Changed
+
+- A subagent's transcript in `/tasks` now has the chat box of a workflow stage chat: its prompt's top rule names the subagent, as `[subagent: <name>]`, and while it runs its usage meter, model line, working line and queued messages sit around the prompt in the same order, with a footer counting its own running tasks. `/tasks` typed there lists that subagent's own shells and the subagents it launched instead of the parent's, also for nested subagents, and Escape or Left returns to its chat ([#4640](https://github.com/bastani-inc/atomic/issues/4640))
+- Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema` and `@earendil-works/pi-telemetry` to 1.5.2; the intercom, subagents, web-access and workflows packages now require `@earendil-works/pi-tui` and `@earendil-works/pi-agent-core` `^1.5.2`
+- Workflow stages and subagents now recall the project's history by default: `read` and `search` on `history://workflows` and `history://` reach the project's workflow runs, and a subagent's `history://sessions` lists the project's sessions rather than only its own. A subagent whose own prompt replaces the default prompt also gets the Session memory guidance ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
+- The default prompt's Session memory guidance now has the agent recall comparable earlier sessions and workflow runs, and the preferences you stated in them, before it chooses between a workflow and inline work, how to verify a change, or how long a task will take. With a shell tool it also suggests searching commits, issues, PRs and their comments for relevant prior work ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
+
+### Fixed
+
+- Fixed the llama.cpp setup guide telling you to verify the installation with `llama cli --version`; it now uses the unified `llama --version` entry point (upstream [#11958](https://github.com/earendil-works/pi/pull/11958))
+- Fixed `/share` crashing Atomic when the `gh` command fails to start while creating the gist; it now shows the error (upstream [#12025](https://github.com/earendil-works/pi/pull/12025))
+- Fixed subagents of a workflow stage losing their background shells when the stage is released while it waits or its session is replaced: the subagent can still wait on, stop and start shells instead of failing with `Task owner is closed` or `stage-parked`, and its shells' completion notices still reach it ([#4639](https://github.com/bastani-inc/atomic/issues/4639)).
+- Fixed a background shell's end being unexplained: its wait result and completion notice now name an execution timeout with its length (`timed out after 300 seconds`), a workflow stage that closed, a session that closed or Atomic shutting down, instead of the same `session closed` for every close. A command that continues in the background now names the timeout that will stop it, and a `wait` that sees the timeout stop it returns an error. A cancelled SDK `TaskResult` carries the same facts as `ownerClose` and `executionTimeoutMs` ([#4639](https://github.com/bastani-inc/atomic/issues/4639)).
+
 ## [0.9.77-alpha.1] - 2026-11-11
 
 Subagent chats look and scope like stage chats, agents recall project history, and background shells explain why they stopped.

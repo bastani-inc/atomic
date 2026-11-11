@@ -4,6 +4,19 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.77] - 2026-11-11
+
+Messages to ended, released or replaced sessions arrive or fail with a reason.
+
+- **Explained recipient errors.** Sends to a subagent that ended or disconnected are held briefly and delivered if it returns, otherwise refused with a typed error that says how it ended and how to resume it ([#4639](https://github.com/bastani-inc/atomic/issues/4639), [#4650](https://github.com/bastani-inc/atomic/pull/4650)).
+- **Suspended and replaced stages.** Sends to a workflow stage, or to subagents of a stage that is suspended, reach its current session or queue until it reopens instead of answering `Session not found` ([#4639](https://github.com/bastani-inc/atomic/issues/4639), [#4650](https://github.com/bastani-inc/atomic/pull/4650)).
+
+### Fixed
+
+- Fixed sends and asks to a subagent that just ended or dropped its connection failing with a bare `Session not found`: the broker now holds them for up to 20 seconds, delivers them once if the subagent reconnects, and otherwise refuses them with a typed `IntercomRecipientGoneError` that names how the subagent ended (`recipient_completed`, `recipient_failed`, `recipient_stopped`, `recipient_cancelled`, or the retryable `recipient_disconnected`) and the `subagent({ action: "resume" })` call to make. What the launching session reported survives the closing of its connection, as a suspended workflow stage's does, until the session is back ([#4639](https://github.com/bastani-inc/atomic/issues/4639))
+- Fixed sends and asks to a released subagent answering `Session not found` once the session that launched it lost its connection, as a workflow stage's does while it is suspended: the broker keeps the subagent's hold for that session, holds each send up to 20 seconds and then refuses it with the retryable `recipient_owner_suspended` error, and the session, once back, takes the subagent over and wakes it for the sends waiting then ([#4639](https://github.com/bastani-inc/atomic/issues/4639))
+- Fixed sends to a workflow stage's session name or session ID returning `Session not found` once the stage's session was replaced or released while it waits: they now reach the stage's current session, or queue for the stage until it reopens, for senders in the stage's group and for the session that launched the run. `contact_supervisor` from a subagent of such a stage is queued for the stage the same way instead of failing ([#4639](https://github.com/bastani-inc/atomic/issues/4639))
+
 ## [0.9.77-alpha.1] - 2026-11-11
 
 Messages to ended, released or replaced sessions arrive or fail with a reason.
