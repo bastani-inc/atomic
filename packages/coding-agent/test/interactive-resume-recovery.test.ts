@@ -108,6 +108,7 @@ describe("interactive resume recovery (#3760)", () => {
 				configurable: true,
 				value: {
 					reload: async () => order.push("reload"),
+					getToolStatus: () => ({ missing: [] }),
 					resourceLoader: { getThemes: () => ({ themes: [] }) },
 					extensionRunner: {},
 					modelRuntime: { getError: () => undefined, getWarning: () => undefined },
@@ -143,9 +144,15 @@ describe("interactive resume recovery (#3760)", () => {
 		assert.deepEqual(order, ["bind", "reload", "render", "recover:startup"]);
 	});
 
-	it("failed deferred extension loading leaves interrupted work for a later resume (#3760)", async () => {
+	it("failed deferred extension loading still recovers interrupted work, and says what could not load (#3760, #4660)", async () => {
 		const order: string[] = [];
 		const mode = Object.create(InteractiveMode.prototype) as InteractiveModeBase;
+		Object.defineProperty(mode, "session", {
+			configurable: true,
+			value: {
+				getToolStatus: () => ({ missing: [{ name: "subagent", reason: "nothing registered it" }] }),
+			},
+		});
 		Object.assign(mode, {
 			chatContainer: new Container(),
 			startupNoticesContainer: new Container(),
@@ -156,13 +163,65 @@ describe("interactive resume recovery (#3760)", () => {
 			promptTurnWorkingLoaderActive: false,
 			stopWorkingLoader() {},
 			showError: (message: string) => order.push(`error:${message}`),
+			showWarning: (message: string) => order.push(`warning:${message}`),
 			maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
-			startSessionRecovery: () => order.push("recover"),
+			startSessionRecovery: (reason: string) => order.push(`recover:${reason}`),
 		});
 
 		await mode.completeDeferredStartup();
 
-		assert.deepEqual(order, ["error:Extension loading failed: extension load failed"]);
+		assert.deepEqual(order, [
+			"error:Extension loading failed: extension load failed",
+			"warning:A tool this session was using isn't available right now: subagent. /tools shows why; /reload retries once that is fixed.",
+			"recover:startup",
+		]);
+	});
+
+	it("a tool status that cannot be read neither shows a message nor skips recovery (#4660)", async () => {
+		const order: string[] = [];
+		const mode = Object.create(InteractiveMode.prototype) as InteractiveModeBase;
+		Object.defineProperty(mode, "session", {
+			configurable: true,
+			value: {
+				reload: async () => {},
+				getToolStatus: () => {
+					throw new Error("status exploded");
+				},
+				resourceLoader: { getThemes: () => ({ themes: [] }) },
+				extensionRunner: {},
+				modelRuntime: { getError: () => undefined, getWarning: () => undefined },
+			},
+		});
+		Object.defineProperty(mode, "options", { configurable: true, value: {} });
+		Object.assign(mode, {
+			chatContainer: new Container(),
+			startupNoticesContainer: new Container(),
+			resourceDisclosureContainer: new Container(),
+			ui: { requestRender() {} },
+			bindCurrentSessionExtensions: async () => {},
+			applyRuntimeSettings() {},
+			rebuildChatFromMessages() {},
+			promptTurnWorkingLoaderActive: false,
+			stopWorkingLoader() {},
+			themeController: { applyFromSettings: async () => {} },
+			setupAutocompleteProvider() {},
+			setupExtensionShortcuts() {},
+			retryDeferredModelRestore: async () => {},
+			updateAvailableProviderCount: async () => {},
+			updateEditorBorderColor() {},
+			showLoadedResources() {},
+			showStartupNoticesIfNeeded() {},
+			reportModelCatalogWarning() {},
+			maybeWarnAboutAnthropicSubscriptionAuth: async () => {},
+			showError: (message: string) => order.push(`error:${message}`),
+			showWarning: (message: string) => order.push(`warning:${message}`),
+			startSessionRecovery: (reason: string) => order.push(`recover:${reason}`),
+		});
+
+		await mode.completeDeferredStartup();
+
+		assert.deepEqual(order, ["recover:startup"]);
+		assert.equal(mode.deferredStartupPending, false);
 	});
 
 	it("an RPC recovery request never holds up ordinary commands such as prompts (#3760)", async () => {

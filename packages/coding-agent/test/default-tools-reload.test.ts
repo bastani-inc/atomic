@@ -15,6 +15,7 @@ import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { isSyntheticPath } from "../src/core/source-info.js";
+import { TOOL_DEACTIVATION_ENTRY_TYPE } from "../src/core/tool-deactivation.ts";
 import { getDefaultToolNames } from "../src/core/tools/index.js";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
@@ -231,15 +232,27 @@ test("SDK rejects mixed tool lists and modifier patterns", async () => {
 const toolReferences = (names: string[]) =>
 	names.map((name) => ({ name, description: name, parameters: Type.Object({}) }));
 
-/** Append a system message that adds and removes tools, as a run records loadout changes. */
-async function recordLoadoutChange(sessionManager: SessionManager, added: string[], removed: string[] = []) {
-	return await sessionManager.appendMessage({
+/**
+ * Append a system message that adds and removes tools, as a run records loadout changes. Removals are explicit
+ * deactivations, as `setActiveTools` records them, unless `explicit` is false: then the tools were removed because
+ * they were not registered when the run started.
+ */
+async function recordLoadoutChange(
+	sessionManager: SessionManager,
+	added: string[],
+	removed: string[] = [],
+	explicit = true,
+) {
+	const id = await sessionManager.appendMessage({
 		role: "system",
 		content: "",
 		...(added.length > 0 ? { toolsAdded: toolReferences(added) } : {}),
 		...(removed.length > 0 ? { toolsRemoved: toolReferences(removed) } : {}),
 		timestamp: Date.now(),
 	});
+	if (explicit && removed.length > 0)
+		await sessionManager.appendCustomEntry(TOOL_DEACTIVATION_ENTRY_TYPE, { tools: removed });
+	return id;
 }
 
 async function recordedSession(toolNames: string[]) {
@@ -278,6 +291,16 @@ test("resume keeps tools removed before a compaction inactive (#11062)", async (
 	await appendTestCompaction(sessionManager, 1000, 500);
 	const session = await createFileSession({ sessionManager, customTools: [activeTool] });
 	assert.deepEqual(session.getActiveToolNames().sort(), ["inactive_tool", "ls", "read"]);
+});
+
+test("resume re-activates tools removed only because they were unregistered, and keeps explicit removals (#4660)", async () => {
+	const sessionManager = await recordedSession(["read", "todo", "active_tool", "inactive_tool"]);
+	await recordLoadoutChange(sessionManager, [], ["todo", "active_tool", "inactive_tool"], false);
+	await recordLoadoutChange(sessionManager, [], ["read"]);
+	await sessionManager.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
+	await appendTestCompaction(sessionManager, 1000, 500);
+	const session = await createFileSession({ sessionManager, customTools: [activeTool] });
+	assert.deepEqual(session.getActiveToolNames().sort(), ["active_tool", "todo"]);
 });
 
 test("tree navigation restores the target branch's loadout (#11075)", async () => {
@@ -593,6 +616,26 @@ test("startup completion activates extension tools the transcript never mentione
 	assert.deepEqual(
 		session.getActiveToolNames().sort(),
 		["ls", "newcomer_probe", "read", "startup_probe", ...MANDATORY_RUNTIME_TOOLS].sort(),
+	);
+});
+
+test("startup completion re-activates tools a turn removed while their extension was not loaded (#4660)", async () => {
+	const sessionManager = await recordedSession(["read", "ls", "startup_probe", "removed_probe", "kept_out_probe"]);
+	await recordLoadoutChange(sessionManager, [], ["startup_probe", "removed_probe"], false);
+	await recordLoadoutChange(sessionManager, [], ["kept_out_probe"]);
+	const { session, completeStartup } = await createDeferredTrustSession({
+		sessionManager,
+		tools: [
+			{ name: "startup_probe" },
+			{ name: "removed_probe" },
+			{ name: "kept_out_probe" },
+			{ name: "optin_probe", defaultActive: false },
+		],
+	});
+	await completeStartup();
+	assert.deepEqual(
+		session.getActiveToolNames().sort(),
+		["ls", "read", "removed_probe", "startup_probe", ...MANDATORY_RUNTIME_TOOLS].sort(),
 	);
 });
 

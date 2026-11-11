@@ -171,6 +171,9 @@ class BuiltinResourceLoader implements ResourceLoader {
 	getExtensions() {
 		return this.extensions;
 	}
+	getInheritanceSnapshot() {
+		return this.delegate.getInheritanceSnapshot?.() ?? {};
+	}
 	getSkills(): ReturnType<ResourceLoader["getSkills"]> {
 		const caller = this.delegate.getSkills();
 		const builtin = this.assets.getSkills();

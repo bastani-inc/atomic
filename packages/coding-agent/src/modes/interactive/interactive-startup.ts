@@ -65,6 +65,7 @@ import {
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { holdTuiForStartupTrust } from "./interactive-startup-trust.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
+import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { showSessionNotices } from "./session-notices.ts";
 
 export const shouldRefreshCatalogsOnStartup = (): boolean => !isOfflineModeEnabled();
@@ -339,6 +340,7 @@ InteractiveModeBase.prototype.init = async function (this: InteractiveModeBase):
 		this.updateTerminalTitle();
 	} else {
 		await bindInitialEagerSession(this);
+		void reportUnavailableTools(this);
 	}
 
 	this.attachStartupNoticesContainer();

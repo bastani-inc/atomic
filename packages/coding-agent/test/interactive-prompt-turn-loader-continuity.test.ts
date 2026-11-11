@@ -25,6 +25,7 @@ type PromptTurnContext = {
 		resumeQueuedMessages: () => Promise<boolean>;
 		prompt: (text: string) => Promise<void>;
 		resourceLoader: { getThemes: () => { themes: [] } };
+		getToolStatus: () => { missing: [] };
 		extensionRunner: Record<string, never>;
 		modelRegistry: { getError: () => string | undefined };
 		_tryExecuteExtensionCommand: (text: string) => Promise<boolean>;
@@ -92,6 +93,7 @@ function createContext(overrides: {
 				context.session.isStreaming = false;
 			}),
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
+			getToolStatus: () => ({ missing: [] as [] }),
 			extensionRunner: {},
 			modelRegistry: { getError: () => undefined },
 			_tryExecuteExtensionCommand: vi.fn(async () => overrides.slashHandled === true),
@@ -115,6 +117,7 @@ function createContext(overrides: {
 		rebuildChatFromMessages: vi.fn(),
 		discardDeferredRenderedUserInput: vi.fn(),
 		showError: vi.fn(),
+		startSessionRecovery: vi.fn(),
 		ui: { requestRender: vi.fn() },
 		createWorkingLoader: vi.fn(() => {
 			const loader = Object.assign(new Text("Working...", 0, 0), { stop: vi.fn() }) as WorkingLoader;

@@ -109,3 +109,17 @@ export function reportDebug(
 export function getDebugLogFailure(): DebugLogUnwritableError | undefined {
 	return debugLogFailure;
 }
+
+/** The debug fields that name a failure a fallback absorbed: its class, stable code, message and first cause (#4660). */
+export function failureDebugFields(error: unknown): DebugFields {
+	if (!(error instanceof Error)) return { message: String(error) };
+	const { code } = error as Error & { code?: unknown };
+	const { cause } = error;
+	return {
+		name: error.name,
+		code: typeof code === "string" || typeof code === "number" ? code : undefined,
+		message: error.message,
+		cause:
+			cause instanceof Error ? `${cause.name}: ${cause.message}` : cause === undefined ? undefined : String(cause),
+	};
+}

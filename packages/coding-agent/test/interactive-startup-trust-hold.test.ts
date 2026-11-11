@@ -107,7 +107,7 @@ function createMode(options: { holdTuiForStartupTrust: boolean }): HeldMode {
 		disposeActiveSelector: vi.fn(),
 		programStatus: { report: vi.fn(), setBlocked: vi.fn() },
 		runtimeHost: {},
-		session: {},
+		session: { getToolStatus: () => ({ missing: [] }) },
 		keybindings,
 		isInitialized: false,
 		isShuttingDown: false,

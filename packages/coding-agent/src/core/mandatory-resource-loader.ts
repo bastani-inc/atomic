@@ -68,6 +68,10 @@ class MandatoryResourceLoader implements ResourceLoader {
 		return this.extensionsResult;
 	}
 
+	getInheritanceSnapshot() {
+		return this.delegate.getInheritanceSnapshot?.() ?? {};
+	}
+
 	getWorkflowResources() {
 		return this.delegate.getWorkflowResources?.() ?? [];
 	}

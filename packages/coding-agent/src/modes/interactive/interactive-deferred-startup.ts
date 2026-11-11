@@ -1,4 +1,5 @@
 import { modelsAreEqual } from "@bastani/pi-ai/compat";
+import { failureDebugFields, reportDebug } from "../../core/debug.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -11,6 +12,7 @@ import {
 	setRegisteredThemes,
 } from "./interactive-mode-deps.ts";
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
+import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
 
 export interface DeferredStartupMode {
@@ -25,8 +27,10 @@ export async function ensureDeferredStartupComplete(mode: DeferredStartupMode): 
 	mode.deferredStartupPromise = startupPromise;
 	try {
 		await startupPromise;
-	} catch {
+	} catch (error) {
+		// Startup carries on with what it has: the prompt is released, and the reason goes to the debug log (#4660).
 		mode.deferredStartupPending = false;
+		reportDebug("storage", "deferred-startup-incomplete", failureDebugFields(error));
 	} finally {
 		if (mode.deferredStartupPromise === startupPromise && !mode.deferredStartupPending) {
 			mode.deferredStartupPromise = undefined;
@@ -46,7 +50,6 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function (
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function (this: InteractiveModeBase): Promise<void> {
-	let loaded = false;
 	try {
 		await this.bindCurrentSessionExtensions();
 		if (!(await this.runtimeHost?.completeStartup?.())) await this.session.reload({ reason: "startup" });
@@ -89,7 +92,6 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		this.updateEditorBorderColor();
 		this.ui.requestRender();
 		void loadAllHighlightLanguages().then(() => this.ui.requestRender());
-		loaded = true;
 	} catch (error) {
 		exitOnRefusedDecisionSetting(this, error);
 		// Same ownership rule as the success path: this catch swallows the error,
@@ -106,7 +108,9 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		// failed, so startup ordering is resolved before any prompt can run.
 		releaseStartupChatOutput(this);
 	}
-	if (loaded) this.startSessionRecovery("startup");
+	await reportUnavailableTools(this);
+	// Interrupted work is recovered whatever extension loading did: what could not load only means less to restore.
+	this.startSessionRecovery("startup");
 };
 
 export async function applyDeferredModelScope(mode: InteractiveModeBase): Promise<void> {
