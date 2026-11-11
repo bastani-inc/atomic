@@ -712,6 +712,36 @@ const GITHUB_COPILOT_EXTENDED_CONTEXT_MODELS = new Set([
 
 const GITHUB_COPILOT_CLAUDE_FABLE_MODEL_IDS = ["claude-fable-5", "claude-fable-5-1"] as const;
 
+// GitHub Copilot serves these models, and models.dev's Copilot catalog lists them since they launched
+// (Claude Fable 5.2 on 2026-11-09, Gemini 4 Carbon on 2026-11-10). A build that fetches an older
+// models.dev snapshot would ship without them, so keep their published rows here. A models.dev row with
+// the same ID wins.
+const GITHUB_COPILOT_MODELS_DEV_FALLBACKS: Record<string, ModelsDevModel> = {
+	"claude-fable-5.2": {
+		id: "claude-fable-5.2",
+		name: "Claude Fable 5.2",
+		reasoning: true,
+		reasoning_options: [{ type: "effort", values: ["low", "medium", "high", "xhigh", "max"] }],
+		tool_call: true,
+		structured_output: true,
+		modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+		limit: { context: 1000000, output: 128000 },
+		provider: { npm: "@ai-sdk/anthropic" },
+		cost: { input: 8, output: 40, cache_read: 0.2, cache_write: 10 },
+	},
+	"gemini-4-carbon": {
+		id: "gemini-4-carbon",
+		name: "Gemini 4 Carbon",
+		reasoning: true,
+		reasoning_options: [{ type: "effort", values: ["low", "medium", "high"] }],
+		tool_call: true,
+		structured_output: true,
+		modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+		limit: { context: 1048576, output: 65536 },
+		cost: { input: 2, output: 10, cache_read: 0.1 },
+	},
+};
+
 // Checked manually against the authenticated GitHub Copilot /models endpoint on 2026-06-15.
 // Keep this to narrow corrections over models.dev metadata instead of snapshotting Copilot's catalog.
 const GITHUB_COPILOT_THINKING_LEVEL_OVERRIDES = {
@@ -1467,7 +1497,7 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (model.id.includes("fable-5")) {
 		mergeThinkingLevelMap(model, { off: null, xhigh: "xhigh", max: "max" });
 	}
-	// Anthropic publishes exactly five efforts for Claude Fable 5.1, Claude Opus 5.5, and Claude
+	// Anthropic publishes exactly five efforts for Claude Fable 5.1 and 5.2, Claude Opus 5.5, and Claude
 	// Sonnet 5.5 — low, medium, high, xhigh, max — and no `minimal`. `getSupportedThinkingLevels`
 	// includes any level the map leaves undefined, so on the sparse Anthropic-side maps `minimal` was
 	// offered as a sixth option. It is not an API error (`mapThinkingLevelToEffort` collapses it to
@@ -1475,9 +1505,10 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	// already carry a full map with `minimal: null` from models.dev `reasoning_options`, so this is a
 	// no-op there.
 	// https://platform.claude.com/docs/en/models/fable-5-1/overview
+	// https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2
 	// https://platform.claude.com/docs/en/models/opus-5-5/overview
 	// https://platform.claude.com/docs/en/models/sonnet-5-5/overview
-	if (/fable-5[-.]1|opus-5[-.]5|(?:sonnet|haiku)-5[-.]5/.test(model.id)) {
+	if (/fable-5[-.][12]|opus-5[-.]5|(?:sonnet|haiku)-5[-.]5/.test(model.id)) {
 		mergeThinkingLevelMap(model, { minimal: null });
 	}
 	if (model.api === "anthropic-messages" && isAnthropicAdaptiveThinkingModel(model.id)) {
@@ -2702,6 +2733,9 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 				githubCopilotModels[modelId] ??
 				(anthropicSource ? { ...anthropicSource, provider: { npm: "@ai-sdk/anthropic" } } : undefined);
 			if (source) githubCopilotModels[modelId] = source;
+		}
+		for (const [modelId, fallback] of Object.entries(GITHUB_COPILOT_MODELS_DEV_FALLBACKS)) {
+			githubCopilotModels[modelId] ??= fallback;
 		}
 		for (const [modelId, m] of Object.entries(githubCopilotModels)) {
 				if (m.tool_call !== true) continue;

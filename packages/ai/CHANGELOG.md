@@ -4,6 +4,14 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Copilot: `github-copilot/gemini-4-carbon` and `github-copilot/claude-fable-5.2` are always in the built-in catalog, also when the catalog was built before models.dev listed them
+
+### Fixed
+
+- Claude Fable 5.2 no longer offers a `minimal` thinking level; like Fable 5.1 it accepts `low`, `medium`, `high`, `xhigh` and `max`
+
 ## [0.9.77] - 2026-11-11
 
 Providers can release their resources when a session ends.

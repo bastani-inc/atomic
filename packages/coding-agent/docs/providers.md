@@ -207,7 +207,7 @@ Copilot serves models from several vendors through one provider. Atomic picks ea
 
 | Family | Bundled models | API | Thinking levels | Reasoning on the next turn | Context / max output |
 | --- | --- | --- | --- | --- | --- |
-| Gemini | `gemini-3.8-flash`, `gemini-4-argon` | Chat Completions | `low`, `medium`, `high` | Copilot's opaque reasoning value is kept and sent back to the same model | 1,000,000 / 64,000; 1,048,576 / 65,536 |
+| Gemini | `gemini-3.8-flash`, `gemini-4-argon`, `gemini-4-carbon` | Chat Completions | `low`, `medium`, `high` | Copilot's opaque reasoning value is kept and sent back to the same model | 1,000,000 / 64,000; 1,048,576 / 65,536 for Gemini 4 |
 | Kimi | `kimi-k3` | Chat Completions | `low`, `high`, `max` | Readable reasoning, when the model returns it, is sent back to the same model | 1,048,576 / 131,072 |
 | Grok | `grok-4.5`, `grok-4.6`, `grok-4.7` | Responses | `low`, `medium`, `high`; 4.6 and 4.7 add `xhigh` | The encrypted reasoning item is sent back to the same model | 500,000 / 128,000 |
 | Discovered | Any chat model the account lists | From `supported_endpoints` | From the entry's `reasoning_effort` | As for its API | From the entry's limits |
