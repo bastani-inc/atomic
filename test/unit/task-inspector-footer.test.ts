@@ -148,28 +148,33 @@ test("agent transcript footer offers messaging only when the source supports it 
 	}
 });
 
-test("transcript shows both a retained-output note and a late foreground failure (#4521)", async () => {
-	const foreground = Promise.withResolvers<{ ok: false; error: { message: string } }>();
+test("transcript shows both a retained-output note and a late input failure (#4521, #4662)", async () => {
+	const written = Promise.withResolvers<{ ok: false; error: { message: string } }>();
 	const shell = taskRecord("shell", "command");
 	shell.output.byteCount = "10000";
 	const h = await host((owner) => ({
 		...owner,
 		tasks: [shell],
 		backgroundTasks: [shell],
-		foregroundTask: () => foreground.promise,
+		stdinAvailable: () => true,
+		writeTaskInput: () => written.promise,
 		readTaskOutput: async () => ({ ok: true as const, value: { text: "output", omitted: false } }),
 	}));
 	try {
 		await enter(h.inspector);
 		h.inspector.handleInput("\x1b[B");
+		h.inspector.handleInput("\x1b[B");
 		await enter(h.inspector);
-		h.inspector.handleInput("\x1b[A");
+		h.inspector.handleInput("y");
 		await enter(h.inspector);
-		foreground.resolve({ ok: false, error: { message: "foreground failed" } });
+		h.inspector.handleInput("\x1b");
+		await enter(h.inspector);
+		await enter(h.inspector);
+		written.resolve({ ok: false, error: { message: "input failed" } });
 		await flush();
-		assert.equal(h.lines().at(-2), "Earlier output omitted · showing retained 8 KiB tail · foreground failed");
+		assert.equal(h.lines().at(-2), "Earlier output omitted · showing retained 8 KiB tail · input failed");
 	} finally {
-		foreground.resolve({ ok: false, error: { message: "foreground failed" } });
+		written.resolve({ ok: false, error: { message: "input failed" } });
 		await h.dispose();
 	}
 });
