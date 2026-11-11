@@ -131,7 +131,7 @@ For classifier compaction, log in with `/login typesafe`, then set `"compactionM
 
 For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
 
-The compaction card shows the backend and model that produced the result, such as `classifier · typesafe/jev-latest` or `morph · morph/morph-compactor`. A policy-refusal summary appears as `summary (pi fallback)`.
+The compaction card shows the model that produced the result, such as `github-copilot/claude-opus-5.5` or `morph/morph-compactor`. A policy-refusal summary is headed `Context compacted · summary (pi fallback)`.
 
 ### Troubleshooting policy refusals
 

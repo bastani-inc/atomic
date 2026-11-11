@@ -73,18 +73,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 			),
 		);
 		content.addChild(new Text(label, 0, 0));
-		if (this.view.backend && this.view.model) {
-			content.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`${this.view.backend === "summary" ? "summary (pi fallback)" : this.view.backend} · ${this.view.model}`,
-					),
-					0,
-					0,
-				),
-			);
-		}
+		if (this.view.model) content.addChild(new Text(theme.fg("dim", this.view.model), 0, 0));
 		content.addChild(new Spacer(1));
 		if (this.expanded) {
 			content.addChild(
