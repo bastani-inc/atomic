@@ -6,6 +6,7 @@ import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import { SessionHistoryIndex } from "./session-history-index.ts";
 import { createBranchedSessionState } from "./session-manager-archive.ts";
 import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
@@ -24,7 +25,6 @@ import {
 	createThinkingLevelChangeEntry,
 	createWorktreeSnapshotEntry,
 	getEntriesWithoutHeader,
-	getLatestSessionName,
 } from "./session-manager-entries.ts";
 import { SessionEntryError } from "./session-manager-errors.js";
 import {
@@ -104,6 +104,7 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private readonly historyIndex = new SessionHistoryIndex();
 
 	private constructor(store: SessionStore, cwd: string, sessionDir: string, options?: NewSessionOptions) {
 		this.store = store;
@@ -365,6 +366,7 @@ export class SessionManager {
 		for (const entry of entries) {
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
+			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
 	}
@@ -595,28 +597,21 @@ export class SessionManager {
 
 	/** Restores recorded on the active branch, oldest first: work recorded under `from` continues under `to`. */
 	getWorktreeRootMappings(): WorktreeRootMapping[] {
-		return this.getBranch().flatMap((entry) =>
-			entry.type === "worktree_snapshot" && entry.restore ? [entry.restore] : [],
-		);
+		return this.historyIndex.worktreeRootMappings(this.leafId, this.byId);
 	}
 
 	/** Every snapshot record in the session, by id. */
 	getWorktreeSnapshotRecords(): Map<string, WorktreeSnapshot> {
-		const records = new Map<string, WorktreeSnapshot>();
-		for (const entry of this.fileEntries) {
-			if (entry.type === "worktree_snapshot" && entry.snapshot) records.set(entry.snapshotId, entry.snapshot);
-		}
-		return records;
+		return this.historyIndex.worktreeSnapshotRecords(this.fileEntries);
 	}
 
 	/** The latest snapshot of each checkout root on the active branch, keyed by the root it was last recorded under. */
 	getLatestWorktreeSnapshots(): Map<string, WorktreeSnapshot> {
 		const records = this.getWorktreeSnapshotRecords();
 		const latest = new Map<string, WorktreeSnapshot>();
-		for (const entry of this.getBranch()) {
-			if (entry.type !== "worktree_snapshot") continue;
-			const snapshot = records.get(entry.snapshotId);
-			if (snapshot) latest.set(entry.root, snapshot);
+		for (const { root, snapshotId } of this.historyIndex.worktreeSnapshots(this.leafId, this.byId)) {
+			const snapshot = records.get(snapshotId);
+			if (snapshot) latest.set(root, snapshot);
 		}
 		return latest;
 	}
@@ -651,7 +646,7 @@ export class SessionManager {
 	 * `hasName: false`. Read-side only: the JSONL already records the distinction.
 	 */
 	getSessionNameState(): SessionNameState {
-		return getLatestSessionName(this.fileEntries);
+		return this.historyIndex.sessionName(this.fileEntries);
 	}
 
 	/** Append a custom message entry (for extensions) that participates in LLM context unless excluded. */
@@ -730,17 +725,27 @@ export class SessionManager {
 
 	/** Walk from entry to root, returning all entries in path order. */
 	getBranch(fromId?: string): SessionEntry[] {
-		return getBranchPath(fromId ?? this.leafId, this.byId);
+		const leafId = fromId ?? this.leafId;
+		return leafId === this.leafId
+			? this.historyIndex.branch(leafId, this.byId).slice()
+			: getBranchPath(leafId, this.byId);
 	}
 
 	/** Return the active branch entries after applying the latest compaction boundary. */
 	buildContextEntries(): SessionEntry[] {
-		return buildContextEntries(this.getEntries(), this.leafId, this.byId);
+		return buildContextEntries(this.getEntries(), this.leafId, this.byId, this.activeBranch());
 	}
 
 	/** Build provenance-preserving, compaction-aware model context from the current leaf. */
 	buildSessionProjection(): SessionProjection {
-		return buildSessionProjection(this.getEntries(), this.leafId, this.byId, this.sessionId);
+		return buildSessionProjection(this.getEntries(), this.leafId, this.byId, this.sessionId, this.activeBranch());
+	}
+
+	/** The active branch when the leaf is an entry of this session; undefined lets a stale leaf fall back as before. */
+	private activeBranch(): readonly SessionEntry[] | undefined {
+		return this.leafId !== null && this.byId.has(this.leafId)
+			? this.historyIndex.branch(this.leafId, this.byId)
+			: undefined;
 	}
 
 	/** Build the session context (what gets sent to the LLM). */

@@ -13,6 +13,7 @@ import {
 	StorageUnavailableError,
 	StoreClosedError,
 } from "./errors.js";
+import { announceHistoryLoad, hasHistoryLoadObserver } from "./history-load-observer.ts";
 import {
 	applySessionSummaryEntries,
 	materializeSessionSummaryMetadata,
@@ -305,6 +306,13 @@ export class SqlSessionStore implements SessionStore {
 	async load(sessionId: string): Promise<SessionSnapshot> {
 		this.assertOpen();
 		validateSessionText("sessionId", sessionId);
+		if (hasHistoryLoadObserver()) {
+			const row = await this.database.get<{ last_seq: number }>(
+				`SELECT last_seq FROM ${this.tables.sessions} WHERE id = ?`,
+				sessionId,
+			);
+			if (row) announceHistoryLoad(row.last_seq);
+		}
 		return this.database.transaction((tx) => this.read(tx, sessionId), SESSION_TRANSACTION);
 	}
 

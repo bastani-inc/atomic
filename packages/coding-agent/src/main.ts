@@ -102,6 +102,7 @@ import { applyCliRuntimeApiKey } from "./main-runtime-api-key.ts";
 import {
 	applyInheritedWorkflowSessionClassification,
 	cliResumeTrust,
+	createResumeProgress,
 	openCliSession,
 	openSessionInCurrentCwdOrExit,
 	promptForDirtyCheckout,
@@ -641,12 +642,14 @@ export async function main(argv: string[], options?: MainOptions) {
 	// storage selection before loading the selected session's resources.
 	let sessionManager: SessionManager;
 	let worktreeRestoreDiagnostics: readonly ResumeNotice[] = [];
+	const startupProgress = createResumeProgress(appMode, engineEnv.child === "1", process.stderr);
 	try {
 		const opened = await openCliSession(parsed, cwd, startupSettingsManager, {
 			agentDir,
 			sessionStorage,
 			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
 			blueprints: engineEnv.child === "1" ? "skip" : "build",
+			progress: startupProgress,
 			chooseDirtyCheckout:
 				appMode === "interactive"
 					? (prompt) => {
@@ -1092,7 +1095,7 @@ export async function main(argv: string[], options?: MainOptions) {
 	const storageWarning = await sharedStorageWarning;
 	const startupDiagnostics = deduplicateDiagnostics([
 		...startupSettingsDiagnostics,
-		...startupResumeDiagnostics(appMode, worktreeRestoreDiagnostics),
+		...startupResumeDiagnostics(appMode, worktreeRestoreDiagnostics, engineEnv.child === "1"),
 		...runtime.diagnostics,
 		...(storageWarning === undefined ? [] : [{ type: "warning" as const, message: storageWarning }]),
 	]);

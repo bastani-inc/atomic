@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -49,6 +58,7 @@ import {
 import {
 	cliSessionStorageSelection,
 	closeStoreAfter,
+	createResumeProgress,
 	openCliSession,
 	startupResumeDiagnostics,
 } from "../src/main-session.ts";
@@ -250,6 +260,194 @@ describe("openCliSession (#4329)", () => {
 			chooseDirtyCheckout: async () => "cancel",
 		});
 		assert.equal(opened, "cancelled");
+	});
+});
+
+describe("resume progress (#4660)", () => {
+	function recordingProgress() {
+		const events: string[] = [];
+		return {
+			events,
+			progress: { phase: (message: string) => events.push(`phase:${message}`), done: () => events.push("done") },
+		};
+	}
+
+	test("a resume tells its progress each step it starts and stops it once the session is ready (#4660)", async () => {
+		const selection = sqliteSelection("shared");
+		const { clone, sessionId } = await sessionRecordedElsewhere(selection);
+		const { events, progress } = recordingProgress();
+		const opened = await openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: selection,
+			trusted: () => true,
+			progress,
+		});
+		assert.notEqual(opened, "cancelled");
+		if (opened !== "cancelled") cleanups.push(() => opened.sessionManager.getSessionStore().close());
+		const restored = events.find((event) => event.startsWith("phase:Restoring "));
+		assert.deepEqual(events, [
+			"phase:Loading the session history",
+			"phase:Checking 1 checkout against the session's snapshots",
+			restored,
+			"phase:Setting up the blueprints of restored worktrees",
+			"done",
+		]);
+		assert.match(restored?.slice(`phase:Restoring ${clone} from snapshot `.length) ?? "", /^\w{12}$/);
+		assert.ok(restored?.startsWith(`phase:Restoring ${clone} from snapshot `), restored);
+	});
+
+	test("a resume stops its progress before asking about a dirty checkout (#4660)", async () => {
+		const selection = sqliteSelection("shared");
+		const { sessionId } = await sessionRecordedElsewhere(selection);
+		const checkout = sandbox.path("node-b-checkout");
+		renameSync(sandbox.path("node-a-offline"), checkout);
+		sandbox.write(join(checkout, "README.md"), "user edit\n");
+		const { events, progress } = recordingProgress();
+		const opened = await openCliSession(parseArgs(["--session", sessionId]), checkout, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: selection,
+			trusted: () => false,
+			progress,
+			chooseDirtyCheckout: async () => {
+				events.push("prompt");
+				return "cancel";
+			},
+		});
+		assert.equal(opened, "cancelled");
+		assert.deepEqual(events.slice(-3), ["done", "prompt", "done"]);
+	});
+
+	test("only --session and --continue announce the history load (#4660)", async () => {
+		const selection = sqliteSelection("shared");
+		const { sessionId } = await recordSessionWithSnapshot(selection);
+		for (const flags of [["--continue"], ["--session", sessionId], [], ["--fork", sessionId]]) {
+			const { events, progress } = recordingProgress();
+			const opened = await openCliSession(parseArgs(flags), sandbox.root, settings(), {
+				agentDir: sandbox.path("agent"),
+				sessionStorage: selection,
+				trusted: () => true,
+				progress,
+			}).catch(() => "failed" as const);
+			if (opened !== "cancelled" && opened !== "failed")
+				cleanups.push(() => opened.sessionManager.getSessionStore().close());
+			const loads = events.includes("phase:Loading the session history");
+			assert.equal(loads, flags[0] === "--continue" || flags[0] === "--session", flags.join(" "));
+		}
+	});
+
+	test("a resume that fails after loading still stops its progress (#4660)", async () => {
+		const selection = sqliteSelection("shared");
+		const { sessionId } = await sessionRecordedElsewhere(selection);
+		const { events, progress } = recordingProgress();
+		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
+		await assert.rejects(
+			openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
+				agentDir: sandbox.path("agent"),
+				sessionStorage: selection,
+				trusted: () => true,
+				progress,
+			}),
+		);
+		assert.equal(events.at(-1), "done");
+		assert.equal(events.filter((event) => event === "done").length, 1);
+	});
+
+	test("a long history is announced before it is read, not after (#4660)", async () => {
+		const selection = sqliteSelection("shared");
+		const { sessionId } = await recordSessionWithSnapshot(selection);
+		const { events, progress } = recordingProgress();
+		const atRead: string[][] = [];
+		const prototype = SqlSessionStore.prototype as unknown as { read: (...args: unknown[]) => unknown };
+		const original = prototype.read;
+		const read = vi.spyOn(prototype, "read").mockImplementation(function (this: unknown, ...args: unknown[]) {
+			atRead.push([...events]);
+			return Reflect.apply(original, this, args);
+		});
+		cleanups.push(() => read.mockRestore());
+		const opened = await openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: selection,
+			trusted: () => true,
+			progress,
+			eagerHistoryEntries: 1,
+		});
+		if (opened !== "cancelled") cleanups.push(() => opened.sessionManager.getSessionStore().close());
+		assert.ok(atRead.length > 0);
+		assert.ok(
+			atRead[0]?.some((event) => /^phase:Loading the session history \(\d+ entries\)$/.test(event)),
+			JSON.stringify(atRead[0]),
+		);
+	});
+
+	test("an announced step reaches the terminal's file descriptor synchronously (#4660)", () => {
+		const file = sandbox.path("terminal.txt");
+		const fd = openSync(file, "w");
+		try {
+			const progress = createResumeProgress("interactive", false, {
+				isTTY: true,
+				fd,
+				write: () => {
+					throw new Error("the stream's own write is asynchronous on some platforms");
+				},
+			});
+			progress?.phase("Loading the session history (150000 entries)", { immediate: true });
+			assert.match(readFileSync(file, "utf8"), /Loading the session history \(150000 entries\)…\r\n/);
+		} finally {
+			closeSync(fd);
+		}
+	});
+
+	test("a short history is not announced before it is read (#4660)", async () => {
+		const selection = sqliteSelection("shared");
+		const { sessionId } = await recordSessionWithSnapshot(selection);
+		const { events, progress } = recordingProgress();
+		const opened = await openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
+			agentDir: sandbox.path("agent"),
+			sessionStorage: selection,
+			trusted: () => true,
+			progress,
+		});
+		if (opened !== "cancelled") cleanups.push(() => opened.sessionManager.getSessionStore().close());
+		assert.ok(!events.some((event) => /entries\)$/.test(event)), JSON.stringify(events));
+	});
+
+	test("a failed lookup stops the progress too (#4660)", async () => {
+		const { events, progress } = recordingProgress();
+		await assert.rejects(
+			openCliSession(parseArgs(["--session", "no-such-session"]), sandbox.root, settings(), {
+				agentDir: sandbox.path("agent"),
+				sessionStorage: sqliteSelection("shared"),
+				trusted: () => true,
+				progress,
+			}),
+		);
+		assert.deepEqual(events, ["phase:Loading the session history", "done"]);
+	});
+
+	test("only an interactive host on a terminal shows resume progress (#4660)", () => {
+		const terminal = { isTTY: true, write: () => true };
+		assert.ok(createResumeProgress("interactive", false, terminal));
+		assert.equal(createResumeProgress("interactive", true, terminal), undefined);
+		assert.equal(createResumeProgress("interactive", false, { ...terminal, isTTY: false }), undefined);
+		for (const mode of ["print", "json", "rpc"] as const)
+			assert.equal(createResumeProgress(mode, false, terminal), undefined);
+	});
+
+	test("the progress an interactive host shows is written to its terminal (#4660)", () => {
+		vi.useFakeTimers();
+		try {
+			const written: string[] = [];
+			const progress = createResumeProgress("interactive", false, {
+				isTTY: true,
+				write: (text: string) => written.push(text) > 0,
+			});
+			progress?.phase("Loading the session history");
+			vi.advanceTimersByTime(10_000);
+			assert.equal(written.length, 1);
+			assert.match(written[0] ?? "", /Loading the session history…/);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -482,6 +680,12 @@ describe("resume helpers (#4329)", () => {
 		assert.deepEqual(startupResumeDiagnostics("interactive", notices), []);
 		for (const mode of ["print", "json", "rpc"] as const)
 			assert.equal(startupResumeDiagnostics(mode, notices), notices);
+	});
+
+	test("the isolated interactive engine leaves resume notices to its host, which shows them once (#4660)", () => {
+		const notices = [{ type: "warning" as const, message: "Resuming in /a, where this session worked" }];
+		assert.deepEqual(startupResumeDiagnostics("rpc", notices, true), []);
+		assert.equal(startupResumeDiagnostics("rpc", notices, false), notices);
 	});
 
 	test("sessionResumeOptions reads snapshot settings and the setup command", () => {

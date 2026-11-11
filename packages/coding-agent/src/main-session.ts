@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import type { Args } from "./cli/args.ts";
 import { selectSession } from "./cli/session-picker.ts";
+import { createStartupProgress, type StartupProgress } from "./cli/startup-progress.ts";
 import { getAgentDir } from "./config.js";
 import { KeybindingsManager } from "./core/keybindings.ts";
 import {
@@ -33,6 +34,7 @@ import { resolveSessionStore, selectSessionStorage } from "./core/session-storag
 import { sessionContinuesIn, sessionRunsInRecordedCheckout } from "./core/session-worktree-snapshots.ts";
 import type { DefaultProjectTrust, SettingsManager } from "./core/settings-manager.ts";
 import { type StorageSelection, storageSelectionKey } from "./core/storage/provider.js";
+import { observeHistoryLoads } from "./core/storage/session/history-load-observer.ts";
 import type { SessionStore } from "./core/storage/session/types.js";
 import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import type { AppMode } from "./main-app-mode.ts";
@@ -544,6 +546,10 @@ export interface OpenCliSessionOptions {
 	readonly io?: ResumePreflightIo;
 	/** `"skip"` in the interactive engine child, whose host already built the blueprints of this resume. */
 	readonly blueprints?: "build" | "skip";
+	/** Shows the slow steps of opening and preparing the session; told `done()` once the session is ready. */
+	readonly progress?: StartupProgress;
+	/** Entries from which a history is announced before it loads. Default {@link EAGER_HISTORY_ENTRIES}. */
+	readonly eagerHistoryEntries?: number;
 }
 
 export interface OpenedCliSession {
@@ -579,27 +585,43 @@ export async function openCliSession(
 			throw resumeLookupError(error, "session", parsed.session ?? null);
 		});
 	}
-	const sessionManager = await createSessionManager(
-		parsed,
-		cwd,
-		undefined,
-		settingsManager,
-		options.sessionStorage,
-	).catch((error: unknown) => {
-		throw resuming ? resumeLookupError(error, "session", parsed.session ?? null) : error;
-	});
+	const loading = parsed.session !== undefined || parsed.continue === true;
+	if (loading) options.progress?.phase("Loading the session history");
+	const stopObserving =
+		loading && options.progress !== undefined
+			? observeHistoryLoads((entries) => {
+					if (entries >= (options.eagerHistoryEntries ?? EAGER_HISTORY_ENTRIES)) {
+						options.progress?.phase(`Loading the session history (${entries} entries)`, { immediate: true });
+					}
+				})
+			: undefined;
+	const sessionManager = await createSessionManager(parsed, cwd, undefined, settingsManager, options.sessionStorage)
+		.catch((error: unknown) => {
+			options.progress?.done();
+			throw resuming ? resumeLookupError(error, "session", parsed.session ?? null) : error;
+		})
+		.finally(() => stopObserving?.());
 	const owned = options.sessionStorage === undefined || !("load" in options.sessionStorage);
 	const release = (failure?: unknown) =>
 		owned ? closeStoreAfter(sessionManager.getSessionStore(), failure) : undefined;
+	const choose = options.chooseDirtyCheckout;
 	const prepared = await prepareSessionResume(sessionManager, {
 		...sessionResumeOptions("cli", cwd, options.agentDir, settingsManager, options.trusted),
-		chooseDirtyCheckout: options.chooseDirtyCheckout,
+		chooseDirtyCheckout:
+			choose &&
+			((prompt) => {
+				options.progress?.done();
+				return choose(prompt);
+			}),
 		io: options.io,
 		blueprints: resuming || parsed.fork !== undefined ? options.blueprints : "skip",
-	}).catch(async (error: unknown) => {
-		await release(error);
-		throw error;
-	});
+		onProgress: options.progress?.phase,
+	})
+		.catch(async (error: unknown) => {
+			await release(error);
+			throw error;
+		})
+		.finally(() => options.progress?.done());
 	if (prepared.status === "cancelled") {
 		await release();
 		return "cancelled";
@@ -607,12 +629,32 @@ export async function openCliSession(
 	return { sessionManager: prepared.sessionManager, notices: prepared.notices };
 }
 
+/** The progress of opening a session that an interactive host shows on its terminal before the TUI paints (#4660). */
+export function createResumeProgress(
+	appMode: AppMode,
+	interactiveEngineChild: boolean,
+	stderr: Pick<NodeJS.WriteStream, "isTTY" | "write"> & { readonly fd?: number },
+): StartupProgress | undefined {
+	// A synchronous write reaches the terminal before a blocking history read starts, on every platform.
+	return appMode === "interactive" && !interactiveEngineChild && stderr.isTTY === true
+		? createStartupProgress((text) => (stderr.fd === undefined ? stderr.write(text) : writeSync(stderr.fd, text)))
+		: undefined;
+}
+
+/** A history this long is announced before it loads: reading it takes long enough to be noticed. */
+export const EAGER_HISTORY_ENTRIES = 100_000;
+
 /**
  * The resume notices print-like modes report with the startup diagnostics. Interactive mode shows them in the TUI
- * instead, so they are not reported twice.
+ * instead, and the isolated interactive engine leaves them to the host that prepared the same resume and shows them,
+ * so they are not reported twice (#4660).
  */
-export function startupResumeDiagnostics(appMode: AppMode, notices: readonly ResumeNotice[]): readonly ResumeNotice[] {
-	return appMode === "interactive" ? [] : notices;
+export function startupResumeDiagnostics(
+	appMode: AppMode,
+	notices: readonly ResumeNotice[],
+	interactiveEngineChild = false,
+): readonly ResumeNotice[] {
+	return appMode === "interactive" || interactiveEngineChild ? [] : notices;
 }
 
 /**
