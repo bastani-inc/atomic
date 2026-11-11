@@ -145,7 +145,13 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			join(tempDir, "durable-inbox.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/durable-inbox.ts"), "utf-8"),
 		);
-		for (const file of ["detachable-calls.ts", "released-reply-format.ts", "intercom-utils.ts", "group.ts"])
+		for (const file of [
+			"detachable-calls.ts",
+			"released-reply-format.ts",
+			"intercom-utils.ts",
+			"group.ts",
+			"hosted-session-timeout-error.ts",
+		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });
 		writeFileSync(
@@ -160,6 +166,11 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			join(tempDir, "broker", "recipient-gone-errors.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/recipient-gone-errors.ts"), "utf-8"),
 		);
+		for (const file of ["hosted-session-errors.ts", "hosted-sessions.ts"])
+			writeFileSync(
+				join(tempDir, "broker", file),
+				readFileSync(resolve(repoRoot, "packages/intercom/broker", file), "utf-8"),
+			);
 		writeFileSync(
 			join(tempDir, "broker", "released-reply-errors.ts"),
 			readFileSync(resolve(repoRoot, "packages/intercom/broker/released-reply-errors.ts"), "utf-8"),

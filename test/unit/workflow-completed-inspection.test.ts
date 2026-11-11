@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { openCompletedDurableWorkflow as openCompleted } from "../../packages/workflows/src/durable/completed-inspection.js";
+import { createCompletedStageAnswerer } from "../../packages/workflows/src/extension/completed-stage-intercom-ask.js";
 import {
 	createWorkflowLifecycleNotificationState,
 	installWorkflowLifecycleNotifications,
 	seedWorkflowLifecycleNotificationState,
 } from "../../packages/workflows/src/extension/lifecycle-notifications.js";
+import { createPostMortemHandleResolver } from "../../packages/workflows/src/extension/postmortem-deps.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -217,6 +219,161 @@ describe("completed workflow inspection", () => {
 		assert.deepEqual(lifecycle.sent, []);
 		lifecycle.unsubscribe();
 	});
+	describe("stages of an inspected completed run return to their saved conversation (#4642)", () => {
+		const INSPECTION_SETTLE_MS = 2_000;
+
+		async function inspected() {
+			const runId = testRunId("inspected-release");
+			const backend = await createMemoryTestBackend();
+			const store = createStore();
+			const registry = createStageControlRegistry();
+			const sessionFile = retainedSession(runId);
+			await backend.commitWorkflowRegistration({
+				workflowId: runId,
+				name: "completed-flow",
+				inputs: {},
+				createdAt: 1,
+				updatedAt: 3,
+				status: "completed",
+			});
+			await backend.commitCheckpoint({
+				kind: "stage",
+				workflowId: runId,
+				checkpointId: "stage:1",
+				name: "final",
+				replayKey: "stage:final:1",
+				output: "done",
+				sessionFile,
+				sessionId: `${runId}-session`,
+				completedAt: 2,
+				topology: completedTopology("final-source"),
+			});
+			const prompts: string[] = [];
+			let created = 0;
+			let disposed = 0;
+			const adapters = {
+				agentSession: {
+					async create() {
+						created += 1;
+						const session: StageSessionRuntime = {
+							...mockSession(),
+							sessionFile,
+							sessionId: `${runId}-session`,
+							async prompt(text: string) {
+								prompts.push(text);
+							},
+							async dispose() {
+								disposed += 1;
+							},
+						};
+						return session;
+					},
+				},
+			};
+			const opened = await openCompletedDurableWorkflow(runId, {
+				durableBackend: backend,
+				store,
+				stageControlRegistry: registry,
+				adapters,
+				cwd: tempDir,
+			});
+			assert.equal(opened.ok, true);
+			const handle = registry.get(runId, "final-source");
+			assert.ok(handle, "the opened run registers a chat handle for its stage");
+			return {
+				runId,
+				backend,
+				store,
+				registry,
+				handle,
+				prompts,
+				adapters,
+				live: () => created - disposed,
+				created: () => created,
+			};
+		}
+
+		async function untilReleased(run: Awaited<ReturnType<typeof inspected>>): Promise<void> {
+			await vi.waitFor(
+				() => {
+					assert.equal(run.live(), 0, "the session went back to its saved conversation");
+					assert.equal(run.registry.get(run.runId, "final-source"), undefined);
+				},
+				{ timeout: INSPECTION_SETTLE_MS, interval: 5 },
+			);
+		}
+
+		test("a handle nobody opened holds no session", async () => {
+			const run = await inspected();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.equal(run.created(), 0);
+			assert.equal(run.registry.get(run.runId, "final-source"), run.handle);
+			await run.registry.clear();
+		});
+
+		test("attaching, messaging and detaching releases it, and the next message rebuilds it", async () => {
+			const run = await inspected();
+			const detach = run.handle.subscribe(() => {});
+			await run.handle.sendUserMessage?.("what did you change?");
+			assert.equal(run.live(), 1, "the attached chat keeps the session");
+			detach();
+			await untilReleased(run);
+
+			const resolved = await createPostMortemHandleResolver({
+				adapters: run.adapters,
+				resolveDefaultStageSessionDir: () => undefined,
+				store: run.store,
+				stageControlRegistry: run.registry,
+				sessionStore,
+			} as Parameters<typeof createPostMortemHandleResolver>[0])(run.runId, "final-source");
+			assert.equal(resolved?.ok, true);
+			if (resolved?.ok !== true) return;
+			await resolved.handle.prompt("and then?");
+			await untilReleased(run);
+			assert.deepEqual(run.prompts, ["what did you change?", "and then?"]);
+			assert.equal(run.created(), 2, "each reopening built the session once");
+		});
+
+		test("opening the run again while a stage chat is attached does not keep the session after the chat closes", async () => {
+			const run = await inspected();
+			const detach = run.handle.subscribe(() => {});
+			await run.handle.sendUserMessage?.("what did you change?");
+			assert.equal(run.live(), 1, "the attached chat keeps the session");
+
+			const reopened = await openCompletedDurableWorkflow(run.runId, {
+				durableBackend: run.backend,
+				store: run.store,
+				stageControlRegistry: run.registry,
+				adapters: run.adapters,
+				cwd: tempDir,
+			});
+			assert.equal(reopened.ok, true);
+			assert.equal(run.registry.get(run.runId, "final-source"), run.handle, "the attached handle is kept as is");
+
+			detach();
+			await untilReleased(run);
+		});
+
+		test("an Intercom ask reopens the stage for one turn and releases it after", async () => {
+			const run = await inspected();
+			const resolve = createPostMortemHandleResolver({
+				adapters: run.adapters,
+				resolveDefaultStageSessionDir: () => undefined,
+				store: run.store,
+				stageControlRegistry: run.registry,
+				sessionStore,
+			} as Parameters<typeof createPostMortemHandleResolver>[0]);
+			const answer = createCompletedStageAnswerer(resolve);
+
+			await answer(run.runId, "final-source", "which file?");
+			await untilReleased(run);
+			await answer(run.runId, "final-source", "and the test?");
+			await untilReleased(run);
+			assert.equal(run.created(), 2);
+			assert.equal(run.prompts.length, 2);
+		});
+	});
+
 	test("includes the full workflow id in a completed inspection message", async () => {
 		const workflowId = testRunId("full-workflow-id");
 		const backend = await createMemoryTestBackend();

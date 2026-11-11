@@ -123,7 +123,7 @@ function registerCompletedChatHandles(
 		if (stage.sessionId === undefined) continue;
 		const key = completedChatKey(snapshot.id, stage.id);
 		const registration = registrations.get(key)?.deref();
-		const existing = registry.claim(snapshot.id, stage.id);
+		const existing = registry.peek(snapshot.id, stage.id);
 		if (existing?.sessionId === stage.sessionId && existing.sessionStore === sessionStore && !existing.isDisposed)
 			continue;
 		if (registration !== undefined) {

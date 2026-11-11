@@ -56,6 +56,7 @@
         "packages/mcp",
         "packages/web-access",
         "packages/intercom",
-        "test/fixtures/intercom-0.9.71"
+        "test/fixtures/intercom-0.9.71",
+        "test/fixtures/intercom-0.9.77-alpha.1"
     ]
 }

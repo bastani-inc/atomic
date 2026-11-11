@@ -35,7 +35,12 @@ import {
 } from "./executor-direct-helpers.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import { askUserQuestionToolEvent, toolResultChatText, toolResultHasChatAnswer } from "./executor-hil.js";
-import { stageReplayFields } from "./executor-lifecycle.js";
+import {
+	announceSettledStageEdit,
+	applyModelFallbackMetaToStage,
+	applySessionMetaToStage,
+	stageReplayFields,
+} from "./executor-lifecycle.js";
 import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-user-message.js";
 import type { StageScheduler } from "./executor-scheduler.js";
 import { isTerminalStage } from "./executor-scheduler.js";
@@ -232,17 +237,8 @@ export function createWorkflowStageFactory(input: {
 		if (keptResults !== undefined) stageSnapshot.waitResults = recordStageWaitToolResults(keptResults);
 
 		const applyModelFallbackMeta = (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>): void => {
-			if (meta.model !== undefined) stageSnapshot.model = meta.model;
-			if (meta.thinkingLevel !== undefined) stageSnapshot.thinkingLevel = meta.thinkingLevel;
-			else delete stageSnapshot.thinkingLevel;
-			if (meta.attemptedModels !== undefined) stageSnapshot.attemptedModels = meta.attemptedModels;
-			if (meta.modelAttempts !== undefined) stageSnapshot.modelAttempts = meta.modelAttempts;
-			if (meta.rateLimits !== undefined) stageSnapshot.rateLimits = meta.rateLimits;
-			if (meta.routerSelection !== undefined) stageSnapshot.routerSelection = meta.routerSelection;
-			if (meta.warnings !== undefined) {
-				if (meta.warnings.length > 0) stageSnapshot.warnings = meta.warnings;
-				else delete stageSnapshot.warnings;
-			}
+			if (applyModelFallbackMetaToStage(stageSnapshot, meta))
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 		};
 
 		let runtime!: LiveStageRuntime;
@@ -354,10 +350,12 @@ export function createWorkflowStageFactory(input: {
 			},
 			async recordResults(_wait, results) {
 				stageSnapshot.waitResults = recordStageWaitToolResults(results);
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 				await recordWait("wait-results");
 			},
 			resultsInTranscript() {
 				delete stageSnapshot.waitResults;
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			},
 			async leave() {
 				waitRecordMissing = false;
@@ -572,11 +570,12 @@ export function createWorkflowStageFactory(input: {
 
 		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {
 			const meta = innerCtx.__sessionMeta();
-			if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
-			if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
+			const changed = applySessionMetaToStage(stageSnapshot, meta);
 			if (meta.sessionId !== undefined)
 				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
+			if (changed) announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
+			announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
 				await pending;
 				return;
@@ -659,6 +658,9 @@ export function createWorkflowStageFactory(input: {
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
 					() => input.opts.onStageEnd!(input.runId, stageSnapshot),
 				);
+				// The callback may edit the ended stage: the durable end recorder attaches its worktree snapshot, and a
+				// caller's own callback may change any field. The store reads a finished stage again only when told.
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			}
 			if (input.opts.persistence) {
 				await appendStageStartOnce();

@@ -1,4 +1,5 @@
 import type { ExpandedWorkflowStage } from "./expanded-workflow-graph.js";
+import { runStageIndex } from "./run-stage-index.js";
 import { isTerminalRunStatus } from "./store-internal.js";
 import type { RunSnapshot, RunStatus, StageSnapshot, StageStatus } from "./store-types.js";
 import {
@@ -311,7 +312,7 @@ export function pendingWorkflowStageStatuses(
 	resolveOwningRunStatus?: PendingWorkflowRunStatusResolver,
 	resolveBoundarySegments?: WorkflowBoundarySegmentsResolver,
 ): PendingWorkflowStageStatus[] {
-	return run.stages.flatMap((stage) => {
+	return runStageIndex(run).pending.flatMap((stage) => {
 		const pending = pendingWorkflowStageStatus(run, stage, resolveOwningRunStatus, resolveBoundarySegments);
 		return pending === undefined ? [] : [pending];
 	});

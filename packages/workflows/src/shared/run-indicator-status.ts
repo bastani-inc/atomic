@@ -1,4 +1,5 @@
 import { effectiveRunStatus } from "./returned-run-status.js";
+import { runStageIndex } from "./run-stage-index.js";
 import type { RunSnapshot, RunStatus } from "./store-types.js";
 
 /** The status represented by a run's primary indicator. */
@@ -65,14 +66,7 @@ export function resolveRunIndicatorStatuses(
 }
 
 function runHasPendingInput(run: RunSnapshot): boolean {
-	if (run.pendingPrompt !== undefined) return true;
-	return run.stages.some(
-		(stage) =>
-			stage.status === "awaiting_input" ||
-			stage.awaitingInputSince !== undefined ||
-			stage.pendingPrompt !== undefined ||
-			stage.inputRequest !== undefined,
-	);
+	return run.pendingPrompt !== undefined || runStageIndex(run).awaitingInput;
 }
 
 function ancestorsOfPendingInputRuns(allRuns: readonly RunSnapshot[]): Set<string> {

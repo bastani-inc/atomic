@@ -79,13 +79,13 @@ It belongs to the `IntercomBrokerError` family. Both classes are exported from `
 
 ### Upgrading Atomic with sessions running
 
-Sessions on one machine share one broker, and it keeps running after the Atomic that started it is replaced. Each broker reports the range of Intercom protocol versions it accepts (`atomic intercom status` shows it as `Protocol:`); a broker from Atomic 0.9.71 or earlier reports none and speaks protocol 1. This version speaks protocols 1 to 2.
+Sessions on one machine share one broker, and it keeps running after the Atomic that started it is replaced. Each broker reports the range of Intercom protocol versions it accepts (`atomic intercom status` shows it as `Protocol:`); a broker from Atomic 0.9.71 or earlier reports none and speaks protocol 1. This version speaks protocols 1 to 3.
 
 - **A session of a newer version replaces an older broker.** When a session starts and finds a broker whose range this version covers, it asks that broker to shut down, waits for its process to exit, and starts its own broker in its place. It waits up to a minute: on Windows an older broker can take about 30 seconds to exit while sessions are connected. Until the successor answers, sessions of either version wait for it instead of starting a broker of their own. Sessions of the older version reconnect to it as they do after any broker restart, keep their session IDs, and keep exchanging messages with sessions of the new version. Sessions starting together replace the broker once.
 - **A broker that cannot be replaced is used on this machine only.** If the older broker does not stop, reads another shared storage selection than a broker started by this session would, or shares no protocol version with this one, the session leaves it running and registers as an older session would. With no multi-node storage configured, it shows one warning and continues on this machine. With multi-node storage selected, or when the older broker routes across machines, the session is refused with `IntercomRoutingUnavailableError` instead, because it cannot verify how the broker routes. In both cases `atomic intercom restart` replaces the broker.
 - **Installers and `atomic update` finish by running `atomic intercom upgrade`** when the version they installed has it. It stops an older broker that has no session connected, so the next session starts the new one, and otherwise leaves the broker to the next session of the new version. It is safe to run at any time.
 
-While a session uses an older broker, requests that need a newer protocol, such as keeping a released subagent addressable, fail before anything is sent:
+While a session uses an older broker, requests that need a newer protocol, such as keeping a released subagent or a released workflow stage addressable, fail before anything is sent:
 
 | Class | `code` | When it happens | Fields | What to do |
 | --- | --- | --- | --- | --- |

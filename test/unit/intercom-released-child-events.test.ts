@@ -50,7 +50,7 @@ import {
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 2 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
 }));
 
 type LifecycleHandler = (event: object, ctx: ExtensionContext) => void | Promise<void>;

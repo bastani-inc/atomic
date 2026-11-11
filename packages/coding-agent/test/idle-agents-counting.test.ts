@@ -383,8 +383,12 @@ describe("idle agents hold nothing per agent (#4326)", () => {
  * A host's forwarding of a released agent's call, as a host that took the call does it: one reaction on the call's
  * result that delivers it as a wake, holding the result and the agent's id, not the call.
  */
-function forwardResult(dispatcher: AgentWakeDispatcher, sessionId: string, result: Promise<DetachedToolResult>): void {
-	void result.then((toolResult) =>
+function forwardResult(
+	dispatcher: AgentWakeDispatcher,
+	sessionId: string,
+	result: Promise<DetachedToolResult>,
+): Promise<void> {
+	return result.then((toolResult) =>
 		dispatcher.deliver(`bench:${sessionId}`, { id: `ci:${toolResult.toolCallId}`, kind: "tool-result", toolResult }),
 	);
 }
@@ -405,6 +409,26 @@ function liveObjects(): Record<keyof typeof COUNTED, number> {
 /** The test walks the vitest worker's whole heap seven times; in a loaded full-suite run that outlasts the default budget. */
 const HEAP_WALK_TEST_TIMEOUT_MS = 90_000;
 
+const PENDING_CALL_OBJECTS = ["long tool's promise", "call's promise", "host's forwarding reaction"] as const;
+
+class ReleasedAgentWatch {
+	private readonly watched = new Map<string, Map<string, WeakRef<object>>>();
+
+	watch(toolCallId: string, name: string, object: object): void {
+		const refs = this.watched.get(toolCallId) ?? new Map<string, WeakRef<object>>();
+		refs.set(name, new WeakRef(object));
+		this.watched.set(toolCallId, refs);
+	}
+
+	surviving(toolCallIds: readonly string[]): string[] {
+		return toolCallIds.flatMap((toolCallId) =>
+			[...(this.watched.get(toolCallId) ?? [])].flatMap(([name, ref]) =>
+				ref.deref() === undefined ? [] : [`${toolCallId}:${name}`],
+			),
+		);
+	}
+}
+
 function wholeCountPerAgent(delta: number, agents: number): number {
 	return Math.round(delta / agents) || 0;
 }
@@ -424,7 +448,7 @@ const RELEASED_AGENT_PROMISES = 4 + ADOPTION_ON_PROMISE_HOOKS;
 
 describe("a released agent keeps its history and its long call's delivery, nothing else (#4403)", () => {
 	test(
-		"per released agent: no abort signal, only the promises that deliver its call, and log2(history) buffers",
+		"per released agent: no abort signal, only the promises that deliver its call, and log2(history) buffers (#4655)",
 		async () => {
 			const operations = new Map<string, (result: AgentToolResult) => void>();
 			const dispatcher = new AgentWakeDispatcher();
@@ -432,10 +456,24 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 			dispatcher.handle("bench", async (_wakeKey, wakes) => {
 				for (const wake of wakes) delivered.push(wake.id);
 			});
+			const watch = new ReleasedAgentWatch();
+			const callOf = new Map<string, string>();
 			const h = await host(
 				{
-					start: (toolCallId) => new Promise((resolve) => operations.set(toolCallId, resolve)),
-					taken: (call, sessionId) => forwardResult(dispatcher, sessionId, call.result),
+					start: (toolCallId) => {
+						const operation = new Promise<AgentToolResult>((resolve) => operations.set(toolCallId, resolve));
+						watch.watch(toolCallId, PENDING_CALL_OBJECTS[0], operation);
+						return operation;
+					},
+					taken: (call, sessionId) => {
+						callOf.set(sessionId, call.toolCallId);
+						watch.watch(call.toolCallId, PENDING_CALL_OBJECTS[1], call.result);
+						watch.watch(
+							call.toolCallId,
+							PENDING_CALL_OBJECTS[2],
+							forwardResult(dispatcher, sessionId, call.result),
+						);
+					},
 				},
 				{ spill: false },
 			);
@@ -445,7 +483,12 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 				const sessions = await Promise.all(
 					Array.from({ length: AGENTS_PER_WAVE }, (_, index) => h.runAgent(offset + index)),
 				);
-				for (const session of sessions) released.push((await session.release()).sessionId);
+				for (const session of sessions) {
+					const toolCallId = callOf.get(session.sessionId);
+					assert.ok(toolCallId);
+					watch.watch(toolCallId, "session", session);
+					released.push((await session.release()).sessionId);
+				}
 			};
 
 			await wave(0);
@@ -472,19 +515,27 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 				`${perAgent(idle, "ArrayBuffer")} buffers per agent for ${historyBytes} bytes of history`,
 			);
 
-			// What stayed is the calls' delivery: finishing the operations delivers each result and frees what it held.
 			const later = [...operations.keys()].filter((toolCallId) => !firstWave.has(toolCallId));
-			for (const toolCallId of later) {
+			assert.equal(later.length, agents);
+			const pendingCallObjects = later.flatMap((toolCallId) =>
+				PENDING_CALL_OBJECTS.map((name) => `${toolCallId}:${name}`),
+			);
+			const survivingBeforeDelivery = new Set(watch.surviving(later));
+			for (const object of pendingCallObjects) assert.ok(survivingBeforeDelivery.has(object), object);
+
+			// What stayed is the calls' delivery: finishing the operations delivers each result and frees what it held.
+			const finishOperation = (toolCallId: string) => {
 				const finish = operations.get(toolCallId);
 				operations.delete(toolCallId);
 				finish?.({ content: [{ type: "text", text: "green" }], details: undefined });
-			}
+			};
+			for (const toolCallId of later) finishOperation(toolCallId);
 			for (let turn = 0; turn < SETTLE_TURNS && delivered.length < agents; turn++)
 				await new Promise((resolve) => setImmediate(resolve));
 			assert.deepEqual(delivered.sort(), later.map((toolCallId) => `ci:${toolCallId}`).sort());
 			await settledHandles();
-			const finishedPromises = queryObjects(Promise, { format: "count" }) as number;
-			assert.equal(wholeCountPerAgent(finishedPromises - before.Promise, agents), 0);
+			queryObjects(Promise, { format: "count" });
+			assert.deepEqual(watch.surviving(later), []);
 		},
 		HEAP_WALK_TEST_TIMEOUT_MS,
 	);

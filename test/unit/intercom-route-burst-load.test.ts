@@ -37,7 +37,7 @@ import { IntercomWireProxy, type WireFrame } from "../helpers/intercom-wire-prox
 import { sleep } from "../helpers/runtime.js";
 
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 2 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
 }));
 vi.mock("../../packages/intercom/broker/spawn.js", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../packages/intercom/broker/spawn.js")>()),

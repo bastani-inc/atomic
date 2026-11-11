@@ -92,11 +92,14 @@ export {
 	isIntercomRecipientGoneErrorCode,
 	isRetryableIntercomRecipientGoneError,
 	isSubagentRecipientDisconnectedError,
+	isStageRecipientReleasedError,
 	isSubagentRecipientEndedError,
 	isSubagentRecipientOwnerSuspendedError,
 	readSerializedIntercomRecipientGoneError,
 	rehydrateIntercomRecipientGoneError,
 	type SerializedIntercomRecipientGoneError,
+	type StageRecipientReleasedCode,
+	StageRecipientReleasedError,
 	SUBAGENT_ENDED_OUTCOMES,
 	type SubagentEndedOutcome,
 	type SubagentRecipientDisconnectedCode,
@@ -108,6 +111,30 @@ export {
 	serializeIntercomRecipientGoneError,
 	subagentEndedCode,
 } from "./broker/recipient-gone-errors.js";
+export {
+	type IntercomHostedSessionRequestType,
+	IntercomHostedSessionTimeoutError,
+	type IntercomHostedSessionTimeoutCode,
+	type IntercomHostedSessionTimeoutFields,
+	type IntercomHostedSessionTimeoutPhase,
+	isIntercomHostedSessionTimeoutError,
+} from "./hosted-session-timeout-error.js";
+export {
+	HOSTED_SESSION_ERROR_CODES,
+	HostedSessionRequestError,
+	IntercomHostedSessionError,
+	type IntercomHostedSessionErrorCode,
+	type IntercomHostedSessionErrorFields,
+	isHostedSessionErrorCode,
+	isHostedSessionRequestError,
+	isIntercomHostedSessionError,
+	isNotHostedSessionError,
+	NotHostedSessionError,
+	readSerializedIntercomHostedSessionError,
+	rehydrateIntercomHostedSessionError,
+	type SerializedIntercomHostedSessionError,
+	serializeIntercomHostedSessionError,
+} from "./broker/hosted-session-errors.js";
 
 type LifecycleSnapshot<K extends keyof ForwardedEventMap> = {
 	event: ForwardedEventMap[K];

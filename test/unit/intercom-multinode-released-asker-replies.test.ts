@@ -760,6 +760,7 @@ describe("replies to released askers across nodes (#4386)", () => {
 		assert.equal(answered.reasonCode, "released_reply_answered");
 		assert.ok(
 			answered.error !== undefined &&
+				answered.error.code === "released_reply_answered" &&
 				isReleasedReplyAnsweredError(rehydrateIntercomReleasedReplyError(answered.error)),
 		);
 		assert.equal(answered.error.retryable, false);

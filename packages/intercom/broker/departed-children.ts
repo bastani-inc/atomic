@@ -6,6 +6,7 @@ import {
 	type IntercomRecipientGoneError,
 	SUBAGENT_ENDED_OUTCOMES,
 	type SubagentEndedOutcome,
+	StageRecipientReleasedError,
 	SubagentRecipientDisconnectedError,
 	subagentRecipientEnded,
 } from "./recipient-gone-errors.js";
@@ -119,6 +120,7 @@ export function validateEndedChildrenFrame(
 
 type Verdict =
 	| { readonly kind: "ended"; readonly outcome: SubagentEndedOutcome; readonly childId?: string }
+	| { readonly kind: "stage_released" }
 	| { readonly kind: "disconnected" };
 
 /** The verdict of a subagent nobody said anything about before its wait ended. */
@@ -243,6 +245,25 @@ export class DepartedChildren {
 			refused.push(...this.refuseHeld(departure, departure.verdict));
 		}
 		return { refused, evicted };
+	}
+
+	/**
+	 * #4642: a released workflow stage's hosted peer left: its host connection removed it or closed. Sends to its name,
+	 * id or return address are refused at once with a {@link StageRecipientReleasedError}, until it is hosted again.
+	 */
+	markStageReleased(
+		ownerSessionId: string,
+		child: Omit<EndedChildMark, "outcome" | "childId">,
+	): { readonly refused: HeldSendRefusal[]; readonly evicted: HeldSend[] } {
+		const entry = this.entry(ownerSessionId, child.childName, child.group, child.aliases);
+		this.disarm(entry.departure);
+		entry.departure.verdict = { kind: "stage_released" };
+		return { refused: this.refuseHeld(entry.departure, entry.departure.verdict), evicted: entry.evicted };
+	}
+
+	/** Whether `target`, to a sender that may reach it, names a released stage whose hosted peer is gone (#4642). */
+	isReleasedStage(target: string, sender: { readonly id: string; readonly info: SessionInfo }): boolean {
+		return this.visible(target, sender)?.verdict?.kind === "stage_released";
 	}
 
 	/** Decide a send that found no live recipient. `canHold` is false for a client that cannot wait for a verdict. */
@@ -406,6 +427,8 @@ export class DepartedChildren {
 	}
 
 	private errorFor(departure: Departure, verdict: Verdict, target: string): IntercomRecipientGoneError {
+		if (verdict.kind === "stage_released")
+			return new StageRecipientReleasedError({ target, childName: departure.childName });
 		if (verdict.kind !== "ended") return this.disconnectedError(departure, target);
 		return subagentRecipientEnded(verdict.outcome, {
 			target,

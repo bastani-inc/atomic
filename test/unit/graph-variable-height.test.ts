@@ -43,6 +43,7 @@ test("graph reflows model-card queues without a snapshot change and updates down
 		store: makeStore(makeSnap([model, next])),
 		graphTheme: defaultTheme,
 		getStageQueuedMessageCount: (_runId, stageId) => (stageId === "model" ? queued : 0),
+		getQueuedStageSignature: () => String(queued),
 		onStageAttach: (_runId, stageId) => {
 			attached.push(stageId);
 		},

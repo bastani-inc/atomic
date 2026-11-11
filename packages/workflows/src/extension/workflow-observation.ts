@@ -7,7 +7,7 @@ import type {
 import type { Store } from "../shared/store.js";
 import { workflowObservationRuntime } from "../shared/store-factory.js";
 import { subscribeStoreInvalidation } from "../shared/store-observation.js";
-import { projectWorkflowActivity } from "../shared/workflow-activity.js";
+import { WorkflowActivityProjector } from "../shared/workflow-activity.js";
 import type { WorkflowRuntimeEvent } from "../shared/workflow-observation-runtime.js";
 
 /** Keys of a root graph that serialize, in order. */
@@ -67,8 +67,9 @@ export function createWorkflowObservation(
 ): { dispose(): void } {
 	const runtime = workflowObservationRuntime(store);
 	let roots = new Map<string, WorkflowRootActivity>();
+	const projector = new WorkflowActivityProjector();
 	const project = (): WorkflowRootActivity[] =>
-		projectWorkflowActivity({ snapshot: store.graphSnapshot(), ownership: { ...runtime, ownerSessionId } });
+		projector.project({ snapshot: store.graphSnapshot(), ownership: { ...runtime, ownerSessionId } });
 	const snapshot = (): void => {
 		if (runtime.recovering) publisher.publishSnapshot({ availability: "recovering" });
 		else {

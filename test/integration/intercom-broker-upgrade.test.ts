@@ -302,7 +302,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 			assert.equal(status.isError, false, status.content[0]?.text);
 
 			const after = await runningBroker();
-			assert.deepEqual(after.protocol, { min: 1, max: 2 });
+			assert.deepEqual(after.protocol, { min: 1, max: 3 });
 			assert.notEqual(after.pid, before.pid);
 			assert.equal(isAlive(before.pid), false, "the 0.9.71 broker exited");
 			await previous.reconnected(2);
@@ -364,7 +364,7 @@ describe("a session of this version finding a 0.9.71 broker (#4538)", () => {
 			for (const status of statuses) assert.equal(status.isError, false, status.content[0]?.text);
 			await previous.reconnected(2);
 			const after = await runningBroker();
-			assert.deepEqual(after.protocol, { min: 1, max: 2 });
+			assert.deepEqual(after.protocol, { min: 1, max: 3 });
 			assert.equal(isAlive(before.pid), false);
 			assert.equal(after.sessions, 4);
 			assert.deepEqual(
@@ -492,7 +492,7 @@ describe("replacing an older broker (#4538)", () => {
 				"sessions that waited for the lock found the successor, not the older broker",
 			);
 			const after = await runningBroker();
-			assert.deepEqual(after.protocol, { min: 1, max: 2 });
+			assert.deepEqual(after.protocol, { min: 1, max: 3 });
 			assert.equal(existsSync(join(agentDir, "intercom", "broker.spawn.lock")), false);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
@@ -509,7 +509,7 @@ describe("replacing an older broker (#4538)", () => {
 			const after = await runningBroker();
 			assert.deepEqual(
 				after.protocol,
-				{ min: 1, max: 2 },
+				{ min: 1, max: 3 },
 				"a successor started while the older broker still answered would have yielded to it",
 			);
 			assert.equal(legacy.shutdownRequests(), 1);
@@ -582,7 +582,7 @@ describe("replacing an older broker (#4538)", () => {
 				const { upgradeBroker } = await import("../../packages/intercom/broker/spawn.js");
 				assert.equal(await upgradeBroker("bun", [], 30_000), "upgraded");
 				assert.equal(legacy.shutdownRequests(), 1);
-				assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 2 });
+				assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 3 });
 			},
 			UPGRADE_TEST_TIMEOUT_MS,
 		);
@@ -661,7 +661,7 @@ describe("replacing an older broker (#4538)", () => {
 				`the lock was written again about every 10 s while the older broker exited, not on every poll: ${[...writtenAt].join(", ")}`,
 			);
 			assert.deepEqual([staleSeen, foreignOwner], [false, false]);
-			assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 2 });
+			assert.deepEqual((await runningBroker()).protocol, { min: 1, max: 3 });
 			assert.equal(existsSync(lockPath), false);
 		},
 		UPGRADE_TEST_TIMEOUT_MS,
@@ -877,7 +877,7 @@ describe("atomic intercom upgrade against a 0.9.71 broker (#4538)", () => {
 			assert.deepEqual(await upgradeIntercomBroker(agentDir), {
 				status: "current",
 				pid: report.pid,
-				protocol: { min: 1, max: 2 },
+				protocol: { min: 1, max: 3 },
 				decision: "compatible",
 			});
 		},

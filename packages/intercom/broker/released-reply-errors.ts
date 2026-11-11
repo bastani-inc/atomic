@@ -158,7 +158,7 @@ type WireObject = { readonly [key: string]: JsonWireValue };
 const isWireObject = (value: JsonWireValue | undefined): value is WireObject =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
-function readCause(value: JsonWireValue | undefined, depth: number): SerializedErrorCause | undefined | false {
+export function readCause(value: JsonWireValue | undefined, depth: number): SerializedErrorCause | undefined | false {
 	if (value === undefined) return undefined;
 	if (!isWireObject(value) || typeof value.name !== "string" || typeof value.message !== "string") return false;
 	const next = depth < MAX_CAUSE_DEPTH ? readCause(value.cause, depth + 1) : undefined;

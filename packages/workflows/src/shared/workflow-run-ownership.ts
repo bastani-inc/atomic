@@ -102,14 +102,47 @@ function index<T extends { readonly id: string }>(
 	return byId;
 }
 
+/**
+ * Snapshot arrays that are never changed after they are published. JavaScriptCore freezes an array, asks whether it is
+ * frozen and reads it element by element (about 90, 50 and 8 ns per element against 1 ns for a plain array), so
+ * freezing a run's stages on every store change cost as much as the change itself at a few hundred stages (#4642).
+ * The graph snapshot builder leaves its stage and tool-node arrays unfrozen and lists them here; the stage and run
+ * objects in them stay frozen, and lookups index these arrays as they index frozen ones.
+ */
+const publishedSnapshotArrays = new WeakSet<readonly object[]>();
+
+/** Lists an array a graph snapshot publishes; the caller never changes it afterwards. */
+export function markPublishedSnapshotArray(items: readonly object[]): void {
+	publishedSnapshotArrays.add(items);
+}
+
+/** Whether `items` is an array of a graph snapshot, which no one changes once it is published. */
+export function isPublishedSnapshotArray(items: readonly object[]): boolean {
+	return publishedSnapshotArrays.has(items);
+}
+
+/**
+ * The index of an array that never changes, from the cache when it has one: Bun's `Object.isFrozen` checks every
+ * element of an array, so asking it on each lookup made a lookup cost the whole array again (#4642). A graph
+ * snapshot's stage arrays are published unfrozen and never changed, and are indexed like frozen ones.
+ */
+function frozenIndex<T extends { readonly id: string }>(
+	items: readonly T[],
+	cache: WeakMap<readonly T[], ReadonlyMap<string, T>>,
+): ReadonlyMap<string, T> | undefined {
+	return (
+		cache.get(items) ?? (isPublishedSnapshotArray(items) || Object.isFrozen(items) ? index(items, cache) : undefined)
+	);
+}
+
 export function findSnapshotRun(runs: readonly RunSnapshot[], runId: string): RunSnapshot | undefined {
-	return Object.isFrozen(runs) ? index(runs, runIndexes).get(runId) : runs.find((run) => run.id === runId);
+	const byId = frozenIndex(runs, runIndexes);
+	return byId === undefined ? runs.find((run) => run.id === runId) : byId.get(runId);
 }
 
 export function findSnapshotStage(stages: readonly StageSnapshot[], stageId: string): StageSnapshot | undefined {
-	return Object.isFrozen(stages)
-		? index(stages, stageIndexes).get(stageId)
-		: stages.find((stage) => stage.id === stageId);
+	const byId = frozenIndex(stages, stageIndexes);
+	return byId === undefined ? stages.find((stage) => stage.id === stageId) : byId.get(stageId);
 }
 
 /** The runs hanging from a run, or from one of its stages: asked of a lookup, scanned for in a list. */

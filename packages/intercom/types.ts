@@ -4,6 +4,7 @@ import type {
 	SerializedIntercomRecipientGoneError,
 	SubagentEndedOutcome,
 } from "./broker/recipient-gone-errors.js";
+import type { SerializedIntercomHostedSessionError } from "./broker/hosted-session-errors.js";
 import type { SerializedIntercomReleasedReplyError } from "./broker/released-reply-errors.js";
 
 export interface SessionInfo {
@@ -168,7 +169,36 @@ export type DeliveryFailureReasonCode =
 	| "recipient_not_restored"
 	| "recipient_parked"
 	| ReleasedReplyRefusalCode
-	| IntercomRecipientGoneErrorCode;
+	| IntercomRecipientGoneErrorCode
+	| "not_hosted_by_connection";
+
+/** #4642: why the broker refused a hosted-session request; see `IntercomHostedSessionError`. */
+export type HostedSessionRefusalCode = "invalid_hosted_frame" | "invalid_hosted_session" | "not_hosted_by_connection";
+
+/** The broker's typed refusal of a hosted-session request; `key` or `sessionId` names the offending item. */
+export interface HostedSessionRefusal {
+	code: HostedSessionRefusalCode;
+	key?: string;
+	sessionId?: string;
+}
+
+/**
+ * #4642: one session a connection hosts in a `host_sessions` frame of at most 500. It is listed and addressed like a
+ * connected session, without a connection of its own; `key` is the host's name for it in the answer.
+ */
+export interface HostedSessionFrameItem {
+	key: string;
+	session: Omit<SessionInfo, "id">;
+	returnAddress?: string;
+	liveRoute?: { runId: string; stageKeys: string[]; capability: string };
+}
+
+/** The broker id of one hosted session, and whether its live workflow-stage route was registered or why not. */
+export interface HostedSessionAssignment {
+	key: string;
+	sessionId: string;
+	liveRouteRefusal?: LiveWorkflowStageRouteRefusalCode;
+}
 
 /** One subagent in a `mark_ended_children` frame: its owner reports how its last run ended (#4639). */
 export interface EndedChildFrame {
@@ -305,6 +335,10 @@ export type ClientMessage =
   | { type: "acknowledge_released_child_wake"; requestId: string; childName: string }
   /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
   | { type: "released_child_reply_ack"; messageId: string; handoffId: string; accepted: boolean }
+  /** #4642: host sessions without a connection each; protocol 3. The broker answers `hosted_sessions_ack`. */
+  | { type: "host_sessions"; requestId: string; sessions: HostedSessionFrameItem[] }
+  /** #4642: remove sessions this connection hosts, in a frame of at most 500. */
+  | { type: "unhost_sessions"; requestId: string; sessionIds: string[] }
   | {
       type: "send" | "supervisor_send";
       to: string;
@@ -314,6 +348,8 @@ export type ClientMessage =
       resolveReplyTarget?: true;
       /** The sender understands `send_held` and may wait past its usual acknowledgement timeout (#3760). */
       awaitRestoringRecipient?: true;
+      /** #4642: send as this session, which this connection hosts. */
+      hostedSender?: string;
       message: Message;
       attemptId?: string;
     }
@@ -426,7 +462,8 @@ export type BrokerMessage =
 	| { type: "groups"; requestId: string; groups: GroupSummary[] }
 	| { type: "membership_ack"; requestId: string; groups: string[] }
   | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
-  | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
+  /** `hostedRecipient` names the hosted session the message is for, written only to the connection hosting it (#4642). */
+  | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor"; hostedRecipient?: string }
 	| { type: "pending_stage_notification"; requestId: string; from: SessionInfo; message: Message }
 	| {
 			type: "pending_stage_message";
@@ -474,6 +511,7 @@ export type BrokerMessage =
 	| { type: "released_child_reply"; childName: string; handoffId: string; replyTo: string; from: SessionInfo; message: Message }
 	| { type: "restoring_recipient_ack"; requestId: string; error?: string }
 	| { type: "released_children_ack"; requestId: string; refusal?: ReleasedChildRefusal }
+	| { type: "hosted_sessions_ack"; requestId: string; sessions?: HostedSessionAssignment[]; refusal?: HostedSessionRefusal }
 	| {
 			type: "delivery_failed";
 			messageId: string;
@@ -481,7 +519,7 @@ export type BrokerMessage =
 			reasonCode?: DeliveryFailureReasonCode;
 			attemptId?: string;
 			/** #4386: the typed refusal of a reply to a released subagent; its `code` equals `reasonCode`. */
-			error?: SerializedIntercomReleasedReplyError;
+			error?: SerializedIntercomReleasedReplyError | SerializedIntercomHostedSessionError;
 			/**
 			 * #4639: why a subagent with no live session is gone. Carried apart from `error` and `reasonCode`, which older
 			 * clients validate strictly; they read only `reason`, which is this error's message.

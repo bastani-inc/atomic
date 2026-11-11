@@ -1,7 +1,7 @@
 import type { SerializedError } from "../../shared/error-codec.js";
 import { appendRunBlocked, appendRunEnd } from "../../shared/persistence-session-entries.js";
 import type { Store } from "../../shared/store.js";
-import { isTerminalRunStatus } from "../../shared/store-internal.js";
+import { isTerminalRunStatus, isTerminalStageStatus } from "../../shared/store-internal.js";
 import type {
 	RunBudgetState,
 	RunFailureClassification,
@@ -19,6 +19,7 @@ import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import { runFailureClassification } from "../../shared/workflow-failures-classifier.js";
 import { safeExecutorAggregateErrorItems } from "./executor-abort.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
+import type { StageModelFallbackMeta } from "./stage-runner-types.js";
 
 export const EMPTY_WORKFLOW_GRAPH_ERROR_MESSAGE =
 	"Workflow run completed without creating any workflow stages or durable tool nodes. Create tracked execution with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), ctx.workflow(), or ctx.tool().";
@@ -162,6 +163,81 @@ export interface RunFailureMetadata {
 	readonly budgetState?: RunBudgetState;
 	/** The typed error of the selected failure, from its stage or its thrown error (#4309). */
 	readonly failureDetail?: SerializedError;
+}
+
+/**
+ * Names a settled stage whose fields executor code changed outside a store method. Graph snapshots read a completed,
+ * failed or skipped stage again only when a store change names it (#4642), so an edit no store method follows is
+ * announced here; a stage still running is read on every snapshot and needs no announcement.
+ */
+export function announceSettledStageEdit(store: Store, runId: string, stage: StageSnapshot): void {
+	if (isTerminalStageStatus(stage.status)) store.editRun(runId, () => ({ stageIds: [stage.id] }));
+}
+
+/**
+ * Calls a caller's `onStageEnd` hook for an ended stage and names the stage to the store both right away and, when the
+ * hook returns a promise, again once that promise settles (#4642). A hook that edits the stage after an `await`, such
+ * as the durable end recorder that writes its checkpoint before running the caller's hook, would otherwise leave its
+ * edit out of graph snapshots. A rejected hook keeps rejecting as before.
+ */
+export function endStageWithHook(
+	store: Store,
+	runId: string,
+	stage: StageSnapshot,
+	hook: ((runId: string, snapshot: StageSnapshot) => unknown) | undefined,
+): void {
+	const outcome = hook?.(runId, stage);
+	announceSettledStageEdit(store, runId, stage);
+	if (!isPromiseLike(outcome)) return;
+	void Promise.resolve(outcome).then(
+		() => announceSettledStageEdit(store, runId, stage),
+		(error: unknown) => {
+			announceSettledStageEdit(store, runId, stage);
+			throw error;
+		},
+	);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return (
+		(typeof value === "object" || typeof value === "function") &&
+		value !== null &&
+		typeof (value as { then?: unknown }).then === "function"
+	);
+}
+
+/** Copies a stage session's model fallback metadata onto its stage; true when a field graph snapshots show changed. */
+export function applyModelFallbackMetaToStage(stage: StageSnapshot, meta: StageModelFallbackMeta): boolean {
+	const { model, thinkingLevel, rateLimits, routerSelection, warnings } = stage;
+	if (meta.model !== undefined) stage.model = meta.model;
+	if (meta.thinkingLevel !== undefined) stage.thinkingLevel = meta.thinkingLevel;
+	else delete stage.thinkingLevel;
+	if (meta.attemptedModels !== undefined) stage.attemptedModels = meta.attemptedModels;
+	if (meta.modelAttempts !== undefined) stage.modelAttempts = meta.modelAttempts;
+	if (meta.rateLimits !== undefined) stage.rateLimits = meta.rateLimits;
+	if (meta.routerSelection !== undefined) stage.routerSelection = meta.routerSelection;
+	if (meta.warnings !== undefined) {
+		if (meta.warnings.length > 0) stage.warnings = meta.warnings;
+		else delete stage.warnings;
+	}
+	return (
+		model !== stage.model ||
+		thinkingLevel !== stage.thinkingLevel ||
+		rateLimits !== stage.rateLimits ||
+		routerSelection !== stage.routerSelection ||
+		warnings !== stage.warnings
+	);
+}
+
+/** Copies a stage session's id and file onto its stage; true when either changed. */
+export function applySessionMetaToStage(
+	stage: StageSnapshot,
+	meta: { readonly sessionId: string | undefined; readonly sessionFile: string | undefined },
+): boolean {
+	const { sessionId, sessionFile } = stage;
+	if (meta.sessionId !== undefined) stage.sessionId = meta.sessionId;
+	if (meta.sessionFile !== undefined) stage.sessionFile = meta.sessionFile;
+	return sessionId !== stage.sessionId || sessionFile !== stage.sessionFile;
 }
 
 /**

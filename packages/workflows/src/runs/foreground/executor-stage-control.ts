@@ -9,6 +9,7 @@ import type {
 	StageUserMessageDeliveryAction,
 	StageUserMessagePreparation,
 } from "./stage-runner-types.js";
+import { StageSessionHolds } from "./stage-session-holds.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
 export function createStageControlHandle(runtime: LiveStageRuntime): StageControlHandle {
@@ -68,11 +69,13 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 	};
 	const toolExecutions = new StageToolExecutionBuffer();
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
+	const holds = new StageSessionHolds();
 	// One lifetime subscription feeds both runtime projections, so the queue stays
 	// current while no stage chat is mounted.
 	const unsubscribeStageEvents = runtime.innerCtx.subscribe((event) => {
 		toolExecutions.record(event);
 		queuedUserMessages.record(event);
+		holds.observe(event);
 		if (event.type === "task_cleanup_quarantined")
 			runtime.activeStore.recordStageNotice(runtime.runId, runtime.stageId, {
 				id: crypto.randomUUID(),
@@ -84,28 +87,6 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 		if (event.type === "background_compaction")
 			runtime.activeStore.recordStageCompaction(runtime.runId, runtime.stageId, event.compaction);
 	});
-	// Mounted chats subscribe through this handle for as long as they exist, hidden or not.
-	let externalSubscribers = 0;
-	const countSubscription = (unsubscribe: () => void): (() => void) => {
-		externalSubscribers += 1;
-		let active = true;
-		return () => {
-			if (!active) return;
-			active = false;
-			externalSubscribers -= 1;
-			unsubscribe();
-		};
-	};
-	// Release must not interleave with an operation that already holds this handle.
-	let activeOperations = 0;
-	const tracked = async <T>(operation: () => Promise<T>): Promise<T> => {
-		activeOperations += 1;
-		try {
-			return await operation();
-		} finally {
-			activeOperations -= 1;
-		}
-	};
 	const sessionSaved = (): boolean =>
 		runtime.stageSnapshot.status === "completed" &&
 		runtime.state.stageFinalized &&
@@ -345,12 +326,13 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			}
 		},
 		subscribe(listener: AgentSessionEventListener) {
-			return countSubscription(runtime.innerCtx.subscribe(listener));
+			return holds.subscription(runtime.innerCtx.subscribe(listener));
 		},
 		subscribeDeliveryActivity(listener) {
-			return countSubscription(runtime.innerCtx.__subscribeDeliveryActivity(listener));
+			return holds.subscription(runtime.innerCtx.__subscribeDeliveryActivity(listener));
 		},
 		async dispose() {
+			holds.clear();
 			unsubscribeStageEvents();
 			toolExecutions.clear();
 			queuedUserMessages.clear();
@@ -367,8 +349,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 			idle() {
 				return (
 					sessionSaved() &&
-					externalSubscribers === 0 &&
-					activeOperations === 0 &&
+					!holds.held &&
 					stageQueuedUserMessageCount(queuedUserMessages.snapshot()) === 0 &&
 					!runtime.state.waitingForStageChatTurn &&
 					runtime.state.wakeWaitingForStageChatTurn === undefined &&
@@ -377,17 +358,19 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
 					runtime.innerCtx.__idleForRelease()
 				);
 			},
+			holdsTaken: () => holds.holdsTaken,
+			onHoldLifted: (listener) => holds.onLifted(listener),
 		},
 	} satisfies StageControlHandle;
 
 	const { ensureAttached, sendUserMessage, prompt, steer, followUp, pause, resume } = handle;
-	handle.ensureAttached = () => tracked(ensureAttached);
+	handle.ensureAttached = () => holds.operation(ensureAttached);
 	handle.sendUserMessage = (text, options, beforeDelivery) =>
-		tracked(() => sendUserMessage(text, options, beforeDelivery));
-	handle.prompt = (text) => tracked(() => prompt(text));
-	handle.steer = (text, options) => tracked(() => steer(text, options));
-	handle.followUp = (text, options) => tracked(() => followUp(text, options));
-	handle.pause = () => tracked(pause);
-	handle.resume = (message, beforeResume) => tracked(() => resume(message, beforeResume));
+		holds.operation(() => sendUserMessage(text, options, beforeDelivery));
+	handle.prompt = (text) => holds.operation(() => prompt(text));
+	handle.steer = (text, options) => holds.operation(() => steer(text, options));
+	handle.followUp = (text, options) => holds.operation(() => followUp(text, options));
+	handle.pause = () => holds.operation(pause);
+	handle.resume = (message, beforeResume) => holds.operation(() => resume(message, beforeResume));
 	return handle;
 }

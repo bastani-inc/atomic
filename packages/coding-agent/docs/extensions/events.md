@@ -863,6 +863,8 @@ Run control actions describe the caller's request: an already-aborted caller sig
 
 Use `ctx.observeWorkflowActivity` for status consumers. Registration captures a snapshot atomically with attaching the observer. Delivery is asynchronous, snapshot first, then FIFO updates. Each callback finishes before the next callback for that observer starts; a slow observer does not delay the publisher or other observers.
 
+Each frame and each `workflow_activity_changed` event has its own copy of the root, its `graph` and the graph's `nodes` array. The nodes themselves are deep-frozen and shared between frames and observers, so changing one throws in strict mode: copy a node (`{ ...node }`) before changing it.
+
 ```typescript
 import type { ExtensionAPI, WorkflowActivitySubscription, WorkflowRootActivity } from "@bastani/atomic";
 

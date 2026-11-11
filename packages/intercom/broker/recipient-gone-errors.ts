@@ -19,11 +19,15 @@ export type SubagentRecipientDisconnectedCode = "recipient_disconnected";
 /** The subagent is released and the session that would wake it is suspended or disconnected. */
 export type SubagentRecipientOwnerSuspendedCode = "recipient_owner_suspended";
 
-/** Why a send or ask to a subagent with no live session was refused (#4639). Codes are public API. */
+/** The released workflow stage's peer is no longer hosted: its host connection closed or removed it (#4642). */
+export type StageRecipientReleasedCode = "recipient_stage_released";
+
+/** Why a send or ask to a subagent or released stage with no live session was refused (#4639, #4642). Codes are public API. */
 export type IntercomRecipientGoneErrorCode =
 	| SubagentRecipientEndedCode
 	| SubagentRecipientDisconnectedCode
-	| SubagentRecipientOwnerSuspendedCode;
+	| SubagentRecipientOwnerSuspendedCode
+	| StageRecipientReleasedCode;
 
 export const INTERCOM_RECIPIENT_GONE_ERROR_CODES: readonly IntercomRecipientGoneErrorCode[] = [
 	"recipient_completed",
@@ -32,6 +36,7 @@ export const INTERCOM_RECIPIENT_GONE_ERROR_CODES: readonly IntercomRecipientGone
 	"recipient_cancelled",
 	"recipient_disconnected",
 	"recipient_owner_suspended",
+	"recipient_stage_released",
 ];
 
 const CODES: ReadonlySet<unknown> = new Set(INTERCOM_RECIPIENT_GONE_ERROR_CODES);
@@ -67,9 +72,12 @@ const WHAT: Readonly<Record<IntercomRecipientGoneErrorCode, string>> = {
 	recipient_cancelled: "was cancelled for good and has no live session",
 	recipient_disconnected: "disconnected and has not reconnected",
 	recipient_owner_suspended: "is released and the session that launched it is suspended or disconnected, so nothing can wake it now",
+	recipient_stage_released: "was released and the session that answered for it has gone away",
 };
 
 function hintFor(code: IntercomRecipientGoneErrorCode, childId: string | undefined): string {
+	if (code === "recipient_stage_released")
+		return "Send to its workflow stage target (workflow:<rootRunId>/<stage>), which reaches the stage's current session or queues until it reopens, or resume the run.";
 	if (code === "recipient_cancelled")
 		return "It cannot be resumed; launch a fresh subagent if its work is still needed.";
 	if (code === "recipient_disconnected")
@@ -83,6 +91,7 @@ const BASE_NAME = "IntercomRecipientGoneError";
 const ENDED_NAME = "SubagentRecipientEndedError";
 const DISCONNECTED_NAME = "SubagentRecipientDisconnectedError";
 const OWNER_SUSPENDED_NAME = "SubagentRecipientOwnerSuspendedError";
+const STAGE_RELEASED_NAME = "StageRecipientReleasedError";
 
 /**
  * #4639: base of the refusals of a send or ask to a subagent that has no live session, decided by the broker
@@ -103,7 +112,8 @@ export class IntercomRecipientGoneError extends Error {
 		options?: { readonly cause?: Error },
 	) {
 		const hint = hintFor(code, fields.childId);
-		super(`Subagent ${JSON.stringify(fields.childName)} ${WHAT[code]} (${code}). ${hint}`, options);
+		const subject = code === "recipient_stage_released" ? "Workflow stage" : "Subagent";
+		super(`${subject} ${JSON.stringify(fields.childName)} ${WHAT[code]} (${code}). ${hint}`, options);
 		this.code = code;
 		this.hint = hint;
 		this.retryable = code === "recipient_disconnected" || code === "recipient_owner_suspended";
@@ -155,7 +165,27 @@ export class SubagentRecipientOwnerSuspendedError extends IntercomRecipientGoneE
 	}
 }
 
-const NAMES: ReadonlySet<string> = new Set([BASE_NAME, ENDED_NAME, DISCONNECTED_NAME, OWNER_SUSPENDED_NAME]);
+/**
+ * #4642: a released workflow stage answered through a hosted peer, and that peer is gone: its host connection closed or
+ * removed it. Names the stage and where to send instead. Not retryable: the same name stays unreachable until the stage
+ * is hosted again.
+ */
+export class StageRecipientReleasedError extends IntercomRecipientGoneError {
+	override readonly name = STAGE_RELEASED_NAME;
+	declare readonly code: StageRecipientReleasedCode;
+	constructor(fields: IntercomRecipientGoneErrorFields, options?: { readonly cause?: Error }) {
+		super("recipient_stage_released", fields, options);
+	}
+}
+
+const NAMES: ReadonlySet<string> = new Set([
+	BASE_NAME,
+	ENDED_NAME,
+	DISCONNECTED_NAME,
+	OWNER_SUSPENDED_NAME,
+	STAGE_RELEASED_NAME,
+]);
+const STAGE_RELEASED_NAMES: ReadonlySet<string> = new Set([STAGE_RELEASED_NAME]);
 const ENDED_NAMES: ReadonlySet<string> = new Set([ENDED_NAME]);
 const DISCONNECTED_NAMES: ReadonlySet<string> = new Set([DISCONNECTED_NAME]);
 const OWNER_SUSPENDED_NAMES: ReadonlySet<string> = new Set([OWNER_SUSPENDED_NAME]);
@@ -178,6 +208,10 @@ export function isSubagentRecipientDisconnectedError(error: Error): error is Sub
 
 export function isSubagentRecipientOwnerSuspendedError(error: Error): error is SubagentRecipientOwnerSuspendedError {
 	return error instanceof SubagentRecipientOwnerSuspendedError || hasStructure(error, OWNER_SUSPENDED_NAMES);
+}
+
+export function isStageRecipientReleasedError(error: Error): error is StageRecipientReleasedError {
+	return error instanceof StageRecipientReleasedError || hasStructure(error, STAGE_RELEASED_NAMES);
 }
 
 const MAX_CAUSE_DEPTH = 4;
@@ -230,7 +264,14 @@ export function rehydrateIntercomRecipientGoneError(
 ): IntercomRecipientGoneError {
 	const options = serialized.cause === undefined ? undefined : { cause: rehydrateErrorCause(serialized.cause, 1) };
 	const { code, fields } = serialized;
-	if (serialized.name === ENDED_NAME && code !== "recipient_disconnected" && code !== "recipient_owner_suspended")
+	if (serialized.name === STAGE_RELEASED_NAME && code === "recipient_stage_released")
+		return new StageRecipientReleasedError(fields, options);
+	if (
+		serialized.name === ENDED_NAME &&
+		code !== "recipient_disconnected" &&
+		code !== "recipient_owner_suspended" &&
+		code !== "recipient_stage_released"
+	)
 		return new SubagentRecipientEndedError(code, fields, options);
 	if (serialized.name === DISCONNECTED_NAME && code === "recipient_disconnected")
 		return new SubagentRecipientDisconnectedError(fields, options);

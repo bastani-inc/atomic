@@ -65,6 +65,7 @@ import {
 import {
 	type BrokerConnectedSession,
 	deliveryTargetIdentity,
+	messageFrameFor,
 	type RemoteSendRequest,
 	type SendClientMessage,
 	senderGroupIdentity,
@@ -524,7 +525,10 @@ export class MultiNodeRouter {
 		const claims = [...this.inflight.values()].filter((inflight) => inflight.session === session);
 		for (const inflight of claims) this.inflight.delete(inflight.row.messageId);
 		for (const waiter of [...this.waiters.values()]) {
-			if (waiter.socket === session.socket) this.dropWaiter(waiter);
+			// #4642: a hosted session shares its host's socket; only its own sends end with it.
+			const sentBySession =
+				session.hostedBy === undefined ? waiter.socket === session.socket : waiter.senderSessionId === session.info.id;
+			if (sentBySession) this.dropWaiter(waiter);
 		}
 		const holds = [...this.holds.values()].filter((hold) => hold.senderId === session.info.id);
 		for (const hold of holds) {
@@ -1701,7 +1705,8 @@ export class MultiNodeRouter {
 			}
 			const inflight: Inflight = { claim, row, session, identity };
 			this.inflight.set(row.messageId, inflight);
-			this.host.writeConfirmed(session.socket, frame, (written) => {
+			const delivery = messageFrameFor(session, frame.from, frame.message, frame.channel);
+			this.host.writeConfirmed(session.socket, delivery, (written) => {
 				if (this.inflight.get(row.messageId) !== inflight) return;
 				if (!written) {
 					this.inflight.delete(row.messageId);

@@ -36,9 +36,10 @@ import type {
 	StageControlHandle,
 	StageControlRegistry,
 } from "./stage-control-registry.js";
-import { StageQueuedUserMessageBuffer } from "./stage-queued-user-messages.js";
+import { StageQueuedUserMessageBuffer, stageQueuedUserMessageCount } from "./stage-queued-user-messages.js";
 import { createStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageUserMessagePreparation } from "./stage-runner-types.js";
+import { StageSessionHolds } from "./stage-session-holds.js";
 
 /** Why a terminal stage could not be revived as an interactive post-mortem chat. */
 export type PostMortemUnavailableReason = "no_adapter" | "not_terminal" | "no_session" | "invalid_session" | "closed";
@@ -223,12 +224,16 @@ export function createPostMortemStageHandle(
 	// Same runtime queue projection the live handle keeps, so a retained-session
 	// chat rehydrates its pending rows on reattach too.
 	const queuedUserMessages = new StageQueuedUserMessageBuffer();
-	const unsubscribeQueuedUserMessages = context.subscribe((event) => queuedUserMessages.record(event));
-	return {
+	const holds = new StageSessionHolds();
+	const unsubscribeQueuedUserMessages = context.subscribe((event) => {
+		queuedUserMessages.record(event);
+		holds.observe(event);
+	});
+	const handle = {
 		runId,
 		stageId: stage.id,
 		stageName: stage.name,
-		status: "completed",
+		status: "completed" as const,
 		sessionStore,
 		get sessionId() {
 			return context.__sessionMeta().sessionId ?? sessionId;
@@ -282,17 +287,47 @@ export function createPostMortemStageHandle(
 			throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
 		},
 		subscribe(listener: AgentSessionEventListener) {
-			return context.subscribe(listener);
+			return holds.subscription(context.subscribe(listener));
 		},
 		subscribeDeliveryActivity(listener) {
-			return context.__subscribeDeliveryActivity(listener);
+			return holds.subscription(context.__subscribeDeliveryActivity(listener));
 		},
 		async dispose() {
 			if (disposed) return;
 			disposed = true;
+			holds.clear();
 			unsubscribeQueuedUserMessages();
 			queuedUserMessages.clear();
 			await context.__dispose();
 		},
-	};
+		releaseGate: {
+			releaseWhenIdle: true,
+			async savedForReopen() {
+				if (disposed) return undefined;
+				const store = context.__persistedSessionStore() ?? sessionStore;
+				const savedSessionId = context.__sessionMeta().sessionId ?? sessionId;
+				if (store === undefined) return undefined;
+				return (await isReopenableSession(store, savedSessionId)) ? store : undefined;
+			},
+			idle() {
+				return (
+					!disposed &&
+					!holds.held &&
+					stageQueuedUserMessageCount(queuedUserMessages.snapshot()) === 0 &&
+					(context.__sessionMeta().sessionId === undefined || context.__idleForRelease())
+				);
+			},
+			holdsTaken: () => holds.holdsTaken,
+			onHoldLifted: (listener: () => void) => holds.onLifted(listener),
+		},
+	} satisfies StageControlHandle;
+
+	const { sendUserMessage, prompt, steer, followUp } = handle;
+	handle.ensureAttached = () => holds.operation(ensureAttached);
+	handle.sendUserMessage = (text, options, beforeDelivery) =>
+		holds.operation(() => sendUserMessage(text, options, beforeDelivery));
+	handle.prompt = (text) => holds.operation(() => prompt(text));
+	handle.steer = (text) => holds.operation(() => steer(text));
+	handle.followUp = (text) => holds.operation(() => followUp(text));
+	return handle;
 }

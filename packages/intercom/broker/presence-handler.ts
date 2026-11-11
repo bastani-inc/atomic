@@ -22,7 +22,8 @@ function broadcastMembershipChange(
 	if (!isAgentRecipient(session.info)) return;
 	const previousInfo = { ...session.info, groups: [...previous], group: previous.values().next().value };
 	for (const [id, peer] of sessions) {
-		if (id === session.info.id) continue;
+		// #4642: a hosted session shares its host's socket and needs no copy of its own.
+		if (id === session.info.id || peer.hostedBy !== undefined) continue;
 		const sharedBefore = sessionsShareGroup(previousInfo, peer.info);
 		const sharedAfter = sessionsShareGroup(session.info, peer.info);
 		if (!sharedBefore && sharedAfter) {

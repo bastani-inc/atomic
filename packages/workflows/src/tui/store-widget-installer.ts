@@ -175,14 +175,6 @@ function reportWidgetFailure(ui: UiSlice | undefined, message: string): void {
 	return;
 }
 
-function liveWidgetSnapshot(storeInstance: Store): StoreSnapshot {
-	return {
-		runs: storeInstance.runs(),
-		notices: storeInstance.notices(),
-		version: 0,
-	};
-}
-
 export function decideWidgetAction(prev: WidgetRenderState, nextLines: readonly string[]): WidgetAction {
 	return decideReactiveWidgetAction(prev, nextLines);
 }
@@ -237,7 +229,7 @@ export function installStoreWidget(
 		placement: "belowEditor",
 		scroll: { maxHeight: 10, maxHeightFraction: 1 / 3 },
 		timers,
-		getSnapshot: () => liveWidgetSnapshot(storeInstance),
+		getSnapshot: () => readGraphStoreSnapshot(storeInstance),
 		subscribe: (listener) => {
 			const throttled = budgetedStoreListener(listener, timers, clock);
 			const unsubscribe = subscribeStoreInvalidation(storeInstance, throttled.listener);
@@ -247,8 +239,16 @@ export function installStoreWidget(
 			};
 		},
 		getPreviewLines: (snap, now) => buildThemedWidgetLines(snap, undefined, 120, now),
-		render: (snap, { theme, width, now }) =>
-			buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now, layout),
+		// A frame reads the store as it is now, frozen per store version, so frames between store changes reuse each
+		// run's expanded graph and stage index instead of walking every stage again (#4642).
+		render: (_snap, { theme, width, now }) =>
+			buildThemedWidgetLines(
+				readGraphStoreSnapshot(storeInstance),
+				theme as PiTheme | undefined,
+				width,
+				now,
+				layout,
+			),
 		getNextRefreshDelayMs: (snap, now) => nextWidgetRefreshDelayMs(snap, now),
 		// #1856: a store mutation that leaves the rendered card byte-identical
 		// must not broadcast a host-wide render (each one becomes terminal

@@ -7,7 +7,7 @@
  * root/parent attribution and must not import this module.
  */
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
-import { isTerminalStageStatus } from "../shared/store-internal.js";
+import { runStageIndex } from "../shared/run-stage-index.js";
 import type { PendingPrompt, RunSnapshot, RunStatus, StageInputRequest, StageSnapshot } from "../shared/store-types.js";
 import { reciprocalWorkflowRootRunId } from "../shared/workflow-run-ownership.js";
 import { visibleWidth } from "./text-helpers.js";
@@ -286,9 +286,7 @@ function descriptorsAreCompatible(prompt: PendingPrompt, request: StageInputRequ
 function stagePromptOccurrences(run: RunSnapshot): PendingInputOccurrence[] {
 	const occurrences: PendingInputOccurrence[] = [];
 
-	for (const stage of run.stages) {
-		if (isTerminalStageStatus(stage.status)) continue;
-
+	for (const stage of runStageIndex(run).waiting) {
 		const prompt = stage.pendingPrompt;
 		const request = stage.inputRequest;
 		if (prompt !== undefined && request !== undefined) {

@@ -147,6 +147,7 @@ export class WorkflowAttachPane implements Component {
 			piKeybindings: this.piKeybindings,
 			footerData: this.footerData,
 			getStageQueuedMessageCount: (runId, stageId) => this._stageQueuedMessageCount(runId, stageId),
+			getQueuedStageSignature: () => this._queuedStageSignature(),
 			requestRender: () => {
 				if (this.mode !== "graph") return;
 				this.hostRequestRender?.();
@@ -168,6 +169,22 @@ export class WorkflowAttachPane implements Component {
 		if (handle?.queuedUserMessages === undefined || (handle.placement?.kind === "local-worker" && count === 0))
 			return this._stageSnapshot(runId, stageId)?.queuedUserMessageCount ?? 0;
 		return count;
+	}
+	/**
+	 * What every live handle's queue holds right now; its cost follows the handles held, not the stages of a run. Run
+	 * and stage ids are author text that may hold any separator, so the signature is a JSON list of id and count tuples.
+	 */
+	private _queuedStageSignature(): string {
+		const registry = this.registry;
+		if (registry === undefined) return "";
+		const queued: (readonly [runId: string, stageId: string, count: number])[] = [];
+		for (const run of readGraphStoreSnapshot(this.store).runs) {
+			for (const handle of registry.forRun(run.id)) {
+				const count = stageQueuedUserMessageCount(handle.queuedUserMessages?.());
+				if (count > 0) queued.push([run.id, handle.stageId, count]);
+			}
+		}
+		return JSON.stringify(queued);
 	}
 	private _resolveRunId(): string | null {
 		if (this.runId) return this.runId;

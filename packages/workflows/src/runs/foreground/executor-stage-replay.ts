@@ -10,7 +10,7 @@ import type { Store } from "../../shared/store.js";
 import { workflowObservationRuntime } from "../../shared/store-factory.js";
 import type { StageSnapshot } from "../../shared/store-types.js";
 import { workflowActivityNodeKey } from "../../shared/workflow-activity.js";
-import { stageReplayFields } from "./executor-lifecycle.js";
+import { endStageWithHook, stageReplayFields } from "./executor-lifecycle.js";
 import type { WorkflowExitCleanup } from "./executor-types.js";
 import type { InternalStageContext } from "./stage-runner.js";
 
@@ -76,7 +76,7 @@ export function createReplayStageContext(input: {
 				stageSnapshot.skippedReason = input.workflowExitSkippedReason(reason);
 			}
 			input.activeStore.recordStageEnd(runId, stageSnapshot);
-			input.opts.onStageEnd?.(runId, stageSnapshot);
+			endStageWithHook(input.activeStore, runId, stageSnapshot, input.opts.onStageEnd);
 			await appendReplayStageEnd();
 			input.tracker.onSettle(stageId);
 		})();

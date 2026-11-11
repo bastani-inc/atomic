@@ -22,7 +22,7 @@
  *  - src/tui/chat-surface.ts renderRoundedBoxLines
  */
 
-import { createWorkflowGraphExpander } from "../shared/expanded-workflow-graph.js";
+import { createWorkflowGraphExpander, settledStageCount } from "../shared/expanded-workflow-graph.js";
 import {
 	pendingWorkflowStageStatuses,
 	type WorkflowBoundarySegmentsResolver,
@@ -202,10 +202,7 @@ function modeLabel(stages: readonly StageSnapshot[]): string {
 function progressLabel(stages: readonly StageSnapshot[]): string | undefined {
 	const total = stages.length;
 	if (total === 0) return undefined;
-	const done = stages.filter(
-		(s) => s.status === "completed" || s.status === "failed" || s.status === "skipped",
-	).length;
-	return `${done}/${total}`;
+	return `${settledStageCount(stages)}/${total}`;
 }
 
 function elapsedLabel(run: RunSnapshot, now: number): string {

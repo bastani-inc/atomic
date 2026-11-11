@@ -342,7 +342,7 @@ function faultyStatusReport(fault: StatusFault): Record<string, JsonWireValue> |
 				sessions: 0,
 				storage: { digest: "d", source: "env" },
 				multiNode: { status: "on" },
-				protocol: { min: 1, max: 2 },
+				protocol: { min: 1, max: 3 },
 			};
 		case "legacy":
 			return { pid: 1, sessions: 0, multiNode: { status: "off" } };
@@ -351,9 +351,9 @@ function faultyStatusReport(fault: StatusFault): Record<string, JsonWireValue> |
 		case "legacy-multi-node":
 			return { pid: 1, sessions: 0, multiNode: { status: "on" } };
 		case "future":
-			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 3, max: 4 } };
+			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 4, max: 5 } };
 		case "current":
-			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 1, max: 2 } };
+			return { pid: 1, sessions: 0, multiNode: { status: "off" }, protocol: { min: 1, max: 3 } };
 		case "malformed":
 			return { pid: "unknown" };
 		default:
@@ -394,7 +394,7 @@ async function startFaultyBroker(fault: StatusFault): Promise<FaultyBroker> {
 								type: "registered",
 								sessionId: `fake-session-${broker.verifiedRegistrations}`,
 								multiNodeRouting: "off",
-								protocol: { min: 1, max: 2 },
+								protocol: { min: 1, max: 3 },
 							});
 					}
 					if (message.type === "list")

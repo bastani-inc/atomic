@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed finished workflow stages that you attached to, messaged or asked over Intercom staying in memory until the session ended: a reopened stage, including one of a completed run you opened for inspection, goes back to its saved transcript once its chat is closed and its turn has ended, and the next attach, message or ask reopens it under the same Intercom name ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Fixed the workflow graph overlay and the progress widget slowing down as runs finish more stages: the graph no longer redraws its scrollbar through every row, node lookups no longer rescan the run, and widget frames reuse the run's expanded graph until the run changes ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Fixed starting each stage of a long run walking every earlier stage when nothing in the run is paused or blocked ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Fixed workflow store changes re-reading every stage a long run had finished: the graph snapshot, the progress widget's counts and the root activity published to extensions now redo only the stages that changed, and a run made only of `ctx.stage` stages is expanded from its previous expansion. A run with `ctx.tool` calls or nested workflows still expands in full on each change, so its cost still grows with its finished stages. The executor now tells the store when it edits a finished stage's wait results or worktree snapshot ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
 ## [0.9.77] - 2026-11-11
 
 The workflow page explains stalled runs, and the bundled Impeccable skill is current.

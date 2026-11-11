@@ -25,6 +25,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { GraphView } from "../../packages/workflows/src/tui/graph-view.js";
 import { WorkflowAttachPane } from "../../packages/workflows/src/tui/workflow-attach-pane.js";
+import { makeTestTui } from "./overlay-graph-helpers.js";
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const stripAnsi = (s: string) => s.replace(ANSI_RE, "");
@@ -91,6 +92,213 @@ function makeHandle(
 		emit: (event: AgentSessionEvent) => queuedUserMessages.record(event),
 	};
 }
+
+describe("a repaint reads queue counts in time that does not follow the stage count (#4642)", () => {
+	function runOfStages(count: number) {
+		const store = createStore();
+		store.recordRunStart({
+			id: "run-1",
+			name: "long-run",
+			inputs: {},
+			status: "running",
+			stages: [],
+			toolNodes: [],
+			startedAt: 1,
+		});
+		for (let index = 0; index < count; index++) {
+			store.recordStageStart("run-1", {
+				id: `stage-${index}`,
+				name: `stage-${index}`,
+				status: "completed",
+				parentIds: index === 0 ? [] : [`stage-${index - 1}`],
+				toolEvents: [],
+				model: "gpt-5-mini",
+				startedAt: 1,
+			});
+		}
+		return store;
+	}
+
+	test("a repaint reads the counts of the cards in view, and only a changed signature reads every stage's", () => {
+		const perRepaint: number[] = [];
+		const onChange: number[] = [];
+		for (const stages of [10, 200, 800]) {
+			const store = runOfStages(stages);
+			let reads = 0;
+			let signature = "";
+			const view = new GraphView({
+				piKeybindings: s5aKeybindings(),
+				mode: "overlay",
+				runId: "run-1",
+				store,
+				graphTheme: deriveGraphTheme({}),
+				piTui: makeTestTui(24),
+				getStageQueuedMessageCount: () => {
+					reads += 1;
+					return 0;
+				},
+				getQueuedStageSignature: () => signature,
+			});
+			try {
+				view.render(120);
+				view.render(120);
+				const before = reads;
+				view.render(120);
+				perRepaint.push(reads - before);
+
+				signature = "run-1/stage-3:1";
+				const beforeChange = reads;
+				view.render(120);
+				onChange.push(reads - beforeChange);
+			} finally {
+				view.dispose();
+			}
+		}
+		assert.ok(perRepaint[0]! <= 10, `10 stages: ${perRepaint[0]} reads per repaint`);
+		assert.ok(
+			perRepaint[2]! <= perRepaint[0]!,
+			`800 stages read no more per repaint than 10 do: ${perRepaint.join(", ")}`,
+		);
+		assert.ok(onChange[2]! >= 800, `a queue change re-reads every stage once: ${onChange.join(", ")}`);
+	});
+
+	test("an empty-queue handle appearing or disappearing does not remeasure finished cards (#4642)", () => {
+		const store = runOfStages(200);
+		const registry = createStageControlRegistry();
+		let queueReads = 0;
+		const peek = registry.peek.bind(registry);
+		registry.peek = (runId, stageId) => {
+			queueReads += 1;
+			return peek(runId, stageId);
+		};
+		const pane = new WorkflowAttachPane({
+			store,
+			piTui: makeTestTui(24),
+			piKeybindings: s5aKeybindings(),
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.render(120);
+			queueReads = 0;
+			pane.render(120);
+			const readsPerFrame = queueReads;
+			assert.ok(readsPerFrame < 200);
+			const { handle } = makeHandle("run-1", "stage-7");
+			const unregister = registry.register(handle);
+			queueReads = 0;
+			pane.render(120);
+			assert.equal(queueReads, readsPerFrame);
+			unregister();
+			queueReads = 0;
+			pane.render(120);
+			assert.equal(queueReads, readsPerFrame);
+		} finally {
+			pane.dispose();
+		}
+	});
+
+	test("queues swapped between stages whose ids would join into the same text re-read every stage's count (#4642)", () => {
+		const store = runOfStages(200);
+		for (const id of ["b", "c", "b:1,run-1/c"])
+			store.recordStageStart("run-1", {
+				id,
+				name: id,
+				status: "completed",
+				parentIds: [],
+				toolEvents: [],
+				model: "gpt-5-mini",
+				startedAt: 1,
+			});
+		const registry = createStageControlRegistry();
+		const queueOne = (stageId: string): (() => void) => {
+			const { handle, emit } = makeHandle("run-1", stageId);
+			emit({ type: "queue_update", steering: ["later"], followUp: [] } as AgentSessionEvent);
+			return registry.register(handle);
+		};
+		const releaseB = queueOne("b");
+		const releaseC = queueOne("c");
+		let queueReads = 0;
+		const peek = registry.peek.bind(registry);
+		registry.peek = (runId, stageId) => {
+			queueReads += 1;
+			return peek(runId, stageId);
+		};
+		const pane = new WorkflowAttachPane({
+			store,
+			piTui: makeTestTui(24),
+			piKeybindings: s5aKeybindings(),
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.render(120);
+			pane.render(120);
+			releaseB();
+			releaseC();
+			const releaseSwapped = queueOne("b:1,run-1/c");
+			queueReads = 0;
+			pane.render(120);
+			assert.ok(queueReads >= 203, `the swap re-read every stage's queue count: ${queueReads} reads`);
+			releaseSwapped();
+			const releaseQueuedC = queueOne("c");
+			pane.render(120);
+			releaseQueuedC();
+			queueOne("b");
+			queueReads = 0;
+			pane.render(120);
+			assert.ok(queueReads >= 203, `a queue that moved to another stage re-read every count: ${queueReads} reads`);
+		} finally {
+			pane.dispose();
+		}
+	});
+
+	test("the pane's signature follows the live handles' queues and nothing else", () => {
+		const store = runOfStages(200);
+		const registry = createStageControlRegistry();
+		const { handle, emit } = makeHandle("run-1", "stage-7");
+		registry.register(handle);
+		let signatureReads = 0;
+		const forRun = registry.forRun.bind(registry);
+		registry.forRun = (runId: string) => {
+			signatureReads += 1;
+			return forRun(runId);
+		};
+		const pane = new WorkflowAttachPane({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.render(120);
+			const first = signatureReads;
+			assert.ok(first >= 1);
+			pane.render(120);
+			assert.equal(signatureReads - first, 1, "one registry read per run on a repaint, whatever the stage count");
+
+			emit({ type: "queue_update", steering: ["later"], followUp: [] } as AgentSessionEvent);
+			assert.match(
+				stripAnsi(pane.render(120).join("\n")),
+				/✉ 1/,
+				"the queued message appears without a store change",
+			);
+			emit({ type: "queue_update", steering: ["later"], followUp: ["and later"] } as AgentSessionEvent);
+			assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 2/, "a queue that grows is badged again");
+			emit({ type: "queue_update", steering: ["later"], followUp: ["and later", "last"] } as AgentSessionEvent);
+			assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 3/);
+			emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
+			assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /✉/);
+		} finally {
+			pane.dispose();
+		}
+	});
+});
 
 describe("graph queued-message badge", () => {
 	test("paints the queued count for a stage the user is not attached to", () => {

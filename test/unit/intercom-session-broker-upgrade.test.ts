@@ -21,7 +21,7 @@ vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded:
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({ queryBrokerRouting: vi.fn() }));
 
 const LEGACY = { min: 1, max: 1 };
-const CURRENT = { min: 1, max: 2 };
+const CURRENT = { min: 1, max: 3 };
 
 let connects: Array<ExpectedRouting | undefined>;
 
@@ -98,7 +98,7 @@ test("a session finding an older broker replaces it once, then registers verifie
 });
 
 test("a session finding a broker of this version or a newer one never replaces it (#4538)", async () => {
-	for (const protocol of [CURRENT, { min: 1, max: 3 }]) {
+	for (const protocol of [CURRENT, { min: 1, max: 4 }]) {
 		vi.mocked(queryBrokerRouting).mockResolvedValueOnce(routing(protocol));
 		const session = await startSession();
 		await session.status();
@@ -124,7 +124,7 @@ test("a failed replacement leaves the session on the older broker, on this machi
 });
 
 test("a broker sharing no protocol version is not replaced, and the session uses it on this machine only (#4538)", async () => {
-	vi.mocked(queryBrokerRouting).mockResolvedValue(routing({ min: 3, max: 4 }));
+	vi.mocked(queryBrokerRouting).mockResolvedValue(routing({ min: 4, max: 5 }));
 	const session = await startSession();
 
 	await session.status();

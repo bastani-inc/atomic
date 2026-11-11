@@ -1,3 +1,4 @@
+import { graphSnapshotLineage } from "./graph-store-snapshot.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot, ToolNodeSnapshot } from "./store-types.js";
 import { authoritativeWorkflowChildRunId, reciprocalWorkflowRootRunId } from "./workflow-run-ownership.js";
 
@@ -142,24 +143,182 @@ export function expandWorkflowGraph(snapshot: StoreSnapshot, rootRunId: string):
  */
 const snapshotExpansions = new WeakMap<StoreSnapshot, Map<string, ExpandedWorkflowGraph>>();
 
+function isSettledStage(stage: StageSnapshot): boolean {
+	return stage.status === "completed" || stage.status === "failed" || stage.status === "skipped";
+}
+
+/** Settled-stage counts of the stage lists expansions produced, which never change once produced. */
+const settledStageCounts = new WeakMap<readonly StageSnapshot[], number>();
+const expandedStageLists = new WeakSet<readonly StageSnapshot[]>();
+
+/**
+ * How many of `stages` completed, failed or were skipped. An expansion's stage list is counted once, and the list of a
+ * run's next version is counted from it, so a progress label costs the stages that changed (#4642).
+ */
+export function settledStageCount(stages: readonly StageSnapshot[]): number {
+	const known = settledStageCounts.get(stages);
+	if (known !== undefined) return known;
+	let count = 0;
+	for (const stage of stages) if (isSettledStage(stage)) count++;
+	if (expandedStageLists.has(stages)) settledStageCounts.set(stages, count);
+	return count;
+}
+
+/** The expansion of a run as a root, kept to expand the run's next version from it. */
+interface ChainExpansion {
+	readonly run: RunSnapshot;
+	readonly graph: ExpandedWorkflowGraph;
+}
+
+/**
+ * Per graph-snapshot builder, the last expansion of each run expanded as a root whose stages form a plain chain: no
+ * tool nodes, no stage that owns a nested workflow, and stages already in execution order. Such an expansion maps the
+ * run's stages one to one, in order, so the next version is expanded from it by re-expanding only the stages whose
+ * frozen projection changed and the ones appended (#4642).
+ */
+const chainExpansions = new WeakMap<object, Map<string, ChainExpansion>>();
+
+/** A stage's execution order as `localItems` sorts by it, with stages that have none last. */
+function executionOrderKey(stage: StageSnapshot): number {
+	return stage.executionOrder ?? Number.MAX_SAFE_INTEGER;
+}
+
+function chainStage(stage: StageSnapshot): boolean {
+	return stage.nodeKind !== "tool" && authoritativeWorkflowChildRunId(stage) === undefined;
+}
+
+/** Whether the expansion of `run` as a root maps its stages one to one and in order. */
+function isChainRun(run: RunSnapshot): boolean {
+	if (toolNodesFor(run).length > 0) return false;
+	let order = Number.NEGATIVE_INFINITY;
+	for (const stage of run.stages) {
+		const next = executionOrderKey(stage);
+		if (next < order || !chainStage(stage)) return false;
+		order = next;
+	}
+	return true;
+}
+
+/**
+ * The expansion of `run` as a root from the expansion of an earlier version of it, re-expanding only the stages whose
+ * projection changed and the ones appended; undefined when the run is no longer a chain the earlier expansion fits.
+ * Equal to `expandIndexedWorkflowGraph` over the same run, which a chain makes independent of every other run.
+ */
+function expandChainFrom(run: RunSnapshot, previous: ChainExpansion): ExpandedWorkflowGraph | undefined {
+	const before = previous.run.stages;
+	if (run.id !== previous.run.id || run.name !== previous.run.name || toolNodesFor(run).length > 0) return undefined;
+	if (run.stages.length < before.length) return undefined;
+	const replaced: number[] = [];
+	for (let index = 0; index < before.length; index++) {
+		const stage = run.stages[index]!;
+		const earlier = before[index]!;
+		if (stage === earlier) continue;
+		if (
+			stage.id !== earlier.id ||
+			stage.executionOrder !== earlier.executionOrder ||
+			!sameIds(stage.parentIds, earlier.parentIds) ||
+			!chainStage(stage)
+		)
+			return undefined;
+		replaced.push(index);
+	}
+	let order = before.length === 0 ? Number.NEGATIVE_INFINITY : executionOrderKey(before[before.length - 1]!);
+	for (let index = before.length; index < run.stages.length; index++) {
+		const stage = run.stages[index]!;
+		const next = executionOrderKey(stage);
+		if (next < order || !chainStage(stage)) return undefined;
+		order = next;
+	}
+	const graph = previous.graph;
+	if (replaced.length === 0 && run.stages.length === before.length) return graph;
+	// A chain has no tool nodes, so its stages are its render stages; one array serves as both.
+	const stages = graph.stages.slice();
+	const nodes = graph.nodes.slice();
+	for (const index of replaced) {
+		const earlier = graph.stages[index]!;
+		const stage: ExpandedWorkflowStage = {
+			...run.stages[index]!,
+			id: earlier.id,
+			parentIds: earlier.parentIds,
+			workflowGraphTarget: earlier.workflowGraphTarget,
+		};
+		stages[index] = stage;
+		nodes[index] = { kind: "stage", stage };
+	}
+	let settled = settledStageCounts.get(graph.stages);
+	if (settled !== undefined)
+		for (const index of replaced)
+			settled += Number(isSettledStage(stages[index]!)) - Number(isSettledStage(graph.stages[index]!));
+	let targets = graph.targets;
+	if (run.stages.length > before.length) {
+		const extended = new Map(graph.targets);
+		for (let index = before.length; index < run.stages.length; index++) {
+			const source = run.stages[index]!;
+			const target: ExpandedWorkflowStageTarget = { runId: run.id, stageId: source.id, runName: run.name, depth: 0 };
+			extended.set(source.id, target);
+			const stage: ExpandedWorkflowStage = {
+				...source,
+				id: source.id,
+				parentIds: Object.freeze([...source.parentIds]),
+				workflowGraphTarget: target,
+			};
+			stages.push(stage);
+			nodes.push({ kind: "stage", stage });
+			if (settled !== undefined) settled += Number(isSettledStage(stage));
+		}
+		targets = extended;
+	}
+	expandedStageLists.add(stages);
+	if (settled !== undefined) settledStageCounts.set(stages, settled);
+	return { stages, renderStages: stages, tools: graph.tools, nodes, targets };
+}
+
+/** Remembers the expansion of `run` as a root when it is a chain, and forgets runs the snapshot no longer holds. */
+function rememberChainExpansion(
+	memo: Map<string, ChainExpansion>,
+	runById: ReadonlyMap<string, RunSnapshot>,
+	run: RunSnapshot,
+	graph: ExpandedWorkflowGraph,
+	patched: boolean,
+): void {
+	if (patched || isChainRun(run)) memo.set(run.id, { run, graph });
+	else memo.delete(run.id);
+	if (memo.size <= runById.size) return;
+	for (const runId of memo.keys()) if (!runById.has(runId)) memo.delete(runId);
+}
+
 /** Share one snapshot's run index across expansions; create anew for each render pass. */
 export function createWorkflowGraphExpander(snapshot: StoreSnapshot): (rootRunId: string) => ExpandedWorkflowGraph {
 	// Terminal-only surfaces need no expansion preparation.
 	let runById: ReadonlyMap<string, RunSnapshot> | undefined;
 	let expansions: Map<string, ExpandedWorkflowGraph> | undefined;
+	let chains: Map<string, ChainExpansion> | undefined;
 	if (Object.isFrozen(snapshot)) {
 		expansions = snapshotExpansions.get(snapshot);
 		if (expansions === undefined) {
 			expansions = new Map();
 			snapshotExpansions.set(snapshot, expansions);
 		}
+		const lineage = graphSnapshotLineage(snapshot);
+		if (lineage !== undefined) {
+			chains = chainExpansions.get(lineage);
+			if (chains === undefined) {
+				chains = new Map();
+				chainExpansions.set(lineage, chains);
+			}
+		}
 	}
 	return (rootRunId) => {
 		const known = expansions?.get(rootRunId);
 		if (known !== undefined) return known;
 		runById ??= new Map(snapshot.runs.map((run) => [run.id, run]));
-		const graph = expandIndexedWorkflowGraph(runById, rootRunId);
+		const root = runById.get(rootRunId);
+		const previous = root === undefined ? undefined : chains?.get(rootRunId);
+		const patched = root === undefined || previous === undefined ? undefined : expandChainFrom(root, previous);
+		const graph = patched ?? expandIndexedWorkflowGraph(runById, rootRunId);
 		expansions?.set(rootRunId, graph);
+		if (chains !== undefined && root !== undefined)
+			rememberChainExpansion(chains, runById, root, graph, patched !== undefined);
 		return graph;
 	};
 }
@@ -331,8 +490,10 @@ function expandIndexedWorkflowGraph(
 	};
 
 	const expanded = expandRun(root, 0, []);
+	const stages = expanded.stages.filter((stage) => stage.nodeKind !== "tool");
+	expandedStageLists.add(stages);
 	return {
-		stages: expanded.stages.filter((stage) => stage.nodeKind !== "tool"),
+		stages,
 		renderStages: expanded.stages,
 		tools: expanded.tools,
 		nodes: expanded.nodes,

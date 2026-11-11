@@ -204,6 +204,29 @@ function writtenHandle(event: BackendEvent): JournalHandle | undefined {
 	return event.payload as JournalHandle;
 }
 
+/**
+ * A journal hands back the entry it wrote with every field decoded into a value of its own, so the text of a stage's
+ * output and result would sit in memory once more beside the one the writer already holds (#4642). A stage checkpoint
+ * folds with the writer's strings wherever the decoded ones are equal; only primitive strings are reused, so nothing
+ * mutable is shared with the caller.
+ */
+function sharingWrittenText(entry: JournalEntry, written: BackendEvent): JournalEntry {
+	const folded = entry.event as BackendEvent;
+	if (folded.type !== E.checkpointRecorded || written.type !== E.checkpointRecorded) return entry;
+	const decoded = folded.payload;
+	const source = written.payload;
+	if (decoded.kind !== "stage" || source.kind !== "stage") return entry;
+	const sharesOutput = typeof source.output === "string" && decoded.output === source.output;
+	const sharesResult = typeof source.result === "string" && decoded.result === source.result;
+	if (!sharesOutput && !sharesResult) return entry;
+	const payload = {
+		...decoded,
+		...(sharesOutput ? { output: source.output } : {}),
+		...(sharesResult ? { result: source.result } : {}),
+	} as typeof decoded;
+	return { ...entry, event: { ...folded, payload } };
+}
+
 function snapshotNeedsHistory(tail: RunSnapshotTail): boolean {
 	const handle = writtenHandle(tail.snapshot.event as BackendEvent);
 	return (
@@ -848,7 +871,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			if (outcome.entry.seq > nextSeq) {
 				for (const entry of yield* this.entries(runId, nextSeq)) this.fold(entry);
 			}
-			this.fold(outcome.entry);
+			this.fold(sharingWrittenText(outcome.entry, event));
 		} catch (error) {
 			if (error instanceof Error) throw yield* this.mapOwnership(error, runId);
 			throw error;
@@ -1209,7 +1232,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 					const nextSeq = (this.sequences.get(runId) ?? 0) + 1;
 					if (result.value.entry.seq > nextSeq)
 						for (const entry of yield* this.entries(runId, nextSeq)) this.fold(entry);
-					this.fold(result.value.entry);
+					this.fold(sharingWrittenText(result.value.entry, append.event));
 					append.resolve();
 				}
 				settled++;

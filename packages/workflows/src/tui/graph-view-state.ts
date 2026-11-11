@@ -86,6 +86,8 @@ export abstract class GraphViewState {
 	protected piKeybindings?: unknown;
 	protected footerData?: ReadonlyFooterDataProvider;
 	protected getStageQueuedMessageCount?: (runId: string, stageId: string) => number;
+	private getQueuedStageSignature?: () => string;
+	private queuedSignature: string | undefined;
 
 	protected focusedIndex = 0;
 	protected switcherOpen = false;
@@ -143,6 +145,7 @@ export abstract class GraphViewState {
 		this.piKeybindings = opts.piKeybindings;
 		this.footerData = opts.footerData;
 		this.getStageQueuedMessageCount = opts.getStageQueuedMessageCount;
+		this.getQueuedStageSignature = opts.getQueuedStageSignature;
 
 		// Store changes only mark the layout stale; it is rebuilt once when next read (#4009).
 		this._unsubscribe = subscribeStoreInvalidation(this.store, () => {
@@ -205,8 +208,8 @@ export abstract class GraphViewState {
 	}
 
 	protected _refreshQueuedNodeHeights(): void {
-		if (!this.getStageQueuedMessageCount) return;
-		if (!this.cachedLayout.some((node) => (node.height ?? NODE_H) !== this._nodeHeight(node.stage))) return;
+		const signature = this.getQueuedStageSignature?.();
+		if (signature === undefined || signature === this.queuedSignature) return;
 		this.lastBuiltSnapshotVersion = null;
 		this._rebuildLayout();
 	}
@@ -220,6 +223,7 @@ export abstract class GraphViewState {
 			return;
 		}
 
+		this.queuedSignature = this.getQueuedStageSignature?.();
 		const run = this._getCurrentRun();
 		if (!run) {
 			this.cachedLayout = [];

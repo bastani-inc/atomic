@@ -1,9 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type { IntercomClient } from "./broker/client.js";
+import type { JsonWireValue } from "./broker/framing.js";
+import { hostedSessionErrorFor } from "./broker/hosted-session-errors.js";
+import { HOSTED_SESSION_FRAME_MAX, validateHostSessionsFrame } from "./broker/hosted-sessions.js";
 import { normalizeGroup } from "./group.js";
+import { isIntercomHostedSessionTimeoutError } from "./hosted-session-timeout-error.js";
 import { formatAttachments, resolveIntercomPresenceName, toError } from "./intercom-utils.js";
-import { IntercomLiveRouteRefusedError } from "./live-route-refusal.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
-import type { Message, SessionInfo } from "./types.js";
+import { IntercomClientDisconnectedError } from "./recoverable-disconnect.js";
+import type { HostedSessionFrameItem, Message, SessionInfo } from "./types.js";
 
 /** Workflows -> Intercom: a completed stage released its session and still needs a peer. */
 export const RELEASED_STAGE_EVENT = "atomic:workflow-released-stage";
@@ -50,8 +55,26 @@ export function isReleasedStageAnnouncement(value: object): value is ReleasedSta
 	);
 }
 
+/** Reconnect attempts in a row, about ten minutes at the longest backoff, after which the peers stop trying until the next adoption. */
+export const RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX = 30;
+
+/** Whether trying the same thing again may succeed: an error that says it cannot, as a protocol refusal does, is not retried. */
+export function isRetryableHostingFailure(error: Error): boolean {
+	return (error as Error & { readonly retryable?: unknown }).retryable !== false;
+}
+
+/** A failure of the background reconnect, and whether the peers keep trying. */
+export interface ReleasedStageReconnectFailure {
+	readonly error: Error;
+	readonly retrying: boolean;
+	readonly attempt: number;
+	readonly peers: number;
+}
+
 export interface ReleasedStagePeersDeps {
-	/** Makes sure a broker is running before a peer connects. */
+	/** Told of each failure of the background reconnect, so it is recorded instead of swallowed. */
+	report?(failure: ReleasedStageReconnectFailure): void;
+	/** Makes sure a broker is running before the peers' connection connects. */
 	prepare(): Promise<void>;
 	createClient(returnAddress: string): IntercomClient;
 	cwd(): string;
@@ -63,18 +86,29 @@ export interface ReleasedStagePeersDeps {
 }
 
 interface ReleasedStagePeer {
-	readonly route: ReleasedStageAnnouncement;
-	readonly returnAddress: string;
-	client: IntercomClient | null;
-	connecting: Promise<void> | null;
-	reconnectTimer: NodeJS.Timeout | null;
-	reconnectAttempt: number;
-	closed: boolean;
+	route: ReleasedStageAnnouncement;
+	/** The connection the peer is hosted on, or being hosted on. */
+	hostedOn?: IntercomClient;
+	/** The peer's broker session id on `hostedOn`, once the broker assigned it. */
+	sessionId?: string;
+	/** Settles when hosting on `hostedOn` ends, with its failure if it failed. */
+	hosting?: Promise<Error | undefined>;
 	readonly answering: Set<string>;
 }
 
 function peerKey(route: Pick<ReleasedStageAnnouncement, "runId" | "stageId">): string {
 	return `${route.runId}\0${route.stageId}`;
+}
+
+/** Whether an announcement registers the stage exactly as the peer is registered already. */
+function sameRegistration(left: ReleasedStageAnnouncement, right: ReleasedStageAnnouncement): boolean {
+	return (
+		left.sessionId === right.sessionId &&
+		left.group === right.group &&
+		left.model === right.model &&
+		left.liveRoute?.capability === right.liveRoute?.capability &&
+		(left.liveRoute?.stageKeys ?? []).join("\0") === (right.liveRoute?.stageKeys ?? []).join("\0")
+	);
 }
 
 /** The ask text the reopened stage conversation receives; its final reply is relayed to the asker. */
@@ -97,9 +131,20 @@ function askPrompt(from: SessionInfo, message: Message): string {
  * as `closed · reply: post-mortem only`. A blocking ask reopens the stage through
  * the workflow host's loader, never rerunning the workflow, and the peer sends
  * the stage's final reply. Every other message reaches the host session.
+ *
+ * #4642: every peer is a session hosted on one shared broker connection, opened
+ * with the first peer and closed with the last, so a released stage costs an
+ * index entry here and at the broker, never a socket or timer of its own.
  */
 export class ReleasedStagePeers {
 	private readonly peers = new Map<string, ReleasedStagePeer>();
+	private readonly hostAddress = `released-stages:${randomUUID()}`;
+	private client: IntercomClient | null = null;
+	private connecting: Promise<IntercomClient> | null = null;
+	private reconnectTimer: NodeJS.Timeout | null = null;
+	private reconnectAttempt = 0;
+	/** Bumped by `disconnectAll`, so a connection still being opened is closed instead of kept. */
+	private epoch = 0;
 
 	constructor(private readonly deps: ReleasedStagePeersDeps) {}
 
@@ -107,82 +152,172 @@ export class ReleasedStagePeers {
 		return this.peers.size;
 	}
 
-	/** Resolves once the peer is registered, or rejects when the first connection attempt fails (it keeps retrying). */
+	/**
+	 * Resolves once the peer is hosted, or rejects when that attempt fails (the connection keeps retrying). Adopting a
+	 * stage again with the same registration only takes the new announcement's loader; otherwise it replaces the peer.
+	 * An announcement the broker would refuse is rejected alone with `HostedSessionRequestError`, before it is kept.
+	 */
 	async adopt(route: ReleasedStageAnnouncement): Promise<void> {
+		if (this.reconnectTimer === null) this.reconnectAttempt = 0;
+		const wire: JsonWireValue = JSON.parse(JSON.stringify([this.hostedSession(route)]));
+		const validation = validateHostSessionsFrame(wire);
+		if (!validation.ok) throw hostedSessionErrorFor(validation.refusal);
 		const key = peerKey(route);
 		const previous = this.peers.get(key);
-		if (previous !== undefined) await this.close(previous);
-		const peer: ReleasedStagePeer = {
-			route,
-			returnAddress: `${route.sessionId}:released-stage`,
-			client: null,
-			connecting: null,
-			reconnectTimer: null,
-			reconnectAttempt: 0,
-			closed: false,
-			answering: new Set(),
-		};
+		if (previous !== undefined && sameRegistration(previous.route, route)) {
+			previous.route = route;
+			await this.host(previous);
+			return;
+		}
+		const peer: ReleasedStagePeer = { route, answering: new Set() };
 		this.peers.set(key, peer);
-		await this.connect(peer);
+		if (previous !== undefined) await this.unhost(previous);
+		await this.host(peer);
 	}
 
 	async disconnectAll(): Promise<void> {
-		const peers = [...this.peers.values()];
+		this.epoch += 1;
 		this.peers.clear();
-		await Promise.all(peers.map((peer) => this.close(peer)));
+		clearTimeout(this.reconnectTimer ?? undefined);
+		this.reconnectTimer = null;
+		this.reconnectAttempt = 0;
+		const client = this.client;
+		this.client = null;
+		// An attempt still connecting sees the new epoch and closes its own connection.
+		await Promise.allSettled([this.connecting]);
+		await client?.disconnect();
 	}
 
-	private connect(peer: ReleasedStagePeer): Promise<void> {
-		if (peer.connecting !== null) return peer.connecting;
-		const attempt: Promise<void> = this.connectOnce(peer).then(
-			() => {
-				peer.reconnectAttempt = 0;
-			},
-			(error) => {
-				if (peer.connecting === attempt) peer.connecting = null;
-				this.scheduleReconnect(peer);
-				throw toError(error);
-			},
-		);
-		peer.connecting = attempt;
-		const settled = (): void => {
-			if (peer.connecting === attempt) peer.connecting = null;
-		};
-		attempt.then(settled, settled);
-		return attempt;
+	private async host(peer: ReleasedStagePeer): Promise<void> {
+		let failure: Error | undefined;
+		try {
+			const client = await this.connect();
+			if (peer.hostedOn !== client) void this.hostPending(client);
+			failure = await peer.hosting;
+		} catch (error) {
+			failure = toError(error);
+		}
+		if (failure === undefined) return;
+		// The caller gets the failure either way; a retryable one is also tried again in the background.
+		if (isRetryableHostingFailure(failure)) this.scheduleReconnect();
+		throw failure;
 	}
 
-	private async connectOnce(peer: ReleasedStagePeer): Promise<void> {
-		const { route } = peer;
-		await this.deps.prepare();
-		if (peer.closed) return;
+	/** Hosts every peer not yet hosted on `client`, in frames of at most 500; settles with the first failure. */
+	private async hostPending(client: IntercomClient): Promise<Error | undefined> {
+		const pending = [...this.peers.values()].filter((peer) => peer.hostedOn !== client);
+		const requests: Promise<Error | undefined>[] = [];
+		for (let start = 0; start < pending.length; start += HOSTED_SESSION_FRAME_MAX) {
+			const chunk = pending.slice(start, start + HOSTED_SESSION_FRAME_MAX);
+			const byKey = new Map(chunk.map((peer) => [peerKey(peer.route), peer]));
+			const request = client.hostSessions(chunk.map((peer) => this.hostedSession(peer.route))).then(
+				(assigned): undefined => {
+					for (const { key, sessionId } of assigned) {
+						const peer = byKey.get(key);
+						if (peer === undefined || peer.hostedOn !== client) continue;
+						peer.sessionId = sessionId;
+					}
+					return undefined;
+				},
+				(error) => {
+					// Hosting them again on this connection is up to the next attempt.
+					for (const peer of chunk) if (peer.hostedOn === client) peer.hostedOn = undefined;
+					// A timed-out request may still have hosted its sessions. Closing the connection removes whatever it
+					// hosted, so the next attempt cannot leave two sessions under one name.
+					if (isIntercomHostedSessionTimeoutError(error)) this.dropConnection(client);
+					return toError(error);
+				},
+			);
+			for (const peer of chunk) {
+				peer.hostedOn = client;
+				peer.sessionId = undefined;
+				peer.hosting = request;
+			}
+			requests.push(request);
+		}
+		return (await Promise.all(requests)).find((failure) => failure !== undefined);
+	}
+
+	private hostedSession(route: ReleasedStageAnnouncement): HostedSessionFrameItem {
 		const group = normalizeGroup(route.group);
-		const client = this.deps.createClient(peer.returnAddress);
-		client.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
-			if (peer.client !== client) return;
-			this.receive(peer, client, from, message, channel);
+		const now = Date.now();
+		return {
+			key: peerKey(route),
+			session: {
+				name: resolveIntercomPresenceName(undefined, route.sessionId),
+				cwd: this.deps.cwd(),
+				model: route.model ?? "unknown",
+				pid: process.pid,
+				startedAt: now,
+				lastActivity: now,
+				status: RELEASED_STAGE_STATUS,
+				replyCapability: "live",
+				groups: [group],
+				group,
+			},
+			returnAddress: `${route.sessionId}:released-stage`,
+			...(route.liveRoute === undefined || route.liveRoute.stageKeys.length === 0
+				? {}
+				: {
+						liveRoute: {
+							runId: route.runId,
+							stageKeys: [...route.liveRoute.stageKeys],
+							capability: route.liveRoute.capability,
+						},
+					}),
+		};
+	}
+
+	/** Removes a replaced peer's broker session; a peer whose connection is gone left the broker with it. */
+	private async unhost(peer: ReleasedStagePeer): Promise<void> {
+		await peer.hosting;
+		const { hostedOn, sessionId } = peer;
+		peer.hostedOn = undefined;
+		peer.sessionId = undefined;
+		if (sessionId !== undefined && hostedOn === this.client) await hostedOn.unhostSessions([sessionId]);
+	}
+
+	private connect(): Promise<IntercomClient> {
+		if (this.client !== null) return Promise.resolve(this.client);
+		if (this.connecting === null) {
+			const attempt = this.connectOnce();
+			this.connecting = attempt;
+			const settled = (): void => {
+				this.connecting = null;
+			};
+			attempt.then(settled, settled);
+		}
+		return this.connecting;
+	}
+
+	private async connectOnce(): Promise<IntercomClient> {
+		const epoch = this.epoch;
+		await this.deps.prepare();
+		if (epoch !== this.epoch) throw new IntercomClientDisconnectedError();
+		const client = this.deps.createClient(this.hostAddress);
+		client.on("hosted_message", (recipient: string, from: SessionInfo, message: Message, channel?: "supervisor") => {
+			if (this.client === client) this.receive(client, recipient, from, message, channel);
 		});
+		// Peers keep naming the closed connection until they are hosted on the next one; nothing it sends is read.
 		client.on("disconnected", () => {
-			if (peer.client !== client) return;
-			peer.client = null;
-			this.scheduleReconnect(peer);
+			if (this.client !== client) return;
+			this.client = null;
+			this.scheduleReconnect();
 		});
 		client.on("error", () => {
 			// Reconnect runs from the disconnect path; broker socket noise stays out of the TUI.
 		});
-		peer.client = client;
+		const now = Date.now();
+		const group = this.hostAddress;
 		try {
-			const now = Date.now();
 			await client.connect(
 				{
-					name: resolveIntercomPresenceName(undefined, route.sessionId),
 					cwd: this.deps.cwd(),
-					model: route.model ?? "unknown",
+					model: "unknown",
 					pid: process.pid,
 					startedAt: now,
 					lastActivity: now,
-					status: RELEASED_STAGE_STATUS,
-					replyCapability: "live",
+					recipientPurpose: "control",
 					groups: [group],
 					group,
 				},
@@ -191,48 +326,90 @@ export class ReleasedStagePeers {
 				undefined,
 				group,
 			);
-			if (route.liveRoute !== undefined && route.liveRoute.stageKeys.length > 0) {
-				try {
-					await client.registerLiveWorkflowStageRoute(
-						route.runId,
-						[...route.liveRoute.stageKeys],
-						route.liveRoute.capability,
-					);
-				} catch (error) {
-					// The peer stays reachable by name; only the `workflow:` alias was refused.
-					if (!(error instanceof IntercomLiveRouteRefusedError)) throw error;
-				}
-			}
-			if (peer.closed) {
-				peer.client = null;
-				await client.disconnect();
-			}
 		} catch (error) {
-			if (peer.client === client) peer.client = null;
-			try {
-				await client.disconnect();
-			} catch {
-				// The failed connection is already gone.
-			}
+			await client.disconnect();
 			throw error;
 		}
+		if (epoch !== this.epoch) {
+			await client.disconnect();
+			throw new IntercomClientDisconnectedError();
+		}
+		this.client = client;
+		return client;
 	}
 
-	private scheduleReconnect(peer: ReleasedStagePeer): void {
-		if (peer.closed || peer.reconnectTimer !== null || peer.connecting !== null) return;
-		peer.reconnectTimer = setTimeout(() => {
-			peer.reconnectTimer = null;
-			if (peer.closed) return;
-			peer.reconnectAttempt += 1;
-			this.connect(peer).catch(() => {
-				// connect() schedules the next attempt itself.
+	/** Closes a connection whose hosting outcome is unknown; its broker sessions leave with it. */
+	private dropConnection(client: IntercomClient): void {
+		if (this.client !== client) return;
+		this.client = null;
+		void client.disconnect().catch(() => {});
+	}
+
+	/** One timer for every peer: reconnects, then hosts every peer the broker does not have yet. */
+	private scheduleReconnect(): void {
+		if (this.reconnectTimer !== null || this.peers.size === 0) return;
+		if (this.reconnectAttempt >= RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX) {
+			this.deps.report?.({
+				error: new IntercomClientDisconnectedError(),
+				retrying: false,
+				attempt: this.reconnectAttempt,
+				peers: this.peers.size,
 			});
-		}, reconnectDelayMs(peer.reconnectAttempt));
+			return;
+		}
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = null;
+			this.reconnectAttempt += 1;
+			void this.connect()
+				.then((client) => this.hostPending(client))
+				.then(
+					(failure) => this.reconnectFailed(failure),
+					(error) => this.reconnectFailed(toError(error)),
+				);
+		}, reconnectDelayMs(this.reconnectAttempt));
+	}
+
+	private reconnectFailed(failure: Error | undefined): void {
+		if (failure === undefined) {
+			this.reconnectAttempt = 0;
+			return;
+		}
+		const retrying =
+			isRetryableHostingFailure(failure) && this.reconnectAttempt < RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX;
+		this.deps.report?.({ error: failure, retrying, attempt: this.reconnectAttempt, peers: this.peers.size });
+		if (retrying) this.scheduleReconnect();
+	}
+
+	private peerHosting(recipient: string): ReleasedStagePeer | undefined {
+		// Broker session ids are never reused, so at most one peer has this one.
+		return [...this.peers.values()].find((candidate) => candidate.sessionId === recipient);
 	}
 
 	private receive(
-		peer: ReleasedStagePeer,
 		client: IntercomClient,
+		recipient: string,
+		from: SessionInfo,
+		message: Message,
+		channel: "supervisor" | undefined,
+	): void {
+		const peer = this.peerHosting(recipient);
+		if (peer !== undefined) {
+			this.deliver(client, peer, recipient, from, message, channel);
+			return;
+		}
+		// The broker may deliver a stage's first message in the chunk that carries the answer naming its id, before
+		// that answer reaches the peer: look again once the hosting still in flight has ended. A session this connection
+		// does not host is still unknown then, and its message is dropped: the broker told its askers it left.
+		void Promise.all([...this.peers.values()].map((candidate) => candidate.hosting)).then(() => {
+			const late = this.peerHosting(recipient);
+			if (late !== undefined) this.deliver(client, late, recipient, from, message, channel);
+		});
+	}
+
+	private deliver(
+		client: IntercomClient,
+		peer: ReleasedStagePeer,
+		recipient: string,
 		from: SessionInfo,
 		message: Message,
 		channel: "supervisor" | undefined,
@@ -243,12 +420,13 @@ export class ReleasedStagePeers {
 		}
 		if (peer.answering.has(message.id)) return;
 		peer.answering.add(message.id);
-		void this.answer(peer, client, from, message).finally(() => peer.answering.delete(message.id));
+		void this.answer(peer, client, recipient, from, message).finally(() => peer.answering.delete(message.id));
 	}
 
 	private async answer(
 		peer: ReleasedStagePeer,
 		client: IntercomClient,
+		recipient: string,
 		from: SessionInfo,
 		message: Message,
 	): Promise<void> {
@@ -259,31 +437,16 @@ export class ReleasedStagePeers {
 			const failure = `Released workflow stage could not answer: ${toError(error).message}`;
 			reply = { text: failure, replyError: failure };
 		}
-		if (peer.closed || !client.isConnected()) return;
+		if (peer.sessionId !== recipient || this.client !== client) return;
 		try {
-			await client.send(from.id, { ...reply, replyTo: message.id, requirePendingReply: true });
+			await client.send(from.id, {
+				...reply,
+				replyTo: message.id,
+				requirePendingReply: true,
+				hostedSender: recipient,
+			});
 		} catch {
-			// The asker left or timed out; the broker already settled that ask.
-		}
-	}
-
-	private async close(peer: ReleasedStagePeer): Promise<void> {
-		peer.closed = true;
-		if (peer.reconnectTimer !== null) clearTimeout(peer.reconnectTimer);
-		peer.reconnectTimer = null;
-		if (this.peers.get(peerKey(peer.route)) === peer) this.peers.delete(peerKey(peer.route));
-		try {
-			await peer.connecting;
-		} catch {
-			// A failed attempt leaves nothing to disconnect.
-		}
-		const client = peer.client;
-		peer.client = null;
-		if (client === null) return;
-		try {
-			await client.disconnect();
-		} catch {
-			// The broker connection is already gone.
+			// The asker left or timed out, or this connection closed; the broker already settled that ask.
 		}
 	}
 }

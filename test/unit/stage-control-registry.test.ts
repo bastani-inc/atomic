@@ -494,6 +494,8 @@ describe("stageControlRegistry — releaseIdle", () => {
 				idle() {
 					return gate.idle ?? true;
 				},
+				holdsTaken: () => 0,
+				onHoldLifted: () => () => {},
 			},
 		};
 	}

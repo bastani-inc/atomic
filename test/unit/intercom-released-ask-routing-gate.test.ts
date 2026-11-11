@@ -7,7 +7,7 @@ useTemporaryAgentDir();
 
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: true, hasSharedStorage: true, protocol: { min: 1, max: 2 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: true, hasSharedStorage: true, protocol: { min: 1, max: 3 } }),
 }));
 
 const { createEventBus } = await import("../../packages/coding-agent/src/core/event-bus.js");

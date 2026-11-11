@@ -7,6 +7,7 @@ const DELIVERY_FAILURE_REASON_CODES: ReadonlySet<string> = new Set<DeliveryFailu
 	"recipient_parked",
 	"released_reply_answered",
 	"released_reply_in_flight",
+	"not_hosted_by_connection",
 ]);
 
 export function isDeliveryFailureReasonCode(value: string): value is DeliveryFailureReasonCode {

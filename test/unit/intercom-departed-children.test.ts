@@ -8,6 +8,7 @@ import {
 	validateEndedChildrenFrame,
 } from "../../packages/intercom/broker/departed-children.js";
 import {
+	isStageRecipientReleasedError,
 	isSubagentRecipientDisconnectedError,
 	isSubagentRecipientEndedError,
 } from "../../packages/intercom/broker/recipient-gone-errors.js";
@@ -647,4 +648,92 @@ test("a departure that adds an orphan beyond the bound returns the sends of the 
 	);
 	assert.equal(bounded.orphanCount, 1);
 	bounded.clear();
+});
+
+test("a send to a released stage whose hosted peer left is refused at once with why, under any of its targets (#4642)", () => {
+	const { children } = departed();
+	children.markStageReleased(OWNER, {
+		childName: CHILD,
+		group: "workflow:run",
+		aliases: [CHILD_INTERCOM_ID, `${CHILD_SESSION_ID}:released-stage`],
+	});
+	const inGroup = sender("asker", ["workflow:run"]);
+
+	for (const target of [CHILD, CHILD_INTERCOM_ID, `${CHILD_SESSION_ID}:released-stage`]) {
+		const admission = children.admit(target, inGroup, send("m", "asker", target), true);
+		assert.equal(admission.kind, "refused");
+		if (admission.kind !== "refused") return;
+		assert.ok(isStageRecipientReleasedError(admission.error));
+		assert.equal(admission.error.fields.target, target);
+		assert.equal(admission.error.fields.childName, CHILD);
+	}
+	assert.equal(children.heldSendCount, 0, "nothing waits for a verdict: it is already known");
+	assert.equal(
+		children.admit(CHILD, inGroup, send("n"), false).kind,
+		"refused",
+		"a sender that cannot wait is refused the same way",
+	);
+	assert.equal(children.admit(CHILD, sender("outsider", ["other"]), send("o", "outsider"), true).kind, "none");
+	assert.equal(children.admit("never-hosted", inGroup, send("p", "asker", "never-hosted"), true).kind, "none");
+});
+
+test("hosting the stage again, or its host going for good, ends the refusal (#4642)", () => {
+	const { children } = departed();
+	const stage = { childName: CHILD, group: "workflow:run", aliases: [CHILD_INTERCOM_ID] };
+	children.markStageReleased(OWNER, stage);
+	assert.equal(children.size, 1);
+
+	children.supersede(OWNER, CHILD);
+	assert.equal(children.size, 0);
+	assert.equal(children.admit(CHILD, sender("asker", ["workflow:run"]), send("m", "asker"), true).kind, "none");
+
+	children.markStageReleased(OWNER, stage);
+	children.dropOwner(OWNER);
+	assert.deepEqual(children.sizes(), { departures: 0, byTarget: 0, byOwner: 0, heldSends: 0, timers: 0 });
+
+	children.markStageReleased(OWNER, stage);
+	children.dropOwner(OWNER, "released-stages:host");
+	assert.equal(children.orphanCount, 1, "a host that reconnects as the same return address keeps it");
+	children.adoptOrphans("new-host-connection", "released-stages:host");
+	assert.equal(children.admit(CHILD, sender("asker", ["workflow:run"]), send("m2", "asker"), true).kind, "refused");
+	children.supersede("new-host-connection", CHILD);
+	assert.equal(children.size, 0);
+});
+
+test("marking a stage released refuses the sends already held for that name and disarms its wait (#4642)", () => {
+	vi.useFakeTimers();
+	const { children, expired } = departed();
+	depart(children);
+	const waiting = send("held", "asker");
+	assert.equal(children.admit(CHILD, sender("asker"), waiting, true).kind, "held");
+	assert.equal(children.sizes().timers, 1);
+
+	const marked = children.markStageReleased(OWNER, { childName: CHILD, group: "default", aliases: [] });
+
+	assert.equal(marked.refused.length, 1);
+	assert.equal(marked.refused[0]!.held, waiting);
+	assert.ok(isStageRecipientReleasedError(marked.refused[0]!.error));
+	assert.deepEqual(marked.evicted, []);
+	assert.deepEqual(children.sizes(), { departures: 1, byTarget: 3, byOwner: 1, heldSends: 0, timers: 0 });
+	vi.advanceTimersByTime(DEPARTED_CHILD_HOLD_MS * 2);
+	assert.deepEqual(expired, [], "the wait that was disarmed expires nothing");
+});
+
+test("only a stage marked released, visible to the sender, is reported as one (#4642)", () => {
+	const { children } = departed();
+	const stage = { childName: CHILD, group: "workflow:run", aliases: [CHILD_INTERCOM_ID] };
+	const inGroup = sender("asker", ["workflow:run"]);
+	assert.equal(children.isReleasedStage(CHILD, inGroup), false, "nothing is known about it yet");
+
+	depart(children);
+	assert.equal(children.isReleasedStage(CHILD, sender("asker")), false, "a departed subagent is not a released stage");
+
+	children.markStageReleased(OWNER, stage);
+	assert.equal(children.isReleasedStage(CHILD, inGroup), true);
+	assert.equal(children.isReleasedStage(CHILD_INTERCOM_ID, inGroup), true, "under each of its targets");
+	assert.equal(children.isReleasedStage(CHILD, sender("outsider", ["other"])), false, "an outsider learns nothing");
+	assert.equal(children.isReleasedStage("never-hosted", inGroup), false);
+
+	children.supersede(OWNER, CHILD);
+	assert.equal(children.isReleasedStage(CHILD, inGroup), false, "hosting the stage again ends it");
 });

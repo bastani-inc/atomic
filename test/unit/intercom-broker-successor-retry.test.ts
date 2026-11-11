@@ -43,7 +43,7 @@ vi.mock("../../packages/intercom/broker-successor-retry.js", async (importOrigin
 });
 vi.mock("../../packages/intercom/broker/spawn.js", () => ({ spawnBrokerIfNeeded: vi.fn() }));
 vi.mock("../../packages/intercom/broker/broker-routing.js", () => ({
-	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 2 } }),
+	queryBrokerRouting: async () => ({ acrossMachines: false, hasSharedStorage: false, protocol: { min: 1, max: 3 } }),
 }));
 
 // The client resolves the broker socket from the agent directory when it loads.

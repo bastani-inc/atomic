@@ -98,14 +98,21 @@ export function createStageScheduler(input: {
 		input.runSnapshot.stages.filter((stage) => stage.id !== stageId && hasAncestor(stage, stageId));
 
 	const blockingAncestorFor = (stage: StageSnapshot): string | undefined => {
+		// Only a paused or blocked stage blocks: without one the walk over every ancestor is skipped, and with one it
+		// checks each ancestor in a set, so admitting a stage no longer costs the whole run once per ancestor (#4642).
+		const holding = new Set(
+			input.runSnapshot.stages
+				.filter((candidate) => candidate.status === "paused" || candidate.status === "blocked")
+				.map((candidate) => candidate.id),
+		);
+		if (holding.size === 0) return undefined;
 		const queue = [...stage.parentIds];
 		const seen = new Set<string>();
-		while (queue.length > 0) {
-			const next = queue.shift();
-			if (next === undefined || seen.has(next)) continue;
+		for (let index = 0; index < queue.length; index++) {
+			const next = queue[index]!;
+			if (seen.has(next)) continue;
 			seen.add(next);
-			const ancestor = stageById(next);
-			if (ancestor?.status === "paused" || ancestor?.status === "blocked") return next;
+			if (holding.has(next)) return next;
 			queue.push(...input.tracker.getParents(next));
 		}
 		return undefined;
