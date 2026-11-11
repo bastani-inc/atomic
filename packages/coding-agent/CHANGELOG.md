@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
+## [0.9.79-alpha.2] - 2026-11-11
+
+Quieter session status messages.
+
+- **Less noise in the transcript.** The compaction card names only the model that compacted the context, a policy-refusal summary is labeled `summary (fallback)`, and a successful interactive engine restart no longer prints a message; failed restarts are still reported ([#4673](https://github.com/bastani-inc/atomic/pull/4673)).
+
 ### Changed
 
-- The compaction card names only the model that compacted the context, such as `github-copilot/claude-opus-5.5`, instead of `planner · github-copilot/claude-opus-5.5`. A policy-refusal summary is headed `Context compacted · summary (fallback)` instead of `summary (pi fallback)`.
-- An interactive engine that stops or stops responding and is restarted successfully no longer shows "Interactive engine stopped unexpectedly; restarting." or "Interactive engine is not responding; restarting."; the cause goes to the debug log. A restart that fails is still reported.
+- The compaction card names only the model that compacted the context, such as `github-copilot/claude-opus-5.5`, instead of `planner · github-copilot/claude-opus-5.5`. A policy-refusal summary is headed `Context compacted · summary (fallback)` instead of `summary (pi fallback)` ([#4673](https://github.com/bastani-inc/atomic/pull/4673)).
+- An interactive engine that stops or stops responding and is restarted successfully no longer shows "Interactive engine stopped unexpectedly; restarting." or "Interactive engine is not responding; restarting."; the cause goes to the debug log. A restart that fails is still reported ([#4673](https://github.com/bastani-inc/atomic/pull/4673)).
 
 ## [0.9.79-alpha.1] - 2026-11-11
 
