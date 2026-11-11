@@ -55,7 +55,7 @@ class RemoteComponent implements Component {
 	}
 	wantsKeyRelease = true;
 	readonly handlesInternalUiAction: boolean;
-	private lines = ["Loading remote component…"];
+	private lines: string[] = [];
 	private width = 0;
 	private rows = 0;
 	private requestId = 0;

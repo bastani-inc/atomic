@@ -271,6 +271,28 @@ describe("AssistantMessageComponent", () => {
 		}
 	});
 
+	test("a response the user interrupted ends with a muted Interrupted line, not the provider's abort error", () => {
+		initTheme("dark");
+		for (const errorMessage of [
+			undefined,
+			"Request was aborted",
+			"This operation was aborted",
+			"Operation aborted",
+		]) {
+			const component = new AssistantMessageComponent(
+				createAssistantMessage([{ type: "text", text: "partial" }], { stopReason: "aborted", errorMessage }),
+			);
+			const lines = component.render(80);
+			const last = lines.filter((line) => stripAnsi(line).trim() !== "").at(-1) ?? "";
+			assert.equal(stripAnsi(last).trim(), "Interrupted", String(errorMessage));
+			assert.equal(last.includes(theme.fg("error", "Interrupted")), false, "not drawn as an error");
+		}
+		const retried = new AssistantMessageComponent(
+			createAssistantMessage([], { stopReason: "aborted", errorMessage: "Aborted after 2 retry attempts" }),
+		);
+		assert.ok(retried.render(80).some((line) => stripAnsi(line).includes("Aborted after 2 retry attempts")));
+	});
+
 	test("renders neutral truncation wording for a length stop", () => {
 		initTheme("dark");
 		const component = new AssistantMessageComponent(

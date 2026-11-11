@@ -217,12 +217,10 @@ export class AssistantMessageComponent extends Container {
 			);
 		} else if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
-				const abortMessage =
-					message.errorMessage && message.errorMessage !== "Request was aborted"
-						? message.errorMessage
-						: "Operation aborted";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), this.outputPad, 0));
+				this.contentContainer.addChild(
+					new Text(theme.fg("muted", interruptedNotice(message.errorMessage)), this.outputPad, 0),
+				);
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
@@ -230,4 +228,20 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 	}
+}
+
+/**
+ * The line shown under a response the user interrupted. A generic abort, whatever the provider called it ("Request
+ * was aborted", "This operation was aborted", an AbortError), reads as a calm "Interrupted", the way the user asked
+ * for it; a specific reason, such as the retry count, is kept.
+ */
+export function interruptedNotice(errorMessage: string | undefined): string {
+	if (
+		!errorMessage ||
+		/^(?:operation|request|this operation) was aborted\.?$|^operation aborted$|^aborterror\b|^the operation was aborted/i.test(
+			errorMessage.trim(),
+		)
+	)
+		return "Interrupted";
+	return errorMessage;
 }

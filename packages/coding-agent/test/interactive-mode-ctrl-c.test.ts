@@ -20,6 +20,8 @@ type CtrlCHost = {
 	session: CtrlCSession;
 	restoreQueuedMessagesToEditor: ReturnType<typeof vi.fn>;
 	clearEditor: ReturnType<typeof vi.fn>;
+	editor: { getText: () => string };
+	showStatus: ReturnType<typeof vi.fn>;
 	shutdown: ReturnType<typeof vi.fn>;
 	showError: ReturnType<typeof vi.fn>;
 	manualCompactionTakeoverPending: boolean;
@@ -59,6 +61,8 @@ function createHost(sessionOverrides: Partial<CtrlCSession> = {}): CtrlCHost {
 		manualCompactionTakeoverPending: false,
 		restoreQueuedMessagesToEditor: vi.fn(),
 		clearEditor: vi.fn(),
+		editor: { getText: () => "" },
+		showStatus: vi.fn(),
 		shutdown: vi.fn().mockResolvedValue(undefined),
 		showError: vi.fn(),
 		interruptActiveOperation: () => false,
@@ -125,15 +129,37 @@ describe("InteractiveMode Ctrl+C", () => {
 		expect(host.clearEditor).not.toHaveBeenCalled();
 	});
 
-	test("clears editor when idle, exits on quick double press", () => {
+	test("on an empty idle editor the first press says how to exit and a quick second press exits", () => {
 		const host = createHost();
 
 		handleCtrlC.call(host);
-		expect(host.clearEditor).toHaveBeenCalledTimes(1);
+		expect(host.showStatus).toHaveBeenCalledWith("Press Ctrl+C again to exit");
 		expect(host.shutdown).not.toHaveBeenCalled();
 
 		handleCtrlC.call(host);
 		expect(host.shutdown).toHaveBeenCalledTimes(1);
+	});
+
+	test("text in the editor is cleared first, even while a response streams, and clearing never arms the exit", () => {
+		let text = "half-typed message";
+		const host = createHost({ isStreaming: true });
+		host.editor = { getText: () => text };
+		host.clearEditor.mockImplementation(() => {
+			text = "";
+		});
+
+		handleCtrlC.call(host);
+		expect(host.clearEditor).toHaveBeenCalledTimes(1);
+		expect(host.session.abort).not.toHaveBeenCalled();
+
+		handleCtrlC.call(host);
+		expect(host.session.abort).toHaveBeenCalledTimes(1);
+		expect(host.shutdown).not.toHaveBeenCalled();
+
+		host.session.isStreaming = false;
+		handleCtrlC.call(host);
+		expect(host.shutdown).not.toHaveBeenCalled();
+		expect(host.showStatus).toHaveBeenCalledWith("Press Ctrl+C again to exit");
 	});
 
 	test("reports an abort rejection without leaving an unhandled fire-and-forget promise", async () => {
@@ -200,7 +226,7 @@ describe("InteractiveMode Ctrl+C", () => {
 		handleCtrlC.call(host);
 		expect(host.session.pauseQueuedMessages).toHaveBeenCalledTimes(1);
 		expect(host.session.abort).toHaveBeenCalledTimes(1);
-		expect(host.clearEditor).toHaveBeenCalledTimes(1);
+		expect(host.showStatus).toHaveBeenCalledWith("Press Ctrl+C again to exit");
 		expect(host.shutdown).not.toHaveBeenCalled();
 
 		handleCtrlC.call(host);
@@ -262,7 +288,7 @@ describe("InteractiveMode SIGINT signals (#4096)", () => {
 			handleCtrlC.call(host);
 			handleSigintSignal.call(host);
 			expect(host.shutdown).not.toHaveBeenCalled();
-			expect(host.clearEditor).toHaveBeenCalledTimes(1);
+			expect(host.showStatus).toHaveBeenCalledTimes(1);
 		} finally {
 			restoreStdin();
 		}
@@ -274,7 +300,7 @@ describe("InteractiveMode SIGINT signals (#4096)", () => {
 			const host = signalHost();
 			handleSigintSignal.call(host);
 			handleSigintSignal.call(host);
-			expect(host.clearEditor).toHaveBeenCalledTimes(1);
+			expect(host.showStatus).toHaveBeenCalledTimes(1);
 			expect(host.shutdown).toHaveBeenCalledTimes(1);
 		} finally {
 			restoreStdin();
