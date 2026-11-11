@@ -547,6 +547,23 @@ describe("Anthropic message threads", () => {
 		assert.ok(!h.requests[0].betas.includes(THREADS_BETA));
 	});
 
+	// https://github.com/earendil-works/pi/issues/11987
+	it("uses threads for any provider on api.anthropic.com, not for other endpoints", async () => {
+		const alias = harness();
+		const aliasModel: Model<"anthropic-messages"> = { ...baseModel, provider: "anthropic-1-api" };
+		const aliasMessages = [user("first")];
+		await say(alias, aliasMessages, { model: aliasModel });
+		aliasMessages.push(user("second"));
+		await say(alias, aliasMessages, { model: aliasModel });
+		assert.deepEqual(threadOf(alias.requests[0]), { type: "create" });
+		assert.deepEqual(threadOf(alias.requests[1]), { type: "continue", previous_message_id: "msg_1" });
+
+		const gateway = harness();
+		await say(gateway, [user("first")], { model: { ...baseModel, baseUrl: "https://gateway.example.com" } });
+		assert.equal(Object.hasOwn(gateway.requests[0].body, "thread"), false);
+		assert.ok(!gateway.requests[0].betas.includes(THREADS_BETA));
+	});
+
 	it("matches Claude Code tool names across turns with OAuth", async () => {
 		const h = harness();
 		h.queue.push((request) =>
@@ -598,7 +615,6 @@ describe("Anthropic message threads in Atomic", () => {
 	});
 
 	it.each<[string, Partial<Model<"anthropic-messages">>]>([
-		["the anthropic-api provider", { provider: "anthropic-api" }],
 		["GitHub Copilot", { provider: "github-copilot", baseUrl: "https://api.githubcopilot.com" }],
 		["another endpoint", { baseUrl: "https://gateway.example.com" }],
 		["a gateway with api.anthropic.com in its path", { baseUrl: "https://gateway.example/api.anthropic.com" }],
