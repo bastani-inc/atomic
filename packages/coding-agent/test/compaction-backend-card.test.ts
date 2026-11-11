@@ -27,7 +27,8 @@ test("labels policy-refusal summaries and the compaction model (#3470)", () => {
 		},
 	});
 	const text = stripVTControlCharacters(component.render(160).join("\n"));
-	assert.match(text, /summary \(pi fallback\)/);
+	assert.match(text, /Context compacted · summary \(fallback\)/);
+	assert.doesNotMatch(text, /pi fallback/);
 	assert.match(text, /provider\/model/);
 });
 
@@ -72,7 +73,7 @@ test("replays the pi summary tail as separate messages with its original roles (
 	assert.equal(projection.entries.find((entry) => entry.sourceEntry.id === "tail")?.messages.length, 1);
 });
 
-test("live and reloaded compaction cards show backend and model when collapsed or expanded (#3470)", () => {
+test("live and reloaded compaction cards show only the model when collapsed or expanded (#3470)", () => {
 	initTheme("dark");
 	for (const backend of ["planner", "classifier", "morph", "summary"] as const) {
 		const details = {
@@ -98,9 +99,9 @@ test("live and reloaded compaction cards show backend and model when collapsed o
 			for (const expanded of [false, true]) {
 				component.setExpanded(expanded);
 				const output = stripVTControlCharacters(component.render(160).join("\n"));
-				assert.ok(
-					output.includes(`${backend === "summary" ? "summary (pi fallback)" : backend} · ${backend}/model`),
-				);
+				const lines = output.split("\n").map((line) => line.trim());
+				assert.ok(lines.includes(`${backend}/model`), "the model alone, without the backend");
+				assert.equal(output.includes(`${backend} · `), false);
 				assert.ok(output.includes("Compacted from 100 tokens"));
 				assert.equal(output.includes("retained text"), expanded);
 			}

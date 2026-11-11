@@ -74,7 +74,7 @@ test("deferred startup stops on a project setting refused when the project is tr
 	assert.equal(mode.showError.mock.calls.length, 0);
 });
 
-test("an engine diagnostic carrying a refused decision setting stops Atomic; others are shown", () => {
+test("an engine diagnostic carrying a refused decision setting stops Atomic; failures are shown and a successful restart is silent", () => {
 	const { exit } = exitSpies();
 	const mode = {
 		stop: vi.fn(),
@@ -105,10 +105,10 @@ test("an engine diagnostic carrying a refused decision setting stops Atomic; oth
 		message: "Engine restarted",
 	});
 	assert.equal(mode.stopWorkingLoader.mock.calls.length, 1);
-	assert.ok(
-		mode.showStatus.mock.calls.some(
-			(args: unknown[]) => args.length === 2 && args[0] === "Engine restarted" && args[1] === undefined,
-		),
+	assert.equal(
+		mode.showStatus.mock.calls.some((args: unknown[]) => args[0] === "Engine restarted"),
+		false,
+		"a successful engine restart shows nothing",
 	);
 	assert.equal(mode.stop.mock.calls.length, 1);
 });

@@ -9,7 +9,7 @@ LLMs have finite context windows. Atomic reduces older transcript context with *
 
 Compaction normally uses the model selected by `compactionModel`. If it fails, Atomic borrows the next model from your configured `fallbackModels` for that request. A chat model's policy refusal that arrives before it generated anything first triggers pi's summary compaction on the same model, whether selected by `auto`, an explicit chat-model ID, or a `fallbackModels` entry. A refusal that arrives partway through the model's output is retried once and then planned in parts, keeping the result verbatim, before any summary. If that also fails, Atomic continues through the fallback models. Classifier and Morph failures go straight to the fallback models.
 
-**The selected compaction model and configured fallback models may receive the compaction transcript**, using their own credentials. Borrowing never changes the session's model or thinking level. Line planners select deletions, and Atomic reconstructs surviving lines without rewriting them. The policy-refusal summary fallback is lossy and appears as `summary (pi fallback)`.
+**The selected compaction model and configured fallback models may receive the compaction transcript**, using their own credentials. Borrowing never changes the session's model or thinking level. Line planners select deletions, and Atomic reconstructs surviving lines without rewriting them. The policy-refusal summary fallback is lossy and appears as `summary (fallback)`.
 
 ## On this page and its reference
 
@@ -23,7 +23,7 @@ This page covers the concepts and normal use of compaction and branch summarizat
 | Background compaction | Context passes `compaction.backgroundThresholdPercent` (75% by default) | The same verbatim compaction, run while the agent keeps working | The same boundary, committed at the next turn boundary |
 | Planner fallback borrowing | A failed selected compaction model | Same deletion records, from a configured `fallbackModels` entry | Retained text with the borrowed model recorded |
 | Split planning | A chat provider refuses a compaction request partway through its output, twice | The same deletion records, planned for each part of the transcript split at message boundaries | Retained text reconstructed from the originals |
-| Policy-refusal summary fallback | A chat provider refuses compaction under its policy before generating anything, or split planning failed | Pi's summary compaction on the same model | A summary boundary labeled `summary (pi fallback)` |
+| Policy-refusal summary fallback | A chat provider refuses compaction under its policy before generating anything, or split planning failed | Pi's summary compaction on the same model | A summary boundary labeled `summary (fallback)` |
 | Fresh context window | Load-bearing compaction after every configured model failed | *(none — no model call)* | A `CompactionEntry` with `details.rung: "fresh"` |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
@@ -131,7 +131,7 @@ For classifier compaction, log in with `/login typesafe`, then set `"compactionM
 
 For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
 
-The compaction card shows the backend and model that produced the result, such as `classifier · typesafe/jev-latest` or `morph · morph/morph-compactor`. A policy-refusal summary appears as `summary (pi fallback)`.
+The compaction card shows the model that produced the result, such as `github-copilot/claude-opus-5.5` or `morph/morph-compactor`. A policy-refusal summary is headed `Context compacted · summary (fallback)`.
 
 ### Troubleshooting policy refusals
 

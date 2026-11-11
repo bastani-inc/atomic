@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The compaction card names only the model that compacted the context, such as `github-copilot/claude-opus-5.5`, instead of `planner · github-copilot/claude-opus-5.5`. A policy-refusal summary is headed `Context compacted · summary (fallback)` instead of `summary (pi fallback)`.
+- An interactive engine that stops or stops responding and is restarted successfully no longer shows "Interactive engine stopped unexpectedly; restarting." or "Interactive engine is not responding; restarting."; the cause goes to the debug log. A restart that fails is still reported.
+
 ## [0.9.79-alpha.1] - 2026-11-11
 
 Resuming long sessions is faster and keeps your tools and subagents, long workflow runs stay responsive, and interrupting a response is calmer.
