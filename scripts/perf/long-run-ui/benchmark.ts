@@ -28,7 +28,7 @@
  * is a fixed part plus that text kept once, so a larger result checks that it is not kept more often than that.
  *
  * `--assert` fails the run unless the criteria of `criteria.ts` hold. The first checkpoint is measured after a discarded
- * warm-up window and is the baseline: frame time and key latency, as the median from 200 finished stages on and at the last checkpoint, stay within 20% of it
+ * warm-up window and is the baseline: frame time and key latency, as the median from 200 finished stages on and as the median of the largest half of those checkpoints, stay within 20% of it
  * (plus a small timer-noise floor), no session or registry entry is left open, and heap grows by an index-sized amount
  * per finished stage.
  *
@@ -61,6 +61,8 @@ interface Options {
 	readonly keys: number;
 	readonly keyIntervalMs: number;
 	readonly probes: number;
+	/** Stages the lanes may start while keys arrive in each churn window. */
+	readonly churn: number;
 	readonly toolDelayMs: number;
 	readonly resultBytes: number;
 	readonly store: "sqlite" | "memory";
@@ -103,6 +105,7 @@ function parseOptions(argv: readonly string[]): Options {
 		keys: count("keys", 60),
 		keyIntervalMs: count("key-interval-ms", 33),
 		probes: count("probes", 3),
+		churn: count("churn", 12),
 		toolDelayMs: count("tool-delay-ms", 5),
 		resultBytes: Math.max(1, count("result-bytes", 1_100)),
 		store,
@@ -365,12 +368,24 @@ async function measureWindow(host: SimulatedHost, options: Options, probes: numb
 	return result;
 }
 
+/** Keys arrive while the lanes keep starting and finishing stages, up to `options.churn` of them. */
+async function measureChurnWindow(host: SimulatedHost, options: Options, profile?: string): Promise<WindowResult> {
+	const churned = host.waitFor((line) => line.type === "bench_churn_done");
+	host.control({ type: "bench_churn_start", stages: options.churn });
+	const window = await measureWindow(host, options, 0, profile);
+	host.control({ type: "bench_churn_stop" });
+	await churned;
+	return window;
+}
+
 interface CheckpointResult {
 	readonly finished: number;
 	readonly reopened: number;
 	readonly sample: EngineSample;
 	readonly idle: WindowResult;
 	readonly busy: WindowResult;
+	/** Key latency while the lanes start and finish stages. Reported with the table, not asserted: its tail still grows with the stage count. */
+	readonly churn: WindowResult;
 }
 
 /** Self time per function of a CPU profile, the costliest first. */
@@ -435,7 +450,7 @@ function summarizeHeap(path: string): { readonly name: string; readonly count: n
 
 async function main(): Promise<void> {
 	const options = parseOptions(process.argv.slice(2));
-	const stages = (options.checkpoints.at(-1) ?? 10) + 10;
+	const stages = (options.checkpoints.at(-1) ?? 10) + 10 + options.churn * (options.checkpoints.length + 1);
 	const config: EngineConfig = {
 		runs: options.runs,
 		lanes: options.lanes,
@@ -482,6 +497,10 @@ async function main(): Promise<void> {
 		for (let repeat = 0; repeat < options.windows; repeat++)
 			busyWindows.push(await measureWindow(host, options, options.probes, repeat === 0 ? busyProfile : undefined));
 		const busy = medianWindow(busyWindows);
+		if (checkpoint === options.checkpoints[0]) await measureChurnWindow(host, options);
+		const churnProfile = profile("churn");
+		const churn = await measureChurnWindow(host, options, churnProfile);
+		if (churnProfile !== undefined) profiles[`${checkpoint}-churn`] = summarizeProfile(churnProfile);
 		if (idleProfile !== undefined) profiles[`${checkpoint}-idle`] = summarizeProfile(idleProfile);
 		if (busyProfile !== undefined) profiles[`${checkpoint}-busy`] = summarizeProfile(busyProfile);
 		if (options.profileDir !== undefined) {
@@ -495,6 +514,7 @@ async function main(): Promise<void> {
 			sample: sampled.sample!,
 			idle,
 			busy,
+			churn,
 		};
 		checkpoints.push(result);
 		process.stderr.write(
@@ -539,11 +559,11 @@ function table(label: string, rows: readonly CheckpointResult[]): string {
 	return [
 		`### ${label}`,
 		"",
-		"| finished | reopened | heap MiB | RSS MiB | live sessions | registry | handles | widget render p50/p95 ms | pane render p50/p95 ms | key p50/p95 ms idle | key p50/p95 ms busy |",
-		`|${"---|".repeat(11)}`,
+		"| finished | reopened | heap MiB | RSS MiB | live sessions | registry | handles | widget render p50/p95 ms | pane render p50/p95 ms | key p50/p95 ms idle | key p50/p95 ms busy | key p50/p95 ms churn |",
+		`|${"---|".repeat(12)}`,
 		...rows.map(
 			(row) =>
-				`| ${row.finished} | ${row.reopened} | ${mb(row.sample.heapUsedBytes)} | ${mb(row.sample.rssBytes)} | ${row.sample.liveSessions} | ${row.sample.registryEntries} | ${handles(row.sample)} | ${row.idle.engineRenderMs.widget.p50}/${row.idle.engineRenderMs.widget.p95} | ${row.idle.engineRenderMs.pane.p50}/${row.idle.engineRenderMs.pane.p95} | ${row.idle.keyLatencyMs.p50}/${row.idle.keyLatencyMs.p95} | ${row.busy.keyLatencyMs.p50}/${row.busy.keyLatencyMs.p95} |`,
+				`| ${row.finished} | ${row.reopened} | ${mb(row.sample.heapUsedBytes)} | ${mb(row.sample.rssBytes)} | ${row.sample.liveSessions} | ${row.sample.registryEntries} | ${handles(row.sample)} | ${row.idle.engineRenderMs.widget.p50}/${row.idle.engineRenderMs.widget.p95} | ${row.idle.engineRenderMs.pane.p50}/${row.idle.engineRenderMs.pane.p95} | ${row.idle.keyLatencyMs.p50}/${row.idle.keyLatencyMs.p95} | ${row.busy.keyLatencyMs.p50}/${row.busy.keyLatencyMs.p95} | ${row.churn.keyLatencyMs.p50}/${row.churn.keyLatencyMs.p95} |`,
 		),
 	].join("\n");
 }

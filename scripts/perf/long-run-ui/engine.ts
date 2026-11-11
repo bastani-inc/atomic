@@ -78,6 +78,8 @@ export type BenchControl =
 	| { type: "bench_window_start"; probes: number; profile?: string }
 	| { type: "bench_window_end" }
 	| { type: "bench_heap_snapshot"; path: string }
+	| { type: "bench_churn_start"; stages: number }
+	| { type: "bench_churn_stop" }
 	| { type: "bench_continue" };
 
 export interface RenderTimes {
@@ -325,6 +327,8 @@ let finished = 0;
 let checkpointIndex = 0;
 let gate: { readonly promise: Promise<void>; readonly open: () => void } | undefined;
 let checkpointAnnounced = -1;
+/** While set, lanes keep starting stages until this many have started, past the checkpoint they would wait at. */
+let churnUntil: number | undefined;
 const finishedStages: { readonly runId: string; readonly stageId: string }[] = [];
 let reopenCursor = 0;
 
@@ -332,7 +336,14 @@ function nextCheckpoint(): number | undefined {
 	return config.checkpoints[checkpointIndex];
 }
 
+function announceChurnWhenIdle(): void {
+	if (churnUntil === undefined || started !== finished || started < churnUntil) return;
+	churnUntil = undefined;
+	control({ type: "bench_churn_done", finished });
+}
+
 function announceCheckpointWhenIdle(): void {
+	announceChurnWhenIdle();
 	const checkpoint = nextCheckpoint();
 	if (checkpoint === undefined || gate === undefined || finished < checkpoint || started !== finished) return;
 	if (checkpointAnnounced === checkpoint) return;
@@ -345,7 +356,7 @@ async function admit(): Promise<boolean> {
 	for (;;) {
 		if (started >= config.stages) return false;
 		const checkpoint = nextCheckpoint();
-		if (checkpoint === undefined || started < checkpoint) {
+		if (checkpoint === undefined || started < checkpoint || (churnUntil !== undefined && started < churnUntil)) {
 			started += 1;
 			return true;
 		}
@@ -568,6 +579,17 @@ async function handleControl(message: BenchControl): Promise<void> {
 			control({ type: "bench_heap_snapshot_done", path: message.path });
 			return;
 		}
+		case "bench_churn_start": {
+			churnUntil = started + message.stages;
+			const opened = gate;
+			gate = undefined;
+			opened?.open();
+			return;
+		}
+		case "bench_churn_stop":
+			churnUntil = started;
+			announceChurnWhenIdle();
+			return;
 		case "bench_continue": {
 			checkpointIndex += 1;
 			const opened = gate;

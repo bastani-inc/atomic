@@ -653,7 +653,6 @@ export function checkpointKey(c: DurableCheckpoint): string {
 	return `${c.kind}:${c.checkpointId}`;
 }
 
-/** A recorded checkpoint as a run's indexes keep it: a session read from its file, and a stage's implied topology. */
 /**
  * A journal decodes each field of a stage checkpoint into a string of its own, so a result the stage's output also
  * holds would sit in memory twice. A checkpoint that keeps one text under both names keeps one string (#4642).
@@ -666,6 +665,7 @@ function sharingOutputAsResult(checkpoint: DurableCheckpoint): DurableCheckpoint
 		: checkpoint;
 }
 
+/** A recorded checkpoint as a run's indexes keep it: a session read from its file, and a stage's implied topology. */
 export function normalizedCheckpoint(recorded: DurableCheckpoint): DurableCheckpoint {
 	const checkpoint = sharingOutputAsResult(
 		recorded.kind === "stage" ? migrateStageSessionCheckpoint(recorded) : recorded,

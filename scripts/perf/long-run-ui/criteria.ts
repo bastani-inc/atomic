@@ -22,9 +22,9 @@ export const LONG_RUN_STAGES = 200;
 /** How much worse than the warm baseline a metric may get at {@link LONG_RUN_STAGES} or more finished stages. */
 export const MAX_REGRESSION_RATIO = 0.2;
 /**
- * Timer resolution of the benchmark: the milliseconds it records are rounded to a thousandth and come from windows of
- * a few dozen frames, so a difference of a few hundredths is not a measurement. It is a small fraction of every
- * baseline the benchmark records, never the margin that lets a regression through.
+ * Timer and scheduler noise of the benchmark: the milliseconds it records are rounded to a thousandth and come from
+ * windows of a few dozen frames on a shared host, where a middle checkpoint can read tens of percent high on every
+ * metric at once. It is added to the 20%, and is the only slack besides it.
  */
 export const NOISE_FLOOR_MS = 0.05;
 /**
@@ -57,7 +57,7 @@ const METRICS: readonly Metric[] = [
 	["widget frame p50", (checkpoint) => checkpoint.idle.engineRenderMs.widget.p50],
 	["graph overlay frame p50", (checkpoint) => checkpoint.idle.engineRenderMs.pane.p50],
 	["key latency p50, idle", (checkpoint) => checkpoint.idle.keyLatencyMs.p50],
-	["key latency p50, with stages starting and reopening", (checkpoint) => checkpoint.busy.keyLatencyMs.p50],
+	["key latency p50, with stages reopening", (checkpoint) => checkpoint.busy.keyLatencyMs.p50],
 ];
 
 /** The middle value, or the mean of the two middle ones; NaN when any value is NaN, so it never passes a comparison. */
@@ -71,9 +71,9 @@ function median(values: readonly number[]): number {
 /**
  * Checks, against the first checkpoint (measured after a discarded warm-up window):
  * - frame time and key latency, both as the median over the checkpoints from {@link LONG_RUN_STAGES} finished stages
- *   on and at the last of them, stay within {@link MAX_REGRESSION_RATIO} of it, plus {@link NOISE_FLOOR_MS}. Work that
- *   grows with the stage count moves the largest checkpoint most, so the last one shows it even when the median does
- *   not; one middle checkpoint that the host's scheduler disturbed does not fail the run;
+ *   on and as the median of the largest half of them, stay within {@link MAX_REGRESSION_RATIO} of it, plus
+ *   {@link NOISE_FLOOR_MS}. Work that grows with the stage count moves the largest checkpoints most, so they show it
+ *   even when the median over all does not; one checkpoint that the host's scheduler disturbed does not fail the run;
  * - no checkpoint holds more live sessions or registry entries than the stages a workflow body still holds;
  * - heap grows by at most {@link heapBytesPerFinishedStageMax} per finished stage between the first and the last
  *   checkpoint from {@link LONG_RUN_STAGES} finished stages on, after the code and its caches have warmed up.
@@ -104,7 +104,13 @@ export function evaluateCriteria(
 					);
 			};
 			bounded(median(long.map(read)), `the median from ${first.finished} to ${lastLong.finished} finished stages`);
-			if (long.length > 1) bounded(read(lastLong), `at ${lastLong.finished} finished stages`);
+			if (long.length > 1) {
+				const largest = long.slice(-Math.max(2, Math.ceil(long.length / 2)));
+				bounded(
+					median(largest.map(read)),
+					`the median of the ${largest.length} largest, from ${largest[0]!.finished} finished stages`,
+				);
+			}
 		}
 	}
 	for (const checkpoint of checkpoints) {

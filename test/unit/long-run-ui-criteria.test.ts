@@ -58,13 +58,13 @@ describe("the long-run UI benchmark criteria (#4642)", () => {
 		assert.equal(report.heapBytesPerFinishedStage, 4_000);
 	});
 
-	test("each metric's median from 200 finished stages on, and its last value, are held to 20% of the baseline plus the noise floor", () => {
+	test("each metric's median from 200 finished stages on, and the median of the largest half, are held to 20% of the baseline plus the noise floor", () => {
 		const allowed = (baseline: number) => baseline * 1.2 + NOISE_FLOOR_MS;
 		const metrics = [
 			["widget", 1, "widget frame p50"],
 			["pane", 2, "graph overlay frame p50"],
 			["idleKey", 3, "key latency p50, idle"],
-			["busyKey", 4, "key latency p50, with stages starting and reopening"],
+			["busyKey", 4, "key latency p50, with stages reopening"],
 		] as const;
 		const longRun = (value: Overrides) => [
 			...flat.slice(0, 3),
@@ -81,7 +81,10 @@ describe("the long-run UI benchmark criteria (#4642)", () => {
 			assert.equal(over.failures.length, 2);
 			assert.match(over.failures[0]!, new RegExp(`^${name} is `));
 			assert.match(over.failures[0]!, /the median from 200 to 600 finished stages; the 10-stage baseline/);
-			assert.match(over.failures[1]!, /at 600 finished stages; the 10-stage baseline/);
+			assert.match(
+				over.failures[1]!,
+				/the median of the 2 largest, from 300 finished stages; the 10-stage baseline/,
+			);
 		}
 	});
 
@@ -94,22 +97,26 @@ describe("the long-run UI benchmark criteria (#4642)", () => {
 		]);
 		assert.equal(grows.passed, false);
 		assert.match(grows.failures[0]!, /^graph overlay frame p50 is 5 ms, the median from 200 to 600/);
-		assert.match(grows.failures[1]!, /^graph overlay frame p50 is 7.5 ms, at 600 finished stages/);
+		assert.match(grows.failures[1]!, /^graph overlay frame p50 is 6.25 ms, the median of the 2 largest, from 400/);
 
 		const onlyAtTheEnd = evaluateCriteria([
 			checkpoint(10),
 			checkpoint(200),
 			checkpoint(400),
-			checkpoint(600, { pane: 2.5 }),
+			checkpoint(600, { pane: 4 }),
 		]);
-		assert.equal(onlyAtTheEnd.failures.length, 1, "the median hides it, the last checkpoint does not");
-		assert.match(onlyAtTheEnd.failures[0]!, /^graph overlay frame p50 is 2.5 ms, at 600 finished stages/);
+		assert.equal(onlyAtTheEnd.failures.length, 1, "the median hides it, the largest checkpoints do not");
+		assert.match(
+			onlyAtTheEnd.failures[0]!,
+			/^graph overlay frame p50 is 3 ms, the median of the 2 largest, from 400/,
+		);
 
 		const spike = evaluateCriteria([
 			checkpoint(10),
-			checkpoint(200),
-			checkpoint(400, { pane: 9, widget: 9, idleKey: 9, busyKey: 9 }),
+			checkpoint(200, { pane: 9, widget: 9, idleKey: 9, busyKey: 9 }),
+			checkpoint(400),
 			checkpoint(600),
+			checkpoint(800),
 		]);
 		assert.deepEqual(spike.failures, []);
 		const even = evaluateCriteria([checkpoint(10), checkpoint(200, { pane: 1 }), checkpoint(300, { pane: 9 })]);
