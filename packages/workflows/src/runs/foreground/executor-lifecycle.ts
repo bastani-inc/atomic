@@ -174,6 +174,38 @@ export function announceSettledStageEdit(store: Store, runId: string, stage: Sta
 	if (isTerminalStageStatus(stage.status)) store.editRun(runId, () => ({ stageIds: [stage.id] }));
 }
 
+/**
+ * Calls a caller's `onStageEnd` hook for an ended stage and names the stage to the store both right away and, when the
+ * hook returns a promise, again once that promise settles (#4642). A hook that edits the stage after an `await`, such
+ * as the durable end recorder that writes its checkpoint before running the caller's hook, would otherwise leave its
+ * edit out of graph snapshots. A rejected hook keeps rejecting as before.
+ */
+export function endStageWithHook(
+	store: Store,
+	runId: string,
+	stage: StageSnapshot,
+	hook: ((runId: string, snapshot: StageSnapshot) => unknown) | undefined,
+): void {
+	const outcome = hook?.(runId, stage);
+	announceSettledStageEdit(store, runId, stage);
+	if (!isPromiseLike(outcome)) return;
+	void Promise.resolve(outcome).then(
+		() => announceSettledStageEdit(store, runId, stage),
+		(error: unknown) => {
+			announceSettledStageEdit(store, runId, stage);
+			throw error;
+		},
+	);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+	return (
+		(typeof value === "object" || typeof value === "function") &&
+		value !== null &&
+		typeof (value as { then?: unknown }).then === "function"
+	);
+}
+
 /** Copies a stage session's model fallback metadata onto its stage; true when a field graph snapshots show changed. */
 export function applyModelFallbackMetaToStage(stage: StageSnapshot, meta: StageModelFallbackMeta): boolean {
 	const { model, thinkingLevel, rateLimits, routerSelection, warnings } = stage;
