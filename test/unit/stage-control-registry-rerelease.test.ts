@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { AgentSession, SessionStore } from "@bastani/atomic";
 import { describe, test, vi } from "vitest";
 import {
+	CLAIM_GRACE_MS,
 	createStageControlRegistry,
 	type ReleasedStage,
 	type StageControlHandle,
@@ -217,6 +218,54 @@ describe("a stage is released when its last hold ends, once its release was aske
 		gate.lift();
 		await settled();
 		assert.equal(registry.get(RUN, "a"), undefined, "released once the claimer used it and let go");
+	});
+
+	test("a claim nothing follows with a hold stops pinning the handle after the grace, and the sweep then releases it (#4642)", async () => {
+		vi.useFakeTimers();
+		try {
+			const registry = createStageControlRegistry();
+			const gate = fakeGate({ holds: 3, idle: false });
+			const fake = gatedHandle("a", gate);
+			registry.register(fake.handle);
+			await registry.releaseIdle(RUN);
+
+			assert.equal(registry.claim(RUN, "a"), fake.handle);
+			gate.idle = true;
+			gate.lift();
+			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS - 1);
+			assert.equal(registry.get(RUN, "a"), fake.handle, "the claimer still has time to take its hold");
+			assert.equal(fake.disposals(), 0);
+
+			await vi.advanceTimersByTimeAsync(1);
+			assert.equal(registry.get(RUN, "a"), undefined, "no hold followed the claim");
+			assert.equal(fake.disposals(), 1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a claimer that takes its hold in time keeps the handle however long it holds it, and a second claim restarts the wait (#4642)", async () => {
+		vi.useFakeTimers();
+		try {
+			const registry = createStageControlRegistry();
+			const gate = fakeGate({ holds: 0, idle: false });
+			const fake = gatedHandle("a", gate);
+			registry.register(fake.handle);
+			await registry.releaseIdle(RUN);
+			registry.claim(RUN, "a");
+			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS - 1);
+			registry.claim(RUN, "a");
+			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS - 1);
+			assert.equal(registry.get(RUN, "a"), fake.handle, "the second claim restarted the wait");
+
+			gate.holds = 1;
+			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS * 5);
+			assert.equal(registry.get(RUN, "a"), fake.handle, "a held handle is not released whatever time passes");
+			await registry.clear();
+			assert.equal(vi.getTimerCount(), 0, "clearing the registry leaves no claim timer behind");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	test("a handle the registry created for a reopened stage is released when its holds lift, unasked", async () => {

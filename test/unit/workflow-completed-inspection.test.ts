@@ -282,6 +282,7 @@ describe("completed workflow inspection", () => {
 			assert.ok(handle, "the opened run registers a chat handle for its stage");
 			return {
 				runId,
+				backend,
 				store,
 				registry,
 				handle,
@@ -331,6 +332,26 @@ describe("completed workflow inspection", () => {
 			await untilReleased(run);
 			assert.deepEqual(run.prompts, ["what did you change?", "and then?"]);
 			assert.equal(run.created(), 2, "each reopening built the session once");
+		});
+
+		test("opening the run again while a stage chat is attached does not keep the session after the chat closes", async () => {
+			const run = await inspected();
+			const detach = run.handle.subscribe(() => {});
+			await run.handle.sendUserMessage?.("what did you change?");
+			assert.equal(run.live(), 1, "the attached chat keeps the session");
+
+			const reopened = await openCompletedDurableWorkflow(run.runId, {
+				durableBackend: run.backend,
+				store: run.store,
+				stageControlRegistry: run.registry,
+				adapters: run.adapters,
+				cwd: tempDir,
+			});
+			assert.equal(reopened.ok, true);
+			assert.equal(run.registry.get(run.runId, "final-source"), run.handle, "the attached handle is kept as is");
+
+			detach();
+			await untilReleased(run);
 		});
 
 		test("an Intercom ask reopens the stage for one turn and releases it after", async () => {

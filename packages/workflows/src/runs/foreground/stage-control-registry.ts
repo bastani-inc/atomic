@@ -325,6 +325,9 @@ export interface ReleasedStage {
  * In-memory implementation. Handles live in a `Map<runId, Map<stageId, handle>>`
  * so per-run lookups stay cheap as workflows scale.
  */
+/** How long a claimed handle waits for its claimer to take a hold before it may be released again. */
+export const CLAIM_GRACE_MS = 10_000;
+
 export function createStageControlRegistry(): StageControlRegistry {
 	type RegistryEntry = {
 		handle: StageControlHandle;
@@ -338,6 +341,8 @@ export function createStageControlRegistry(): StageControlRegistry {
 		releaseWanted: boolean;
 		/** Holds taken when a consumer last claimed the handle: it stays until that consumer has used it. */
 		holdsAtClaim?: number;
+		/** Ends the wait for the claimer to use the handle, so a claim nobody follows with a hold does not pin it. */
+		claimTimer?: ReturnType<typeof setTimeout>;
 		releasing?: Promise<void>;
 		stopWatching?: () => void;
 	};
@@ -389,12 +394,26 @@ export function createStageControlRegistry(): StageControlRegistry {
 	function stopWatching(entry: RegistryEntry): void {
 		entry.stopWatching?.();
 		entry.stopWatching = undefined;
+		clearTimeout(entry.claimTimer);
+		entry.claimTimer = undefined;
 	}
 
-	function markClaimed(entry: RegistryEntry): void {
+	/**
+	 * A claimer takes its hold on the handle right after claiming it, so the handle waits for that, and not for a
+	 * release in between. A claim no hold follows within {@link CLAIM_GRACE_MS} stops waiting and the handle is swept.
+	 */
+	function markClaimed(runId: string, stageId: string, entry: RegistryEntry): void {
 		entry.permanent = true;
 		entry.epoch += 1;
 		entry.holdsAtClaim = entry.handle.releaseGate?.holdsTaken();
+		clearTimeout(entry.claimTimer);
+		if (entry.handle.releaseGate === undefined) return;
+		entry.claimTimer = setTimeout(() => {
+			entry.claimTimer = undefined;
+			entry.holdsAtClaim = undefined;
+			releaseWhenLetGo(runId, stageId, entry);
+		}, CLAIM_GRACE_MS);
+		entry.claimTimer.unref();
 	}
 
 	function unusedSinceClaim(entry: RegistryEntry, gate: StageSessionReleaseGate): boolean {
@@ -568,7 +587,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 			const runMap = ensureRun(runId);
 			const existing = runMap.get(stageId);
 			if (existing !== undefined && existing.handle.isDisposed !== true) {
-				markClaimed(existing);
+				markClaimed(runId, stageId, existing);
 				return existing.handle;
 			}
 			if (existing !== undefined) {
@@ -581,7 +600,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 				permanent: true,
 				releaseWanted: true,
 			});
-			entry.holdsAtClaim = handle.releaseGate?.holdsTaken();
+			markClaimed(runId, handle.stageId, entry);
 			runMap.set(handle.stageId, entry);
 			return handle;
 		},
@@ -651,7 +670,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 		},
 		claim(runId: string, stageId: string): StageControlHandle | undefined {
 			const entry = _byRun.get(runId)?.get(stageId);
-			if (entry !== undefined) markClaimed(entry);
+			if (entry !== undefined) markClaimed(runId, stageId, entry);
 			return entry?.handle;
 		},
 		get(runId: string, stageId: string): StageControlHandle | undefined {
