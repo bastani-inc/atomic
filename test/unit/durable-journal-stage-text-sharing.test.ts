@@ -47,7 +47,13 @@ async function openBackend(): Promise<JournalDurableBackend> {
 	return backend;
 }
 
-function stageCheckpoint(index: number, result: "same" | "different"): DurableStageCheckpoint {
+/**
+ * A stage checkpoint whose output and result are long texts: the same text, two different texts, a text output with
+ * no result, or a text result with an output that is not text.
+ */
+type StageTexts = "same" | "different" | "output only" | "result only";
+
+function stageCheckpoint(index: number, result: StageTexts): DurableStageCheckpoint {
 	const text = `${index}:${"r".repeat(TEXT_BYTES)}`;
 	return {
 		kind: "stage",
@@ -55,14 +61,14 @@ function stageCheckpoint(index: number, result: "same" | "different"): DurableSt
 		checkpointId: `stage-${index}`,
 		name: `stage-${index}`,
 		replayKey: `stage:${index}`,
-		output: text,
-		result: result === "same" ? text : `${text}!`,
+		output: result === "result only" ? { summary: `stage ${index}` } : text,
+		...(result === "output only" ? {} : { result: result === "different" ? `${text}!` : text }),
 		completedAt: index,
 	};
 }
 
 /** Heap the backend adds while the caller, as the workflow store does, keeps every checkpoint it wrote. */
-async function heapGrownByBackend(result: "same" | "different", commits: "one by one" | "in a burst"): Promise<number> {
+async function heapGrownByBackend(result: StageTexts, commits: "one by one" | "in a burst"): Promise<number> {
 	const backend = await openBackend();
 	collectGarbage();
 	const before = process.memoryUsage().heapUsed;
@@ -93,6 +99,17 @@ for (const commits of ["one by one", "in a burst"] as const) {
 		assert.ok(twoTexts < oneCopy * 2.4, `and the writer's is the only copy of it too: ${twoTexts} bytes`);
 	});
 }
+
+test("a stage's text is kept once when only its output or only its result is text (#4642)", async () => {
+	const oneCopy = TEXT_BYTES * STAGES;
+	for (const texts of ["output only", "result only"] as const) {
+		const grown = await heapGrownByBackend(texts, "one by one");
+		assert.ok(
+			grown < oneCopy * 1.4,
+			`${texts}: the writer's text is the only copy: ${grown} bytes for ${STAGES} stages`,
+		);
+	}
+});
 
 test("sharing stage text does not retain the writer's mutable output (#4642)", async () => {
 	const backend = await openBackend();

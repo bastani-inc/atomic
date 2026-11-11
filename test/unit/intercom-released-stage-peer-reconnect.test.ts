@@ -64,7 +64,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-test("released stages share one connection that keeps retrying with one timer after it fails (#4642)", async () => {
+test("released stages share one connection that keeps retrying with one timer after it fails (#3622, #4642)", async () => {
 	vi.useFakeTimers();
 	const { peers, connects, hosted } = fakeConnections({ failures: 2 });
 

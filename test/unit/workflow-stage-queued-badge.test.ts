@@ -200,6 +200,55 @@ describe("a repaint reads queue counts in time that does not follow the stage co
 		}
 	});
 
+	test("queues swapped between stages whose ids would join into the same text re-read every stage's count (#4642)", () => {
+		const store = runOfStages(200);
+		for (const id of ["b", "c", "b:1,run-1/c"])
+			store.recordStageStart("run-1", {
+				id,
+				name: id,
+				status: "completed",
+				parentIds: [],
+				toolEvents: [],
+				model: "gpt-5-mini",
+				startedAt: 1,
+			});
+		const registry = createStageControlRegistry();
+		const queueOne = (stageId: string): (() => void) => {
+			const { handle, emit } = makeHandle("run-1", stageId);
+			emit({ type: "queue_update", steering: ["later"], followUp: [] } as AgentSessionEvent);
+			return registry.register(handle);
+		};
+		const releaseB = queueOne("b");
+		const releaseC = queueOne("c");
+		let queueReads = 0;
+		const peek = registry.peek.bind(registry);
+		registry.peek = (runId, stageId) => {
+			queueReads += 1;
+			return peek(runId, stageId);
+		};
+		const pane = new WorkflowAttachPane({
+			store,
+			piTui: makeTestTui(24),
+			piKeybindings: s5aKeybindings(),
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.render(120);
+			pane.render(120);
+			releaseB();
+			releaseC();
+			queueOne("b:1,run-1/c");
+			queueReads = 0;
+			pane.render(120);
+			assert.ok(queueReads >= 203, `the swap re-read every stage's queue count: ${queueReads} reads`);
+		} finally {
+			pane.dispose();
+		}
+	});
+
 	test("the pane's signature follows the live handles' queues and nothing else", () => {
 		const store = runOfStages(200);
 		const registry = createStageControlRegistry();
