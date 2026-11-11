@@ -247,10 +247,6 @@
       "$ref": "#/$defs/KeybindingValue",
       "description": "Inspect selected task"
     },
-    "app.tasks.foreground": {
-      "$ref": "#/$defs/KeybindingValue",
-      "description": "Wait for selected task"
-    },
     "app.tasks.cancel": {
       "$ref": "#/$defs/KeybindingValue",
       "description": "Cancel selected task with confirmation"

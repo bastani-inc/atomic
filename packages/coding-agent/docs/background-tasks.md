@@ -246,7 +246,7 @@ Shell details show the command, available exit information, and a bounded output
 | Failed | Execution ended with an error. Details retain the error message. |
 | Stopped | Execution was cancelled. Completed work is not undone. |
 
-Completed, failed, and stopped tasks retain inspection but do not offer execution controls. **Foreground wait** observes a running task; it does not transfer ownership or create a second execution.
+Completed, failed, and stopped tasks retain inspection but do not offer execution controls.
 
 ## Background shells
 

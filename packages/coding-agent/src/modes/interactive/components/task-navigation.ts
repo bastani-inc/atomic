@@ -11,7 +11,6 @@ export type TaskFocus =
 export type TaskNavigationActions = {
 	inspect(task: TaskRecord): void;
 	transcript(task: TaskRecord): void;
-	foreground(task: TaskRecord): void;
 	confirmCancel(task: TaskRecord): Promise<boolean>;
 	cancel(task: TaskRecord): void;
 	input(task: TaskRecord): void;
@@ -51,7 +50,6 @@ export class TaskNavigation {
 		if (!task) return;
 		if (action === "transcript") return this.actions.transcript(task);
 		if (task.execution.kind === "settled") return;
-		if (action === "foreground") this.actions.foreground(task);
 		if (action === "question" && task.attention.kind === "input-needed")
 			this.actions.openQuestion(task.attention.route);
 		if (action === "cancel" && (await this.actions.confirmCancel(task))) {
@@ -85,7 +83,7 @@ export class TaskNavigation {
 			}
 			return true;
 		}
-		for (const action of ["foreground", "cancel", "input"] as const) {
+		for (const action of ["cancel", "input"] as const) {
 			if (this.keys.matches(data, `app.tasks.${action}`)) {
 				void this.activate(action);
 				return true;

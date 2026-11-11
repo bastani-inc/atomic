@@ -7,7 +7,7 @@ import { theme } from "../theme/theme.js";
 import { keyHintIfBound } from "./keybinding-hints.js";
 import { taskDisplayText, taskMetricsText, taskModelText, taskStatusAppearance } from "./task-row.js";
 
-export type TaskDetailAction = "transcript" | "foreground" | "cancel" | "input" | "question";
+export type TaskDetailAction = "transcript" | "cancel" | "input" | "question";
 
 export function taskDetailActions(
 	execution: Execution,
@@ -17,7 +17,6 @@ export function taskDetailActions(
 	if (execution.kind === "settled") return ["transcript"];
 	return [
 		"transcript",
-		"foreground",
 		"cancel",
 		...(stdinAvailable ? ["input" as const] : []),
 		...(attention.kind === "input-needed" ? ["question" as const] : []),
@@ -26,7 +25,6 @@ export function taskDetailActions(
 
 export const taskDetailLabels: Record<TaskDetailAction, string> = {
 	transcript: "Inspect transcript",
-	foreground: "Foreground wait",
 	cancel: "Cancel task…",
 	input: "Input",
 	question: "Open question",
@@ -82,7 +80,7 @@ export class TaskDetail implements Component {
 		lines.push("", theme.fg("muted", theme.bold("Actions")));
 		for (const action of taskDetailActions(this.task.execution, this.task.attention, this.content.stdinAvailable)) {
 			const hint =
-				action === "foreground" || action === "cancel" || action === "input"
+				action === "cancel" || action === "input"
 					? keyHintIfBound(`app.tasks.${action}`, taskDetailLabels[action])
 					: "";
 			lines.push(hint || taskDetailLabels[action]);

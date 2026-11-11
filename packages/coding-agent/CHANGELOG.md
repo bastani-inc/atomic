@@ -10,6 +10,10 @@
 - Fixed the llama.cpp provider defaulting to port 8080 while `llama serve` listens on 9931; the default server URL is now `http://127.0.0.1:9931`, and the llama.cpp guide starts the router, including the NVIDIA RTX recipe router, with `llama serve` on that port (upstream [#12001](https://github.com/earendil-works/pi/pull/12001), [#12004](https://github.com/earendil-works/pi/pull/12004))
 - Fixed Anthropic message threads staying off for custom providers whose `baseUrl` is on `api.anthropic.com`; the default now follows the endpoint, not the provider ID (upstream [#11987](https://github.com/earendil-works/pi/issues/11987))
 
+### Removed
+
+- Removed the "Foreground wait" action and the `app.tasks.foreground` keybinding from the `/tasks` detail page. It only showed a passing `yielded` or `settled` line and briefly dropped the task from the running-tasks count; it never changed how the task ran or what the agent was told ([#4662](https://github.com/bastani-inc/atomic/issues/4662))
+
 ## [0.9.78] - 2026-11-11
 
 GitHub Copilot users get Gemini 4 Carbon and Claude Fable 5.2, and automatic model routing can rank Gemini 4 Carbon.

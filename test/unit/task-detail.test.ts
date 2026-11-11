@@ -24,18 +24,14 @@ test("terminal task detail omits all live actions", () => {
 
 // RFC #2884: input and HIL actions are factual capabilities, not inferred state.
 test("live detail exposes only available input and exact question actions", () => {
-	assert.deepEqual(taskDetailActions({ kind: "running" }, { kind: "none" }, false), [
-		"transcript",
-		"foreground",
-		"cancel",
-	]);
+	assert.deepEqual(taskDetailActions({ kind: "running" }, { kind: "none" }, false), ["transcript", "cancel"]);
 	assert.deepEqual(
 		taskDetailActions(
 			{ kind: "running" },
 			{ kind: "input-needed", requestId: "q", prompt: "", route: { sessionId: "s", promptId: "q" } },
 			true,
 		),
-		["transcript", "foreground", "cancel", "input", "question"],
+		["transcript", "cancel", "input", "question"],
 	);
 });
 
@@ -70,4 +66,10 @@ test("detail renders task metadata and configured action hints without inventing
 	} finally {
 		setKeybindings(previous);
 	}
+});
+
+test("a running task's detail page offers no foreground wait and no binding exists for one (#4662)", () => {
+	const actions: string[] = taskDetailActions({ kind: "running" }, { kind: "none" }, true);
+	assert.equal(actions.includes("foreground"), false);
+	assert.equal(Object.keys(new KeybindingsManager().getResolvedBindings()).includes("app.tasks.foreground"), false);
 });

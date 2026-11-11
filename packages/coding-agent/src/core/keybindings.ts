@@ -46,7 +46,6 @@ const APP_KEYBINDINGS = {
 	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.tasks.open": { defaultKeys: [], description: "Open task list" },
 	"app.tasks.inspect": { defaultKeys: "enter", description: "Inspect selected task" },
-	"app.tasks.foreground": { defaultKeys: [], description: "Wait for selected task" },
 	"app.tasks.cancel": { defaultKeys: [], description: "Cancel selected task with confirmation" },
 	"app.tasks.input": { defaultKeys: [], description: "Input to selected task" },
 	"app.thinking.toggle": {

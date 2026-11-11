@@ -82,12 +82,6 @@ export class TaskInspector implements Component {
 				this.detailGeneration++;
 				this.openTranscript();
 			},
-			foreground: (task) => {
-				void this.store.foregroundTask(task.ref.taskId).then((result) => {
-					this.status = result.ok ? result.value.kind : result.error.message;
-					this.requestRender();
-				});
-			},
 			confirmCancel: () =>
 				new Promise<boolean>((resolve) => {
 					this.confirmation = resolve;
@@ -349,8 +343,8 @@ export class TaskInspector implements Component {
 		return transcript.handleInput(data);
 	}
 	private configuredTaskKey(data: string): boolean {
-		return (["app.tasks.inspect", "app.tasks.foreground", "app.tasks.cancel", "app.tasks.input"] as const).some(
-			(key) => getKeybindings().matches(data, key),
+		return (["app.tasks.inspect", "app.tasks.cancel", "app.tasks.input"] as const).some((key) =>
+			getKeybindings().matches(data, key),
 		);
 	}
 	/** Only the task picker stays inline; drill-down and confirmation own the screen. */
