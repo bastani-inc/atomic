@@ -33,7 +33,7 @@ import {
   type ReleasedChildWakeNotice,
   waitForIntercomPeer,
 } from "./session-recovery.js";
-import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
+import { APP_NAME, createGitEnvironment, type ExtensionAPI, IntercomRoutingMismatchError, IntercomRoutingUnavailableError, isIntercomBrokerStopTimeoutError, isIntercomBrokerUpgradeError, isIntercomRoutingChangedError, isIntercomRoutingMismatchError, isIntercomRoutingUnavailableError, isProjectGroupError, type ExtensionContext, processStorageEnvironment, reportDebug, type SessionEntry, sessionScopedExtensionState } from "@bastani/atomic";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -311,7 +311,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const pendingStageRouteConnections = new Map<string, PendingStageRouteConnection>();
   const routeClientConnectGate = createConcurrencyGate(ROUTE_CLIENT_CONNECT_CONCURRENCY);
   const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
+  function reportReleasedStageFailure(event: string, error: Error, fields: Record<string, number | boolean>): void {
+    const { code } = error as Error & { readonly code?: unknown };
+    reportDebug("workflow", event, { name: error.name, code: typeof code === "string" ? code : undefined, message: error.message, ...fields });
+  }
   const releasedStagePeers = new ReleasedStagePeers({
+    report: ({ error, retrying, attempt, peers }) =>
+      reportReleasedStageFailure("released-stage-reconnect-failed", error, { retrying, attempt, peers }),
     prepare: () => spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs),
     createClient: (returnAddress) => new IntercomClient(returnAddress),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
@@ -1652,8 +1658,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     // A released stage keeps a peer only while the host session that ran it is live.
     if (typeof payload !== "object" || payload === null || !isReleasedStageAnnouncement(payload)) return;
     if (!getLiveContext()) return;
-    void releasedStagePeers.adopt(payload).catch(() => {
-      // The peer retries its own connection; an ask meanwhile fails as an unknown session.
+    void releasedStagePeers.adopt(payload).catch((error: unknown) => {
+      // A retryable failure is also retried in the background; either way an ask meanwhile fails as an unknown session.
+      reportReleasedStageFailure("released-stage-adopt-failed", toError(error), { peers: releasedStagePeers.size });
     });
   });
   async function pendingStageNotificationClient(runId: string): Promise<IntercomClient> {

@@ -54,7 +54,25 @@ export function isReleasedStageAnnouncement(value: object): value is ReleasedSta
 	);
 }
 
+/** Reconnect attempts in a row, about ten minutes at the longest backoff, after which the peers stop trying until the next adoption. */
+export const RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX = 30;
+
+/** Whether trying the same thing again may succeed: an error that says it cannot, as a protocol refusal does, is not retried. */
+export function isRetryableHostingFailure(error: Error): boolean {
+	return (error as Error & { readonly retryable?: unknown }).retryable !== false;
+}
+
+/** A failure of the background reconnect, and whether the peers keep trying. */
+export interface ReleasedStageReconnectFailure {
+	readonly error: Error;
+	readonly retrying: boolean;
+	readonly attempt: number;
+	readonly peers: number;
+}
+
 export interface ReleasedStagePeersDeps {
+	/** Told of each failure of the background reconnect, so it is recorded instead of swallowed. */
+	report?(failure: ReleasedStageReconnectFailure): void;
 	/** Makes sure a broker is running before the peers' connection connects. */
 	prepare(): Promise<void>;
 	createClient(returnAddress: string): IntercomClient;
@@ -139,6 +157,7 @@ export class ReleasedStagePeers {
 	 * An announcement the broker would refuse is rejected alone with `HostedSessionRequestError`, before it is kept.
 	 */
 	async adopt(route: ReleasedStageAnnouncement): Promise<void> {
+		if (this.reconnectTimer === null) this.reconnectAttempt = 0;
 		const wire: JsonWireValue = JSON.parse(JSON.stringify([this.hostedSession(route)]));
 		const validation = validateHostSessionsFrame(wire);
 		if (!validation.ok) throw hostedSessionErrorFor(validation.refusal);
@@ -178,7 +197,8 @@ export class ReleasedStagePeers {
 			failure = toError(error);
 		}
 		if (failure === undefined) return;
-		this.scheduleReconnect();
+		// The caller gets the failure either way; a retryable one is also tried again in the background.
+		if (isRetryableHostingFailure(failure)) this.scheduleReconnect();
 		throw failure;
 	}
 
@@ -318,18 +338,24 @@ export class ReleasedStagePeers {
 	/** One timer for every peer: reconnects, then hosts every peer the broker does not have yet. */
 	private scheduleReconnect(): void {
 		if (this.reconnectTimer !== null || this.peers.size === 0) return;
+		if (this.reconnectAttempt >= RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX) return;
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.reconnectAttempt += 1;
 			void this.connect()
 				.then((client) => this.hostPending(client))
 				.then(
-					(failure) => {
-						if (failure !== undefined) this.scheduleReconnect();
-					},
-					() => this.scheduleReconnect(),
+					(failure) => this.reconnectFailed(failure),
+					(error) => this.reconnectFailed(toError(error)),
 				);
 		}, reconnectDelayMs(this.reconnectAttempt));
+	}
+
+	private reconnectFailed(failure: Error | undefined): void {
+		if (failure === undefined) return;
+		const retrying = isRetryableHostingFailure(failure) && this.reconnectAttempt < RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX;
+		this.deps.report?.({ error: failure, retrying, attempt: this.reconnectAttempt, peers: this.peers.size });
+		if (retrying) this.scheduleReconnect();
 	}
 
 	private receive(
@@ -338,11 +364,22 @@ export class ReleasedStagePeers {
 		from: SessionInfo,
 		message: Message,
 		channel: "supervisor" | undefined,
+		retried = false,
 	): void {
 		// Broker session ids are never reused, so at most one peer has this one.
 		const peer = [...this.peers.values()].find((candidate) => candidate.sessionId === recipient);
-		// A session this connection no longer hosts: the broker told its askers it left.
-		if (peer === undefined) return;
+		if (peer === undefined) {
+			// The broker may deliver a stage's first message in the chunk that carries the answer naming its id, before
+			// that answer reaches the peer: look again once the hosting still in flight has ended.
+			const hosting = [...this.peers.values()]
+				.filter((candidate) => candidate.hostedOn === client && candidate.sessionId === undefined)
+				.map((candidate) => candidate.hosting);
+			if (hosting.length === 0 || retried) return;
+			void Promise.all(hosting).then(() => {
+				if (this.client === client) this.receive(client, recipient, from, message, channel, true);
+			});
+			return;
+		}
 		if (message.expectsReply !== true || channel !== undefined) {
 			this.deps.relay(from, message, channel);
 			return;

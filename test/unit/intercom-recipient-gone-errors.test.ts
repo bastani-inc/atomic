@@ -10,11 +10,13 @@ const {
 	isIntercomRecipientGoneError,
 	isIntercomRecipientGoneErrorCode,
 	isRetryableIntercomRecipientGoneError,
+	isStageRecipientReleasedError,
 	isSubagentRecipientDisconnectedError,
 	isSubagentRecipientEndedError,
 	isSubagentRecipientOwnerSuspendedError,
 	readSerializedIntercomRecipientGoneError,
 	rehydrateIntercomRecipientGoneError,
+	StageRecipientReleasedError,
 	SUBAGENT_ENDED_OUTCOMES,
 	SubagentRecipientDisconnectedError,
 	SubagentRecipientEndedError,
@@ -93,6 +95,7 @@ test("the codes and outcomes are the documented unions, and each outcome maps to
 			"recipient_cancelled",
 			"recipient_disconnected",
 			"recipient_owner_suspended",
+			"recipient_stage_released",
 		],
 	);
 	for (const code of INTERCOM_RECIPIENT_GONE_ERROR_CODES) assert.ok(isIntercomRecipientGoneErrorCode(code));
@@ -292,4 +295,57 @@ test("a malformed serialized refusal on the wire is rejected (#4639)", () => {
 		4,
 		"a malformed level past the fourth is never read",
 	);
+});
+
+test("a released stage whose hosted peer is gone has its own class, message, hint and no retry (#4642)", () => {
+	const fields = { target: "subagent-chat-1", childName: "subagent-chat-1" };
+	const error = new StageRecipientReleasedError(fields);
+	assert.equal(error.name, "StageRecipientReleasedError");
+	assert.equal(error.code, "recipient_stage_released");
+	assert.equal(error.retryable, false);
+	assert.ok(error instanceof IntercomRecipientGoneError);
+	assert.equal(
+		error.hint,
+		"Send to its workflow stage target (workflow:<rootRunId>/<stage>), which reaches the stage's current session or queues until it reopens, or resume the run.",
+	);
+	assert.equal(
+		error.message,
+		`Workflow stage "subagent-chat-1" was released and the session that answered for it has gone away (recipient_stage_released). ${error.hint}`,
+	);
+	assert.deepEqual(error.fields, fields);
+	assert.equal(isRetryableIntercomRecipientGoneError(error), false);
+
+	assert.ok(isStageRecipientReleasedError(error));
+	assert.ok(
+		isStageRecipientReleasedError(
+			Object.assign(new Error("x"), { name: "StageRecipientReleasedError", code: "recipient_stage_released" }),
+		),
+	);
+	assert.equal(
+		isStageRecipientReleasedError(
+			Object.assign(new Error("x"), { name: "StageRecipientReleasedError", code: "nope" }),
+		),
+		false,
+	);
+	assert.equal(isStageRecipientReleasedError(new SubagentRecipientEndedError("recipient_completed", FIELDS)), false);
+	assert.ok(isIntercomRecipientGoneError(error));
+});
+
+test("a released-stage refusal serializes, validates on the wire and rehydrates into its class (#4642)", () => {
+	const original = new StageRecipientReleasedError(
+		{ target: "t", childName: "c" },
+		{ cause: new Error("socket closed") },
+	);
+	const serialized = serializeIntercomRecipientGoneError(original);
+	assert.equal(serialized.name, "StageRecipientReleasedError");
+	assert.deepEqual(readSerializedIntercomRecipientGoneError(JSON.parse(JSON.stringify(serialized))), serialized);
+	const rehydrated = rehydrateIntercomRecipientGoneError(serialized);
+	assert.ok(rehydrated instanceof StageRecipientReleasedError);
+	assert.equal(rehydrated.message, original.message);
+	assert.equal((rehydrated.cause as Error).message, "socket closed");
+
+	const mismatched = rehydrateIntercomRecipientGoneError({ ...serialized, code: "recipient_completed" });
+	assert.equal(mismatched.constructor, IntercomRecipientGoneError, "the stage class never carries another code");
+	const ended = rehydrateIntercomRecipientGoneError({ ...serialized, name: "SubagentRecipientEndedError" });
+	assert.equal(ended.constructor, IntercomRecipientGoneError, "an ended class never carries the stage code");
 });

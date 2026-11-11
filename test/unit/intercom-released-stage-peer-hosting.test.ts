@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import { IntercomBrokerProtocolError } from "@bastani/atomic";
 import { afterEach, describe, test, vi } from "vitest";
 import { IntercomClient, type SendOptions } from "../../packages/intercom/broker/client.js";
 import { HOSTED_SESSION_FRAME_MAX } from "../../packages/intercom/broker/hosted-sessions.js";
-import { type ReleasedStageAnnouncement, ReleasedStagePeers } from "../../packages/intercom/released-stage-peers.js";
+import {
+	isRetryableHostingFailure,
+	RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX,
+	type ReleasedStageAnnouncement,
+	ReleasedStagePeers,
+	type ReleasedStageReconnectFailure,
+} from "../../packages/intercom/released-stage-peers.js";
 import type {
 	HostedSessionAssignment,
 	HostedSessionFrameItem,
@@ -32,6 +39,7 @@ interface HarnessOptions {
 	/** Opens the `index`-th connection; the default opens at once. */
 	readonly connect?: (index: number) => Promise<void>;
 	readonly prepare?: () => Promise<void>;
+	readonly report?: (failure: ReleasedStageReconnectFailure) => void;
 }
 
 const route = (index: number, overrides: Partial<ReleasedStageAnnouncement> = {}): ReleasedStageAnnouncement => ({
@@ -55,6 +63,7 @@ function harness(options: HarnessOptions = {}) {
 	const relayed: { readonly text: string; readonly channel?: string }[] = [];
 	let hostCalls = 0;
 	const peers = new ReleasedStagePeers({
+		...(options.report === undefined ? {} : { report: options.report }),
 		prepare: options.prepare ?? (async () => {}),
 		cwd: () => "/workspace",
 		relay: (_from, message, channel) => relayed.push({ text: message.content.text, ...(channel ? { channel } : {}) }),
@@ -195,6 +204,50 @@ describe("a released stage hosted on the shared connection answers asks as itsel
 			assert.deepEqual(connection!.sent, [], interrupt);
 			await peers.disconnectAll();
 		}
+	});
+});
+
+describe("a message that arrives with the answer naming its stage (#4642)", () => {
+	test("is delivered to the stage once its id is known, and one for a session never hosted is still dropped", async () => {
+		const answered = Promise.withResolvers<HostedSessionAssignment[]>();
+		const { peers, connections, relayed } = harness({ host: () => answered.promise });
+		const adopting = peers.adopt(route(0));
+		await settle();
+		const [connection] = connections;
+
+		deliver(connection!, idOf(0), "early fyi", { expectsReply: false });
+		deliver(connection!, "c0:unknown", "lost", { expectsReply: false });
+		await settle();
+		assert.equal(relayed.length, 0, "nothing is delivered before the stage's id is known");
+
+		answered.resolve(assignEach(connection!.hosted[0]!, 0));
+		await adopting;
+		await settle();
+
+		assert.deepEqual(
+			relayed.map((message) => message.text),
+			["early fyi"],
+		);
+	});
+});
+
+describe("an ask in the read that carries the hosting answer (#4642)", () => {
+	test("is answered by the stage, as the client emits it in the turn that resolves the request", async () => {
+		const answered = Promise.withResolvers<HostedSessionAssignment[]>();
+		const { peers, connections } = harness({ host: () => answered.promise });
+		const adopting = peers.adopt(route(0));
+		await settle();
+		const [connection] = connections;
+
+		answered.resolve(assignEach(connection!.hosted[0]!, 0));
+		deliver(connection!, idOf(0), "asked at once", { id: "same-read" });
+		await adopting;
+		await settle();
+
+		assert.equal(connection!.sent.length, 1, "the ask was answered, not dropped");
+		assert.equal(connection!.sent[0]!.to, "asker");
+		assert.equal(connection!.sent[0]!.options.replyTo, "same-read");
+		assert.equal(connection!.sent[0]!.options.hostedSender, idOf(0));
 	});
 });
 
@@ -413,6 +466,76 @@ describe("the shared connection (#4642)", () => {
 		assert.equal(connections.length, 2, "the second retry waits the second step");
 		await vi.advanceTimersByTimeAsync(1);
 		assert.equal(connections.length, 3);
+		await peers.disconnectAll();
+	});
+
+	test("a failure that says it cannot succeed is surfaced once, not retried, and a later adoption tries again (#4642)", async () => {
+		vi.useFakeTimers();
+		const refusal = new IntercomBrokerProtocolError({
+			feature: "host_sessions",
+			brokerProtocolMin: 1,
+			brokerProtocolMax: 2,
+			requiredProtocol: 3,
+		});
+		let refuse = true;
+		const reported: ReleasedStageReconnectFailure[] = [];
+		const { peers, connections } = harness({
+			report: (failure) => reported.push(failure),
+			host: async (frame, connection) => {
+				if (refuse) throw refusal;
+				return assignEach(frame, connection);
+			},
+		});
+
+		await assert.rejects(peers.adopt(route(0)), (error: Error) => error === refusal);
+		assert.equal(vi.getTimerCount(), 0, "no background retry is scheduled");
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		assert.equal(connections.length, 1, "nothing reconnected");
+		assert.deepEqual(reported, [], "the caller got the failure; the background loop had none to report");
+
+		refuse = false;
+		await peers.adopt(route(0));
+		assert.equal(connections[0]!.hosted.length, 2, "the next adoption hosts the stage again");
+		await peers.disconnectAll();
+	});
+
+	test("only an error that does not say it is final is retried (#4642)", () => {
+		assert.equal(isRetryableHostingFailure(new Error("broker down")), true);
+		assert.equal(isRetryableHostingFailure(Object.assign(new Error("timed out"), { retryable: true })), true);
+		assert.equal(isRetryableHostingFailure(Object.assign(new Error("refused"), { retryable: false })), false);
+	});
+
+	test("the background reconnect reports every failure and stops after its bound, until the next adoption (#4642)", async () => {
+		vi.useFakeTimers();
+		const reported: ReleasedStageReconnectFailure[] = [];
+		const { peers, connections } = harness({
+			report: (failure) => reported.push(failure),
+			connect: async () => {
+				throw new Error("broker down");
+			},
+		});
+		await assert.rejects(peers.adopt(route(0)));
+		await vi.advanceTimersByTimeAsync(60 * 60_000);
+
+		assert.equal(connections.length, 1 + RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX, "the first attempt and every retry");
+		assert.equal(reported.length, RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX);
+		assert.deepEqual(
+			reported.map((failure) => failure.attempt),
+			Array.from({ length: RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX }, (_, index) => index + 1),
+		);
+		assert.ok(reported.slice(0, -1).every((failure) => failure.retrying));
+		assert.equal(reported.at(-1)!.retrying, false, "the last failure says nobody retries");
+		assert.equal(reported.at(-1)!.peers, 1);
+		assert.equal(reported.at(-1)!.error.message, "broker down");
+		assert.equal(vi.getTimerCount(), 0);
+
+		await assert.rejects(peers.adopt(route(1)));
+		await vi.advanceTimersByTimeAsync(FIRST_RETRY_MS);
+		assert.equal(
+			connections.length,
+			2 + RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX + 1,
+			"a new adoption starts the retries again",
+		);
 		await peers.disconnectAll();
 	});
 

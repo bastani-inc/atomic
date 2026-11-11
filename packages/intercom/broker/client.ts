@@ -64,6 +64,7 @@ import {
 	IntercomPendingStageRouteTimeoutError,
 	type IntercomPendingStageRouteTimeoutFields,
 } from "../pending-stage-route-timeout-error.js";
+import { type IntercomHostedSessionTimeoutFields, IntercomHostedSessionTimeoutError } from "../hosted-session-timeout-error.js";
 import { isSocketAnswering } from "./socket-liveness.js";
 import { IntercomBrokerProtocolError, IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
 import {
@@ -1781,11 +1782,24 @@ export class IntercomClient extends EventEmitter {
   private hostedSessionRequest(frame: Record<string, unknown>): Promise<HostedSessionAssignment[]> {
     const socket = this.requireActiveSocket();
     const requestId = randomUUID();
+    const startedAt = performance.now();
     return new Promise((resolve, reject) => {
       // Every other way the request settles clears this timer, so it only ever finds the request still pending.
       const timeout = setTimeout(() => {
         this.pendingHostedSessionRequests.delete(requestId);
-        void this.requestTimeout(socket, new Error("Hosted-session request timeout")).then(reject);
+        const timedOut: IntercomHostedSessionTimeoutFields = {
+          requestType: frame.type === "unhost_sessions" ? "unhost_sessions" : "host_sessions",
+          sessionCount: Array.isArray(frame.sessions) ? frame.sessions.length : Array.isArray(frame.sessionIds) ? frame.sessionIds.length : 0,
+          timeoutMs: RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS,
+          elapsedMs: Math.round(performance.now() - startedAt),
+        };
+        void this.requestTimeout(socket, new IntercomHostedSessionTimeoutError(timedOut)).then((error) =>
+          reject(
+            error instanceof IntercomBrokerTimeoutError && !(error instanceof IntercomHostedSessionTimeoutError)
+              ? new IntercomHostedSessionTimeoutError(timedOut, { cause: error })
+              : error,
+          ),
+        );
       }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
       this.pendingHostedSessionRequests.set(requestId, {
         resolve: (sessions) => {

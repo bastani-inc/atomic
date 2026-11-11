@@ -157,6 +157,8 @@ A session can host lightweight sessions on its own broker connection with `Inter
 | `HostedSessionRequestError` | `invalid_hosted_session` | A hosted session has no name, is not a valid agent registration, or has a malformed return address or live workflow-stage route. Nothing in its request took effect. | Fix the named item and send the request again. |
 | `NotHostedSessionError` | `not_hosted_by_connection` | A send names a `hostedSender`, or a removal names a session, that this connection does not host. A refused send's result has this `reasonCode` and the error in `error`. | Send from, or remove through, the connection that hosts the session; after a reconnect, host it again. |
 
+A hosting request the broker does not answer within 5 seconds fails with `IntercomHostedSessionTimeoutError` (`code` `hosted_session_timeout`, `phase` `"hosted-session-request"`, `requestType`, `sessionCount`, `timeoutMs`, `elapsedMs`, `hint`, `retryable: true`; `cause` is the failed health check when the broker stopped answering altogether). Released stages that need hosting again are hosted on the next connection. A hosting request a broker below protocol 3 refuses fails with `IntercomBrokerProtocolError`, which is not retried: replace the broker with `atomic intercom restart`. Failures of the background reconnect are recorded in the debug log, and it stops after 30 attempts in a row until the next released stage is adopted.
+
 With [multi-node routing](/intercom/operations#running-intercom-across-machines) on, a child reserved through one broker stays with its owner. A reservation that another session makes for it through a different broker is withdrawn as soon as the shared store refuses it.
 
 ### Subagents with no live session
@@ -173,6 +175,7 @@ The send result's `error` is an `IntercomRecipientGoneError` and `reasonCode` is
 | `SubagentRecipientEndedError` | `recipient_cancelled` | The subagent was cancelled for good, or its workflow stage ended. | `false` | Launch a fresh subagent if its work is still needed. |
 | `SubagentRecipientDisconnectedError` | `recipient_disconnected` | The subagent disconnected, did not reconnect within 20 seconds, and its launching session did not say why. | `true` | Check `subagent({ action: "status" })` in its launching session, or try again shortly. |
 | `SubagentRecipientOwnerSuspendedError` | `recipient_owner_suspended` | The subagent is released and the session that launched it, which wakes it, is suspended or disconnected; the send waited 20 seconds, or could not wait. | `true` | Try again once that session is back, or send to its workflow stage target (`workflow:<rootRunId>/<stage>`), which queues the message until the stage reopens. |
+| `StageRecipientReleasedError` | `recipient_stage_released` | A send or ask names a released workflow stage whose hosted peer is gone: its host connection removed it or closed, and it is not hosted again. The message reads `Workflow stage "<name>" …`. | `false` | Send to its workflow stage target (`workflow:<rootRunId>/<stage>`), which reaches the stage's current session or queues until it reopens, or resume the run. |
 
 A launching session reports at most 500 subagents per request; a malformed report is refused with the `ReleasedChildReservationError` codes above, and a report naming a subagent another session owns with `not_owner`.
 

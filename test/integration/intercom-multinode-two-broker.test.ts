@@ -504,3 +504,83 @@ test("a remote sender's send and ask wake a released child on the owner's broker
 	await waitForMessage(child, nextId);
 	assert.equal(wakes.length, 1, "a send to the live child wakes nothing");
 });
+
+test("a stage hosted on one broker is listed, asked and answered across nodes (#4642)", async ({ annotate }) => {
+	const group = unique("workflow:hosted-run");
+	const host = await harness.connect("a", unique("hosted-host"), { group });
+	const asker = await harness.connect("b", unique("hosted-asker"), { group });
+	if (!harness.multiNodeRouting) {
+		await annotate("multi-node routing not advertised: nothing crosses brokers");
+		return;
+	}
+	const stageName = unique("subagent-chat-hosted");
+	const now = Date.now();
+	const hostedMessages: { recipient: string; text: string; id: string }[] = [];
+	host.client.on(
+		"hosted_message",
+		(recipient: string, _from: unknown, message: { id: string; content: { text: string } }) =>
+			hostedMessages.push({ recipient, text: message.content.text, id: message.id }),
+	);
+
+	const [assigned] = await host.client.hostSessions([
+		{
+			key: "stage-0",
+			session: {
+				name: stageName,
+				cwd: "/workspace",
+				model: "faux/model",
+				pid: process.pid,
+				startedAt: now,
+				lastActivity: now,
+				status: "closed · reply: post-mortem only",
+				replyCapability: "live",
+				groups: [group],
+				group,
+			},
+			returnAddress: `${stageName}:released-stage`,
+		},
+	]);
+	assert.ok(assigned);
+	const hostedId = assigned.sessionId;
+
+	await vi.waitFor(
+		async () => {
+			const listed = await asker.client.listSessions(group);
+			assert.ok(
+				listed.some((session) => session.id === hostedId && session.name === stageName),
+				"the other node lists the hosted stage",
+			);
+		},
+		{ timeout: DELIVERY_WAIT_MS, interval: 100 },
+	);
+
+	const ask = await asker.client.send(stageName, { text: "which file?", expectsReply: true });
+	assert.equal(ask.delivered, true, JSON.stringify(ask));
+	await vi.waitFor(() => assert.equal(hostedMessages.length, 1), { timeout: DELIVERY_WAIT_MS, interval: 25 });
+	assert.deepEqual(hostedMessages[0], { recipient: hostedId, text: "which file?", id: ask.id });
+	assert.equal(host.messagesWithId(ask.id).length, 0, "the host's own message handler never sees the stage's ask");
+
+	const reply = await host.client.send(asker.sessionId, {
+		text: "the parser",
+		replyTo: ask.id,
+		requirePendingReply: true,
+		hostedSender: hostedId,
+	});
+	assert.equal(reply.delivered, true, JSON.stringify(reply));
+	const replyFrame = await waitForMessage(asker, reply.id);
+	assert.equal(replyFrame.from.id, hostedId, "the reply comes from the stage, not from its host");
+	assert.equal(replyFrame.message.replyTo, ask.id);
+
+	await host.client.unhostSessions([hostedId]);
+	await vi.waitFor(
+		async () => {
+			const listed = await asker.client.listSessions(group);
+			assert.equal(
+				listed.some((session) => session.id === hostedId),
+				false,
+				"removing the stage removes it on the other node",
+			);
+		},
+		{ timeout: DELIVERY_WAIT_MS, interval: 100 },
+	);
+});

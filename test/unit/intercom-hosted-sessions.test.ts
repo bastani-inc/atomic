@@ -28,6 +28,10 @@ import {
 	ReleasedReplyAnsweredError,
 	serializeIntercomReleasedReplyError,
 } from "../../packages/intercom/broker/released-reply-errors.js";
+import {
+	IntercomHostedSessionTimeoutError,
+	isIntercomHostedSessionTimeoutError,
+} from "../../packages/intercom/hosted-session-timeout-error.js";
 import * as intercom from "../../packages/intercom/index.js";
 import { IntercomBrokerTimeoutError } from "../../packages/intercom/recoverable-disconnect.js";
 
@@ -755,7 +759,9 @@ describe("hosted-session requests settle once and leave nothing behind (#4642)",
 			Object.assign(internals.socket, { destroy() {} });
 			const hosting = assert.rejects(client.hostSessions(items(1)), (error: Error) => {
 				assert.ok(error instanceof IntercomBrokerTimeoutError);
-				assert.equal(error.message, "Hosted-session request timeout");
+				assert.ok(isIntercomHostedSessionTimeoutError(error));
+				assert.ok(error.cause instanceof IntercomBrokerTimeoutError, "the failed health check is its cause");
+				assert.equal(error.requestType, "host_sessions");
 				return true;
 			});
 			await vi.advanceTimersByTimeAsync(10_000);
@@ -825,5 +831,53 @@ describe("messages and delivery failures of hosted sessions (#4642)", () => {
 		const plain = await failingSends().client.send("asker", { text: "x" });
 		assert.equal(plain.delivered, false);
 		assert.equal(Object.hasOwn(plain, "error"), false);
+	});
+});
+
+describe("a hosting request the broker never answers (#4642)", () => {
+	const HOSTED_SESSION_REQUEST_TIMEOUT_MS = 5_000;
+
+	test("fails with the typed timeout naming the request, its size and its bound, and recovers like any broker timeout", async () => {
+		vi.useFakeTimers();
+		try {
+			const healthy = (frame: WrittenFrame): JsonWireValue | undefined =>
+				frame.type === "list_groups" ? { type: "groups", requestId: frame.requestId, groups: [] } : undefined;
+			const { client } = hostingClient({ min: 1, max: 3 }, healthy);
+			const hosting = client.hostSessions(items(3));
+			const removing = client.unhostSessions(["a", "b"]);
+			const failures = Promise.allSettled([hosting, removing]);
+			await vi.advanceTimersByTimeAsync(HOSTED_SESSION_REQUEST_TIMEOUT_MS);
+			const [hostFailure, removeFailure] = await failures;
+
+			assert.equal(hostFailure.status, "rejected");
+			assert.equal(removeFailure.status, "rejected");
+			const error = (hostFailure as PromiseRejectedResult).reason as IntercomHostedSessionTimeoutError;
+			assert.ok(error instanceof IntercomHostedSessionTimeoutError);
+			assert.ok(error instanceof IntercomBrokerTimeoutError);
+			assert.ok(isIntercomHostedSessionTimeoutError(error));
+			assert.equal(error.name, "IntercomHostedSessionTimeoutError");
+			assert.equal(error.code, "hosted_session_timeout");
+			assert.equal(error.phase, "hosted-session-request");
+			assert.equal(error.retryable, true);
+			assert.equal(error.requestType, "host_sessions");
+			assert.equal(error.sessionCount, 3);
+			assert.equal(error.timeoutMs, HOSTED_SESSION_REQUEST_TIMEOUT_MS);
+			assert.equal(error.elapsedMs, HOSTED_SESSION_REQUEST_TIMEOUT_MS);
+			assert.match(
+				error.message,
+				/host_sessions for 3 sessions, unanswered after 5000 ms of 5000 ms \(hosted_session_timeout\)/,
+			);
+			assert.match(error.hint, /atomic intercom restart/);
+			const removal = (removeFailure as PromiseRejectedResult).reason as IntercomHostedSessionTimeoutError;
+			assert.equal(removal.requestType, "unhost_sessions");
+			assert.equal(removal.sessionCount, 2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("the timeout shape is exported from the package", () => {
+		assert.equal(intercom.IntercomHostedSessionTimeoutError, IntercomHostedSessionTimeoutError);
+		assert.equal(intercom.isIntercomHostedSessionTimeoutError, isIntercomHostedSessionTimeoutError);
 	});
 });

@@ -35,6 +35,7 @@ delete process.env.PI_CODING_AGENT_DIR;
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { ReleasedStagePeers } = await import("../../packages/intercom/released-stage-peers.js");
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
+const { isStageRecipientReleasedError } = await import("../../packages/intercom/broker/recipient-gone-errors.js");
 const { HostedSessionRequestError, NotHostedSessionError, isNotHostedSessionError } = await import(
 	"../../packages/intercom/broker/hosted-session-errors.js"
 );
@@ -312,6 +313,65 @@ test("disconnecting the peers removes every released stage from the broker and c
 	assert.equal(fixture.peers.size, 0);
 	assert.deepEqual(await asker.until((sessions) => sessions.length === 0), []);
 	assert.equal(fixture.clients[0]?.isConnected(), false);
+});
+
+test("a send to a released stage whose peer is gone is refused with why and where to send instead, until it is hosted again (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const fixture = peersFixture(group);
+	const asker = await connectAsker(group);
+	const gone = fixture.route(0);
+	await fixture.peers.adopt(gone);
+	await fixture.peers.adopt(fixture.route(1));
+	const hostedIds = (await asker.listed())
+		.filter((session) => session.name === nameOf(gone))
+		.map((session) => session.id);
+	assert.equal(hostedIds.length, 1);
+
+	await fixture.peers.disconnectAll();
+	await asker.until((sessions) => sessions.length === 0);
+
+	for (const target of [nameOf(gone), hostedIds[0]!]) {
+		const refused = await asker.client.send(target, { text: "are you there?" });
+		assert.equal(refused.delivered, false);
+		assert.equal(refused.reasonCode, "recipient_stage_released");
+		const error = refused.error;
+		assert.ok(error !== undefined && isStageRecipientReleasedError(error));
+		assert.equal(error.name, "StageRecipientReleasedError");
+		assert.equal(error.retryable, false);
+		assert.equal(error.fields.target, target);
+		assert.equal(error.fields.childName, nameOf(gone));
+		assert.match(error.hint, /workflow:<rootRunId>\/<stage>/);
+		assert.match(refused.reason ?? "", /Workflow stage .* was released/);
+	}
+	const unknown = await asker.client.send("never-hosted", { text: "hello?" });
+	assert.equal(unknown.reason, "Session not found", "a name nobody hosted keeps its plain refusal");
+
+	await fixture.peers.adopt(gone);
+	const answered = await asker.ask(nameOf(gone), "back?");
+	assert.equal(answered.delivered, true, "hosting the stage again ends the refusal");
+});
+
+test("a session joining a hosted stage's group is announced to the host connection by no hosted session (#4642)", async () => {
+	const stageGroup = `stages-${randomUUID()}`;
+	const fixture = peersFixture(stageGroup);
+	for (let index = 0; index < 3; index++) await fixture.peers.adopt(fixture.route(index));
+	const hostClient = fixture.clients[0]!;
+	const announced: string[] = [];
+	hostClient.on("session_joined", (session: SessionInfo) => announced.push(`joined:${session.name}`));
+	hostClient.on("presence_update", (session: SessionInfo) => announced.push(`presence:${session.name}`));
+	const joinerName = `joiner-${randomUUID()}`;
+	const joiner = await connectAsker(`home-${randomUUID()}`, joinerName);
+
+	await joiner.client.joinGroup(stageGroup);
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+
+	assert.deepEqual(
+		announced,
+		[],
+		"the host connection is in a group of its own, and three hosted stages share its socket without being sent copies",
+	);
+	const asked = await joiner.ask(nameOf(fixture.route(0)), "hello?");
+	assert.equal(asked.delivered, true, "the joiner reaches the stage through its new group");
 });
 
 test("a dropped host connection takes its released stages with it, and they are hosted again on reconnect (#4642)", async () => {

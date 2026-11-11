@@ -2091,8 +2091,12 @@ class IntercomBroker {
         }
         const assignments: HostedSessionAssignment[] = [];
         const presences: Promise<void>[] = [];
+        // #4639: a host back after its connection closed takes over the departures it kept; hosting a name again ends its.
+        this.adoptOrphans(currentId, host);
         for (const item of validation.sessions) {
           const hosted = this.hostSession(currentId, socket, item);
+          if (hosted.registrationName !== undefined)
+            this.dispatchHeldSends(this.departedChildren.supersede(currentId, hosted.registrationName));
           const presence = this.multiNode?.sessionRegistered(hosted);
           if (presence !== undefined) presences.push(presence);
           const liveRouteRefusal = item.liveRoute === undefined ? undefined : this.registerHostedLiveRoute(hosted, item.liveRoute);
@@ -3025,7 +3029,20 @@ class IntercomBroker {
     // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.
     for (const hostedId of [...(this.hostedSessions.get(sessionId) ?? [])]) this.disconnectSession(hostedId);
     this.hostedSessions.delete(sessionId);
-    if (departed.hostedBy !== undefined) this.hostedSessions.get(departed.hostedBy)?.delete(sessionId);
+    if (departed.hostedBy !== undefined) {
+      this.hostedSessions.get(departed.hostedBy)?.delete(sessionId);
+      // A released stage whose peer left answers with why, and where to send instead, rather than `Session not found`.
+      if (departed.registrationName !== undefined) {
+        const aliases = [sessionId, departed.registrationReturnAddress].filter((alias): alias is string => alias !== undefined);
+        this.dispatchHeldSends(
+          this.departedChildren.markStageReleased(departed.hostedBy, {
+            childName: departed.registrationName,
+            group: normalizeGroup(departed.registrationGroup),
+            aliases,
+          }),
+        );
+      }
+    }
 
     this.restoringRecipients.dropSender(sessionId);
     this.departedChildren.dropSender(sessionId);
