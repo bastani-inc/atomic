@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	type DeferredStartupMode,
 	ensureDeferredStartupComplete,
-} from "../src/modes/interactive/interactive-deferred-startup.ts";
+} from "../src/modes/interactive/interactive-deferred-startup.js";
 
 function createMode(): DeferredStartupMode & { starts: number; errors: string[] } {
 	return {

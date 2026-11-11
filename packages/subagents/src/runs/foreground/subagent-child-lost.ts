@@ -23,7 +23,7 @@ export function recordedTask(record: SubagentChildRecord): RecordedTask {
 }
 
 function shellWord(value: string): string {
-	return /^[\w./:@%+=,-]+$/.test(value) ? value : JSON.stringify(value);
+	return /^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /**

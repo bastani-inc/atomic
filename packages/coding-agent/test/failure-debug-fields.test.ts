@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { failureDebugFields } from "../src/core/debug.ts";
+import { failureDebugFields } from "../src/core/debug.js";
 
 test("a failure a fallback absorbed is named by class, code, message and first cause (#4660)", () => {
 	const cause = new TypeError("lower level");

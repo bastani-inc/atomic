@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { test } from "vitest";
-import type { MarkdownTransformer } from "../src/core/extensions/types.ts";
-import type { SessionEntry } from "../src/core/session-manager.ts";
-import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import type { MarkdownTransformer } from "../src/core/extensions/types.js";
+import type { SessionEntry } from "../src/core/session-manager.js";
+import { bindInitialEagerSession } from "../src/modes/interactive/interactive-initial-session-binding.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import {
 	releaseStartupChatOutput,
 	StartupChatContainer,
-} from "../src/modes/interactive/interactive-startup-chat-container.ts";
-import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.ts";
+} from "../src/modes/interactive/interactive-startup-chat-container.js";
+import { getMarkdownTheme, initTheme } from "../src/modes/interactive/theme/theme.js";
 
 initTheme("dark");
 function createGateMode(): InteractiveMode {

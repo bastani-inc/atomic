@@ -337,19 +337,21 @@ export async function prepareSessionResume(
 			: undefined;
 	if (project !== undefined) {
 		await recordReuse(sessionManager, project.mapping);
-		return continueInChosenCheckout(sessionManager, project, storeDir, options);
+		notices.push(project.notice);
 	}
 	const keepsOwnCheckout =
 		match !== undefined &&
+		project === undefined &&
 		needsRestore &&
 		(await isDirectory(match.root)) &&
 		(await orFallBack(options, "own-checkout", new Set([match.root]), () =>
 			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options),
 		).then((worked) => worked.has(match.root)));
+	// The checkout the session returned to stays as it is, whatever it changed since: only the others are restored.
+	const kept = [...(keepsOwnCheckout && match !== undefined ? [match.root] : [])];
+	if (project !== undefined && match !== undefined) kept.push(match.root, project.mapping.to);
 	const resume: PrepareSessionResumeOptions =
-		match !== undefined && keepsOwnCheckout
-			? { ...options, keepInPlace: new Set([...(options.keepInPlace ?? []), match.root]) }
-			: options;
+		kept.length > 0 ? { ...options, keepInPlace: new Set([...(options.keepInPlace ?? []), ...kept]) } : options;
 	if (match !== undefined && !keepsOwnCheckout && needsRestore) {
 		git = { unavailable: await io.probeGit(options.signal) };
 		const reuse = git.unavailable === undefined ? await reuseLaunchCheckout(match, options) : undefined;
