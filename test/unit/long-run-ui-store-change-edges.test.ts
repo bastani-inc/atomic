@@ -435,6 +435,21 @@ describe("expansion edges (#4642)", () => {
 		collectGarbage();
 		assert.equal(removed?.deref(), undefined);
 	});
+
+	test("the expansion kept for a removed run is released even when more runs remain than were expanded (#4642)", async () => {
+		const store = createStore();
+		store.recordRunStart(run("gone", chain(3)));
+		for (const id of ["kept-1", "kept-2", "kept-3"]) store.recordRunStart(run(id, chain(3, "completed", id)));
+		let removed: WeakRef<object> | undefined;
+		(() => {
+			removed = new WeakRef(expandWorkflowGraph(store.graphSnapshot(), "gone").nodes);
+			store.removeRun("gone");
+			createWorkflowGraphExpander(store.graphSnapshot())("kept-1");
+		})();
+		await nextTurn();
+		collectGarbage();
+		assert.equal(removed?.deref(), undefined);
+	});
 });
 
 describe("activity projection edges (#4642)", () => {

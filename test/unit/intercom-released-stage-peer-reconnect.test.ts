@@ -248,3 +248,25 @@ test("a broker that drops every connection while hosting stops being retried aft
 	assert.equal(reports.at(-1)?.retrying, false);
 	assert.equal(vi.getTimerCount(), 0, "no reconnect is left scheduled");
 });
+
+test("a replacement stage is hosted on a new connection when removing the replaced peer times out (#4642)", async () => {
+	vi.useFakeTimers();
+	const { peers, hosted, disconnects, clients } = fakeConnections();
+	await peers.adopt(route(0));
+	vi.spyOn(clients[0]!, "unhostSessions").mockRejectedValue(
+		new IntercomHostedSessionTimeoutError({
+			requestType: "unhost_sessions",
+			sessionCount: 1,
+			timeoutMs: 5_000,
+			elapsedMs: 5_001,
+		}),
+	);
+
+	await peers.adopt({ ...route(0), sessionId: "stage-session-replacement" });
+	await vi.advanceTimersByTimeAsync(RECONNECT_WINDOW_MS);
+
+	assert.deepEqual(disconnects, [0], "the connection whose removal outcome is unknown is closed");
+	assert.equal(clients.length, 2, "the replacement is hosted on a new connection");
+	assert.equal(hosted.at(-1)?.[0]?.returnAddress, "stage-session-replacement:released-stage");
+	await peers.disconnectAll();
+});
