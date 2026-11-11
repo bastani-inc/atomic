@@ -4,13 +4,19 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.78-alpha.1] - 2026-11-11
+
+GitHub Copilot's newest Gemini and Claude models are always in the catalog.
+
+- **New Copilot models.** `github-copilot/gemini-4-carbon` and `github-copilot/claude-fable-5.2` are available even from a catalog built before models.dev listed them, and Fable 5.2 offers only the thinking levels it accepts ([#4653](https://github.com/bastani-inc/atomic/pull/4653)).
+
 ### Added
 
-- GitHub Copilot: `github-copilot/gemini-4-carbon` and `github-copilot/claude-fable-5.2` are always in the built-in catalog, also when the catalog was built before models.dev listed them
+- GitHub Copilot: `github-copilot/gemini-4-carbon` and `github-copilot/claude-fable-5.2` are always in the built-in catalog, also when the catalog was built before models.dev listed them ([#4653](https://github.com/bastani-inc/atomic/pull/4653))
 
 ### Fixed
 
-- Claude Fable 5.2 no longer offers a `minimal` thinking level; like Fable 5.1 it accepts `low`, `medium`, `high`, `xhigh` and `max`
+- Claude Fable 5.2 no longer offers a `minimal` thinking level; like Fable 5.1 it accepts `low`, `medium`, `high`, `xhigh` and `max` ([#4653](https://github.com/bastani-inc/atomic/pull/4653))
 
 ## [0.9.77] - 2026-11-11
 
