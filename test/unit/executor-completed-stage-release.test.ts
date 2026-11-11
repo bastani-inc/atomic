@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe } from "vitest";
+import { describe, vi } from "vitest";
 import { JsonlSessionStore } from "../../packages/coding-agent/src/core/storage/session/jsonl-session-store.js";
 import { ensurePostMortemStageHandle } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
 import type {
@@ -97,17 +97,25 @@ async function completeStageHeldBy(
 	};
 }
 
+/** Long enough for a release to load the saved transcript and dispose the session; failing tests wait this long. */
+const RELEASE_SETTLE_MS = 2_000;
+
+/** The run's end asked for the release; the stage goes as soon as the need ends, with nobody asking again (#4642). */
 async function assertKeptThenReleasedWhenLifted(stage: CompletedStage): Promise<void> {
 	assert.equal(stage.registry.get(stage.runId, stage.stageId), stage.handle, "the stage stays registered");
 	assert.equal(stage.fixture.disposals(), 0, "the live session is not disposed");
 	await stage.lift();
-	await stage.registry.releaseIdle(stage.runId);
-	assert.equal(
-		stage.registry.get(stage.runId, stage.stageId),
-		undefined,
-		"the stage is released once nothing needs it",
+	await vi.waitFor(
+		() => {
+			assert.equal(
+				stage.registry.get(stage.runId, stage.stageId),
+				undefined,
+				"the stage is released once nothing needs it",
+			);
+			assert.equal(stage.fixture.disposals(), 1);
+		},
+		{ timeout: RELEASE_SETTLE_MS, interval: 5 },
 	);
-	assert.equal(stage.fixture.disposals(), 1);
 }
 
 describe("completed stage session release", () => {
@@ -513,6 +521,7 @@ describe("completed stage session release", () => {
 				record.activity.pendingMessages = 1;
 				return () => {
 					record.activity.pendingMessages = 0;
+					record.emit({ type: "queue_update", steering: [], followUp: [] });
 				};
 			});
 			await assertKeptThenReleasedWhenLifted(stage);
@@ -523,6 +532,7 @@ describe("completed stage session release", () => {
 				record.activity.streaming = true;
 				return () => {
 					record.activity.streaming = false;
+					record.emit({ type: "agent_settled", aborted: false });
 				};
 			});
 			await assertKeptThenReleasedWhenLifted(stage);
@@ -620,6 +630,13 @@ describe("completed stage session release", () => {
 				record.activity.compacting = true;
 				return () => {
 					record.activity.compacting = false;
+					record.emit({
+						type: "compaction_end",
+						reason: "threshold",
+						result: undefined,
+						aborted: false,
+						willRetry: false,
+					});
 				};
 			});
 			await assertKeptThenReleasedWhenLifted(stage);
@@ -630,6 +647,7 @@ describe("completed stage session release", () => {
 				record.activity.retrying = true;
 				return () => {
 					record.activity.retrying = false;
+					record.emit({ type: "auto_retry_end", success: true, attempt: 1 });
 				};
 			});
 			await assertKeptThenReleasedWhenLifted(stage);
@@ -640,6 +658,7 @@ describe("completed stage session release", () => {
 				record.activity.queuedMessagesPaused = true;
 				return () => {
 					record.activity.queuedMessagesPaused = false;
+					record.emit({ type: "queue_update", steering: [], followUp: [] });
 				};
 			});
 			await assertKeptThenReleasedWhenLifted(stage);
@@ -745,6 +764,55 @@ describe("completed stage session release", () => {
 			finish.resolve();
 			await running;
 			assert.equal(fixture.disposals(), 1, "the stage is released once it completes and the run ends");
+		});
+	});
+
+	describe("a live stage handle reports what holds it (#4642)", () => {
+		test("attaching and follow-ups on a live stage handle count as holds (#4642)", async () => {
+			const stage = await completeStageHeldBy(({ handle }) => handle.subscribe(() => {}));
+			const gate = stage.handle.releaseGate!;
+			const followUp = vi.spyOn(stage.record.session, "followUp");
+			const before = gate.holdsTaken();
+			await stage.handle.ensureAttached();
+			await stage.handle.followUp("one more thing");
+			assert.equal(gate.holdsTaken(), before + 2);
+			assert.deepEqual(
+				followUp.mock.calls.map(([text]) => text),
+				["one more thing"],
+			);
+			await stage.lift();
+			await stage.registry.clear();
+		});
+
+		test("a stage claimed while a chat held it stays until the claimer used it (#4642)", async () => {
+			const stage = await completeStageHeldBy(({ handle }) => handle.subscribe(() => {}));
+			assert.equal(stage.registry.claim(stage.runId, stage.stageId), stage.handle);
+			await stage.lift();
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.equal(stage.registry.get(stage.runId, stage.stageId), stage.handle, "the claimer has not used it yet");
+
+			await stage.handle.ensureAttached();
+			await vi.waitFor(() => assert.equal(stage.fixture.disposals(), 1), {
+				timeout: RELEASE_SETTLE_MS,
+				interval: 5,
+			});
+		});
+
+		test("a released live handle tells nobody about operations after its release (#4642)", async () => {
+			const stage = await completeStageHeldBy(({ handle }) => handle.subscribe(() => {}));
+			let lifted = 0;
+			stage.handle.releaseGate!.onHoldLifted(() => {
+				lifted += 1;
+			});
+			await stage.lift();
+			await vi.waitFor(() => assert.equal(stage.fixture.disposals(), 1), {
+				timeout: RELEASE_SETTLE_MS,
+				interval: 5,
+			});
+			const liftedAtRelease = lifted;
+
+			await Promise.allSettled([stage.handle.followUp("after release")]);
+			assert.equal(lifted, liftedAtRelease);
 		});
 	});
 

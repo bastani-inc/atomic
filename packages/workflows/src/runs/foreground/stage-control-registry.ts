@@ -341,7 +341,6 @@ export function createStageControlRegistry(): StageControlRegistry {
 	const pendingDisposals = new Set<Promise<void>>();
 	const sessionStores = new Map<string, Map<string, SessionStore>>();
 	const releaseListeners = new Set<(stage: ReleasedStage) => void>();
-	const releasesInFlight = new Map<string, Map<string, Promise<void>>>();
 	let generation = 0;
 	function rememberSessionStore(
 		handle: StageControlHandle,
@@ -394,7 +393,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 	}
 
 	function unusedSinceClaim(entry: RegistryEntry, gate: StageSessionReleaseGate): boolean {
-		return entry.holdsAtClaim !== undefined && gate.holdsTaken() <= entry.holdsAtClaim;
+		return gate.holdsTaken() <= (entry.holdsAtClaim ?? -1);
 	}
 
 	function releaseWhenLetGo(runId: string, stageId: string, entry: RegistryEntry): void {
@@ -436,21 +435,10 @@ export function createStageControlRegistry(): StageControlRegistry {
 	}
 
 	function releaseIdleEntry(runId: string, stageId: string, entry: RegistryEntry): Promise<void> {
-		if (entry.releasing !== undefined) return entry.releasing;
-		let inFlight = releasesInFlight.get(runId);
-		if (inFlight === undefined) {
-			inFlight = new Map();
-			releasesInFlight.set(runId, inFlight);
-		}
-		const runReleases = inFlight;
-		const releasing = releaseUnlessUsed(runId, stageId, entry).finally(() => {
-			if (entry.releasing === releasing) entry.releasing = undefined;
-			if (runReleases.get(stageId) === releasing) runReleases.delete(stageId);
-			if (runReleases.size === 0 && releasesInFlight.get(runId) === runReleases) releasesInFlight.delete(runId);
+		entry.releasing ??= releaseUnlessUsed(runId, stageId, entry).finally(() => {
+			entry.releasing = undefined;
 		});
-		entry.releasing = releasing;
-		runReleases.set(stageId, releasing);
-		return releasing;
+		return entry.releasing;
 	}
 
 	async function releaseUnlessUsed(runId: string, stageId: string, entry: RegistryEntry): Promise<void> {
@@ -464,7 +452,7 @@ export function createStageControlRegistry(): StageControlRegistry {
 		// must see it released or keep it, never half of each.
 		const runMap = _byRun.get(runId);
 		if (runMap?.get(stageId) !== entry || entry.epoch !== epoch || entry.leases.size > 0) return;
-		if (entry.disposal !== undefined || unusedSinceClaim(entry, gate) || !gate.idle()) return;
+		if (unusedSinceClaim(entry, gate) || !gate.idle()) return;
 		const { stageName, sessionId } = entry.handle;
 		rememberSessionStore(entry.handle, savedIn);
 		runMap.delete(stageId);
@@ -711,9 +699,6 @@ export function createStageControlRegistry(): StageControlRegistry {
 		async releaseIdle(runId: string, only?: string): Promise<void> {
 			const runMap = _byRun.get(runId);
 			const entries = only === undefined ? [...(runMap ?? [])] : [[only, runMap?.get(only)] as const];
-			const settling = [...(releasesInFlight.get(runId) ?? [])].filter(
-				([stageId]) => only === undefined || stageId === only,
-			);
 			for (const [stageId, entry] of entries) {
 				if (entry === undefined) continue;
 				entry.releaseWanted = true;
@@ -723,7 +708,8 @@ export function createStageControlRegistry(): StageControlRegistry {
 					console.warn("atomic-workflows: completed stage session release failed", error);
 				}
 			}
-			await Promise.allSettled(settling.map(([, release]) => release));
+			// A release a hold's end started may have unregistered its stage already: wait for its session to go too.
+			await Promise.allSettled([...pendingDisposals]);
 		},
 		onStageReleased(listener: (stage: ReleasedStage) => void): () => void {
 			releaseListeners.add(listener);

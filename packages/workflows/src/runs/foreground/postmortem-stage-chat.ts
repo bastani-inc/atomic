@@ -229,11 +229,11 @@ export function createPostMortemStageHandle(
 		queuedUserMessages.record(event);
 		holds.observe(event);
 	});
-	return {
+	const handle = {
 		runId,
 		stageId: stage.id,
 		stageName: stage.name,
-		status: "completed",
+		status: "completed" as const,
 		sessionStore,
 		get sessionId() {
 			return context.__sessionMeta().sessionId ?? sessionId;
@@ -256,37 +256,29 @@ export function createPostMortemStageHandle(
 		queuedUserMessages() {
 			return queuedUserMessages.snapshot();
 		},
-		ensureAttached() {
-			return holds.operation(ensureAttached);
+		async ensureAttached() {
+			await ensureAttached();
 		},
-		sendUserMessage(text, options, beforeDelivery) {
-			return holds.operation(async () => {
+		async sendUserMessage(text, options, beforeDelivery) {
+			throwIfClosed();
+			const preparation = messagePreparation();
+			const admitDelivery = (): void => {
 				throwIfClosed();
-				const preparation = messagePreparation();
-				const admitDelivery = (): void => {
-					throwIfClosed();
-					beforeDelivery?.();
-				};
-				return context.__sendUserMessage(text, options, admitDelivery, preparation);
-			});
+				beforeDelivery?.();
+			};
+			return context.__sendUserMessage(text, options, admitDelivery, preparation);
 		},
-		prompt(text: string) {
-			return holds.operation(async () => {
-				await ensureAttached();
-				await context.prompt(text);
-			});
+		async prompt(text: string) {
+			await ensureAttached();
+			await context.prompt(text);
 		},
-		steer(text: string) {
-			return holds.operation(async () => {
-				await ensureAttached();
-				await context.steer(text);
-			});
+		async steer(text: string) {
+			await ensureAttached();
+			await context.steer(text);
 		},
-		followUp(text: string) {
-			return holds.operation(async () => {
-				await ensureAttached();
-				await context.followUp(text);
-			});
+		async followUp(text: string) {
+			await ensureAttached();
+			await context.followUp(text);
 		},
 		async pause() {
 			throw new Error("Post-mortem stage chat cannot pause or resume workflow execution.");
@@ -325,7 +317,16 @@ export function createPostMortemStageHandle(
 				);
 			},
 			holdsTaken: () => holds.holdsTaken,
-			onHoldLifted: (listener) => holds.onLifted(listener),
+			onHoldLifted: (listener: () => void) => holds.onLifted(listener),
 		},
-	};
+	} satisfies StageControlHandle;
+
+	const { sendUserMessage, prompt, steer, followUp } = handle;
+	handle.ensureAttached = () => holds.operation(ensureAttached);
+	handle.sendUserMessage = (text, options, beforeDelivery) =>
+		holds.operation(() => sendUserMessage(text, options, beforeDelivery));
+	handle.prompt = (text) => holds.operation(() => prompt(text));
+	handle.steer = (text) => holds.operation(() => steer(text));
+	handle.followUp = (text) => holds.operation(() => followUp(text));
+	return handle;
 }

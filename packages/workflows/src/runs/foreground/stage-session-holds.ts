@@ -1,13 +1,5 @@
 import type { AgentSessionEvent } from "@bastani/atomic";
 
-const SESSION_QUIETING_EVENTS: ReadonlySet<string> = new Set([
-	"agent_end",
-	"agent_settled",
-	"queue_update",
-	"compaction_end",
-	"auto_retry_end",
-]);
-
 /**
  * What holds a stage handle's live session from outside: mounted chats (visible or hidden) and operations still
  * running on the handle. Each time a hold ends, or the session reports it may have gone quiet, listeners are told,
@@ -51,8 +43,16 @@ export class StageSessionHolds {
 		}
 	}
 
+	/** Feed every session event: the end of a turn, of a queue, of a compaction or of a retry may leave it quiet. */
 	observe(event: AgentSessionEvent): void {
-		if (SESSION_QUIETING_EVENTS.has(event.type)) this.lifted();
+		switch (event.type) {
+			case "agent_end":
+			case "agent_settled":
+			case "queue_update":
+			case "compaction_end":
+			case "auto_retry_end":
+				this.lifted();
+		}
 	}
 
 	onLifted(listener: () => void): () => void {

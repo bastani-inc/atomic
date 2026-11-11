@@ -86,7 +86,6 @@ export class GraphViewLayout {
 	private bodyContentRows = 0;
 	private lastBodyWidth: number | undefined;
 	private scrollbar: ScrollbarGeometry | undefined;
-	private scrollbarShown = false;
 	private draggingScrollbar: { grabOffset: number } | undefined;
 
 	constructor(callbacks: GraphViewLayoutCallbacks) {
@@ -98,7 +97,7 @@ export class GraphViewLayout {
 			// The body draws its own scrollbar column, so this is the only place the real content width is known.
 			const contentWidth = this.scrollbarShown ? Math.max(1, width - 1) : width;
 			this.lastBodyWidth = contentWidth;
-			return this.renderBody(contentWidth, width);
+			return this.renderBody(contentWidth);
 		});
 		const footer = new CallbackComponent((width) => this.callbacks.renderFooter(width));
 		this.scrollView = new ScrollView(body, {
@@ -168,7 +167,6 @@ export class GraphViewLayout {
 		this.bodyContentRows = this.contentRowsFor(measureWidth);
 		this.scrollView.updateLayout(this.bodyContentRows, this.bodyViewportRows, requestRender);
 		if (restoreTop !== undefined && this.scrollView.scrollTop < restoreTop) this.scrollView.scrollTo(restoreTop);
-		this.scrollbarShown = this.bodyContentRows > this.bodyViewportRows;
 		this.callbacks.beforeFrame?.(this.scrollView, this.bodyViewportRows, this.bodyContentRows, safeWidth);
 		return renderLayoutFrame(this.root, safeWidth, safeHeight, requestRender);
 	}
@@ -263,6 +261,10 @@ export class GraphViewLayout {
 		this.root.invalidate();
 	}
 
+	private get scrollbarShown(): boolean {
+		return this.bodyContentRows > this.bodyViewportRows;
+	}
+
 	private thumb(trackHeight: number): {
 		readonly offset: number;
 		readonly height: number;
@@ -273,8 +275,7 @@ export class GraphViewLayout {
 			Math.min(trackHeight, Math.round((trackHeight * trackHeight) / this.bodyContentRows)),
 		);
 		const maxScrollTop = Math.max(0, this.bodyContentRows - trackHeight);
-		const offset =
-			maxScrollTop === 0 ? 0 : Math.round((this.scrollView.scrollTop / maxScrollTop) * (trackHeight - height));
+		const offset = Math.round((this.scrollView.scrollTop / Math.max(1, maxScrollTop)) * (trackHeight - height));
 		return { offset, height, maxScrollTop };
 	}
 
@@ -283,7 +284,7 @@ export class GraphViewLayout {
 	 * grapheme, which cost each frame of a scrolling graph more than drawing the graph (#4642).
 	 */
 	private bodyScrollbarGeometry(bodyBox: LayoutBox): ScrollbarGeometry | undefined {
-		if (!this.scrollbarShown || bodyBox.rect.width <= 0 || bodyBox.rect.height <= 0) return undefined;
+		if (!this.scrollbarShown || bodyBox.rect.height <= 0) return undefined;
 		const thumb = this.thumb(bodyBox.rect.height);
 		return {
 			column: bodyBox.rect.x + bodyBox.rect.width - 1,
@@ -295,13 +296,13 @@ export class GraphViewLayout {
 		};
 	}
 
-	private renderBody(width: number, boxWidth: number): string[] {
+	private renderBody(width: number): string[] {
 		const contentRows = this.bodyContentRows;
 		const lines = new Array<string>(contentRows);
 		const top = Math.max(0, Math.min(contentRows, this.scrollView.scrollTop));
 		const rows = Math.max(0, Math.min(this.bodyViewportRows, contentRows - top));
 		const visible = this.callbacks.renderBody(width, top, rows, contentRows);
-		const thumb = this.scrollbarShown && boxWidth > width ? this.thumb(this.bodyViewportRows) : undefined;
+		const thumb = this.scrollbarShown ? this.thumb(this.bodyViewportRows) : undefined;
 		const thumbCell = this.scrollView.scrollbarThumbStyle(this.scrollView.isScrollbarActive ? "█" : "┃");
 		const trackCell = this.scrollView.scrollbarTrackStyle("│");
 		for (let index = 0; index < visible.length && index < rows; index++) {
