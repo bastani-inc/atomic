@@ -6,8 +6,8 @@
  */
 
 import { hasErrorIdentity, type SerializedTypedError, serializeErrorCause } from "../error-contract.ts";
+import { cancelReasonText } from "../tasks/cancel-reason.js";
 import type {
-	CancelCause,
 	CancelError,
 	CancelReceipt,
 	Cleanup,
@@ -31,18 +31,6 @@ export interface TaskStatus {
 }
 
 export const EMPTY_OUTPUT_TEXT = "(no output)";
-
-const CANCEL_CAUSE_TEXT: Record<CancelCause, string> = {
-	user: "stop requested",
-	"owner-close": "session closed",
-	"execution-timeout": "timed out",
-	"output-limit": "output limit reached",
-	"parent-handoff": "handed off",
-	// A shell cannot resume: a pause stops it, and the resumed work redoes the step.
-	pause: "stopped by a pause",
-	quit: "quit · paused · awaiting resume",
-	shutdown: "Atomic shut down",
-};
 
 function firstLine(text: string): string {
 	return text.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
@@ -78,7 +66,7 @@ export function taskResultStatus(result: TaskResult): TaskStatus {
 		case "cancelled":
 			return withDetail(
 				{ glyph: "○", tone: "dim", label: "cancelled" },
-				result.cause === "user" ? undefined : CANCEL_CAUSE_TEXT[result.cause],
+				result.cause === "user" ? undefined : cancelReasonText(result),
 			);
 	}
 }
@@ -96,7 +84,7 @@ function taskResultPhrase(result: TaskResult): string {
 			return `failed (${result.code})${reason ? `: ${reason}` : ""}${result.exitCode === undefined ? "" : ` (exit code ${result.exitCode})`}`;
 		}
 		case "cancelled":
-			return `was cancelled (${CANCEL_CAUSE_TEXT[result.cause]})`;
+			return `was cancelled (${cancelReasonText(result)})`;
 	}
 }
 

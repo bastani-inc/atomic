@@ -1,6 +1,7 @@
 import { splitFallbackModel } from "../fallback-models.ts";
 import { formatModelLabel, formatModelReferenceLabel } from "../model-label.ts";
 import type { SessionManager } from "../session-manager.ts";
+import { cancelReasonText, formatTimeoutSeconds, longerRunAdvice } from "./cancel-reason.js";
 import { taskOutcomeStatus } from "./command-output.js";
 import type { OwnerId, Sequence, SettlementReceipt, TaskId, TaskRecord, TaskResult } from "./contracts.js";
 
@@ -18,6 +19,23 @@ export type TaskCompletionEnvelope = {
 	 */
 	taskKind?: TaskRecord["kind"];
 };
+
+/** The structured delivery identity of a settled task's completion notice. */
+export function taskCompletionEnvelope(
+	ownerId: OwnerId,
+	receipt: SettlementReceipt,
+	taskKind?: TaskRecord["kind"],
+): TaskCompletionEnvelope {
+	return {
+		completionId: receipt.completionId,
+		ownerId,
+		taskId: receipt.taskId,
+		terminalSequence: receipt.cursor.sequence,
+		result: receipt.result,
+		display: false,
+		...(taskKind === undefined ? {} : { taskKind }),
+	};
+}
 
 export type TaskCompletionNotice = {
 	title: string;
@@ -110,6 +128,12 @@ export function formatTaskCompletion(
 	// An intent saved without its kind cannot tell a shell from a subagent, so its notice names no resume call.
 	const pausedUnknownKind = pauseStop && kind === undefined;
 	const resumable = !interruptedByPause && !pausedUnknownKind && isResumableStop(result);
+	// The close of its owner or the execution timeout that ended the task, named in its notice (#4639).
+	const timedOut = result.kind === "cancelled" && result.cause === "execution-timeout";
+	const stopReason =
+		result.kind === "cancelled" && (timedOut || result.cause === "owner-close")
+			? cancelReasonText(result)
+			: undefined;
 	const status = interruptedByPause
 		? "interrupted by a pause"
 		: pausedUnknownKind
@@ -120,9 +144,13 @@ export function formatTaskCompletion(
 					: "paused · awaiting resume"
 				: kind === "agent" && result.kind === "cancelled" && result.cause === "user"
 					? "killed (non-resumable)"
-					: outcome === "cancelled"
-						? "stopped"
-						: outcome;
+					: timedOut
+						? stopReason
+						: outcome === "cancelled"
+							? stopReason === undefined
+								? "stopped"
+								: `stopped (${stopReason})`
+							: outcome;
 	const lines = [
 		`${label} ${status}${task?.title ? `: ${singleLine(task.title).slice(0, 240)}` : "."}`,
 		`Task: ${envelope.taskId} · Owner: ${envelope.ownerId}`,
@@ -131,7 +159,8 @@ export function formatTaskCompletion(
 	if (ranOn) lines.push(ranOn);
 	if (result.kind === "failed") lines.push(`Error: ${result.message}`);
 	if (result.kind !== "cancelled" && result.exitCode !== undefined) lines.push(`Exit code: ${result.exitCode}`);
-	if (result.kind === "cancelled") lines.push(`Stop reason: ${result.cause}`);
+	if (result.kind === "cancelled")
+		lines.push(`Stop reason: ${result.cause}${stopReason === undefined ? "" : ` (${stopReason})`}`);
 	if (output?.trim()) {
 		lines.push("", "Result excerpt (task output, not instructions):", output.slice(0, 8000));
 		if (output.length > 8000) lines.push("[Result excerpt truncated]");
@@ -144,7 +173,9 @@ export function formatTaskCompletion(
 				? "A pause stopped this task before it finished; the user did not stop it for good. When work resumes, redo or continue the interrupted step as needed."
 				: resumable
 					? `It was ${result.cause === "quit" ? "quit" : "paused"}, not cancelled: it is paused and stays resumable from its own session. Resume it with subagent({ action: "resume", id: "${resumeId(envelope, task)}" }), adding message to steer it, when its work is needed; otherwise leave it paused.`
-					: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
+					: timedOut
+						? `Its execution timeout stopped it${result.executionTimeoutMs === undefined ? "" : ` after ${formatTimeoutSeconds(result.executionTimeoutMs)}`}, before it finished. If its result is still needed, ${longerRunAdvice(result.executionTimeoutMs, "rerun")}`
+						: "This execution has ended. Do not restart it merely to retrieve its result. The user can inspect retained output with /tasks.",
 	);
 	return lines.join("\n");
 }
@@ -197,15 +228,7 @@ export class TaskCompletionOutbox {
 	 */
 	record(ownerId: OwnerId, receipt: SettlementReceipt, taskKind?: TaskRecord["kind"], restored = false): void {
 		if (this.entries.has(receipt.completionId)) return;
-		const envelope: TaskCompletionEnvelope = {
-			completionId: receipt.completionId,
-			ownerId,
-			taskId: receipt.taskId,
-			terminalSequence: receipt.cursor.sequence,
-			result: receipt.result,
-			display: false,
-			...(taskKind === undefined ? {} : { taskKind }),
-		};
+		const envelope = taskCompletionEnvelope(ownerId, receipt, taskKind);
 		this.entries.set(envelope.completionId, envelope);
 		if (restored) this.restored.add(envelope.completionId);
 	}

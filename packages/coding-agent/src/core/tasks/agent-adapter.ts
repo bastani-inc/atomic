@@ -70,9 +70,9 @@ export class AgentTaskHost {
 				this.authorizeTaskLaunch();
 				this.binding.authorizeLaunch(intent);
 			},
-			authorizeCommandLaunch: (intent) => {
+			authorizeCommandLaunch: (intent, origin) => {
 				this.authorizeTaskLaunch();
-				this.binding.authorizeCommandLaunch?.(intent);
+				this.binding.authorizeCommandLaunch?.(intent, origin);
 			},
 			onTaskSettled: (ref, receipt) => this.binding.onTaskSettled?.(ref, receipt),
 			onTaskCleanupQuarantined: (ref, resources) => this.binding.onTaskCleanupQuarantined?.(ref, resources),

@@ -110,12 +110,17 @@ export type FakeRunnerContext = {
 };
 /** Independent cleanup evidence: an outcome alone never proves resource release. */
 export type FakeExecution = { result: Promise<C.TaskResult>; cleanup: Promise<C.Cleanup> };
+/**
+ * Who asks an owner to run a command: the session that owns it, or a subagent child that runs its shells in its
+ * parent's owner. A released workflow stage still lets its live workers launch (#4639).
+ */
+export type CommandLaunchOrigin = "owner" | "subagent-child";
 export type TrustedTaskHost = {
 	scope: C.OwnerScope;
 	/** Owner-host observation settings; never an execution deadline. */
 	tasks?: { wait?: C.TaskWaitConfiguration };
 	/** The existing host/tool refusal throws here, before native admission. */
-	authorizeCommandLaunch?(intent: C.CommandIntent): void;
+	authorizeCommandLaunch?(intent: C.CommandIntent, origin: CommandLaunchOrigin): void;
 	authorizeLaunch(intent: C.AgentIntent): void;
 	resourceAdmission?: ResourceAdmission;
 	/** Internal host/test configuration only; never tool input or user settings. */
@@ -171,7 +176,12 @@ type TaskState = {
 	statuses: Map<string, string>;
 	statusListeners: Set<() => void>;
 };
-type WaitState = { native: native.WaitLease; outcome: Promise<C.Result<C.WaitOutcome, C.WaitError>> };
+type WaitState = {
+	native: native.WaitLease;
+	outcome: Promise<C.Result<C.WaitOutcome, C.WaitError>>;
+	/** The waited task's owner's metadata, which its settled outcome names. */
+	launches: LaunchMetadata;
+};
 
 // Native supervisors share one actor per environment; their JS continuations must too.
 const environment = {
@@ -314,7 +324,11 @@ function output(value: native.OutputRef): C.OutputRef {
 		omittedRanges: value.omittedRanges.map(({ start, end }) => ({ start, end })),
 	};
 }
-function taskResult(value: native.TaskResult): C.TaskResult {
+/**
+ * A native result in the facade's terms. A cancelled one names, besides its cause, the close of its owner that ended it
+ * or the execution timeout that stopped it, which the native result does not carry (#4639).
+ */
+function taskResult(value: native.TaskResult, taskId: string, launches: LaunchMetadata): C.TaskResult {
 	switch (value.kind) {
 		case "completed":
 			return {
@@ -330,16 +344,22 @@ function taskResult(value: native.TaskResult): C.TaskResult {
 				...(value.output === undefined ? {} : { output: output(value.output) }),
 				...(value.exitCode === undefined ? {} : { exitCode: value.exitCode }),
 			};
-		case "cancelled":
+		case "cancelled": {
+			const ownerClose = value.cause === "owner-close" ? launches.ownerClose : undefined;
+			const executionTimeoutMs =
+				value.cause === "execution-timeout" ? launches.executionTimeouts.get(taskId) : undefined;
 			return {
 				kind: value.kind,
 				cause: value.cause,
 				...(value.output === undefined ? {} : { output: output(value.output) }),
+				...(ownerClose === undefined ? {} : { ownerClose }),
+				...(executionTimeoutMs === undefined ? {} : { executionTimeoutMs }),
 			};
+		}
 	}
 }
-function execution(value: native.Execution): C.Execution {
-	return value.kind === "settled" ? { kind: "settled", result: taskResult(value.result) } : value;
+function execution(value: native.Execution, taskId: string, launches: LaunchMetadata): C.Execution {
+	return value.kind === "settled" ? { kind: "settled", result: taskResult(value.result, taskId, launches) } : value;
 }
 function observation(value: native.HostObservation): C.HostObservation {
 	if (value.kind === "foreground") return { kind: value.kind, waitId: value.waitId as C.WaitId };
@@ -374,6 +394,10 @@ export type LaunchMetadata = {
 	 * native start resolves, and it must already carry its cadence.
 	 */
 	readonly launchHeartbeats: Map<string, LaunchHeartbeat>;
+	/** Execution timeouts of commands, by task id: a command its timeout stops names it (#4639). */
+	readonly executionTimeouts: Map<string, number>;
+	/** The close that ended the owner, which every task that close cancelled names (#4639). Kept past the close. */
+	ownerClose?: C.OwnerCloseCause;
 };
 /** Record a launch's cadence before native admission; returns the entry this launch must forget if it fails. */
 function rememberLaunchHeartbeat(launches: LaunchMetadata, operation: C.OperationId, heartbeatMs?: number) {
@@ -411,7 +435,7 @@ function record(value: native.TaskRecord, launches: LaunchMetadata): C.TaskRecor
 		...(routerSelection ? { routerSelection } : {}),
 		...(requestedModel === undefined ? {} : { requestedModel }),
 		...(heartbeatMs === undefined ? {} : { heartbeatMs }),
-		execution: execution(value.execution),
+		execution: execution(value.execution, value.ref.taskId, launches),
 		observation: observation(value.observation),
 		...(value.wasBackground === undefined ? {} : { wasBackground: value.wasBackground }),
 		attention: value.attention,
@@ -476,7 +500,7 @@ function payload(value: native.TaskEvent, launches: LaunchMetadata): C.TaskEvent
 			return {
 				kind: value.kind,
 				ref: reference(value.ref),
-				result: taskResult(value.result),
+				result: taskResult(value.result, value.ref.taskId, launches),
 				completionId: value.completionId,
 			};
 		case "cleanup-changed":
@@ -498,18 +522,18 @@ function event(value: native.NativeEvent, launches: LaunchMetadata): C.NativeEve
 		payload: payload(value.payload, launches),
 	};
 }
-function waitOutcome(value: native.WaitOutcome): C.WaitOutcome {
+function waitOutcome(value: native.WaitOutcome, launches: LaunchMetadata): C.WaitOutcome {
 	return value.kind === "settled"
-		? { kind: value.kind, taskId: value.taskId as C.TaskId, result: taskResult(value.result) }
+		? { kind: value.kind, taskId: value.taskId as C.TaskId, result: taskResult(value.result, value.taskId, launches) }
 		: { kind: value.kind, taskId: value.taskId as C.TaskId, waitId: value.waitId as C.WaitId, reason: value.reason };
 }
-function cancelReceipt(value: native.CancelReceipt): C.CancelReceipt {
+function cancelReceipt(value: native.CancelReceipt, launches: LaunchMetadata): C.CancelReceipt {
 	if (value.decision !== "already-settled" && value.decision !== "cancellation-requested")
 		throw new Error("Invalid cancellation decision");
 	return {
 		taskId: value.taskId as C.TaskId,
 		decision: value.decision,
-		execution: execution(value.execution),
+		execution: execution(value.execution, value.taskId, launches),
 		cleanup: value.cleanup,
 	};
 }
@@ -777,6 +801,7 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 		routerSelections: state.launches.routerSelections.size,
 		requestedModels: state.launches.requestedModels.size,
 		launchHeartbeats: state.launches.launchHeartbeats.size,
+		executionTimeouts: state.launches.executionTimeouts.size,
 	};
 }
 
@@ -830,7 +855,12 @@ export class TaskSupervisor {
 					releases: new Set(),
 					releaseFailures: [],
 					commandStarts: new Map(),
-					launches: { routerSelections: new Map(), requestedModels: new Map(), launchHeartbeats: new Map() },
+					launches: {
+						routerSelections: new Map(),
+						requestedModels: new Map(),
+						launchHeartbeats: new Map(),
+						executionTimeouts: new Map(),
+					},
 				};
 				this.#owners.set(owner, ownerState);
 				this.#ownerIds.set(id, owner);
@@ -906,6 +936,7 @@ export class TaskSupervisor {
 		state.launches.requestedModels.delete(taskId);
 		if (state.launches.launchHeartbeats.get(operation)?.taskId === taskId)
 			state.launches.launchHeartbeats.delete(operation);
+		state.launches.executionTimeouts.delete(taskId);
 		if (state.commandStarts.get(operation)?.task === task) state.commandStarts.delete(operation);
 	}
 	#evicted(task: TaskLease): boolean {
@@ -986,7 +1017,7 @@ export class TaskSupervisor {
 		state.host.binding.onTaskSettled(ref, {
 			taskId: receipt.taskId as C.TaskId,
 			cursor: cursor(receipt.cursor),
-			result: taskResult(receipt.result),
+			result: taskResult(receipt.result, receipt.taskId, state.launches),
 			completionId: receipt.completionId,
 		});
 	}
@@ -995,9 +1026,10 @@ export class TaskSupervisor {
 		intent: C.CommandIntent,
 		operation: C.OperationId,
 		signal?: AbortSignal,
+		origin: CommandLaunchOrigin = "owner",
 	): Promise<C.Result<TaskLease, C.StartFailure>> {
 		const state = this.#owner(owner);
-		state.host.binding.authorizeCommandLaunch?.(intent);
+		state.host.binding.authorizeCommandLaunch?.(intent, origin);
 		for (let known = state.commandStarts.get(operation); known; known = state.commandStarts.get(operation)) {
 			if (known.task && this.#evicted(known.task)) {
 				this.#forgetEvictedTask(state, this.#task(known.task).ref.taskId, known.task);
@@ -1075,7 +1107,11 @@ export class TaskSupervisor {
 			const existing = state.tasks.get(id);
 			if (existing) return { ok: true, value: existing };
 			// A closing owner forgets its launch metadata, maybe already: a late admission adds none (#4451).
-			if (!state.closing.signal.aborted) claimLaunchHeartbeat(state.launches, operation, id, cadence);
+			if (!state.closing.signal.aborted) {
+				claimLaunchHeartbeat(state.launches, operation, id, cadence);
+				if (intent.executionTimeoutMs !== undefined)
+					state.launches.executionTimeouts.set(id, intent.executionTimeoutMs);
+			}
 			let bindFailure: Error | undefined;
 			if (held?.release.bindProcess) {
 				try {
@@ -1340,7 +1376,7 @@ export class TaskSupervisor {
 				this.#agentBudget(this.#task(task).owner, budgetMs, this.#task(task).kind === "command"),
 				designation ? this.#host(designation).native : undefined,
 			),
-			(lease) => this.#register(lease),
+			(lease) => this.#register(lease, this.#task(task).owner.launches),
 			waitErrors,
 		);
 		return registered.ok
@@ -1380,7 +1416,7 @@ export class TaskSupervisor {
 					known !== undefined && this.#task(known).kind === "command",
 				),
 			),
-			(lease) => this.#register(lease),
+			(lease) => this.#register(lease, this.#owner(owner).launches),
 			waitErrors,
 		);
 		if (!registered.ok) return registered;
@@ -1396,7 +1432,7 @@ export class TaskSupervisor {
 				state.owner.host.native,
 				this.#agentBudget(state.owner, budgetMs, state.kind === "command"),
 			),
-			(lease) => this.#register(lease),
+			(lease) => this.#register(lease, state.owner.launches),
 			errors,
 		);
 		return registered.ok
@@ -1413,7 +1449,8 @@ export class TaskSupervisor {
 		return this.#wait(wait).outcome;
 	}
 	yieldTaskWait(wait: WaitLease, reason: C.YieldReason): C.Result<C.WaitOutcome, C.YieldError> {
-		return mapped(this.#native.yieldTaskWait(this.#wait(wait).native, reason), waitOutcome, [
+		const { native: lease, launches } = this.#wait(wait);
+		return mapped(this.#native.yieldTaskWait(lease, reason), (outcome) => waitOutcome(outcome, launches), [
 			"UnknownWait",
 			"StaleGeneration",
 			"ObserverCancelled",
@@ -1437,7 +1474,7 @@ export class TaskSupervisor {
 					: undefined,
 				state.owner.host.native,
 			),
-			(lease) => this.#register(lease),
+			(lease) => this.#register(lease, state.owner.launches),
 			waitErrors,
 		);
 		if (!registered.ok) return registered;
@@ -1448,7 +1485,8 @@ export class TaskSupervisor {
 	}
 	async cancelTask(task: TaskLease, cause: C.CancelCause): Promise<C.Result<C.CancelReceipt, C.CancelError>> {
 		const state = this.#task(task);
-		const result = mapped(this.#native.cancelTask(state.native, cause), cancelReceipt, [
+		const receiptOf = (receipt: native.CancelReceipt) => cancelReceipt(receipt, state.owner.launches);
+		const result = mapped(this.#native.cancelTask(state.native, cause), receiptOf, [
 			"UnknownTask",
 			"TaskEvicted",
 			"CleanupFailed",
@@ -1461,6 +1499,7 @@ export class TaskSupervisor {
 		cause: C.OwnerCloseCause,
 	): Promise<C.Result<C.OwnerCloseReceipt, C.CloseError>> {
 		const state = this.#owner(owner);
+		state.launches.ownerClose ??= cause;
 		state.closing.abort(new Error("Task owner is closed"));
 		const closing = this.#native.closeTaskOwner(state.native, cause);
 		for (const task of state.tasks.values()) this.#task(task).controller.abort("owner-close");
@@ -1469,7 +1508,7 @@ export class TaskSupervisor {
 			(receipt): C.OwnerCloseReceipt => ({
 				ownerId: receipt.ownerId as C.OwnerId,
 				state: "closed",
-				tasks: receipt.tasks.map(cancelReceipt),
+				tasks: receipt.tasks.map((task) => cancelReceipt(task, state.launches)),
 			}),
 			["CleanupFailed", "EnvironmentClosing"],
 		);
@@ -1494,6 +1533,7 @@ export class TaskSupervisor {
 				state.launches.routerSelections.clear();
 				state.launches.requestedModels.clear();
 				state.launches.launchHeartbeats.clear();
+				state.launches.executionTimeouts.clear();
 			}
 		if (result.ok) {
 			for (const taskId of [...state.permits.keys()]) this.#releasePermit(state, taskId);
@@ -1546,18 +1586,18 @@ export class TaskSupervisor {
 			? (configuration?.commandBudgetMs ?? COMMAND_FOREGROUND_BUDGET_MS)
 			: (configuration?.agentBudgetMs ?? DEFAULT_AGENT_WAIT_BUDGET_MS);
 	}
-	#register(lease: native.WaitLease): WaitLease {
+	#register(lease: native.WaitLease, launches: LaunchMetadata): WaitLease {
 		const wait = new WaitCapability();
 		Object.freeze(wait);
 		const id = lease.waitId as C.WaitId;
 		this.#waitRegistry.set(id, wait);
 		const outcome = this.#native
 			.observeTaskWait(lease)
-			.then((result) => mapped(result, waitOutcome, waitErrors))
+			.then((result) => mapped(result, (outcome) => waitOutcome(outcome, launches), waitErrors))
 			.finally(() => {
 				this.#waitRegistry.delete(id);
 			});
-		this.#waits.set(wait, { native: lease, outcome });
+		this.#waits.set(wait, { native: lease, outcome, launches });
 		return wait;
 	}
 	#host(host: HostSession): HostState {

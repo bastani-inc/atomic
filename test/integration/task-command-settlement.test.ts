@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import * as native from "@bastani/atomic-natives";
 import { test } from "vitest";
 import type * as C from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import { TaskSupervisor } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { TaskSupervisor, type WaitLease } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { sleep } from "../helpers/runtime.js";
 
 function value<T, E>(result: C.Result<T, E>): T {
@@ -138,7 +138,14 @@ test.runIf(process.platform !== "win32").each(["user", "owner-close", "execution
 			const receipt = value(h.actor.taskSettlement(nativeTask));
 			assert.equal(receipt.result.kind, "cancelled");
 			assert.equal(receipt.result.kind === "cancelled" && receipt.result.cause, cause);
-			assert.deepEqual(h.settlements, [{ ref, receipt }]);
+			// The host's receipt also names the close or the timeout, which the native receipt does not carry (#4639).
+			const named =
+				cause === "owner-close"
+					? { ownerClose: "session-close" }
+					: cause === "execution-timeout"
+						? { executionTimeoutMs: 25 }
+						: {};
+			assert.deepEqual(h.settlements, [{ ref, receipt: { ...receipt, result: { ...receipt.result, ...named } } }]);
 			const terminal = value(h.actor.drainOwnerTasks(h.journal.lease)).events.find(
 				(event) => event.payload.kind === "task-settled",
 			);
@@ -153,6 +160,145 @@ test.runIf(process.platform !== "win32").each(["user", "owner-close", "execution
 		} finally {
 			value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
 			h.actor.disposeSubscription(h.journal.lease);
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32").each(["session-close", "stage-close", "app-shutdown"] as const)(
+	"a command cancelled by its owner's %s names that close in its settlement, its wait, its close and kill receipts (#4639)",
+	async (closeCause) => {
+		const h = harness();
+		try {
+			const task = value(
+				await h.supervisor.startCommandTask(
+					h.owner,
+					{ kind: "command", command: "read line", terminal: { kind: "pipe" } },
+					operation(),
+				),
+			);
+			const waiting = h.supervisor.initialObservation(task, { kind: "foreground", budgetMs: 60_000 });
+			const closed = value(await h.supervisor.closeTaskOwner(h.owner, closeCause));
+			await eventually(() => h.settlements.length === 1);
+			const settled = h.settlements[0]!.receipt.result;
+			assert.deepEqual(
+				settled.kind === "cancelled" ? { cause: settled.cause, ownerClose: settled.ownerClose } : settled,
+				{ cause: "owner-close", ownerClose: closeCause },
+			);
+			const waited = value(await waiting);
+			assert.deepEqual(waited, {
+				kind: "settled",
+				taskId: h.supervisor.taskReference(task).taskId,
+				result: settled,
+			});
+			assert.deepEqual(closed.tasks[0]!.execution, { kind: "settled", result: settled });
+			const killed = value(await h.supervisor.cancelTask(task, "user"));
+			assert.deepEqual(killed.execution, { kind: "settled", result: settled });
+		} finally {
+			value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+			h.actor.disposeSubscription(h.journal.lease);
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a command its execution timeout stops names the timeout in its settlement, its wait and its owner's record (#4639)",
+	async () => {
+		const h = harness();
+		try {
+			const task = value(
+				await h.supervisor.startCommandTask(
+					h.owner,
+					{ kind: "command", command: "read line", terminal: { kind: "pipe" }, executionTimeoutMs: 300 },
+					operation(),
+				),
+			);
+			let registered: WaitLease | undefined;
+			const waiting = h.supervisor.waitForTaskId(
+				h.owner,
+				h.supervisor.taskReference(task).taskId,
+				10_000,
+				(wait) => {
+					registered = wait;
+				},
+			);
+			assert.ok(registered);
+			const yielded = value(h.supervisor.yieldTaskWait(registered, "explicit"));
+			assert.deepEqual(
+				{ kind: yielded.kind, taskId: yielded.taskId },
+				{ kind: "yielded", taskId: h.supervisor.taskReference(task).taskId },
+			);
+			assert.equal(value(await waiting).kind, "yielded");
+			const foreground = value(await h.supervisor.foregroundTask(task, 10_000));
+			const observed = value(await h.supervisor.initialObservation(task, { kind: "foreground", budgetMs: 10_000 }));
+			assert.deepEqual(foreground, observed);
+			const timedOut = { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300 };
+			assert.ok(observed.kind === "settled");
+			assert.deepEqual({ ...observed.result, output: undefined }, { ...timedOut, output: undefined });
+			await eventually(() => h.settlements.length === 1);
+			assert.deepEqual(h.settlements[0]!.receipt.result, observed.result);
+			const watch = value(h.supervisor.watchOwnerTasks(h.owner));
+			assert.deepEqual(watch.snapshot.tasks[0]!.execution, { kind: "settled", result: observed.result });
+			watch.dispose();
+		} finally {
+			value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+			h.actor.disposeSubscription(h.journal.lease);
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a command its user stopped names no owner close or timeout, also once its owner has closed (#4639)",
+	async () => {
+		const h = harness();
+		try {
+			const task = value(
+				await h.supervisor.startCommandTask(
+					h.owner,
+					{ kind: "command", command: "read line", terminal: { kind: "pipe" }, executionTimeoutMs: 60_000 },
+					operation(),
+				),
+			);
+			value(await h.supervisor.cancelTask(task, "user"));
+			await eventually(() => h.settlements.length === 1);
+			const { output, ...stopped } = h.settlements[0]!.receipt.result as Extract<
+				C.TaskResult,
+				{ kind: "cancelled" }
+			>;
+			assert.deepEqual(stopped, { kind: "cancelled", cause: "user" });
+			value(await h.supervisor.closeTaskOwner(h.owner, "stage-close"));
+			const killed = value(await h.supervisor.cancelTask(task, "user"));
+			assert.deepEqual(killed.execution, { kind: "settled", result: h.settlements[0]!.receipt.result });
+		} finally {
+			value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+			h.actor.disposeSubscription(h.journal.lease);
+		}
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"a command launch tells its host whether its owner's session or a subagent child launched it (#4639)",
+	async () => {
+		const supervisor = new TaskSupervisor();
+		const scope: C.OwnerScope = { kind: "session", sessionId: randomUUID() };
+		const origins: string[] = [];
+		const host = supervisor.bindHostSession({
+			scope,
+			authorizeLaunch() {},
+			authorizeCommandLaunch(_intent, origin) {
+				origins.push(origin);
+			},
+			createRunner() {
+				throw new Error("command must not launch an agent runner");
+			},
+		});
+		const owner = value(supervisor.openTaskOwner(host, scope));
+		const intent: C.CommandIntent = { kind: "command", command: "true", terminal: { kind: "pipe" } };
+		try {
+			value(await supervisor.startCommandTask(owner, intent, operation()));
+			value(await supervisor.startCommandTask(owner, intent, operation(), undefined, "subagent-child"));
+			assert.deepEqual(origins, ["owner", "subagent-child"]);
+		} finally {
+			value(await supervisor.closeTaskOwner(owner, "session-close"));
 		}
 	},
 );

@@ -174,7 +174,11 @@ async function facadeScenario(door: Door, configured: boolean): Promise<void> {
 		await timerTurns(async (budget) => value(await observe(sibling, budget)));
 		const closed = supervisor.closeTaskOwner(owner, "session-close");
 		const cancelled = value(await bounded(closingWait.observation));
-		assert.deepEqual(cancelled.kind === "settled" && cancelled.result, { kind: "cancelled", cause: "owner-close" });
+		assert.deepEqual(cancelled.kind === "settled" && cancelled.result, {
+			kind: "cancelled",
+			cause: "owner-close",
+			ownerClose: "session-close",
+		});
 		assert.equal(value(await bounded(closed)).state, "closed");
 		watch.drain();
 		assert.ok(watch.snapshot.tasks.every((record) => record.cleanup.kind === "reaped"));

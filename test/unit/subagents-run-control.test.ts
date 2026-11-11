@@ -3105,6 +3105,7 @@ test(
 			routerSelections: processWide.routerSelections,
 			requestedModels: processWide.requestedModels,
 			launchHeartbeats: processWide.launchHeartbeats,
+			executionTimeouts: processWide.executionTimeouts,
 		});
 
 		const resumed = await h.call({ action: "resume", id: "retained0:0", message: "carry on" });

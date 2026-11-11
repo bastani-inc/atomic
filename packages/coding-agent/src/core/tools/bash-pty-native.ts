@@ -3,7 +3,7 @@ import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createModuleRequire } from "../../utils/module-require.ts";
 import { getShellConfig, getShellEnv, type ShellConfig } from "../../utils/shell.ts";
 import type { OperationId, TaskId, WaitOutcome, WaitPolicy } from "../tasks/contracts.js";
-import type { OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";
+import type { CommandLaunchOrigin, OwnerLease, TaskLease, TaskSupervisor, WaitLease } from "../tasks/supervisor.js";
 import { OutputAccumulator, type OutputAccumulatorOptions } from "./output-accumulator.ts";
 import { completeUtf8PrefixLength } from "./persisted-output-file.ts";
 import { EMPTY_OUTPUT_TEXT, TaskToolError, waitResultTail } from "./shell-task-status.ts";
@@ -85,6 +85,8 @@ export interface SupervisedCommandOwner {
 	onCommandStarted?: (taskId: TaskId) => void;
 	/** The task that launches these commands in the owner: a subagent running shells in its parent's owner. */
 	parentTaskId?: TaskId;
+	/** Who launches through this binding; omitted, the owner's own session. */
+	launchOrigin?: CommandLaunchOrigin;
 }
 
 export function lookupOwnedTask(context: SupervisedCommandOwner, id: string): TaskLease {
@@ -158,7 +160,10 @@ export async function waitForSupervisedCommand(
 		if (observed.value.kind === "yielded" && BigInt(nextOffset) > BigInt(yieldedOutputOffsets.get(task) ?? "0"))
 			yieldedOutputOffsets.set(task, nextOffset);
 		const terminal = observed.value.kind === "settled" ? observed.value.result : undefined;
+		// A command its execution timeout stopped did not finish: the wait that sees it reports an error (#4639).
+		const timedOut = terminal?.kind === "cancelled" && terminal.cause === "execution-timeout";
 		return {
+			...(timedOut ? { isError: true } : {}),
 			content: [
 				{
 					type: "text" as const,
@@ -254,6 +259,7 @@ export async function executeSupervisedCommand(
 		},
 		crypto.randomUUID() as OperationId,
 		options.signal,
+		context.launchOrigin,
 	);
 	if (!started.ok) throw new Error(`${started.error.code}: ${started.error.message}`);
 	const task = started.value;

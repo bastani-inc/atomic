@@ -265,6 +265,14 @@ bash({ command: "npm test", wait: { kind: "foreground", budgetMs: 30000 }, timeo
 
 The shell execution timeout is separate: `timeout` is seconds and defaults to 300, with a maximum of 3600. It continues counting after backgrounding. Choose a timeout appropriate for the command; reducing `budgetMs` does not shorten or extend it. Use the returned task ID to inspect or stop the existing task through `/tasks`. Background completion notifies the parent automatically, so there is no need to launch the command again to collect its result.
 
+A launch that continues in the background names the timeout that will stop it:
+
+```text
+Command is still running (task task-1-0-3). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.
+```
+
+When the timeout stops the command, a `wait` on it returns an error ending `Task <id> was cancelled (timed out after 300 seconds).`, and its completion notice reads `Background shell timed out after 300 seconds` with `Stop reason: execution-timeout (timed out after 300 seconds)`. A test suite that can run longer than five minutes needs an explicit `timeout`, for example `timeout: 3600`.
+
 Observe an existing task without running its command again:
 
 ```ts
@@ -301,6 +309,8 @@ Subagents can run background `bash` and `powershell` commands too. Their shell t
 - `/tasks` typed in the subagent's own transcript lists the shells it launched while it ran.
 - While the subagent is still running, a background shell's completion notice goes to the subagent. After the subagent finishes, the notice goes to the parent.
 - Shells keep running after the subagent finishes. They stop when the parent's session or workflow stage closes, or when a workflow stage pauses.
+- In a workflow, a subagent keeps its shells for as long as it runs, even when the stage that launched it is released while it waits (see [Suspended stages](/workflows/operations#suspended-stages)) or its session is replaced. The subagent can still wait on, stop, and start shells, and their completion notices still reach it while the stage is released. A subagent that was itself released while it waited is woken by its stage's session, so its shells' completion notices wait in its saved conversation until that session is back.
+- A shell that ends early says why. Its wait result and completion notice name the stop: `timed out after <n> seconds`, `stopped by a pause`, `workflow stage closed`, `session closed`, or `Atomic shut down`.
 
 Custom operations adapters receive `wait` but must implement it themselves. External-terminal processes are not adopted into `/tasks`. A child's own tool use appears in that subagent's activity and transcript.
 

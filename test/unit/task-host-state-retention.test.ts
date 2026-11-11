@@ -155,6 +155,7 @@ test(
 				routerSelections: FINISHED_TASK_RETENTION,
 				requestedModels: FINISHED_TASK_RETENTION,
 				launchHeartbeats: FINISHED_TASK_RETENTION,
+				executionTimeouts: 0,
 			});
 			const kept = new Set(store.tasks.map((task) => task.ref.taskId));
 			const evicted = taskIds.filter((id) => !kept.has(id));
@@ -221,6 +222,7 @@ test("closing a host reconciles held finished records before its watchers stop, 
 			routerSelections: 0,
 			requestedModels: 0,
 			launchHeartbeats: 0,
+			executionTimeouts: 0,
 		});
 		assert.deepEqual(
 			launchMetadataSizes(control),

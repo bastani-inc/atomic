@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import type { WaitPolicy } from "../src/core/tasks/contracts.js";
+import type { TaskId, WaitId, WaitPolicy } from "../src/core/tasks/contracts.js";
 import { TaskSupervisor } from "../src/core/tasks/supervisor.js";
 import { createBashToolDefinition, createLocalBashOperations } from "../src/core/tools/bash.ts";
 import { executeNativePty } from "../src/core/tools/bash-pty-native.js";
@@ -123,3 +123,59 @@ test.runIf(process.platform !== "win32")(
 		}
 	},
 );
+
+test("a backgrounded command's receipt names the default execution timeout that will stop it (#4639)", async () => {
+	const tool = createBashToolDefinition(process.cwd(), {
+		operations: {
+			exec: async () => ({
+				exitCode: null,
+				observation: {
+					kind: "yielded",
+					taskId: "task-9" as TaskId,
+					waitId: "wait-9" as WaitId,
+					reason: "explicit",
+				},
+			}),
+		},
+	});
+	const result = await tool.execute(
+		"launch",
+		{ command: "npm test", wait: { kind: "background" } },
+		undefined,
+		undefined,
+		{} as never,
+	);
+	const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+	assert.equal(
+		text,
+		"(no output)\n\nCommand is still running (task task-9). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.",
+	);
+});
+
+test("a backgrounded command at the longest timeout is told to split its run, not to ask for a larger timeout (#4639)", async () => {
+	const tool = createBashToolDefinition(process.cwd(), {
+		operations: {
+			exec: async () => ({
+				exitCode: null,
+				observation: {
+					kind: "yielded",
+					taskId: "task-9" as TaskId,
+					waitId: "wait-9" as WaitId,
+					reason: "explicit",
+				},
+			}),
+		},
+	});
+	const result = await tool.execute(
+		"launch",
+		{ command: "npm test", timeout: 3600, wait: { kind: "background" } },
+		undefined,
+		undefined,
+		{} as never,
+	);
+	const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+	assert.equal(
+		text,
+		"(no output)\n\nCommand is still running (task task-9). Its execution timeout stops it after 3600 seconds; 3600 seconds is the longest timeout; split a longer run into shorter commands.",
+	);
+});

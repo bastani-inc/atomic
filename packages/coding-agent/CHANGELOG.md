@@ -13,6 +13,9 @@
 
 - Fixed the llama.cpp setup guide telling you to verify the installation with `llama cli --version`; it now uses the unified `llama --version` entry point (upstream [#11958](https://github.com/earendil-works/pi/pull/11958))
 - Fixed `/share` crashing Atomic when the `gh` command fails to start while creating the gist; it now shows the error (upstream [#12025](https://github.com/earendil-works/pi/pull/12025))
+- Fixed subagents of a workflow stage losing their background shells when the stage is released while it waits or its session is replaced: the subagent can still wait on, stop and start shells instead of failing with `Task owner is closed` or `stage-parked`, and its shells' completion notices still reach it ([#4639](https://github.com/bastani-inc/atomic/issues/4639)).
+- Fixed a background shell's end being unexplained: its wait result and completion notice now name an execution timeout with its length (`timed out after 300 seconds`), a workflow stage that closed, a session that closed or Atomic shutting down, instead of the same `session closed` for every close. A cancelled SDK `TaskResult` carries the same facts as `ownerClose` and `executionTimeoutMs` ([#4639](https://github.com/bastani-inc/atomic/issues/4639)).
+- Fixed a shell command's execution timeout stopping it silently: a command that continues in the background now names the timeout that will stop it, and a `wait` that sees the timeout stop it returns an error ([#4639](https://github.com/bastani-inc/atomic/issues/4639)).
 
 ## [0.9.76] - 2026-11-10
 

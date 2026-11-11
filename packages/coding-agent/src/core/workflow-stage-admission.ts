@@ -2,6 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { OrchestrationContext } from "./extensions/context-types.ts";
 import { AgentTaskHost, type AgentTaskHostBinding } from "./tasks/agent-adapter.js";
+import { type ChildTaskCompletionRoute, childTaskCompletionRoute } from "./tasks/child-command-owner.js";
+import { taskCompletionEnvelope } from "./tasks/completion.js";
+import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import type { OwnerId, OwnerScope, SettlementReceipt, TaskRecord } from "./tasks/contracts.js";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
@@ -49,13 +52,29 @@ function admissionKeys(entries: Iterable<PersistedWorkflowStageAdmission>): stri
 	);
 }
 
-/** The kind of the stage's task a settlement reports, read from the owner's snapshot while the stage is parked. */
-function settledTaskKind(host: AgentTaskHost, receipt: SettlementReceipt): TaskRecord["kind"] | undefined {
+/** The stage's task a settlement reports, read from the owner's snapshot while the stage is parked. */
+function settledTask(host: AgentTaskHost, receipt: SettlementReceipt): TaskRecord | undefined {
 	const watched = host.watchOwnerTasks();
 	if (!watched.ok) return undefined;
-	const kind = watched.value.snapshot.tasks.find((task) => task.ref.taskId === receipt.taskId)?.kind;
+	const task = watched.value.snapshot.tasks.find((item) => item.ref.taskId === receipt.taskId);
 	watched.value.dispose();
-	return kind;
+	return task;
+}
+
+/**
+ * Hand a worker's settled shell to the live worker that launched it, as the stage's session would. A close of the stage
+ * may leave its record unreadable: the notice then still names the shell and why it stopped.
+ */
+async function deliverToWorker(
+	host: AgentTaskHost,
+	route: ChildTaskCompletionRoute,
+	settlement: ParkedTaskSettlement,
+	task: TaskRecord | undefined,
+): Promise<void> {
+	const lease = host.resolveTask(settlement.receipt.taskId);
+	const output = lease.ok && task !== undefined ? await commandOutputExcerpt(host, lease.value, task) : undefined;
+	const envelope = taskCompletionEnvelope(settlement.ownerId, settlement.receipt, "command");
+	await route.deliver(taskCompletionMessage(envelope, task, output));
 }
 
 /**
@@ -110,6 +129,11 @@ export class WorkflowStageAdmissionBoundary {
 		return this.taskHost !== undefined;
 	}
 
+	/** The stage's task host, whichever of its sessions bound it; undefined until the first binds it. */
+	agentTaskHost(): AgentTaskHost | undefined {
+		return this.taskHost;
+	}
+
 	/** Task completions that arrived while the stage was parked, handed once to the session that binds next. */
 	takeParkedTaskSettlements(): ParkedTaskSettlement[] {
 		return this.parkedSettlements.splice(0);
@@ -129,10 +153,25 @@ export class WorkflowStageAdmissionBoundary {
 			heartbeat: undefined,
 			onTaskCleanupQuarantined: undefined,
 			authorizeLaunch: refuseParkedLaunch,
-			authorizeCommandLaunch: refuseParkedLaunch,
+			// The stage's live workers keep running their shells in its owner while it is released (#4639).
+			authorizeCommandLaunch: (_intent, origin) => {
+				if (origin !== "subagent-child") refuseParkedLaunch();
+			},
 			onTaskSettled: (ref, receipt) => {
 				host.retainTaskRecord(receipt.taskId);
-				this.parkedSettlements.push({ ownerId: ref.ownerId, receipt, kind: settledTaskKind(host, receipt) });
+				const task = settledTask(host, receipt);
+				const settlement: ParkedTaskSettlement = { ownerId: ref.ownerId, receipt, kind: task?.kind };
+				// Only shells a worker launched have a worker's route.
+				const worker = childTaskCompletionRoute(host, receipt.taskId);
+				if (worker === undefined) {
+					this.parkedSettlements.push(settlement);
+					return;
+				}
+				// A worker that ended before its notice arrived leaves it to the stage's next session.
+				void deliverToWorker(host, worker, settlement, task).then(
+					() => host.releaseTaskRecord(receipt.taskId),
+					() => this.parkedSettlements.push(settlement),
+				);
 			},
 		});
 	}

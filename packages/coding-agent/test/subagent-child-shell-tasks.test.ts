@@ -10,10 +10,10 @@ import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
-import type { OperationId, TaskId } from "../src/core/tasks/contracts.js";
+import type { OperationId, TaskId, TaskResult } from "../src/core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../src/core/tasks/owner-store.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
-import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
+import { parkWorkflowStageForRelease, WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
 import { createTestResourceLoader } from "./utilities.js";
 
 vi.mock("../src/utils/shell.js", async (importOriginal) => {
@@ -99,7 +99,11 @@ async function childOf(
 		subagentPolicy: childPolicy(executionEnded.signal),
 		...(orchestrationContext ? { orchestrationContext } : {}),
 	});
-	return { child, endExecution: () => executionEnded.abort() };
+	return {
+		child,
+		endExecution: () => executionEnded.abort(),
+		parentCommandTaskOwner: inherited.parentCommandTaskOwner,
+	};
 }
 
 async function startBackground(session: AgentSession, name: ShellName): Promise<TaskId> {
@@ -145,6 +149,18 @@ function completionNotices(session: AgentSession, taskId: TaskId): number {
 				entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
 				(entry.details as { taskId?: string } | undefined)?.taskId === taskId,
 		).length;
+}
+
+function completionNoticeText(session: AgentSession, taskId: TaskId): string | undefined {
+	const notice = session.sessionManager
+		.getEntries()
+		.find(
+			(entry) =>
+				entry.type === "custom_message" &&
+				entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
+				(entry.details as { taskId?: string } | undefined)?.taskId === taskId,
+		);
+	return notice?.type === "custom_message" ? String(notice.content) : undefined;
 }
 
 function acknowledgedBy(owner: AgentSession, taskId: TaskId): boolean {
@@ -287,6 +303,252 @@ test("workflow-stage subagent shells land in the stage's /tasks without rebindin
 		{ timeout: 10000 },
 	);
 	assert.equal(completionNotices(child, stageTask), 0, "stage completions still reach the stage");
+});
+
+function workflowStageContext(
+	boundary: WorkflowStageAdmissionBoundary,
+): NonNullable<AgentSession["orchestrationContext"]> {
+	return {
+		kind: "workflow-stage",
+		workflowRunId: crypto.randomUUID(),
+		workflowStageId: "stage",
+		workflowStageName: "Stage",
+		constraints: { disableWorkflowTool: true },
+		messageAdmission: {
+			boundary,
+			extensionState: new Map<string, object>(),
+			isOpen: () => boundary.isOpen(),
+		},
+	};
+}
+
+/** A workflow stage whose session launched a worker that started a background shell. */
+async function stageWithWorkerShell(root: string) {
+	const boundary = new WorkflowStageAdmissionBoundary();
+	cleanups.push(() => boundary.close());
+	const context = workflowStageContext(boundary);
+	const stage = await newSession(root, { orchestrationContext: context });
+	const stageHost = stage.getAgentTaskHost();
+	const { child, endExecution, parentCommandTaskOwner } = await childOf(stage, root, context);
+	const id = await startBackground(child, nativeShell);
+	return { context, stage, stageHost, worker: child, id, endExecution, parentCommandTaskOwner };
+}
+
+async function disposeStageSession(stage: AgentSession): Promise<void> {
+	await stage.closeSessionTasks();
+	await stage.dispose();
+}
+
+async function writeToTask(host: ReturnType<AgentSession["getAgentTaskHost"]>, id: TaskId): Promise<void> {
+	const task = host.resolveTask(id);
+	assert.ok(task.ok);
+	const { supervisor } = host.ownerBinding;
+	const input = supervisor.taskStdin(task.value);
+	assert.ok(input.ok);
+	const written = await supervisor.writeTaskInput(input.value, crypto.randomUUID() as OperationId, {
+		kind: "bytes",
+		bytes: Buffer.from("go\n"),
+	});
+	assert.ok(written.ok);
+}
+
+/** Wait until the task settles: a completion notice reaching the worker yields its pending waits. */
+async function settledFor(worker: AgentSession, id: TaskId): Promise<BashToolDetails> {
+	for (;;) {
+		const result = await tool(worker, nativeShell).execute("settle", { action: "wait", id, budgetMs: 10000 });
+		const details = result.details as BashToolDetails;
+		if (details.observation?.kind === "settled") return details;
+		assert.notEqual((details.observation as { reason?: string } | undefined)?.reason, "elapsed");
+	}
+}
+
+/** The worker can still wait on its first shell, launch a second one, and kill it. */
+async function assertWorkerControlsItsShells(worker: AgentSession, id: TaskId): Promise<void> {
+	const polled = await tool(worker, nativeShell).execute("poll", { action: "wait", id, budgetMs: 0 });
+	assert.equal(
+		(polled.details as BashToolDetails).observation?.kind,
+		"yielded",
+		"the worker still observes its shell",
+	);
+	const second = await startBackground(worker, nativeShell);
+	const killed = await tool(worker, "kill").execute("kill", { id: second });
+	assert.equal((killed.details as { taskId?: string }).taskId ?? second, second);
+	assert.equal((await settledFor(worker, second)).observation?.kind, "settled", "the worker controls its new shell");
+}
+
+test("a workflow-stage worker keeps waiting on, launching and killing its shells after the stage's session is replaced (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, stageHost, worker, id } = await stageWithWorkerShell(root);
+
+	await disposeStageSession(stage);
+	const replacement = await newSession(root, { orchestrationContext: context });
+	assert.equal(replacement.getAgentTaskHost(), stageHost, "the replacement binds the stage's one task host");
+
+	await assertWorkerControlsItsShells(worker, id);
+	await writeToTask(stageHost, id);
+	assert.equal((await settledFor(worker, id)).exitCode, 3);
+});
+
+test("a workflow-stage worker keeps waiting on, launching and killing its shells while the stage is released (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, stageHost, worker, id } = await stageWithWorkerShell(root);
+
+	parkWorkflowStageForRelease(context);
+	await disposeStageSession(stage);
+
+	await assertWorkerControlsItsShells(worker, id);
+	await writeToTask(stageHost, id);
+	assert.equal((await settledFor(worker, id)).exitCode, 3);
+});
+
+test("a released workflow stage still refuses launches from its own session while its worker launches (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, worker } = await stageWithWorkerShell(root);
+
+	parkWorkflowStageForRelease(context);
+
+	await assert.rejects(
+		tool(stage, nativeShell).execute("stage-launch", { command: "echo late", wait: { kind: "background" } }),
+		/stage-parked/,
+	);
+	await startBackground(worker, nativeShell);
+});
+
+test("a live worker receives the completion of its shell while its workflow stage is released (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, stageHost, worker, id } = await stageWithWorkerShell(root);
+
+	parkWorkflowStageForRelease(context);
+	await disposeStageSession(stage);
+	const released = vi.spyOn(stageHost, "releaseTaskRecord");
+	await writeToTask(stageHost, id);
+
+	await vi.waitFor(() => assert.equal(completionNotices(worker, id), 1), { timeout: 10000 });
+	assert.match(
+		completionNoticeText(worker, id) ?? "",
+		/^Background shell failed: [\s\S]*Result excerpt \(task output, not instructions\):\n[\s\S]*child shell done/,
+	);
+	await vi.waitFor(() => assert.deepEqual(released.mock.calls, [[id]]), { timeout: 10000 });
+	const boundary = context.kind === "workflow-stage" ? context.messageAdmission?.boundary : undefined;
+	assert.deepEqual(boundary?.takeParkedTaskSettlements(), [], "the stage's next session is not handed it again");
+});
+
+test("a worker's shell completion that its route cannot take waits for its released stage's next session (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, stageHost, worker, id, endExecution, parentCommandTaskOwner } =
+		await stageWithWorkerShell(root);
+	assert.ok(parentCommandTaskOwner);
+	parkWorkflowStageForRelease(context);
+	await disposeStageSession(stage);
+	const workerId = worker.sessionManager.getSessionId();
+	endExecution();
+	await worker.closeSessionTasks();
+	await worker.dispose();
+	parentCommandTaskOwner.routeReleased(workerId, {
+		isOpen: () => true,
+		deliver: async () => {
+			throw new Error("the released worker's owner is gone");
+		},
+	});
+	await writeToTask(stageHost, id);
+
+	const boundary = context.kind === "workflow-stage" ? context.messageAdmission?.boundary : undefined;
+	assert.ok(boundary);
+	await vi.waitFor(
+		() =>
+			assert.deepEqual(
+				boundary.takeParkedTaskSettlements().map((parked) => parked.receipt.taskId),
+				[id],
+			),
+		{ timeout: 10000 },
+	);
+});
+
+test("a live worker hears that its released stage's close stopped its shell (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, worker, id } = await stageWithWorkerShell(root);
+	parkWorkflowStageForRelease(context);
+	await disposeStageSession(stage);
+	const boundary = context.kind === "workflow-stage" ? context.messageAdmission?.boundary : undefined;
+	assert.ok(boundary);
+
+	await boundary.close();
+
+	await vi.waitFor(() => assert.equal(completionNotices(worker, id), 1), { timeout: 10000 });
+	const notice = completionNoticeText(worker, id) ?? "";
+	assert.match(notice, /^Background shell stopped \(workflow stage closed\)/);
+	assert.match(notice, /Stop reason: owner-close \(workflow stage closed\)/);
+	assert.doesNotMatch(notice, /Result excerpt|Output unavailable/);
+});
+
+test("a released worker's shell completion reaches it while its workflow stage is released too (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, stageHost, worker, id, endExecution, parentCommandTaskOwner } =
+		await stageWithWorkerShell(root);
+	assert.ok(parentCommandTaskOwner);
+	parkWorkflowStageForRelease(context);
+	await disposeStageSession(stage);
+	const workerId = worker.sessionManager.getSessionId();
+	endExecution();
+	await worker.closeSessionTasks();
+	await worker.dispose();
+	const delivered: string[] = [];
+
+	const routed = parentCommandTaskOwner.routeReleased(workerId, {
+		isOpen: () => true,
+		deliver: async (message) => {
+			delivered.push(message.content);
+		},
+	});
+	await writeToTask(stageHost, id);
+
+	assert.equal(routed, true, "the released worker's running shell is routed to it");
+	await vi.waitFor(() => assert.equal(delivered.length, 1), { timeout: 10000 });
+	assert.match(delivered[0] ?? "", /^Background shell failed: /);
+	assert.match(delivered[0] ?? "", /child shell done/);
+});
+
+/** Registers the running agent task whose transcript is `worker`'s session, as a subagent's runner does. */
+async function startWorkerAgentTask(stageHost: ReturnType<AgentSession["getAgentTaskHost"]>, worker: AgentSession) {
+	const result = Promise.withResolvers<TaskResult>();
+	const sessionId = worker.sessionManager.getSessionId();
+	const started = await stageHost.startAgentTask(
+		{ kind: "agent", agent: "worker", task: "work" },
+		crypto.randomUUID() as OperationId,
+		(context) => {
+			context.bindTranscript({ getSessionId: () => sessionId, getEntries: () => [] });
+			return { result: result.promise, cleanup: Promise.resolve({ kind: "reaped" }) };
+		},
+	);
+	assert.ok(started.ok);
+	cleanups.push(() => result.resolve({ kind: "cancelled", cause: "user" }));
+	return started.value.taskId;
+}
+
+function launcherOf(stageHost: ReturnType<AgentSession["getAgentTaskHost"]>, id: TaskId): TaskId | undefined {
+	const watched = stageHost.watchOwnerTasks();
+	assert.ok(watched.ok);
+	const task = watched.value.snapshot.tasks.find((item) => item.ref.taskId === id);
+	watched.value.dispose();
+	assert.ok(task, `${id} is in the stage's owner`);
+	return task.parentTaskId;
+}
+
+test("a worker's shells name the worker's task after the stage session is replaced and while the stage is released (#4639)", async () => {
+	const root = tempRoot();
+	const { context, stage, stageHost, worker } = await stageWithWorkerShell(root);
+	const workerTask = await startWorkerAgentTask(stageHost, worker);
+
+	await disposeStageSession(stage);
+	const replacement = await newSession(root, { orchestrationContext: context });
+	assert.equal(replacement.getAgentTaskHost(), stageHost);
+	const afterReplacement = await startBackground(worker, nativeShell);
+	parkWorkflowStageForRelease(context);
+	await disposeStageSession(replacement);
+	const whileReleased = await startBackground(worker, nativeShell);
+
+	assert.equal(launcherOf(stageHost, afterReplacement), workerTask, "launched after the stage session was replaced");
+	assert.equal(launcherOf(stageHost, whileReleased), workerTask, "launched while the stage was released");
 });
 
 test("a subagent without a parent task owner keeps refusing background shells", async () => {

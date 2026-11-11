@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
+import { cancelReasonText } from "../../packages/coding-agent/src/core/tasks/cancel-reason.js";
 import {
 	formatTaskCompletion,
 	type TaskCompletionEnvelope,
+	taskCompletionEnvelope,
 } from "../../packages/coding-agent/src/core/tasks/completion.js";
-import type { Sequence } from "../../packages/coding-agent/src/core/tasks/contracts.js";
+import type {
+	CancelCause,
+	Generation,
+	Sequence,
+	SettlementReceipt,
+} from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskCompletionMessage } from "../../packages/coding-agent/src/modes/interactive/components/task-completion-message.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { assertBackgroundFill } from "../helpers/background-fill.js";
@@ -84,6 +91,121 @@ test("a shell interrupted by a stage, run or session pause asks to redo the step
 	const stopped = formatTaskCompletion({ ...envelope, result: { kind: "cancelled", cause: "user" } }, shell);
 	assert.match(stopped, /^Background shell stopped: /);
 	assert.match(stopped, /This execution has ended\. Do not restart it/);
+});
+
+test("a shell its execution timeout stopped names the timeout's length and how to give it longer (#4639)", () => {
+	const shell = taskRecord("timed-out-shell", "command");
+	const notice = formatTaskCompletion(
+		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 300_000 } },
+		shell,
+		"suite still running",
+	);
+	assert.match(notice, /^Background shell timed out after 300 seconds: /);
+	assert.match(notice, /Stop reason: execution-timeout \(timed out after 300 seconds\)\n/);
+	assert.match(
+		notice,
+		/Its execution timeout stopped it after 300 seconds, before it finished\. If its result is still needed, run it again with a larger timeout\.$/,
+	);
+	assert.doesNotMatch(notice, /Do not restart it/);
+});
+
+test.each([
+	["session-close", "session closed"],
+	["stage-close", "workflow stage closed"],
+	["app-shutdown", "Atomic shut down"],
+] as const)("a shell its owner's %s cancelled names that close (#4639)", (ownerClose, reason) => {
+	const shell = taskRecord("owner-closed-shell", "command");
+	const notice = formatTaskCompletion(
+		{ ...envelope, result: { kind: "cancelled", cause: "owner-close", ownerClose } },
+		shell,
+	);
+	assert.ok(notice.startsWith(`Background shell stopped (${reason}): `), notice);
+	assert.ok(notice.includes(`Stop reason: owner-close (${reason})\n`), notice);
+	assert.match(notice, /This execution has ended\./);
+});
+
+test("a shell its execution timeout stopped, with no recorded limit, still says the timeout stopped it (#4639)", () => {
+	const shell = taskRecord("timed-out-shell", "command");
+	const notice = formatTaskCompletion(
+		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout" } },
+		shell,
+	);
+	assert.match(notice, /^Background shell timed out: /);
+	assert.match(
+		notice,
+		/Its execution timeout stopped it, before it finished\. If its result is still needed, run it again with a larger timeout\.$/,
+	);
+});
+
+test("a shell stopped at the longest execution timeout is told to split its run (#4639)", () => {
+	const shell = taskRecord("max-timeout-shell", "command");
+	const notice = formatTaskCompletion(
+		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 3_600_000 } },
+		shell,
+	);
+	assert.match(notice, /^Background shell timed out after 3600 seconds: /);
+	assert.match(
+		notice,
+		/Its execution timeout stopped it after 3600 seconds, before it finished\. If its result is still needed, 3600 seconds is the longest timeout; split a longer run into shorter commands\.$/,
+	);
+	const justBelow = formatTaskCompletion(
+		{ ...envelope, result: { kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 3_599_000 } },
+		shell,
+	);
+	assert.match(justBelow, /run it again with a larger timeout\.$/);
+});
+
+test("a finished task's notice names no stop reason (#4639)", () => {
+	const shell = taskRecord("finished-shell", "command");
+	const notice = formatTaskCompletion(
+		{ ...envelope, result: { kind: "completed", output: shell.output, exitCode: 0 } },
+		shell,
+	);
+	assert.match(notice, /^Background shell completed: /);
+	assert.doesNotMatch(notice, /Stop reason|timed out|stopped/);
+});
+
+test.each<[CancelCause, string]>([
+	["user", "stop requested"],
+	["owner-close", "task owner closed"],
+	["execution-timeout", "timed out"],
+	["output-limit", "output limit reached"],
+	["parent-handoff", "handed off"],
+	["pause", "stopped by a pause"],
+	["quit", "quit · paused · awaiting resume"],
+	["shutdown", "Atomic shut down"],
+])("a task cancelled for %s without recorded facts reads as %s (#4639)", (cause, text) => {
+	assert.equal(cancelReasonText({ kind: "cancelled", cause }), text);
+});
+
+test("a cancellation names a close or a timeout only for its own cause (#4639)", () => {
+	assert.equal(cancelReasonText({ kind: "cancelled", cause: "user", ownerClose: "stage-close" }), "stop requested");
+	assert.equal(cancelReasonText({ kind: "cancelled", cause: "user", executionTimeoutMs: 5_000 }), "stop requested");
+	assert.equal(
+		cancelReasonText({ kind: "cancelled", cause: "owner-close", executionTimeoutMs: 5_000 }),
+		"task owner closed",
+	);
+	assert.equal(
+		cancelReasonText({ kind: "cancelled", cause: "execution-timeout", executionTimeoutMs: 2_500 }),
+		"timed out after 2.5 seconds",
+	);
+});
+
+test("a completion envelope names its task's kind only when it is known", () => {
+	const receipt: SettlementReceipt = {
+		taskId: envelope.taskId,
+		cursor: { generation: "1" as Generation, sequence: "7" as Sequence },
+		result: { kind: "cancelled", cause: "user" },
+		completionId: "completion-fixture",
+	};
+	const unknown = taskCompletionEnvelope(envelope.ownerId, receipt);
+	assert.equal("taskKind" in unknown, false);
+	assert.deepEqual(unknown, { ...envelope, result: receipt.result });
+	assert.deepEqual(taskCompletionEnvelope(envelope.ownerId, receipt, "command"), {
+		...envelope,
+		result: receipt.result,
+		taskKind: "command",
+	});
 });
 
 test("completion cards shade their full width with chat-card padding in both themes", () => {

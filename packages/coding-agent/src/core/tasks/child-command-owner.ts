@@ -158,6 +158,7 @@ export function createChildCommandTaskOwner(resolveHost: () => AgentTaskHost): C
 				parentTaskId: runningSubagentTask(host, childId),
 				ownsTask: (taskId) => routes.launchedByChild(taskId, childId),
 				onCommandStarted: (taskId) => routes.recordLaunch(taskId, childId),
+				launchOrigin: "subagent-child",
 				waitForTask: (taskId, budgetMs, onRegistered) =>
 					supervisor.waitForTaskId(owner, taskId, budgetMs, (wait) => {
 						waits.track(supervisor, wait);

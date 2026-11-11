@@ -425,3 +425,56 @@ test("a command's admission snapshot carries its cadence before its launch promi
 		await h.supervisor.closeTaskOwner(h.owner, "session-close");
 	}
 });
+
+test("an evicted command and a closed owner keep no execution timeout (#4639)", async () => {
+	const h = await harness();
+	const timed: C.CommandIntent = { ...commandIntent, executionTimeoutMs: 60_000 };
+	try {
+		await h.settle(value(await h.supervisor.startCommandTask(h.owner, commandIntent, "untimed" as C.OperationId)));
+		assert.equal(
+			taskHostStateSizesForTesting(h.owner).executionTimeouts,
+			0,
+			"a command without a timeout records none",
+		);
+		const first = await h.settle(value(await h.supervisor.startCommandTask(h.owner, timed, REPLAYED)));
+		assert.equal(taskHostStateSizesForTesting(h.owner).executionTimeouts, 1);
+		h.release(await h.evict(first));
+		h.supervisor.failedTaskCleanups(h.owner);
+		assert.equal(taskHostStateSizesForTesting(h.owner).executionTimeouts, 0, "the eviction forgot it");
+		await h.settle(value(await h.supervisor.startCommandTask(h.owner, timed, "after-eviction" as C.OperationId)));
+		assert.equal(taskHostStateSizesForTesting(h.owner).executionTimeouts, 1);
+		value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+		assert.equal(taskHostStateSizesForTesting(h.owner).executionTimeouts, 0, "the close forgot it");
+	} finally {
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});
+
+test("a command admitted as its owner closes leaves no execution timeout behind (#4639)", async () => {
+	const h = await harness();
+	const admitted = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const original = native.TaskSupervisor.prototype.startCommandTask;
+	const door = vi.spyOn(native.TaskSupervisor.prototype, "startCommandTask").mockImplementation(async function (
+		this: native.TaskSupervisor,
+		...args: Parameters<typeof original>
+	) {
+		const result = await original.apply(this, args);
+		admitted.resolve();
+		await resume.promise;
+		return result;
+	});
+	const started = h.supervisor.startCommandTask(h.owner, { ...commandIntent, executionTimeoutMs: 60_000 }, REPLAYED);
+	try {
+		await admitted.promise;
+		value(await h.supervisor.closeTaskOwner(h.owner, "session-close"));
+		resume.resolve();
+		value(await started);
+		assert.equal(taskHostStateSizesForTesting(h.owner).executionTimeouts, 0, "the late admission records none");
+	} finally {
+		resume.resolve();
+		door.mockRestore();
+		await started;
+		await h.supervisor.closeTaskOwner(h.owner, "session-close");
+	}
+});

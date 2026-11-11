@@ -17,6 +17,7 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { formatTimeoutSeconds, longerRunAdvice, MAX_COMMAND_TIMEOUT_SECONDS } from "../tasks/cancel-reason.js";
 import type { WaitPolicy } from "../tasks/contracts.js";
 import { validateTaskHeartbeatMs } from "../tasks/heartbeat-notice.js";
 import { stripLeadingCdCommand } from "./bash-leading-cd.ts";
@@ -151,13 +152,23 @@ export interface BashToolDetails {
 	wallTimeMs?: number;
 }
 const DEFAULT_TIMEOUT_SECONDS = 300,
-	MAX_TIMEOUT_SECONDS = 3600;
+	MAX_TIMEOUT_SECONDS = MAX_COMMAND_TIMEOUT_SECONDS;
 export function validateExplicitTimeoutSeconds(timeout: number): void {
 	if (!Number.isFinite(timeout) || timeout <= 0 || timeout > MAX_TIMEOUT_SECONDS)
 		throw new Error(
 			`Invalid timeout ${String(timeout)}: timeout must be a finite number greater than 0 and no more than ${MAX_TIMEOUT_SECONDS} seconds`,
 		);
 }
+const STILL_RUNNING = (taskId: string) => `Command is still running (task ${taskId}).`;
+
+/**
+ * The text a launch that continues in the background ends with: its task, and the execution timeout that stops it
+ * whether or not anyone waits on it, so a long run is not stopped by a default nobody saw (#4639).
+ */
+export function stillRunningReceipt(taskId: string, timeoutSeconds: number): string {
+	return `${STILL_RUNNING(taskId)} Its execution timeout stops it after ${formatTimeoutSeconds(timeoutSeconds * 1000)}; ${longerRunAdvice(timeoutSeconds * 1000, "launch")}`;
+}
+
 function normalizeTimeoutSeconds(timeout: number | undefined): number {
 	if (timeout === undefined) return DEFAULT_TIMEOUT_SECONDS;
 	validateExplicitTimeoutSeconds(timeout);
@@ -383,8 +394,8 @@ function rebuildBashResultRenderComponent(
 	let output = getTextOutput(result, showImages).trim();
 	const observation = result.details?.observation;
 	if (observation?.kind === "yielded") {
-		const receipt = `Command is still running (task ${observation.taskId}).`;
-		if (output.endsWith(receipt)) output = output.slice(0, -receipt.length).trimEnd();
+		const receiptAt = output.lastIndexOf(STILL_RUNNING(observation.taskId));
+		if (receiptAt >= 0) output = output.slice(0, receiptAt).trimEnd();
 		component.addChild(new Text(theme.fg("accent", "∀ Continued in background"), 0, 0));
 		component.addChild(
 			new Text(
@@ -652,7 +663,7 @@ export function createBashToolDefinition(
 						content: [
 							{
 								type: "text",
-								text: appendStatus(outputText, `Command is still running (task ${observation.taskId}).`),
+								text: appendStatus(outputText, stillRunningReceipt(observation.taskId, timeout)),
 							},
 						],
 						details: { ...withTiming(details), observation },
