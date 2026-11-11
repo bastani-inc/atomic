@@ -575,6 +575,7 @@ export function createWorkflowStageFactory(input: {
 				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
 			if (changed) announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
+			announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
 				await pending;
 				return;
@@ -653,14 +654,13 @@ export function createWorkflowStageFactory(input: {
 			);
 			input.stageUiBroker.clearStageStatuses(input.runId, stageId);
 			if (input.opts.onStageEnd) {
-				const worktreeSnapshot = stageSnapshot.snapshot;
 				await runCallback(
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
 					() => input.opts.onStageEnd!(input.runId, stageSnapshot),
 				);
-				// The durable end recorder attaches the stage's worktree snapshot once the stage has ended.
-				if (stageSnapshot.snapshot !== worktreeSnapshot)
-					announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
+				// The callback may edit the ended stage: the durable end recorder attaches its worktree snapshot, and a
+				// caller's own callback may change any field. The store reads a finished stage again only when told.
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			}
 			if (input.opts.persistence) {
 				await appendStageStartOnce();

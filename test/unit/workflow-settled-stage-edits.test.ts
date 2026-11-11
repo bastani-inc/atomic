@@ -82,7 +82,7 @@ describe("a graph snapshot shows every field of a stage the executor edits after
 		assert.deepEqual(stale, []);
 	});
 
-	test("a worktree snapshot the durable end recorder attaches shows in the graph snapshot (#4642)", async () => {
+	test("a field a caller's onStageEnd callback sets on the ended stage shows in the graph snapshot (#4642)", async () => {
 		vi.useRealTimers();
 		const store = createStore();
 		const stale = followGraphSnapshots(store);
@@ -98,7 +98,7 @@ describe("a graph snapshot shows every field of a stage the executor edits after
 					await ctx.stage("s").prompt("x");
 					await new Promise((resolve) => setTimeout(resolve, 50));
 					const shown = store.graphSnapshot().runs[0]?.stages.find((candidate) => candidate.name === "s");
-					midRun.push(shown?.snapshot);
+					midRun.push(shown?.snapshot, shown?.skippedReason);
 					return {};
 				},
 			}),
@@ -108,11 +108,49 @@ describe("a graph snapshot shows every field of a stage the executor edits after
 				store,
 				onStageEnd: async (_runId, stage) => {
 					stage.snapshot = worktree;
+					stage.skippedReason = "edited by the caller";
 				},
 			},
 		);
 		assert.equal(result.status, "completed");
-		assert.deepEqual(midRun, [worktree], "read while the run is still running");
+		assert.deepEqual(midRun, [worktree, "edited by the caller"], "read while the run is still running");
 		assert.deepEqual(stale, []);
+	});
+
+	test("the store is told of the ended stage once a caller's onStageEnd callback has returned, whatever the callback did (#4642)", async () => {
+		vi.useRealTimers();
+		const store = createStore();
+		const announced: string[] = [];
+		const editRun = store.editRun.bind(store);
+		store.editRun = (runId, edit) => {
+			const edited = edit(store.run(runId)!);
+			for (const stageId of edited.stageIds ?? []) announced.push(stageId);
+			return editRun(runId, () => edited);
+		};
+		const events: string[] = [];
+		const result = await run(
+			workflow({
+				name: "settled-callback",
+				description: "",
+				inputs: {},
+				outputs: {},
+				run: async (ctx) => {
+					await ctx.stage("s").prompt("x");
+					return {};
+				},
+			}),
+			{},
+			{
+				adapters: { prompt: { prompt: async (text: string) => `ok:${text}` } },
+				store,
+				onStageEnd: async (_runId, stage) => {
+					announced.length = 0;
+					events.push(`callback ${stage.id}`);
+				},
+			},
+		);
+		assert.equal(result.status, "completed");
+		assert.equal(events.length, 1);
+		assert.equal(announced.length > 0, true, "the ended stage was announced after the callback");
 	});
 });

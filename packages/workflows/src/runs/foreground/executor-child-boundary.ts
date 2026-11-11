@@ -18,7 +18,7 @@ import { makeParentWorkflowExitAbortReason } from "./executor-abort.js";
 import { cloneWorkflowChildReplaySnapshot, cloneWorkflowChildValue } from "./executor-child-helpers.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
-import { applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
+import { announceSettledStageEdit, applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
 import type { WorkflowExitCleanup } from "./executor-types.js";
 
 interface LinkedChildWorkflowExitState {
@@ -208,6 +208,7 @@ export function createWorkflowBoundaryFactory(input: {
 				}
 				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 				input.opts.onStageEnd?.(input.runId, stageSnapshot);
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 				await appendStageEndForSnapshot();
 				input.tracker.onSettle(stageId);
 			})();
@@ -234,6 +235,7 @@ export function createWorkflowBoundaryFactory(input: {
 				unregisterWorkflowExitCleanup();
 				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 				input.opts.onStageEnd?.(input.runId, stageSnapshot);
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 				await appendStageEndForSnapshot();
 				input.tracker.onSettle(stageId);
 			})();

@@ -22,7 +22,7 @@ import {
 	type PromptDescriptor,
 	promptReplayKey,
 } from "./executor-hil.js";
-import { applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
+import { announceSettledStageEdit, applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
 import type { RunOpts, WorkflowExitCleanup } from "./executor-types.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 
@@ -159,6 +159,7 @@ export function buildPromptNodeUiAdapter(input: {
 				input.activeStore.recordStageAttachable(input.runId, stageId, false);
 				input.activeStore.recordStageEnd(input.runId, stageSnapshot);
 				await input.opts.onStageEnd?.(input.runId, stageSnapshot);
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 				if (input.opts.persistence) {
 					await appendStageEnd(input.opts.persistence, {
 						runId: input.runId,
