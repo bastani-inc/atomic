@@ -887,6 +887,7 @@ async function reloadOwnedGeneration(
 			this._defaultToolModifiers,
 		);
 		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
+		this._restoredToolNames = new Set(this.getActiveToolNames());
 		this._buildRuntime({
 			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,
@@ -1037,6 +1038,7 @@ async function reloadOwnedGeneration(
 		this._bindExtensionCore(candidateRunner);
 		this._applyExtensionBindings(candidateRunner);
 		for (const name of this.getActiveToolNames()) this._pendingToolNames.add(name);
+		this._restoredToolNames = new Set(this.getActiveToolNames());
 		this._buildRuntime({
 			activeToolNames: activeToolsAfterReload(defaultTools),
 			flagValues: previousFlagValues,

@@ -97,7 +97,9 @@ export function setActiveToolsByName(this: AgentSession, toolNames: string[]): v
 	const previous = this.getActiveToolNames();
 	this._setActiveTools(toolNames);
 	const active = new Set(this.getActiveToolNames());
-	if (previous.some((name) => !active.has(name))) this._pendingToolNames.clear();
+	if (previous.some((name) => !active.has(name) && this._restoredToolNames.has(name))) {
+		this._pendingToolNames.clear();
+	}
 }
 
 export function _setActiveTools(this: AgentSession, toolNames: string[]): void {
@@ -327,11 +329,13 @@ export function activatesAfterRecordedLoadout(
  */
 export function _restoreToolsFromTranscript(this: AgentSession, options?: { startup?: boolean }): void {
 	this._pendingToolNames.clear();
+	this._restoredToolNames.clear();
 	const recorded = recordedToolLoadout(this);
 	// No recorded loadout: keep the current tools.
 	if (!recorded) return;
 	const keepLoadout = options?.startup && preservesInitialToolLoadout(this);
 	const modifiers = options?.startup && this._usesDefaultTools ? this._defaultToolModifiers : [];
+	this._restoredToolNames = new Set(applyToolModifiers([...recorded.current], modifiers));
 	// Removed tools are mentioned too, so they stay inactive.
 	const newTools = [...this._toolRegistry.keys()].filter((name) =>
 		activatesAfterRecordedLoadout(this, recorded, name, this._toolDefinitions.get(name)?.definition),
