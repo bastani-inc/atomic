@@ -35,7 +35,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	assert.doesNotMatch(evals, /^## Grok 4\.7$/mu);
 	assert.match(
 		evals,
-		/^Last Accessed: 2026-11-09 \(Claude Fable 5\.2 and other new-model additions, and refreshed Artificial Analysis values listed below; earlier rows retain their snapshot dates below\)\.$/mu,
+		/^Last Accessed: 2026-11-11 \(Gemini 4 Carbon additions and the Gemini 4 Argon recheck listed below; earlier rows retain their snapshot dates below\)\.$/mu,
 	);
 	assert.match(evals, /^\| slug \| Model \| Release date \| idx \| Brief \| Gn \| Auto \| TB4 \|/mu);
 	assert.match(
@@ -63,7 +63,7 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 	const aaEnd = lines.findIndex((line, index) => index >= aaStart && !line.startsWith("| "));
 	const aaRows = lines.slice(aaStart, aaEnd < 0 ? undefined : aaEnd);
 	const caption =
-		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, (\d+) Claude Fable 5\.2 rows accessed 2026-11-09, and (\d+) rows for 14 other new model families accessed 2026-11-09\.$/mu.exec(
+		/^Table: the (\d+) models on the Artificial Analysis leaderboard as of 2026-09-25, including models with no published scores, plus (\d+) Claude Sonnet 5\.5 rows accessed 2026-09-28, (\d+) GPT-6\.1 Sol rows accessed 2026-09-29, (\d+) Claude Haiku 5\.5 rows accessed 2026-10-07, (\d+) GPT-6\.1 Terra rows accessed 2026-10-26, (\d+) Gemini 4 Argon row accessed 2026-11-02, (\d+) Claude Fable 5\.2 rows accessed 2026-11-09, (\d+) Gemini 4 Carbon rows accessed 2026-11-11, and (\d+) rows for 14 other new model families accessed 2026-11-09\.$/mu.exec(
 			evals,
 		);
 	assert.ok(caption, "the caption dates the leaderboard and later model additions separately");
@@ -76,7 +76,8 @@ test("the factual evals document includes every Artificial Analysis leaderboard 
 			Number(caption[5]) +
 			Number(caption[6]) +
 			Number(caption[7]) +
-			Number(caption[8]),
+			Number(caption[8]) +
+			Number(caption[9]),
 	);
 	assert.ok(aaRows.length > 500, "the catalog covers the whole leaderboard, not a top-N excerpt");
 	const aaHeaderCells = evals.match(/^\| slug \|.*$/mu)![0].split("|").length;
@@ -430,6 +431,154 @@ test("Claude Fable 5.2 published results keep score, qualifier and source", asyn
 		/\[system card\]\(https:\/\/www\.anthropic\.com\/document\/claude-fable-5-2-mythos-5-2-system-card\)/u,
 	);
 	assert.match(sources, /vendor-reported/u);
+});
+
+const GEMINI_4_CARBON_AA_ROWS: ReadonlyArray<
+	readonly [slug: string, model: string, values: Readonly<Record<string, string>>]
+> = [
+	[
+		"gemini-4-carbon",
+		"Gemini 4 Carbon (high)",
+		{ Brief: "55.5", Gn: "61.6", Auto: "77.8", TB4: "65.2", PDF: "28.4", LCR: "79.3" },
+	],
+	[
+		"gemini-4-carbon-medium",
+		"Gemini 4 Carbon (medium)",
+		{ Brief: "55.1", Auto: "77.6", TB4: "60.6", PDF: "29.6", MMMU: "89.2" },
+	],
+	["gemini-4-carbon-low", "Gemini 4 Carbon (low)", { Brief: "53.4", Auto: "63.5", TB4: "62.6", PDF: "28.6" }],
+];
+
+test("Gemini 4 Carbon AA rows keep three configurations, their published values and unknown cells", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const carbonRows = aa.rows.filter((row) => /^gemini-4-carbon(?:-|$)/u.test(row[0]!));
+	assert.deepEqual(
+		carbonRows.map((row) => row[0]),
+		GEMINI_4_CARBON_AA_ROWS.map(([slug]) => slug),
+		"each Gemini 4 Carbon configuration appears exactly once",
+	);
+	const scoreColumns = aa.header.slice(3);
+	for (const [slug, model, values] of GEMINI_4_CARBON_AA_ROWS) {
+		const row = carbonRows.find((candidate) => candidate[0] === slug)!;
+		assert.deepEqual(row.slice(1, 3), [model, "2026-10-28"], slug);
+		assert.deepEqual(
+			row.slice(3),
+			scoreColumns.map((column) => values[column] ?? "∅"),
+			`${slug} keeps published values and leaves unpublished and revised-version columns unknown`,
+		);
+		assert.ok(evals.includes(`(https://artificialanalysis.ai/models/${slug})`), `${slug} cites its model page`);
+	}
+});
+
+test("Gemini 4 Argon keeps its single AA row and records the 2026-11-11 recheck", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const aa = sectionTable(evals, "## Artificial Analysis Intelligence Index v4.3.2");
+	const argonRows = aa.rows.filter((row) => /^gemini-4-argon(?:-|$)/u.test(row[0]!));
+	assert.deepEqual(
+		argonRows.map((row) => row[0]),
+		["gemini-4-argon"],
+	);
+	const published: Readonly<Record<string, string>> = {
+		Brief: "49.2",
+		Gn: "56.5",
+		Auto: "77.5",
+		TB4: "57.1",
+		Sci: "61.8",
+		HLE: "57.1",
+		PDF: "21.8",
+		Crit: "27.1",
+		LCR: "79.7",
+		Analyst: "48.8",
+	};
+	assert.deepEqual(
+		argonRows[0]!.slice(3),
+		aa.header.slice(3).map((column) => published[column] ?? "∅"),
+	);
+	assert.match(evals, /^- Gemini 4 Argon: .*Rechecked 2026-11-11 against the model page and leaderboard/mu);
+});
+
+test("Gemini 4 Carbon published results keep score, qualifier and source", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const published = sectionTable(evals, "## Published benchmark results");
+	const carbon = published.rows
+		.filter((row) => row[0]!.startsWith("gemini-4-carbon"))
+		.map((row) => [row[0], row[2], row[3], row[5]]);
+	assert.deepEqual(carbon, [
+		["gemini-4-carbon", "FSWE", "61.2", "Google"],
+		["gemini-4-carbon", "TB4", "65.2", "Google"],
+		["gemini-4-carbon", "TBSci", "64.8", "Google"],
+		["gemini-4-carbon", "VALS", "70.4", "Google"],
+		["gemini-4-carbon", "ALE", "77.4", "Google"],
+		["gemini-4-carbon", "OSW21", "81.5", "Google"],
+		["gemini-4-carbon", "Chart", "72.5", "Google"],
+		["gemini-4-carbon", "GW1M", "96.2", "Google"],
+		["gemini-4-carbon", "RBench", "80.0", "Google"],
+		["gemini-4-carbon", "CWE", "71.0", "Google"],
+		["gemini-4-carbon", "XGym", "54.8", "Google"],
+		["gemini-4-carbon", "SECPro", "88.2", "Google"],
+		["gemini-4-carbon", "TBSci", "64.8", "Artificial Analysis"],
+		["gemini-4-carbon-medium", "TBSci", "62.4", "Artificial Analysis"],
+		["gemini-4-carbon-low", "TBSci", "61.9", "Artificial Analysis"],
+		["gemini-4-carbon", "ABench", "53.9", "Zapier"],
+		["gemini-4-carbon-medium", "ABench", "53.0", "Zapier"],
+		["gemini-4-carbon-low", "ABench", "31.5", "Zapier"],
+		["gemini-4-carbon", "ARC1", "97.5", "ARC Prize"],
+		["gemini-4-carbon", "ARC2", "92.1", "ARC Prize"],
+		["gemini-4-carbon", "ARC3", "96.9", "ARC Prize"],
+		["gemini-4-carbon-medium", "ARC1", "98.5", "ARC Prize"],
+		["gemini-4-carbon-medium", "ARC2", "94.2", "ARC Prize"],
+		["gemini-4-carbon-medium", "ARC3", "63.9", "ARC Prize"],
+		["gemini-4-carbon-medium", "ARC3", "99.1", "ARC Prize"],
+		["gemini-4-carbon-low", "ARC1", "85.5", "ARC Prize"],
+		["gemini-4-carbon-low", "ARC2", "49.6", "ARC Prize"],
+		["gemini-4-carbon-low", "ARC3", "65.1", "ARC Prize"],
+		["gemini-4-carbon-low", "ARC3", "97.7", "ARC Prize"],
+	]);
+	const sources = evals.split("\n").find((line) => line.startsWith("- Gemini 4 Carbon, accessed 2026-11-11:"));
+	assert.ok(sources, "Gemini 4 Carbon published results name their sources and access date");
+	assert.match(sources, /\[model card\]\(https:\/\/deepmind\.google\/models\/model-cards\/gemini-4-carbon\/\)/u);
+	assert.match(sources, /\[methodology\]\(https:\/\/deepmind\.google\/models\/evals-methodology\/gemini-4-carbon\)/u);
+	assert.match(sources, /\[AutomationBench\]\(https:\/\/zapier\.com\/benchmarks\)/u);
+	assert.match(
+		sources,
+		/\[Gemini 4 Carbon results page\]\(https:\/\/arcprize\.org\/results\/google-gemini-4-carbon\)/u,
+	);
+	assert.match(sources, /vendor-reported/u);
+});
+
+test("Gemini 4 Argon published results add the newer Google-reported versions and ARC Prize results", async () => {
+	const evals = await readText("packages/coding-agent/docs/models/evals.md");
+	const published = sectionTable(evals, "## Published benchmark results");
+	const added = published.rows
+		.filter(
+			(row) =>
+				row[0]!.startsWith("gemini-4-argon") &&
+				(row[5] === "ARC Prize" || /Gemini 4 Carbon model card/u.test(row[4]!)),
+		)
+		.map((row) => [row[0], row[2], row[3], row[5]]);
+	assert.deepEqual(added, [
+		["gemini-4-argon", "VALS", "69.2", "Google"],
+		["gemini-4-argon", "ALE", "69.0", "Google"],
+		["gemini-4-argon", "OSW21", "74.7", "Google"],
+		["gemini-4-argon", "XGym", "42.0", "Google"],
+		["gemini-4-argon", "SECPro", "83.4", "Google"],
+		["gemini-4-argon", "ARC1", "98.5", "ARC Prize"],
+		["gemini-4-argon", "ARC2", "91.3", "ARC Prize"],
+		["gemini-4-argon", "ARC3", "97.3", "ARC Prize"],
+		["gemini-4-argon-medium", "ARC1", "98.5", "ARC Prize"],
+		["gemini-4-argon-medium", "ARC2", "87.1", "ARC Prize"],
+		["gemini-4-argon-medium", "ARC3", "46.3", "ARC Prize"],
+		["gemini-4-argon-medium", "ARC3", "97.3", "ARC Prize"],
+		["gemini-4-argon-low", "ARC1", "76.5", "ARC Prize"],
+		["gemini-4-argon-low", "ARC2", "42.1", "ARC Prize"],
+		["gemini-4-argon-low", "ARC3", "49.8", "ARC Prize"],
+		["gemini-4-argon-low", "ARC3", "97.5", "ARC Prize"],
+	]);
+	const sources = evals.split("\n").find((line) => line.startsWith("- Gemini 4 Argon, accessed 2026-11-02:"));
+	assert.ok(sources);
+	assert.match(sources, /Rechecked 2026-11-11/u);
+	assert.match(sources, /\[Gemini 4 Argon results page\]\(https:\/\/arcprize\.org\/results\/google-gemini-4-argon\)/u);
 });
 
 const OTHER_NEW_FAMILY_AA_ROWS: readonly string[] = [

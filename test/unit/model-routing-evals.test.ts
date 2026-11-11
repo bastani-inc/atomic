@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import { type CandidateModel, rankCandidates } from "../../packages/coding-agent/src/core/model-routing-candidates.js";
 import {
+	candidateEvidenceRows,
 	candidateReleaseDate,
 	catalogEvidence,
 	filterModelSelectionEvals,
@@ -9,6 +11,7 @@ import {
 	modelEvidenceTokens,
 	parseEvalsCatalog,
 } from "../../packages/coding-agent/src/core/model-routing-evals.js";
+import type { ResolvedTaskNeeds } from "../../packages/coding-agent/src/core/model-routing-needs.js";
 import { readText } from "../helpers/runtime.js";
 
 const slugs = [
@@ -225,7 +228,7 @@ test("shipped Gemini 4 Argon evidence reaches Copilot routing without Gemini 3.x
 	for (const evidence of [bounded, full]) {
 		assert.match(evidence, /^\| gemini-4-argon \| Gemini 4 Argon \(high\) \| 2026-09-30 \|/mu);
 		assert.match(evidence, /^\| gemini-4-argon \| Gemini 4 Argon \| medium \| 47\.6 \| 52\.8 \| 60\.5 \| 66\.1 \|/mu);
-		assert.doesNotMatch(evidence, /^\| gemini-(?!4-argon(?:-medium)? \|)/mu);
+		assert.doesNotMatch(evidence, /^\| gemini-(?!4-argon(?:-medium|-low)? \|)/mu);
 	}
 	assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= MODEL_SELECTION_EVALS_JSON_BYTES);
 	assert.match(
@@ -234,6 +237,94 @@ test("shipped Gemini 4 Argon evidence reaches Copilot routing without Gemini 3.x
 	);
 	assert.match(full, /^\| gemini-4-argon-medium \| Gemini 4 Argon \| ABench \| 50\.1 \|/mu);
 	assert.equal(candidateReleaseDate(catalog, id), "2026-09-30");
+});
+
+const geminiNeeds = (work: ResolvedTaskNeeds["work"]): ResolvedTaskNeeds => ({
+	work,
+	difficulty: "hard",
+	mistakeCost: "high",
+	needsImages: false,
+	longContext: false,
+	latencySensitive: false,
+});
+
+const copilotCandidate = (id: string): CandidateModel => ({
+	model: id,
+	name: id,
+	cost: { input: 4, output: 20 },
+	input: ["text", "image"],
+});
+
+test("shipped Gemini 4 Carbon evidence reaches Copilot routing without Argon or Gemini 3.x rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	const id = "github-copilot/gemini-4-carbon";
+	const slugsOf = (candidate: string) =>
+		new Set(candidateEvidenceRows(catalog, candidate).map((row) => row.line.split(" | ")[0]!.slice(2)));
+	assert.deepEqual(
+		[...slugsOf(id)].sort(),
+		["gemini-4-carbon", "gemini-4-carbon-low", "gemini-4-carbon-medium"],
+		"the AA and published tables both resolve to Carbon slugs only",
+	);
+	assert.deepEqual(
+		[...slugsOf("github-copilot/gemini-4-argon")].sort(),
+		["gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium"],
+		"Argon evidence never borrows Carbon rows",
+	);
+	const bounded = filterModelSelectionEvals(document, [id]);
+	const full = catalogEvidence(catalog, [id]);
+	for (const effort of ["high", "medium", "low"])
+		for (const evidence of [bounded, full])
+			assert.match(
+				evidence,
+				new RegExp(
+					`^\\| gemini-4-carbon(?:-${effort})? \\| Gemini 4 Carbon \\(${effort}\\) \\| 2026-10-28 \\|`,
+					"mu",
+				),
+				`${effort} AA row`,
+			);
+	assert.ok(Buffer.byteLength(JSON.stringify(bounded), "utf8") <= MODEL_SELECTION_EVALS_JSON_BYTES);
+	assert.match(full, /^\| gemini-4-carbon \| Gemini 4 Carbon \| VALS \| 70\.4 \| v2\.2[^\n]*\| Google \|$/mu);
+	assert.match(full, /^\| gemini-4-carbon-low \| Gemini 4 Carbon \| ABench \| 31\.5 \|/mu);
+	assert.match(full, /^\| gemini-4-carbon-medium \| Gemini 4 Carbon \| ARC3 \| 99\.1 \|/mu);
+	assert.doesNotMatch(full, /^\| gemini-(?!4-carbon(?:-medium|-low)? \|)/mu);
+	assert.equal(candidateReleaseDate(catalog, id), "2026-10-28");
+
+	const [carbon] = rankCandidates(catalog, [copilotCandidate(id)], geminiNeeds("coding"));
+	assert.equal(carbon?.released, "2026-10-28");
+	assert.equal(carbon?.values.get("aa:TB4"), 65.2);
+	assert.equal(carbon?.values.get("aa:Brief"), 55.5);
+	assert.equal(carbon?.values.get("pub:ABench@Zapier"), 53.9);
+	assert.equal(carbon?.values.get("pub:TBSci@Artificial Analysis"), 64.8);
+	assert.equal(carbon?.values.get("pub:SECPro@Google"), 88.2);
+	assert.equal(carbon?.conditions.get("aa:TB4"), "high effort");
+});
+
+test("shipped Gemini 4 Argon evidence carries the recheck, the newer Google-reported versions and ARC Prize rows", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const catalog = parseEvalsCatalog(document);
+	const id = "github-copilot/gemini-4-argon";
+	const full = catalogEvidence(catalog, [id]);
+	assert.match(
+		full,
+		/^\| gemini-4-argon \| Gemini 4 Argon \(high\) \| 2026-09-30 \| ∅ \| 49\.2 \| 56\.5 \| 77\.5 \| 57\.1 \| 61\.8 \| 57\.1 \| 21\.8 \| 27\.1 \|/mu,
+	);
+	assert.match(full, /^\| gemini-4-argon \| Gemini 4 Argon \| VALS \| 69\.2 \| v2\.2[^\n]*\| Google \|$/mu);
+	assert.match(full, /^\| gemini-4-argon \| Gemini 4 Argon \| OSW21 \| 74\.7 \|/mu);
+	assert.match(
+		full,
+		/^\| gemini-4-argon-low \| Gemini 4 Argon \| ARC2 \| 42\.1 \| semi-private, low \| ARC Prize \|$/mu,
+	);
+	assert.doesNotMatch(full, /^\| gemini-4-carbon/mu);
+	const [argon] = rankCandidates(catalog, [copilotCandidate(id)], geminiNeeds("coding"));
+	assert.equal(argon?.values.get("aa:TB4"), 57.1);
+	assert.equal(argon?.values.get("pub:SECPro@Google"), 83.4);
+	assert.equal(argon?.values.get("pub:XGym@Google"), 42);
+	assert.equal(argon?.values.get("pub:ALE@Google"), 69);
 });
 
 test("shipped Claude Fable 5.2 evidence reaches every catalog route without Fable 5.1 rows", async () => {
