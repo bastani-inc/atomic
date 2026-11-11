@@ -6,10 +6,13 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
 import { TaskMessageError } from "../../packages/coding-agent/src/core/tasks/message-error.js";
+import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
+import type { ChatBoxSession } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.ts";
 import { SCROLLBAR_HIDE_DELAY_MS } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
+import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -217,5 +220,109 @@ test("a chat that shows task rows adds and repaints them as its tasks change (#4
 	} finally {
 		host.dispose();
 		await fixture.dispose();
+	}
+});
+
+const FOOTER_DATA = {
+	getGitBranch: () => null,
+	getExtensionStatuses: () => new Map<string, string>(),
+	getAvailableProviderCount: () => 1,
+	onBranchChange: () => () => {},
+};
+
+function boxSession(modelId: string): ChatBoxSession {
+	const model = { provider: "faux", id: modelId, reasoning: false, contextWindow: 1000 };
+	return {
+		state: { model, thinkingLevel: "off" },
+		model,
+		sessionManager: SessionManager.inMemory("/work"),
+		getContextUsage: () => undefined,
+		modelRuntime: { isUsingOAuth: () => false },
+		isStreaming: false,
+	} as unknown as ChatBoxSession;
+}
+
+test("a chat with no session of any kind shows no usage meter and no session footer (#4640)", () => {
+	initTheme("dark");
+	const host = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA }));
+	assert.deepEqual(host.renderUsage(80), []);
+	assert.deepEqual(host.renderFooter(80), []);
+	host.dispose();
+});
+
+test("a chat's footer follows the session it is given, and counts the tasks of its own source (#4640)", async () => {
+	initTheme("dark");
+	const fixture = taskFixture();
+	await fixture.start("Footer count");
+	let current = boxSession("first-model");
+	const withSource = new ChatSessionHost(
+		hostOptions({
+			footerData: FOOTER_DATA,
+			getChatBoxSession: () => current,
+			getTaskSource: () => ownerTaskViewSource(fixture.store),
+		}),
+	);
+	const bare = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => current }));
+	const empty = new ChatSessionHost(
+		hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => current, getTaskSource: () => undefined }),
+	);
+	try {
+		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
+			"first-model • /work",
+			"Tasks  1 local agent running · /tasks",
+		]);
+		for (const host of [bare, empty])
+			assert.deepEqual(text(host.renderFooter(80)).split("\n"), ["first-model • /work"]);
+		current = boxSession("second-model");
+		assert.match(text(withSource.renderFooter(80)), /^second-model • \/work/);
+	} finally {
+		withSource.dispose();
+		bare.dispose();
+		empty.dispose();
+		await fixture.dispose();
+	}
+});
+
+test("a chat that has an agent session counts the tasks of that session's own store, not its task source (#4640)", async () => {
+	initTheme("dark");
+	const owned = taskFixture();
+	await owned.start("Owned by the session");
+	const shown = taskFixture();
+	const session = boxSession("agent-model");
+	bindOwnerTaskStore(session, owned.store);
+	const host = new ChatSessionHost(
+		hostOptions({
+			footerData: FOOTER_DATA,
+			getAgentSession: () => session as never,
+			getTaskSource: () => ownerTaskViewSource(shown.store),
+		}),
+	);
+	try {
+		assert.match(text(host.renderFooter(80)), /Tasks {2}1 local agent running/);
+	} finally {
+		host.dispose();
+		await owned.dispose();
+		await shown.dispose();
+	}
+});
+
+test("a footer without a task list of its own counts nothing for a session that has no task store (#4640)", () => {
+	initTheme("dark");
+	const footer = new FooterComponent(boxSession("lone-model"), FOOTER_DATA);
+	assert.deepEqual(text(footer.render(80)).split("\n"), ["lone-model • /work"]);
+	footer.dispose();
+});
+
+test("a chat that does not own its running session never offers to interrupt it from its footer (#4640)", () => {
+	initTheme("dark");
+	const session = { ...boxSession("busy-model"), isStreaming: true } as ChatBoxSession;
+	const borrowed = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => session }));
+	const owned = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getAgentSession: () => session as never }));
+	try {
+		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), ["busy-model • /work"]);
+		assert.match(text(owned.renderFooter(80)), /esc to interrupt/);
+	} finally {
+		borrowed.dispose();
+		owned.dispose();
 	}
 });

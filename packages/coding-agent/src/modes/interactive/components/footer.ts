@@ -8,7 +8,9 @@ import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ContextUsage } from "../../../core/extensions/types.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { formatModelLabel } from "../../../core/model-label.ts";
+import type { TaskRecord } from "../../../core/tasks/contracts.js";
 import { getOwnerTaskStore } from "../../../core/tasks/owner-store.js";
+import type { ChatBoxSession } from "../../../core/tasks/supervisor.js";
 import { addUsageToTotals, createUsageTotals, type UsageTotals } from "../../../core/usage-totals.ts";
 import { getEngineSessionStats } from "../../interactive-engine/engine-session-stats.js";
 import { theme } from "../theme/theme.js";
@@ -88,7 +90,7 @@ interface MirrorStats extends UsageSummary {
 	contextUsage: ContextUsage | undefined;
 }
 
-const mirrorStats = new WeakMap<AgentSession, MirrorStats>();
+const mirrorStats = new WeakMap<ChatBoxSession, MirrorStats>();
 
 function getCacheHitRate(usage: Usage): number | undefined {
 	const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
@@ -103,7 +105,7 @@ function summarizeEngineUsage(stats: SessionStats): UsageSummary {
 	};
 }
 
-function summarizeEntryUsage(session: AgentSession): UsageSummary {
+function summarizeEntryUsage(session: ChatBoxSession): UsageSummary {
 	// Calculate cumulative usage from ALL session entries (not just post-compaction messages)
 	const totals = createUsageTotals();
 	let latestCacheHitRate: number | undefined;
@@ -129,7 +131,7 @@ function summarizeEntryUsage(session: AgentSession): UsageSummary {
 	return { totals, latestCacheHitRate };
 }
 
-function getMirrorStats(session: AgentSession): MirrorStats {
+function getMirrorStats(session: ChatBoxSession): MirrorStats {
 	const manager = session.sessionManager;
 	const sessionId = manager.getSessionId();
 	const leafId = manager.getLeafId();
@@ -152,7 +154,7 @@ function getMirrorStats(session: AgentSession): MirrorStats {
 	return stats;
 }
 
-function getUsageLine(session: AgentSession, autoCompactEnabled: boolean, width: number): string {
+function getUsageLine(session: ChatBoxSession, autoCompactEnabled: boolean, width: number): string {
 	const state = session.state;
 	// An isolated engine owns the live session; its stats replace the host's mirror entries.
 	const engineStats = getEngineSessionStats(session);
@@ -224,13 +226,13 @@ export function formatCwdForFooter(cwd: string, home: string | undefined): strin
 export class UsageMeterComponent implements Component {
 	private autoCompactEnabled = true;
 
-	private declare session: AgentSession;
+	private declare session: ChatBoxSession;
 
-	constructor(session: AgentSession) {
+	constructor(session: ChatBoxSession) {
 		this.session = session;
 	}
 
-	setSession(session: AgentSession): void {
+	setSession(session: ChatBoxSession): void {
 		this.session = session;
 	}
 
@@ -252,27 +254,31 @@ export class UsageMeterComponent implements Component {
  * when idle, or one semantic dot with short recovery copy while work is live.
  */
 export class FooterComponent implements Component {
-	private declare session: AgentSession;
+	private declare session: ChatBoxSession;
 	private declare footerData: ReadonlyFooterDataProvider;
 	private declare readonly renderStyle: FooterRenderStyle;
 	private readonly navigationActive: () => boolean;
+	private readonly backgroundTasks: (() => readonly TaskRecord[]) | undefined;
 	private branchCwd: string | undefined;
 	private releaseBranch: (() => void) | undefined;
 	private disposed = false;
 
+	/** `backgroundTasks` names the tasks the footer counts; without it, those of the session's own task store. */
 	constructor(
-		session: AgentSession,
+		session: ChatBoxSession,
 		footerData: ReadonlyFooterDataProvider,
 		renderStyle: FooterRenderStyle = defaultFooterRenderStyle,
 		navigationActive: () => boolean = () => false,
+		backgroundTasks?: () => readonly TaskRecord[],
 	) {
 		this.session = session;
 		this.footerData = footerData;
 		this.renderStyle = renderStyle;
 		this.navigationActive = navigationActive;
+		this.backgroundTasks = backgroundTasks;
 	}
 
-	setSession(session: AgentSession): void {
+	setSession(session: ChatBoxSession): void {
 		if (this.session !== session) {
 			this.releaseBranch?.();
 			this.releaseBranch = undefined;
@@ -335,7 +341,9 @@ export class FooterComponent implements Component {
 		const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
 		const statusRow = renderExtensionStatusRow(this.footerData.getExtensionStatuses(), width, this.renderStyle);
 		if (statusRow !== undefined) lines.push(statusRow);
-		lines.push(...renderTaskFooter(getOwnerTaskStore(this.session)?.backgroundTasks ?? [], width));
+		lines.push(
+			...renderTaskFooter(this.backgroundTasks?.() ?? getOwnerTaskStore(this.session)?.backgroundTasks ?? [], width),
+		);
 		return lines;
 	}
 }

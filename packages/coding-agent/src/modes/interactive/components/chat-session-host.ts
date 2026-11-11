@@ -90,6 +90,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 			editorFactory: opts.editorFactory,
 			style: opts.style,
 			getChatRenderSettings: opts.getChatRenderSettings,
+			footerData: opts.footerData,
 			notify: (message) => this.showWarning(message),
 		});
 		this.state = new ChatSessionHostState(opts, {

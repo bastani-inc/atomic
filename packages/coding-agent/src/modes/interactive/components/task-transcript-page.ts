@@ -1,4 +1,5 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@earendil-works/pi-tui";
+import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
 import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
@@ -25,6 +26,8 @@ export interface TaskTranscriptEnvironment {
 	readonly editorFactory?: ChatSessionHostOpts["editorFactory"];
 	readonly style: ChatSessionHostStyle;
 	readonly getChatRenderSettings?: ChatSessionHostOpts["getChatRenderSettings"];
+	/** What the transcript chat's footer reads of git and providers; without it the footer counts tasks only. */
+	readonly footerData?: ChatSessionHostOpts["footerData"];
 	readonly getToolsExpanded?: () => boolean;
 	readonly setToolsExpanded?: (expanded: boolean) => void;
 	/** Tells the reader about a message that failed after they left its transcript and the task pages. */
@@ -83,6 +86,16 @@ function keybindingsOf(candidate: unknown): Pick<KeybindingsManager, "matches"> 
 		: getKeybindings();
 }
 
+/** The subagent's footer shows its own session: the extension statuses of the chat that opened it are not its own. */
+function withoutExtensionStatuses(data: ReadonlyFooterDataProvider): ReadonlyFooterDataProvider {
+	return {
+		getGitBranch: (cwd) => data.getGitBranch(cwd),
+		getAvailableProviderCount: () => data.getAvailableProviderCount(),
+		onBranchChange: (callback, cwd) => data.onBranchChange(callback, cwd),
+		getExtensionStatuses: () => new Map(),
+	};
+}
+
 async function settled<T>(read: T | Promise<T>): Promise<T> {
 	return read instanceof Promise ? await read : read;
 }
@@ -131,6 +144,8 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			editorTheme: env.editorTheme,
 			editorFactory: env.editorFactory,
 			getChatRenderSettings: env.getChatRenderSettings,
+			...(env.footerData === undefined ? {} : { footerData: withoutExtensionStatuses(env.footerData) }),
+			getChatBoxSession: () => this.followed?.chatSession,
 			requestRender,
 			taskRowsInChat: false,
 			isStreaming: () => this.followed?.getStreamingMessage?.() !== undefined,
@@ -288,10 +303,19 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		this.followed = session;
 		if (session === undefined) return;
 		this.chat.hydrateStreamingAssistantMessage(session.getStreamingMessage?.());
+		this.hydrateRunningTurn(session);
 		this.unsubscribe = session.subscribe?.((event) => {
 			this.chat.applyAgentEvent(event);
 			this.requestRender();
 		});
+	}
+
+	/** A page opened mid-turn missed `agent_start` and `queue_update`, so it reads the turn and the queue now. */
+	private hydrateRunningTurn(session: TaskTranscriptSource): void {
+		if (session.isRunning?.() === true) this.chat.beginExternalPromptLifecycle();
+		const queued = session.getQueuedMessages?.();
+		if (queued === undefined) return;
+		this.chat.applyAgentEvent({ type: "queue_update", steering: queued.steering, followUp: queued.followUp });
 	}
 
 	private loadEarlier(): void {

@@ -4,7 +4,7 @@
 
 ### Changed
 
-- A subagent's transcript in `/tasks` now has the chat box of a workflow stage chat: its prompt's top rule names the subagent, as `[subagent: <name>]`, and pending messages, the working line and a footer counting the subagent's running tasks sit around the prompt in the same order. `/tasks` typed there lists that subagent's own shells and the subagents it launched instead of the parent's, also for nested subagents, and Escape or Left returns to its chat ([#4640](https://github.com/bastani-inc/atomic/issues/4640))
+- A subagent's transcript in `/tasks` now has the chat box of a workflow stage chat: its prompt's top rule names the subagent, as `[subagent: <name>]`, and while it runs its usage meter, model line, working line and queued messages sit around the prompt in the same order, with a footer counting its own running tasks. `/tasks` typed there lists that subagent's own shells and the subagents it launched instead of the parent's, also for nested subagents, and Escape or Left returns to its chat ([#4640](https://github.com/bastani-inc/atomic/issues/4640))
 - Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema` and `@earendil-works/pi-telemetry` to 1.5.2; the intercom, subagents, web-access and workflows packages now require `@earendil-works/pi-tui` and `@earendil-works/pi-agent-core` `^1.5.2`
 
 ### Fixed

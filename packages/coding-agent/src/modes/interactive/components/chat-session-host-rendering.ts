@@ -93,9 +93,9 @@ export function renderChatSessionUsage<TExtraEntry extends ChatTranscriptEntryLi
 	state: ChatSessionHostState<TExtraEntry>,
 	width: number,
 ): string[] {
-	const agentSession = state.getAgentSession?.();
-	if (!agentSession) return [];
-	return new UsageMeterComponent(agentSession).render(width);
+	const session = state.getAgentSession?.() ?? state.getChatBoxSession?.();
+	if (!session) return [];
+	return new UsageMeterComponent(session).render(width);
 }
 
 export function renderChatSessionEditor<TExtraEntry extends ChatTranscriptEntryLike>(
@@ -135,10 +135,12 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 ): string[] {
 	if (state.disposed) return [];
 	const agentSession = state.getAgentSession?.();
-	state.footerNavigationActive = navigationActive;
-	if (agentSession && state.footerData) {
+	const session = agentSession ?? state.getChatBoxSession?.();
+	// A chat that does not own its session cannot interrupt it, so its footer never offers "esc to interrupt".
+	state.footerNavigationActive = navigationActive || agentSession === undefined;
+	if (session && state.footerData) {
 		state.footer ??= new FooterComponent(
-			agentSession,
+			session,
 			state.footerData,
 			{
 				dim: (text) => state.style.dim(text),
@@ -146,8 +148,10 @@ export function renderChatSessionFooter<TExtraEntry extends ChatTranscriptEntryL
 				warning: (text) => state.style.accent(text),
 			},
 			() => state.footerNavigationActive,
+			// A task's session has no task store of its own: its footer counts the tasks the host shows for it.
+			agentSession === undefined ? () => state.getTaskSource?.()?.backgroundTasks ?? [] : undefined,
 		);
-		state.footer.setSession(agentSession);
+		state.footer.setSession(session);
 		return state.footer.render(width);
 	}
 	state.footer?.dispose();

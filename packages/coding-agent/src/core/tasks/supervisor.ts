@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type * as native from "@bastani/atomic-natives";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModuleRequire } from "../../utils/module-require.ts";
-import type { AgentSessionEvent, CompactionReason } from "../agent-session.js";
+import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent-session.js";
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
@@ -26,7 +26,28 @@ export type TaskMessageDelivery =
 			readonly elapsedMs: number;
 	  };
 
+/**
+ * What a chat's usage meter and footer read of a live session: its model, entries, context use and streaming state.
+ * A task's transcript offers it while the task runs, so a chat of the task shows them without owning the session.
+ */
+export type ChatBoxSession = Pick<
+	AgentSession,
+	"state" | "model" | "sessionManager" | "getContextUsage" | "modelRuntime" | "isStreaming"
+>;
+
+/** Messages a live session holds back until its turn ends. */
+export interface QueuedTaskMessages {
+	readonly steering: readonly string[];
+	readonly followUp: readonly string[];
+}
+
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
+	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
+	readonly chatSession?: ChatBoxSession;
+	/** Whether the session is part-way through a turn, for a viewer that missed `agent_start`. */
+	isRunning?(): boolean;
+	/** The messages queued for the session now, for a viewer that missed their `queue_update`. */
+	getQueuedMessages?(): QueuedTaskMessages;
 	readonly completionSource?: TaskCompletionSource;
 	/** Viewer-only subscription; updates never publish task lifecycle events. */
 	subscribe?(listener: (event: AgentSessionEvent) => void): () => void;

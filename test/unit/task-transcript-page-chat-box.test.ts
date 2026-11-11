@@ -3,7 +3,9 @@ import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
+import type { ReadonlyFooterDataProvider } from "../../packages/coding-agent/src/core/footer-data-provider.js";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import type {
 	AttemptId,
 	Generation,
@@ -12,7 +14,7 @@ import type {
 	TaskId,
 	TaskRecord,
 } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import type { TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import type { ChatBoxSession, TaskTranscriptSource } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
 import {
 	launchedTaskViewSource,
 	type TaskViewSource,
@@ -338,6 +340,171 @@ test("repaints its footer as its parent's tasks change without rebuilding its tr
 		rebuilds.mockRestore();
 		page.dispose();
 	}
+});
+
+const LIVE_MODEL = {
+	provider: "faux",
+	id: "worker-model",
+	reasoning: true,
+	contextWindow: 200_000,
+} as unknown as ChatBoxSession["model"];
+
+/** The live session of a subagent: a model, an entry that used 1,200 input tokens, and a working directory. */
+async function liveChatSession(cwd = "/work/subagent"): Promise<ChatBoxSession> {
+	const sessionManager = SessionManager.inMemory(cwd);
+	await sessionManager.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text: "working" }],
+		api: "openai-responses",
+		provider: "faux",
+		model: "worker-model",
+		usage: {
+			input: 1200,
+			output: 340,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 1540,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.0123 },
+		},
+		stopReason: "stop",
+		timestamp: 1,
+	});
+	return {
+		state: { model: LIVE_MODEL, thinkingLevel: "low" },
+		model: LIVE_MODEL,
+		sessionManager,
+		getContextUsage: () => ({ tokens: 1540, contextWindow: 200_000, percent: 0.77 }),
+		modelRuntime: { isUsingOAuth: () => false },
+		isStreaming: false,
+	} as unknown as ChatBoxSession;
+}
+
+const footerData: ReadonlyFooterDataProvider = {
+	getGitBranch: () => "feature",
+	getExtensionStatuses: () => new Map([["parent-ext", "PARENT-STATUS"]]),
+	getAvailableProviderCount: () => 1,
+	onBranchChange: () => () => {},
+};
+
+describe("a live subagent's chat box (#4640)", () => {
+	async function livePage(extra: Partial<TaskTranscriptSource> = {}, env: Partial<TaskTranscriptEnvironment> = {}) {
+		const live = {
+			...session("child", "subagent-worker-aabcf28b-1"),
+			chatSession: await liveChatSession(),
+			...extra,
+		};
+		const opened: Array<Parameters<TaskTranscriptEnvironment["createChat"]>[0]> = [];
+		const page = subagentPage(
+			treeSource(tree(), new Map([["child", live]])),
+			"child",
+			environment({
+				footerData,
+				...env,
+				createChat: (opts) => {
+					opened.push(opts);
+					return new ChatSessionHost(opts);
+				},
+			}),
+		);
+		await page.load();
+		return { page, live, opened };
+	}
+
+	test("shows the usage meter above the label and the model and folder footer, then the task count, below it (#4640)", async () => {
+		const { page } = await livePage();
+		const rows = plain(page.render(100, 20));
+		const label = rows.findIndex((row) => row.includes("[subagent: subagent-worker-aabcf28b-1]"));
+		const usage = rows.findIndex((row) => row.includes("↑1.2k"));
+		assert.ok(usage >= 0 && usage === label - 1, "the usage meter sits right above the prompt's top rule");
+		assert.match(rows[usage] ?? "", /↓340 • \$0\.012 • 0\.8%\/200k \(auto\)$/);
+		assert.deepEqual(rows.slice(label + 3), [
+			"worker-model  low • /work/subagent (feature)",
+			"Tasks  2 background tasks running · /tasks",
+		]);
+		page.dispose();
+	});
+
+	test("never makes the subagent's session the chat's own, so /tasks still lists only its tasks (#4640)", async () => {
+		const { page, opened } = await livePage();
+		assert.equal(opened[0]?.getAgentSession, undefined);
+		await type(page, "/tasks");
+		page.handleInput(ENTER);
+		await flush();
+		const list = text(page.render(100, 24));
+		assert.match(list, /title-child-shell/);
+		assert.doesNotMatch(list, /title-parent-shell|title-grandchild-shell/);
+		page.dispose();
+	});
+
+	test("reads the subagent's git branch and watches it through the chat's footer data, until the page closes (#4640)", async () => {
+		const watched: string[] = [];
+		let released = 0;
+		const data: ReadonlyFooterDataProvider = {
+			...footerData,
+			getGitBranch: (cwd) => `branch-of-${cwd}`,
+			onBranchChange: (_callback, cwd) => {
+				watched.push(String(cwd));
+				return () => {
+					released++;
+				};
+			},
+		};
+		const { page } = await livePage({}, { footerData: data });
+		assert.match(text(page.render(100, 20)), /\(branch-of-\/work\/subagent\)/);
+		assert.deepEqual(watched, ["/work/subagent"]);
+		page.dispose();
+		assert.equal(released, 1);
+	});
+
+	test("keeps the parent chat's extension statuses out of the subagent's footer (#4640)", async () => {
+		const { page } = await livePage();
+		assert.doesNotMatch(text(page.render(100, 20)), /PARENT-STATUS/);
+		page.dispose();
+	});
+
+	test("without footer data the subagent's footer counts its tasks and its usage meter still shows (#4640)", async () => {
+		const { page } = await livePage({}, { footerData: undefined });
+		const rows = plain(page.render(100, 20));
+		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		assert.ok(rows.some((row) => row.includes("↑1.2k")));
+		page.dispose();
+	});
+
+	test("shows the working line from a turn already under way when the page opens, until the turn ends (#4640)", async () => {
+		const { page, live } = await livePage({ isRunning: () => true });
+		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		for (const listener of live.listeners) listener({ type: "agent_end", messages: [] } as AgentSessionEvent);
+		assert.ok(!plain(page.render(100, 20)).some((row) => row.includes("Working")));
+		page.dispose();
+		const idle = await livePage({ isRunning: () => false });
+		assert.ok(!plain(idle.page.render(100, 20)).some((row) => row.includes("Working")));
+		idle.page.dispose();
+	});
+
+	test("shows the messages already queued for the subagent when the page opens (#4640)", async () => {
+		const { page } = await livePage({
+			getQueuedMessages: () => ({ steering: ["use the fixture"], followUp: ["then run the suite"] }),
+		});
+		const rows = plain(page.render(100, 24));
+		assert.ok(rows.some((row) => row.includes("Steering: use the fixture")));
+		assert.ok(rows.some((row) => row.includes("Follow-up: then run the suite")));
+		const empty = await livePage({ getQueuedMessages: () => ({ steering: [], followUp: [] }) });
+		assert.ok(!plain(empty.page.render(100, 24)).some((row) => row.includes("Steering:")));
+		page.dispose();
+		empty.page.dispose();
+	});
+
+	test("shows no usage meter once the subagent's session is no longer live (#4640)", async () => {
+		const { page } = await livePage();
+		assert.ok(plain(page.render(100, 20)).some((row) => row.includes("↑1.2k")));
+		const settled = subagentPage(treeSource(), "child", environment({ footerData }));
+		await settled.load();
+		const rows = plain(settled.render(100, 20));
+		assert.ok(!rows.some((row) => row.includes("↑1.2k")));
+		assert.equal(rows.at(-1), "Tasks  2 background tasks running · /tasks");
+		page.dispose();
+		settled.dispose();
+	});
 });
 
 describe("/tasks in a subagent's chat (#4640)", () => {

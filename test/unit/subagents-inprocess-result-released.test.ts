@@ -6,6 +6,7 @@ import { runSingleInProcess } from "../../packages/subagents/src/runs/foreground
 import { subagentReleasePolicy } from "../../packages/subagents/src/runs/foreground/released-children.ts";
 import { subagentRegistrySizes } from "../../packages/subagents/src/runs/foreground/subagent-registry-sizes.ts";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.ts";
+import type { TaskExecutionHooks } from "../../packages/subagents/src/shared/types.ts";
 import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 import { agent } from "../helpers/released-task-launch.js";
 
@@ -94,6 +95,44 @@ test(
 		const cancelled = await running;
 		assert.equal(cancelled.status, "interrupted");
 		assert.equal("released" in cancelled, false);
+	},
+	CHILD_LOAD_TIMEOUT_MS,
+);
+
+test(
+	"a child that is running a tool tells its task's chat that a turn is under way, and one that is not does not (#4640)",
+	async () => {
+		const env = await liveChildEnvironment(cleanups);
+		const bound: Array<Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0]> = [];
+		const controller = new AbortController();
+		const hooks: TaskExecutionHooks = {
+			signal: controller.signal,
+			reportActivity() {},
+			bindTranscript: (source) => void bound.push(source),
+			onExecution() {},
+			yieldTaskWait() {},
+			isParentObserving: () => false,
+		};
+		env.faux.setResponses([
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "b-1", name: "block", arguments: {} }],
+				stopReason: "toolUse",
+			} as never,
+		]);
+		const running = runSingleInProcess(env.root, agent, "block", {
+			...env.options("chat-running-turn", { signal: controller.signal }),
+			taskExecution: hooks,
+		});
+		for (let turn = 0; turn < POLL_LIMIT && !env.blockStarted(); turn++)
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(env.blockStarted(), true);
+		const live = bound.find((source) => source.chatSession !== undefined);
+		assert.equal(live?.isRunning?.(), true);
+		assert.deepEqual(live?.getQueuedMessages?.(), { steering: [], followUp: [] });
+		controller.abort();
+		await running;
+		assert.equal(live?.isRunning?.(), false, "the session is idle once its turn is over");
 	},
 	CHILD_LOAD_TIMEOUT_MS,
 );
