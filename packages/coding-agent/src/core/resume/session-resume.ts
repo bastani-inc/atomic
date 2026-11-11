@@ -223,9 +223,9 @@ async function returnToStartingCheckout(
 	options: PrepareSessionResumeOptions,
 ): Promise<Extract<CheckoutReuse, { kind: "reused" }> | undefined> {
 	if (!isInside(storeDir, match.root)) return undefined;
-	const restore = sessionManager
-		.getWorktreeRootMappings()
-		.findLast((mapping) => resolve(mapping.to) === resolve(match.root));
+	const restore = [...sessionManager.getWorktreeRootMappings()]
+		.reverse()
+		.find((mapping) => resolve(mapping.to) === resolve(match.root));
 	if (restore === undefined || restore.snapshotId !== match.snapshot.id) return undefined;
 	const checkout = resolve(restore.from);
 	const cwd = resolve(checkout, relative(match.root, match.cwd));
