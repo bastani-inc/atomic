@@ -274,7 +274,14 @@ export class ReleasedStagePeers {
 		const { hostedOn, sessionId } = peer;
 		peer.hostedOn = undefined;
 		peer.sessionId = undefined;
-		if (sessionId !== undefined && hostedOn === this.client) await hostedOn.unhostSessions([sessionId]);
+		if (sessionId === undefined || hostedOn !== this.client) return;
+		try {
+			await hostedOn.unhostSessions([sessionId]);
+		} catch {
+			// Whether the removal happened is unknown. Closing the connection removes everything it hosted, so the
+			// replacement is hosted on a fresh connection and cannot leave two sessions under one name.
+			this.dropConnection(hostedOn);
+		}
 	}
 
 	private connect(): Promise<IntercomClient> {

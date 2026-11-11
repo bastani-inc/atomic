@@ -283,7 +283,6 @@ function rememberChainExpansion(
 ): void {
 	if (patched || isChainRun(run)) memo.set(run.id, { run, graph });
 	else memo.delete(run.id);
-	if (memo.size <= runById.size) return;
 	for (const runId of memo.keys()) if (!runById.has(runId)) memo.delete(runId);
 }
 
