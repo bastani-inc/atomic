@@ -1080,7 +1080,7 @@ await pi.registerProvider("local-server", {
         const baseUrl = await prompt({
           type: "text",
           message: "Server URL",
-          placeholder: "http://localhost:8080"
+          placeholder: "http://localhost:9931"
         });
         if (signal.aborted) throw new Error("Login cancelled");
         return { type: "api_key", env: { LOCAL_SERVER_URL: baseUrl } };

@@ -107,6 +107,13 @@ describe("compatibility schemas", () => {
 		);
 	});
 
+	it("documents that message threads default on by endpoint, not provider", () => {
+		const description = (AnthropicMessagesCompatSchema.properties as Record<string, { description?: string }>)
+			.supportsMessageThreads?.description;
+		expect(description).toContain("Default: true for a baseUrl whose host is api.anthropic.com, false otherwise.");
+		expect(description).not.toContain("provider anthropic");
+	});
+
 	it("keeps each API schema's properties inside the provider superset", () => {
 		const apiSchemas = [
 			OpenAICompletionsCompatSchema,

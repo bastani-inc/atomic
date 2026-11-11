@@ -35,6 +35,14 @@ const BUN_TARGETS = {
 	"windows-arm64": { bytecode: true, target: "bun-windows-arm64" },
 } as const;
 
+function launcherCompileCommand(source: string): string {
+	const command = source
+		.split(/&&|\r?\n/u)
+		.find((candidate) => candidate.includes("bun build --compile") && candidate.includes("dist/bun/split-loader.js"));
+	assert.ok(command, "missing split-loader compile command");
+	return command;
+}
+
 function assertBuildScriptSyntax(): void {
 	const syntax = spawnSyncCollect(["bash", "-n", buildScriptPath]);
 	assert.equal(syntax.exitCode, 0, syntax.stderr.toString());
@@ -62,6 +70,23 @@ test("every compiled target shares the syntax-minified application sidecar", () 
 	] as const) {
 		assert.match(command, /(?:^|\s)--minify-syntax(?:\s|$)/u, `${site} must syntax-minify the shared app`);
 		assert.doesNotMatch(command, /(?:^|\s)--minify-identifiers(?:\s|$)/u, `${site} must preserve identifiers`);
+	}
+
+	assertBuildScriptSyntax();
+});
+
+test("compiled launchers autoload package.json so extension dependencies resolve main and exports", () => {
+	const buildScript = readFileSync(buildScriptPath, "utf8");
+	const manifest = JSON.parse(readFileSync(packageManifestPath, "utf8")) as { scripts: Record<string, string> };
+
+	for (const [site, command] of [
+		[
+			"packages/coding-agent/package.json build:binary",
+			launcherCompileCommand(manifest.scripts["build:binary"] ?? ""),
+		],
+		["scripts/build-binaries.sh", launcherCompileCommand(buildScript)],
+	] as const) {
+		assert.match(command, /(?:^|\s)--compile-autoload-package-json(?:\s|$)/u, `${site} must autoload package.json`);
 	}
 
 	assertBuildScriptSyntax();
@@ -119,6 +144,7 @@ test("the pinned Windows bytecode probe covers the enabled x64 and ARM64 release
 		assert.ok(args.includes(`--target=${spec.target}`));
 		assert.ok(args.includes("--no-compile-autoload-dotenv"));
 		assert.ok(args.includes("--no-compile-autoload-bunfig"));
+		assert.ok(args.includes("--compile-autoload-package-json"));
 	}
 
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-bytecode-pe-"));

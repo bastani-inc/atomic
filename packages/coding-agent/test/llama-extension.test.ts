@@ -184,7 +184,7 @@ describe("llama.cpp extension", () => {
 	});
 
 	it("normalizes management and inference URLs", () => {
-		expect(normalizeLlamaServerUrl("http://127.0.0.1:8080/v1/")).toBe("http://127.0.0.1:8080");
+		expect(normalizeLlamaServerUrl("http://127.0.0.1:9931/v1/")).toBe("http://127.0.0.1:9931");
 		expect(normalizeLlamaServerUrl("https://example.com/prefix/v1")).toBe("https://example.com/prefix");
 		expect(() => normalizeLlamaServerUrl("file:///tmp/llama")).toThrow("http or https");
 	});
@@ -242,20 +242,20 @@ describe("llama.cpp extension", () => {
 				{ id: "unloaded", status: { value: "unloaded" } },
 				{ id: "loading", status: { value: "loading" } },
 			],
-			"http://localhost:8080",
+			"http://localhost:9931",
 		);
 
 		expect(controller.provider.getModels()).toEqual([
 			expect.objectContaining({
 				id: "loaded",
-				baseUrl: "http://localhost:8080/v1",
+				baseUrl: "http://localhost:9931/v1",
 				contextWindow: 65536,
 				maxTokens: 65536,
 				input: ["text", "image"],
 			}),
 			expect.objectContaining({
 				id: "sleeping",
-				baseUrl: "http://localhost:8080/v1",
+				baseUrl: "http://localhost:9931/v1",
 			}),
 		]);
 	});
@@ -526,7 +526,7 @@ describe("llama.cpp extension", () => {
 				{ id: "decide", status: { value: "sleeping" }, architecture: { output_modalities: ["decisions"] } },
 				{ id: "hybrid", status: { value: "loaded" }, architecture: { output_modalities: ["text", "decisions"] } },
 			],
-			"http://localhost:8080",
+			"http://localhost:9931",
 		);
 		assert.deepEqual(
 			controller.provider.getModels().map((model) => model.id),
@@ -542,6 +542,29 @@ describe("llama.cpp extension", () => {
 				["hybrid", "typesafe-system-one"],
 			],
 		);
+	});
+
+	it("defaults the server URL to the llama serve port 9931", async () => {
+		const { provider } = createLlamaProvider();
+		expect(provider.baseUrl).toBe("http://127.0.0.1:9931/v1");
+
+		vi.stubEnv("LLAMA_BASE_URL", undefined);
+		try {
+			const prompts: AuthPrompt[] = [];
+			const stop = new Error("prompt captured");
+			await expect(
+				provider.auth.apiKey!.login!({
+					prompt: async (prompt: AuthPrompt) => {
+						prompts.push(prompt);
+						throw stop;
+					},
+					notify: () => {},
+				}),
+			).rejects.toBe(stop);
+			expect(prompts).toEqual([expect.objectContaining({ type: "text", placeholder: "http://127.0.0.1:9931" })]);
+		} finally {
+			vi.unstubAllEnvs();
+		}
 	});
 
 	it("stays dormant until configured and stores URL plus optional key", async () => {

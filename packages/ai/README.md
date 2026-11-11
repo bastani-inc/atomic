@@ -1,6 +1,6 @@
 # @bastani/pi-ai
 
-Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`473515f9c297c75cf2c3ebb3ba027049ed836d27`](https://github.com/earendil-works/pi/commit/473515f9c297c75cf2c3ebb3ba027049ed836d27). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
+Bastani-branded fork of [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai) from [earendil-works/pi](https://github.com/earendil-works/pi). Originally forked at **v0.84.2** (`914cf1472e715297caa30db4b9535d534a9eb718`); applicable upstream Pi AI fixes and the unified model catalog are synced through [`4b519d3bb19b57a368129b167a48da16e447d9f6`](https://github.com/earendil-works/pi/commit/4b519d3bb19b57a368129b167a48da16e447d9f6). `@bastani/pi-ai` publishes at the same version as Atomic. `npm run build` refreshes the models.dev catalog, same as upstream.
 
 The public API is a drop-in replacement: install `@bastani/pi-ai` and import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. See [NOTICE.md](NOTICE.md). This package lives in the Atomic monorepo and publishes from `.github/workflows/publish.yml`. The first npm version must be published by hand so trusted publishing can be attached.
 
@@ -1068,7 +1068,7 @@ const provider = createProvider({
     name: 'Qwen3 4B',
     api: 'llama-cpp-classify',
     provider: 'local-llama',
-    baseUrl: 'http://127.0.0.1:8080',
+    baseUrl: 'http://127.0.0.1:9931',
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 32768
@@ -1418,7 +1418,7 @@ const llamacpp = createProvider({
   id: 'llamacpp',
   auth: { apiKey: { name: 'llama.cpp', resolve: async () => ({ auth: {} }) } },
   models: [],
-  fetchModels: async ({ signal }) => fetchModelsFromServer('http://localhost:8080', signal),
+  fetchModels: async ({ signal }) => fetchModelsFromServer('http://localhost:9931', signal),
   api: openAICompletionsApi(),
 });
 
@@ -1499,7 +1499,7 @@ Built-in API implementations live under `./api/<api-id>`:
 
 Importing an implementation module loads its SDK. The `./api/<id>.lazy` wrappers (used by the provider factories) defer that load to the first request when the runtime or bundler supports dynamic import chunking. Legacy raw API subpaths from older releases (`./anthropic`, `./google`, `./mistral`, `./openai-completions`, ...) were removed; use `@bastani/pi-ai/api/<api-id>`.
 
-**Anthropic message threads (beta):** with `sessionId` set and `cacheRetention` not `"none"`, Anthropic requests continue from the previous reply on the server (`message-threads-2026-08-12` beta) and send only the new messages. When anything earlier in the request changed, or the server can't continue, the full request is sent. Token counts and prompt caching are unchanged. On by default only for the `anthropic` provider on `api.anthropic.com`; set `compat.supportsMessageThreads` to change that, for example for gateways that forward the `thread` field. Requests made with a caller-supplied `client` never use threads. Set `disableContinuation: true` on requests that repeat an earlier one, such as cache warming. Call `cleanupSessionResources(sessionId)` when a session ends.
+**Anthropic message threads (beta):** with `sessionId` set and `cacheRetention` not `"none"`, Anthropic requests continue from the previous reply on the server (`message-threads-2026-08-12` beta) and send only the new messages. When anything earlier in the request changed, or the server can't continue, the full request is sent. Token counts and prompt caching are unchanged. On by default only for a `baseUrl` on `api.anthropic.com`; set `compat.supportsMessageThreads` to change that, for example for gateways that forward the `thread` field. Requests made with a caller-supplied `client` never use threads. Set `disableContinuation: true` on requests that repeat an earlier one, such as cache warming. Call `cleanupSessionResources(sessionId)` when a session ends.
 
 ### OpenAI Compatibility Settings
 

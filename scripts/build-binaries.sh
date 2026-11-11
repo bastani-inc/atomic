@@ -261,7 +261,7 @@ for platform in "${PLATFORMS[@]}"; do
     # segfaults before user code runs (even on --version). publish.yml builds
     # the Windows archives on the Windows runner and passes --skip-windows to
     # the Linux release-payload build.
-    bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/$binary_name"
+    bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --compile-autoload-package-json --target="$bun_target" ./dist/bun/split-loader.js --outfile "binaries/$platform/$binary_name"
 done
 
 echo "==> Copying runtime dependencies..."

@@ -94,6 +94,17 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 		expect(files).toEqual(["direct.spec.ts"]);
 	});
 
+	// https://github.com/earendil-works/pi/issues/12020: a leading `./` must not hide every match.
+	it("a leading ./ matches like the pattern without it", async () => {
+		expect(await runFind("./src/*.spec.ts")).toEqual(["direct.spec.ts"]);
+		expect(await runFind("././src/*.spec.ts")).toEqual(["direct.spec.ts"]);
+		expect((await runFind("./src/**/*.spec.ts")).sort()).toEqual(["direct.spec.ts", "foo/bar/example.spec.ts"]);
+		expect((await runFind("./**/parent/child/*")).sort()).toEqual([
+			"some/parent/child/file.ext",
+			"some/parent/child/test.spec.ts",
+		]);
+	});
+
 	// https://github.com/earendil-works/pi/issues/9262: on Windows, `\` is a path separator.
 	it.runIf(process.platform === "win32")("Windows backslash patterns match like forward-slash patterns", async () => {
 		expect((await runFind(String.raw`src\**\*.spec.ts`)).sort()).toEqual([

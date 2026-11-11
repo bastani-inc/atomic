@@ -31,7 +31,7 @@ const REQUEST_REJECTED_CODES: ReadonlySet<string> = new Set<LlamaServerErrorCode
 const UNREACHABLE_HINT =
 	"Check that llama-server is running, and that the URL, port and http or https scheme in /login llama.cpp or LLAMA_BASE_URL are right.";
 const REQUEST_REJECTED_HINT =
-	"Check the server URL in /login llama.cpp or LLAMA_BASE_URL: use a plain http or https address without a user name or password (give an API key separately), on a port that fetch does not block, such as the default 8080.";
+	"Check the server URL in /login llama.cpp or LLAMA_BASE_URL: use a plain http or https address without a user name or password (give an API key separately), on a port that fetch does not block, such as the default 9931.";
 
 /** The server URL without user information, so it can go into messages and fields. */
 function displayServerUrl(serverUrl: string): string {

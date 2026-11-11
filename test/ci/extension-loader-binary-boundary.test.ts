@@ -27,7 +27,7 @@ function formatCommand(command: readonly string[]): string {
 }
 
 test(
-	"compiled extension loading preserves mutable CommonJS module semantics",
+	"compiled extension loading preserves mutable CommonJS module semantics and package.json entry points",
 	() => {
 		// Keep the fixture below the repository root so the extension's bare
 		// import resolves the repository-installed proper-lockfile package, exactly
@@ -61,12 +61,30 @@ test(
 					'  console.log("extension/native lock probe: OK");\n' +
 					"})();\n",
 			);
+			for (const name of ["probe-main-only", "probe-lazy"]) {
+				makeDirectorySync(join(fixture, "node_modules", name, "lib"), { recursive: true });
+			}
+			writeTextSync(
+				join(fixture, "node_modules/probe-main-only/package.json"),
+				JSON.stringify({ name: "probe-main-only", version: "1.0.0", main: "lib/entry.js" }),
+			);
+			writeTextSync(join(fixture, "node_modules/probe-main-only/lib/entry.js"), 'module.exports = "main-only";\n');
+			writeTextSync(
+				join(fixture, "node_modules/probe-lazy/package.json"),
+				JSON.stringify({ name: "probe-lazy", version: "1.0.0", main: "lib/lazy.js" }),
+			);
+			writeTextSync(
+				join(fixture, "node_modules/probe-lazy/lib/lazy.js"),
+				'exports.load = async () => (await import("probe-main-only")).default;\n',
+			);
 			writeTextSync(
 				extensionPath,
 				'import lockfile from "proper-lockfile";\n' +
+					'import { load } from "probe-lazy";\n' +
 					'import { join } from "node:path";\n' +
 					"export default async function extension(): Promise<void> {\n" +
 					'  if (typeof lockfile.lock !== "function") throw new Error("proper-lockfile default import is invalid");\n' +
+					'  if ((await load()) !== "main-only") throw new Error("lazy package.json main import is invalid");\n' +
 					'  const target = join(import.meta.dirname, "target.json");\n' +
 					'  await Bun.write(target, "native-probe");\n' +
 					"  for (let index = 0; index < 2; index++) {\n" +
@@ -134,6 +152,7 @@ test(
 				"--external=mupdf",
 				"--no-compile-autoload-dotenv",
 				"--no-compile-autoload-bunfig",
+				"--compile-autoload-package-json",
 				join(fixture, "split-loader.ts"),
 				"--outfile",
 				executablePath,

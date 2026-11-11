@@ -231,6 +231,7 @@ class AgentSessionBase {
 	protected _extensionRunnerRef?: { current?: ExtensionRunner };
 	protected _initialActiveToolNames?: string[];
 	protected _pendingToolNames = new Set<string>();
+	protected _restoredToolNames = new Set<string>();
 	protected _usesDefaultTools: boolean;
 	protected _defaultToolModifiers: string[];
 	/** Resolved defaults last applied here, independent of shared settings publication. */
