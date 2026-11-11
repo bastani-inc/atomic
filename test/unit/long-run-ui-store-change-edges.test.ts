@@ -98,6 +98,20 @@ describe("a settled stage's model and session metadata (#4642)", () => {
 		assert.equal("warnings" in settled, false);
 		applyModelFallbackMetaToStage(settled, { model: "m2" });
 		assert.equal("thinkingLevel" in settled, false);
+		const kept = stage("b", {
+			model: "m",
+			thinkingLevel: "low",
+			attemptedModels: ["m"],
+			modelAttempts: [],
+			rateLimits: [],
+			routerSelection: { model: "m" } as never,
+		});
+		const before = { ...kept };
+		assert.equal(applyModelFallbackMetaToStage(kept, { thinkingLevel: "low" }), false);
+		assert.deepEqual(kept, before, "absent fields keep their values");
+		const attempts = [{ model: "n" }] as never;
+		applyModelFallbackMetaToStage(kept, { thinkingLevel: "low", modelAttempts: attempts });
+		assert.equal(kept.modelAttempts, attempts);
 	});
 
 	test("session metadata reports a change when the session id or file changes (#4642)", () => {
@@ -166,20 +180,27 @@ describe("graph snapshot builder edges (#4642)", () => {
 
 	test("stages that share an id are all re-read by a change that names the id (#4642)", () => {
 		const store = createStore();
-		const second = stage("dup", { status: "running" });
-		store.recordRunStart(
-			run("r", [stage("dup", { status: "running" }), second, stage("other", { status: "running" })]),
-		);
+		const second = stage("dup");
+		store.recordRunStart(run("r", [stage("dup"), second, stage("other")]));
 		store.graphSnapshot();
 		second.error = "second";
 		store.recordStageStart("r", second);
 		assert.deepStrictEqual(store.graphSnapshot(), fullSnapshot(store));
-		const appended = stage("other", { status: "running" });
+		const appended = stage("other");
 		store.run("r")!.stages.push(appended);
 		store.recordStageStart("r", appended);
 		store.graphSnapshot();
 		appended.error = "appended twin";
 		store.recordStageStart("r", appended);
+		assert.deepStrictEqual(store.graphSnapshot(), fullSnapshot(store));
+	});
+
+	test("a stage object replaced in place is projected anew though no change names it (#4642)", () => {
+		const store = createStore();
+		store.recordRunStart(run("r", [stage("a"), stage("b"), stage("live", { status: "running" })]));
+		store.graphSnapshot();
+		store.run("r")!.stages[1] = stage("b", { status: "failed", error: "replaced" });
+		store.recordToolStart("r", "live", { name: "tool", startedAt: 1 });
 		assert.deepStrictEqual(store.graphSnapshot(), fullSnapshot(store));
 	});
 
@@ -257,6 +278,7 @@ describe("run stage index derived version to version (#4642)", () => {
 			stage("d", { status: "pending" }),
 		]);
 		assert.deepEqual(runStageIndex(first), runStageIndex({ stages: [...first.stages] }));
+		assert.deepEqual(runStageIndex(first).waiting, [], "finished stages that hold a prompt do not wait");
 		const stages = [...first.stages];
 		stages[0] = Object.freeze(stage("a", { status: "pending" }));
 		stages[1] = Object.freeze(stage("b", { status: "failed" }));
@@ -285,6 +307,15 @@ describe("run stage index derived version to version (#4642)", () => {
 		indexRunFrom(fourth, third, [2], 5);
 		assert.equal(runStageIndex(fourth).awaitingInput, false);
 		assert.deepEqual(runStageIndex(fourth), runStageIndex({ stages: [...fourth.stages] }));
+		const reopened = [...fourth.stages];
+		reopened[1] = Object.freeze(stage("b", { status: "pending" }));
+		const fifth = Object.freeze({ ...fourth, stages: reopened });
+		indexRunFrom(fifth, fourth, [1], 5);
+		assert.deepEqual(
+			runStageIndex(fifth).pending.map((entry) => entry.id),
+			["a", "b", "d"],
+			"a stage that is pending again keeps its place in run order",
+		);
 	});
 
 	test("the index of a run's next version is derived without walking its stages (#4642)", () => {
@@ -326,6 +357,21 @@ describe("expansion edges (#4642)", () => {
 		assert.equal(settledStageCount([...second.stages]), 5, "a list no expansion produced is counted as it is");
 		store.recordStageStart("r", stage("next", { status: "skipped", executionOrder: 7 }));
 		assert.equal(settledStageCount(expandWorkflowGraph(store.graphSnapshot(), "r").stages), 7);
+		const plain = [stage("x"), stage("y", { status: "running" })];
+		assert.equal(settledStageCount(plain), 1);
+		plain[1]!.status = "failed";
+		assert.equal(settledStageCount(plain), 2, "a list no expansion produced may change and is counted again");
+	});
+
+	test("a stage list whose earlier versions were never counted is counted, then kept (#4642)", () => {
+		const store = createStore();
+		store.recordRunStart(run("r", [...chain(3), stage("live", { status: "running", executionOrder: 4 })]));
+		expandWorkflowGraph(store.graphSnapshot(), "r");
+		store.recordToolStart("r", "live", { name: "tool", startedAt: 1 });
+		const patched = expandWorkflowGraph(store.graphSnapshot(), "r");
+		assert.equal(settledStageCount(patched.stages), 3);
+		(patched.stages[0] as { status: string }).status = "running";
+		assert.equal(settledStageCount(patched.stages), 3, "the count of an expansion's list is kept");
 	});
 
 	test("a renamed run, a run replaced with other stages, and a stage of tool kind expand as from scratch (#4642)", () => {
@@ -355,6 +401,21 @@ describe("expansion edges (#4642)", () => {
 		expandsAsFull("a stage of tool kind");
 		store.recordStageStart("r", stage("after", { executionOrder: 10 }));
 		expandsAsFull("after a stage of tool kind");
+		store.recordRunStart(run("r", chain(3), { name: "renamed" }));
+		store.recordToolNodeStart("r", {
+			kind: "tool",
+			id: "tool:1",
+			name: "t",
+			status: "pending",
+			parentIds: [],
+			ordinal: 1,
+			argsHash: "1",
+			attachable: false,
+		});
+		expandsAsFull("with a tool node");
+		store.run("r")!.toolNodes.pop();
+		store.recordRunExecutionState("r", { lastProgressAt: 3 });
+		expandsAsFull("its tool node removed");
 	});
 
 	test("the expansion kept for a removed run is released (#4642)", async () => {
@@ -438,6 +499,71 @@ describe("activity projection edges (#4642)", () => {
 				["run-b", 0, "retrying"],
 			],
 		);
+	});
+
+	test("projection follows every stage of a run whose stages share ids (#4642)", () => {
+		const snapshot: StoreSnapshot = Object.freeze({
+			runs: Object.freeze([
+				Object.freeze(
+					run("r", [stage("dup"), stage("dup"), stage("p", { status: "pending", parentIds: ["dup"] })]),
+				),
+			]),
+			notices: [],
+			version: 1,
+		});
+		const owned = ownership({
+			liveRunIds: new Set(["r"]),
+			executingStageIds: new Set([workflowActivityNodeKey("r", "dup")]),
+		});
+		const projector = new WorkflowActivityProjector();
+		const single: StoreSnapshot = Object.freeze({ ...snapshot, runs: Object.freeze([run("r", [stage("dup")])]) });
+		projector.project({ snapshot: single, ownership: owned });
+		const projected = projector.project({ snapshot, ownership: owned });
+		assert.deepStrictEqual(projected, projectWorkflowActivity({ snapshot, ownership: owned }));
+		assert.equal(projected[0]?.activeExecutionCount, 2);
+	});
+
+	test("a retrying finished stage keeps its root working while a child run of it stops (#4642)", () => {
+		const child = run("child", [stage("c", { status: "running" })], {
+			parentRunId: "root",
+			parentStageId: "b",
+			rootRunId: "root",
+		});
+		const snapshot: StoreSnapshot = Object.freeze({
+			runs: Object.freeze([
+				Object.freeze(run("root", [stage("a"), stage("b", { status: "running" })])),
+				Object.freeze(child),
+			]),
+			notices: [],
+			version: 1,
+		});
+		const owned = ownership({
+			liveRunIds: new Set(["root", "child"]),
+			executingStageIds: new Set([workflowActivityNodeKey("child", "c")]),
+			retryingStageIds: new Set([workflowActivityNodeKey("root", "a")]),
+			stoppingRunIds: new Set(["child"]),
+		});
+		const [projected] = new WorkflowActivityProjector().project({ snapshot, ownership: owned });
+		assert.deepStrictEqual([projected], projectWorkflowActivity({ snapshot, ownership: owned }));
+		assert.equal(projected?.reason, "retrying");
+	});
+
+	test("a live run whose stages all ended keeps its root working while another of its runs waits for input (#4642)", () => {
+		const waiting = run("child", [stage("c", { status: "running" })], {
+			parentRunId: "root",
+			parentStageId: "x",
+			rootRunId: "root",
+			pendingPrompt: { id: "p", kind: "input", message: "name?", createdAt: 1 },
+		});
+		const snapshot: StoreSnapshot = Object.freeze({
+			runs: Object.freeze([Object.freeze(run("root", chain(3))), Object.freeze(waiting)]),
+			notices: [],
+			version: 1,
+		});
+		const owned = ownership({ liveRunIds: new Set(["root"]) });
+		const [projected] = new WorkflowActivityProjector().project({ snapshot, ownership: owned });
+		assert.deepStrictEqual([projected], projectWorkflowActivity({ snapshot, ownership: owned }));
+		assert.equal(projected?.state, "working");
 	});
 
 	test("projected graph nodes are frozen with their parents and prompt (#4642)", () => {
