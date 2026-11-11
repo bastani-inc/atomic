@@ -255,10 +255,12 @@ describe("a stage is released when its last hold ends, once its release was aske
 			registry.claim(RUN, "a");
 			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS - 1);
 			registry.claim(RUN, "a");
+			gate.idle = true;
 			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS - 1);
 			assert.equal(registry.get(RUN, "a"), fake.handle, "the second claim restarted the wait");
 
 			gate.holds = 1;
+			gate.idle = false;
 			await vi.advanceTimersByTimeAsync(CLAIM_GRACE_MS * 5);
 			assert.equal(registry.get(RUN, "a"), fake.handle, "a held handle is not released whatever time passes");
 			await registry.clear();

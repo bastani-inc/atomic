@@ -25,10 +25,10 @@
  *   bun run scripts/perf/long-run-ui/benchmark.ts --runs 2 --lanes 1 --label after --out /tmp/long-run-after.json
  *
  * `--result-bytes` sets the size of the text every stage ends with (default 1,100): the heap a finished stage may add
- * is a fixed part plus that text kept twice, so a larger result checks that it is not kept more often than that.
+ * is a fixed part plus that text kept once, so a larger result checks that it is not kept more often than that.
  *
  * `--assert` fails the run unless the criteria of `criteria.ts` hold. The first checkpoint is measured after a discarded
- * warm-up window and is the baseline: frame time and key latency at 200 or more finished stages stay within 20% of it
+ * warm-up window and is the baseline: frame time and key latency, as the median from 200 finished stages on and at the last checkpoint, stay within 20% of it
  * (plus a small timer-noise floor), no session or registry entry is left open, and heap grows by an index-sized amount
  * per finished stage.
  *

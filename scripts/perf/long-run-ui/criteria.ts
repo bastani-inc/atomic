@@ -35,10 +35,10 @@ export const NOISE_FLOOR_MS = 0.05;
  */
 export const HEAP_BYTES_PER_FINISHED_STAGE_FIXED = 20 * 1024;
 /**
- * How many times a stage's result text may be in memory: once in the workflow store and once in the journal's
- * checkpoint. A third copy, which a journal that decodes every field into a string of its own would make, fails.
+ * How many times a stage's result text may be in memory: one string, shared by the workflow store and the journal's
+ * checkpoint. A journal that decodes every field into a string of its own would make a second copy, which fails.
  */
-export const RESULT_COPIES_PER_FINISHED_STAGE_MAX = 2;
+export const RESULT_COPIES_PER_FINISHED_STAGE_MAX = 1;
 
 export function heapBytesPerFinishedStageMax(resultBytes: number): number {
 	return HEAP_BYTES_PER_FINISHED_STAGE_FIXED + RESULT_COPIES_PER_FINISHED_STAGE_MAX * resultBytes;
@@ -70,10 +70,10 @@ function median(values: readonly number[]): number {
 
 /**
  * Checks, against the first checkpoint (measured after a discarded warm-up window):
- * - frame time and key latency, as the median over the checkpoints from {@link LONG_RUN_STAGES} finished stages on,
- *   stay within {@link MAX_REGRESSION_RATIO} of it, plus {@link NOISE_FLOOR_MS}. Work that grows with the stage count
- *   moves every one of those checkpoints, so the median shows it; one checkpoint that the host's scheduler disturbed
- *   does not fail the run;
+ * - frame time and key latency, both as the median over the checkpoints from {@link LONG_RUN_STAGES} finished stages
+ *   on and at the last of them, stay within {@link MAX_REGRESSION_RATIO} of it, plus {@link NOISE_FLOOR_MS}. Work that
+ *   grows with the stage count moves the largest checkpoint most, so the last one shows it even when the median does
+ *   not; one middle checkpoint that the host's scheduler disturbed does not fail the run;
  * - no checkpoint holds more live sessions or registry entries than the stages a workflow body still holds;
  * - heap grows by at most {@link heapBytesPerFinishedStageMax} per finished stage between the first and the last
  *   checkpoint from {@link LONG_RUN_STAGES} finished stages on, after the code and its caches have warmed up.
@@ -97,11 +97,14 @@ export function evaluateCriteria(
 	if (first !== undefined && lastLong !== undefined) {
 		for (const [name, read] of METRICS) {
 			const allowed = read(baseline) * (1 + MAX_REGRESSION_RATIO) + NOISE_FLOOR_MS;
-			const measured = median(long.map(read));
-			if (!(measured <= allowed))
-				failures.push(
-					`${name} is ${measured} ms, the median from ${first.finished} to ${lastLong.finished} finished stages; the ${baseline.finished}-stage baseline ${read(baseline)} ms allows ${allowed.toFixed(3)} ms`,
-				);
+			const bounded = (measured: number, where: string): void => {
+				if (!(measured <= allowed))
+					failures.push(
+						`${name} is ${measured} ms, ${where}; the ${baseline.finished}-stage baseline ${read(baseline)} ms allows ${allowed.toFixed(3)} ms`,
+					);
+			};
+			bounded(median(long.map(read)), `the median from ${first.finished} to ${lastLong.finished} finished stages`);
+			if (long.length > 1) bounded(read(lastLong), `at ${lastLong.finished} finished stages`);
 		}
 	}
 	for (const checkpoint of checkpoints) {

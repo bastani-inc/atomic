@@ -193,6 +193,10 @@ describe("a repaint reads queue counts in time that does not follow the stage co
 				/✉ 1/,
 				"the queued message appears without a store change",
 			);
+			emit({ type: "queue_update", steering: ["later"], followUp: ["and later"] } as AgentSessionEvent);
+			assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 2/, "a queue that grows is badged again");
+			emit({ type: "queue_update", steering: ["later"], followUp: ["and later", "last"] } as AgentSessionEvent);
+			assert.match(stripAnsi(pane.render(120).join("\n")), /✉ 3/);
 			emit({ type: "queue_update", steering: [], followUp: [] } as AgentSessionEvent);
 			assert.doesNotMatch(stripAnsi(pane.render(120).join("\n")), /✉/);
 		} finally {

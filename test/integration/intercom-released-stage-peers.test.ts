@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, afterEach, beforeAll, test } from "vitest";
+import { afterAll, afterEach, beforeAll, test, vi } from "vitest";
 import type {
 	IntercomClient as IntercomClientType,
 	ReleasedChildReply,
@@ -425,6 +425,64 @@ test("a stage hosted with a live route, whose peer is gone, is refused with why 
 	await fixture.peers.adopt(stage);
 	const answered = await asker.ask(nameOf(stage), "back?");
 	assert.equal(answered.delivered, true, "hosting the stage again reaches it");
+});
+
+test("a stage whose hosted peer is gone is reached through its run once a live session answers for it (#4642)", async () => {
+	const runId = randomUUID();
+	const group = `workflow:${runId}`;
+	const capability = randomUUID();
+	const owner = new IntercomClient();
+	await owner.connect(
+		{ ...registration(undefined, group), recipientPurpose: "control" },
+		undefined,
+		undefined,
+		undefined,
+		group,
+	);
+	cleanups.push(() => owner.disconnect());
+	const forwarded: string[] = [];
+	owner.on("pending_stage_message", (request: { requestId: string; target: string }) => {
+		forwarded.push(request.target);
+		owner.respondPendingStageMessage(request.requestId, { outcome: "forward", target: request.target });
+	});
+	await owner.registerPendingStageRouteAcknowledged(runId, group, capability, [
+		{
+			stageId: "stage-0",
+			stageName: "reviewer",
+			target: `workflow:${runId}/stage-0`,
+			lifecycle: "running",
+			routeEligible: true,
+			recipientPurpose: "agent",
+			group,
+		},
+	]);
+	const fixture = peersFixture(group, runId);
+	const asker = await connectAsker(group);
+	const stage = fixture.route(0, {
+		stageName: "reviewer",
+		liveRoute: { stageKeys: ["stage-0", "reviewer"], capability },
+	});
+	await fixture.peers.adopt(stage);
+	const hosted = (await asker.client.listSessions(group)).find((session) => session.name === nameOf(stage));
+	assert.ok(hosted, "the hosted stage is listed under its own broker id");
+	await fixture.peers.disconnectAll();
+	await asker.until((sessions) => sessions.length === 0);
+
+	const reopened = new IntercomClient();
+	const received: string[] = [];
+	reopened.on("message", (_from: SessionInfo, message: Message) => {
+		received.push(message.content.text);
+		reopened.acknowledgeReceived(message.id);
+	});
+	await reopened.connect(registration(nameOf(stage), group), undefined, undefined, undefined, group);
+	cleanups.push(() => reopened.disconnect());
+	await reopened.registerLiveWorkflowStageRoute(runId, ["stage-0", "reviewer"], capability);
+
+	const sent = await asker.client.send(hosted.id, { text: "are you back?" });
+
+	assert.equal(sent.delivered, true, sent.reason);
+	assert.deepEqual(forwarded, [`workflow:${runId}/stage-0`], "the run was asked, and it forwarded the message");
+	await vi.waitFor(() => assert.deepEqual(received, ["are you back?"]));
 });
 
 test("a sender that registered below protocol 3 is refused with the plain reason only, and keeps its connection (#4642)", async () => {

@@ -13,8 +13,6 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Fixed each finished workflow stage that was released from memory keeping its own broker connection open for the rest of the session: released stages now share one connection per session, keeping their names, `closed · reply: post-mortem only` listing, post-mortem asks and plain-send relay ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
-- Fixed a released stage's first message or ask being dropped when the broker delivered it in the same read as the answer that names the stage, while the sender was told it was delivered ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
-- Fixed released stages retrying a hosting failure that cannot succeed, such as a broker below protocol 3: it is surfaced once, and the background reconnect stops after 30 attempts in a row and records each failure in the debug log ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
 
 ## [0.9.77] - 2026-11-11
 
