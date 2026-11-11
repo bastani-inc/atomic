@@ -358,6 +358,73 @@ test("generates both GitHub Copilot Claude Fable models from models.dev metadata
 
 const FABLE_5_2_EXPECTED_COST = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 };
 
+const COPILOT_FABLE_5_2_MODELS_DEV = {
+	...FABLE_5_1_MODELS_DEV,
+	id: "claude-fable-5.2",
+	name: "Claude Fable 5.2",
+	release_date: "2026-11-09",
+	provider: { npm: "@ai-sdk/anthropic" },
+	cost: { input: 8, output: 40, cache_read: 0.2, cache_write: 10 },
+};
+
+const COPILOT_GEMINI_4_CARBON_MODELS_DEV = {
+	id: "gemini-4-carbon",
+	name: "Gemini 4 Carbon",
+	tool_call: true,
+	reasoning: true,
+	structured_output: true,
+	temperature: false,
+	release_date: "2026-11-10",
+	reasoning_options: [{ type: "effort", values: ["low", "medium", "high"] }],
+	modalities: { input: ["text", "image", "pdf"], output: ["text"] },
+	limit: { context: 1_048_576, output: 65_536 },
+	cost: { input: 2, output: 10, cache_read: 0.1 },
+};
+
+test("keeps Claude Fable 5.2 and Gemini 4 Carbon in the GitHub Copilot catalog when models.dev lags them", () => {
+	const copilot = generate()["github-copilot"];
+	assert.equal(CATALOG["github-copilot"].models["claude-fable-5.2" as keyof (typeof CATALOG)["github-copilot"]["models"]], undefined);
+
+	const fable52 = copilot["claude-fable-5.2"];
+	assert.ok(fable52, "expected github-copilot/claude-fable-5.2 to be generated");
+	assert.equal(fable52.name, "Claude Fable 5.2");
+	assert.equal(fable52.api, "anthropic-messages");
+	assert.equal(fable52.contextWindow, 1_000_000);
+	assert.equal(fable52.maxTokens, 128_000);
+	assert.deepEqual(fable52.input, ["text", "image"]);
+	assert.deepEqual(fable52.cost, FABLE_5_2_EXPECTED_COST);
+	assert.deepEqual(getSupportedThinkingLevels(fable52 as unknown as Model<Api>), ["low", "medium", "high", "xhigh", "max"]);
+
+	const carbon = copilot["gemini-4-carbon"];
+	assert.ok(carbon, "expected github-copilot/gemini-4-carbon to be generated");
+	assert.equal(carbon.name, "Gemini 4 Carbon");
+	assert.equal(carbon.api, "openai-completions");
+	assert.equal(carbon.contextWindow, 1_048_576);
+	assert.equal(carbon.maxTokens, 65_536);
+	assert.deepEqual(carbon.input, ["text", "image"]);
+	assert.deepEqual(carbon.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 });
+	assert.deepEqual(getSupportedThinkingLevels(carbon as unknown as Model<Api>), ["low", "medium", "high"]);
+});
+
+test("generates the same GitHub Copilot Fable 5.2 and Gemini 4 Carbon rows from the fallback as from models.dev", () => {
+	const fromFallback = generate()["github-copilot"];
+	const withRows = {
+		...CATALOG,
+		"github-copilot": {
+			models: {
+				...CATALOG["github-copilot"].models,
+				"claude-fable-5.2": COPILOT_FABLE_5_2_MODELS_DEV,
+				"gemini-4-carbon": COPILOT_GEMINI_4_CARBON_MODELS_DEV,
+			},
+		},
+	};
+	const fromModelsDev = generate(withRows)["github-copilot"];
+
+	assert.deepEqual(fromFallback["claude-fable-5.2"], fromModelsDev["claude-fable-5.2"]);
+	assert.deepEqual(fromFallback["gemini-4-carbon"], fromModelsDev["gemini-4-carbon"]);
+});
+
+
 test("generates Claude Fable 5.2 as a static Anthropic entry while models.dev lacks it", () => {
 	const catalogs = generate();
 	assert.equal(CATALOG.anthropic.models["claude-fable-5-2" as keyof typeof CATALOG.anthropic.models], undefined);
