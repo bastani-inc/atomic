@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Recorded Gemini 4 Carbon results in the evals snapshot used by automatic model routing, so `model: "auto"` can rank `gemini-4-carbon`: Artificial Analysis rows at high, medium and low effort, Terminal-Bench-Science, Zapier AutomationBench and ARC Prize results at each effort, and the results Google reports in its model card. Rechecked Gemini 4 Argon against Artificial Analysis (no published value changed) and added its ARC Prize results and the newer-version results Google reports for it in the Gemini 4 Carbon model card ([#4654](https://github.com/bastani-inc/atomic/issues/4654))
+
 ## [0.9.77] - 2026-11-11
 
 Subagent chats look and scope like stage chats, agents recall project history, and background shells explain why they stopped.
