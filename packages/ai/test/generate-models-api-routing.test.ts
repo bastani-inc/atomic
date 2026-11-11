@@ -180,6 +180,9 @@ test("routes GitHub Copilot models by their models.dev SDK metadata, not their I
 		// Copilot fallbacks added before models.dev lists them (upstream pi 27c072e9).
 		"gpt-6-luna": "openai-responses",
 		"gpt-6-sol": "openai-responses",
+		// Fallback rows kept until models.dev lists them; each routes by its own SDK metadata.
+		"claude-fable-5.2": "anthropic-messages",
+		"gemini-4-carbon": "openai-completions",
 	});
 });
 
