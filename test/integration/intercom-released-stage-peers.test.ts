@@ -374,6 +374,59 @@ test("a session joining a hosted stage's group is announced to the host connecti
 	assert.equal(asked.delivered, true, "the joiner reaches the stage through its new group");
 });
 
+test("a stage hosted with a live route, whose peer is gone, is refused with why instead of being forwarded to its run (#4642)", async () => {
+	const runId = randomUUID();
+	const group = `workflow:${runId}`;
+	const capability = randomUUID();
+	const owner = new IntercomClient();
+	await owner.connect(
+		{ ...registration(undefined, group), recipientPurpose: "control" },
+		undefined,
+		undefined,
+		undefined,
+		group,
+	);
+	cleanups.push(() => owner.disconnect());
+	const forwarded: string[] = [];
+	owner.on("pending_stage_message", (request: { requestId: string; target: string }) => {
+		forwarded.push(request.target);
+		owner.respondPendingStageMessage(request.requestId, { outcome: "forward", target: request.target });
+	});
+	await owner.registerPendingStageRouteAcknowledged(runId, group, capability, [
+		{
+			stageId: "stage-0",
+			stageName: "reviewer",
+			target: `workflow:${runId}/stage-0`,
+			lifecycle: "running",
+			routeEligible: true,
+			recipientPurpose: "agent",
+			group,
+		},
+	]);
+	const fixture = peersFixture(group, runId);
+	const asker = await connectAsker(group);
+	const stage = fixture.route(0, {
+		stageName: "reviewer",
+		liveRoute: { stageKeys: ["stage-0", "reviewer"], capability },
+	});
+	await fixture.peers.adopt(stage);
+	await fixture.peers.disconnectAll();
+	await asker.until((sessions) => sessions.length === 0);
+
+	for (const kind of ["send", "ask"] as const) {
+		const refused = await asker.client.send(nameOf(stage), { text: "are you there?", expectsReply: kind === "ask" });
+		assert.equal(refused.delivered, false, kind);
+		assert.equal(refused.reasonCode, "recipient_stage_released", kind);
+		const error = refused.error;
+		assert.ok(error !== undefined && isStageRecipientReleasedError(error), kind);
+	}
+	assert.deepEqual(forwarded, [], "the run was not asked about a stage nothing answers for");
+
+	await fixture.peers.adopt(stage);
+	const answered = await asker.ask(nameOf(stage), "back?");
+	assert.equal(answered.delivered, true, "hosting the stage again reaches it");
+});
+
 test("a sender that registered below protocol 3 is refused with the plain reason only, and keeps its connection (#4642)", async () => {
 	const group = `workflow:${randomUUID()}`;
 	const fixture = peersFixture(group);

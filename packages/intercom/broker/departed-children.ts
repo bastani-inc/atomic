@@ -261,6 +261,11 @@ export class DepartedChildren {
 		return { refused: this.refuseHeld(entry.departure, entry.departure.verdict), evicted: entry.evicted };
 	}
 
+	/** Whether `target`, to a sender that may reach it, names a released stage whose hosted peer is gone (#4642). */
+	isReleasedStage(target: string, sender: { readonly id: string; readonly info: SessionInfo }): boolean {
+		return this.visible(target, sender)?.verdict?.kind === "stage_released";
+	}
+
 	/** Decide a send that found no live recipient. `canHold` is false for a client that cannot wait for a verdict. */
 	admit(
 		target: string,

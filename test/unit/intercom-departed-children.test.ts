@@ -718,3 +718,22 @@ test("marking a stage released refuses the sends already held for that name and 
 	vi.advanceTimersByTime(DEPARTED_CHILD_HOLD_MS * 2);
 	assert.deepEqual(expired, [], "the wait that was disarmed expires nothing");
 });
+
+test("only a stage marked released, visible to the sender, is reported as one (#4642)", () => {
+	const { children } = departed();
+	const stage = { childName: CHILD, group: "workflow:run", aliases: [CHILD_INTERCOM_ID] };
+	const inGroup = sender("asker", ["workflow:run"]);
+	assert.equal(children.isReleasedStage(CHILD, inGroup), false, "nothing is known about it yet");
+
+	depart(children);
+	assert.equal(children.isReleasedStage(CHILD, sender("asker")), false, "a departed subagent is not a released stage");
+
+	children.markStageReleased(OWNER, stage);
+	assert.equal(children.isReleasedStage(CHILD, inGroup), true);
+	assert.equal(children.isReleasedStage(CHILD_INTERCOM_ID, inGroup), true, "under each of its targets");
+	assert.equal(children.isReleasedStage(CHILD, sender("outsider", ["other"])), false, "an outsider learns nothing");
+	assert.equal(children.isReleasedStage("never-hosted", inGroup), false);
+
+	children.supersede(OWNER, CHILD);
+	assert.equal(children.isReleasedStage(CHILD, inGroup), false, "hosting the stage again ends it");
+});

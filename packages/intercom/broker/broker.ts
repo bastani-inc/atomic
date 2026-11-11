@@ -1083,7 +1083,15 @@ class IntercomBroker {
 			return undefined;
 		}
 		const reachable = hasGroup(sessionGroups(sender.info), stage.group) || this.canControlWorkflowInvocation(sender, route.group);
-		return reachable ? stage.target : undefined;
+		if (!reachable) return undefined;
+		// #4642: a released stage whose hosted peer is gone and that no live session answers for is refused with why
+		// by the send itself, not forwarded to a run that has nothing to queue for it.
+		const live = this.liveWorkflowStageRoutes.get(stage.target);
+		const liveSession = live === undefined ? undefined : this.sessions.get(live.sessionId);
+		if (liveSession === undefined && this.departedChildren.isReleasedStage(alias, { id: sender.info.id, info: sender.info })) {
+			return undefined;
+		}
+		return stage.target;
 	};
 
 	private routePendingStage = (route: PendingStageRoute): boolean => {
