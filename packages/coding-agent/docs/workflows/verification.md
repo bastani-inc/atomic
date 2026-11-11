@@ -23,14 +23,7 @@ See [tool selection](/computer-use#choose-the-right-tool) before operating a ses
 
 ### Reuse past verification
 
-When a shell tool is available, the agent records each check it ran or attempted as an `Assistant-verification` line in the commits and PRs it writes, for example:
-
-```text
-Assistant-verification: herdr terminal E2E passed: /tasks lists running tasks first at 80x24
-Assistant-verification: agent-desktop unavailable: Accessibility permission not granted
-```
-
-Before choosing checks for a change, the agent looks up these lines for comparable changes (for example with `git log --format='%h %s%n%(trailers:key=Assistant-verification)' -- <path>`) and reuses the commands and scenarios that proved them. A setup recorded as `unavailable` is not retried without a reason to expect a different result. Past records guide the choice; they do not replace the project's required checks. See [execution history](/usage#system-prompt-files) to turn these records off.
+Before choosing checks for a change, the agent can look up how comparable work was verified in earlier sessions and workflow runs through `history://` (see [Recalling earlier work](/sessions#recalling-earlier-work)), and in the commits and PRs that made those changes. Earlier checks guide the choice; they do not replace the project's required checks.
 
 ## Define a reproducible scenario
 

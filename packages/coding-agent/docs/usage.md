@@ -170,18 +170,7 @@ Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in eit
 
 The default prompt asks the agent to write self-describing code and not add code comments unless you ask for them or the task calls for them. To get comments, request them in your prompt (for example "add JSDoc to the exported functions"), or make it a standing rule in a context file or `APPEND_SYSTEM.md` (for example "Document every exported function with a JSDoc block"). The default guideline explicitly defers to those instructions, so no other configuration is needed.
 
-When a shell tool is available, the default prompt also asks the agent to record how each task ran in the commits, PRs, issues, and comments it writes, so later sessions can learn from your history:
-
-```text
-Assistant-workflow: ralph (run 1a2b3c4d)
-Assistant-duration: 42m converged, estimated 30m
-Assistant-verification: vitest unit passed: npm run test:unit
-Assistant-verification: herdr terminal E2E passed: /tasks lists running tasks first at 80x24
-User-preference: keep PRs under 500 changed lines
-Co-authored-by: Ada Lovelace <ada@example.com>
-```
-
-Tasks done without a workflow record `Assistant-workflow: inline`. Each `Assistant-verification` line names one check that ran or was attempted, such as unit or E2E tests, agent-browser, agent-desktop, Herdr terminal automation, or the qlty CLI, with its outcome (`passed`, `failed`, or `unavailable`). Each preference carries a `Co-authored-by` line naming the user who expressed it. Before choosing between a workflow and inline work, deciding how to verify a change, or estimating how long a task will take, the agent looks up comparable records with your version control system and its hosting CLI (for example `git log` and `gh` on GitHub) and uses them as a guide alongside your request. A lack of workflow history, or a history of mostly inline tasks, does not make the agent default to inline work: it still judges from the task itself whether a workflow would help unless you have stated or recorded a preference. For verification, it starts from the checks that proved similar changes and skips setups previously recorded as unavailable unless something has changed, while still running the project's required checks. It applies your own recorded preferences first and falls back to other contributors' preferences as repository conventions only when yours don't cover the situation, so you can always override a convention by stating your preference. To turn off any of these records, such as only preferences or all of them, say so in your request, a context file, or `APPEND_SYSTEM.md`.
+The agent remembers earlier work through `history://`: it recalls this project's past sessions and workflow runs, and the preferences you stated in them, when you refer to earlier work, when a task resembles one done before, and before it chooses between a workflow and inline work, how to verify a change, or how long a task will take. Workflow stages and subagents recall the same history by default. With a shell tool, the agent also searches commits, issues, PRs and their comments for relevant prior work. See [Recalling earlier work](/sessions#recalling-earlier-work).
 
 ## Exporting and Sharing Sessions
 

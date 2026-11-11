@@ -372,6 +372,7 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 	runner.setStatusSink(statusSinks.get(this));
 	runner.bindCommandContext(this._extensionCommandContextActions);
 	runner.bindChildSessionOptions(liveChildSessionOptions(this));
+	runner.bindInheritedHistory(this._inheritedHistory);
 	runner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
 
 	this._extensionErrorUnsubscriber?.();
@@ -975,6 +976,7 @@ async function reloadOwnedGeneration(
 		candidateRunner.setStatusSink(statusSinks.get(this));
 		candidateRunner.bindCommandContext(this._extensionCommandContextActions);
 		candidateRunner.bindChildSessionOptions(liveChildSessionOptions(this));
+		candidateRunner.bindInheritedHistory(this._inheritedHistory);
 		candidateRunner.bindWorkflowJournal(this._workflowJournal, this._storageAgentDir);
 		if (options?.failOnExtensionErrors && errors.length > 0)
 			throw new Error(

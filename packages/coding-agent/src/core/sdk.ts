@@ -70,6 +70,7 @@ import { assertTeamAdapterInstalled } from "./storage/team.js";
 import { createChildCommandTaskOwner } from "./tasks/child-command-owner.js";
 import { time } from "./timings.ts";
 import { createToolNameMatcher } from "./tool-selection.ts";
+import type { ProjectHistory } from "./tools/history-protocol.ts";
 import { allToolNames, getDefaultToolNames } from "./tools/index.js";
 import {
 	assertSessionManagerInWorktree,
@@ -797,6 +798,10 @@ async function constructAgentSession(
 	const providerRollback = modelRuntime.createExtensionProviderTransaction();
 	let session: AgentSession;
 	const childCommandTaskOwner = createChildCommandTaskOwner(() => session.getAgentTaskHost());
+	const childHistory: ProjectHistory = {
+		sessionStore: () => session.extensionRunner.getProjectHistory().sessionStore(),
+		workflows: () => session.extensionRunner.getProjectHistory().workflows(),
+	};
 	try {
 		session = new AgentSession({
 			agent,
@@ -832,6 +837,7 @@ async function constructAgentSession(
 						customTools: options.customTools,
 						extensionBindings: session.extensionRunner.getChildHostBindings(),
 						parentCommandTaskOwner: childCommandTaskOwner,
+						inheritedHistory: childHistory,
 						resourceAdmission: options.resourceAdmission,
 						workspace,
 					},
@@ -857,6 +863,7 @@ async function constructAgentSession(
 			orchestrationContext: options.orchestrationContext,
 			subagentPolicy,
 			parentCommandTaskOwner: options.parentCommandTaskOwner,
+			inheritedHistory: options.inheritedHistory,
 			resourceAdmission: options.resourceAdmission ?? undefined,
 			systemPromptTransform: options.systemPromptTransform,
 			contextProjectionTransform: options.initialContextTransform,

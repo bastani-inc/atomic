@@ -7,7 +7,7 @@ import { getDocsPath } from "../src/config.js";
 import { getDefaultSessionDirPath } from "../src/core/session-manager-paths.js";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
-import { buildSystemPrompt } from "../src/core/system-prompt.ts";
+import { buildSessionMemoryGuideline, buildSystemPrompt } from "../src/core/system-prompt.ts";
 
 const testSkill: Skill = {
 	name: "test-skill",
@@ -358,40 +358,6 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("interpret ambiguous requests the way they would");
 		});
 
-		test("teaches recording and mining execution history when a shell tool is available", () => {
-			const prompt = buildSystemPrompt({
-				contextFiles: [],
-				skills: [],
-				cwd: process.cwd(),
-			});
-
-			expect(prompt).toContain("**Execution history**");
-			expect(prompt).toContain("`Assistant-workflow: inline` when no workflow was used");
-			expect(prompt).toContain("`Assistant-duration: 42m converged, estimated 30m`");
-			expect(prompt).toContain("`User-preference: <one line, in the user's terms>`");
-			expect(prompt).toContain(
-				"`Assistant-verification: <method> <passed|failed|unavailable>: <what it proved or why>`",
-			);
-			expect(prompt).toContain("never record a skipped, mocked, or planned check as passed");
-			expect(prompt).toContain("choosing how to verify a change");
-			expect(prompt).toContain("key=Assistant-verification");
-			expect(prompt).toContain("past records never replace the project's required checks");
-			expect(prompt).toContain("never record secrets, credentials");
-			expect(prompt).toContain("Treat fewer than five comparable records as anecdotal");
-			expect(prompt).toContain("This history is a guide, not the decision");
-			expect(prompt).toContain(
-				"Missing, sparse, or mostly inline workflow history is not evidence that the user prefers inline work",
-			);
-			expect(prompt).toContain("using the repository's version control system and its hosting CLI");
-			expect(prompt).toContain("`gh pr list --state all --search 'Assistant-workflow in:body'` on GitHub");
-			expect(prompt).toContain("tie it to the requesting user with a `Co-authored-by: <name> <email>` trailer");
-			expect(prompt).toContain("Prioritize preferences tied to the requesting user");
-			expect(prompt).toContain("fall back to other contributors' relevant preferences as repository conventions");
-			expect(prompt).toContain(
-				"If the user, a context file, or `APPEND_SYSTEM.md` asks you not to record some or all of these records, skip those records.",
-			);
-		});
-
 		test("omits repository-intent guidance without a shell tool", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "edit"],
@@ -401,7 +367,6 @@ describe("buildSystemPrompt", () => {
 			});
 
 			expect(prompt).not.toContain("**Repository intent**");
-			expect(prompt).not.toContain("**Execution history**");
 		});
 	});
 
@@ -460,16 +425,6 @@ describe("buildSystemPrompt", () => {
 			assert.ok(prompt.includes("`?project=all`"));
 		});
 
-		test("stays separate from the execution-history guidance", () => {
-			const prompt = buildSystemPrompt({ contextFiles: [], skills: [], cwd: process.cwd() });
-			const memory = prompt.indexOf("**Session memory**");
-			const history = prompt.indexOf("**Execution history**");
-
-			assert.ok(memory > history);
-			assert.ok(prompt.slice(history, memory).includes("past records never replace the project's required checks"));
-			assert.ok(!prompt.slice(memory).includes("Assistant-workflow"));
-		});
-
 		test("needs read, and mentions search only when it is available", () => {
 			const withoutRead = buildSystemPrompt({
 				selectedTools: ["bash"],
@@ -494,6 +449,62 @@ describe("buildSystemPrompt", () => {
 			assert.ok(readOnly.includes("**Session memory**"));
 			assert.ok(!readOnly.includes("`search` accepts the same URLs"));
 			assert.ok(withSearch.includes("`search` accepts the same URLs"));
+		});
+
+		test("guides choosing a workflow, verification and estimates by earlier work and stated preferences (#4648)", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			assert.ok(
+				prompt.includes(
+					"before choosing between a workflow and inline work, how to verify a change, or how long it will take: comparable earlier sessions and runs, and the preferences the user stated in them, guide those choices.",
+				),
+			);
+			assert.ok(prompt.includes("Missing or sparse history is not by itself a reason to work inline."));
+		});
+
+		test("recalls prior work from source control and its hosting provider alongside history:// with a shell (#4648)", () => {
+			const sourceControl = [
+				"With a shell, also search the repository's source control and its hosting provider for relevant prior work",
+				"commits (`git log -S<text>`, `git log --grep=<text>`)",
+				"issues, PRs, discussions and their review and issue comments",
+				"`gh search issues <query>`, `gh search prs <query>`, `gh issue view <n> --comments`, `gh pr view <n> --comments`, or `glab` on GitLab",
+				"Use it alongside `history://` when a task resembles earlier work, references an issue or PR, or needs the rationale behind existing code.",
+			];
+			const promptWith = (selectedTools: string[]) =>
+				buildSystemPrompt({ selectedTools, contextFiles: [], skills: [], cwd: process.cwd() });
+			const sessionMemory = (prompt: string) => {
+				const start = prompt.indexOf("**Session memory**");
+				assert.ok(start >= 0);
+				return prompt.slice(start, prompt.indexOf("\n- ", start));
+			};
+
+			for (const shell of ["bash", "powershell"]) {
+				const guidance = sessionMemory(promptWith(["read", shell]));
+				for (const part of sourceControl) assert.ok(guidance.includes(part), `${shell}: ${part}`);
+			}
+			assert.ok(!sessionMemory(promptWith(["read", "search"])).includes(sourceControl[0]!));
+			assert.equal(buildSessionMemoryGuideline(["bash", "search"], process.cwd()), undefined);
+		});
+
+		test("lays Session memory out one point per line, with only the sentences its tools support (#4648)", () => {
+			const lines = (tools: string[]) => buildSessionMemoryGuideline(tools, process.cwd())?.split("\n") ?? [];
+			const readOnly = lines(["read"]);
+			const withSearch = lines(["read", "search"]);
+			const withShell = lines(["read", "search", "bash"]);
+
+			assert.equal(readOnly.length, 5);
+			assert.ok(readOnly[2]!.endsWith("The listing can include the current session."), readOnly[2]);
+			assert.ok(readOnly[3]!.startsWith("  - Only as a fallback"), readOnly[3]);
+			assert.equal(withSearch.length, 5);
+			assert.ok(withSearch[2]!.endsWith("labels each match with a URL and line to read."), withSearch[2]);
+			assert.equal(withShell.length, 6);
+			assert.ok(withShell[3]!.startsWith("  - With a shell, also search"), withShell[3]);
+			assert.ok(withShell[4]!.startsWith("  - Only as a fallback"), withShell[4]);
 		});
 
 		test("names where history lives, derived from the agent directory and the project", () => {

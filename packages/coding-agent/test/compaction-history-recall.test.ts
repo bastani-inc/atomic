@@ -9,6 +9,7 @@ import { authForStream } from "../src/core/agent-session-models.ts";
 import { COMPACTION_RECALL_HEADING } from "../src/core/compaction/history-recall.js";
 import { stripVerbatimCompactionPrefix, VERBATIM_COMPACTION_PREFIX, verbatimRecallHint } from "../src/core/messages.js";
 import type { CompactionEntry } from "../src/core/session-manager-types.js";
+import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
 import {
 	appendMessages,
@@ -183,6 +184,39 @@ describe.each(SESSION_STORES)("history recall during compaction over $name (#456
 			boundary.split(LATEST_REQUEST).length - 1,
 			1,
 			"the latest request is kept in the tail, not recalled",
+		);
+	});
+
+	it("recalls the launching session's project history in a stage or subagent kept in a store of its own (#4648)", async () => {
+		const project = await seededStore();
+		const workflows = workflowRunControl();
+		const compacting = await createCompactingSession({
+			store: new MemorySessionStore(),
+			cwd,
+			plannerResponses: [FIRST_CYCLE_PLAN, SECOND_CYCLE_PLAN],
+			inheritedHistory: { sessionStore: () => project, workflows: () => workflows },
+		});
+		sessions.push(compacting);
+		await appendMessages(compacting, firstCycleMessages());
+		await compactOnce(compacting);
+		await appendMessages(compacting, secondCycleMessages());
+		const second = await compactOnce(compacting);
+
+		assert.deepEqual(
+			recalledLines(second).slice().sort(),
+			[CYCLE_ONE_DECISION, OTHER_SESSION_FINDING, STAGE_FINDING, RUN_ERROR_LINE].sort(),
+			recalledSection(second).join("\n"),
+		);
+		assert.deepEqual(
+			recalledSources(second)
+				.map((source) => source.replace(/:\d+-\d+$/, ""))
+				.sort(),
+			[
+				`history://sessions/${compacting.session.sessionId}`,
+				`history://sessions/${OTHER_SESSION_ID}`,
+				`history://sessions/${STAGE_SESSION_ID}`,
+				`history://workflows/${RUN_ID}`,
+			].sort(),
 		);
 	});
 

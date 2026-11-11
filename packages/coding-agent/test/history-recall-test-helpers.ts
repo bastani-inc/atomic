@@ -22,7 +22,7 @@ import {
 	type SessionRecordHeader,
 	type SessionStore,
 } from "../src/core/storage/session/types.js";
-import { createHistoryRouter } from "../src/core/tools/history-protocol.js";
+import { createHistoryRouter, type ProjectHistory } from "../src/core/tools/history-protocol.js";
 import { createReadToolDefinition } from "../src/core/tools/read.js";
 import type { InternalResourceContext } from "../src/core/tools/resource-selectors.js";
 import { createSearchToolDefinition } from "../src/core/tools/search.js";
@@ -223,6 +223,8 @@ export interface CompactingSessionOptions {
 	readonly internal?: boolean;
 	readonly settings?: Parameters<typeof SettingsManager.inMemory>[0];
 	readonly workflows?: WorkflowRunControl;
+	/** The launching session's history, for a session started as a workflow stage or a subagent. */
+	readonly inheritedHistory?: ProjectHistory;
 }
 
 export async function createCompactingSession(options: CompactingSessionOptions): Promise<CompactingSession> {
@@ -250,6 +252,7 @@ export async function createCompactingSession(options: CompactingSessionOptions)
 		cwd: options.cwd,
 		modelRuntime: getModelRuntime(await createInMemoryModelRegistry(authStorage)),
 		resourceLoader: createTestResourceLoader(extensionsResult ? { extensionsResult } : {}),
+		...(options.inheritedHistory ? { inheritedHistory: options.inheritedHistory } : {}),
 	});
 	return { session, manager };
 }

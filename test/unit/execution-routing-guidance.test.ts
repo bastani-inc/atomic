@@ -112,6 +112,14 @@ describe("agent-decided workflow execution guidance", () => {
 		])
 			expect(workflowGuidance.join("\n")).not.toContain(obsolete);
 	});
+	test("refines the workflow-or-inline call with session memory and the user's stated preferences (#4648)", () => {
+		expect(WORKFLOW_TOOL_DESCRIPTION).toContain(
+			"Judge the task's shape first, then refine the call with session memory (`history://` sessions and workflow runs) and the user's stated preferences; missing, sparse, or mostly inline workflow history is not by itself a reason to work inline.",
+		);
+		expect(subagentGuidance.join("\n")).toContain(
+			"Judge the task's shape first and refine with session memory (`history://` sessions and workflow runs) and the user's stated preferences; no workflow history, or history of only inline runs, does not mean every task should run inline.",
+		);
+	});
 	test("defaults non-trivial structured work to a workflow and names the fit signals", () => {
 		for (const phrase of [
 			"treat workflows as the default execution path for non-trivial tasks",

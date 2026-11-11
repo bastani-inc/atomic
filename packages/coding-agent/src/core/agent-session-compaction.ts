@@ -132,7 +132,8 @@ async function recallForPlannedText(
 			cwd: session._cwd,
 			currentSessionId: session.sessionManager.getSessionId(),
 			sessionStore: () => session.sessionManager.getSessionStore(),
-			workflows: () => session._extensionRunner?.getWorkflowRunControl(),
+			projectSessionStore: () => session._extensionRunner.getProjectHistory().sessionStore(),
+			workflows: () => session._extensionRunner.getProjectHistory().workflows(),
 		});
 		const section = await recallHistory({
 			router,

@@ -166,7 +166,7 @@ Sessions created by workflow stage execution are marked as **internal** and are 
 
 ## Recalling earlier work
 
-The agent can look back at this project's earlier sessions and workflow runs, even in a fresh session, through `history://` URLs that `read` and `search` accept. They go through the configured session store and workflow journal, so they work the same for the default SQLite store, JSONL directories, memory and custom stores.
+The agent can look back at this project's earlier sessions and workflow runs, even in a fresh session, through `history://` URLs that `read` and `search` accept. They go through the configured session store and workflow journal, so they work the same for the default SQLite store, JSONL directories, memory and custom stores. Workflow stages and subagents read the same history as the session that started them, with no extra configuration: a subagent lists the project's sessions rather than only its own, and opens its own transcript through its own `history://sessions/<id>` URL.
 
 | URL | Result |
 | --- | --- |

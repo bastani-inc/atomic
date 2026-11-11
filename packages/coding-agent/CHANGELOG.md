@@ -6,6 +6,8 @@
 
 - A subagent's transcript in `/tasks` now has the chat box of a workflow stage chat: its prompt's top rule names the subagent, as `[subagent: <name>]`, and while it runs its usage meter, model line, working line and queued messages sit around the prompt in the same order, with a footer counting its own running tasks. `/tasks` typed there lists that subagent's own shells and the subagents it launched instead of the parent's, also for nested subagents, and Escape or Left returns to its chat ([#4640](https://github.com/bastani-inc/atomic/issues/4640))
 - Updated `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-codemode`, `@earendil-works/pi-schema` and `@earendil-works/pi-telemetry` to 1.5.2; the intercom, subagents, web-access and workflows packages now require `@earendil-works/pi-tui` and `@earendil-works/pi-agent-core` `^1.5.2`
+- Workflow stages and subagents now recall the project's history by default: `read` and `search` on `history://workflows` and `history://` reach the project's workflow runs, and a subagent's `history://sessions` lists the project's sessions rather than only its own. A subagent whose own prompt replaces the default prompt also gets the Session memory guidance ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
+- The default prompt's Session memory guidance now has the agent recall comparable earlier sessions and workflow runs, and the preferences you stated in them, before it chooses between a workflow and inline work, how to verify a change, or how long a task will take. With a shell tool it also suggests searching commits, issues, PRs and their comments for relevant prior work ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
 
 ### Fixed
 

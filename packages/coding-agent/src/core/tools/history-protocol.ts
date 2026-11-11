@@ -27,12 +27,28 @@ import {
 	searchTextSelectorLines,
 } from "./resource-selectors.ts";
 
+/** The part of a workflow run control that history:// reads; it can list and read runs, never manage them. */
+export type WorkflowRunHistory = Pick<WorkflowRunControl, "listRuns" | "listProjectRuns" | "getRun">;
+
+/**
+ * Where a session reads its project's history: the project's sessions and its workflow runs. A workflow stage or a
+ * subagent gets the history of the session that launched it, since neither holds the project's run control and a
+ * subagent keeps its own transcript apart from the project's sessions.
+ */
+export interface ProjectHistory {
+	readonly sessionStore: () => SessionStore | undefined;
+	readonly workflows: () => WorkflowRunHistory | undefined;
+}
+
 export interface HistorySources {
 	/** The project whose history is visible by default. */
 	readonly cwd: string;
 	readonly currentSessionId?: string;
+	/** The store that holds the current session. */
 	readonly sessionStore: () => SessionStore | undefined;
-	readonly workflows: () => WorkflowRunControl | undefined;
+	/** The store that holds the project's other sessions, when it is not the current session's. */
+	readonly projectSessionStore?: () => SessionStore | undefined;
+	readonly workflows: () => WorkflowRunHistory | undefined;
 }
 
 const DEFAULT_LIMIT = 25;
@@ -146,13 +162,16 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			? {}
 			: { cwd: target.project === undefined ? sources.cwd : resolvePath(target.project, sources.cwd) };
 
-	const requireStore = (): SessionStore => {
-		const store = sources.sessionStore();
+	const projectStore = (): SessionStore | undefined => sources.projectSessionStore?.() ?? sources.sessionStore();
+
+	/** The store that holds session `id`, or the project's sessions without one. */
+	const requireStore = (id?: string): SessionStore => {
+		const store = id !== undefined && id === sources.currentSessionId ? sources.sessionStore() : projectStore();
 		if (!store) throw new Error("Session history is unavailable: this session has no session store.");
 		return store;
 	};
 
-	const requireWorkflows = (): WorkflowRunControl => {
+	const requireWorkflows = (): WorkflowRunHistory => {
 		const control = sources.workflows();
 		if (!control)
 			throw new Error("Workflow history is unavailable: no workflow run control is registered for this session.");
@@ -183,7 +202,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 
 	async function authorizedSessionId(target: HistoryTarget): Promise<string> {
 		const id = target.id ?? "";
-		const header = await requireStore().readHeader(id);
+		const header = await requireStore(id).readHeader(id);
 		if (!header) throw new Error(`Session not found: ${id}`);
 		if (id === sources.currentSessionId) return id;
 		const { cwd } = projectScope(target);
@@ -306,12 +325,12 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 		);
 
 	async function searchSessions(target: HistoryTarget, request: InternalSearchRequest): Promise<string[]> {
-		const store = requireStore();
 		const linkRun = target.project === undefined;
 		if (target.id !== undefined) {
 			const id = await authorizedSessionId(target);
-			return searchLines(sessionUrl(id, target), await loadTranscript(store, id, linkRun), request);
+			return searchLines(sessionUrl(id, target), await loadTranscript(requireStore(id), id, linkRun), request);
 		}
+		const store = requireStore();
 		const candidates = (await recentSessions(target)).filter((summary) => summary.id !== sources.currentSessionId);
 		const window = candidates.slice(target.offset, target.offset + target.limit);
 		const out: string[] = [];
@@ -342,7 +361,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 	): Promise<{ readonly lines: string[]; readonly unreadable: number }> {
 		const detail = await requireWorkflows().getRun(runId);
 		const lines = searchLines(`history://workflows/${runId}`, runLines(detail), request);
-		const store = sources.sessionStore();
+		const store = projectStore();
 		let unreadable = 0;
 		for (const stage of detail.stages) {
 			if (!store || !stage.sessionId) continue;
@@ -391,7 +410,7 @@ export function createHistoryRouter(sources: HistorySources): InternalResourceRo
 			if (target.domain === "sessions") {
 				if (target.id === undefined) return listSessions(target);
 				const id = await authorizedSessionId(target);
-				return (await loadTranscript(requireStore(), id, target.project === undefined)).join("\n");
+				return (await loadTranscript(requireStore(id), id, target.project === undefined)).join("\n");
 			}
 			return target.id === undefined ? listWorkflows(target) : (await readRun(target.id)).join("\n");
 		},

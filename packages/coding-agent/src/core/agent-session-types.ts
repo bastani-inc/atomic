@@ -243,6 +243,8 @@ export interface AgentSessionConfig {
 	subagentPolicy?: SubagentChildPolicy;
 	/** Parent-issued shell task owner for an in-process subagent child. */
 	parentCommandTaskOwner?: import("./tasks/child-command-owner.js").ChildCommandTaskOwner;
+	/** The launching session's project history, read by history:// in a workflow stage or a subagent. */
+	inheritedHistory?: import("./tools/history-protocol.ts").ProjectHistory;
 	resourceAdmission?: import("./sdk-types.ts").ResourceAdmission;
 	/** Resolved workspace binding; a read-only binding refuses file-writing tools. */
 	workspace?: import("./workspace/resolve.ts").BoundWorkspace;

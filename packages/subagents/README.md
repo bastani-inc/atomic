@@ -304,7 +304,7 @@ Set `disabled: true` to hide a builtin from runtime discovery and agent-facing `
 
 ### Prompt assembly
 
-Subagents are designed to be narrow by default. Custom agents start with a clean system prompt and only the context you intentionally give them. They do not automatically inherit Pi’s whole base prompt, project instruction files, or discovered skills catalog.
+Subagents are designed to be narrow by default. Custom agents start with a clean system prompt and only the context you intentionally give them. They do not automatically inherit Pi’s whole base prompt, project instruction files, or discovered skills catalog. An agent with the `read` tool keeps one part of the base prompt, the Session memory guidance, and recalls the project's earlier sessions and workflow runs through `history://` like the session that launched it.
 
 Use these fields when an agent should see more:
 

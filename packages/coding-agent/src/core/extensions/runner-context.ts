@@ -10,7 +10,7 @@ import type { SkillCatalog } from "../skill-catalog.ts";
 import { sessionScratchDir } from "../storage/session/scratch-directory.js";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
-import { createHistoryRouter } from "../tools/history-protocol.ts";
+import { createHistoryRouter, type ProjectHistory } from "../tools/history-protocol.ts";
 import { composeInternalRouters } from "../tools/resource-selectors.ts";
 import { createToolOutputRouter } from "../tools/tool-output-protocol.ts";
 import type {
@@ -30,11 +30,10 @@ import type {
 	OrchestrationContext,
 	SubagentChildPolicy,
 } from "./types.ts";
-import type { WorkflowRunControl } from "./workflow-run-control.js";
 export interface ExtensionContextSource {
 	observeWorkflowActivity: ExtensionContext["observeWorkflowActivity"];
-	/** The run control the workflows extension registered, for history:// reads of workflow runs. */
-	getWorkflowRunControl?(): WorkflowRunControl | undefined;
+	/** Where history:// reads the project's sessions and workflow runs. */
+	getProjectHistory(): ProjectHistory;
 	getChildSessionOptions?: ExtensionContext["getChildSessionOptions"];
 	getExtensionPaths?(): string[];
 	assertActive(): void;
@@ -304,7 +303,8 @@ export function createExtensionContext(source: ExtensionContextSource, owner: ob
 				cwd: source.getCwd(),
 				currentSessionId: manager.getSessionId(),
 				sessionStore: () => manager.getSessionStore(),
-				workflows: () => source.getWorkflowRunControl?.(),
+				projectSessionStore: () => source.getProjectHistory().sessionStore(),
+				workflows: () => source.getProjectHistory().workflows(),
 			});
 			const sessionRouters = composeInternalRouters(
 				createToolOutputRouter({
