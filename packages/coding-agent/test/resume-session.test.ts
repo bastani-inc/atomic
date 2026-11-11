@@ -1079,42 +1079,48 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		return shim;
 	}
 
-	test("when looking for the session's own checkout throws, the session stays in it and nothing is restored (#4660)", async () => {
-		const { clone } = await editedClone();
-		const manager = await recordSession(clone, join(clone, "notes"));
-		sandbox.write(join(clone, "README.md"), "changed after the snapshot\n");
-		const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
-		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+	test.skipIf(process.platform === "win32")(
+		"when looking for the session's own checkout throws, the session stays in it and nothing is restored (#4660)",
+		async () => {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone, join(clone, "notes"));
+			sandbox.write(join(clone, "README.md"), "changed after the snapshot\n");
+			const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
+			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
 
-		const prepared = await prepareSessionResume(manager, options());
+			const prepared = await prepareSessionResume(manager, options());
 
-		assert.equal(cwdOf(prepared), join(clone, "notes"));
-		assert.deepEqual(prepared.status === "ready" && prepared.notices, []);
-		assert.equal(existsSync(sandbox.path("host")), false);
-		assert.deepEqual(manager.getWorktreeRootMappings(), []);
-	});
+			assert.equal(cwdOf(prepared), join(clone, "notes"));
+			assert.deepEqual(prepared.status === "ready" && prepared.notices, []);
+			assert.equal(existsSync(sandbox.path("host")), false);
+			assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		},
+	);
 
-	test("when examining the checkout a session came from throws, the session still goes back to it (#4660)", async () => {
-		const { clone } = await editedClone();
-		const manager = await recordSession(clone, join(clone, "notes"));
-		renameSync(clone, sandbox.path("away"));
-		const first = await prepareSessionResume(manager, options());
-		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
-		renameSync(sandbox.path("away"), clone);
-		const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
-		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+	test.skipIf(process.platform === "win32")(
+		"when examining the checkout a session came from throws, the session still goes back to it (#4660)",
+		async () => {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone, join(clone, "notes"));
+			renameSync(clone, sandbox.path("away"));
+			const first = await prepareSessionResume(manager, options());
+			const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
+			renameSync(sandbox.path("away"), clone);
+			const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
+			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
 
-		const reopened = first.status === "ready" ? first.sessionManager : manager;
-		const second = await prepareSessionResume(reopened, options());
+			const reopened = first.status === "ready" ? first.sessionManager : manager;
+			const second = await prepareSessionResume(reopened, options());
 
-		assert.equal(cwdOf(second), join(clone, "notes"));
-		assert.deepEqual(second.status === "ready" && second.notices, [
-			{
-				type: "info",
-				message: `Resuming in ${clone}, the checkout this session was restored from, instead of the worktree ${worktree}.`,
-			},
-		]);
-	});
+			assert.equal(cwdOf(second), join(clone, "notes"));
+			assert.deepEqual(second.status === "ready" && second.notices, [
+				{
+					type: "info",
+					message: `Resuming in ${clone}, the checkout this session was restored from, instead of the worktree ${worktree}.`,
+				},
+			]);
+		},
+	);
 
 	test("a session that worked in its restored worktree stays there (#4660)", async () => {
 		const { clone } = await editedClone();
