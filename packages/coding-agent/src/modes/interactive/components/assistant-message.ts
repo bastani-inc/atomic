@@ -217,12 +217,10 @@ export class AssistantMessageComponent extends Container {
 			);
 		} else if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
-				const abortMessage =
-					message.errorMessage && message.errorMessage !== "Request was aborted"
-						? message.errorMessage
-						: "Operation aborted";
 				this.contentContainer.addChild(new Spacer(1));
-				this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), this.outputPad, 0));
+				this.contentContainer.addChild(
+					new Text(theme.fg("muted", interruptedNotice(message.errorMessage)), this.outputPad, 0),
+				);
 			} else if (message.stopReason === "error") {
 				const errorMsg = message.errorMessage || "Unknown error";
 				this.contentContainer.addChild(new Spacer(1));
@@ -230,4 +228,21 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 	}
+}
+
+/**
+ * The line shown under an interrupted response: "Interrupted by user" for every interrupt, whatever the provider or
+ * retry loop called it. Only an abort Atomic itself caused with an explanation, such as a dismissed question, keeps
+ * that explanation.
+ */
+export function interruptedNotice(errorMessage: string | undefined): string {
+	const text = errorMessage?.trim() ?? "";
+	if (
+		text === "" ||
+		/^(?:(?:the |this )?(?:operation|request) (?:was )?aborted|operation aborted|aborterror\b.*|aborted after \d+ retry attempts?|interrupted(?: by user)?)\.?$/i.test(
+			text,
+		)
+	)
+		return "Interrupted by user";
+	return text;
 }

@@ -10,6 +10,8 @@
 ### Changed
 
 - Workflow activity frames from `ctx.observeWorkflowActivity` and `session.workflows.observe`, and `workflow_activity_changed` events, share their root graph's nodes as deep-frozen objects instead of cloning every node for every observer, so a change to a long run no longer costs a copy of its whole graph. Each frame still has its own root, graph and `nodes` array; copy a node before changing it ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Ctrl+C clears the editor first when it has text, even while a response is streaming; with an empty editor it stops running work at once, as Escape does. On an empty, idle editor the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits. Clearing text or stopping work never counts toward exiting, so a quick second press after clearing no longer quits Atomic.
+- A response you interrupt with Escape or Ctrl+C ends with a muted `Interrupted by user` line instead of a red provider message such as "This operation was aborted" or "Aborted after 2 retry attempts".
 
 ### Fixed
 
@@ -27,6 +29,7 @@
 ### Removed
 
 - Removed the "Foreground wait" action and the `app.tasks.foreground` keybinding from the `/tasks` detail page. It only showed a passing `yielded` or `settled` line and briefly dropped the task from the running-tasks count; it never changed how the task ran or what the agent was told ([#4662](https://github.com/bastani-inc/atomic/issues/4662))
+- Removed the "Loading remote component…" line that briefly appeared while an interactive component drew its first frame.
 
 ## [0.9.78] - 2026-11-11
 

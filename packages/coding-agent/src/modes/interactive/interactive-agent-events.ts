@@ -6,6 +6,7 @@ import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui
 import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.js";
 import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 import type { JsonAgentSessionEvent } from "../json-event.ts";
+import { interruptedNotice } from "./components/assistant-message.ts";
 import { AtomicWorkingLoader } from "./components/atomic-working-status.ts";
 import { mountIdleStatus } from "./components/idle-status.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
@@ -279,15 +280,10 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				let errorMessage: string | undefined;
 				if (this.streamingMessage.stopReason === "aborted") {
 					const existingAbortMessage =
-						this.streamingMessage.errorMessage && this.streamingMessage.errorMessage !== "Request was aborted"
-							? this.streamingMessage.errorMessage
-							: undefined;
-					const retryAttempt = this.session.retryAttempt;
-					errorMessage =
-						existingAbortMessage ??
-						(retryAttempt > 0
-							? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-							: "Operation aborted");
+						interruptedNotice(this.streamingMessage.errorMessage) === "Interrupted by user"
+							? undefined
+							: this.streamingMessage.errorMessage;
+					errorMessage = existingAbortMessage ?? "Interrupted by user";
 					this.streamingMessage.errorMessage = errorMessage;
 				}
 				this.streamingComponent.updateContent(this.streamingMessage, false);

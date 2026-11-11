@@ -8,27 +8,34 @@ import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
 import { handOffCompactionQueue, showQueueRestoreFailure } from "./interactive-queueing.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 
+/** A second Ctrl+C on an empty, idle editor within this window exits. */
+const CTRL_C_EXIT_WINDOW_MS = 800;
 const SHUTDOWN_INPUT_DRAIN_MAX_MS = 250;
 const SHUTDOWN_INPUT_DRAIN_IDLE_MS = 50;
 
+/**
+ * Ctrl+C, in order: text in the editor is cleared; otherwise running work stops at once (as Escape does); otherwise
+ * the first press says how to exit and a second press within {@link CTRL_C_EXIT_WINDOW_MS} exits. Clearing text or
+ * stopping work never counts toward the exit, so a press meant for either cannot quit Atomic.
+ */
 InteractiveModeBase.prototype.handleCtrlC = function (this: InteractiveModeBase): void {
 	if (isWindowsSubshellActive(this)) return;
-	// When the agent is doing work, Ctrl+C interrupts it (matching Escape and
-	// common CLI muscle memory) instead of clearing/exiting the editor. Only
-	// fall back to the clear / double-press-exit behavior when idle.
+	if (this.editor.getText() !== "") {
+		this.clearEditor();
+		this.lastSigintTime = 0;
+		return;
+	}
 	if (this.interruptActiveOperation()) {
-		// Reset the double-press window so a follow-up Ctrl+C after the abort
-		// does not immediately exit.
 		this.lastSigintTime = 0;
 		return;
 	}
 	const now = Date.now();
-	if (now - this.lastSigintTime < 500) {
+	if (now - this.lastSigintTime < CTRL_C_EXIT_WINDOW_MS) {
 		void this.shutdown();
-	} else {
-		this.clearEditor();
-		this.lastSigintTime = now;
+		return;
 	}
+	this.lastSigintTime = now;
+	this.showStatus("Press Ctrl+C again to exit");
 };
 
 /**

@@ -155,7 +155,7 @@ On Windows, pressing the secondary mouse button in fullscreen pastes text from t
 | Keybinding id | Default | Description |
 |--------|---------|-------------|
 | `app.interrupt` | `escape` | Abort active or queued work and restore still-queued steering/follow-up messages to the editor; the session remains paused until an ordinary submission. A message the agent already picked up is answered instead of restored |
-| `app.clear` | `ctrl+c` | Interrupt active or queued work, or terminate an unresponsive interactive engine; once idle, clear the editor (press twice while idle to exit) |
+| `app.clear` | `ctrl+c` | Clear the editor when it has text; otherwise interrupt active or queued work, or terminate an unresponsive interactive engine; on an empty, idle editor, the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits |
 | `app.exit` | `ctrl+d` | Exit (when editor empty) |
 | `app.suspend` | `ctrl+z` (`alt+z` on Windows) | Suspend to background; on Windows, open a PowerShell subshell |
 | `app.editor.external` | `ctrl+g` | Open in external editor (`$VISUAL` or `$EDITOR`) |
@@ -173,7 +173,7 @@ Ctrl+X does not copy messages or selections. A workflow tool-detail view closes 
 
 On OAuth sign-in screens, Ctrl+X copies the sign-in URL, including long URLs that wrap across lines. This also works in `/mcp login`. Customize this shortcut with `app.auth.copyUrl`; it does not change Ctrl+X behavior outside sign-in screens. Remote sessions use OSC 52 clipboard forwarding as described above.
 
-A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, the next Ctrl+C clears the editor without releasing or dequeuing the hold, and a second quick idle press exits normally.
+A held paused queue by itself is idle for Ctrl+C handling. After an interruption settles, Ctrl+C on an empty editor shows the exit hint without releasing or dequeuing the hold, and a second quick press exits normally. Clearing text or interrupting work never counts toward exiting.
 
 In interactive sessions the agent runs in a supervised engine child (see [Extensions](/extensions#interactive-callback-isolation)). Escape there requests the engine's cooperative cancellation and waits for it with no deadline; it never terminates or replaces the engine.
 
