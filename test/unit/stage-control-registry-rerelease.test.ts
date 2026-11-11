@@ -270,6 +270,20 @@ describe("a stage is released when its last hold ends, once its release was aske
 		}
 	});
 
+	test("a claim's grace timer does not keep an idle process alive (#4642)", () => {
+		const registry = createStageControlRegistry();
+		const fake = gatedHandle("a", fakeGate());
+		const unregister = registry.register(fake.handle);
+		const referencedTimers = () => process.getActiveResourcesInfo().filter((kind) => kind === "Timeout").length;
+		const before = referencedTimers();
+		try {
+			assert.equal(registry.claim(RUN, "a"), fake.handle);
+			assert.equal(referencedTimers(), before);
+		} finally {
+			unregister();
+		}
+	});
+
 	test("a claim's wait ends with its handle: unregistering clears it, and a handle that cannot be released again starts none (#4642)", async () => {
 		vi.useFakeTimers();
 		try {

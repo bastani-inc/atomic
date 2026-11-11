@@ -94,6 +94,18 @@ for (const commits of ["one by one", "in a burst"] as const) {
 	});
 }
 
+test("sharing stage text does not retain the writer's mutable output (#4642)", async () => {
+	const backend = await openBackend();
+	const output = { text: "saved", nested: { count: 1 } };
+	const checkpoint = { ...stageCheckpoint(1, "different"), output };
+	await backend.commitCheckpoint(checkpoint);
+	output.text = "changed";
+	output.nested.count = 2;
+	const recorded = backend.listCheckpoints("run")[0] as DurableStageCheckpoint;
+	assert.deepEqual(recorded.output, { text: "saved", nested: { count: 1 } });
+	assert.equal(recorded.result, checkpoint.result);
+});
+
 test("a checkpoint reads back as written, whether or not its texts are shared (#4642)", async () => {
 	const backend = await openBackend();
 	const same = stageCheckpoint(1, "same");

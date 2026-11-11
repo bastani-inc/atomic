@@ -162,6 +162,44 @@ describe("a repaint reads queue counts in time that does not follow the stage co
 		assert.ok(onChange[2]! >= 800, `a queue change re-reads every stage once: ${onChange.join(", ")}`);
 	});
 
+	test("an empty-queue handle appearing or disappearing does not remeasure finished cards (#4642)", () => {
+		const store = runOfStages(200);
+		const registry = createStageControlRegistry();
+		let queueReads = 0;
+		const peek = registry.peek.bind(registry);
+		registry.peek = (runId, stageId) => {
+			queueReads += 1;
+			return peek(runId, stageId);
+		};
+		const pane = new WorkflowAttachPane({
+			store,
+			piTui: makeTestTui(24),
+			piKeybindings: s5aKeybindings(),
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageControlRegistry: registry,
+			onClose: () => {},
+		});
+		try {
+			pane.render(120);
+			queueReads = 0;
+			pane.render(120);
+			const readsPerFrame = queueReads;
+			assert.ok(readsPerFrame < 200);
+			const { handle } = makeHandle("run-1", "stage-7");
+			const unregister = registry.register(handle);
+			queueReads = 0;
+			pane.render(120);
+			assert.equal(queueReads, readsPerFrame);
+			unregister();
+			queueReads = 0;
+			pane.render(120);
+			assert.equal(queueReads, readsPerFrame);
+		} finally {
+			pane.dispose();
+		}
+	});
+
 	test("the pane's signature follows the live handles' queues and nothing else", () => {
 		const store = runOfStages(200);
 		const registry = createStageControlRegistry();
