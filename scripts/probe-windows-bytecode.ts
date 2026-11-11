@@ -30,6 +30,7 @@ export function windowsBytecodeCompileArgs(target: string, loaderPath: string, o
 		"mupdf",
 		"--no-compile-autoload-dotenv",
 		"--no-compile-autoload-bunfig",
+		"--compile-autoload-package-json",
 		`--target=${target}`,
 		loaderPath,
 		"--outfile",
