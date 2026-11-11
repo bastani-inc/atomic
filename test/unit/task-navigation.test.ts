@@ -11,7 +11,6 @@ function navigation(overrides: Partial<TaskNavigationActions> = {}) {
 	return new TaskNavigation(new KeybindingsManager(), {
 		inspect() {},
 		transcript() {},
-		foreground() {},
 		async confirmCancel() {
 			return false;
 		},
@@ -30,7 +29,7 @@ test("task actions are namespaced without stealing global shortcuts", () => {
 	const keys = new KeybindingsManager();
 	assert.deepEqual(keys.getKeys("app.tasks.open"), []);
 	assert.deepEqual(keys.getKeys("app.tasks.inspect"), ["enter"]);
-	for (const action of ["app.tasks.foreground", "app.tasks.cancel", "app.tasks.input"] as const) {
+	for (const action of ["app.tasks.cancel", "app.tasks.input"] as const) {
 		assert.deepEqual(keys.getKeys(action), []);
 	}
 	assert.deepEqual(keys.getKeys("app.tools.expand"), ["ctrl+o"]);

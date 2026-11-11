@@ -20,6 +20,10 @@
 - Fixed resuming a long session walking its whole history again and again: the session's branch, worktree restores, latest snapshots and name are kept current as entries are added, and recorded checkouts are compared with their snapshots once each, several at a time. On a 200,000-entry session with six checkouts, time to a usable prompt dropped from about 10.4 s to about 6.3 s; about 2 s of that is the session no longer being moved into a restored worktree, and about 4 s remains in full-history parses that this change does not remove ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
 - Fixed a startup step that fails, such as a tool status that cannot be read or extension loading that did not finish, holding back session recovery: the session keeps its tools and working directory and interrupted work is still recovered ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
 
+### Removed
+
+- Removed the "Foreground wait" action and the `app.tasks.foreground` keybinding from the `/tasks` detail page. It only showed a passing `yielded` or `settled` line and briefly dropped the task from the running-tasks count; it never changed how the task ran or what the agent was told ([#4662](https://github.com/bastani-inc/atomic/issues/4662))
+
 ## [0.9.78] - 2026-11-11
 
 GitHub Copilot users get Gemini 4 Carbon and Claude Fable 5.2, and automatic model routing can rank Gemini 4 Carbon.

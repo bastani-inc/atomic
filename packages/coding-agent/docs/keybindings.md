@@ -231,7 +231,6 @@ These actions apply only while inspecting tasks. They do not replace global Ctrl
 |--------|---------|-------------|
 | `app.tasks.open` | Unbound | Command-only `/tasks` route |
 | `app.tasks.inspect` | `enter` | Inspect the selected task while task focus owns input |
-| `app.tasks.foreground` | Unbound | Observe the selected live task without restarting it |
 | `app.tasks.cancel` | Unbound | Request cancellation after confirming the target |
 | `app.tasks.input` | Unbound | Focus stdin only when the selected task has writable input |
 
