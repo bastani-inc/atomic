@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.77-alpha.1] - 2026-11-11
+
+Delegation guidance uses session memory, and messages to ended subagents say how to continue them.
+
+- **Memory-informed delegation.** Orchestration guidance weighs earlier sessions, workflow runs and your stated preferences when choosing between a workflow and inline work ([#4648](https://github.com/bastani-inc/atomic/issues/4648), [#4649](https://github.com/bastani-inc/atomic/pull/4649)).
+- **Resumable ended subagents.** An Intercom send to a subagent that finished, failed or was stopped explains how it ended and which `subagent({ action: "resume" })` call continues it ([#4639](https://github.com/bastani-inc/atomic/issues/4639), [#4650](https://github.com/bastani-inc/atomic/pull/4650)).
+
 ### Changed
 
 - The subagent orchestration guidance now refines the choice between a workflow and inline work with session memory (`history://` sessions and workflow runs) and your stated preferences ([#4648](https://github.com/bastani-inc/atomic/issues/4648))

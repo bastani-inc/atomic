@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.77-alpha.1] - 2026-11-11
+
+Messages to ended, released or replaced sessions arrive or fail with a reason.
+
+- **Explained recipient errors.** Sends to a subagent that ended or disconnected are held briefly and delivered if it returns, otherwise refused with a typed error that says how it ended and how to resume it ([#4639](https://github.com/bastani-inc/atomic/issues/4639), [#4650](https://github.com/bastani-inc/atomic/pull/4650)).
+- **Suspended and replaced stages.** Sends to a workflow stage, or to subagents of a stage that is suspended, reach its current session or queue until it reopens instead of answering `Session not found` ([#4639](https://github.com/bastani-inc/atomic/issues/4639), [#4650](https://github.com/bastani-inc/atomic/pull/4650)).
+
 ### Fixed
 
 - Fixed sends and asks to a subagent that just ended or dropped its connection failing with a bare `Session not found`: the broker now holds them for up to 20 seconds, delivers them once if the subagent reconnects, and otherwise refuses them with a typed `IntercomRecipientGoneError` that names how the subagent ended (`recipient_completed`, `recipient_failed`, `recipient_stopped`, `recipient_cancelled`, or the retryable `recipient_disconnected`) and the `subagent({ action: "resume" })` call to make. What the launching session reported survives the closing of its connection, as a suspended workflow stage's does, until the session is back ([#4639](https://github.com/bastani-inc/atomic/issues/4639))

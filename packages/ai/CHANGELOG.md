@@ -4,6 +4,12 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.77-alpha.1] - 2026-11-11
+
+Providers can release their resources when a session ends.
+
+- **Session resource cleanup.** Import `registerSessionResourceCleanup` and `cleanupSessionResources` from `@bastani/pi-ai/session-resources` to free provider resources when a session ends ([#4638](https://github.com/bastani-inc/atomic/pull/4638), upstream [#11961](https://github.com/earendil-works/pi/pull/11961)).
+
 ### Added
 
 - Added the `@bastani/pi-ai/session-resources` subpath export, so `registerSessionResourceCleanup` and `cleanupSessionResources` can be imported to release provider resources when a session ends (upstream [#11961](https://github.com/earendil-works/pi/pull/11961))
