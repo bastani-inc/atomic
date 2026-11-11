@@ -270,6 +270,26 @@ describe("a stage is released when its last hold ends, once its release was aske
 		}
 	});
 
+	test("a claim's wait ends with its handle: unregistering clears it, and a handle that cannot be released again starts none (#4642)", async () => {
+		vi.useFakeTimers();
+		try {
+			const registry = createStageControlRegistry();
+			const fake = gatedHandle("a", fakeGate());
+			const unregister = registry.register(fake.handle);
+			registry.claim(RUN, "a");
+			assert.equal(vi.getTimerCount(), 1, "a claim waits for its holder to take a hold");
+			unregister();
+			assert.equal(vi.getTimerCount(), 0, "the wait ends with the handle");
+
+			const { releaseGate: _gate, ...withoutGate } = gatedHandle("b", fakeGate()).handle;
+			registry.register(withoutGate as StageControlHandle);
+			registry.claim(RUN, "b");
+			assert.equal(vi.getTimerCount(), 0, "a handle with no release gate is never released, so nothing waits");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a handle the registry created for a reopened stage is released when its holds lift, unasked", async () => {
 		const registry = createStageControlRegistry();
 		const gate = fakeGate();

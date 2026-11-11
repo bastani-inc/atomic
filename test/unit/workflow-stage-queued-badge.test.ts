@@ -112,7 +112,7 @@ describe("a repaint reads queue counts in time that does not follow the stage co
 				status: "completed",
 				parentIds: index === 0 ? [] : [`stage-${index - 1}`],
 				toolEvents: [],
-				model: "faux/model",
+				model: "gpt-5-mini",
 				startedAt: 1,
 			});
 		}

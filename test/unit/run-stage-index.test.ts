@@ -24,6 +24,10 @@ describe("the index of a run's stages (#4642)", () => {
 			stage("asking", { status: "running", pendingPrompt: prompt }),
 			stage("awaiting", { status: "awaiting_input" }),
 			stage("since", { status: "running", awaitingInputSince: 5 }),
+			stage("requesting", {
+				status: "running",
+				inputRequest: { id: "r1", kind: "input", questions: [] } as unknown as StageSnapshot["inputRequest"],
+			}),
 			stage("queued-b", { status: "pending" }),
 			stage("finished-with-prompt", { status: "completed", pendingPrompt: prompt }),
 		];
@@ -35,7 +39,7 @@ describe("the index of a run's stages (#4642)", () => {
 		);
 		assert.deepEqual(
 			index.waiting.map((entry) => entry.id),
-			["asking", "awaiting", "since"],
+			["asking", "awaiting", "since", "requesting"],
 			"a finished stage no longer waits",
 		);
 		assert.equal(index.awaitingInput, true);

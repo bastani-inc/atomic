@@ -62,16 +62,19 @@ function stageCheckpoint(index: number, result: "same" | "different"): DurableSt
 }
 
 /** Heap the backend adds while the caller, as the workflow store does, keeps every checkpoint it wrote. */
-async function heapGrownByBackend(result: "same" | "different"): Promise<number> {
+async function heapGrownByBackend(result: "same" | "different", commits: "one by one" | "in a burst"): Promise<number> {
 	const backend = await openBackend();
 	collectGarbage();
 	const before = process.memoryUsage().heapUsed;
 	const written: DurableStageCheckpoint[] = [];
+	const burst: Promise<void>[] = [];
 	for (let index = 0; index < STAGES; index++) {
 		const checkpoint = stageCheckpoint(index, result);
 		written.push(checkpoint);
-		await backend.commitCheckpoint(checkpoint);
+		if (commits === "one by one") await backend.commitCheckpoint(checkpoint);
+		else burst.push(backend.commitCheckpoint(checkpoint));
 	}
+	await Promise.all(burst);
 	collectGarbage();
 	const grown = process.memoryUsage().heapUsed - before;
 	assert.equal(backend.listCheckpoints("run").length, STAGES);
@@ -79,14 +82,17 @@ async function heapGrownByBackend(result: "same" | "different"): Promise<number>
 	return grown;
 }
 
-test("a stage's result text is kept once for the writer and the journal projection together (#4642)", async () => {
-	const oneCopy = TEXT_BYTES * STAGES;
-	const sameText = await heapGrownByBackend("same");
-	const twoTexts = await heapGrownByBackend("different");
+for (const commits of ["one by one", "in a burst"] as const) {
+	test(`a stage's result text is kept once for the writer and the journal projection together, committed ${commits} (#4642)`, async () => {
+		const oneCopy = TEXT_BYTES * STAGES;
+		const sameText = await heapGrownByBackend("same", commits);
+		const twoTexts = await heapGrownByBackend("different", commits);
 
-	assert.ok(sameText < oneCopy * 1.4, `the writer's text is the only copy: ${sameText} bytes for ${STAGES} stages`);
-	assert.ok(twoTexts > oneCopy * 1.8, `a result that differs from the output is kept as its own: ${twoTexts} bytes`);
-});
+		assert.ok(sameText < oneCopy * 1.4, `the writer's text is the only copy: ${sameText} bytes for ${STAGES} stages`);
+		assert.ok(twoTexts > oneCopy * 1.8, `a result that differs from the output is its own text: ${twoTexts} bytes`);
+		assert.ok(twoTexts < oneCopy * 2.4, `and the writer's is the only copy of it too: ${twoTexts} bytes`);
+	});
+}
 
 test("a checkpoint reads back as written, whether or not its texts are shared (#4642)", async () => {
 	const backend = await openBackend();
