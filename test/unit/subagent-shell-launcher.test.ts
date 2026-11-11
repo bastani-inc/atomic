@@ -29,9 +29,9 @@ import { liveChildEnvironment } from "../helpers/live-child-environment.js";
 /** The child is a real in-process session on a scripted model, so it starts like any subagent does. */
 const LIVE_CHILD_TIMEOUT_MS = 120_000;
 
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-	while (cleanups.length > 0) cleanups.pop()?.();
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
+	while (cleanups.length > 0) await cleanups.pop()?.();
 	clearSubagentControls();
 });
 
@@ -39,7 +39,9 @@ const route = { isOpen: () => true, deliver: async () => {} };
 
 function ownerHost(): AgentTaskHost {
 	const host = new AgentTaskHost({ scope: { kind: "session", sessionId: randomUUID() }, authorizeLaunch() {} });
-	cleanups.push(() => void host.close("session-close"));
+	cleanups.push(async () => {
+		assert.ok((await host.close("session-close")).ok);
+	});
 	return host;
 }
 

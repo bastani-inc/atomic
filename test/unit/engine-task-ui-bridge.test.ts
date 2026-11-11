@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { type Component, getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { test } from "vitest";
@@ -8,6 +9,7 @@ import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybind
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { bindOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";
 import type { TaskMessageDelivery } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import { formatCwdForFooter } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import type { EngineHostRenderSettings } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
@@ -298,7 +300,9 @@ test("the main /tasks gives a running subagent's transcript the chat's footer da
 	const previousKeys = getKeybindings();
 	setKeybindings(new KeybindingsManager());
 	const fixture = taskFixture();
-	const transcript = SessionManager.inMemory("/work/subagent");
+	const cwd = resolve("/work/subagent");
+	const footerCwd = formatCwdForFooter(cwd, process.env.HOME || process.env.USERPROFILE);
+	const transcript = SessionManager.inMemory(cwd);
 	await transcript.appendMessage({ role: "user", content: "Check the parser", timestamp: 0 });
 	let component: Component | undefined;
 	const custom = ((factory: Parameters<ExtensionUIContext["custom"]>[0]) =>
@@ -333,7 +337,7 @@ test("the main /tasks gives a running subagent's transcript the chat's footer da
 		}
 		const rows = (component?.render(100) ?? []).map((row) => stripVTControlCharacters(row));
 		assert.ok(
-			rows.some((row) => /^worker-model • \/work\/subagent \(main\)/.test(row)),
+			rows.some((row) => row.startsWith(`worker-model • ${footerCwd} (main)`)),
 			rows.join("\n"),
 		);
 		component?.handleInput?.("\x03");

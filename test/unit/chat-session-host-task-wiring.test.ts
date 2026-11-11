@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, test, vi } from "vitest";
@@ -12,7 +13,10 @@ import { ownerTaskViewSource } from "../../packages/coding-agent/src/core/tasks/
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import type { ChatSessionHostOpts } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host-types.ts";
 import { SCROLLBAR_HIDE_DELAY_MS } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
-import { FooterComponent } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
+import {
+	FooterComponent,
+	formatCwdForFooter,
+} from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { taskFixture } from "../helpers/task-projection.js";
 
@@ -230,12 +234,15 @@ const FOOTER_DATA = {
 	onBranchChange: () => () => {},
 };
 
+const BOX_CWD = resolve("/work");
+const BOX_FOOTER_CWD = formatCwdForFooter(BOX_CWD, process.env.HOME || process.env.USERPROFILE);
+
 function boxSession(modelId: string): ChatBoxSession {
 	const model = { provider: "faux", id: modelId, reasoning: false, contextWindow: 1000 };
 	return {
 		state: { model, thinkingLevel: "off" },
 		model,
-		sessionManager: SessionManager.inMemory("/work"),
+		sessionManager: SessionManager.inMemory(BOX_CWD),
 		getContextUsage: () => undefined,
 		modelRuntime: { isUsingOAuth: () => false },
 		isStreaming: false,
@@ -268,13 +275,16 @@ test("a chat's footer follows the session it is given, and counts the tasks of i
 	);
 	try {
 		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
-			"first-model • /work",
+			`first-model • ${BOX_FOOTER_CWD}`,
 			"Tasks  1 local agent running · /tasks",
 		]);
 		for (const host of [bare, empty])
-			assert.deepEqual(text(host.renderFooter(80)).split("\n"), ["first-model • /work"]);
+			assert.deepEqual(text(host.renderFooter(80)).split("\n"), [`first-model • ${BOX_FOOTER_CWD}`]);
 		current = boxSession("second-model");
-		assert.match(text(withSource.renderFooter(80)), /^second-model • \/work/);
+		assert.deepEqual(text(withSource.renderFooter(80)).split("\n"), [
+			`second-model • ${BOX_FOOTER_CWD}`,
+			"Tasks  1 local agent running · /tasks",
+		]);
 	} finally {
 		withSource.dispose();
 		bare.dispose();
@@ -309,7 +319,7 @@ test("a chat that has an agent session counts the tasks of that session's own st
 test("a footer without a task list of its own counts nothing for a session that has no task store (#4640)", () => {
 	initTheme("dark");
 	const footer = new FooterComponent(boxSession("lone-model"), FOOTER_DATA);
-	assert.deepEqual(text(footer.render(80)).split("\n"), ["lone-model • /work"]);
+	assert.deepEqual(text(footer.render(80)).split("\n"), [`lone-model • ${BOX_FOOTER_CWD}`]);
 	footer.dispose();
 });
 
@@ -319,7 +329,7 @@ test("a chat that does not own its running session never offers to interrupt it 
 	const borrowed = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => session }));
 	const owned = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getAgentSession: () => session as never }));
 	try {
-		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), ["busy-model • /work"]);
+		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), [`busy-model • ${BOX_FOOTER_CWD}`]);
 		assert.match(text(owned.renderFooter(80)), /esc to interrupt/);
 	} finally {
 		borrowed.dispose();

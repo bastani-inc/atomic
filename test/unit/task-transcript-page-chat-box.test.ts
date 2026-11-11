@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { getKeybindings, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
@@ -21,6 +22,7 @@ import {
 } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { ChatSessionHost } from "../../packages/coding-agent/src/modes/interactive/components/chat-session-host.js";
 import { ChatTranscriptComponent } from "../../packages/coding-agent/src/modes/interactive/components/chat-transcript.js";
+import { formatCwdForFooter } from "../../packages/coding-agent/src/modes/interactive/components/footer.js";
 import { TaskInspector } from "../../packages/coding-agent/src/modes/interactive/components/task-inspector.js";
 import {
 	TaskAgentTranscriptPage,
@@ -349,8 +351,11 @@ const LIVE_MODEL = {
 	contextWindow: 200_000,
 } as unknown as ChatBoxSession["model"];
 
+const LIVE_CWD = resolve("/work/subagent");
+const LIVE_FOOTER_CWD = formatCwdForFooter(LIVE_CWD, process.env.HOME || process.env.USERPROFILE);
+
 /** The live session of a subagent: a model, an entry that used 1,200 input tokens, and a working directory. */
-async function liveChatSession(cwd = "/work/subagent"): Promise<ChatBoxSession> {
+async function liveChatSession(cwd = LIVE_CWD): Promise<ChatBoxSession> {
 	const sessionManager = SessionManager.inMemory(cwd);
 	await sessionManager.appendMessage({
 		role: "assistant",
@@ -418,7 +423,7 @@ describe("a live subagent's chat box (#4640)", () => {
 		assert.ok(usage >= 0 && usage === label - 1, "the usage meter sits right above the prompt's top rule");
 		assert.match(rows[usage] ?? "", /↓340 • \$0\.012 • 0\.8%\/200k \(auto\)$/);
 		assert.deepEqual(rows.slice(label + 3), [
-			"worker-model  low • /work/subagent (feature)",
+			`worker-model  low • ${LIVE_FOOTER_CWD} (feature)`,
 			"Tasks  2 background tasks running · /tasks",
 		]);
 		page.dispose();
@@ -450,8 +455,8 @@ describe("a live subagent's chat box (#4640)", () => {
 			},
 		};
 		const { page } = await livePage({}, { footerData: data });
-		assert.match(text(page.render(100, 20)), /\(branch-of-\/work\/subagent\)/);
-		assert.deepEqual(watched, ["/work/subagent"]);
+		assert.ok(text(page.render(100, 20)).includes(`(branch-of-${LIVE_CWD})`));
+		assert.deepEqual(watched, [LIVE_CWD]);
 		page.dispose();
 		assert.equal(released, 1);
 	});
