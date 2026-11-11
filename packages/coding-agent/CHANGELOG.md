@@ -7,6 +7,10 @@
 - Resuming lists its slow steps on the terminal before the TUI appears (`Loading the session history (0.6 s)…`, `Checking 6 checkouts against the session's snapshots…`, `Restoring … from snapshot …`), a history of 100,000 entries or more before it is read, and any other step that blocks the terminal as soon as it ends; quick resumes stay silent ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
 - Interactive startup notes `Tools this session was using aren't available right now: <names>` when a tool the session was using, or one its tool selection names, is not registered once startup finishes, and `/tools` lists such tools under **Missing**; tools left out with `--tools`, `--no-tools` or `--no-extensions` are never listed ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
 
+### Changed
+
+- Workflow activity frames from `ctx.observeWorkflowActivity` and `session.workflows.observe`, and `workflow_activity_changed` events, share their root graph's nodes as deep-frozen objects instead of cloning every node for every observer, so a change to a long run no longer costs a copy of its whole graph. Each frame still has its own root, graph and `nodes` array; copy a node before changing it ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
 ### Fixed
 
 - Fixed MCP tools loaded by `tool_search` being dropped on resume and `/reload` when an extension deactivates only its own tool at `session_start` (upstream [#12054](https://github.com/earendil-works/pi/pull/12054))

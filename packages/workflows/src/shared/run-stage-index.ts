@@ -1,4 +1,3 @@
-import { isTerminalStageStatus } from "./store-internal.js";
 import type { RunSnapshot, StageSnapshot } from "./store-types.js";
 
 /**
@@ -15,23 +14,50 @@ export interface RunStageIndex {
 	readonly waiting: readonly StageSnapshot[];
 }
 
-const indexes = new WeakMap<object, RunStageIndex>();
+/** An index with what it was counted from, so the index of the run's next version can be derived from it. */
+interface IndexedStages {
+	readonly index: RunStageIndex;
+	/** Stages that ask for input, finished or not. */
+	readonly asking: number;
+	/** Positions of the stages that are not finished, in run order. */
+	readonly unfinished: readonly number[];
+}
 
-function buildIndex(stages: readonly StageSnapshot[]): RunStageIndex {
-	let awaitingInput = false;
+const indexes = new WeakMap<object, IndexedStages>();
+
+function asksForInput(stage: StageSnapshot): boolean {
+	return (
+		stage.pendingPrompt !== undefined ||
+		stage.inputRequest !== undefined ||
+		stage.status === "awaiting_input" ||
+		stage.awaitingInputSince !== undefined
+	);
+}
+
+function isFinished(stage: StageSnapshot): boolean {
+	return stage.status === "completed" || stage.status === "failed" || stage.status === "skipped";
+}
+
+/** The index of `stages` from the unfinished ones, which are the only ones that can be pending or waiting. */
+function indexFrom(stages: readonly StageSnapshot[], asking: number, unfinished: readonly number[]): IndexedStages {
 	const pending: StageSnapshot[] = [];
 	const waiting: StageSnapshot[] = [];
-	for (const stage of stages) {
-		const asksForInput =
-			stage.pendingPrompt !== undefined ||
-			stage.inputRequest !== undefined ||
-			stage.status === "awaiting_input" ||
-			stage.awaitingInputSince !== undefined;
-		if (asksForInput) awaitingInput = true;
+	for (const position of unfinished) {
+		const stage = stages[position]!;
 		if (stage.status === "pending") pending.push(stage);
-		if (asksForInput && !isTerminalStageStatus(stage.status)) waiting.push(stage);
+		if (asksForInput(stage)) waiting.push(stage);
 	}
-	return { awaitingInput, pending, waiting };
+	return { index: { awaitingInput: asking > 0, pending, waiting }, asking, unfinished };
+}
+
+function buildIndex(stages: readonly StageSnapshot[]): IndexedStages {
+	let asking = 0;
+	const unfinished: number[] = [];
+	stages.forEach((stage, position) => {
+		if (asksForInput(stage)) asking++;
+		if (!isFinished(stage)) unfinished.push(position);
+	});
+	return indexFrom(stages, asking, unfinished);
 }
 
 /**
@@ -41,8 +67,42 @@ function buildIndex(stages: readonly StageSnapshot[]): RunStageIndex {
  */
 export function runStageIndex(run: Pick<RunSnapshot, "stages">): RunStageIndex {
 	const known = indexes.get(run);
-	if (known !== undefined) return known;
+	if (known !== undefined) return known.index;
 	const built = buildIndex(run.stages);
 	if (Object.isFrozen(run)) indexes.set(run, built);
-	return built;
+	return built.index;
+}
+
+/**
+ * Indexes `run`, a frozen version of `previous` whose stages are the same objects except at `changed` positions and
+ * from `appendedFrom` on, from the index of `previous` when it has one: a store change reads the stages it touched and
+ * the unfinished ones rather than every stage the run finished (#4642). The graph snapshot builder calls this.
+ */
+export function indexRunFrom(
+	run: Pick<RunSnapshot, "stages">,
+	previous: Pick<RunSnapshot, "stages">,
+	changed: Iterable<number>,
+	appendedFrom: number,
+): void {
+	const known = indexes.get(previous);
+	if (known === undefined || !Object.isFrozen(run)) return;
+	let asking = known.asking;
+	const unfinished = new Set(known.unfinished);
+	const update = (position: number, before: StageSnapshot | undefined): void => {
+		const stage = run.stages[position]!;
+		if (before !== undefined && asksForInput(before)) asking--;
+		if (asksForInput(stage)) asking++;
+		if (isFinished(stage)) unfinished.delete(position);
+		else unfinished.add(position);
+	};
+	for (const position of changed) update(position, previous.stages[position]);
+	for (let position = appendedFrom; position < run.stages.length; position++) update(position, undefined);
+	indexes.set(
+		run,
+		indexFrom(
+			run.stages,
+			asking,
+			[...unfinished].sort((left, right) => left - right),
+		),
+	);
 }

@@ -1,7 +1,7 @@
 import type { SerializedError } from "../../shared/error-codec.js";
 import { appendRunBlocked, appendRunEnd } from "../../shared/persistence-session-entries.js";
 import type { Store } from "../../shared/store.js";
-import { isTerminalRunStatus } from "../../shared/store-internal.js";
+import { isTerminalRunStatus, isTerminalStageStatus } from "../../shared/store-internal.js";
 import type {
 	RunBudgetState,
 	RunFailureClassification,
@@ -162,6 +162,15 @@ export interface RunFailureMetadata {
 	readonly budgetState?: RunBudgetState;
 	/** The typed error of the selected failure, from its stage or its thrown error (#4309). */
 	readonly failureDetail?: SerializedError;
+}
+
+/**
+ * Names a settled stage whose fields executor code changed outside a store method. Graph snapshots read a completed,
+ * failed or skipped stage again only when a store change names it (#4642), so an edit no store method follows is
+ * announced here; a stage still running is read on every snapshot and needs no announcement.
+ */
+export function announceSettledStageEdit(store: Store, runId: string, stage: StageSnapshot): void {
+	if (isTerminalStageStatus(stage.status)) store.editRun(runId, () => ({ stageIds: [stage.id] }));
 }
 
 /**

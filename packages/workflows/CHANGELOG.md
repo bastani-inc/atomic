@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed finished workflow stages that you attached to, messaged or asked over Intercom staying in memory until the session ended: a reopened stage, including one of a completed run you opened for inspection, goes back to its saved transcript once its chat is closed and its turn has ended, and the next attach, message or ask reopens it under the same Intercom name ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
 - Fixed the workflow graph overlay and the progress widget slowing down as runs finish more stages: the graph no longer redraws its scrollbar through every row, node lookups no longer rescan the run, and widget frames reuse the run's expanded graph until the run changes ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
 - Fixed starting each stage of a long run walking every earlier stage when nothing in the run is paused or blocked ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Fixed every workflow store change re-reading all the stages a long run had finished: the graph snapshot, the expanded graph, the progress widget's counts and the root activity published to extensions now redo only the stages that changed, so keys stay responsive while a long run keeps starting and finishing stages ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
 
 ## [0.9.77] - 2026-11-11
 

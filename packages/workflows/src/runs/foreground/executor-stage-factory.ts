@@ -35,7 +35,7 @@ import {
 } from "./executor-direct-helpers.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import { askUserQuestionToolEvent, toolResultChatText, toolResultHasChatAnswer } from "./executor-hil.js";
-import { stageReplayFields } from "./executor-lifecycle.js";
+import { announceSettledStageEdit, stageReplayFields } from "./executor-lifecycle.js";
 import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-user-message.js";
 import type { StageScheduler } from "./executor-scheduler.js";
 import { isTerminalStage } from "./executor-scheduler.js";
@@ -232,6 +232,7 @@ export function createWorkflowStageFactory(input: {
 		if (keptResults !== undefined) stageSnapshot.waitResults = recordStageWaitToolResults(keptResults);
 
 		const applyModelFallbackMeta = (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>): void => {
+			const { model, thinkingLevel, rateLimits, routerSelection, warnings } = stageSnapshot;
 			if (meta.model !== undefined) stageSnapshot.model = meta.model;
 			if (meta.thinkingLevel !== undefined) stageSnapshot.thinkingLevel = meta.thinkingLevel;
 			else delete stageSnapshot.thinkingLevel;
@@ -243,6 +244,14 @@ export function createWorkflowStageFactory(input: {
 				if (meta.warnings.length > 0) stageSnapshot.warnings = meta.warnings;
 				else delete stageSnapshot.warnings;
 			}
+			if (
+				model !== stageSnapshot.model ||
+				thinkingLevel !== stageSnapshot.thinkingLevel ||
+				rateLimits !== stageSnapshot.rateLimits ||
+				routerSelection !== stageSnapshot.routerSelection ||
+				warnings !== stageSnapshot.warnings
+			)
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 		};
 
 		let runtime!: LiveStageRuntime;
@@ -572,10 +581,13 @@ export function createWorkflowStageFactory(input: {
 
 		const captureStageSessionMeta = async (checkpointOptions?: StageSessionCheckpointOptions): Promise<void> => {
 			const meta = innerCtx.__sessionMeta();
+			const { sessionId, sessionFile } = stageSnapshot;
 			if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
 			if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
 			if (meta.sessionId !== undefined)
 				input.activeStore.recordStageSession(input.runId, stageId, { sessionId: meta.sessionId });
+			if (sessionId !== stageSnapshot.sessionId || sessionFile !== stageSnapshot.sessionFile)
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			const pending = input.opts.onStageSession?.(input.runId, stageSnapshot, checkpointOptions);
 			if (checkpointOptions?.forceDurable === true || checkpointOptions?.awaitDurable === true) {
 				await pending;

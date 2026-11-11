@@ -1,3 +1,4 @@
+import { isPublishedSnapshotArray } from "./graph-store-snapshot.js";
 import type { RunSnapshot, StageSnapshot } from "./store-types.js";
 
 /** Child run selected by a boundary's status-authoritative ownership metadata. */
@@ -103,14 +104,17 @@ function index<T extends { readonly id: string }>(
 }
 
 /**
- * The index of a frozen array, from the cache when it has one: Bun's `Object.isFrozen` checks every element of an
- * array, so asking it on each lookup made a lookup cost the whole array again (#4642).
+ * The index of an array that never changes, from the cache when it has one: Bun's `Object.isFrozen` checks every
+ * element of an array, so asking it on each lookup made a lookup cost the whole array again (#4642). A graph
+ * snapshot's stage arrays are published unfrozen and never changed, and are indexed like frozen ones.
  */
 function frozenIndex<T extends { readonly id: string }>(
 	items: readonly T[],
 	cache: WeakMap<readonly T[], ReadonlyMap<string, T>>,
 ): ReadonlyMap<string, T> | undefined {
-	return cache.get(items) ?? (Object.isFrozen(items) ? index(items, cache) : undefined);
+	return (
+		cache.get(items) ?? (isPublishedSnapshotArray(items) || Object.isFrozen(items) ? index(items, cache) : undefined)
+	);
 }
 
 export function findSnapshotRun(runs: readonly RunSnapshot[], runId: string): RunSnapshot | undefined {

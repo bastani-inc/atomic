@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import type { WorkflowRootActivity } from "@bastani/atomic";
 import { describe, test } from "vitest";
 import { createWorkflowObservation } from "../../packages/workflows/src/extension/workflow-observation.js";
-import { expandWorkflowGraph } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
+import { expandWorkflowGraph, settledStageCount } from "../../packages/workflows/src/shared/expanded-workflow-graph.js";
 import { createGraphStoreSnapshot } from "../../packages/workflows/src/shared/graph-store-snapshot.js";
+import { runStageIndex } from "../../packages/workflows/src/shared/run-stage-index.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { workflowObservationRuntime } from "../../packages/workflows/src/shared/store-factory.js";
+import { isTerminalStageStatus } from "../../packages/workflows/src/shared/store-internal.js";
 import type { Store } from "../../packages/workflows/src/shared/store-public-types.js";
 import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { projectWorkflowActivity } from "../../packages/workflows/src/shared/workflow-activity.js";
@@ -174,23 +176,28 @@ const MUTATIONS: readonly Mutation[] = [
 	(store, _pick, step) => {
 		store.recordNotice({ id: `notice-${step}`, runId: "root", level: "info", message: "n", createdAt: step });
 	},
-	// Executor-style edits: a live stage object changed directly, then a store change scoped elsewhere.
+	// Executor-style edits: a live stage object changed directly, then a store change scoped elsewhere. A stage that
+	// had settled is edited only next to a store change scoped to it, as executor code does (#4642).
 	(store, pick, step) => {
 		const target = pick(store.runs());
 		const node = target && pick(target.stages);
 		const other = pick(store.runs());
-		if (!node || !other) return;
+		if (!target || !node || !other) return;
+		const settled = isTerminalStageStatus(node.status);
 		node.status = "failed";
 		node.error = `failed at ${step}`;
+		if (settled) store.recordStageStart(target.id, node);
 		store.recordStageStart(other.id, stage(`bump-${step}`));
 	},
 	(store, pick, step) => {
 		const target = pick(store.runs());
 		const node = target && pick(target.stages);
 		const other = pick(store.runs());
-		if (!node || !other) return;
+		if (!target || !node || !other) return;
+		const settled = isTerminalStageStatus(node.status);
 		node.toolEvents.push({ name: `pushed-${step}`, startedAt: step });
 		(node.parentIds as string[]).push(`parent-${step}`);
+		if (settled) store.recordStageStart(target.id, node);
 		store.recordStageStart(other.id, stage(`bump-${step}`));
 	},
 	(store, pick, step) => {
@@ -229,7 +236,10 @@ describe("incremental graph store snapshot and expansion equivalence (#4009)", (
 						fullDerivation(store).runs.find((entry) => entry.id === single.id),
 						`seed ${seed} step ${step} run ${single.id}`,
 					);
-					assert.ok(Object.isFrozen(projected?.stages), `seed ${seed} step ${step}`);
+					assert.ok(
+						Object.isFrozen(projected) && projected?.stages.every((entry) => Object.isFrozen(entry)),
+						`seed ${seed} step ${step}`,
+					);
 				}
 				// Sometimes several changes land between two reads, as in one publication batch.
 				if (next() < 0.4) continue;
@@ -237,14 +247,29 @@ describe("incremental graph store snapshot and expansion equivalence (#4009)", (
 				const full = fullDerivation(store);
 				assert.deepStrictEqual(incremental, full, `seed ${seed} step ${step}`);
 				assert.equal(JSON.stringify(incremental), JSON.stringify(full), `seed ${seed} step ${step}`);
-				for (const root of incremental.runs.filter((entry) => entry.parentRunId === undefined))
+				for (const root of incremental.runs.filter((entry) => entry.parentRunId === undefined)) {
+					const expanded = expandWorkflowGraph(incremental, root.id);
 					assert.deepStrictEqual(
-						expandWorkflowGraph(incremental, root.id),
+						expanded,
 						expandWorkflowGraph(full, root.id),
 						`seed ${seed} step ${step} root ${root.id}`,
 					);
+					assert.equal(
+						settledStageCount(expanded.stages),
+						settledStageCount([...expanded.stages]),
+						`seed ${seed} step ${step} root ${root.id} settled stages`,
+					);
+				}
+				for (const entry of incremental.runs)
+					assert.deepStrictEqual(
+						runStageIndex(entry),
+						runStageIndex({ stages: [...entry.stages] }),
+						`seed ${seed} step ${step} run ${entry.id} stage index`,
+					);
 				assert.ok(
-					incremental.runs.every((entry) => Object.isFrozen(entry) && Object.isFrozen(entry.stages)),
+					incremental.runs.every(
+						(entry) => Object.isFrozen(entry) && entry.stages.every((stageEntry) => Object.isFrozen(stageEntry)),
+					),
 					`seed ${seed} step ${step}`,
 				);
 			}
