@@ -350,10 +350,12 @@ export function createWorkflowStageFactory(input: {
 			},
 			async recordResults(_wait, results) {
 				stageSnapshot.waitResults = recordStageWaitToolResults(results);
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 				await recordWait("wait-results");
 			},
 			resultsInTranscript() {
 				delete stageSnapshot.waitResults;
+				announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			},
 			async leave() {
 				waitRecordMissing = false;
@@ -651,10 +653,14 @@ export function createWorkflowStageFactory(input: {
 			);
 			input.stageUiBroker.clearStageStatuses(input.runId, stageId);
 			if (input.opts.onStageEnd) {
+				const worktreeSnapshot = stageSnapshot.snapshot;
 				await runCallback(
 					{ kind: "workflow.stage_adapter", name: `onStageEnd:${name}`, runId: input.runId, stageId },
 					() => input.opts.onStageEnd!(input.runId, stageSnapshot),
 				);
+				// The durable end recorder attaches the stage's worktree snapshot once the stage has ended.
+				if (stageSnapshot.snapshot !== worktreeSnapshot)
+					announceSettledStageEdit(input.activeStore, input.runId, stageSnapshot);
 			}
 			if (input.opts.persistence) {
 				await appendStageStartOnce();

@@ -126,10 +126,23 @@ function reindexStages(
 	return { stages, positions, active };
 }
 
-/** The ids after `${runId}:` of the keys in `keys` that name a node of that run. */
-function* ownedNodeIds(keys: ReadonlySet<string>, runId: string): Generator<string> {
-	const prefix = workflowActivityNodeKey(runId, "");
-	for (const key of keys) if (key.startsWith(prefix)) yield key.slice(prefix.length);
+/**
+ * The ids after `${runId}:` of the keys in `keys` that name a node of one of `runIds`, by run id. Each key is read once,
+ * trying every `:` as the end of a run id, since run ids may hold `:` too; the cost follows the keys, not the keys of
+ * each run.
+ */
+function ownedNodeIdsByRun(keys: ReadonlySet<string>, runIds: ReadonlySet<string>): Map<string, string[]> {
+	const owned = new Map<string, string[]>();
+	for (const key of keys) {
+		for (let colon = key.indexOf(":"); colon !== -1; colon = key.indexOf(":", colon + 1)) {
+			const runId = key.slice(0, colon);
+			if (!runIds.has(runId)) continue;
+			const ids = owned.get(runId);
+			if (ids === undefined) owned.set(runId, [key.slice(colon + 1)]);
+			else ids.push(key.slice(colon + 1));
+		}
+	}
+	return owned;
 }
 
 function projectRoot(
@@ -152,6 +165,9 @@ function projectRoot(
 	let stoppingExecutionCount = 0;
 	let independentContinuation = false;
 	let childContinuation = false;
+	const runIds = new Set(runs.map((run) => run.id));
+	const executingByRun = ownedNodeIdsByRun(ownership.executingStageIds, runIds);
+	const retryingByRun = ownedNodeIdsByRun(ownership.retryingStageIds, runIds);
 	for (const run of runs) {
 		const runStopping = isStoppingRun(run, rootRunId, runById, ownership.stoppingRunIds);
 		let runExecutionCount = run.toolNodes.filter((tool) =>
@@ -216,9 +232,8 @@ function projectRoot(
 				const position = index.positions.get(stageId);
 				return position !== undefined && !index.active.has(position);
 			};
-			for (const stageId of ownedNodeIds(ownership.executingStageIds, run.id))
-				if (quietOwned(stageId)) runExecutionCount++;
-			for (const stageId of ownedNodeIds(ownership.retryingStageIds, run.id)) {
+			for (const stageId of executingByRun.get(run.id) ?? []) if (quietOwned(stageId)) runExecutionCount++;
+			for (const stageId of retryingByRun.get(run.id) ?? []) {
 				if (!quietOwned(stageId)) continue;
 				retrying = true;
 				if (!runStopping) independentContinuation = true;

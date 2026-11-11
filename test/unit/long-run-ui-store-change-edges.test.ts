@@ -566,6 +566,37 @@ describe("activity projection edges (#4642)", () => {
 		assert.equal(projected?.state, "working");
 	});
 
+	test("the executing and retrying keys are read once per projection, however many runs the root has (#4642)", () => {
+		const readsOf = (children: number): number => {
+			let reads = 0;
+			class CountingSet extends Set<string> {
+				override [Symbol.iterator](): SetIterator<string> {
+					reads++;
+					return super[Symbol.iterator]();
+				}
+			}
+			const runs = [
+				run("root", chain(2)),
+				...Array.from({ length: children }, (_, index) =>
+					run(`child:${index}`, chain(2), { parentRunId: "root", parentStageId: "s-0", rootRunId: "root" }),
+				),
+			].map((entry) => Object.freeze(entry));
+			const snapshot: StoreSnapshot = Object.freeze({ runs: Object.freeze(runs), notices: [], version: 1 });
+			const keys = new CountingSet(runs.map((entry) => workflowActivityNodeKey(entry.id, "s-1")));
+			const owned = ownership({
+				liveRunIds: new Set(runs.map((entry) => entry.id)),
+				executingStageIds: keys,
+				retryingStageIds: new CountingSet([workflowActivityNodeKey("child:1", "s-0")]),
+			});
+			const projected = new WorkflowActivityProjector().project({ snapshot, ownership: owned });
+			const projectorReads = reads;
+			assert.deepStrictEqual(projected, projectWorkflowActivity({ snapshot, ownership: owned }));
+			return projectorReads;
+		};
+		assert.equal(readsOf(60), readsOf(5));
+		assert.equal(readsOf(60), 2);
+	});
+
 	test("projected graph nodes are frozen with their parents and prompt (#4642)", () => {
 		const prompt = { id: "p", kind: "select" as const, message: "pick", choices: ["a", "b"], createdAt: 1 };
 		const snapshot: StoreSnapshot = Object.freeze({
