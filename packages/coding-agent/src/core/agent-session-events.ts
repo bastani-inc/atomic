@@ -18,6 +18,7 @@ import {
 import { normalizeQueuedMessageImages } from "./agent-session-prompt.ts";
 import { abortCurrentGeneration } from "./agent-session-queue-pause.ts";
 import { sessionClosing } from "./agent-session-release.ts";
+import { recordExplicitToolDeactivations } from "./agent-session-state.ts";
 import { forgetTypedQueuedText } from "./agent-session-typed-queue.ts";
 import {
 	type AgentSessionEvent,
@@ -325,6 +326,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
 				entryId = await this.sessionManager.appendMessage(event.message);
+				if (event.message.role === "system") await recordExplicitToolDeactivations(this, event.message);
 			}
 		} catch (error) {
 			recordPersistenceFailure(this, event.message, error);

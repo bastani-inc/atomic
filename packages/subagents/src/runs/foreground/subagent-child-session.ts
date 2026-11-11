@@ -20,17 +20,19 @@ export function readPreviousIntercomId(sessionManager: SessionManager): string |
 }
 
 /**
- * Reopen a child's own session from wherever it was created: its JSONL session file when
- * one was recorded, otherwise by session id from the owner's session store (forked children
- * live in the store of the session that launched them, which is a database by default and
- * has no session file).
+ * Reopen a child's own session from wherever it was created: its JSONL session file when one was recorded (reported
+ * by path when it is gone, never looked up in the store), otherwise by session id from the owner's session store
+ * (forked children live in the store of the session that launched them, which is a database by default and has no
+ * session file).
  */
 export async function reopenChildSession(
 	ctx: Pick<ExtensionContext, "sessionManager">,
 	record: Pick<SubagentChildRecord, "childSessionId" | "childSessionFile" | "cwd">,
 ): Promise<{ readonly sessionManager: SessionManager } | { readonly reason: string }> {
 	try {
-		if (record.childSessionFile && existsSync(record.childSessionFile)) {
+		if (record.childSessionFile && !existsSync(record.childSessionFile))
+			return { reason: `its session file is missing: ${record.childSessionFile}` };
+		if (record.childSessionFile) {
 			const sessionManager = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
 			return record.childSessionId !== undefined && sessionManager.getSessionId() !== record.childSessionId
 				? { reason: "its session file now belongs to a different session" }

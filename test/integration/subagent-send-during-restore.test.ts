@@ -480,6 +480,14 @@ test(
 				assert.equal(result.isError, true);
 				assert.match(text(result), /did not survive the restart and is gone/);
 				assert.doesNotMatch(text(result), /Session not found/);
+				// Named by its Intercom name whichever address reached it, with the reason and how to relaunch it (#4660).
+				assert.ok(
+					text(result).includes(
+						`Subagent \`${childName}\` did not survive the restart and is gone: its session file is missing: ${original.childSessionFile}. The message was not sent. Facts: agent worker;`,
+					),
+					text(result),
+				);
+				assert.match(text(result), /To relaunch it: `subagent\(\{ agent: "worker", task: /);
 			}
 
 			await restoration;
@@ -490,6 +498,12 @@ test(
 				const laterSend = await parent.send(target, "anyone?");
 				assert.match(text(laterSend), /did not survive the restart and is gone/, target);
 				assert.doesNotMatch(text(laterSend), /Session not found/, target);
+				assert.ok(
+					text(laterSend).startsWith(
+						`Subagent \`${childName}\` did not survive the restart and is gone: its session file is missing: ${original.childSessionFile}. The message was not sent.`,
+					),
+					text(laterSend),
+				);
 			}
 
 			const unrelated = await parent.send("subagent-worker-never-existed-1", "hello");

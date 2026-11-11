@@ -232,6 +232,8 @@ class AgentSessionBase {
 	protected _initialActiveToolNames?: string[];
 	protected _pendingToolNames = new Set<string>();
 	protected _restoredToolNames = new Set<string>();
+	/** Tools `setActiveToolsByName` deactivated whose removal no saved system message has declared yet (#4660). */
+	protected _explicitToolDeactivations = new Set<string>();
 	protected _usesDefaultTools: boolean;
 	protected _defaultToolModifiers: string[];
 	/** Resolved defaults last applied here, independent of shared settings publication. */

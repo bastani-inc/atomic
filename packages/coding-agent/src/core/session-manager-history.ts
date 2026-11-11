@@ -185,11 +185,12 @@ export function buildContextEntries(
 	entries: SessionEntry[],
 	leafId?: string | null,
 	byId = new Map(entries.map((entry) => [entry.id, entry])),
+	branch?: readonly SessionEntry[],
 ): SessionEntry[] {
 	if (leafId === null) return [];
 	const leaf = leafId ? byId.get(leafId) : entries[entries.length - 1];
 	if (!leaf) return [];
-	const path = normalizeDerivedSessionEntries(getBranchPath(leaf.id, byId));
+	const path = normalizeDerivedSessionEntries(branch ?? getBranchPath(leaf.id, byId));
 	const boundary = getLatestCompactionBoundaryEntry(path);
 	if (!boundary) return path;
 	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
@@ -217,6 +218,7 @@ export function buildSessionProjection(
 	leafId?: string | null,
 	byId?: Map<string, SessionEntry>,
 	sessionId?: string,
+	branch?: readonly SessionEntry[],
 ): SessionProjection {
 	// Build uuid index if not available
 	if (!byId) {
@@ -245,9 +247,10 @@ export function buildSessionProjection(
 	}
 
 	// Walk from leaf to root, collecting path
-	const path = normalizeDerivedSessionEntries(getBranchPath(leaf.id, byId));
+	const walked = branch ?? getBranchPath(leaf.id, byId);
+	const path = normalizeDerivedSessionEntries(walked);
 	const { thinkingLevel, model } = getSessionContextSettings(path);
-	const contextEntries = buildContextEntries(entries, leaf.id, byId);
+	const contextEntries = buildContextEntries(entries, leaf.id, byId, walked);
 	const edits = collectContextEdits(contextEntries);
 
 	const boundary = getLatestCompactionBoundaryEntry(path);
@@ -346,7 +349,10 @@ export function buildSessionIndex(fileEntries: FileEntry[]): SessionIndex {
 	return { byId, labelsById, labelTimestampsById, leafId };
 }
 
-export function getBranchPath(fromId: string | null | undefined, byId: Map<string, SessionEntry>): SessionEntry[] {
+export function getBranchPath(
+	fromId: string | null | undefined,
+	byId: ReadonlyMap<string, SessionEntry>,
+): SessionEntry[] {
 	const path: SessionEntry[] = [];
 	let current = fromId ? byId.get(fromId) : undefined;
 	while (current) {

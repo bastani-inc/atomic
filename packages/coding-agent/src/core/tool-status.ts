@@ -47,7 +47,10 @@ export interface ToolStatusReport {
 	selection: ToolSelectionStatus;
 	/** Every registered tool: active ones first, then inactive ones, each group in registration order. */
 	tools: ToolStatus[];
-	/** Selected names that no built-in, extension, SDK custom tool, or MCP server registered. */
+	/**
+	 * Selected names, and tools the session's transcript records as active, that no built-in, extension, SDK custom
+	 * tool, or MCP server registered.
+	 */
 	missing: UnavailableToolStatus[];
 	/** Selected names removed by an exclusion before they could register. */
 	excluded: UnavailableToolStatus[];
@@ -65,8 +68,13 @@ export interface ToolStatusInput {
 	isExcluded?: (name: string) => boolean;
 	/** Present only when the session runs from an explicit tool allowlist. */
 	isAllowed?: (name: string) => boolean;
+	/** Tools the session's transcript records as active, other than MCP tools, which register as their servers connect. */
+	recordedActiveNames?: readonly string[];
 	git?: GitToolStatus;
 }
+
+const RECORDED_MISSING_REASON =
+	"active in this session's history, but nothing registered it at startup; its extension may have failed to load (see the extension issues shown at startup), so run /reload once it is fixed";
 
 export function describeToolSelection(source: ToolSelectionSource, modifiers: readonly string[]): string {
 	const origin = {
@@ -184,12 +192,22 @@ export function buildToolStatusReport(input: ToolStatusInput): ToolStatusReport 
 	const unregistered = [...new Set(input.selection.names)].filter(
 		(name) => !name.includes("*") && !registered.includes(name),
 	);
+	const unregisteredRecorded = (input.recordedActiveNames ?? []).filter(
+		(name) =>
+			!registered.includes(name) &&
+			!unregistered.includes(name) &&
+			!input.isExcluded?.(name) &&
+			(input.isAllowed?.(name) ?? true),
+	);
 	return {
 		selection: input.selection,
 		tools: [...statuses.filter((tool) => tool.active), ...statuses.filter((tool) => !tool.active)],
-		missing: unregistered
-			.filter((name) => !input.isExcluded?.(name))
-			.map((name) => ({ name, reason: missingReason(name, input.selection, registered) })),
+		missing: [
+			...unregistered
+				.filter((name) => !input.isExcluded?.(name))
+				.map((name) => ({ name, reason: missingReason(name, input.selection, registered) })),
+			...unregisteredRecorded.map((name) => ({ name, reason: RECORDED_MISSING_REASON })),
+		],
 		excluded: unregistered
 			.filter((name) => input.isExcluded?.(name))
 			.map((name) => ({ name, reason: EXCLUDED_REASON })),

@@ -47,6 +47,7 @@ import { pendingToolCalls, planReleasedChildWake } from "./released-children.js"
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
+import { describeLostSubagentChild } from "./subagent-child-lost.js";
 import {
 	createSubagentChildRecordSink,
 	findSubagentChildRecord,
@@ -921,14 +922,22 @@ export async function restoreSubagentChildren(
 	ctx: ExtensionContext,
 ): Promise<SubagentChildRestoreOutcome[]> {
 	const owned = readSubagentChildRecords(ctx.sessionManager.getEntries(), subagentChildOwner(ctx).sessionId);
-	const outcomes = await Promise.all(
-		[...owned.values()].filter(isRestorableSubagentChild).map((record) =>
-			restoreSubagentChild(deps, ctx, record.childId).catch((error: Error) => {
-				if (!isRetryableStorageError(error)) throw error;
-				return undefined;
-			}),
-		),
+	const restorable = [...owned.values()].filter(isRestorableSubagentChild);
+	const settled = await Promise.allSettled(
+		restorable.map((record) => restoreSubagentChild(deps, ctx, record.childId)),
 	);
+	// One child's failure never takes the others' outcomes with it (#4660). A failure that passes leaves its child as it
+	// was, to be resumed; any other is reported for that child alone, and the child is not recorded as gone.
+	const outcomes = settled.map((result, index): SubagentChildRestoreOutcome | undefined => {
+		if (result.status === "fulfilled") return result.value;
+		const error: unknown = result.reason;
+		if (isRetryableStorageError(error)) return undefined;
+		return {
+			kind: "unrestorable",
+			childId: restorable[index]!.childId,
+			reason: error instanceof Error ? error.message : String(error),
+		};
+	});
 	return outcomes.filter((outcome) => outcome !== undefined);
 }
 
@@ -942,8 +951,8 @@ function addressesChild(record: SubagentChildRecord, target: string, previousInt
 	);
 }
 
-function goneChildRefusal(label: string, reason?: string): string {
-	return `Subagent \`${label}\` did not survive the restart and is gone${reason ? `: ${reason}` : ""}. The message was not sent; launch a fresh subagent if its work is still needed.`;
+function goneChildRefusal(label: string, record: SubagentChildRecord, reason?: string): string {
+	return `Subagent \`${label}\` did not survive the restart and is gone${reason ? `: ${reason}` : ""}. The message was not sent. ${describeLostSubagentChild(record)}`;
 }
 
 function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
@@ -1001,7 +1010,7 @@ export async function awaitSubagentChildRestoration(
 		}
 		if (!outcome)
 			return `Subagent \`${label}\` is still being restored after the restart. The message was not sent; try again shortly.`;
-		if (outcome.kind === "unrestorable") return goneChildRefusal(label, outcome.reason);
+		if (outcome.kind === "unrestorable") return goneChildRefusal(label, active.record, outcome.reason);
 		if (outcome.kind === "restored" && outcome.intercomLive === false)
 			return `Subagent \`${label}\` was relaunched after the restart but has not reconnected to Intercom. The message was not sent; its result will still arrive as a task completion.`;
 		return undefined;
@@ -1011,7 +1020,7 @@ export async function awaitSubagentChildRestoration(
 			reported.ownerSessionId === ownerSessionId &&
 			addressesChild(reported.record, target, reported.previousIntercomId)
 		)
-			return goneChildRefusal(reported.record.intercomTarget ?? targetName.trim(), reported.reason);
+			return goneChildRefusal(reported.record.intercomTarget ?? targetName.trim(), reported.record, reported.reason);
 	}
 	const gone = [...readSubagentChildRecords(entries, ownerSessionId).values()].find(
 		(record) =>
@@ -1019,7 +1028,7 @@ export async function awaitSubagentChildRestoration(
 			record.state === "terminal" &&
 			record.terminalStatus === SUBAGENT_CHILD_GONE_STATUS,
 	);
-	return gone ? goneChildRefusal(gone.intercomTarget ?? targetName.trim()) : undefined;
+	return gone ? goneChildRefusal(gone.intercomTarget ?? targetName.trim(), gone) : undefined;
 }
 
 function childLabel(record: SubagentChildRecord | undefined, childId: string): string {
@@ -1035,7 +1044,7 @@ export function subagentChildRestoreNotices(outcomes: readonly SubagentChildRest
 		if (outcome.kind === "terminal") return [];
 		if (outcome.kind === "unrestorable")
 			return [
-				`${childLabel(outcome.record, outcome.childId)} did not survive the restart and could not be restored: ${outcome.reason}. It is gone: do not send it Intercom messages or wait for its result. Launch a fresh subagent if its work is still needed.`,
+				`${childLabel(outcome.record, outcome.childId)} did not survive the restart and could not be restored: ${outcome.reason}. It is gone: do not send it Intercom messages or wait for its result.${outcome.record ? ` ${describeLostSubagentChild(outcome.record)}` : " Launch a fresh subagent if its work is still needed."}`,
 			];
 		const label = childLabel(outcome.record, outcome.record.childId);
 		const how = outcome.fresh

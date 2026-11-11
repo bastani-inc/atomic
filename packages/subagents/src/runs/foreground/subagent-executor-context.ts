@@ -158,7 +158,7 @@ export function prepareExecutionContext(input: {
 	} else {
 		const baseSessionRoot = deps.config.defaultSessionDir
 			? path.resolve(deps.expandTilde(deps.config.defaultSessionDir))
-			: deps.getSubagentSessionRoot(parentSessionFile);
+			: deps.getSubagentSessionRoot(parentSessionFile, resolveCurrentSessionId(ctx.sessionManager));
 		sessionRoot = path.join(baseSessionRoot, runId);
 	}
 	try {

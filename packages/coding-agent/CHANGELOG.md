@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Resuming lists its slow steps on the terminal before the TUI appears (`Loading the session history (0.6 s)…`, `Checking 6 checkouts against the session's snapshots…`, `Restoring … from snapshot …`), a history of 100,000 entries or more before it is read, and any other step that blocks the terminal as soon as it ends; quick resumes stay silent ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Interactive startup notes `Tools this session was using aren't available right now: <names>` when a tool the session was using, or one its tool selection names, is not registered once startup finishes, and `/tools` lists such tools under **Missing**; tools left out with `--tools`, `--no-tools` or `--no-extensions` are never listed ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+
 ### Fixed
 
 - Fixed MCP tools loaded by `tool_search` being dropped on resume and `/reload` when an extension deactivates only its own tool at `session_start` (upstream [#12054](https://github.com/earendil-works/pi/pull/12054))
@@ -9,6 +14,11 @@
 - Fixed the standalone binary failing to resolve extension npm dependencies whose entry point is declared in `package.json` `main` or `exports`, including imports made from inside other dependencies (upstream [#12046](https://github.com/earendil-works/pi/pull/12046))
 - Fixed the llama.cpp provider defaulting to port 8080 while `llama serve` listens on 9931; the default server URL is now `http://127.0.0.1:9931`, and the llama.cpp guide starts the router, including the NVIDIA RTX recipe router, with `llama serve` on that port (upstream [#12001](https://github.com/earendil-works/pi/pull/12001), [#12004](https://github.com/earendil-works/pi/pull/12004))
 - Fixed Anthropic message threads staying off for custom providers whose `baseUrl` is on `api.anthropic.com`; the default now follows the endpoint, not the provider ID (upstream [#11987](https://github.com/earendil-works/pi/issues/11987))
+- Fixed a later plain resume bringing back tools an earlier run left out with `--tools`, `--no-tools`, `--exclude-tools` or a `-name` modifier, so resumed sessions keep the tools they last ran with, as in upstream pi ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed a resumed session losing `subagent`, `workflow`, `todo` and MCP tools for good after one turn ran while they were not registered, for example while their extensions were still loading or had failed to load: such tools now come back on resume like in a new session, while a tool an extension or SDK caller turned off with `setActiveTools` stays off ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed resume moving a session into a snapshot worktree under `~/.atomic/agent/worktree-snapshots/worktrees/` when its own project checkout had only changed since the snapshot, for example after work was merged: the session continues in its checkout without a notice, and a session an earlier resume moved into such a worktree returns to its checkout when it did no work there since ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed resuming a long session walking its whole history again and again: the session's branch, worktree restores, latest snapshots and name are kept current as entries are added, and recorded checkouts are compared with their snapshots once each, several at a time. On a 200,000-entry session with six checkouts, time to a usable prompt dropped from about 10.4 s to about 6.3 s; about 2 s of that is the session no longer being moved into a restored worktree, and about 4 s remains in full-history parses that this change does not remove ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed a startup step that fails, such as a tool status that cannot be read or extension loading that did not finish, holding back session recovery: the session keeps its tools and working directory and interrupted work is still recovered ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
 
 ## [0.9.78] - 2026-11-11
 

@@ -41,6 +41,7 @@ type DeferredModeContext = {
 	session: {
 		reload: (options: { reason: "startup" }) => Promise<void>;
 		resourceLoader: { getThemes: () => { themes: [] } };
+		getToolStatus: () => { missing: [] };
 		extensionRunner: object;
 		modelRegistry: { getError: () => string | undefined };
 	};
@@ -64,6 +65,7 @@ type DeferredModeContext = {
 	updateAvailableProviderCount: () => Promise<void>;
 	updateEditorBorderColor: () => void;
 	showError: (message: string) => void;
+	startSessionRecovery: (reason: string) => void;
 	showWarning: (message: string) => void;
 	sessionManager: { buildSessionContext: () => { messages: [] } };
 	settingsManager: { getDefaultProvider: () => undefined; getDefaultModel: () => undefined };
@@ -185,6 +187,7 @@ describe("coding-agent deferred startup input", () => {
 					cursor.col = text.length;
 				}),
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
+				getToolStatus: () => ({ missing: [] }),
 				extensionRunner: {},
 				modelRegistry: { getError: () => undefined },
 			},
@@ -210,6 +213,7 @@ describe("coding-agent deferred startup input", () => {
 			updateAvailableProviderCount: vi.fn(async () => {}),
 			updateEditorBorderColor: vi.fn(() => {}),
 			showError: vi.fn(() => {}),
+			startSessionRecovery: vi.fn(() => {}),
 			showWarning: vi.fn(() => {}),
 			sessionManager: { buildSessionContext: () => ({ messages: [] }) },
 			settingsManager: { getDefaultProvider: () => undefined, getDefaultModel: () => undefined },

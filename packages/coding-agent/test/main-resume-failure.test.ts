@@ -203,3 +203,18 @@ test("interactive mode offers the dirty-checkout prompt to the resume (#4329)", 
 	assert.equal(await options.chooseDirtyCheckout?.(prompt), "use");
 	assert.deepEqual(opening.prompts, [prompt]);
 });
+
+test("print mode opens its session without startup progress, even on a terminal (#4660)", async () => {
+	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", sandbox.path("agent"));
+	Object.defineProperty(process.stderr, "isTTY", { value: true, configurable: true });
+	cleanups.push(() => {
+		Reflect.deleteProperty(process.stderr, "isTTY");
+	});
+	opening.failure = new TypeError("stop after the session options are read");
+
+	await assert.rejects(main(["--no-extensions", "--session", "abc", "-p", "continue"]), opening.failure);
+
+	const options = opening.calls.at(-1)?.[3] as { progress?: unknown; blueprints?: string } | undefined;
+	assert.equal(options?.progress, undefined);
+	assert.equal(options?.blueprints, "build");
+});

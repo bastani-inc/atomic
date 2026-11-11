@@ -58,6 +58,7 @@ import {
 	subagentChildLaunch,
 	subagentChildModelChoice,
 	subagentChildRecordsAppended,
+	subagentChildTask,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import type { SubagentExecutorRuntimeDeps } from "./subagent-executor-types.js";
@@ -443,6 +444,7 @@ export async function runAgentTask(input: {
 			...(input.options.orchestratorIntercomTarget
 				? { orchestratorTarget: input.options.orchestratorIntercomTarget }
 				: {}),
+			...subagentChildTask(input.intentTask ?? input.task, input.options),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(waitingOn ? { waitingOn } : {}),

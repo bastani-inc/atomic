@@ -83,7 +83,7 @@ export interface ExecutorDeps {
 	state: SubagentState;
 	config: import("../../shared/types.js").ExtensionConfig;
 	tempArtifactsDir: string;
-	getSubagentSessionRoot: (parentSessionFile: string | null) => string;
+	getSubagentSessionRoot: (parentSessionFile: string | null, parentSessionId: string) => string;
 	expandTilde: (p: string) => string;
 	discoverAgents: (cwd: string, scope: AgentScope) => { agents: AgentConfig[] };
 	allowMutatingManagementActions?: boolean;

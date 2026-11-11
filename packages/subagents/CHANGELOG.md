@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed background subagents being lost when a machine rebooted before their parent session was resumed: a parent on the default SQLite session store kept its children's sessions in the system temporary directory, which a reboot clears. They now live under the agent directory (`subagent-sessions/<parent session id>`), and a recorded session file that is gone is reported by its path instead of as a session-store loss ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed one background subagent whose restoration failed unexpectedly after a restart hiding the notices for every other subagent: each child is now reported on its own, and a child that failed this way is retried on the next resume instead of being recorded as gone ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed the notice for a subagent that could not be restored after a restart saying only to launch a fresh one: it now gives the agent, its task, run and child ids, working directory, worktree and branch, session, a ready `subagent` call to relaunch it in its worktree when its task was recorded (otherwise where to find the launching call), and how to inspect what it left behind ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+
 ## [0.9.77] - 2026-11-11
 
 Delegation guidance uses session memory, and messages to ended subagents say how to continue them.

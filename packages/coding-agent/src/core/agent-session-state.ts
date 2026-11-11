@@ -4,6 +4,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import { getGitStatus } from "../utils/tools-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { getCallableTools } from "./agent-session-nested-tools.js";
+import { failureDebugFields, reportDebug } from "./debug.ts";
 import type { ToolDefinition, ToolInfo } from "./extensions/index.js";
 import { applyToolModifiers } from "./settings-merge.js";
 import { getSkillCatalog } from "./skill-catalog.ts";
@@ -15,8 +16,18 @@ import {
 	type NormalizedBuildSystemPromptOptions,
 	normalizeBuildSystemPromptOptions,
 } from "./system-prompt.ts";
+import {
+	isToolDeactivationEntryData,
+	TOOL_DEACTIVATION_ENTRY_TYPE,
+	type ToolDeactivationEntryData,
+} from "./tool-deactivation.ts";
 import { applyToolLoadout, isToolDeclarationHidden } from "./tool-loadout.js";
-import { activatesOnRegistration, selectedToolNames } from "./tool-selection.ts";
+import {
+	activatesOnRegistration,
+	isMcpToolName,
+	isRegisteredToolAllowed,
+	selectedToolNames,
+} from "./tool-selection.ts";
 import {
 	buildToolStatusReport,
 	describeToolSelection,
@@ -82,6 +93,12 @@ export function getToolStatus(this: AgentSession): ToolStatusReport {
 		},
 		isExcluded: this._excludedTools,
 		isAllowed: this._allowedTools,
+		recordedActiveNames: recordedToolLoadout(this)?.current.filter(
+			(name) =>
+				!isMcpToolName(name) &&
+				(!this._resourceLoader.getInheritanceSnapshot?.().noExtensions || this._baseToolDefinitions.has(name)) &&
+				(!this._usesDefaultTools || applyToolModifiers([name], this._defaultToolModifiers).includes(name)),
+		),
 		git: getGitStatus(),
 	});
 }
@@ -97,14 +114,49 @@ export function setActiveToolsByName(this: AgentSession, toolNames: string[]): v
 	const previous = this.getActiveToolNames();
 	this._setActiveTools(toolNames);
 	const active = new Set(this.getActiveToolNames());
-	if (previous.some((name) => !active.has(name) && this._restoredToolNames.has(name))) {
+	const deactivated = previous.filter((name) => !active.has(name));
+	for (const name of deactivated) this._explicitToolDeactivations.add(name);
+	if (deactivated.some((name) => this._restoredToolNames.has(name))) {
 		this._pendingToolNames.clear();
 	}
 }
 
+/**
+ * Whether the session's own tool selection leaves `name` out: a `--tools` allowlist, `--no-tools`, `--exclude-tools`, or
+ * a `-name` modifier. Like a call to `setActiveTools`, that is the user's choice, so it persists across a later resume
+ * as it does in upstream pi (#4660).
+ */
+function isLeftOutBySelection(session: AgentSession, name: string): boolean {
+	return (
+		!isRegisteredToolAllowed(session, name) ||
+		(session._usesDefaultTools && !applyToolModifiers([name], session._defaultToolModifiers).includes(name))
+	);
+}
+
+/** After a system message is saved, record which of its removals were explicit deactivations (#4660). */
+export async function recordExplicitToolDeactivations(session: AgentSession, message: SystemMessage): Promise<void> {
+	const tools = (message.toolsRemoved ?? [])
+		.map((tool) => tool.name)
+		.filter((name) => session._explicitToolDeactivations.has(name) || isLeftOutBySelection(session, name));
+	if (tools.length === 0) return;
+	const data: ToolDeactivationEntryData = { tools };
+	try {
+		await session.sessionManager.appendCustomEntry(TOOL_DEACTIVATION_ENTRY_TYPE, data);
+	} catch (error) {
+		// The turn goes on. The names stay pending, so the next system message records them again; if the session
+		// ends first, the tools come back on resume, which is the safe direction.
+		reportDebug("storage", "tool-deactivation-not-recorded", failureDebugFields(error));
+		return;
+	}
+	for (const name of tools) session._explicitToolDeactivations.delete(name);
+}
+
 export function _setActiveTools(this: AgentSession, toolNames: string[]): void {
 	const tools = applyToolLoadout(this, toolNames);
-	for (const tool of tools) this._pendingToolNames.delete(tool.name);
+	for (const tool of tools) {
+		this._pendingToolNames.delete(tool.name);
+		this._explicitToolDeactivations.delete(tool.name);
+	}
 	this._rebuildSystemPrompt(tools.map((tool) => tool.name));
 }
 
@@ -271,25 +323,38 @@ export function preservesInitialToolLoadout(session: AgentSession): boolean {
 	);
 }
 
-/** The tools the selected transcript records, and every tool it ever added or removed. */
+/** The tools the selected transcript records, every tool it ever added or removed, and the removals made on purpose. */
 export interface RecordedToolLoadout {
 	readonly current: readonly string[];
 	readonly mentioned: ReadonlySet<string>;
+	/** Removed tools whose latest removal was an explicit deactivation; see {@link TOOL_DEACTIVATION_ENTRY_TYPE}. */
+	readonly explicitlyRemoved: ReadonlySet<string>;
 }
 
 /** The recorded loadout of the selected branch, or undefined when it recorded none. */
 export function recordedToolLoadout(session: AgentSession): RecordedToolLoadout | undefined {
 	// All system messages on the branch, including those before a compaction, whose snapshot lists only
 	// the tools still added. Replaying them gives the current loadout and every tool the branch mentioned.
-	const systemMessages = session.sessionManager
-		.getBranch()
-		.flatMap((entry) =>
+	const systemMessages: SystemMessage[] = [];
+	const explicitlyRemoved = new Set<string>();
+	for (const entry of session.sessionManager.getBranch()) {
+		const message =
 			entry.type === "message" && entry.message.role === "system"
-				? [entry.message]
-				: entry.type === "compaction" && entry.systemMessage
-					? [entry.systemMessage]
-					: [],
-		);
+				? entry.message
+				: entry.type === "compaction"
+					? entry.systemMessage
+					: undefined;
+		if (message) {
+			systemMessages.push(message);
+			for (const tool of message.toolsAdded ?? []) explicitlyRemoved.delete(tool.name);
+		} else if (
+			entry.type === "custom" &&
+			entry.customType === TOOL_DEACTIVATION_ENTRY_TYPE &&
+			isToolDeactivationEntryData(entry.data)
+		) {
+			for (const name of entry.data.tools) explicitlyRemoved.add(name);
+		}
+	}
 	if (systemMessages.length === 0) return undefined;
 	return {
 		current: getCurrentTools(systemMessages).map((tool) => tool.name),
@@ -298,13 +363,18 @@ export function recordedToolLoadout(session: AgentSession): RecordedToolLoadout 
 				.flatMap((message) => [...(message.toolsAdded ?? []), ...(message.toolsRemoved ?? [])])
 				.map((tool) => tool.name),
 		),
+		explicitlyRemoved,
 	};
 }
 
 /**
- * Whether restoring a transcript activates a registered tool it never mentioned. Such an extension tool
- * was registered after the branch recorded its loadout, so it activates like a newly registered tool.
- * Built-in tools follow `defaultTools` instead, and opt-in tools stay inactive until a selection names them.
+ * Whether restoring a transcript activates a registered tool its recorded loadout does not list.
+ *
+ * A tool the branch never mentioned was registered after the branch recorded its loadout, so it activates like a
+ * newly registered tool. A tool the branch removed without an explicit deactivation was removed only because it was
+ * not registered when a turn started, for example while its extension was still loading or had failed to load, so it
+ * activates as it would in a fresh session (#4660). Built-in tools follow the session's default tool selection, and
+ * opt-in tools stay inactive until a selection names them.
  */
 export function activatesAfterRecordedLoadout(
 	session: AgentSession,
@@ -312,9 +382,18 @@ export function activatesAfterRecordedLoadout(
 	name: string,
 	definition: { exposure?: string; defaultActive?: boolean } | undefined,
 ): boolean {
+	if (session._baseToolDefinitions.has(name)) {
+		return (
+			recorded.mentioned.has(name) &&
+			!recorded.current.includes(name) &&
+			!recorded.explicitlyRemoved.has(name) &&
+			session._usesDefaultTools &&
+			session._appliedDefaultTools.has(name)
+		);
+	}
 	return (
-		!recorded.mentioned.has(name) &&
-		!session._baseToolDefinitions.has(name) &&
+		!recorded.current.includes(name) &&
+		!recorded.explicitlyRemoved.has(name) &&
 		activatesOnRegistration(session, name, definition, false)
 	);
 }

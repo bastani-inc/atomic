@@ -407,3 +407,61 @@ test("tool status shows a pending git update and one that could not be made (#43
 		),
 	);
 });
+
+test("tools the history records as active but nothing registered are missing once, unless excluded (#4660)", () => {
+	const selection = {
+		source: "built-in-defaults" as const,
+		description: "Atomic's default tool set",
+		names: ["read", "todo"],
+		modifiers: [],
+	};
+	const report = buildToolStatusReport({
+		tools: [{ definition: { name: "read", description: "Read files" } }],
+		activeToolNames: ["read"],
+		selection,
+		isExcluded: (name) => name === "excluded_probe",
+		recordedActiveNames: ["read", "todo", "subagent", "excluded_probe", "workflow"],
+	});
+	assert.deepEqual(
+		report.missing.map((tool) => tool.name),
+		["todo", "subagent", "workflow"],
+	);
+	assert.match(report.missing[0]!.reason, /^selected by Atomic's default tool set/);
+	assert.equal(
+		report.missing[1]!.reason,
+		"active in this session's history, but nothing registered it at startup; its extension may have failed to load (see the extension issues shown at startup), so run /reload once it is fixed",
+	);
+	assert.deepEqual(
+		report.excluded.map((tool) => tool.name),
+		[],
+	);
+});
+
+test("tools the user left out with --tools or --no-tools are never reported as unavailable (#4660)", () => {
+	const selection = {
+		source: "tools-allowlist" as const,
+		description: "the --tools allowlist",
+		names: ["read"],
+		modifiers: [],
+	};
+	const report = (isAllowed: (name: string) => boolean) =>
+		buildToolStatusReport({
+			tools: [{ definition: { name: "read", description: "Read files" } }],
+			activeToolNames: ["read"],
+			selection,
+			isAllowed,
+			recordedActiveNames: ["read", "todo", "subagent", "workflow"],
+		}).missing.map((tool) => tool.name);
+	assert.deepEqual(
+		report((name) => name === "read" || name === "bash"),
+		[],
+	);
+	assert.deepEqual(
+		report(() => false),
+		[],
+	);
+	assert.deepEqual(
+		report((name) => name === "read" || name === "subagent"),
+		["subagent"],
+	);
+});

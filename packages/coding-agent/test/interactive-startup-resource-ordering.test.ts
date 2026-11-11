@@ -67,6 +67,7 @@ async function renderStartupWithEarlyNotify(
 				value: {
 					reload: async () => {},
 					startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+					getToolStatus: () => ({ missing: [] }),
 					resourceLoader: { getThemes: () => ({ themes: [] }) },
 					extensionRunner: {},
 					modelRuntime: { getError: () => undefined, getWarning: () => undefined },
@@ -127,6 +128,7 @@ function configureDeferredMode(mode: InteractiveMode): void {
 			value: {
 				reload: async () => {},
 				startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+				getToolStatus: () => ({ missing: [] }),
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
 				modelRuntime: { getError: () => undefined, getWarning: () => undefined },
@@ -201,6 +203,7 @@ async function renderCatalogWarning(
 			value: {
 				reload: async () => {},
 				startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+				getToolStatus: () => ({ missing: [] }),
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
 				modelRuntime: { getError: () => undefined, getWarning },
@@ -324,6 +327,7 @@ const anthropicSubscriptionNotice: StartupNotice = {
 				},
 				reload: async () => {},
 				startPendingRecovery: async () => ({ replayed: 0, dropped: 0, completions: 0, notices: [] }),
+				getToolStatus: () => ({ missing: [] }),
 				resourceLoader: { getThemes: () => ({ themes: [] }) },
 				extensionRunner: {},
 			},

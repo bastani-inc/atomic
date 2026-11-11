@@ -199,6 +199,7 @@ function asDeferredStartupContext(probe: DraftProbe): DeferredStartupProbeContex
 		bindCurrentSessionExtensions: vi.fn(async () => {}),
 		session: {
 			reload: vi.fn(async () => {}),
+			getToolStatus: () => ({ missing: [] }),
 			resourceLoader: { getThemes: () => ({ themes: [] as [] }) },
 			extensionRunner: {},
 			modelRuntime: { getError: () => undefined, getWarning: () => undefined },
@@ -215,6 +216,7 @@ function asDeferredStartupContext(probe: DraftProbe): DeferredStartupProbeContex
 		updateAvailableProviderCount: vi.fn(async () => {}),
 		updateEditorBorderColor: vi.fn(),
 		showError: vi.fn(),
+		startSessionRecovery: vi.fn(),
 		startupNoticesContainer: {},
 		resourceDisclosureContainer: {},
 		chatContainer: new Container(),

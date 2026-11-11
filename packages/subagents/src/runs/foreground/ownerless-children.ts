@@ -19,6 +19,7 @@ import {
 	subagentChildInheritance,
 	subagentChildLaunch,
 	subagentChildModelChoice,
+	subagentChildTask,
 	takeSubagentChildStop,
 } from "./subagent-child-records.js";
 import { runUnboundParallelTask } from "./subagent-executor-parallel-task.js";
@@ -141,6 +142,7 @@ export function runOwnerlessChild(input: {
 			...(input.options.orchestratorIntercomTarget
 				? { orchestratorTarget: input.options.orchestratorIntercomTarget }
 				: {}),
+			...subagentChildTask(input.task, input.options),
 			...(worktree ? { worktree } : {}),
 			...(terminalStatus ? { terminalStatus } : {}),
 			...(held?.messages.length ? { heldMessages: { taskId: launchId, ...held } } : {}),

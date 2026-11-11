@@ -126,6 +126,12 @@ export interface SubagentChildRecord {
 	 * for an empty session). Model and thinking changes the child's session records after it are the child's own.
 	 */
 	readonly launchLeafId?: string | null;
+	/**
+	 * What the launch asked the child to do, as one short line (see {@link summarizeSubagentTask}), so a child that
+	 * cannot be restored is still told apart and can be relaunched (#4660). Absent for a resumed child, whose message
+	 * is not its task, and in records written before Atomic recorded it.
+	 */
+	readonly task?: string;
 	readonly intercomTarget?: string;
 	readonly intercomGroup?: string;
 	readonly orchestratorTarget?: string;
@@ -220,6 +226,19 @@ export function subagentChildModelChoice(
 		...(requestedModel ? { requestedModel } : {}),
 		...(options.modelConstraints ? { modelConstraints: options.modelConstraints } : {}),
 	};
+}
+
+export const TASK_SUMMARY_LIMIT = 300;
+
+/** A task on one line, cut at {@link TASK_SUMMARY_LIMIT} characters. */
+export function summarizeSubagentTask(task: string): string {
+	const line = task.replace(/\s+/g, " ").trim();
+	return line.length > TASK_SUMMARY_LIMIT ? `${line.slice(0, TASK_SUMMARY_LIMIT - 1)}…` : line;
+}
+
+/** The task a record keeps for a launch with these options; a resumed child keeps none, since its message is not a task. */
+export function subagentChildTask(task: string, options: RunSyncOptions): Pick<SubagentChildRecord, "task"> {
+	return options.resumeSession === true || task.trim() === "" ? {} : { task: summarizeSubagentTask(task) };
 }
 
 /** What a launch with these options inherits from its owner; see {@link SubagentChildInheritance}. */
