@@ -251,11 +251,14 @@ export class DepartedChildren {
 	 * #4642: a released workflow stage's hosted peer left: its host connection removed it or closed. Sends to its name,
 	 * id or return address are refused at once with a {@link StageRecipientReleasedError}, until it is hosted again.
 	 */
-	markStageReleased(ownerSessionId: string, child: Omit<EndedChildMark, "outcome" | "childId">): HeldSend[] {
+	markStageReleased(
+		ownerSessionId: string,
+		child: Omit<EndedChildMark, "outcome" | "childId">,
+	): { readonly refused: HeldSendRefusal[]; readonly evicted: HeldSend[] } {
 		const entry = this.entry(ownerSessionId, child.childName, child.group, child.aliases);
 		this.disarm(entry.departure);
 		entry.departure.verdict = { kind: "stage_released" };
-		return entry.evicted;
+		return { refused: this.refuseHeld(entry.departure, entry.departure.verdict), evicted: entry.evicted };
 	}
 
 	/** Decide a send that found no live recipient. `canHold` is false for a client that cannot wait for a verdict. */

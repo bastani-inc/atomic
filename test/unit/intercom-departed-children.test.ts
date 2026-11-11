@@ -699,3 +699,22 @@ test("hosting the stage again, or its host going for good, ends the refusal (#46
 	children.supersede("new-host-connection", CHILD);
 	assert.equal(children.size, 0);
 });
+
+test("marking a stage released refuses the sends already held for that name and disarms its wait (#4642)", () => {
+	vi.useFakeTimers();
+	const { children, expired } = departed();
+	depart(children);
+	const waiting = send("held", "asker");
+	assert.equal(children.admit(CHILD, sender("asker"), waiting, true).kind, "held");
+	assert.equal(children.sizes().timers, 1);
+
+	const marked = children.markStageReleased(OWNER, { childName: CHILD, group: "default", aliases: [] });
+
+	assert.equal(marked.refused.length, 1);
+	assert.equal(marked.refused[0]!.held, waiting);
+	assert.ok(isStageRecipientReleasedError(marked.refused[0]!.error));
+	assert.deepEqual(marked.evicted, []);
+	assert.deepEqual(children.sizes(), { departures: 1, byTarget: 3, byOwner: 1, heldSends: 0, timers: 0 });
+	vi.advanceTimersByTime(DEPARTED_CHILD_HOLD_MS * 2);
+	assert.deepEqual(expired, [], "the wait that was disarmed expires nothing");
+});

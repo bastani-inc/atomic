@@ -51,9 +51,8 @@ export class IntercomHostedSessionTimeoutError extends IntercomBrokerTimeoutErro
 	}
 }
 
-/** True for an {@link IntercomHostedSessionTimeoutError}, including one from another realm, by `name` and `code`. */
+/** True for an {@link IntercomHostedSessionTimeoutError}, or an error of another realm shaped like one, by `name` and `code`. */
 export function isIntercomHostedSessionTimeoutError(value: unknown): value is IntercomHostedSessionTimeoutError {
-	if (value instanceof IntercomHostedSessionTimeoutError) return true;
 	if (typeof value !== "object" || value === null) return false;
 	const { name, code } = value as { readonly name?: unknown; readonly code?: unknown };
 	return name === "IntercomHostedSessionTimeoutError" && code === "hosted_session_timeout";

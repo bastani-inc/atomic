@@ -338,7 +338,6 @@ export class ReleasedStagePeers {
 	/** One timer for every peer: reconnects, then hosts every peer the broker does not have yet. */
 	private scheduleReconnect(): void {
 		if (this.reconnectTimer !== null || this.peers.size === 0) return;
-		if (this.reconnectAttempt >= RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX) return;
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.reconnectAttempt += 1;
@@ -353,9 +352,15 @@ export class ReleasedStagePeers {
 
 	private reconnectFailed(failure: Error | undefined): void {
 		if (failure === undefined) return;
-		const retrying = isRetryableHostingFailure(failure) && this.reconnectAttempt < RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX;
+		const retrying =
+			isRetryableHostingFailure(failure) && this.reconnectAttempt < RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX;
 		this.deps.report?.({ error: failure, retrying, attempt: this.reconnectAttempt, peers: this.peers.size });
 		if (retrying) this.scheduleReconnect();
+	}
+
+	private peerHosting(recipient: string): ReleasedStagePeer | undefined {
+		// Broker session ids are never reused, so at most one peer has this one.
+		return [...this.peers.values()].find((candidate) => candidate.sessionId === recipient);
 	}
 
 	private receive(
@@ -364,22 +369,29 @@ export class ReleasedStagePeers {
 		from: SessionInfo,
 		message: Message,
 		channel: "supervisor" | undefined,
-		retried = false,
 	): void {
-		// Broker session ids are never reused, so at most one peer has this one.
-		const peer = [...this.peers.values()].find((candidate) => candidate.sessionId === recipient);
-		if (peer === undefined) {
-			// The broker may deliver a stage's first message in the chunk that carries the answer naming its id, before
-			// that answer reaches the peer: look again once the hosting still in flight has ended.
-			const hosting = [...this.peers.values()]
-				.filter((candidate) => candidate.hostedOn === client && candidate.sessionId === undefined)
-				.map((candidate) => candidate.hosting);
-			if (hosting.length === 0 || retried) return;
-			void Promise.all(hosting).then(() => {
-				if (this.client === client) this.receive(client, recipient, from, message, channel, true);
-			});
+		const peer = this.peerHosting(recipient);
+		if (peer !== undefined) {
+			this.deliver(client, peer, recipient, from, message, channel);
 			return;
 		}
+		// The broker may deliver a stage's first message in the chunk that carries the answer naming its id, before
+		// that answer reaches the peer: look again once the hosting still in flight has ended. A session this connection
+		// does not host is still unknown then, and its message is dropped: the broker told its askers it left.
+		void Promise.all([...this.peers.values()].map((candidate) => candidate.hosting)).then(() => {
+			const late = this.peerHosting(recipient);
+			if (late !== undefined) this.deliver(client, late, recipient, from, message, channel);
+		});
+	}
+
+	private deliver(
+		client: IntercomClient,
+		peer: ReleasedStagePeer,
+		recipient: string,
+		from: SessionInfo,
+		message: Message,
+		channel: "supervisor" | undefined,
+	): void {
 		if (message.expectsReply !== true || channel !== undefined) {
 			this.deps.relay(from, message, channel);
 			return;

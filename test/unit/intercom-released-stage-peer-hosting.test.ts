@@ -143,6 +143,11 @@ describe("a released stage hosted on the shared connection answers asks as itsel
 
 		deliver(connection!, idOf(1), "which file?", { id: "q1" });
 		deliver(connection!, idOf(0), "fyi", { expectsReply: false });
+		assert.deepEqual(
+			relayed.map((message) => message.text),
+			["fyi"],
+			"a stage that is already hosted is served in the turn its message arrives",
+		);
 		deliver(connection!, idOf(0), "to the owner", { channel: "supervisor" });
 		deliver(connection!, "c0:unknown", "lost", { expectsReply: false });
 		deliver(connection!, "c0:unknown", "lost ask");
@@ -536,6 +541,56 @@ describe("the shared connection (#4642)", () => {
 			2 + RELEASED_STAGE_RECONNECT_ATTEMPTS_MAX + 1,
 			"a new adoption starts the retries again",
 		);
+		await peers.disconnectAll();
+	});
+
+	test("an adoption while a reconnect is waiting does not restart its backoff (#4642)", async () => {
+		vi.useFakeTimers();
+		const { peers, connections } = harness({
+			connect: async () => {
+				throw new Error("broker down");
+			},
+		});
+		await assert.rejects(peers.adopt(route(0)));
+		await vi.advanceTimersByTimeAsync(FIRST_RETRY_MS);
+		const before = connections.length;
+		await assert.rejects(peers.adopt(route(1)));
+		await vi.advanceTimersByTimeAsync(2_000);
+		const afterSecondRetry = connections.length;
+		assert.ok(afterSecondRetry > before);
+
+		await vi.advanceTimersByTimeAsync(5_000 - 1);
+		assert.equal(connections.length, afterSecondRetry, "the third retry still waits the third step, not the second");
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(connections.length, afterSecondRetry + 1);
+		await peers.disconnectAll();
+	});
+
+	test("a background reconnect that fails for good is reported once and not scheduled again (#4642)", async () => {
+		vi.useFakeTimers();
+		const refusal = Object.assign(new Error("broker below protocol 3"), { retryable: false as const });
+		const reported: ReleasedStageReconnectFailure[] = [];
+		let hostCalls = 0;
+		const { peers, connections } = harness({
+			report: (failure) => reported.push(failure),
+			host: async (frame, connection) => {
+				hostCalls += 1;
+				if (hostCalls > 1) throw refusal;
+				return assignEach(frame, connection);
+			},
+		});
+		await peers.adopt(route(0));
+		connections[0]!.client.emit("disconnected");
+		await vi.advanceTimersByTimeAsync(FIRST_RETRY_MS);
+
+		assert.equal(hostCalls, 2);
+		assert.deepEqual(
+			reported.map(({ error, retrying, attempt, peers: count }) => ({ error, retrying, attempt, count })),
+			[{ error: refusal, retrying: false, attempt: 0, count: 1 }],
+		);
+		assert.equal(vi.getTimerCount(), 0, "no further attempt is scheduled");
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		assert.equal(hostCalls, 2);
 		await peers.disconnectAll();
 	});
 

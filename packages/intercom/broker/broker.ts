@@ -3033,14 +3033,13 @@ class IntercomBroker {
       this.hostedSessions.get(departed.hostedBy)?.delete(sessionId);
       // A released stage whose peer left answers with why, and where to send instead, rather than `Session not found`.
       if (departed.registrationName !== undefined) {
-        const aliases = [sessionId, departed.registrationReturnAddress].filter((alias): alias is string => alias !== undefined);
-        this.dispatchHeldSends(
-          this.departedChildren.markStageReleased(departed.hostedBy, {
-            childName: departed.registrationName,
-            group: normalizeGroup(departed.registrationGroup),
-            aliases,
-          }),
-        );
+        const marked = this.departedChildren.markStageReleased(departed.hostedBy, {
+          childName: departed.registrationName,
+          group: normalizeGroup(departed.registrationGroup),
+          aliases: [sessionId],
+        });
+        this.refuseHeldSends(marked.refused);
+        this.dispatchHeldSends(marked.evicted);
       }
     }
 
