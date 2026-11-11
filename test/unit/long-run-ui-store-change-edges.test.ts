@@ -808,7 +808,9 @@ describe("activity hub sharing edges (#4642)", () => {
 			// A WeakRef keeps its target alive until the job that created it ends.
 			await nextTurn();
 			collectGarbage();
-			return watched?.deref() === undefined && hub !== undefined;
+			const wasReleased = watched?.deref() === undefined;
+			hub.dispose();
+			return wasReleased;
 		};
 		assert.equal(await released((publisher) => publisher.publishRemoved("r")), true, "removed");
 		assert.equal(
