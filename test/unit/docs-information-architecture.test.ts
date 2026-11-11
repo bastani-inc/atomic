@@ -993,6 +993,8 @@ describe("docs references and assets (#2847)", () => {
 				"Broker does not start",
 				"Half-closed peer or undeliverable send",
 				"Subagent being restored after a restart",
+				"Subagent that ended or dropped off",
+				"Workflow stage whose session was replaced or released",
 				"Queued for a workflow stage that has not started",
 				"Subagent released while it waits",
 				"Queued for an offline session",

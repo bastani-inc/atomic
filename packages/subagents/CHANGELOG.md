@@ -6,6 +6,10 @@
 
 - The subagent orchestration guidance now refines the choice between a workflow and inline work with session memory (`history://` sessions and workflow runs) and your stated preferences ([#4648](https://github.com/bastani-inc/atomic/issues/4648))
 
+### Fixed
+
+- Fixed Intercom sends to a subagent that completed, failed, was stopped or was cancelled answering `Session not found`: the session that launched it now reports how it ended, so the sender is told why and which `subagent({ action: "resume", id, message })` call continues it ([#4639](https://github.com/bastani-inc/atomic/issues/4639))
+
 ## [0.9.75] - 2026-11-10
 
 Woken subagents build blueprints, and the bundled computer-use skills are current.

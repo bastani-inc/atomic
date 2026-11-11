@@ -1,5 +1,6 @@
 import type { PendingRecoveryDelivery, SessionEntry, SessionRecoveryReplayResult } from "@bastani/atomic";
 import type { IntercomClient } from "./broker/client.js";
+import { SUBAGENT_ENDED_OUTCOMES, type SubagentEndedOutcome } from "./broker/recipient-gone-errors.js";
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import type { SessionInfo } from "./types.js";
 
@@ -38,6 +39,11 @@ export const SUBAGENT_DROP_RELEASED_CHILDREN_EVENT = "subagent:drop-released-chi
 /** Subagents tells Intercom it is waking a released child, so the sends held for it may wait longer (#4326). */
 export const SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT = "subagent:acknowledge-released-child-wake";
 /**
+ * Subagents tells Intercom how children this session launched ended, so the broker refuses a send to one with no live
+ * session with why and the next step instead of `Session not found` (#4639). Payload: {@link MarkEndedChildrenRequest}.
+ */
+export const SUBAGENT_MARK_ENDED_CHILDREN_EVENT = "subagent:mark-ended-children";
+/**
  * Intercom tells every extension that this session is connected to the broker, at start and after each reconnect,
  * when the broker has forgotten every reservation this connection made (#4326). Payload: {@link IntercomConnectedNotice}.
  */
@@ -60,6 +66,20 @@ export interface DropReleasedChildrenRequest {
 	readonly childNames: readonly string[];
 	readonly gone?: string;
 	readonly refusal?: string;
+	completion?: Promise<void>;
+}
+
+/** One child that ended, as {@link SUBAGENT_MARK_ENDED_CHILDREN_EVENT} reports it. */
+export interface EndedChildRequest {
+	readonly childName: string;
+	readonly group?: string;
+	readonly aliases?: readonly string[];
+	readonly outcome: SubagentEndedOutcome;
+	readonly childId?: string;
+}
+
+export interface MarkEndedChildrenRequest {
+	readonly children: readonly EndedChildRequest[];
 	completion?: Promise<void>;
 }
 
@@ -187,6 +207,25 @@ export function isDropReleasedChildrenRequest(value: unknown): value is DropRele
 		(request.gone === undefined || typeof request.gone === "string") &&
 		(request.refusal === undefined || typeof request.refusal === "string")
 	);
+}
+
+const ENDED_OUTCOMES: ReadonlySet<unknown> = new Set(SUBAGENT_ENDED_OUTCOMES);
+
+function isEndedChildRequest(value: unknown): value is EndedChildRequest {
+	const child = value as Partial<EndedChildRequest> | null | undefined;
+	return (
+		typeof child?.childName === "string" &&
+		ENDED_OUTCOMES.has(child.outcome) &&
+		(child.group === undefined || typeof child.group === "string") &&
+		(child.childId === undefined || typeof child.childId === "string") &&
+		(child.aliases === undefined ||
+			(Array.isArray(child.aliases) && child.aliases.every((alias) => typeof alias === "string")))
+	);
+}
+
+export function isMarkEndedChildrenRequest(value: unknown): value is MarkEndedChildrenRequest {
+	const children = (value as Partial<MarkEndedChildrenRequest> | null | undefined)?.children;
+	return Array.isArray(children) && children.every(isEndedChildRequest);
 }
 
 export function isAcknowledgeReleasedChildWakeRequest(value: unknown): value is AcknowledgeReleasedChildWakeRequest {

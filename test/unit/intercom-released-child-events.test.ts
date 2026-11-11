@@ -43,6 +43,7 @@ import {
 	INTERCOM_CONNECTED_EVENT,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+	SUBAGENT_MARK_ENDED_CHILDREN_EVENT,
 	SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
 } from "../../packages/intercom/session-recovery.js";
@@ -515,5 +516,97 @@ describe("heavy extension: supervisor authorizations of children that are no lon
 		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children: [] }).completion;
 		assert.equal(connectCount, 2);
 		assert.deepEqual(restored, [live]);
+	});
+});
+
+describe("ended-subagent reports (#4639)", () => {
+	const ENDED = [{ childName: "subagent-a", outcome: "completed", childId: "run:0", aliases: [SESSION_ID] }];
+	let markCalls: Array<Parameters<IntercomClient["markEndedChildren"]>> = [];
+	let markOutcome: () => Promise<void> = () => Promise.resolve();
+	beforeEach(() => {
+		markCalls = [];
+		markOutcome = () => Promise.resolve();
+		vi.spyOn(IntercomClient.prototype, "markEndedChildren").mockImplementation((...args) => {
+			markCalls.push(args);
+			return markOutcome();
+		});
+	});
+
+	test("a report reaches the loaded heavy extension's broker connection (#4639)", async () => {
+		const harness = await startLightweight();
+		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children: [] }).completion;
+		const mark = request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED });
+		assert.ok(mark.completion instanceof Promise);
+		await mark.completion;
+		assert.deepEqual(markCalls, [[ENDED]]);
+	});
+
+	test("a report resolves without loading Intercom, and without a connection sends nothing (#4639)", async () => {
+		const lightweight = await startLightweight();
+		const before = connectCount;
+		assert.equal(
+			await request(lightweight, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED }).completion,
+			undefined,
+		);
+		assert.equal(connectCount, before);
+		const heavy = await startHeavy();
+		state.connected = false;
+		assert.equal(await request(heavy, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED }).completion, undefined);
+		assert.deepEqual(markCalls, []);
+	});
+
+	test("a lost connection settles a report quietly; a broker refusal reaches the caller typed (#4639)", async () => {
+		const harness = await startLightweight();
+		await request(harness, SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT, { children: [] }).completion;
+		markOutcome = () => Promise.reject(new IntercomClientDisconnectedError());
+		assert.equal(
+			await request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED }).completion,
+			undefined,
+		);
+		markOutcome = () =>
+			Promise.reject(new ReleasedChildReservationError({ code: "not_owner", childName: "subagent-a" }));
+		await assert.rejects(
+			request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED }).completion as Promise<unknown>,
+			(error: Error) => error instanceof ReleasedChildReservationError && error.code === "not_owner",
+		);
+	});
+
+	test("a report before Intercom ever connected resolves and sends nothing (#4639)", async () => {
+		const harness = fakePi();
+		intercomHeavy(harness.pi as never);
+		const mark = request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED });
+		assert.ok(mark.completion instanceof Promise, "the report is answered, not dropped by a failing handler");
+		assert.equal(await mark.completion, undefined);
+		assert.deepEqual(markCalls, []);
+	});
+
+	test("a report with an unknown outcome or a malformed child, or one already answered, is ignored (#4639)", async () => {
+		const harness = await startHeavy();
+		const existing: Completion = Promise.resolve("existing");
+		for (const invalid of [
+			{ children: "subagent-a" },
+			{ children: [null] },
+			{ children: [{ childName: "a", outcome: "released" }] },
+			{ children: [{ childName: 1, outcome: "completed" }] },
+			{ children: [{ childName: "a", outcome: "completed", group: 1 }] },
+			{ children: [{ childName: "a", outcome: "completed", childId: 1 }] },
+			{ children: [{ childName: "a", outcome: "completed", aliases: "x" }] },
+			{ children: [{ childName: "a", outcome: "completed", aliases: [1] }] },
+		]) {
+			assert.equal(
+				request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, invalid).completion,
+				undefined,
+				JSON.stringify(invalid),
+			);
+		}
+		assert.equal(
+			request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, { children: ENDED, completion: existing }).completion,
+			existing,
+		);
+		const minimal = request(harness, SUBAGENT_MARK_ENDED_CHILDREN_EVENT, {
+			children: [{ childName: "a", outcome: "stopped" }],
+		});
+		await minimal.completion;
+		assert.deepEqual(markCalls, [[[{ childName: "a", outcome: "stopped" }]]]);
 	});
 });

@@ -227,6 +227,38 @@ for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]
 		},
 	);
 	test.runIf(process.platform !== "win32")(
+		`${factory.name} reports a background command's execution timeout as an error to the wait that sees it (#4639)`,
+		async () => {
+			const owner = host();
+			try {
+				const id = await launch(owner, "sleep 30", 1);
+				const tool = factory(process.cwd(), { taskOwner: owner.ownerBinding });
+				const result = await tool.execute("wait", { action: "wait", id, budgetMs: 10_000 });
+				assert.equal(result.isError, true);
+				const text = result.content[0].text;
+				assert.ok(text.endsWith(`Task ${id} was cancelled (timed out after 1 second).`), text);
+			} finally {
+				await owner.close("session-close");
+			}
+		},
+	);
+	test.runIf(process.platform !== "win32")(
+		`${factory.name} a wait on a command that exits non-zero stays a plain result`,
+		async () => {
+			const owner = host();
+			try {
+				const id = await launch(owner);
+				await release(owner, id);
+				const tool = factory(process.cwd(), { taskOwner: owner.ownerBinding });
+				const result = await tool.execute("wait", { action: "wait", id, budgetMs: 10_000 });
+				assert.equal(result.details?.exitCode, 7);
+				assert.equal(result.isError, undefined);
+			} finally {
+				await owner.close("session-close");
+			}
+		},
+	);
+	test.runIf(process.platform !== "win32")(
 		`${factory.name} owner closure does not wait for observation budget`,
 		async () => {
 			const owner = host({ kind: "until-settled" });
@@ -323,6 +355,32 @@ for (const factory of [createBashToolDefinition, createPowerShellToolDefinition]
 		},
 	);
 }
+
+test.runIf(process.platform !== "win32")(
+	"a background command's receipt names the execution timeout that will stop it (#4639)",
+	async () => {
+		const owner = host();
+		try {
+			const tool = createBashToolDefinition(process.cwd(), { taskOwner: owner.ownerBinding });
+			const result = await tool.execute("launch", {
+				command: "read value",
+				timeout: 2,
+				wait: { kind: "background" },
+			});
+			const id = result.details?.observation?.taskId;
+			assert.ok(id);
+			const text = result.content[0].text;
+			assert.ok(
+				text.endsWith(
+					`Command is still running (task ${id}). Its execution timeout stops it after 2 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.`,
+				),
+				text,
+			);
+		} finally {
+			await owner.close("session-close");
+		}
+	},
+);
 
 test.runIf(process.platform === "win32" || !!process.env.ATOMIC_TEST_PWSH)(
 	"real PowerShell task can yield and be waited without restarting",

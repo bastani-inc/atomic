@@ -130,7 +130,15 @@ export type OutputRef = {
 export type TaskResult =
 	| { kind: "completed"; output: OutputRef; exitCode?: number }
 	| { kind: "failed"; code: string; message: string; output?: OutputRef; exitCode?: number }
-	| { kind: "cancelled"; cause: CancelCause; output?: OutputRef };
+	| {
+			kind: "cancelled";
+			cause: CancelCause;
+			output?: OutputRef;
+			/** Which close of its owner cancelled it, when `cause` is `owner-close` because its owner closed. */
+			ownerClose?: OwnerCloseCause;
+			/** The execution timeout that stopped it, in milliseconds, when `cause` is `execution-timeout`. */
+			executionTimeoutMs?: number;
+	  };
 export type Execution =
 	| { kind: "queued" }
 	| { kind: "running" }

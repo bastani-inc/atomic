@@ -245,7 +245,12 @@ test("background bash results show observation status rather than finished timin
 		process.cwd(),
 	);
 	const result = {
-		content: [{ type: "text" as const, text: "first output\n\nCommand is still running (task shell-id)." }],
+		content: [
+			{
+				type: "text" as const,
+				text: "first output\n\nCommand is still running (task shell-id). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.",
+			},
+		],
 		details: { observation: { kind: "yielded", taskId: "shell-id", waitId: "wait-id", reason: "elapsed" } },
 		isError: false,
 	};
@@ -255,13 +260,43 @@ test("background bash results show observation status rather than finished timin
 		const compact = stripVTControlCharacters(component.render(80).join("\n"));
 		assert.match(compact, /Continued in background/);
 		assert.match(compact, /first output/);
-		assert.doesNotMatch(compact, /Command is still running|shell-id|Took/);
+		assert.doesNotMatch(compact, /Command is still running|execution timeout|shell-id|Took/);
 		component.setExpanded(true);
 		assert.match(stripVTControlCharacters(component.render(80).join("\n")), /shell-id/);
 		assert.equal(JSON.stringify(result), original);
 	} finally {
 		component.dispose();
 	}
+});
+
+test("a background bash result hides exactly its still-running receipt (#4639)", () => {
+	initTheme("dark");
+	const render = (text: string): string => {
+		const component = new ToolExecutionComponent(
+			"bash",
+			"bash-ui",
+			{ command: "sleep 20" },
+			{},
+			undefined,
+			{ requestRender() {} } as TUI,
+			process.cwd(),
+		);
+		try {
+			component.updateResult({
+				content: [{ type: "text" as const, text }],
+				details: { observation: { kind: "yielded", taskId: "shell-id", waitId: "wait-id", reason: "elapsed" } },
+				isError: false,
+			});
+			return stripVTControlCharacters(component.render(80).join("\n"));
+		} finally {
+			component.dispose();
+		}
+	};
+	const receipt =
+		"Command is still running (task shell-id). Its execution timeout stops it after 300 seconds; launch it with a larger timeout (up to 3600 seconds) for a longer run.";
+	assert.equal(render(`first output\n\n${receipt}`), render("first output"));
+	assert.match(render("first output"), /first output/);
+	assert.doesNotMatch(render(receipt), /still running|execution timeout/);
 });
 
 test("collapsed agent list advertises the actual expand binding", () => {

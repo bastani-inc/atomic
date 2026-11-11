@@ -35,6 +35,12 @@ import {
 	rehydrateIntercomReleasedReplyError,
 } from "./released-reply-errors.js";
 import { RELEASED_CHILD_FRAME_MAX, validateReleasedChildFrame } from "./released-children.js";
+import {
+	type IntercomRecipientGoneError,
+	readSerializedIntercomRecipientGoneError,
+	rehydrateIntercomRecipientGoneError,
+	type SubagentEndedOutcome,
+} from "./recipient-gone-errors.js";
 import { normalizeGroups } from "../group.js";
 import {
 	BROKER_RETIRING_CODE,
@@ -188,6 +194,17 @@ export interface ReleasedChildReply {
 	readonly message: Message;
 }
 
+/** A subagent this session launched whose last run ended, and how (#4639). */
+export interface EndedChildReport {
+	readonly childName: string;
+	readonly group?: string;
+	/** Its Atomic session id and last Intercom id, when known. */
+	readonly aliases?: readonly string[];
+	readonly outcome: SubagentEndedOutcome;
+	/** The `<runId>:<index>` id `subagent({ action: "resume" })` takes. */
+	readonly childId?: string;
+}
+
 /** A released subagent to keep addressable through its owner, by name (#4326). */
 export interface ReleasedChildReservation {
 	readonly childName: string;
@@ -208,6 +225,32 @@ export {
 	UnknownReleasedChildError,
 } from "./released-child-errors.js";
 export type { IntercomReleasedChildErrorCode, SerializedIntercomReleasedChildError } from "./released-child-errors.js";
+export {
+	INTERCOM_RECIPIENT_GONE_ERROR_CODES,
+	IntercomRecipientGoneError,
+	isIntercomRecipientGoneError,
+	isIntercomRecipientGoneErrorCode,
+	isRetryableIntercomRecipientGoneError,
+	isSubagentRecipientDisconnectedError,
+	isSubagentRecipientEndedError,
+	isSubagentRecipientOwnerSuspendedError,
+	readSerializedIntercomRecipientGoneError,
+	rehydrateIntercomRecipientGoneError,
+	SUBAGENT_ENDED_OUTCOMES,
+	SubagentRecipientDisconnectedError,
+	SubagentRecipientEndedError,
+	SubagentRecipientOwnerSuspendedError,
+	serializeIntercomRecipientGoneError,
+} from "./recipient-gone-errors.js";
+export type {
+	IntercomRecipientGoneErrorCode,
+	IntercomRecipientGoneErrorFields,
+	SerializedIntercomRecipientGoneError,
+	SubagentEndedOutcome,
+	SubagentRecipientDisconnectedCode,
+	SubagentRecipientEndedCode,
+	SubagentRecipientOwnerSuspendedCode,
+} from "./recipient-gone-errors.js";
 export {
 	IntercomReleasedReplyError,
 	isIntercomReleasedReplyError,
@@ -239,8 +282,11 @@ export interface SendResult {
   queued?: boolean;
   reason?: string;
 	reasonCode?: DeliveryFailureReasonCode;
-	/** #4386: the typed refusal of a reply to a released subagent; its `code` is `reasonCode`. */
-	error?: IntercomReleasedReplyError;
+	/**
+	 * #4386: the typed refusal of a reply to a released subagent. #4639: why a subagent with no live session is gone.
+	 * Its `code` is `reasonCode`.
+	 */
+	error?: IntercomReleasedReplyError | IntercomRecipientGoneError;
 	target?: string;
   position?: number;
   /** How a queued workflow target relates to the run's stages (#4359). */
@@ -391,6 +437,7 @@ export class IntercomClient extends EventEmitter {
 	private connectAttempt: AbortController | undefined;
 	/** #3983: the broker of the current registration accepts `saving`. */
 	private brokerExtendsSaves = false;
+	private brokerMarksEndedChildren = false;
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _supervisorSessionId: string | null = null;
@@ -657,6 +704,7 @@ export class IntercomClient extends EventEmitter {
         this._brokerProtocol = LEGACY_BROKER_PROTOCOL;
         this.brokerClaimsWorkflowInvocations = false;
         this.brokerExtendsSaves = false;
+        this.brokerMarksEndedChildren = false;
         this._messageSource = undefined;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
@@ -790,6 +838,7 @@ export class IntercomClient extends EventEmitter {
             && brokerMessage.multiNodeRouting !== "starting" && brokerMessage.multiNodeRouting !== "on"
             && brokerMessage.multiNodeRouting !== "unavailable")
           || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)
+          || (brokerMessage.marksEndedChildren !== undefined && brokerMessage.marksEndedChildren !== true)
           || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
           throw new Error("Invalid registered message");
         }
@@ -819,6 +868,7 @@ export class IntercomClient extends EventEmitter {
         this._multiNodeRouting = brokerMessage.multiNodeRouting as BrokerMultiNodeStatus["status"] | undefined;
         this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
         this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
+        this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
         this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
@@ -1162,12 +1212,16 @@ export class IntercomClient extends EventEmitter {
 		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
 		const wireError = brokerMessage.error as JsonWireValue | undefined;
 		const error = readSerializedIntercomReleasedReplyError(wireError);
+		const wireRecipientError = brokerMessage.recipientError as JsonWireValue | undefined;
+		const recipientError = readSerializedIntercomRecipientGoneError(wireRecipientError);
 		if (
 			typeof messageId !== "string" ||
 			(attemptId !== undefined && typeof attemptId !== "string") ||
 			typeof reason !== "string" ||
 			(reasonCode !== undefined && (typeof reasonCode !== "string" || !isDeliveryFailureReasonCode(reasonCode))) ||
-			(wireError !== undefined && (error === undefined || error.code !== reasonCode))
+			(wireError !== undefined && (error === undefined || error.code !== reasonCode)) ||
+			// A valid released-reply `error` always comes with its `reasonCode`, so this also refuses carrying both errors.
+			(wireRecipientError !== undefined && (recipientError === undefined || reasonCode !== undefined))
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}
@@ -1177,6 +1231,9 @@ export class IntercomClient extends EventEmitter {
 			reason,
 			...(reasonCode === undefined ? {} : { reasonCode }),
 			...(error === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(error) }),
+			...(recipientError === undefined
+				? {}
+				: { reasonCode: recipientError.code, error: rehydrateIntercomRecipientGoneError(recipientError) }),
 		};
 		if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
 		else this.pendingSends.resolve(messageId, attemptId, result);
@@ -1555,6 +1612,31 @@ export class IntercomClient extends EventEmitter {
         childNames: childNames.slice(start, start + RELEASED_CHILD_FRAME_MAX),
         ...(outcome.gone === undefined ? {} : { gone: outcome.gone }),
         ...(outcome.refusal === undefined ? {} : { refusal: outcome.refusal }),
+      });
+    }
+  }
+
+  /**
+   * #4639: report how subagents this session launched ended, in frames of at most 500, so a send to one that has no
+   * live session is refused with why and the next step instead of `Session not found`. The broker keeps each report on
+   * this connection until the subagent registers again or this session disconnects; report again after a reconnect.
+   * Resolves without sending anything to a broker that does not advertise `marksEndedChildren`. Fails with a
+   * `ReleasedChildReservationError` naming the first invalid child, or `not_owner` when another session owns one.
+   */
+  async markEndedChildren(children: readonly EndedChildReport[]): Promise<void> {
+    if (!this.brokerMarksEndedChildren) return;
+    // Fields left undefined are not written: the frame carries what each report names, nothing else.
+    const wireChildren = children.map((child) => ({
+      childName: child.childName,
+      group: child.group,
+      aliases: child.aliases,
+      outcome: child.outcome,
+      childId: child.childId,
+    }));
+    for (let start = 0; start < wireChildren.length; start += RELEASED_CHILD_FRAME_MAX) {
+      await this.restoringRecipientRequest({
+        type: "mark_ended_children",
+        children: wireChildren.slice(start, start + RELEASED_CHILD_FRAME_MAX),
       });
     }
   }

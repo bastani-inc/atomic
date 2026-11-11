@@ -6,14 +6,8 @@ import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
 import { sessionGenerationClosing } from "./session-lifecycle-work.ts";
 import { AgentTaskHost } from "./tasks/agent-adapter.js";
 import { type ChildTaskCompletionRoute, childTaskCompletionRoute } from "./tasks/child-command-owner.js";
-import { COMMAND_DETAIL_TAIL_BYTES, taskOutputText } from "./tasks/command-output.js";
-import {
-	formatTaskCompletion,
-	TASK_COMPLETION_MESSAGE_TYPE,
-	type TaskCompletionEnvelope,
-	TaskCompletionOutbox,
-	taskCompletionNotice,
-} from "./tasks/completion.js";
+import { type TaskCompletionEnvelope, TaskCompletionOutbox } from "./tasks/completion.js";
+import { commandOutputExcerpt, taskCompletionMessage } from "./tasks/completion-message.js";
 import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
@@ -50,6 +44,15 @@ export function replaceSessionTaskOwner(session: AgentSession): void {
 	session._agentTaskHost = undefined;
 	session._taskAdmission = undefined;
 	session._taskCompletionOutbox = undefined;
+}
+
+/**
+ * The task host a subagent child of this session runs its shells in. A workflow stage's host outlives each of the
+ * stage's sessions, so its workers keep their shells when the session that launched them is released or replaced
+ * (#4639).
+ */
+export function childCommandTaskHost(session: AgentSession): AgentTaskHost {
+	return stageTaskAdmission(session)?.agentTaskHost() ?? session.getAgentTaskHost();
 }
 
 export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
@@ -96,28 +99,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 							.map((block) => block.text)
 							.join("\n")
 					: undefined;
-			if (task?.kind === "command" && lease?.ok && host) {
-				try {
-					const bytes = BigInt(task.output.byteCount);
-					const start = bytes > BigInt(COMMAND_DETAIL_TAIL_BYTES) ? bytes - BigInt(COMMAND_DETAIL_TAIL_BYTES) : 0n;
-					const page = await host.ownerBinding.supervisor.readTaskOutput(lease.value, {
-						start: String(start),
-						maximumBytes: COMMAND_DETAIL_TAIL_BYTES,
-					});
-					output = page.ok
-						? `${start > 0n ? "[Earlier output omitted]\n" : ""}${taskOutputText(page.value)}`
-						: "Output unavailable";
-				} catch {
-					// Missing retained output must not suppress a terminal notification.
-					output = "Output unavailable";
-				}
-			}
-			const message = {
-				customType: TASK_COMPLETION_MESSAGE_TYPE,
-				content: formatTaskCompletion(envelope, task, output),
-				details: { ...envelope, notification: taskCompletionNotice(envelope, task, output) },
-				display: true as const,
-			};
+			if (task?.kind === "command" && lease?.ok && host)
+				output = await commandOutputExcerpt(host, lease.value, task);
+			const message = taskCompletionMessage(envelope, task, output);
 			const childRoute =
 				host && task?.kind === "command" ? childTaskCompletionRoute(host, envelope.taskId) : undefined;
 			if (childRoute) {

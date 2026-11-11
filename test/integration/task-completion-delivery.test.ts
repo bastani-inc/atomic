@@ -362,7 +362,7 @@ test("session closure still suppresses its children's cancellation notifications
 		await session._taskCompletionOutbox!.flush();
 		assert.deepEqual(
 			session._taskCompletionOutbox!.pending.map((entry) => entry.result),
-			[{ kind: "cancelled", cause: "owner-close" }],
+			[{ kind: "cancelled", cause: "owner-close", ownerClose: "session-close" }],
 		);
 		assert.equal(sendCustomMessage.mock.calls.length, 0);
 	} finally {

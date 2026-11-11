@@ -2,6 +2,7 @@ import type net from "node:net";
 import { hasGroup } from "../group.js";
 import type { DeliveryFailureReasonCode, SessionInfo } from "../types.js";
 import { sessionGroups } from "./group-membership.js";
+import { type IntercomRecipientGoneError, SubagentRecipientOwnerSuspendedError } from "./recipient-gone-errors.js";
 import { ReleasedChildReservationError } from "./released-child-errors.js";
 import { isReleasedReservationKey, normalizeReservationTarget, releasedReservationKey } from "./released-children.js";
 
@@ -12,6 +13,11 @@ export const RESTORING_RECIPIENT_HOLD_MAX_MS = 120_000;
 /** A reservation covers the child's name plus its Atomic session id and its pre-restart Intercom id. */
 const MAX_RESERVED_TARGETS = 8;
 const MAX_HELD_SENDS = 256;
+/**
+ * The most released-child reservations kept for owners that disconnected, across the broker (#4639); the oldest is
+ * forgotten first.
+ */
+export const ORPHANED_RESERVATIONS_MAX = 4_096;
 
 /** A send the broker is holding for a subagent that is being restored. */
 export interface HeldSend {
@@ -34,7 +40,13 @@ export interface RestoringRecipientWake {
 export type RestoringRecipientAdmission =
 	| { readonly kind: "none" }
 	| { readonly kind: "held"; readonly timeoutMs: number; readonly wake?: RestoringRecipientWake }
-	| { readonly kind: "refused"; readonly reason: string; readonly reasonCode?: DeliveryFailureReasonCode };
+	| {
+			readonly kind: "refused";
+			readonly reason: string;
+			readonly reasonCode?: DeliveryFailureReasonCode;
+			/** #4639: the typed refusal, when there is one; its message is `reason`. */
+			readonly error?: IntercomRecipientGoneError;
+	  };
 
 /** One reservation as `RestoringRecipients.active` reports it; `gone` is the formatted gone refusal. */
 export interface RestoringReservationSnapshot {
@@ -62,7 +74,7 @@ interface HeldEntry {
 
 interface Reservation {
 	readonly key: string;
-	readonly ownerSessionId: string;
+	ownerSessionId: string;
 	readonly childName: string;
 	group: string;
 	/**
@@ -97,6 +109,14 @@ export interface ReserveOptions {
 	readonly wake?: boolean;
 	/** The aliases given are all the child has, not additions to those reserved before. */
 	readonly replaceAliases?: boolean;
+}
+
+/** The owner-suspended refusal of a send to a released child whose owner is away (#4639). */
+function ownerSuspended(reservation: Reservation, held: Pick<HeldSend, "clientMessage">): IntercomRecipientGoneError {
+	return new SubagentRecipientOwnerSuspendedError({
+		target: held.clientMessage.to.trim(),
+		childName: reservation.childName,
+	});
 }
 
 const normalizeTarget = normalizeReservationTarget;
@@ -136,7 +156,8 @@ const removeFromIndex = <Key, Value>(index: Map<Key, Set<Value>>, key: Key, valu
  * in the child's group finds no live session, it is held instead of failing with `Session not found`. A hold ends
  * in exactly one way: the child registers and every held send is dispatched again, once and in order; the owner
  * reports the child gone and held and later senders get the gone refusal; or the hold times out and the sender
- * is told to try again. Reservations end when their owner disconnects.
+ * is told to try again. Reservations end when their owner disconnects, except a released child's, which is kept for the
+ * owner's host session until it is back (#4639; see {@link dropOwner}).
  *
  * A reservation can start before the restore does: a resumed session reserves its recorded children at session
  * start, and the launching session of an interrupted workflow run reserves the children of the run's stages while
@@ -152,10 +173,29 @@ export class RestoringRecipients {
 	private readonly byChild = new Map<string, Set<Reservation>>();
 	private readonly byOwner = new Map<string, Set<Reservation>>();
 	private readonly withHeld = new Set<Reservation>();
+	/**
+	 * #4639: released-child reservations whose owner's connection closed, as a suspended workflow stage's does, oldest
+	 * first, each with the owner's host session (its return address). An orphan goes on holding sends, waking nobody,
+	 * until a session of that host session takes it over.
+	 */
+	private readonly orphans = new Map<Reservation, string>();
 	private heldTotal = 0;
 	private liveTimers = 0;
 
-	constructor(private readonly onExpired: (held: HeldSend, reason: string, reasonCode: DeliveryFailureReasonCode) => void) {}
+	constructor(
+		private readonly onExpired: (
+			held: HeldSend,
+			reason: string,
+			reasonCode: DeliveryFailureReasonCode,
+			error?: IntercomRecipientGoneError,
+		) => void,
+		private readonly orphansMax = ORPHANED_RESERVATIONS_MAX,
+	) {}
+
+	/** Reservations kept for owners that disconnected (#4639). */
+	get orphanCount(): number {
+		return this.orphans.size;
+	}
 
 	/** Reservations in force, including gone markers. */
 	get size(): number {
@@ -184,6 +224,24 @@ export class RestoringRecipients {
 
 	releasedOwner(childName: string): string | undefined {
 		return this.reservations.get(releasedReservationKey(childName))?.ownerSessionId;
+	}
+
+	/**
+	 * #4639: the session `ownerSessionId`, whose host session is `returnAddress`, comes back for the released children
+	 * it kept before its connection closed: every orphaned reservation of that host session becomes its own again. The
+	 * sends held for them wait for its next reservation, which asks it to wake the child.
+	 */
+	adoptOrphans(ownerSessionId: string, returnAddress: string | undefined): void {
+		for (const [reservation, host] of [...this.orphans]) {
+			if (host !== returnAddress) continue;
+			this.orphans.delete(reservation);
+			removeFromIndex(this.byOwner, reservation.ownerSessionId, reservation);
+			reservation.ownerSessionId = ownerSessionId;
+			addToIndex(this.byOwner, ownerSessionId, reservation);
+			// Nobody was asked to wake the child for the sends held meanwhile: the owner's next reservation asks.
+			reservation.wake = false;
+			reservation.extended = false;
+		}
 	}
 
 	/**
@@ -283,6 +341,11 @@ export class RestoringRecipients {
 		}
 		if (reservation === undefined) return { kind: "none" };
 		if (reservation.gone !== undefined) return { kind: "refused", reason: reservation.gone };
+		const orphaned = this.orphans.has(reservation);
+		if (orphaned && (!canHold || reservation.held.size >= MAX_HELD_SENDS)) {
+			const error = ownerSuspended(reservation, held);
+			return { kind: "refused", reason: error.message, error };
+		}
 		if (!canHold || reservation.held.size >= MAX_HELD_SENDS) {
 			return {
 				kind: "refused",
@@ -290,7 +353,10 @@ export class RestoringRecipients {
 				reasonCode: unrestoredReasonCode(reservation.key, reservation.wake),
 			};
 		}
-		const wake = reservation.wake && reservation.held.size === 0 ? this.wakeOf(reservation) : undefined;
+		const wake =
+			reservation.wake && !orphaned && reservation.held.size === 0
+				? this.wakeOf(reservation)
+				: undefined;
 		if (reservation.held.size === 0) reservation.extended = false;
 		const entry: HeldEntry = { timer: undefined, admittedAt: Date.now(), reservation };
 		this.arm(held, entry, RESTORING_RECIPIENT_HOLD_MS);
@@ -382,10 +448,38 @@ export class RestoringRecipients {
 		return { held, gone: reservation.gone };
 	}
 
-	/** The owner disconnected: end its reservations and return their held sends for ordinary routing. */
-	dropOwner(ownerSessionId: string): HeldSend[] {
+	/**
+	 * The owner disconnected: end its reservations and return their held sends for ordinary routing. #4639: given the
+	 * owner's host session (`returnAddress`), its released children are kept instead, holding sends, until a session of
+	 * that host session takes them over ({@link adoptOrphans}) or they are forgotten as the oldest beyond
+	 * {@link ORPHANED_RESERVATIONS_MAX}, whose held sends are returned too.
+	 */
+	dropOwner(ownerSessionId: string, returnAddress?: string): HeldSend[] {
 		const released: HeldSend[] = [];
 		for (const reservation of [...(this.byOwner.get(ownerSessionId) ?? [])]) {
+			if (returnAddress !== undefined && isReleasedReservationKey(reservation.key) && reservation.gone === undefined) {
+				this.orphans.set(reservation, returnAddress);
+				continue;
+			}
+			this.forget(reservation);
+			released.push(...this.take(reservation));
+		}
+		for (const oldest of this.orphans.keys()) {
+			if (this.orphans.size <= this.orphansMax) break;
+			this.forget(oldest);
+			released.push(...this.take(oldest));
+		}
+		return released;
+	}
+
+	/**
+	 * #4639: the run whose stages kept these orphaned released children ended: forget every orphaned reservation in a
+	 * group `inGroup` accepts, and return its held sends for ordinary routing.
+	 */
+	dropOrphans(inGroup: (group: string) => boolean): HeldSend[] {
+		const released: HeldSend[] = [];
+		for (const reservation of [...this.orphans.keys()]) {
+			if (!inGroup(reservation.group)) continue;
 			this.forget(reservation);
 			released.push(...this.take(reservation));
 		}
@@ -428,6 +522,7 @@ export class RestoringRecipients {
 		this.byChild.clear();
 		this.byOwner.clear();
 		this.withHeld.clear();
+		this.orphans.clear();
 	}
 
 	private wakeOf(reservation: Reservation): RestoringRecipientWake {
@@ -460,6 +555,11 @@ export class RestoringRecipients {
 		const reservation = entry.reservation;
 		if (reservation.held.get(held) !== entry) return;
 		this.detach(reservation, held);
+		if (this.orphans.has(reservation)) {
+			const error = ownerSuspended(reservation, held);
+			this.onExpired(held, error.message, error.code, error);
+			return;
+		}
 		this.onExpired(
 			held,
 			restoringRecipientRetryReason(reservation.childName),
@@ -487,6 +587,7 @@ export class RestoringRecipients {
 	}
 
 	private forget(reservation: Reservation): void {
+		this.orphans.delete(reservation);
 		this.reservations.delete(reservation.key);
 		removeFromIndex(this.byChild, normalizeTarget(reservation.childName), reservation);
 		removeFromIndex(this.byOwner, reservation.ownerSessionId, reservation);

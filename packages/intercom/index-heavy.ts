@@ -17,6 +17,7 @@ import {
   type IntercomConnectedNotice,
   isAcknowledgeReleasedChildWakeRequest,
   isDropReleasedChildrenRequest,
+  isMarkEndedChildrenRequest,
   isReleaseRestoringChildRequest,
   isReserveReleasedChildrenRequest,
   isReserveRestoringChildRequest,
@@ -24,6 +25,7 @@ import {
   SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
   SUBAGENT_AWAIT_INTERCOM_PEER_EVENT,
   SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
+  SUBAGENT_MARK_ENDED_CHILDREN_EVENT,
   SUBAGENT_RELEASE_RESTORING_CHILD_EVENT,
   SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
   SUBAGENT_RESERVE_RESTORING_CHILD_EVENT,
@@ -1775,6 +1777,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           ...(request.gone === undefined ? {} : { gone: request.gone }),
           ...(request.refusal === undefined ? {} : { refusal: request.refusal }),
         })
+      : Promise.resolve();
+  });
+  // #4639: how children this session launched ended; a report lives on this connection, like a reservation.
+  pi.events.on(SUBAGENT_MARK_ENDED_CHILDREN_EVENT, (payload) => {
+    if (!isMarkEndedChildrenRequest(payload) || payload.completion) return;
+    const request = payload;
+    const activeClient = client;
+    request.completion = activeClient?.isConnected()
+      ? activeClient.markEndedChildren(request.children)
       : Promise.resolve();
   });
   pi.events.on(SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT, (payload) => {
