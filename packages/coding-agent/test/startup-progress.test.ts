@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import { createStartupProgress, STARTUP_PROGRESS_DELAY_MS } from "../src/cli/startup-progress.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import { createStartupProgress, STARTUP_PROGRESS_DELAY_MS } from "../src/cli/startup-progress.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 
 let lines: string[];
 const write = (text: string) => lines.push(stripAnsi(text));

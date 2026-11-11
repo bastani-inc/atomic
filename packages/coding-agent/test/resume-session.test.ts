@@ -15,15 +15,15 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { holdsSnapshotCommit } from "../src/core/resume/session-resume.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import type { SessionStore } from "../src/core/storage/session/types.ts";
-import { resolveToCwd } from "../src/core/tools/path-utils.ts";
-import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
-import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
-import type { WorktreeRootMapping, WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
+import { holdsSnapshotCommit } from "../src/core/resume/session-resume.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
+import { resolveToCwd } from "../src/core/tools/path-utils.js";
+import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
+import type { WorktreeRootMapping, WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 import {
 	type DirtyCheckoutChoice,
 	type DirtyCheckoutPrompt,
@@ -41,9 +41,9 @@ import {
 	setWorktreeSnapshotGit,
 	WorkspaceDriftError,
 	withWorktreeRootMappings,
-} from "../src/index.ts";
-import { appendLineCommand, nodeCommand, startedSleepingCommand } from "./helpers/hook-commands.ts";
-import { missingGit } from "./helpers/missing-git.ts";
+} from "../src/index.js";
+import { appendLineCommand, nodeCommand, startedSleepingCommand } from "./helpers/hook-commands.js";
+import { missingGit } from "./helpers/missing-git.js";
 
 useTemporaryAgentDir();
 
@@ -75,7 +75,7 @@ async function sqlStore(name: string): Promise<SessionStore> {
 }
 
 /** A session on "node A" whose last turn recorded a snapshot of `root`, with its cwd at `cwd`. */
-async function recordSession(root: string, cwd = root): Promise<SessionManager> {
+async function recordSession(root: string, cwd = root, siblings: readonly string[] = []): Promise<SessionManager> {
 	const store = await sqlStore("sessions");
 	const manager = await SessionManager.create(store, cwd);
 	await manager.appendMessage({ role: "user", content: "edit the files", timestamp: Date.now() });
@@ -83,6 +83,12 @@ async function recordSession(root: string, cwd = root): Promise<SessionManager> 
 	assert.equal(capture.status, "captured");
 	if (capture.status !== "captured") throw new Error("unreachable");
 	await manager.appendWorktreeSnapshot(root, capture.snapshot.id, capture.snapshot);
+	for (const sibling of siblings) {
+		const recorded = await captureWorktreeSnapshot(sibling, { settings, blobs: store.snapshotBlobs });
+		assert.equal(recorded.status, "captured");
+		if (recorded.status !== "captured") throw new Error("unreachable");
+		await manager.appendWorktreeSnapshot(sibling, recorded.snapshot.id, recorded.snapshot);
+	}
 	return manager;
 }
 
@@ -982,6 +988,30 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		]);
 	});
 
+	test("a session that returns to its original checkout still restores a sibling checkout that is missing (#4660)", async () => {
+		const { clone } = await editedClone();
+		const { clone: sibling } = await sandbox.remoteWithClone("sibling");
+		sandbox.write(join(sibling, "sibling-work.txt"), "saved sibling work\n");
+		const manager = await recordSession(clone, join(clone, "notes"), [sibling]);
+		renameSync(clone, sandbox.path("away"));
+		const first = await prepareSessionResume(manager, options());
+		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
+		renameSync(sandbox.path("away"), clone);
+		sandbox.write(join(clone, "README.md"), "merged later\n");
+		await sandbox.commitAll(clone, "work merged after the snapshot");
+		renameSync(sibling, sandbox.path("sibling-gone"));
+
+		const reopened = first.status === "ready" ? first.sessionManager : manager;
+		const second = await prepareSessionResume(reopened, options());
+
+		assert.equal(cwdOf(second), join(clone, "notes"));
+		const restored = reopened.getWorktreeRootMappings().find((mapping) => mapping.from === sibling);
+		assert.ok(restored, "the missing sibling checkout was not restored");
+		assert.ok(restored.to.startsWith(sandbox.path("host")), restored.to);
+		assert.equal(readFileSync(join(restored.to, "sibling-work.txt"), "utf8"), "saved sibling work\n");
+		assert.equal(reopened.getWorktreeRootMappings().find((mapping) => mapping.from === worktree)?.to, clone);
+	});
+
 	test("a Git failure while looking for the checkout a session came from keeps it where it is, and the resume completes (#4660)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone, join(clone, "notes"));
@@ -1049,42 +1079,48 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		return shim;
 	}
 
-	test("when looking for the session's own checkout throws, the session stays in it and nothing is restored (#4660)", async () => {
-		const { clone } = await editedClone();
-		const manager = await recordSession(clone, join(clone, "notes"));
-		sandbox.write(join(clone, "README.md"), "changed after the snapshot\n");
-		const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
-		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+	test.skipIf(process.platform === "win32")(
+		"when looking for the session's own checkout throws, the session stays in it and nothing is restored (#4660)",
+		async () => {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone, join(clone, "notes"));
+			sandbox.write(join(clone, "README.md"), "changed after the snapshot\n");
+			const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
+			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
 
-		const prepared = await prepareSessionResume(manager, options());
+			const prepared = await prepareSessionResume(manager, options());
 
-		assert.equal(cwdOf(prepared), join(clone, "notes"));
-		assert.deepEqual(prepared.status === "ready" && prepared.notices, []);
-		assert.equal(existsSync(sandbox.path("host")), false);
-		assert.deepEqual(manager.getWorktreeRootMappings(), []);
-	});
+			assert.equal(cwdOf(prepared), join(clone, "notes"));
+			assert.deepEqual(prepared.status === "ready" && prepared.notices, []);
+			assert.equal(existsSync(sandbox.path("host")), false);
+			assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		},
+	);
 
-	test("when examining the checkout a session came from throws, the session still goes back to it (#4660)", async () => {
-		const { clone } = await editedClone();
-		const manager = await recordSession(clone, join(clone, "notes"));
-		renameSync(clone, sandbox.path("away"));
-		const first = await prepareSessionResume(manager, options());
-		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
-		renameSync(sandbox.path("away"), clone);
-		const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
-		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
+	test.skipIf(process.platform === "win32")(
+		"when examining the checkout a session came from throws, the session still goes back to it (#4660)",
+		async () => {
+			const { clone } = await editedClone();
+			const manager = await recordSession(clone, join(clone, "notes"));
+			renameSync(clone, sandbox.path("away"));
+			const first = await prepareSessionResume(manager, options());
+			const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
+			renameSync(sandbox.path("away"), clone);
+			const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
+			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
 
-		const reopened = first.status === "ready" ? first.sessionManager : manager;
-		const second = await prepareSessionResume(reopened, options());
+			const reopened = first.status === "ready" ? first.sessionManager : manager;
+			const second = await prepareSessionResume(reopened, options());
 
-		assert.equal(cwdOf(second), join(clone, "notes"));
-		assert.deepEqual(second.status === "ready" && second.notices, [
-			{
-				type: "info",
-				message: `Resuming in ${clone}, the checkout this session was restored from, instead of the worktree ${worktree}.`,
-			},
-		]);
-	});
+			assert.equal(cwdOf(second), join(clone, "notes"));
+			assert.deepEqual(second.status === "ready" && second.notices, [
+				{
+					type: "info",
+					message: `Resuming in ${clone}, the checkout this session was restored from, instead of the worktree ${worktree}.`,
+				},
+			]);
+		},
+	);
 
 	test("a session that worked in its restored worktree stays there (#4660)", async () => {
 		const { clone } = await editedClone();

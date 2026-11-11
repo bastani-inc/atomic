@@ -11,9 +11,9 @@ import {
 	stripTerminalSequences,
 } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const startup = vi.hoisted(() => ({
 	trustSettled: vi.fn(async () => {}),

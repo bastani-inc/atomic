@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { type Component, Container, resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 const timingMock = vi.hoisted(() => ({ labels: [] as string[] }));
