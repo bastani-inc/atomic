@@ -1,0 +1,2073 @@
+import { EventEmitter } from "events";
+import net from "net";
+import { randomUUID } from "crypto";
+import { writeMessage, createMessageReader, type JsonWireValue } from "./framing.js";
+import { isBrokerStatusReport } from "./broker-status.js";
+import { getBrokerSocketPath } from "./paths.js";
+import type {
+	SessionInfo,
+	Message,
+	Attachment,
+	BrokerStatusReport,
+	BrokerMultiNodeStatus,
+	GroupSummary,
+	SupervisorRegistration,
+	SessionDirectory,
+	WorkflowStageRosterAnnouncement,
+	WorkflowStageRosterEntry,
+	WorkflowFutureStageRosterEntry,
+	WorkflowSendPrediction,
+	WorkflowPossibleStageAnnouncement,
+	WorkflowRunParentAnnouncement,
+	PendingStageRouteRefusalCode,
+	IntercomDeliveryMode,
+	DeliveryFailureReasonCode,
+	ReleasedChildRefusal,
+} from "../types.js";
+import { buildSendSignature, PendingSendRegistry, PendingSendTimeoutError } from "./pending-send-registry.js";
+import { readSubagentMessageSource } from "../source-ownership.js";
+import { isMessage, isSessionInfo } from "./client-message-validation.js";
+import { isDeliveryFailureReasonCode } from "./delivery-failure-reason.js";
+import { isReleasedChildErrorCode, ReleasedChildReservationError, releasedChildErrorFor } from "./released-child-errors.js";
+import {
+	type IntercomReleasedReplyError,
+	readSerializedIntercomReleasedReplyError,
+	rehydrateIntercomReleasedReplyError,
+} from "./released-reply-errors.js";
+import { RELEASED_CHILD_FRAME_MAX, validateReleasedChildFrame } from "./released-children.js";
+import {
+	type IntercomRecipientGoneError,
+	readSerializedIntercomRecipientGoneError,
+	rehydrateIntercomRecipientGoneError,
+	type SubagentEndedOutcome,
+} from "./recipient-gone-errors.js";
+import { normalizeGroups } from "../group.js";
+import {
+	BROKER_RETIRING_CODE,
+	BROKER_ROUTING_CHANGED_CODE,
+	IntercomBrokerRetiringError,
+	IntercomBrokerTimeoutError,
+	IntercomClientDisconnectedError,
+} from "../recoverable-disconnect.js";
+import {
+	IntercomPendingStageRouteTimeoutError,
+	type IntercomPendingStageRouteTimeoutFields,
+} from "../pending-stage-route-timeout-error.js";
+import { isSocketAnswering } from "./socket-liveness.js";
+import { IntercomBrokerProtocolError, IntercomRoutingChangedError, IntercomRoutingUnavailableError } from "@bastani/atomic";
+import {
+	BROKER_PROTOCOL,
+	type BrokerProtocolRange,
+	isBrokerProtocolRange,
+	LEGACY_BROKER_PROTOCOL,
+	protocolRangeOf,
+	VERIFIED_REGISTRATION_PROTOCOL,
+} from "./protocol-version.js";
+import { IntercomLiveRouteRefusedError, isLiveWorkflowStageRouteRefusalCode } from "../live-route-refusal.js";
+import { SEND_RESPONSE_TIMEOUT_MS } from "../retry-policy.js";
+import {
+	isWorkflowFutureStagePredictionFields,
+	isWorkflowSendPredictionFields,
+	type WorkflowSendPredictionFields,
+	workflowSendPredictionFields,
+} from "../workflow-prediction-fields.js";
+
+/** How long `connect()` waits for the broker to answer `register`. */
+export const BROKER_CONNECT_TIMEOUT_MS = 10_000;
+/** How long an acknowledged pending-stage route registration waits for the broker's answer. */
+export const PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS = 10_000;
+const GROUP_REQUEST_TIMEOUT_MS = 5000;
+const PRESENCE_ACK_TIMEOUT_MS = 5000;
+const RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS = 5000;
+/** #3904: retries of a connection the kernel refused before it reached the broker (a full listen backlog). */
+const BROKER_BACKLOG_RETRIES = 6;
+const BROKER_BACKLOG_RETRY_BASE_MS = 25;
+
+/** The connect attempt was cancelled by `disconnect()` before it registered. */
+function connectAborted(): IntercomClientDisconnectedError {
+	return new IntercomClientDisconnectedError({ cause: new Error("Disconnected before the broker connection registered") });
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolveDelay, rejectDelay) => {
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolveDelay();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			rejectDelay(connectAborted());
+		};
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function isBacklogRefusal(error: Error): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "ECONNREFUSED" || code === "EAGAIN";
+}
+
+/** The broker closed the connection before it answered the registration. */
+class ConnectionClosedBeforeRegistrationError extends Error {
+	constructor() {
+		super("Connection closed before registration");
+		this.name = "ConnectionClosedBeforeRegistrationError";
+	}
+}
+
+/**
+ * Whether a failure before the broker answered `register` is what a broker that retired leaves behind: the socket path
+ * is gone (`ENOENT`), or the connection was reset or ended without an answer. A refusal the kernel gives a full listen
+ * backlog (`ECONNREFUSED`, `EAGAIN`) is not: those are retried above and still reject as before.
+ */
+function isLostBrokerSignature(error: Error): boolean {
+	if (error instanceof ConnectionClosedBeforeRegistrationError) return true;
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "ENOENT" || code === "ECONNRESET" || code === "EPIPE";
+}
+
+/**
+ * A failure before registration, classified: when it has the signature of a lost broker and nothing answers on the
+ * broker socket any more, the broker retired first and the failure is recoverable by spawning its replacement. A broker
+ * that still answers closed the connection for its own reasons (a refused or malformed registration), so the failure
+ * stays what it was.
+ */
+async function classifyRegistrationFailure(error: Error, socketPath: string): Promise<Error> {
+	if (!isLostBrokerSignature(error) || (await isSocketAnswering(socketPath))) return error;
+	return new IntercomBrokerRetiringError(`Intercom broker went away before it registered this session: ${error.message}`, {
+    cause: error,
+  });
+}
+/** Extra wait past a broker hold, so the broker's own outcome for a held send always arrives first (#3760). */
+const HELD_SEND_GRACE_MS = 5000;
+
+export interface ExpectedRouting {
+  readonly acrossMachines: boolean;
+  /**
+   * #4538: the broker verifies the routing as it registers the session (`register_verified`, protocol 2). Without it
+   * the session registers as an older client does, and a broker that reports other routing in `registered` is refused.
+   */
+  readonly verify: boolean;
+}
+
+export interface SendOptions {
+  text: string;
+  attachments?: Attachment[];
+  replyTo?: string;
+  expectsReply?: boolean;
+  /** How a busy recipient receives the message; absent means `steer`. */
+  delivery?: IntercomDeliveryMode;
+  replyError?: string;
+  messageId?: string;
+  /** Internal caller-issued target identity; transport still uses the `to` argument. */
+  logicalTarget?: string;
+  /** Public reply must use the broker's exact pending reverse question route. */
+  requirePendingReply?: true;
+  /** An explicit reply selector must resolve to this frozen recipient, never a namesake. */
+  expectedRecipientId?: string;
+  /** Broker-authorized recipient identity for an ask, delivered before its recipient can reply. */
+  onReplyTarget?: (sessionId: string) => void;
+}
+
+export interface IntercomClientOptions {
+	/** Intercom session id held before a restart or reconnect; the broker grants it only when it is free (#3760). */
+	readonly preferredSessionId?: string;
+	/** #3761: this client confirms each received message with `acknowledgeReceived` once it has saved it. */
+	readonly acknowledgesReceipt?: true;
+	/** Registration answer bound for `connect()`; defaults to `BROKER_CONNECT_TIMEOUT_MS`. */
+	readonly connectTimeoutMs?: number;
+	/**
+	 * #3906: this connection carries the pending-stage routes of many runs, so it asks a broker that supports it to
+	 * refuse one run's route on its own and keep the connection open for the others.
+	 */
+	readonly multiplexesPendingStageRoutes?: true;
+	/** Broker socket this client connects to; defaults to the one for the agent directory current when it is created (#4561). */
+	readonly brokerSocketPath?: string;
+}
+
+export interface ReleasedChildReply {
+	readonly childName: string;
+	readonly handoffId: string;
+	readonly replyTo: string;
+	readonly from: SessionInfo;
+	readonly message: Message;
+}
+
+/** A subagent this session launched whose last run ended, and how (#4639). */
+export interface EndedChildReport {
+	readonly childName: string;
+	readonly group?: string;
+	/** Its Atomic session id and last Intercom id, when known. */
+	readonly aliases?: readonly string[];
+	readonly outcome: SubagentEndedOutcome;
+	/** The `<runId>:<index>` id `subagent({ action: "resume" })` takes. */
+	readonly childId?: string;
+}
+
+/** A released subagent to keep addressable through its owner, by name (#4326). */
+export interface ReleasedChildReservation {
+	readonly childName: string;
+	readonly group?: string;
+	readonly aliases?: readonly string[];
+	/** true: the first send held for it asks this owner to wake it; false: parked (paused or quit): sends are held but the owner is never asked. */
+	readonly wake: boolean;
+}
+
+export {
+	IntercomReleasedChildError,
+	isIntercomReleasedChildError,
+	isReleasedChildReservationError,
+	isUnknownReleasedChildError,
+	ReleasedChildReservationError,
+	rehydrateIntercomReleasedChildError,
+	serializeIntercomReleasedChildError,
+	UnknownReleasedChildError,
+} from "./released-child-errors.js";
+export type { IntercomReleasedChildErrorCode, SerializedIntercomReleasedChildError } from "./released-child-errors.js";
+export {
+	INTERCOM_RECIPIENT_GONE_ERROR_CODES,
+	IntercomRecipientGoneError,
+	isIntercomRecipientGoneError,
+	isIntercomRecipientGoneErrorCode,
+	isRetryableIntercomRecipientGoneError,
+	isSubagentRecipientDisconnectedError,
+	isSubagentRecipientEndedError,
+	isSubagentRecipientOwnerSuspendedError,
+	readSerializedIntercomRecipientGoneError,
+	rehydrateIntercomRecipientGoneError,
+	SUBAGENT_ENDED_OUTCOMES,
+	SubagentRecipientDisconnectedError,
+	SubagentRecipientEndedError,
+	SubagentRecipientOwnerSuspendedError,
+	serializeIntercomRecipientGoneError,
+} from "./recipient-gone-errors.js";
+export type {
+	IntercomRecipientGoneErrorCode,
+	IntercomRecipientGoneErrorFields,
+	SerializedIntercomRecipientGoneError,
+	SubagentEndedOutcome,
+	SubagentRecipientDisconnectedCode,
+	SubagentRecipientEndedCode,
+	SubagentRecipientOwnerSuspendedCode,
+} from "./recipient-gone-errors.js";
+export {
+	IntercomReleasedReplyError,
+	isIntercomReleasedReplyError,
+	isReleasedReplyAnsweredError,
+	isReleasedReplyInFlightError,
+	isRetryableIntercomReleasedReplyError,
+	ReleasedReplyAnsweredError,
+	ReleasedReplyInFlightError,
+	rehydrateIntercomReleasedReplyError,
+	serializeIntercomReleasedReplyError,
+} from "./released-reply-errors.js";
+export type {
+	IntercomReleasedReplyErrorCode,
+	IntercomReleasedReplyErrorFields,
+	SerializedIntercomReleasedReplyError,
+} from "./released-reply-errors.js";
+
+function readReleasedChildRefusal(value: unknown): ReleasedChildRefusal | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const { code, childName } = value as { code?: unknown; childName?: unknown };
+	if (typeof code !== "string" || !isReleasedChildErrorCode(code)) return undefined;
+	if (childName !== undefined && typeof childName !== "string") return undefined;
+	return childName === undefined ? { code } : { code, childName };
+}
+
+export interface SendResult {
+  id: string;
+  delivered: boolean;
+  queued?: boolean;
+  reason?: string;
+	reasonCode?: DeliveryFailureReasonCode;
+	/**
+	 * #4386: the typed refusal of a reply to a released subagent. #4639: why a subagent with no live session is gone.
+	 * Its `code` is `reasonCode`.
+	 */
+	error?: IntercomReleasedReplyError | IntercomRecipientGoneError;
+	target?: string;
+  position?: number;
+  /** How a queued workflow target relates to the run's stages (#4359). */
+  prediction?: WorkflowSendPrediction;
+  /** The decision model judged the workflow target unlikely: probably a typo. */
+  unexpected?: true;
+  /** The closest known stage path for an unexpected target. */
+  suggestion?: string;
+}
+
+export interface PendingStageMessageRequest {
+	readonly requestId: string;
+	readonly from: SessionInfo;
+	readonly runId: string;
+	readonly target: string;
+	readonly message: Message;
+	readonly senderRegistrationName?: string;
+	readonly senderReturnAddress?: string;
+	readonly live?: boolean;
+	/** #4006: the broker authorized the sender as the session that launched the run, not by membership. */
+	readonly invocationControl?: true;
+}
+
+/** Broker → route owner: the live stage targets a sticky broadcast was actually written to. */
+export interface StickyLiveDeliveredNotice {
+	readonly runId: string;
+	readonly messageId: string;
+	readonly target: string;
+	readonly deliveredTargets: readonly string[];
+}
+
+export interface PendingStageNotificationRequest {
+	readonly requestId: string;
+	readonly from: SessionInfo;
+	readonly message: Message;
+}
+
+export type PendingStageMessageResult =
+	| ({
+			readonly outcome: "queued";
+			readonly position: number;
+			readonly forwardTargets?: readonly string[];
+	  } & WorkflowSendPredictionFields)
+	| { readonly outcome: "delivered" }
+	| { readonly outcome: "forward"; readonly target: string }
+	| { readonly outcome: "refused"; readonly reason: string; readonly reasonCode?: "message_id_conflict" };
+export interface PresenceUpdates {
+  name?: string;
+  status?: string;
+  model?: string;
+  groups?: string[];
+  group?: string;
+  replyCapability?: SessionInfo["replyCapability"];
+}
+
+
+export interface SupervisorAuthorization extends SupervisorRegistration {
+  childName: string;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+
+
+function isWorkflowFutureStageRosterEntries(value: unknown): value is WorkflowFutureStageRosterEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as WorkflowFutureStageRosterEntry).kind === "workflow-future-stage" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).runId === "string" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).target === "string" &&
+				typeof (entry as WorkflowFutureStageRosterEntry).queuedCount === "number" &&
+				Number.isInteger((entry as WorkflowFutureStageRosterEntry).queuedCount) &&
+				(entry as WorkflowFutureStageRosterEntry).queuedCount >= 0 &&
+				isWorkflowFutureStagePredictionFields(entry as WorkflowFutureStageRosterEntry) &&
+				typeof (entry as WorkflowFutureStageRosterEntry).group === "string",
+		)
+	);
+}
+function isWorkflowStageRosterEntries(value: unknown): value is WorkflowStageRosterEntry[] {
+	return (
+		Array.isArray(value) &&
+		value.every(
+			(entry) =>
+				typeof entry === "object" &&
+				entry !== null &&
+				(entry as WorkflowStageRosterEntry).kind === "workflow-stage" &&
+				typeof (entry as WorkflowStageRosterEntry).runId === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).stageId === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).stageName === "string" &&
+				typeof (entry as WorkflowStageRosterEntry).target === "string" &&
+				((entry as WorkflowStageRosterEntry).lifecycle === "pending" ||
+					(entry as WorkflowStageRosterEntry).lifecycle === "running") &&
+				typeof (entry as WorkflowStageRosterEntry).group === "string" &&
+				((entry as WorkflowStageRosterEntry).sessionId === undefined ||
+					typeof (entry as WorkflowStageRosterEntry).sessionId === "string"),
+		)
+	);
+}
+
+/** The broker refused this pending-stage route registration itself, not the connection it was sent on (#3904). */
+export class IntercomPendingStageRouteRefusedError extends Error {
+	/**
+	 * #3906: the broker answered this refusal on its own and kept the connection, with the route of every other run on
+	 * it. When false, the broker (an older one) ended the connection with the refusal.
+	 */
+	readonly connectionKept: boolean;
+	readonly code: PendingStageRouteRefusalCode | undefined;
+	constructor(reason: string, refusal: { readonly connectionKept: boolean; readonly code?: PendingStageRouteRefusalCode } = { connectionKept: false }) {
+		super(reason);
+		this.name = "IntercomPendingStageRouteRefusedError";
+		this.connectionKept = refusal.connectionKept;
+		this.code = refusal.code;
+	}
+}
+
+const PENDING_STAGE_ROUTE_REFUSAL_CODES: ReadonlySet<string> = new Set<PendingStageRouteRefusalCode>([
+	"not_authorized",
+	"invalid_stage_roster",
+	"invalid_possible_stage_roster",
+]);
+
+export class IntercomClient extends EventEmitter {
+	private readonly returnAddress: string;
+	private readonly preferredSessionId: string | undefined;
+	private readonly acknowledgesReceipt: boolean;
+	private readonly connectTimeoutMs: number;
+	private readonly brokerSocketPath: string;
+	/** #3761: the broker of the current registration echoed `acknowledgesReceipt`, so it understands `received`. */
+	private brokerAcknowledgesReceipt = false;
+	/** The broker of the current registration answers a pending-stage route registration that carries a `requestId`. */
+	private brokerAcknowledgesPendingStageRoutes = false;
+	private readonly multiplexesPendingStageRoutes: boolean;
+	/** #3906: the broker of the current registration refuses a pending-stage route without ending the connection. */
+	private brokerRefusesPendingStageRoutesInPlace = false;
+	private brokerAnswersStatus = false;
+	private _multiNodeRouting: BrokerMultiNodeStatus["status"] | undefined;
+	/** #4538: the protocol versions the broker of the current registration accepts. */
+	private _brokerProtocol: BrokerProtocolRange = LEGACY_BROKER_PROTOCOL;
+	/** #4006: the broker of the current registration accepts `claim_workflow_invocation`. */
+	private brokerClaimsWorkflowInvocations = false;
+	/** #3904: the connect attempt in progress, which `disconnect()` cancels. */
+	private connectAttempt: AbortController | undefined;
+	/** #3983: the broker of the current registration accepts `saving`. */
+	private brokerExtendsSaves = false;
+	private brokerMarksEndedChildren = false;
+  private socket: net.Socket | null = null;
+  private _sessionId: string | null = null;
+  private _supervisorSessionId: string | null = null;
+  /** Source identity is captured once at connect, never read from env per message. */
+  private _messageSource: Message["source"] | undefined;
+  private pendingSends = new PendingSendRegistry();
+  private readonly sendResults = new WeakMap<Promise<SendResult>, Promise<SendResult>>();
+  private pendingReplyTargets = new Map<string, { messageId: string; bind(sessionId: string): void }>();
+  private pendingGroupLists = new Map<string, { resolve: (groups: GroupSummary[]) => void; reject: (error: Error) => void }>();
+  private pendingLists = new Map<string, { resolve: (directory: SessionDirectory) => void; reject: (e: Error) => void }>();
+  private pendingPresence = new Map<string, {
+    resolve: (group: string) => void;
+    reject: (error: Error) => void;
+    groups?: string[];
+  }>();
+  private pendingMemberships = new Map<string, { resolve: (groups: string[]) => void; reject: (error: Error) => void }>();
+  private registrationExpectedRouting: ExpectedRouting | undefined;
+  private pendingBrokerStatus = new Map<string, { resolve: (report: BrokerStatusReport) => void; reject: (error: Error) => void }>();
+  private _groups = normalizeGroups();
+  private pendingLiveWorkflowStageRoutes = new Map<string, { resolve(): void; reject(error: Error): void }>();
+  private pendingWorkflowInvocationClaims = new Map<string, { resolve(claimed: boolean): void; reject(error: Error): void }>();
+  private pendingStageRouteRegistrations = new Map<string, { resolve(): void; reject(error: Error): void }>();
+
+  private pendingSupervisorAuthorizations = new Map<string, {
+    resolve: (authorization: SupervisorAuthorization) => void;
+    reject: (error: Error) => void;
+  }>();
+  private pendingRestoringRecipientRequests = new Map<string, { resolve(): void; reject(error: Error): void }>();
+  private disconnecting = false;
+  private disconnectError: Error | null = null;
+  private healthCheck: { socket: net.Socket; result: Promise<Error | undefined> } | undefined;
+
+  private async requestTimeout(socket: net.Socket, error: Error): Promise<Error> {
+    if (this.socket !== socket || socket.destroyed) return this.disconnectError ?? new IntercomClientDisconnectedError();
+    if (this.healthCheck?.socket !== socket) {
+      const requestId = randomUUID();
+      const result = new Promise<Error | undefined>((resolve) => {
+        const finish = (failure?: Error) => {
+          clearTimeout(timer);
+          this.pendingGroupLists.delete(requestId);
+          resolve(failure);
+        };
+        const timer = setTimeout(() => finish(new IntercomBrokerTimeoutError("Broker health check timed out")), GROUP_REQUEST_TIMEOUT_MS);
+        this.pendingGroupLists.set(requestId, { resolve: () => finish(), reject: finish });
+        try {
+          writeMessage(socket, { type: "list_groups", requestId });
+        } catch (cause) {
+          finish(new IntercomClientDisconnectedError({ cause }));
+        }
+      });
+      this.healthCheck = { socket, result };
+    }
+    const check = this.healthCheck;
+    const failure = await check.result;
+    if (this.healthCheck === check) this.healthCheck = undefined;
+    if (failure === undefined) return error;
+    const reported = failure instanceof IntercomBrokerTimeoutError
+      ? new IntercomBrokerTimeoutError(error.message, { cause: failure })
+      : failure;
+    if (this.socket === socket && !this.disconnecting) {
+      // The other requests on this connection fail with the connection's own failure, not with this request's.
+      this.disconnectError ??= failure;
+      this.failPending(this.disconnectError);
+      socket.destroy();
+    }
+    return reported;
+  }
+
+	constructor(returnAddress: string = randomUUID(), options: IntercomClientOptions = {}) {
+		super();
+		if (returnAddress.length === 0) throw new Error("Intercom return address must not be empty");
+		this.returnAddress = returnAddress;
+		this.preferredSessionId = options.preferredSessionId;
+		this.acknowledgesReceipt = options.acknowledgesReceipt === true;
+		this.connectTimeoutMs = options.connectTimeoutMs ?? BROKER_CONNECT_TIMEOUT_MS;
+		this.multiplexesPendingStageRoutes = options.multiplexesPendingStageRoutes === true;
+		this.brokerSocketPath = options.brokerSocketPath ?? getBrokerSocketPath();
+	}
+
+  private failPending(error: Error): void {
+    this.pendingSends.rejectAll(error);
+    for (const pending of this.pendingGroupLists.values()) pending.reject(error);
+    for (const pending of this.pendingLists.values()) pending.reject(error);
+    for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
+    for (const pending of this.pendingRestoringRecipientRequests.values()) pending.reject(error);
+    for (const pending of this.pendingPresence.values()) pending.reject(error);
+    for (const pending of this.pendingMemberships.values()) pending.reject(error);
+    for (const pending of this.pendingLiveWorkflowStageRoutes.values()) pending.reject(error);
+    for (const pending of this.pendingWorkflowInvocationClaims.values()) pending.reject(error);
+    for (const pending of this.pendingStageRouteRegistrations.values()) pending.reject(error);
+    for (const pending of this.pendingBrokerStatus.values()) pending.reject(error);
+    this.pendingLists.clear();
+    this.pendingGroupLists.clear();
+    this.pendingSupervisorAuthorizations.clear();
+    this.pendingRestoringRecipientRequests.clear();
+    this.pendingPresence.clear();
+    this.pendingMemberships.clear();
+    this.pendingLiveWorkflowStageRoutes.clear();
+    this.pendingWorkflowInvocationClaims.clear();
+    this.pendingStageRouteRegistrations.clear();
+    this.pendingBrokerStatus.clear();
+  }
+
+
+  get sessionId(): string | null {
+    return this._sessionId;
+  }
+  get supervisorSessionId(): string | null {
+    return this._supervisorSessionId;
+  }
+  /** #4538: the protocol versions the broker of the current registration accepts; protocol 1 before registration. */
+  get brokerProtocol(): BrokerProtocolRange {
+    return this._brokerProtocol;
+  }
+
+  /** Routing mode of this registration; absent when the broker predates this capability. */
+  get multiNodeRouting(): BrokerMultiNodeStatus["status"] | undefined {
+    return this._multiNodeRouting;
+  }
+  get groups(): string[] {
+    return [...this._groups];
+  }
+
+
+
+  isConnected(): boolean {
+    const socket = this.socket;
+    return Boolean(socket && this._sessionId && !this.disconnecting && !socket.destroyed && !socket.writableEnded && socket.writable);
+  }
+
+  private requireActiveSocket(): net.Socket {
+    if (this.disconnecting) {
+      throw new Error("Client disconnecting");
+    }
+
+    const socket = this.socket;
+    if (!socket || !this._sessionId) {
+      throw new Error("Not connected");
+    }
+
+    if (socket.destroyed || socket.writableEnded || !socket.writable) {
+      throw new IntercomClientDisconnectedError();
+    }
+
+    return socket;
+  }
+
+  /**
+   * Connect and register. A connection the operating system refuses before it reaches the broker (`ECONNREFUSED`,
+   * `EAGAIN`) is retried a few times with a short jittered backoff: when many sessions start at once (a large pooled
+   * fan-out) the broker socket's listen backlog fills and the kernel refuses connections the broker would accept a
+   * moment later (#3904). Every other failure, and a refusal that persists past the retries, rejects as before.
+   */
+  async connect(
+    session: Omit<SessionInfo, "id">,
+    supervisor?: SupervisorRegistration,
+    supervisorOwnerToken?: string,
+    messageSource?: Message["source"],
+    registrationGroup?: string,
+    expectedRouting?: ExpectedRouting,
+  ): Promise<void> {
+    // #3904: `disconnect()` aborts this attempt, its retry delay and any later retry, so a session that finished
+    // its cleanup never ends up connected and registered by a retry still in flight.
+    const attempt = new AbortController();
+    this.connectAttempt = attempt;
+    try {
+      for (let retry = 0; ; retry++) {
+        if (attempt.signal.aborted) throw connectAborted();
+        try {
+          await this.connectOnce(attempt.signal, session, supervisor, supervisorOwnerToken, messageSource, registrationGroup, expectedRouting);
+          return;
+        } catch (error) {
+          if (attempt.signal.aborted) throw connectAborted();
+          if (!(error instanceof Error)) throw error;
+          if (!isBacklogRefusal(error) || retry >= BROKER_BACKLOG_RETRIES) {
+            const classified = await classifyRegistrationFailure(error, this.brokerSocketPath);
+            if (attempt.signal.aborted) throw connectAborted();
+            if (expectedRouting?.verify === true && classified instanceof ConnectionClosedBeforeRegistrationError) {
+              throw new IntercomRoutingUnavailableError("unsupported", "register");
+            }
+            throw classified;
+          }
+          const backoff = BROKER_BACKLOG_RETRY_BASE_MS * 2 ** retry;
+          await abortableDelay(backoff * (0.5 + Math.random() / 2), attempt.signal);
+        }
+      }
+    } finally {
+      if (this.connectAttempt === attempt) this.connectAttempt = undefined;
+    }
+  }
+
+  private connectOnce(
+    signal: AbortSignal,
+    session: Omit<SessionInfo, "id">,
+    supervisor?: SupervisorRegistration,
+    supervisorOwnerToken?: string,
+    messageSource?: Message["source"],
+    registrationGroup?: string,
+    expectedRouting?: ExpectedRouting,
+  ): Promise<void> {
+    if (this.socket) {
+      return Promise.reject(new Error("Already connected"));
+    }
+    this._messageSource = messageSource ?? readSubagentMessageSource();
+    this._groups = normalizeGroups(session.groups, session.group);
+    this.registrationExpectedRouting = expectedRouting;
+
+    return new Promise((resolve, reject) => {
+      const socket = net.connect(this.brokerSocketPath);
+      this.socket = socket;
+      this.disconnectError = null;
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (!this._sessionId) {
+          cleanupConnectionAttempt();
+          cleanupSocketListeners();
+          if (this.socket === socket) {
+            this.socket = null;
+          }
+          socket.destroy();
+          reject(new IntercomBrokerTimeoutError("Connection timeout"));
+        }
+      }, this.connectTimeoutMs);
+      
+      let connectionEstablished = false;
+      
+      const onRegistered = () => {
+        settled = true;
+        connectionEstablished = true;
+        cleanupConnectionAttempt();
+        resolve();
+      };
+      const onRegistrationFailed = (error: Error) => onError(error);
+      
+      const onError = (err: Error) => {
+        settled = true;
+        cleanupConnectionAttempt();
+        cleanupSocketListeners();
+        if (this.socket === socket) {
+          this.socket = null;
+        }
+        socket.destroy();
+        reject(err);
+      };
+      
+      const onClose = () => {
+        const wasConnecting = !settled && !this._sessionId;
+        const wasDisconnecting = this.disconnecting;
+        const disconnectError = this.disconnectError ?? new IntercomClientDisconnectedError();
+        this.disconnecting = false;
+        cleanupConnectionAttempt();
+        cleanupSocketListeners();
+        this.failPending(disconnectError);
+        if (this.socket === socket) {
+          this.socket = null;
+        }
+        this._sessionId = null;
+        this._supervisorSessionId = null;
+        this.brokerAcknowledgesReceipt = false;
+        this.brokerAcknowledgesPendingStageRoutes = false;
+        this.brokerRefusesPendingStageRoutesInPlace = false;
+        this.brokerAnswersStatus = false;
+        this._multiNodeRouting = undefined;
+        this._brokerProtocol = LEGACY_BROKER_PROTOCOL;
+        this.brokerClaimsWorkflowInvocations = false;
+        this.brokerExtendsSaves = false;
+        this.brokerMarksEndedChildren = false;
+        this._messageSource = undefined;
+        this.disconnectError = null;
+        if (connectionEstablished && !wasDisconnecting) {
+          this.emit("disconnected", disconnectError);
+        }
+        if (wasConnecting) {
+          reject(new ConnectionClosedBeforeRegistrationError());
+        }
+      };
+
+      const onSocketError = (err: Error) => {
+        if (connectionEstablished) {
+          // A transport error on an already-registered socket (ECONNRESET, EPIPE,
+          // ETIMEDOUT, or a write-after-end from our own write) is a *recoverable*
+          // disconnect: the broker connection is gone, and the lightweight wrapper
+          // re-imports and reconnects on the next call. Record it as the typed
+          // recoverable error so `onClose` rejects pending work and emits
+          // `disconnected` with something the classifier recognizes, and keep the
+          // raw transport error as `cause` so the code is still diagnosable.
+          //
+          // `??=`, not `=`: `onReaderError` records a protocol error and then
+          // destroys the socket, and a socket 'error' can still follow. Overwriting
+          // would silently downgrade a non-recoverable protocol failure into a
+          // recoverable one. First error recorded wins.
+          this.disconnectError ??= new IntercomClientDisconnectedError({ cause: err });
+          // The raw error keeps flowing to `error` listeners: that channel exists for
+          // diagnosis, and the transport code is what a debugger wants to see.
+          this.emit("error", err);
+        }
+      };
+
+      const onReaderError = (error: Error) => {
+        const protocolError = new Error(`Intercom protocol error: ${error.message}`, { cause: error });
+        if (!connectionEstablished) {
+          onError(protocolError);
+          return;
+        }
+        this.disconnectError = protocolError;
+        this.emit("error", protocolError);
+        socket.destroy();
+      };
+
+      const reader = createMessageReader((msg) => {
+        this.handleBrokerMessage(msg);
+      }, onReaderError);
+      
+      const onConnect = (): void => {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        try {
+          writeMessage(socket, {
+            ...(expectedRouting?.verify === true
+              ? { type: "register_verified", expectedRouting: { acrossMachines: expectedRouting.acrossMachines } }
+              : { type: "register" }),
+            session,
+            protocol: { ...BROKER_PROTOCOL },
+            ...(registrationGroup !== undefined ? { registrationGroup } : {}),
+			returnAddress: this.returnAddress,
+			...(this.preferredSessionId === undefined ? {} : { preferredSessionId: this.preferredSessionId }),
+			...(this.acknowledgesReceipt ? { acknowledgesReceipt: true as const } : {}),
+            ...(supervisor ? { supervisor } : {}),
+            ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
+          });
+        } catch (error) {
+          cleanupConnectionAttempt();
+          cleanupSocketListeners();
+          if (this.socket === socket) {
+            this.socket = null;
+          }
+          socket.destroy();
+          reject(toError(error));
+        }
+      };
+
+      const onAbort = () => onError(connectAborted());
+
+      const cleanupConnectionAttempt = () => {
+        signal.removeEventListener("abort", onAbort);
+        socket.off("connect", onConnect);
+        this.off("_registered", onRegistered);
+        this.off("_registration_failed", onRegistrationFailed);
+        socket.off("error", onError);
+        clearTimeout(timeout);
+      };
+
+      const cleanupSocketListeners = () => {
+        socket.off("data", reader);
+        socket.off("error", onSocketError);
+        socket.off("close", onClose);
+      };
+      
+      socket.on("data", reader);
+      socket.on("error", onError);
+      socket.on("close", onClose);
+      
+      socket.on("error", onSocketError);
+      this.once("_registered", onRegistered);
+      this.once("_registration_failed", onRegistrationFailed);
+      
+      // Register only once connected, and only if the attempt was not cancelled meanwhile (#3904).
+      signal.addEventListener("abort", onAbort, { once: true });
+      socket.once("connect", onConnect);
+    });
+  }
+
+  private handleBrokerMessage(msg: unknown): void {
+    if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
+      throw new Error("Invalid broker message");
+    }
+
+    const brokerMessage = msg as { type: string } & Record<string, unknown>;
+
+    if (this._sessionId === null
+      && brokerMessage.type !== "registered"
+      && brokerMessage.type !== "registration_failed") {
+      throw new Error(`Received ${brokerMessage.type} before registered`);
+    }
+
+    switch (brokerMessage.type) {
+      case "registered": {
+        if (typeof brokerMessage.sessionId !== "string"
+          || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")
+          || (brokerMessage.acknowledgesReceipt !== undefined && brokerMessage.acknowledgesReceipt !== true)
+          || (brokerMessage.acknowledgesPendingStageRoutes !== undefined && brokerMessage.acknowledgesPendingStageRoutes !== true)
+          || (brokerMessage.refusesPendingStageRoutesInPlace !== undefined && brokerMessage.refusesPendingStageRoutesInPlace !== true)
+          || (brokerMessage.brokerStatus !== undefined && brokerMessage.brokerStatus !== true)
+          || (brokerMessage.claimsWorkflowInvocations !== undefined && brokerMessage.claimsWorkflowInvocations !== true)
+          || (brokerMessage.multiNodeRouting !== undefined && brokerMessage.multiNodeRouting !== "off"
+            && brokerMessage.multiNodeRouting !== "starting" && brokerMessage.multiNodeRouting !== "on"
+            && brokerMessage.multiNodeRouting !== "unavailable")
+          || (brokerMessage.extendsSaves !== undefined && brokerMessage.extendsSaves !== true)
+          || (brokerMessage.marksEndedChildren !== undefined && brokerMessage.marksEndedChildren !== true)
+          || (brokerMessage.protocol !== undefined && !isBrokerProtocolRange(brokerMessage.protocol as JsonWireValue))) {
+          throw new Error("Invalid registered message");
+        }
+        if (this._sessionId !== null) {
+          throw new Error("Received duplicate registered message");
+        }
+        // #4538: a session that registered unverified on a broker it took for single-machine is refused if the broker
+        // that answered routes otherwise, as `register_verified` would have been, before it takes the registration.
+        const expected = this.registrationExpectedRouting;
+        if (
+          expected !== undefined && !expected.verify
+          && brokerMessage.multiNodeRouting !== undefined
+          && (brokerMessage.multiNodeRouting !== "off") !== expected.acrossMachines
+        ) {
+          this.emit("_registration_failed", new IntercomRoutingChangedError(expected.acrossMachines));
+          break;
+        }
+        this._sessionId = brokerMessage.sessionId;
+        this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"
+          ? brokerMessage.supervisorSessionId
+          : null;
+        // #3761: a broker from before receipts never echoes the capability and drops a client that sends `received`.
+        this.brokerAcknowledgesReceipt = this.acknowledgesReceipt && brokerMessage.acknowledgesReceipt === true;
+        this.brokerAcknowledgesPendingStageRoutes = brokerMessage.acknowledgesPendingStageRoutes === true;
+        this.brokerRefusesPendingStageRoutesInPlace = brokerMessage.refusesPendingStageRoutesInPlace === true;
+        this.brokerAnswersStatus = brokerMessage.brokerStatus === true;
+        this._multiNodeRouting = brokerMessage.multiNodeRouting as BrokerMultiNodeStatus["status"] | undefined;
+        this.brokerClaimsWorkflowInvocations = brokerMessage.claimsWorkflowInvocations === true;
+        this.brokerExtendsSaves = this.brokerAcknowledgesReceipt && brokerMessage.extendsSaves === true;
+        this.brokerMarksEndedChildren = brokerMessage.marksEndedChildren === true;
+        this._brokerProtocol = protocolRangeOf(brokerMessage.protocol as BrokerProtocolRange | undefined);
+        this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
+        break;
+      }
+      case "registration_failed": {
+        if (typeof brokerMessage.reason !== "string") throw new Error("Invalid registration_failed message");
+        // A coded refusal is classified by construction downstream; the code, not
+        // the wording, decides whether the stage's bounded warm-up retry may clear it.
+        // A code this client does not know (broker/client version skew) keeps the
+        // reason as an ordinary, non-recoverable error.
+        const refusal = isLiveWorkflowStageRouteRefusalCode(brokerMessage.code)
+          ? new IntercomLiveRouteRefusedError(brokerMessage.code, brokerMessage.reason)
+          : brokerMessage.code === BROKER_RETIRING_CODE
+          ? new IntercomBrokerRetiringError(brokerMessage.reason)
+          : brokerMessage.code === BROKER_ROUTING_CHANGED_CODE
+          ? new IntercomRoutingChangedError(this.registrationExpectedRouting?.acrossMachines ?? false)
+          : new Error(brokerMessage.reason);
+        if (this._sessionId === null) {
+          // Still registering: `connect()` owns the failure and its own cleanup.
+          this.emit("_registration_failed", refusal);
+          break;
+        }
+        // The broker reuses this frame to refuse an *established* client's request
+        // (for example a rejected pending-stage route update) and then ends the
+        // socket, deliberately dropping anything already pipelined behind it. By
+        // this point `connect()` has removed its `_registration_failed` listener,
+        // so emitting there would discard the refusal and leave every pipelined
+        // request — notably the `listSessions()` barrier — to expire on its own
+        // five-second timer with an unusable diagnostic. Record the refusal as the
+        // disconnect cause, settle outstanding work with it, and destroy the socket
+        // so no new work is accepted while we wait for the peer FIN. `onClose`
+        // still owns session/socket teardown and the `disconnected` emission.
+        const refusedRouteId = typeof brokerMessage.requestId === "string" ? brokerMessage.requestId : "";
+        const refusedRoute = this.pendingStageRouteRegistrations.get(refusedRouteId);
+        if (refusedRoute !== undefined) {
+          this.pendingStageRouteRegistrations.delete(refusedRouteId);
+          refusedRoute.reject(new IntercomPendingStageRouteRefusedError(brokerMessage.reason));
+        }
+        this.disconnectError ??= refusal;
+        this.failPending(this.disconnectError);
+        this.socket?.destroy();
+        break;
+      }
+      case "question_target": {
+        const { messageId, attemptId, sessionId } = brokerMessage;
+        if (typeof messageId !== "string" || typeof attemptId !== "string" || typeof sessionId !== "string") {
+          throw new Error("Invalid question_target message");
+        }
+        const pending = this.pendingReplyTargets.get(attemptId);
+        if (pending?.messageId === messageId) pending.bind(sessionId);
+        break;
+      }
+      case "sessions": {
+		const { requestId, sessions, workflowStages, workflowFutureStages, restricted } = brokerMessage;
+		if (
+			typeof requestId !== "string" ||
+			!Array.isArray(sessions) ||
+			!sessions.every(isSessionInfo) ||
+			(workflowStages !== undefined && !isWorkflowStageRosterEntries(workflowStages)) ||
+			(workflowFutureStages !== undefined && !isWorkflowFutureStageRosterEntries(workflowFutureStages)) ||
+			(restricted !== undefined && restricted !== true)
+		) {
+			throw new Error("Invalid sessions message");
+		}
+		const pending = this.pendingLists.get(requestId);
+		if (!pending) return;
+		this.pendingLists.delete(requestId);
+		pending.resolve({
+			sessions,
+			workflowStages: workflowStages ?? [],
+			workflowFutureStages: workflowFutureStages ?? [],
+			...(restricted === true ? { restricted: true as const } : {}),
+		});
+		break;
+	  }
+      case "groups": {
+        const { requestId, groups } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          !Array.isArray(groups) ||
+          !groups.every((summary) =>
+            typeof summary === "object" &&
+            summary !== null &&
+            typeof summary.group === "string" &&
+            typeof summary.sessionCount === "number" &&
+            typeof summary.member === "boolean"
+          )
+        ) {
+          throw new Error("Invalid groups message");
+        }
+        const pending = this.pendingGroupLists.get(requestId);
+        if (!pending) return;
+        this.pendingGroupLists.delete(requestId);
+        pending.resolve(groups as GroupSummary[]);
+        break;
+      }
+      case "broker_status": {
+        const { requestId } = brokerMessage;
+        const report = brokerMessage.report as JsonWireValue | undefined;
+        if (typeof requestId !== "string" || !isBrokerStatusReport(report)) throw new Error("Invalid broker_status message");
+        const pending = this.pendingBrokerStatus.get(requestId);
+        if (!pending) return;
+        this.pendingBrokerStatus.delete(requestId);
+        pending.resolve(report);
+        break;
+      }
+      case "supervisor_authorized": {
+        const { requestId, capability, supervisorSessionId, childName } = brokerMessage;
+        if (typeof requestId !== "string" || typeof capability !== "string"
+          || typeof supervisorSessionId !== "string" || typeof childName !== "string") {
+          throw new Error("Invalid supervisor_authorized message");
+        }
+        const pending = this.pendingSupervisorAuthorizations.get(requestId);
+        if (!pending) return;
+        this.pendingSupervisorAuthorizations.delete(requestId);
+        pending.resolve({ capability, supervisorSessionId, childName });
+        break;
+      }
+      case "message": {
+        const { from, message, channel } = brokerMessage;
+        if (!isSessionInfo(from) || !isMessage(message) || (channel !== undefined && channel !== "supervisor")) {
+          throw new Error("Invalid message event");
+        }
+        this.emit("message", from, message, channel);
+        break;
+      }
+		case "pending_stage_message": {
+			const { requestId, from, senderRegistrationName, senderReturnAddress, runId, target, message, live, invocationControl } =
+				brokerMessage;
+			if (
+				typeof requestId !== "string" ||
+				!isSessionInfo(from) ||
+				(senderRegistrationName !== undefined && typeof senderRegistrationName !== "string") ||
+				(senderReturnAddress !== undefined && typeof senderReturnAddress !== "string") ||
+				typeof runId !== "string" ||
+				typeof target !== "string" ||
+				!isMessage(message) ||
+				(live !== undefined && typeof live !== "boolean") ||
+				(invocationControl !== undefined && invocationControl !== true)
+			) {
+				throw new Error("Invalid pending-stage message event");
+			}
+			this.emit("pending_stage_message", {
+				requestId,
+				from,
+				...(senderRegistrationName === undefined ? {} : { senderRegistrationName }),
+				...(senderReturnAddress === undefined ? {} : { senderReturnAddress }),
+				runId,
+				target,
+				message,
+				...(live === true ? { live: true } : {}),
+				...(invocationControl === true ? { invocationControl: true } : {}),
+			} satisfies PendingStageMessageRequest);
+			break;
+		}
+		case "pending_stage_notification": {
+			const { requestId, from, message } = brokerMessage;
+			if (typeof requestId !== "string" || !isSessionInfo(from) || !isMessage(message)) {
+				throw new Error("Invalid pending-stage notification event");
+			}
+			this.emit("pending_stage_notification", {
+				requestId,
+				from,
+				message,
+			} satisfies PendingStageNotificationRequest);
+			break;
+		}
+		case "sticky_live_delivered": {
+			const { runId, messageId, target, deliveredTargets } = brokerMessage;
+			if (
+				typeof runId !== "string" ||
+				typeof messageId !== "string" ||
+				typeof target !== "string" ||
+				!Array.isArray(deliveredTargets) ||
+				!deliveredTargets.every((entry) => typeof entry === "string")
+			) {
+				throw new Error("Invalid sticky live-delivery event");
+			}
+			this.emit("sticky_live_delivered", {
+				runId,
+				messageId,
+				target,
+				deliveredTargets,
+			} satisfies StickyLiveDeliveredNotice);
+			break;
+		}
+		case "pending_stage_route_revoked": {
+			const { runId } = brokerMessage;
+			if (typeof runId !== "string") throw new Error("Invalid pending-stage route revocation");
+			this.emit("pending_stage_route_revoked", { runId });
+			break;
+		}
+      case "pending_stage_route_refused": {
+        const { requestId, runId, code, reason } = brokerMessage;
+        if (
+          typeof requestId !== "string" ||
+          typeof runId !== "string" ||
+          typeof reason !== "string" ||
+          typeof code !== "string"
+        ) {
+          throw new Error("Invalid pending-stage route refusal");
+        }
+        const pending = this.pendingStageRouteRegistrations.get(requestId);
+        if (!pending) return;
+        this.pendingStageRouteRegistrations.delete(requestId);
+        pending.reject(
+          new IntercomPendingStageRouteRefusedError(reason, {
+            connectionKept: true,
+            ...(PENDING_STAGE_ROUTE_REFUSAL_CODES.has(code) ? { code: code as PendingStageRouteRefusalCode } : {}),
+          }),
+        );
+        break;
+      }
+      case "pending_stage_route_registered": {
+        const { requestId } = brokerMessage;
+        if (typeof requestId !== "string") throw new Error("Invalid pending-stage route registration acknowledgement");
+        const pending = this.pendingStageRouteRegistrations.get(requestId);
+        if (!pending) return;
+        this.pendingStageRouteRegistrations.delete(requestId);
+        pending.resolve();
+        break;
+      }
+      case "workflow_invocation_claimed": {
+        const { requestId, claimed } = brokerMessage;
+        if (typeof requestId !== "string" || typeof claimed !== "boolean") throw new Error("Invalid workflow invocation claim answer");
+        const pending = this.pendingWorkflowInvocationClaims.get(requestId);
+        if (!pending) return;
+        this.pendingWorkflowInvocationClaims.delete(requestId);
+        pending.resolve(claimed);
+        break;
+      }
+      case "live_workflow_stage_route_registered": {
+        const { requestId } = brokerMessage;
+        if (typeof requestId !== "string") throw new Error("Invalid live workflow-stage route registration");
+        const pending = this.pendingLiveWorkflowStageRoutes.get(requestId);
+        if (!pending) return;
+        this.pendingLiveWorkflowStageRoutes.delete(requestId);
+        pending.resolve();
+        break;
+      }
+      case "queued": {
+		const { messageId, attemptId, target, position } = brokerMessage;
+        if (
+          typeof messageId !== "string" ||
+          (attemptId !== undefined && typeof attemptId !== "string") ||
+			typeof target !== "string" ||
+          typeof position !== "number" ||
+          position < 1 ||
+			!isWorkflowSendPredictionFields(brokerMessage)
+        ) {
+          throw new Error("Invalid queued message");
+        }
+		const result = {
+			id: messageId,
+			delivered: false,
+			queued: true,
+			target,
+			position,
+			...workflowSendPredictionFields(brokerMessage),
+		} as const;
+        if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+        else this.pendingSends.resolve(messageId, attemptId, result);
+        break;
+      }
+      case "send_held": {
+        const { messageId, attemptId, timeoutMs } = brokerMessage;
+        if (
+          typeof messageId !== "string" ||
+          (attemptId !== undefined && typeof attemptId !== "string") ||
+          typeof timeoutMs !== "number" ||
+          !Number.isFinite(timeoutMs) ||
+          timeoutMs <= 0
+        ) {
+          throw new Error("Invalid send_held message");
+        }
+        // #3760: the recipient is a subagent being restored; the broker answers within `timeoutMs`.
+        this.pendingSends.extend(messageId, attemptId, timeoutMs + HELD_SEND_GRACE_MS);
+        break;
+      }
+      case "restoring_recipient_wake": {
+        const { capability, childName } = brokerMessage;
+        if (typeof childName !== "string" || (capability !== undefined && typeof capability !== "string")) {
+          throw new Error("Invalid restoring_recipient_wake message");
+        }
+        // #4326: a send waits at the broker for a released child this session reserved; its owner wakes it.
+        this.emit("restoring_recipient_wake", capability === undefined ? { childName } : { childName, capability });
+        break;
+      }
+      case "released_child_reply": {
+        const { childName, handoffId, replyTo, from, message } = brokerMessage;
+        if (
+          typeof childName !== "string" ||
+          typeof handoffId !== "string" ||
+          typeof replyTo !== "string" ||
+          !isSessionInfo(from) ||
+          !isMessage(message) ||
+          message.replyTo !== replyTo
+        ) {
+          throw new Error("Invalid released_child_reply message");
+        }
+        const notice: ReleasedChildReply = { childName, handoffId, replyTo, from, message };
+        this.emit("released_child_reply", notice);
+        break;
+      }
+      case "released_children_ack": {
+        const { requestId, refusal } = brokerMessage;
+        const parsed = refusal === undefined ? undefined : readReleasedChildRefusal(refusal);
+        if (typeof requestId !== "string" || (refusal !== undefined && parsed === undefined)) {
+          throw new Error("Invalid released_children_ack message");
+        }
+        const pending = this.pendingRestoringRecipientRequests.get(requestId);
+        if (!pending) return;
+        this.pendingRestoringRecipientRequests.delete(requestId);
+        if (parsed === undefined) pending.resolve();
+        else pending.reject(releasedChildErrorFor(parsed));
+        break;
+      }
+      case "restoring_recipient_ack": {
+        const { requestId, error } = brokerMessage;
+        if (typeof requestId !== "string" || (error !== undefined && typeof error !== "string")) {
+          throw new Error("Invalid restoring_recipient_ack message");
+        }
+        const pending = this.pendingRestoringRecipientRequests.get(requestId);
+        if (!pending) return;
+        this.pendingRestoringRecipientRequests.delete(requestId);
+        if (error === undefined) pending.resolve();
+        else pending.reject(new Error(error));
+        break;
+      }
+      case "delivered": {
+        const { messageId, attemptId } = brokerMessage;
+        if (typeof messageId !== "string" || (attemptId !== undefined && typeof attemptId !== "string")) {
+          throw new Error("Invalid delivered message");
+        }
+        const result = { id: messageId, delivered: true } as const;
+        if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+        else this.pendingSends.resolve(messageId, attemptId, result);
+        break;
+      }
+      case "delivery_failed": {
+		const { messageId, attemptId, reason, reasonCode } = brokerMessage;
+		const wireError = brokerMessage.error as JsonWireValue | undefined;
+		const error = readSerializedIntercomReleasedReplyError(wireError);
+		const wireRecipientError = brokerMessage.recipientError as JsonWireValue | undefined;
+		const recipientError = readSerializedIntercomRecipientGoneError(wireRecipientError);
+		if (
+			typeof messageId !== "string" ||
+			(attemptId !== undefined && typeof attemptId !== "string") ||
+			typeof reason !== "string" ||
+			(reasonCode !== undefined && (typeof reasonCode !== "string" || !isDeliveryFailureReasonCode(reasonCode))) ||
+			(wireError !== undefined && (error === undefined || error.code !== reasonCode)) ||
+			// A valid released-reply `error` always comes with its `reasonCode`, so this also refuses carrying both errors.
+			(wireRecipientError !== undefined && (recipientError === undefined || reasonCode !== undefined))
+		) {
+			throw new Error("Invalid delivery_failed message");
+		}
+		const result: SendResult = {
+			id: messageId,
+			delivered: false,
+			reason,
+			...(reasonCode === undefined ? {} : { reasonCode }),
+			...(error === undefined ? {} : { error: rehydrateIntercomReleasedReplyError(error) }),
+			...(recipientError === undefined
+				? {}
+				: { reasonCode: recipientError.code, error: rehydrateIntercomRecipientGoneError(recipientError) }),
+		};
+		if (attemptId === undefined) this.pendingSends.resolveLegacy(messageId, result);
+		else this.pendingSends.resolve(messageId, attemptId, result);
+		break;
+      }
+      case "session_joined": {
+        if (!isSessionInfo(brokerMessage.session)) {
+          throw new Error("Invalid session_joined message");
+        }
+        this.emit("session_joined", brokerMessage.session);
+        break;
+      }
+      case "session_left": {
+        if (typeof brokerMessage.sessionId !== "string") {
+          throw new Error("Invalid session_left message");
+        }
+        this.emit("session_left", brokerMessage.sessionId);
+        break;
+      }
+      case "presence_update": {
+        if (!isSessionInfo(brokerMessage.session)) {
+          throw new Error("Invalid presence_update message");
+        }
+        this.emit("presence_update", brokerMessage.session);
+        break;
+      }
+      case "presence_ack": {
+        if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.group !== "string") {
+          throw new Error("Invalid presence_ack message");
+        }
+        const pending = this.pendingPresence.get(brokerMessage.requestId);
+        if (!pending) return;
+        this.pendingPresence.delete(brokerMessage.requestId);
+        this._groups = pending.groups === undefined
+          ? normalizeGroups(undefined, brokerMessage.group)
+          : normalizeGroups(pending.groups);
+        pending.resolve(brokerMessage.group);
+        break;
+      }
+      case "membership_ack": {
+        const { requestId, groups } = brokerMessage;
+        if (typeof requestId !== "string" || !Array.isArray(groups) || !groups.every((group) => typeof group === "string")) {
+          throw new Error("Invalid membership_ack message");
+        }
+        const pending = this.pendingMemberships.get(requestId);
+        if (!pending) return;
+        this.pendingMemberships.delete(requestId);
+        const normalizedGroups = [...normalizeGroups(groups)];
+        this._groups = new Set(normalizedGroups);
+        pending.resolve(normalizedGroups);
+        break;
+      }
+      case "presence_failed": {
+        if (typeof brokerMessage.requestId !== "string" || typeof brokerMessage.reason !== "string") {
+          throw new Error("Invalid presence_failed message");
+        }
+        const presence = this.pendingPresence.get(brokerMessage.requestId);
+        if (presence) {
+          this.pendingPresence.delete(brokerMessage.requestId);
+          presence.reject(new Error(brokerMessage.reason));
+          break;
+        }
+        const membership = this.pendingMemberships.get(brokerMessage.requestId);
+        if (!membership) return;
+        this.pendingMemberships.delete(brokerMessage.requestId);
+        membership.reject(new Error(brokerMessage.reason));
+        break;
+      }
+      case "peer_disconnected": {
+        const { replyTo, peerSessionId, peerName } = brokerMessage;
+        if (typeof replyTo !== "string" || typeof peerSessionId !== "string"
+          || (peerName !== undefined && typeof peerName !== "string")) {
+          throw new Error("Invalid peer_disconnected message");
+        }
+        this.emit("peer_disconnected", {
+          replyTo,
+          peerSessionId,
+          ...(peerName !== undefined ? { peerName } : {}),
+        });
+        break;
+      }
+      case "peer_rebound": {
+        const { replyTo, previousSessionId, sessionId } = brokerMessage;
+        if (typeof replyTo !== "string" || typeof previousSessionId !== "string" || typeof sessionId !== "string") {
+          throw new Error("Invalid peer_rebound message");
+        }
+        this.emit("peer_rebound", { replyTo, previousSessionId, sessionId });
+        break;
+      }
+      case "error": {
+        if (typeof brokerMessage.error !== "string") {
+          throw new Error("Invalid error message");
+        }
+        this.emit("error", new Error(brokerMessage.error));
+        break;
+      }
+      default:
+        throw new Error(`Unknown broker message type: ${brokerMessage.type}`);
+    }
+  }
+  async disconnect(): Promise<void> {
+    // A connect still in progress (or waiting to retry) is cancelled: it closes any socket it opened and never
+    // registers (#3904).
+    if (this.connectAttempt !== undefined && this._sessionId === null) {
+      this.connectAttempt.abort();
+      return;
+    }
+    const socket = this.socket;
+    if (!socket) {
+      return;
+    }
+    this.disconnecting = true;
+    this.disconnectError = null;
+    this.failPending(new IntercomClientDisconnectedError());
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        socket.off("close", onClose);
+        socket.off("error", onError);
+        resolve();
+      };
+      const onClose = () => finish();
+      const onError = () => {
+        socket.destroy();
+      };
+      const timeout = setTimeout(() => {
+        socket.destroy();
+      }, 2000);
+      socket.once("close", onClose);
+      socket.once("error", onError);
+      try {
+        writeMessage(socket, { type: "unregister" });
+        socket.end();
+      } catch {
+        // Disconnect should still finish even if the unregister write fails.
+        socket.destroy();
+      }
+    });
+  }
+  async listSessions(group?: string): Promise<SessionInfo[]> {
+	return (await this.listDirectory(group)).sessions;
+  }
+
+  listDirectory(group?: string): Promise<SessionDirectory> {
+	let socket: net.Socket;
+	try {
+		socket = this.requireActiveSocket();
+	} catch (error) {
+		return Promise.reject(toError(error));
+	}
+	return new Promise((resolve, reject) => {
+		const requestId = randomUUID();
+		const timeout = setTimeout(() => {
+			if (!this.pendingLists.delete(requestId)) return;
+			void this.requestTimeout(socket, new Error("List sessions timeout")).then(reject);
+		}, 5000);
+		this.pendingLists.set(requestId, {
+			resolve: (directory) => {
+				clearTimeout(timeout);
+				resolve(directory);
+			},
+			reject: (error) => {
+				clearTimeout(timeout);
+				reject(error);
+			},
+		});
+		try {
+			writeMessage(socket, group === undefined ? { type: "list", requestId } : { type: "list", requestId, group });
+		} catch (error) {
+			clearTimeout(timeout);
+			this.pendingLists.delete(requestId);
+			reject(toError(error));
+		}
+	});
+  }
+  listGroups(): Promise<GroupSummary[]> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingGroupLists.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("List groups timeout")).then(reject);
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingGroupLists.set(requestId, {
+        resolve: (groups) => { clearTimeout(timeout); resolve(groups); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "list_groups", requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingGroupLists.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  /** The broker's own status, including multi-node routing; `undefined` from a broker older than `broker_status`. */
+  brokerStatus(): Promise<BrokerStatusReport | undefined> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    if (!this.brokerAnswersStatus) return Promise.resolve(undefined);
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingBrokerStatus.delete(requestId)) return;
+        reject(new Error("Broker status timeout"));
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingBrokerStatus.set(requestId, {
+        resolve: (report) => { clearTimeout(timeout); resolve(report); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { type: "broker_status", requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingBrokerStatus.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  joinGroup(group: string): Promise<string[]> {
+    return this.updateMembership("join_group", group);
+  }
+
+  leaveGroup(group?: string): Promise<string[]> {
+    return this.updateMembership("leave_group", group);
+  }
+
+  private updateMembership(type: "join_group" | "leave_group", group?: string): Promise<string[]> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingMemberships.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Membership update timeout")).then(reject);
+      }, GROUP_REQUEST_TIMEOUT_MS);
+      this.pendingMemberships.set(requestId, {
+        resolve: (groups) => { clearTimeout(timeout); resolve(groups); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, group === undefined ? { type, requestId } : { type, requestId, group });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingMemberships.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+
+  authorizeSupervisorChild(childName: string, capability?: string): Promise<SupervisorAuthorization> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const normalizedChildName = childName.trim();
+    if (!normalizedChildName) return Promise.reject(new Error("Child session name is required"));
+    return new Promise((resolve, reject) => {
+      const requestId = randomUUID();
+      const timeout = setTimeout(() => {
+        if (!this.pendingSupervisorAuthorizations.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Supervisor authorization timeout")).then(reject);
+      }, 5000);
+      this.pendingSupervisorAuthorizations.set(requestId, {
+        resolve: (authorization) => { clearTimeout(timeout); resolve(authorization); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, capability
+          ? { type: "authorize_supervisor", requestId, childName: normalizedChildName, capability }
+          : { type: "authorize_supervisor", requestId, childName: normalizedChildName });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingSupervisorAuthorizations.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  /**
+   * #3760: hold sends to the child that `capability` (issued to this session by `authorizeSupervisorChild`)
+   * names, and to its `aliases`, until the child registers with that capability. Calling again adds aliases.
+   * A `dormant` hold keeps the child addressable until the supervisor that restores it takes the hold over.
+   */
+  reserveRestoringRecipient(
+    capability: string,
+    options: { group?: string; aliases?: readonly string[]; dormant?: boolean } = {},
+  ): Promise<void> {
+    return this.restoringRecipientRequest({
+      type: "reserve_restoring_recipient",
+      capability,
+      ...(options.group === undefined ? {} : { group: options.group }),
+      ...(options.aliases === undefined ? {} : { aliases: [...options.aliases] }),
+      ...(options.dormant === true ? { dormant: true } : {}),
+    });
+  }
+
+  /**
+   * #3760: end that hold. With `gone` (the reason), held and later senders are told the child is gone. With
+   * `refusal`, the senders held now are told that reason and later sends are routed normally. With neither,
+   * held sends are routed normally.
+   */
+  releaseRestoringRecipient(capability: string, outcome?: string | { gone?: string; refusal?: string }): Promise<void> {
+    const { gone, refusal } = typeof outcome === "string" ? { gone: outcome, refusal: undefined } : (outcome ?? {});
+    return this.restoringRecipientRequest({
+      type: "release_restoring_recipient",
+      capability,
+      ...(gone === undefined ? {} : { gone }),
+      ...(refusal === undefined ? {} : { refusal }),
+    });
+  }
+
+  /**
+   * #4326: reserve released subagents by child name for this connection, which becomes their owner: sends to
+   * them are held, and the first one held asks this session to wake the child when `wake` is true. Children go in
+   * frames of at most 500. Every item is validated before any frame is sent; an invalid item fails the call with a
+   * `ReleasedChildReservationError` naming its child, and reserves nothing from its frame or any later one. The
+   * broker refuses a whole frame the same way, with `not_owner` when another session owns one of its children and
+   * `group_not_allowed` for a workflow group this session is not a member of.
+   * Reserving a child again replaces its aliases, group and wake flag and keeps the sends held for it.
+   */
+  async reserveReleasedChildren(children: readonly ReleasedChildReservation[]): Promise<void> {
+    this.requireBrokerProtocol("reserve_released_children");
+    const wireChildren = children.map((child) => ({
+      childName: child.childName,
+      ...(child.group === undefined ? {} : { group: child.group }),
+      ...(child.aliases === undefined ? {} : { aliases: [...child.aliases] }),
+      wake: child.wake,
+    }));
+    const frames: (typeof wireChildren)[] = [];
+    for (let start = 0; start < wireChildren.length; start += RELEASED_CHILD_FRAME_MAX) {
+      const frame = wireChildren.slice(start, start + RELEASED_CHILD_FRAME_MAX);
+      const validation = validateReleasedChildFrame(frame);
+      if (!validation.ok) throw new ReleasedChildReservationError(validation.refusal);
+      frames.push(frame);
+    }
+    for (const frame of frames) {
+      await this.restoringRecipientRequest({ type: "reserve_released_children", children: frame });
+    }
+  }
+
+  /**
+   * #4326: end this connection's reservations for these child names, in frames of at most 500. `gone` and
+   * `refusal` behave as they do for `releaseRestoringRecipient`. A child nobody reserved is skipped; a frame naming
+   * a child another session owns fails with a `not_owner` `ReleasedChildReservationError` and drops nothing.
+   */
+  async dropReleasedChildren(childNames: readonly string[], outcome: { gone?: string; refusal?: string } = {}): Promise<void> {
+    this.requireBrokerProtocol("drop_released_children");
+    for (let start = 0; start < childNames.length; start += RELEASED_CHILD_FRAME_MAX) {
+      await this.restoringRecipientRequest({
+        type: "drop_released_children",
+        childNames: childNames.slice(start, start + RELEASED_CHILD_FRAME_MAX),
+        ...(outcome.gone === undefined ? {} : { gone: outcome.gone }),
+        ...(outcome.refusal === undefined ? {} : { refusal: outcome.refusal }),
+      });
+    }
+  }
+
+  /**
+   * #4639: report how subagents this session launched ended, in frames of at most 500, so a send to one that has no
+   * live session is refused with why and the next step instead of `Session not found`. The broker keeps each report on
+   * this connection until the subagent registers again or this session disconnects; report again after a reconnect.
+   * Resolves without sending anything to a broker that does not advertise `marksEndedChildren`. Fails with a
+   * `ReleasedChildReservationError` naming the first invalid child, or `not_owner` when another session owns one.
+   */
+  async markEndedChildren(children: readonly EndedChildReport[]): Promise<void> {
+    if (!this.brokerMarksEndedChildren) return;
+    // Fields left undefined are not written: the frame carries what each report names, nothing else.
+    const wireChildren = children.map((child) => ({
+      childName: child.childName,
+      group: child.group,
+      aliases: child.aliases,
+      outcome: child.outcome,
+      childId: child.childId,
+    }));
+    for (let start = 0; start < wireChildren.length; start += RELEASED_CHILD_FRAME_MAX) {
+      await this.restoringRecipientRequest({
+        type: "mark_ended_children",
+        children: wireChildren.slice(start, start + RELEASED_CHILD_FRAME_MAX),
+      });
+    }
+  }
+
+  /**
+   * #4326: confirm this session is waking `childName`: the broker lengthens the hold of every send waiting for it,
+   * once per wake, up to 120 seconds from each send's admission. Fails with `UnknownReleasedChildError` when no
+   * session holds a reservation for the child, and with a `not_owner` `ReleasedChildReservationError` when another
+   * session owns it.
+   */
+  acknowledgeReleasedChildWake(childName: string): Promise<void> {
+    try {
+      this.requireBrokerProtocol("acknowledge_released_child_wake");
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
+  }
+
+  acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean): boolean {
+    if (!this.socket || this.socket.destroyed) return false;
+    this.requireBrokerProtocol("released_child_reply_ack");
+    writeMessage(this.socket, {
+      type: "released_child_reply_ack",
+      messageId: reply.message.id,
+      handoffId: reply.handoffId,
+      accepted,
+    });
+    return true;
+  }
+
+  /**
+   * #4538: refuse, before anything is sent, a request of protocol 2 to the broker of protocol 1 this client registered
+   * with, which would end the connection with a protocol error over a frame type it does not know. Without a
+   * registration the request fails as it always did, as not connected.
+   */
+  private requireBrokerProtocol(feature: string): void {
+    const broker = this._brokerProtocol;
+    if (this._sessionId === null || broker.max >= VERIFIED_REGISTRATION_PROTOCOL) return;
+    throw new IntercomBrokerProtocolError({
+      feature,
+      brokerProtocolMin: broker.min,
+      brokerProtocolMax: broker.max,
+      requiredProtocol: VERIFIED_REGISTRATION_PROTOCOL,
+    });
+  }
+
+  private restoringRecipientRequest(frame: Record<string, unknown>): Promise<void> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (!this.pendingRestoringRecipientRequests.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Restoring-recipient request timeout")).then(reject);
+      }, RESTORING_RECIPIENT_REQUEST_TIMEOUT_MS);
+      this.pendingRestoringRecipientRequests.set(requestId, {
+        resolve: () => { clearTimeout(timeout); resolve(); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, { ...frame, requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingRestoringRecipientRequests.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+  registerPendingStageRoute(
+	runId: string,
+	group: string,
+	capability: string,
+	stages?: WorkflowStageRosterAnnouncement[],
+	possibleStages?: WorkflowPossibleStageAnnouncement[],
+	parent?: WorkflowRunParentAnnouncement,
+	dormant?: boolean,
+	launcherCapability?: string,
+  ): void {
+	writeMessage(this.requireActiveSocket(), {
+		type: "register_pending_stage_route",
+		runId,
+		group,
+		capability,
+		stages,
+		possibleStages,
+		...(parent === undefined ? {} : { parent }),
+		...(dormant === true ? { dormant: true as const } : {}),
+		...(launcherCapability === undefined || !this.brokerClaimsWorkflowInvocations ? {} : { launcherCapability }),
+	});
+  }
+
+	/**
+	 * Register a pending-stage route and settle once the broker has applied it, so a request on any other
+	 * socket observes the update. A broker that does not advertise the answer is covered by a session listing
+	 * on this socket, which that broker only answers after the registration ahead of it.
+	 */
+	registerPendingStageRouteAcknowledged(
+		runId: string,
+		group: string,
+		capability: string,
+		stages?: WorkflowStageRosterAnnouncement[],
+		possibleStages?: WorkflowPossibleStageAnnouncement[],
+		parent?: WorkflowRunParentAnnouncement,
+		dormant?: boolean,
+		/** #4006: the launcher-only secret, held by the process that launched the run and never by its stages. */
+		launcherCapability?: string,
+	): Promise<void> {
+		let socket: net.Socket;
+		try {
+			socket = this.requireActiveSocket();
+		} catch (error) {
+			return Promise.reject(toError(error));
+		}
+		if (!this.brokerAcknowledgesPendingStageRoutes) {
+			try {
+				this.registerPendingStageRoute(runId, group, capability, stages, possibleStages, parent, dormant, launcherCapability);
+			} catch (error) {
+				return Promise.reject(toError(error));
+			}
+			return this.listSessions().then(() => undefined);
+		}
+		return new Promise((resolve, reject) => {
+			const requestId = randomUUID();
+			const startedAt = performance.now();
+			let timedOut: IntercomPendingStageRouteTimeoutFields | undefined;
+			const timeout = setTimeout(() => {
+				timedOut = {
+					runId,
+					stageCount: stages?.length ?? 0,
+					timeoutMs: PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS,
+					elapsedMs: Math.round(performance.now() - startedAt),
+				};
+				// The broker answers this connection's frames in order, so an acknowledgement that arrived while this
+				// process was too busy to read it is read before the health check's answer and still settles the request.
+				void this.requestTimeout(socket, new IntercomPendingStageRouteTimeoutError(timedOut)).then((error) => {
+					if (this.pendingStageRouteRegistrations.delete(requestId)) reject(error);
+				});
+			}, PENDING_STAGE_ROUTE_ACK_TIMEOUT_MS);
+			this.pendingStageRouteRegistrations.set(requestId, {
+				resolve: () => {
+					clearTimeout(timeout);
+					resolve();
+				},
+				reject: (error) => {
+					clearTimeout(timeout);
+					// A broker that went silent during this registration's own timeout fails it as that timeout.
+					reject(
+						timedOut !== undefined && error instanceof IntercomBrokerTimeoutError
+							? new IntercomPendingStageRouteTimeoutError(timedOut, { cause: error })
+							: error,
+					);
+				},
+			});
+			try {
+				writeMessage(socket, {
+					type: "register_pending_stage_route",
+					requestId,
+					runId,
+					group,
+					capability,
+					stages,
+					possibleStages,
+					...(parent === undefined ? {} : { parent }),
+					...(dormant === true ? { dormant: true as const } : {}),
+					...(launcherCapability === undefined || !this.brokerClaimsWorkflowInvocations ? {} : { launcherCapability }),
+					...(this.multiplexesPendingStageRoutes && this.brokerRefusesPendingStageRoutesInPlace
+						? { refusalKeepsConnection: true as const }
+						: {}),
+				});
+			} catch (error) {
+				clearTimeout(timeout);
+				this.pendingStageRouteRegistrations.delete(requestId);
+				reject(toError(error));
+			}
+		});
+	}
+
+  /**
+   * #4006: prove with the run's launcher capability (registered with the run's route, never given to its
+   * stages) that this session launched `runId`, so it may send to the run's stages without joining
+   * `workflow:<rootRunId>`. Resolves `false` when the broker refused the claim or predates it.
+   */
+  claimWorkflowInvocation(runId: string, launcherCapability: string): Promise<boolean> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    if (!this.brokerClaimsWorkflowInvocations) return Promise.resolve(false);
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      this.pendingWorkflowInvocationClaims.set(requestId, { resolve, reject });
+      try {
+        writeMessage(socket, { type: "claim_workflow_invocation", requestId, runId, capability: launcherCapability });
+      } catch (error) {
+        this.pendingWorkflowInvocationClaims.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+  registerLiveWorkflowStageRoute(runId: string, stageKeys: readonly string[], capability: string): Promise<void> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      this.pendingLiveWorkflowStageRoutes.set(requestId, { resolve, reject });
+      try {
+        writeMessage(socket, {
+          type: "register_live_workflow_stage_route",
+          requestId,
+          runId,
+          stageKeys: [...stageKeys],
+          capability,
+        });
+      } catch (error) {
+        this.pendingLiveWorkflowStageRoutes.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+
+	respondPendingStageMessage(requestId: string, result: PendingStageMessageResult): void {
+		const socket = this.requireActiveSocket();
+		writeMessage(
+			socket,
+			result.outcome === "queued"
+				? {
+						type: "pending_stage_message_result",
+						requestId,
+						outcome: "queued",
+						position: result.position,
+						...workflowSendPredictionFields(result),
+						...(result.forwardTargets === undefined ? {} : { forwardTargets: [...result.forwardTargets] }),
+					}
+				: result.outcome === "forward"
+					? { type: "pending_stage_message_result", requestId, outcome: "forward", target: result.target }
+					: result.outcome === "refused"
+						? {
+								type: "pending_stage_message_result",
+								requestId,
+								outcome: "refused",
+								reason: result.reason,
+								...(result.reasonCode === undefined ? {} : { reasonCode: result.reasonCode }),
+							}
+						: { type: "pending_stage_message_result", requestId, outcome: result.outcome },
+		);
+	}
+
+	respondPendingStageNotification(requestId: string, delivered: boolean): void {
+		writeMessage(this.requireActiveSocket(), { type: "pending_stage_notification_result", requestId, delivered });
+	}
+
+  send(to: string, options: SendOptions): Promise<SendResult> {
+    return this.sendFrame("send", to, options);
+  }
+
+	/**
+	 * #3761: tell the broker this message is saved, so it reports `delivered` to its sender. A no-op unless the
+	 * current registration's broker echoed the capability: that broker already reported `delivered` on the socket write.
+	 */
+	acknowledgeReceived(messageId: string): void {
+		if (!this.brokerAcknowledgesReceipt) return;
+		writeMessage(this.requireActiveSocket(), { type: "received", messageId });
+	}
+
+	/**
+	 * #3983: tell the broker this message is still being saved, so its sender keeps waiting instead of hearing the
+	 * outcome is uncertain. A no-op on a broker that did not advertise `extendsSaves`, or while disconnected.
+	 */
+	reportSaving(messageId: string): void {
+		if (!this.brokerExtendsSaves || !this.socket || this.socket.destroyed) return;
+		writeMessage(this.socket, { type: "saving", messageId });
+	}
+
+	sendPendingStageNotification(
+		runId: string,
+		capability: string,
+		to: string,
+		senderRegistrationName: string | undefined,
+		options: SendOptions,
+		senderReturnAddress?: string,
+	): Promise<SendResult> {
+		return this.sendFrame("send_pending_stage_notification", to, options, {
+			runId,
+			capability,
+			...(senderRegistrationName === undefined ? {} : { senderRegistrationName }),
+			...(senderReturnAddress === undefined ? {} : { senderReturnAddress }),
+		});
+	}
+
+  sendToSupervisor(to: string, options: SendOptions): Promise<SendResult> {
+    return this.sendFrame("supervisor_send", to, options);
+  }
+
+	private sendFrame(
+		type: "send" | "supervisor_send" | "send_pending_stage_notification",
+		to: string,
+		options: SendOptions,
+		extra: {
+			readonly runId: string;
+			readonly capability: string;
+			readonly senderRegistrationName?: string;
+			readonly senderReturnAddress?: string;
+		} | undefined = undefined,
+	): Promise<SendResult> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const messageId = options.messageId ?? randomUUID();
+    let acquired;
+    try {
+		const pendingSignature = JSON.stringify({
+			transportTarget: to,
+			logicalSignature: buildSendSignature(options.logicalTarget ?? to, options),
+			requirePendingReply: options.requirePendingReply ?? false,
+			...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
+		});
+		acquired = this.pendingSends.acquire(messageId, pendingSignature, SEND_RESPONSE_TIMEOUT_MS);
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    let result = this.sendResults.get(acquired.attempt.promise);
+    if (result === undefined) {
+      result = acquired.attempt.promise.catch(async (error: Error) => {
+        if (error instanceof PendingSendTimeoutError) {
+          try {
+            throw await this.requestTimeout(socket, error);
+          } finally {
+            this.pendingSends.release(acquired.attempt);
+          }
+        }
+        throw error;
+      });
+      this.sendResults.set(acquired.attempt.promise, result);
+    }
+    if (!acquired.owner) return result;
+    const message: Message = {
+      id: messageId,
+      timestamp: Date.now(),
+      replyTo: options.replyTo,
+      expectsReply: options.expectsReply,
+      ...(options.delivery === undefined || options.delivery === "steer" ? {} : { delivery: options.delivery }),
+      replyError: options.replyError,
+      source: this._messageSource,
+      content: { text: options.text, attachments: options.attachments },
+    };
+    if (options.onReplyTarget !== undefined) {
+      this.pendingReplyTargets.set(acquired.attempt.attemptId, { messageId, bind: options.onReplyTarget });
+    }
+    try {
+		writeMessage(socket, {
+			type,
+			to,
+			...(options.logicalTarget === undefined ? {} : { logicalTarget: options.logicalTarget }),
+			...(options.requirePendingReply === undefined ? {} : { requirePendingReply: options.requirePendingReply }),
+			...(options.expectedRecipientId === undefined ? {} : { expectedRecipientId: options.expectedRecipientId }),
+      ...(options.onReplyTarget === undefined ? {} : { resolveReplyTarget: true as const }),
+			// #3760: this client understands `send_held`, so the broker may hold the send for a subagent being restored.
+			...(type === "send" ? { awaitRestoringRecipient: true as const } : {}),
+			message,
+			attemptId: acquired.attempt.attemptId,
+			...extra,
+		});
+    } catch (error) {
+      this.pendingSends.reject(acquired.attempt, toError(error));
+    }
+    const clearReplyTarget = () => { this.pendingReplyTargets.delete(acquired.attempt.attemptId); };
+    void acquired.attempt.promise.then(clearReplyTarget, clearReplyTarget);
+    return result;
+  }
+  updatePresence(updates: PresenceUpdates): boolean {
+    if (this.disconnecting) {
+      return false;
+    }
+    const socket = this.socket;
+    if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
+      return false;
+    }
+    writeMessage(socket, { type: "presence", ...updates });
+    if (updates.groups !== undefined) this._groups = normalizeGroups(updates.groups, updates.group);
+    else if (updates.group !== undefined) this._groups = normalizeGroups(undefined, updates.group);
+    return true;
+  }
+
+  updatePresenceAcked(updates: PresenceUpdates): Promise<string> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const requestId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const wrappedResolve = (group: string): void => {
+        clearTimeout(timeout);
+        resolve(group);
+      };
+      const wrappedReject = (error: Error): void => {
+        clearTimeout(timeout);
+        reject(error);
+      };
+      const timeout = setTimeout(() => {
+        if (!this.pendingPresence.delete(requestId)) return;
+        void this.requestTimeout(socket, new Error("Presence update timeout")).then(reject);
+      }, PRESENCE_ACK_TIMEOUT_MS);
+      this.pendingPresence.set(requestId, {
+        resolve: wrappedResolve,
+        reject: wrappedReject,
+        ...(updates.groups === undefined ? {} : { groups: [...updates.groups] }),
+      });
+      try {
+        writeMessage(socket, { type: "presence", ...updates, requestId });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingPresence.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
+}

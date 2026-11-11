@@ -374,6 +374,31 @@ test("a session joining a hosted stage's group is announced to the host connecti
 	assert.equal(asked.delivered, true, "the joiner reaches the stage through its new group");
 });
 
+test("a sender that registered below protocol 3 is refused with the plain reason only, and keeps its connection (#4642)", async () => {
+	const group = `workflow:${randomUUID()}`;
+	const fixture = peersFixture(group);
+	const gone = fixture.route(0);
+	await fixture.peers.adopt(gone);
+	await fixture.peers.disconnectAll();
+	const older = await rawConnection(group, { protocolMax: 2 });
+	const current = await rawConnection(group, { protocolMax: 3 });
+
+	older.send({ type: "send", to: nameOf(gone), message: { id: "m-old", timestamp: 1, content: { text: "hi" } } });
+	const plain = await older.next("delivery_failed");
+	assert.equal(plain.messageId, "m-old");
+	assert.match(String(plain.reason), /^Workflow stage .* was released/);
+	assert.equal(Object.hasOwn(plain, "recipientError"), false, "an older client is never sent a code it does not know");
+	assert.equal(Object.hasOwn(plain, "reasonCode"), false);
+	assert.equal(
+		await Promise.race([older.closed.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 200))]),
+		false,
+	);
+
+	current.send({ type: "send", to: nameOf(gone), message: { id: "m-new", timestamp: 1, content: { text: "hi" } } });
+	const typed = await current.next("delivery_failed");
+	assert.equal((typed.recipientError as { code?: string }).code, "recipient_stage_released");
+});
+
 test("a dropped host connection takes its released stages with it, and they are hosted again on reconnect (#4642)", async () => {
 	const group = `workflow:${randomUUID()}`;
 	const fixture = peersFixture(group);

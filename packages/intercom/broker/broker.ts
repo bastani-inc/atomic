@@ -2895,12 +2895,15 @@ class IntercomBroker {
   }
 
   private failHeldSendWith(held: HeldSend, error: IntercomRecipientGoneError): void {
+    // #4642: a client that registered below protocol 3 validates `recipientError` against the codes it knows and ends
+    // the connection over one it does not; it gets the plain reason, which already says what the typed error does.
+    const typed = error.code !== "recipient_stage_released" || clientHostsSessions(held.socket);
     writeMessageIfOpen(held.socket, {
       type: "delivery_failed",
       messageId: held.messageId,
       ...(held.attemptId === undefined ? {} : { attemptId: held.attemptId }),
       reason: error.message,
-      recipientError: serializeIntercomRecipientGoneError(error),
+      ...(typed ? { recipientError: serializeIntercomRecipientGoneError(error) } : {}),
     });
   }
 

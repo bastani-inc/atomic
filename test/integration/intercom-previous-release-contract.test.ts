@@ -416,3 +416,133 @@ describe("the 0.9.71 Intercom client against this version's broker (#4538)", () 
 		);
 	});
 });
+
+const alphaRelease = join(repoRoot, "test/fixtures/intercom-0.9.77-alpha.1");
+const { IntercomClient: AlphaIntercomClient } = (await import(join(alphaRelease, "broker/client.ts"))) as {
+	IntercomClient: PreviousClientClass;
+};
+
+describe("the 0.9.77-alpha.1 Intercom client against a released stage hosted on this version's broker (#4642)", () => {
+	const STAGE_STATUS = "closed · reply: post-mortem only";
+
+	interface HostedStage {
+		readonly host: Client;
+		readonly hosted: { readonly name: string; readonly id: string };
+		readonly asked: { readonly recipient: string; readonly message: Message }[];
+	}
+
+	async function connectAlpha(name: string, group: string) {
+		const client = new AlphaIntercomClient(randomUUID(), { acknowledgesReceipt: true });
+		const received: Message[] = [];
+		const errors: Error[] = [];
+		client.on("message", (_from: SessionInfo, message: Message) => {
+			received.push(message);
+			client.acknowledgeReceived(message.id);
+		});
+		client.on("error", (error: Error) => errors.push(error));
+		await (client as unknown as { connect: (...args: unknown[]) => Promise<void> }).connect(
+			{ ...session(name), group, groups: [group] },
+			undefined,
+			undefined,
+			undefined,
+			group,
+		);
+		cleanups.push(() => client.disconnect().catch(() => undefined));
+		return { client, received, errors };
+	}
+
+	async function hostStage(group: string): Promise<HostedStage> {
+		const host = new IntercomClient(randomUUID());
+		const asked: HostedStage["asked"] = [];
+		host.on("hosted_message", (recipient: string, _from: SessionInfo, message: Message) =>
+			asked.push({ recipient, message }),
+		);
+		const now = Date.now();
+		await host.connect(
+			{ ...session(`stage-host-${randomUUID()}`), group, groups: [group], recipientPurpose: "control" },
+			undefined,
+			undefined,
+			undefined,
+			group,
+		);
+		cleanups.push(() => host.disconnect().catch(() => undefined));
+		const name = `subagent-chat-${randomUUID()}`;
+		const [assigned] = await host.hostSessions([
+			{
+				key: "stage",
+				session: {
+					name,
+					cwd: repoRoot,
+					model: "faux/model",
+					pid: process.pid,
+					startedAt: now,
+					lastActivity: now,
+					status: STAGE_STATUS,
+					replyCapability: "live",
+					groups: [group],
+					group,
+				},
+				returnAddress: `${name}:released-stage`,
+			},
+		]);
+		assert.ok(assigned);
+		return { host, hosted: { name, id: assigned.sessionId }, asked };
+	}
+
+	test(
+		"lists the hosted stage, asks it and receives its reply",
+		async () => {
+			const group = `workflow:${randomUUID()}`;
+			const stage = await hostStage(group);
+			const alpha = await connectAlpha(`alpha-asker-${randomUUID()}`, group);
+
+			const listed = await alpha.client.listSessions();
+			const entry = listed.find((info) => info.name === stage.hosted.name);
+			assert.equal(entry?.id, stage.hosted.id);
+			assert.equal(entry?.status, STAGE_STATUS);
+
+			const ask = await alpha.client.send(stage.hosted.name, { text: "which file?", expectsReply: true });
+			assert.equal(ask.delivered, true, ask.reason);
+			await vi.waitFor(() => assert.equal(stage.asked.length, 1), WAIT);
+			assert.equal(stage.asked[0]!.recipient, stage.hosted.id);
+			const reply = await stage.host.send(idOf(alpha.client), {
+				text: "the parser",
+				replyTo: ask.id,
+				requirePendingReply: true,
+				hostedSender: stage.hosted.id,
+			});
+			assert.equal(reply.delivered, true, reply.reason);
+			await vi.waitFor(
+				() =>
+					assert.ok(
+						alpha.received.some((message) => message.replyTo === ask.id && message.content.text === "the parser"),
+					),
+				WAIT,
+			);
+			assert.deepEqual(alpha.errors, []);
+			assert.equal(alpha.client.isConnected(), true);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"keeps its connection, with a plain refusal, when it sends to a released stage whose hosted peer is gone",
+		async () => {
+			const group = `workflow:${randomUUID()}`;
+			const stage = await hostStage(group);
+			const alpha = await connectAlpha(`alpha-sender-${randomUUID()}`, group);
+			await stage.host.unhostSessions([stage.hosted.id]);
+
+			for (const target of [stage.hosted.name, stage.hosted.id]) {
+				const refused = await alpha.client.send(target, { text: "are you there?" });
+				assert.equal(refused.delivered, false);
+				assert.ok((refused.reason ?? "").length > 0, "it carries a reason to show");
+				assert.match(refused.reason ?? "", /released and the session that answered for it has gone away/);
+			}
+			assert.deepEqual(alpha.errors, [], "no protocol error was raised on the client");
+			assert.equal(alpha.client.isConnected(), true, "the connection survived the refusal");
+			assert.ok(Array.isArray(await alpha.client.listSessions()), "and it still serves requests");
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+});
