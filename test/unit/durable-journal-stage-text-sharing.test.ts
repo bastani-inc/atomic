@@ -31,12 +31,12 @@ const STAGES = 40;
 async function openBackend(): Promise<JournalDurableBackend> {
 	const dir = makeTempDirectory("journal-text-sharing-");
 	cleanups.push(() => removeTempDirectory(dir));
-	const journal = await SqlRunJournal.open(await openNodeSqliteDatabase(join(dir, "journal.sqlite")));
+	const database = await openNodeSqliteDatabase(join(dir, "journal.sqlite"));
+	cleanups.push(() => database.close());
+	const journal = await SqlRunJournal.open(database);
+	cleanups.push(() => journal.close());
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
-	cleanups.push(async () => {
-		await backend.close();
-		await journal.close();
-	});
+	cleanups.push(() => backend.close());
 	await backend.commitWorkflowRegistration({
 		workflowId: "run",
 		name: "test",
