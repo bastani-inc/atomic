@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.77-alpha.1] - 2026-11-11
+
+The workflow page explains stalled runs, and the bundled Impeccable skill is current.
+
+- **Blocked, paused and resumed runs.** The `/workflow` page, graph widget, stage switcher, status and connect picker show why no more stages appear, including the blocked reason and a count of blocked stages ([#4643](https://github.com/bastani-inc/atomic/issues/4643), [#4645](https://github.com/bastani-inc/atomic/pull/4645)).
+- **Memory-informed workflow choice.** The `workflow` tool's guidance weighs session memory and your stated preferences when choosing between a workflow and inline work ([#4648](https://github.com/bastani-inc/atomic/issues/4648), [#4649](https://github.com/bastani-inc/atomic/pull/4649)).
+- **Impeccable 4.8.2.** Live Mode keeps accepted variants styled and fonts intact, and `generate-image` honors `OPENAI_BASE_URL` ([#4644](https://github.com/bastani-inc/atomic/pull/4644)).
+
 ### Changed
 
 - Updated the bundled Impeccable skill to 4.8.2 with engine 0.1.21. In Live Mode, accepting a variant on a page without hot reload keeps it styled until you reload, and variants accepted in different sessions no longer pick up each other's styles. Live captures keep the page's fonts when a font URL has no file extension, when a font face comes from an `@import` or a matching `@media` or `@supports` rule, and when a cross-origin stylesheet redirects. `generate-image` sends its requests, with your `OPENAI_API_KEY`, to `OPENAI_BASE_URL` when that variable is set. Atomic's telemetry and update-check defaults remain off.
