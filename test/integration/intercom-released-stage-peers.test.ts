@@ -16,11 +16,18 @@ import type {
 	ReleasedStagePeers as ReleasedStagePeersType,
 } from "../../packages/intercom/released-stage-peers.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
+import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
 const BROKER_STARTUP_TIMEOUT_MS = 10_000;
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
-const ASK_TIMEOUT_MS = 10_000;
-const POLL_TIMEOUT_MS = 10_000;
+/**
+ * Inner waits (an ask's reply, a listing poll) must outlast a loaded runner yet stay well inside
+ * the per-test budget, so a real hang fails with its own message rather than a bare test timeout.
+ * Two thirds of the budget leaves room for the broker round trips that precede each wait.
+ */
+const INNER_WAIT_TIMEOUT_MS = Math.floor((TEST_TIMEOUT_MS * 2) / 3);
+const ASK_TIMEOUT_MS = INNER_WAIT_TIMEOUT_MS;
+const POLL_TIMEOUT_MS = INNER_WAIT_TIMEOUT_MS;
 /** 200 finished stages, the scale #4642 measures. */
 const STAGES = 200;
 const RELEASED_STAGE_STATUS = "closed · reply: post-mortem only";

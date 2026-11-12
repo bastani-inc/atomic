@@ -596,8 +596,10 @@ describe("fork chaos log collection (#4321)", () => {
 		try {
 			await collection;
 		} catch (error) {
-			assert.ok(error instanceof ChaosInvariantError);
-			assert.ok(isChaosInvariantError(error));
+			// Name any other failure (a spawn error on a loaded host, say) instead of reporting a bare falsy check.
+			const described = error instanceof Error ? (error.stack ?? error.message) : String(error);
+			assert.ok(error instanceof ChaosInvariantError, `collection threw a non-chaos error: ${described}`);
+			assert.ok(isChaosInvariantError(error), `collection error is not a chaos invariant error: ${described}`);
 			return error;
 		}
 		assert.fail("expected log collection to fail");

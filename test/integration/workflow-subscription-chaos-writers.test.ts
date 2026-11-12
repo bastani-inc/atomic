@@ -2,13 +2,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "vitest";
 import { useBundledNodeFixture } from "../helpers/bundled-node-fixture.js";
-import {
-	fileExists,
-	makeTempDirectory,
-	removeTempDirectory,
-	spawnProcess,
-	spawnSyncCollect,
-} from "../helpers/runtime.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { fileExists, makeTempDirectory, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 import {
 	allIds,
 	assertEveryChildSeeded,
@@ -77,7 +72,8 @@ test(
 		} finally {
 			for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");
 			await Promise.all(children.map((child) => child.exited));
-			removeTempDirectory(directory);
+			// The writers' agent directory is `{directory}/agent`, where they start the Intercom broker (#4655).
+			await removeTempRootReleasingBroker(directory);
 		}
 	},
 	CHAOS_SCENARIO_TIMEOUT_MS,

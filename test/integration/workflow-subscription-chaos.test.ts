@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "vitest";
-import { fileExists, makeTempDirectory, readText, removeTempDirectory, spawnProcess } from "../helpers/runtime.js";
+import { removeTempRootReleasingBroker } from "../helpers/detached-broker.js";
+import { fileExists, makeTempDirectory, readText, spawnProcess } from "../helpers/runtime.js";
 import {
 	allIds,
 	assertEveryChildSeeded,
@@ -86,7 +87,7 @@ test(
 		} finally {
 			if (first.exitCode === null) first.kill("SIGKILL");
 			await first.exited;
-			removeTempDirectory(directory);
+			await removeTempRootReleasingBroker(directory);
 		}
 	},
 	CHAOS_SCENARIO_TIMEOUT_MS,
