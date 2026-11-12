@@ -83,7 +83,25 @@ export function subagentTaskResponseText(response: ModelSingleResponse | ModelPa
 			outcome.observation.kind === "settled" &&
 			subagentTaskResultLabel(outcome.observation.result) === "killed (non-resumable)",
 	);
-	return `${killed.length ? `${killed.length} killed. These children cannot be resumed. Underlying host response:\n` : ""}${JSON.stringify(response)}`;
+	const notStarted = outcomes.filter((outcome) => outcome.kind === "unstarted" && outcome.reason.kind === "rejected");
+	const notices = [
+		...(killed.length ? [`${killed.length} killed. These children cannot be resumed.`] : []),
+		// #4697: one child's setup failure is its own outcome; its siblings ran and report below.
+		...(response.kind === "parallel" && notStarted.length
+			? [
+					`${notStarted.length} of ${outcomes.length} children failed to start${notStarted.length < outcomes.length ? "; the others ran" : ""}. Each slot reports its own outcome.`,
+				]
+			: []),
+	];
+	return `${notices.length ? `${notices.join(" ")} Underlying host response:\n` : ""}${JSON.stringify(response)}`;
+}
+
+/** Every parallel child failed to start, so the call itself failed (#4697). */
+export function parallelResponseNeverStarted(response: ModelParallelResponse): boolean {
+	return (
+		response.slots.length > 0 &&
+		response.slots.every((slot) => slot.outcome.kind === "unstarted" && slot.outcome.reason.kind === "rejected")
+	);
 }
 
 export type SettledTaskOutput = { taskId: TaskId; result: TaskResult };
@@ -235,6 +253,7 @@ export async function parallelTaskToolResultWithOutput(
 			taskResponse: response,
 			taskRecords: taskResponseRecords(response, host),
 		},
+		...(parallelResponseNeverStarted(response) ? { isError: true } : {}),
 	};
 }
 

@@ -194,7 +194,8 @@ for (const themeName of ["dark", "light"] as const) {
 					);
 					assert.equal(text.match(/\/tasks/g)?.length, 1);
 					assert.match(text, /Launched\s+in\s+background/);
-					assert.match(text, /Check\s+failed/);
+					// Collapsed, a failed child's error is one line cut to the card width (#4697).
+					assert.match(text, expanded || width > 12 ? /Check\s+failed/ : / {3}Check ?\S*…/);
 					if (expanded) assert.match(text, /task-a[\s\S]*task-b/);
 					else assert.doesNotMatch(text, /task-a|task-b|wait-a/);
 				}
