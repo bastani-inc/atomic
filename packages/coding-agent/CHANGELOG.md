@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the background check that cleans up released session history no longer starts PowerShell in your working directory, so it can no longer keep that folder locked for a moment after Atomic exits.
+
 ## [0.9.80-alpha.1] - 2026-11-12
 
 Storage adapters by package name for embedding apps, and less placeholder text in the UI.

@@ -129,6 +129,11 @@ async function processStartTime(pid: number): Promise<string | null | undefined>
 	return output.stdout.replace(/[^A-Za-z0-9]+/g, "");
 }
 
+/** Neutral working directory so background OS probes never hold a handle on the caller's cwd (#4655). */
+function probeWorkingDirectory(): string {
+	return process.platform === "win32" ? process.env.SystemRoot || process.env.windir || "C:\\Windows" : "/";
+}
+
 /** Runs a short command; `ran` is false when it could not be started or did not finish in time. */
 function run(
 	command: string,
@@ -140,6 +145,7 @@ function run(
 			command,
 			args,
 			{
+				cwd: probeWorkingDirectory(),
 				encoding: "utf8",
 				timeout: START_TIME_TIMEOUT_MS,
 				windowsHide: true,

@@ -449,3 +449,48 @@ test.each(["darwin", "win32"])("%s boot identities keep files from an earlier bo
 		Object.defineProperty(process, "platform", platform);
 	}
 });
+
+test.each([
+	{ platform: "win32", expectedCwd: "D:\\Windows" },
+	{ platform: "darwin", expectedCwd: "/" },
+])(
+	"$platform boot and start-time probes run outside the caller's cwd (#4655)",
+	async ({ platform: value, expectedCwd }) => {
+		const platform = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+		Object.defineProperty(process, "platform", { value });
+		vi.stubEnv("SystemRoot", "D:\\Windows");
+		const observedCwds: Array<string | URL | undefined> = [];
+		type ExecFileCallback = (error: NodeJS.ErrnoException | null, stdout: string, stderr: string) => void;
+		vi.mocked(childProcess.execFile).mockImplementation(((
+			command: string,
+			argv: readonly string[],
+			options: childProcess.ExecFileOptions,
+			callback: ExecFileCallback,
+		) => {
+			observedCwds.push(options.cwd);
+			const isBoot = command === "sysctl" || argv.at(-1)?.includes("Win32_OperatingSystem");
+			const stdout = isBoot
+				? value === "darwin"
+					? "{ sec = 1730000000, usec = 123456 }"
+					: "123456789"
+				: value === "darwin"
+					? (psFixtures.samples[0]?.stdout ?? "")
+					: "1000";
+			callback(null, stdout, "");
+			return {} as childProcess.ChildProcess;
+		}) as typeof childProcess.execFile);
+		try {
+			vi.resetModules();
+			const module = await import("../src/core/storage/session/released-history-files.js");
+			const directory = await module.releasedHistoryFiles(root).createDirectory();
+			assert.ok(!(directory instanceof Error));
+			await module.sweepReleasedHistory(root);
+			assert.ok(observedCwds.length >= 2, "both boot identity and start-time probes ran");
+			for (const cwd of observedCwds) assert.equal(cwd, expectedCwd);
+			await directory.remove();
+		} finally {
+			vi.unstubAllEnvs();
+			Object.defineProperty(process, "platform", platform);
+		}
+	},
+);
