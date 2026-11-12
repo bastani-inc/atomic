@@ -4,9 +4,9 @@ description: Operate native desktop applications on macOS, Windows and Linux thr
 hidden: true
 metadata:
     github-path: skills/agent-desktop
-    github-ref: refs/tags/v1.2.0
+    github-ref: refs/tags/v1.3.0
     github-repo: https://github.com/vercel-labs/agent-desktop
-    github-tree-sha: 4647b3cc9b929688002a9ae0f3bdd983898e049b
+    github-tree-sha: ef953179861334f07a7ec948f1d34401de17b9b0
 name: agent-desktop
 ---
 
@@ -74,6 +74,42 @@ Action results carry `data.disposition` and errors carry `error.disposition`, ea
 ## Headless and headed
 
 Ref actions are headless by default. They use semantic accessibility calls and do not take focus, move the cursor, synthesize keys or use the clipboard. If no semantic path exists, the action fails closed. Use the global `--headed` flag only when the user explicitly permits physical input, such as double-click, hover, drag, or focus. Never switch to headed mode to recover from a headless failure. Raw coordinates (`--xy`) never imply focus. Which actions need `--headed` differs by OS: read the platform skill.
+
+## Sandboxes
+
+A sandbox is a desktop a provider manages on your machine. The provider is `macos`: a macOS VM on an Apple Silicon Mac running macOS 13 or later. Linux and Windows have no provider; to run agent-desktop in a container you manage yourself there, follow `agent-browser.dev/desktop/guides/docker-container`.
+
+```sh
+agent-desktop sandbox install                          # report the provider's state
+agent-desktop sandbox install macos                    # compile and sign the VM host, then report ready
+```
+
+```sh
+agent-desktop sandbox create demo --provider macos --set from=base   # clone a set-up sandbox; or --set ipsw=latest to install
+agent-desktop sandbox start demo                       # start it headless; add --window to show its desktop
+agent-desktop sandbox status demo                      # state, message and next command
+agent-desktop sandbox list                             # every sandbox and its state
+agent-desktop sandbox exec demo -- status              # run a command in the guest
+agent-desktop sandbox stop demo                        # stop the sandbox
+agent-desktop sandbox rm demo                          # remove it
+```
+
+Names are 1–32 lowercase letters, digits or hyphens, starting with a letter or digit. `exec` returns the guest's envelope and exit status; a provider failure returns a host error. `rm` refuses a sandbox reported as `running`; stop it first. `create` needs exactly one source: `--set from=<sandbox>`, `--set ipsw=latest` or `--set ipsw=<path>`. `start` answers `working` until the guest answers; wait for `status` to report `running` before `exec`.
+
+Read `state`, `message` and optional `next`; `ok: true` alone does not mean the sandbox is ready.
+
+- `unavailable`: satisfy the host requirements in `message` and `next`.
+- `missing`: install the provider.
+- `ready`: create a sandbox.
+- `working`: repeat the command in `next` until the work finishes.
+- `needs_setup`: have a person complete guest setup, then check status.
+- `running`: run guest commands, or stop before removal.
+- `stopped`: start the sandbox to use it, or remove it.
+- `broken`: follow `next`; a broken sandbox may need removal.
+
+A sandbox separates the desktop, not the network or the host. Sandboxes on one host share a virtual network, and a guest can reach the host's network services; keep one trust level per host. Each sandbox has its own pinned SSH host key, so a guest cannot answer for another sandbox. The SSH key under `<state root>/sandboxes/<name>/` is the guest credential, and in the guest Accessibility belongs to `sshd-keygen-wrapper` for the whole user session.
+
+Cloning a configured macOS VM has been tested end to end. Installing the first VM from a macOS image is experimental and has not been verified end to end. Provider setup steps and limits are in the docs: `agent-browser.dev/desktop/sandboxes/macos`.
 
 ## References
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the bundled agent-desktop skill to upstream `v1.3.0`. It adds a Sandboxes section for the new `agent-desktop sandbox` command: on an Apple Silicon Mac running macOS 13 or later it can install the macOS VM provider, create, start, stop and remove sandboxes, and run commands in the guest, and it explains each sandbox state and what to do next. It also notes that a sandbox isolates the desktop but not the network or the host. Install guidance, the readiness check and permission handling are unchanged.
+
 ## [0.9.79] - 2026-11-12
 
 Background subagents survive a reboot, and one that cannot be restored comes with a ready relaunch call.
