@@ -437,6 +437,7 @@ export {
 	AutoRoutingInferenceError,
 	type ModelRoute,
 	type ModelRoutingContext,
+	type ParallelSlot,
 	type RoutingInferenceBounds,
 	routeExecutionModel,
 } from "./core/execution-model-router.js";

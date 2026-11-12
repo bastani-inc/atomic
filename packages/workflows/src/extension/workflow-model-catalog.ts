@@ -78,6 +78,7 @@ export function workflowModelCatalogFromContext(
 				...(input.taskNeeds ? { taskNeeds: input.taskNeeds } : {}),
 				...(input.overrideProviderSettings ? { overrideProviderSettings: true } : {}),
 				...(input.inference ? { inference: input.inference } : {}),
+				...(input.parallelSlot ? { parallelSlot: input.parallelSlot } : {}),
 			});
 		},
 		...(ctx?.getDecisionModel === undefined

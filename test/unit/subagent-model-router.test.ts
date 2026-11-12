@@ -672,7 +672,11 @@ test("long tasks reach the chat reader complete and never reach the classifier",
 	const task = `Review this change.\n${"reference data ".repeat(2000)}<keepContext>Review only.</keepContext>${"more data ".repeat(2000)}\nReport defects.`;
 	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
 	const classify = mockClassifier(f);
-	assert.equal((await f.route(task)).modelOverride, "decision-test/chat");
+	assert.equal(
+		(await f.route(task)).modelOverride,
+		"second-provider/reasoner:low",
+		"with no benchmarks for either model, the reasoning model ranks first on the catalog-wide effort trend",
+	);
 	assert.equal(f.infer.mock.calls.length, 1);
 	assert.equal(chatPayload(f.infer.mock.calls[0]![1]).state.task, task);
 	assert.equal(classify.mock.calls.length, 1);
@@ -805,7 +809,8 @@ test("a caller that states every need gets one choice request whose options carr
 		assert.deepEqual(Object.keys(option), ["model", "id", "released", "price", "reads_images", "coding", "overall"]);
 	assert.match(
 		String(options.find((option) => option.id === "anthropic/claude-opus-5-5")?.coding),
-		/Terminal-Bench 4\.0 59\.6%/u,
+		/at high effort.*Terminal-Bench 4\.0 56\.6% measured with Adaptive Reasoning, High Effort/u,
+		"results are quoted at the effort the model would run at",
 	);
 	assert.deepEqual(route.routerSelection.model, "anthropic/claude-opus-5-5");
 	assert.equal(route.routerSelection.effort, "high", "effort follows the stated difficulty");
@@ -912,8 +917,8 @@ test("Sol 6.1 Fast reaches bounded auto-routing criteria with base evidence and 
 	assert.equal(options.length, 4);
 	const sol = options.find((option) => option.id === "openai-codex/gpt-6.1-sol-fast")!;
 	assert.ok(sol);
-	assert.match(sol.coding!, /Terminal-Bench 4\.0 56\.1% measured with max effort/u);
-	assert.match(sol.coding!, /DeepSWE 75\.2% measured with high effort.*reported by OpenAI/u);
+	assert.match(sol.coding!, /Terminal-Bench 4\.0 30\.8% measured with low effort/u);
+	assert.match(sol.coding!, /DeepSWE 64\.4% measured with low effort.*reported by OpenAI/u);
 	assert.match(sol.overall!, /AA Intelligence Index 51\.8 measured with max effort/u);
 	assert.match(sol.released!, /2026-09-29/u);
 	assert.match(sol.route!, /same results/u);

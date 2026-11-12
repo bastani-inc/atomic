@@ -334,3 +334,38 @@ test("the chat model that reads the task stays a chat model when a classifier sh
 	assert.ok(classified.length > 0, "the classifier decision model still chooses the model");
 	for (const questions of classified) assert.equal(questions.includes("work"), false, "no classifier reads the task");
 });
+
+test("parallel routes made together land on different model families (#4689)", async () => {
+	const { ctx, offered } = routingContext();
+	const reviewer = (parallelSlot?: { index: number; count: number }) =>
+		routeExecutionModel({
+			ctx,
+			task: "Review the change",
+			agent: { name: "reviewer", description: "Reviews code" },
+			taskNeeds: {
+				work: "code_review",
+				difficulty: "hard",
+				mistakeCost: "high",
+				needsImages: false,
+				longContext: false,
+				latencySensitive: false,
+			},
+			...(parallelSlot ? { parallelSlot } : {}),
+		});
+	const family = (model: string) => (model.includes("claude") ? "claude" : "gpt");
+	const alone = await Promise.all([reviewer(), reviewer()]);
+	assert.equal(
+		alone[0]!.routerSelection.model,
+		alone[1]!.routerSelection.model,
+		"without slots both pick the same model",
+	);
+	offered.length = 0;
+	const [a, b] = await Promise.all([reviewer({ index: 0, count: 2 }), reviewer({ index: 1, count: 2 })]);
+	assert.notEqual(family(a!.routerSelection.model), family(b!.routerSelection.model));
+	for (const options of offered) assert.equal(new Set(options.map(family)).size, 1, "each slot is offered one family");
+	const crowded = await reviewer({ index: 2, count: 3 });
+	assert.ok(
+		models.some((model) => `${model.provider}/${model.id}` === crowded.routerSelection.model),
+		"a slot without a family of its own still routes",
+	);
+});

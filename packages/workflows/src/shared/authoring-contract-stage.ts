@@ -10,6 +10,7 @@ import type {
 	ModelConstraints,
 	ModelRoute,
 	ModelRouterOutput,
+	ParallelSlot,
 	RoutingInferenceBounds,
 	TaskNeeds,
 	Workspace,
@@ -138,6 +139,7 @@ export interface WorkflowModelCatalogPort {
 		overrideProviderSettings?: boolean;
 		/** Deadline and concurrency limit the stage owns for routing inference. */
 		inference?: RoutingInferenceBounds;
+		parallelSlot?: ParallelSlot;
 	}): Promise<ModelRoute>;
 	/**
 	 * The host's decision service, bound to the user's `decisionModel`: `decide()` with the host's settings, model
@@ -282,6 +284,12 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
 	readonly modelConstraints?: ModelConstraints;
 	/** What the author already knows about the task, for `model: "auto"`; routing asks only for the rest. */
 	readonly taskNeeds?: TaskNeeds;
+	/**
+	 * For `model: "auto"` stages that run side by side on the same task, such as two reviewers: this stage's
+	 * position among `count` of them, from 0. Each position routes to a different model family when the eligible
+	 * models span enough families.
+	 */
+	readonly parallelSlot?: ParallelSlot;
 	readonly mcp?: StageMcpOptions;
 	readonly tools?: readonly string[];
 	readonly noTools?: "all" | "builtin";

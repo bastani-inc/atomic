@@ -62,6 +62,8 @@ const result = await ctx.task("analyze", {
 
 A chat model reads the complete stage prompt to answer the routing questions; a classifier router such as Jev never sees it. Hard `modelConstraints` remain enforced independently. Set `taskNeeds` in the stage options when you already know the task's kind of work, difficulty, mistake cost, or need for images, a very large context or a fast answer; stating all six skips the chat model's read, and list the contenders in `modelConstraints.allowedModels` to choose them yourself.
 
+Parallel `auto` stages that do the same job, such as two reviewers of one change, can be routed to different model families so they do not share one model's blind spots. Give each a `parallelSlot` with its position and the number of stages, for example `parallelSlot: { index: 0, count: 2 }` and `parallelSlot: { index: 1, count: 2 }`. Each position takes a different family from the ranking (Claude, GPT, Gemini and so on) when enough families are eligible; otherwise the stage routes among every eligible model. The builtin `ralph` workflow's two reviewers do this.
+
 ```ts
 const prompt = [
   keepContext("Review only. Do not edit files. Report findings as JSON."),

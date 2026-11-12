@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `parallelSlot` stage option for `model: "auto"`: parallel stages that do the same job, such as two reviewers, each route to a different model family when enough families are eligible. The builtin `ralph` workflow's reviewers use it, so they no longer both land on the same model ([#4689](https://github.com/bastani-inc/atomic/issues/4689))
+
 ### Fixed
 
 - Escape in a stage chat whose session is waiting out an automatic retry's backoff now interrupts the stage, as the chat's `esc to interrupt` footer offers, instead of closing the chat and leaving the retry running ([#4690](https://github.com/bastani-inc/atomic/issues/4690))
