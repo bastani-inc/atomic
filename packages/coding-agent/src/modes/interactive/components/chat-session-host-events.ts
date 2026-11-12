@@ -13,7 +13,7 @@ import {
 	isVerbatimCompactionMessage,
 } from "../../../core/messages.ts";
 import { pickWhimsicalWorkingMessage } from "../whimsical-messages.ts";
-import { flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
+import { confirmQueuedChatSessionMessages, flushChatSessionCompactionQueue } from "./chat-session-host-actions.ts";
 import {
 	afterChatSessionEvent,
 	decrementOptimisticUserSignature,
@@ -209,12 +209,15 @@ export function applyChatSessionAgentEvent<TExtraEntry extends ChatTranscriptEnt
 			break;
 		case "queue_update": {
 			const queue = event as { steering?: unknown; followUp?: unknown };
-			state.pendingSteeringMessages = Array.isArray(queue.steering)
+			const steering = Array.isArray(queue.steering)
 				? queue.steering.filter((item): item is string => typeof item === "string")
 				: [];
-			state.pendingFollowUpMessages = Array.isArray(queue.followUp)
+			const followUp = Array.isArray(queue.followUp)
 				? queue.followUp.filter((item): item is string => typeof item === "string")
 				: [];
+			confirmQueuedChatSessionMessages(state, steering, followUp);
+			state.pendingSteeringMessages = steering;
+			state.pendingFollowUpMessages = followUp;
 			changed = true;
 			break;
 		}

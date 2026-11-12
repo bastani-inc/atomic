@@ -18,6 +18,11 @@ let nextHandOff = 0;
  */
 const unconfirmedHandOffs = new WeakMap<InteractiveModeBase, CompactionQueuedMessage[]>();
 
+/** The session's queue as the last `queue_update` listed it, so the next one shows which messages it added. */
+const lastListedQueue = new WeakMap<InteractiveModeBase, QueueLists>();
+
+type QueueLists = { steering: readonly string[]; followUp: readonly string[] };
+
 function heldByEditor(mode: InteractiveModeBase): CompactionQueuedMessage[] {
 	return [...(unconfirmedHandOffs.get(mode) ?? []), ...mode.compactionQueuedMessages];
 }
@@ -242,6 +247,73 @@ function confirmHandOff(mode: InteractiveModeBase, message: CompactionQueuedMess
 	if (pending.length === 0) unconfirmedHandOffs.delete(mode);
 	mode.updatePendingMessagesDisplay();
 	return true;
+}
+
+/**
+ * Show a message sent while the agent works as queued at once, before the session confirms it (#4696). Delivery waits
+ * on the session: in an isolated engine that is a round trip through a process whose event loop the agent's own work,
+ * such as a running subagent, shares. The editor shows the message until `settleSubmission()` or a `queue_update` that
+ * lists it, whichever comes first.
+ */
+export function showSubmissionAsQueued(
+	mode: InteractiveModeBase,
+	text: string,
+	lane: CompactionQueuedMessage["mode"],
+): CompactionQueuedMessage {
+	const message: CompactionQueuedMessage = { text, mode: lane };
+	if (!lastListedQueue.has(mode)) {
+		lastListedQueue.set(mode, {
+			steering: mode.session.getSteeringMessages(),
+			followUp: mode.session.getFollowUpMessages(),
+		});
+	}
+	unconfirmedHandOffs.set(mode, [...(unconfirmedHandOffs.get(mode) ?? []), message]);
+	mode.updatePendingMessagesDisplay();
+	mode.ui.requestRender();
+	return message;
+}
+
+/**
+ * Stop showing a submission once the session answered it: queued, it lists the message itself; started or handled, it
+ * is no longer queued; refused, the caller gives it back to the editor and reports why.
+ */
+export function settleSubmission(mode: InteractiveModeBase, message: CompactionQueuedMessage): void {
+	if (confirmHandOff(mode, message)) mode.ui.requestRender();
+}
+
+/**
+ * Stop showing editor copies of messages the session's queue now lists, so a confirmed message is never shown twice
+ * (#4696). Only a message this update added confirms a copy, oldest copy first, so an identical message queued
+ * earlier does not.
+ */
+export function reconcileQueuedSubmissions(mode: InteractiveModeBase, queue: QueueLists): void {
+	const previous = lastListedQueue.get(mode) ?? { steering: [], followUp: [] };
+	lastListedQueue.set(mode, { steering: [...queue.steering], followUp: [...queue.followUp] });
+	const pending = unconfirmedHandOffs.get(mode);
+	if (!pending) return;
+	const added = {
+		steer: addedMessages(previous.steering, queue.steering),
+		followUp: addedMessages(previous.followUp, queue.followUp),
+	};
+	const remaining = pending.filter((message) => {
+		const lane = added[message.mode];
+		const index = lane.indexOf(message.text);
+		if (index === -1) return true;
+		lane.splice(index, 1);
+		return false;
+	});
+	if (remaining.length === 0) unconfirmedHandOffs.delete(mode);
+	else unconfirmedHandOffs.set(mode, remaining);
+}
+
+function addedMessages(before: readonly string[], after: readonly string[]): string[] {
+	const unmatched = [...before];
+	return after.filter((text) => {
+		const index = unmatched.indexOf(text);
+		if (index === -1) return true;
+		unmatched.splice(index, 1);
+		return false;
+	});
 }
 
 /**
