@@ -148,6 +148,14 @@ describe("constrained tool sampling", () => {
 		});
 	});
 
+	it("keeps strict mode for enum-only schemas", () => {
+		const parameters = Type.Object({ level: Type.Enum({ Low: "low", High: "high" }) });
+		const tool = makeTool({ parameters, constrainedSampling: { type: "json_schema", strict: "prefer" } });
+
+		expect(parameters.properties.level).not.toHaveProperty("type");
+		expect(convertResponsesTools([tool], { supportsStrictMode: true })[0]).toMatchObject({ strict: true });
+	});
+
 	it("falls back or rejects schemas that cannot be safely converted", () => {
 		const cases: Array<{ parameters: Tool["parameters"]; error: string }> = [
 			{
@@ -171,6 +179,22 @@ describe("constrained tool sampling", () => {
 					required: ["child"],
 				} as Tool["parameters"],
 				error: "$ref schemas are unsupported",
+			},
+			{
+				parameters: Type.Object({ commandArguments: Type.Optional(Type.Array(Type.Unknown())) }),
+				error: "schemas without a type are unsupported",
+			},
+			{
+				parameters: Type.Object({ value: Type.Any({ description: "Any JSON value" }) }),
+				error: "schemas without a type are unsupported",
+			},
+			{
+				parameters: {
+					type: "object",
+					properties: { mode: { const: "fast" } },
+					required: ["mode"],
+				} as Tool["parameters"],
+				error: "schemas without a type are unsupported",
 			},
 		];
 
