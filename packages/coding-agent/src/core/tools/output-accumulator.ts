@@ -99,7 +99,8 @@ export class OutputAccumulator {
 	}
 
 	snapshot(options: { persistIfTruncated?: boolean } = {}): OutputSnapshot {
-		const tailTruncation = truncateTail(this.getSnapshotText(), {
+		const snapshotText = this.getSnapshotText() || this.tailText;
+		const tailTruncation = truncateTail(snapshotText, {
 			maxLines: this.maxLines,
 			maxBytes: this.maxBytes,
 		});

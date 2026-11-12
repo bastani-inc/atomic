@@ -18,9 +18,12 @@ function createModel(): Model<"anthropic-messages"> {
 	};
 }
 
-async function captureFirstTool(parameters: Tool["parameters"]): Promise<NonNullable<AnthropicToolPayload["tools"]>[number]> {
+async function captureFirstTool(
+	parameters: Tool["parameters"],
+	constrainedSampling: Tool["constrainedSampling"] = { type: "json_schema", strict: "prefer" },
+): Promise<NonNullable<AnthropicToolPayload["tools"]>[number]> {
 	let payload: AnthropicToolPayload | undefined;
-	const tool: Tool = { name: "lookup", description: "Look up a value", parameters, constrainedSampling: { type: "json_schema", strict: "prefer" } };
+	const tool: Tool = { name: "lookup", description: "Look up a value", parameters, constrainedSampling };
 	await streamAnthropic(createModel(), normalizeContext({ messages: [{ role: "user", content: "Use the tool", timestamp: Date.now() }], tools: [tool] }), {
 		apiKey: "test-key", cacheRetention: "none", onPayload: (value) => { payload = value as AnthropicToolPayload; throw new Error("payload captured"); },
 	}).result();
@@ -68,5 +71,29 @@ describe("Anthropic strict tool schemas", () => {
 				...definitions,
 			});
 		}
+	});
+
+	it("keeps root additionalProperties in non-strict schemas and omits it when absent (#12100)", async () => {
+		for (const additionalProperties of [false, true, { type: "string" }] as const) {
+			const parameters = {
+				type: "object",
+				properties: { value: { type: "string" } },
+				required: ["value"],
+				additionalProperties,
+				title: "LookupInput",
+			} as unknown as Tool["parameters"];
+			const tool = await captureFirstTool(parameters, false);
+			assert.equal(tool.strict, undefined);
+			assert.deepEqual(tool.input_schema, {
+				type: "object",
+				properties: { value: { type: "string" } },
+				required: ["value"],
+				additionalProperties,
+			});
+		}
+
+		const omittedTool = await captureFirstTool(Type.Object({ value: Type.String() }), false);
+		assert.equal(omittedTool.strict, undefined);
+		assert.equal("additionalProperties" in omittedTool.input_schema, false);
 	});
 });

@@ -370,6 +370,35 @@ describe("AgentSession retry", () => {
 		expect(callCount).toBe(2);
 	});
 
+	it.each([
+		'{"type":"error","error":{"type":"api_error","message":"Connection closed."}}',
+		"gateway_error: connectionclosed",
+	])("retries gateway closed-connection errors (#12093): %s", async (errorMessage) => {
+		let callCount = 0;
+		await createSessionWithStream(() => {
+			callCount++;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				if (callCount === 1) {
+					const error = createAssistantMessage("", {
+						stopReason: "error",
+						errorMessage,
+					});
+					stream.push({ type: "start", partial: error });
+					stream.push({ type: "error", reason: "error", error });
+					return;
+				}
+				const recovered = createAssistantMessage("Recovered after closed connection");
+				stream.push({ type: "start", partial: recovered });
+				stream.push({ type: "done", reason: "stop", message: recovered });
+			});
+			return stream;
+		});
+
+		await session.prompt("Test");
+		assert.equal(callCount, 2);
+	});
+
 	it("retries degenerate empty completions and bounds them by maxRetries", async () => {
 		let callCount = 0;
 		await createSessionWithStream(() => {
