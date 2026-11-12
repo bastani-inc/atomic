@@ -320,7 +320,7 @@ export default {
 } satisfies StorageAdapterModule;
 ```
 
-Select it with `sessions.storage: { "adapter": "./storage/libsql-adapter.ts" }`, `workflows.journal`, or shared top-level `storage` in [settings](/settings#workflow-storage). SDK sessions accept `sessionStore: { kind: "adapter", module, options, secrets, prefix }`; workflow runs accept `journal: { adapter, options, secrets, prefix }`. Relative module paths resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. A package name selects an adapter from an [installed Atomic package](#adapters-from-atomic-packages), or otherwise resolves from the agent directory. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
+Select it with `sessions.storage: { "adapter": "./storage/libsql-adapter.ts" }`, `workflows.journal`, or shared top-level `storage` in [settings](/settings#workflow-storage). SDK sessions accept `sessionStore: { kind: "adapter", module, options, secrets, prefix }`; workflow runs accept `journal: { adapter, options, secrets, prefix }`. Relative module paths resolve from the agent directory, normally `~/.atomic/agent`; absolute module paths also work. A package name selects an adapter from an [Atomic package](#adapters-from-atomic-packages) that the host loaded or that is installed, or otherwise resolves from the agent directory. Project settings follow the same trust boundary as project extensions. A module executes with Atomic's privileges.
 
 Adapter modules import `@bastani/atomic/storage` and `@bastani/atomic` from the running Atomic, in the npm package and the standalone binary alike, exactly as extensions do. This covers the adapter's entry file and the ES module and TypeScript files it imports by relative path, including `.mjs` files and `.js` files in a `"type": "module"` package. CommonJS files other than the entry file, such as a `.cjs` file or a `.js` file outside a `"type": "module"` package, resolve these specifiers from `node_modules` instead. Import the module in an ES module file and pass it to them. Adapters need no installed or linked copy of Atomic, and Atomic recognizes the storage errors they throw. List `@bastani/atomic` in an adapter package's `peerDependencies`, not its `dependencies`.
 
@@ -363,7 +363,17 @@ Install it with `atomic install npm:@example/atomic-libsql` and select it by pac
 }
 ```
 
-The package name selects the package's first listed adapter. When a package lists several, select one with `<package>/<name>`, where `<name>` is the adapter file's name without its extension, for example `@example/atomic-libsql/libsql-adapter`. Atomic searches the packages in your effective global settings, including legacy `~/.pi/agent/settings.json` settings where applicable; an explicit agent directory does not inherit packages from another home. `atomic install` writes user settings without `-l`; project packages are not searched. When no installed package lists a matching adapter, the name resolves from the agent directory as before.
+The package name selects the package's first listed adapter. When a package lists several, select one with `<package>/<name>`, where `<name>` is the adapter file's name without its extension, for example `@example/atomic-libsql/libsql-adapter`.
+
+An application that embeds Atomic can select an adapter from its own package the same way, without installing it. Pass the package directory as an extension path, with `--extension <dir>` on the command line or `additionalExtensionPaths: [packageRoot]` on the SDK's `DefaultResourceLoader`, and select `"adapter": "@example/app"` or `"@example/app/<name>"` in settings, `--storage`, `--storage-file`, or the [storage variables](#selecting-storage-per-process). The selection then keeps working when the application is reinstalled in another location. Only package directories the process was given to load as code count. Construct the loader before opening any storage that names the package.
+
+Atomic looks up a package name in this order:
+
+1. Package directories the process was given as extension paths, in the order given, and those of the Atomic process that started it.
+2. Packages in your effective global settings, including legacy `~/.pi/agent/settings.json` settings where applicable. An explicit agent directory does not inherit packages from another home. `atomic install` writes user settings without `-l`; project packages are not searched.
+3. The agent directory, which resolves the name as a module specifier, as before.
+
+Processes that Atomic starts, such as local workflow workers, child workflow processes, and the Intercom broker, receive the adapter modules resolved from the host's packages in the `ATOMIC_HOST_STORAGE_ADAPTERS` variable. They open the same storage by the same name without loading the host's package. The variable holds absolute module paths, so like a storage variable that names a module, it should only come from a process you trust. `atomic storage status` shows the resolved module (`from <path>`) when it runs in such a process. Run directly from a shell, it does not load the host's package, so it can only resolve the name from settings packages or the agent directory.
 
 ## Selecting storage per process
 
@@ -384,6 +394,8 @@ ATOMIC_STORAGE='{"adapter":"@example/atomic-sqlite","options":{"url":"libsql://t
 
 atomic --mode rpc --storage-file /etc/atomic/storage.json
 ```
+
+An adapter selected by package name can come from a package the host passes with `--extension <dir>` (see [Adapters from Atomic packages](#adapters-from-atomic-packages)), so the selection holds no absolute module path.
 
 Nothing is written to settings. A process started without these options keeps using its settings, so an interactive `atomic` and an RPC child started with `ATOMIC_STORAGE` in the same account each keep their own sessions and workflow runs, and `/resume` in each lists only its own store. `--storage` and `--storage-file` cannot be combined. The interactive CLI passes its `--storage` selection to its background engine process. Other processes that Atomic starts inherit the environment variables but not the flag.
 

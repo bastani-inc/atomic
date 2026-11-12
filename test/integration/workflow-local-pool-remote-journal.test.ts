@@ -1,5 +1,7 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DefaultResourceLoader } from "@bastani/atomic";
 import { test } from "vitest";
 import {
 	fileFlavor,
@@ -23,6 +25,32 @@ const delegatingFlavor = (name: string) => (directory: string) => {
 	return fileFlavor(path, { adapter: delegating, options: { path, log } }, { POOL_RESUME_JOURNAL: "adapter" }, log);
 };
 
+/**
+ * The same adapter, listed in the manifest of a package the root's host loads through the SDK and selected by the
+ * package's name. The pool's worker processes load no package: they get the resolved module from the root.
+ */
+const hostPackageFlavor = (name: string) => (directory: string) => {
+	const root = join(directory, "host-app");
+	mkdirSync(root);
+	const packageName = "@atomic-test/pooled-host-app";
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({ name: packageName, atomic: { storageAdapters: ["./journal.mjs"] } }),
+	);
+	writeFileSync(
+		join(root, "journal.mjs"),
+		`export { default } from ${JSON.stringify(pathToFileURL(delegating).href)};\n`,
+	);
+	new DefaultResourceLoader({
+		cwd: directory,
+		agentDir: join(directory, "home", "agent"),
+		additionalExtensionPaths: [root],
+	});
+	const path = join(directory, name);
+	const log = join(directory, "appends.jsonl");
+	return fileFlavor(path, { adapter: packageName, options: { path, log } }, { POOL_RESUME_JOURNAL: "adapter" }, log);
+};
+
 /** The shipped libSQL adapter over a `file:` URL: a SQL journal on a driver that is not node:sqlite. */
 const libsqlFileFlavor = (name: string) => (directory: string) => {
 	const url = pathToFileURL(join(directory, name)).href;
@@ -35,6 +63,12 @@ const libsqlFileFlavor = (name: string) => (directory: string) => {
 test.skipIf(process.platform === "win32").each([{ crash: false }, { crash: true }])(
 	"a pooled root runs on a journal in another database, with a dead worker's child replayed from it=$crash",
 	({ crash }) => runPooledRoot(delegatingFlavor("remote.sqlite"), { crash, label: "remote-journal-pool" }),
+	REMOTE_JOURNAL_POOL_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a pooled root runs on a journal adapter named by a package its host loaded, in workers that never load it (#4678)",
+	() => runPooledRoot(hostPackageFlavor("remote.sqlite"), { crash: true, label: "host-package-journal-pool" }),
 	REMOTE_JOURNAL_POOL_TIMEOUT_MS,
 );
 

@@ -707,7 +707,7 @@ To keep workflow records only in memory, set `"journal": { "memory": true }`. Do
 
 Project `workflows.journal` and `storage` each replace their global selection as a whole, including options, secrets, and prefix. For example, a project can select `{ "memory": true }` over a global path. Invalid selected settings raise `StorageConfigError` instead of trying a lower-precedence selection. Combining `memory: true` with a non-empty `path` is an error.
 
-To use your own database driver, install an adapter module, for example as an [Atomic package](/storage#adapters-from-atomic-packages), and select it by package name or module path:
+To use your own database driver, install an adapter module, for example as an [Atomic package](/storage#adapters-from-atomic-packages), and select it by package name or module path. A package name also selects an adapter from a package directory the process was given with `--extension` or the SDK's `additionalExtensionPaths`, ahead of the packages in settings:
 
 ```json
 {

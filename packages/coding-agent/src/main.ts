@@ -59,6 +59,7 @@ import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeo
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
+import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import type { ResumeNotice } from "./core/resume/session-resume.ts";
@@ -518,6 +519,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		(!startupHasTrustInputs || startupDefaultProjectTrust === "always");
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions),
 		resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
+	// Storage opens before the extensions load, and may select an adapter by the name of a package passed here.
+	registerHostStoragePackages(resolvedExtensionPaths, cwd);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates),
 		resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const beginStartupInputCapture = (

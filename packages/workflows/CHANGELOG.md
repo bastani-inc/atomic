@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the `● resumed` label from a resumed workflow run. A resumed run that is running looks like any other running run in the graph header, the widget, `/workflow status`, the `/workflow connect` picker, and the stage switcher; `↑ blocked`, `❚❚ paused`, and `○ quit` are unchanged.
+
 ## [0.9.79] - 2026-11-12
 
 Long workflow runs stay responsive and release finished stages from memory.

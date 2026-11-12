@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A storage `adapter` given as a package name, `<package>` or `<package>/<name>`, now also resolves from the package directories the process was given to load as code, with `--extension <dir>` or the SDK's `additionalExtensionPaths`, before the packages in settings and then the agent directory. An application that embeds Atomic can select the adapter listed in its own package's `storageAdapters` by name in settings, `--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE` and `ATOMIC_WORKFLOWS_JOURNAL`, instead of an absolute module path that breaks when the application is reinstalled elsewhere. Local workflow workers, child workflow processes and the Intercom broker receive the resolved module, so they open the same storage without loading that package ([#4678](https://github.com/bastani-inc/atomic/issues/4678))
+
 ### Removed
 
 - Removed the "Loading isolated renderer…" line that appeared in a tool result or extension message row until the interactive engine drew it. The row now draws nothing until its first frame arrives, like other engine-drawn components.
