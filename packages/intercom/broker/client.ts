@@ -432,6 +432,17 @@ export class IntercomPendingStageRouteRefusedError extends Error {
 	}
 }
 
+/**
+ * The broker did not answer one supervisor authorization in time although the connection then passed its health
+ * check; a broker that failed it rejects with its own failure instead (#4697).
+ */
+export class SupervisorAuthorizationTimeoutError extends Error {
+	constructor() {
+		super("Supervisor authorization timeout");
+		this.name = "SupervisorAuthorizationTimeoutError";
+	}
+}
+
 const PENDING_STAGE_ROUTE_REFUSAL_CODES: ReadonlySet<string> = new Set<PendingStageRouteRefusalCode>([
 	"not_authorized",
 	"invalid_stage_roster",
@@ -1573,7 +1584,7 @@ export class IntercomClient extends EventEmitter {
       const requestId = randomUUID();
       const timeout = setTimeout(() => {
         if (!this.pendingSupervisorAuthorizations.delete(requestId)) return;
-        void this.requestTimeout(socket, new Error("Supervisor authorization timeout")).then(reject);
+        void this.requestTimeout(socket, new SupervisorAuthorizationTimeoutError()).then(reject);
       }, 5000);
       this.pendingSupervisorAuthorizations.set(requestId, {
         resolve: (authorization) => { clearTimeout(timeout); resolve(authorization); },
