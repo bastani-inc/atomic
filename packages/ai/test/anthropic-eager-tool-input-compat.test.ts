@@ -166,6 +166,7 @@ describe("Anthropic eager tool input streaming compatibility", () => {
 			type: "object",
 			properties: parameters.properties,
 			required: parameters.required,
+			additionalProperties: false,
 		});
 
 		const strictRequest = await captureAnthropicRequest({ supportsStrictTools: true }, createContext([strictTool]));
@@ -186,6 +187,7 @@ describe("Anthropic eager tool input streaming compatibility", () => {
 			type: "object",
 			properties: (boundedStrictTool.parameters as { properties: unknown }).properties,
 			required: ["category", "confidence"],
+			additionalProperties: false,
 		});
 	});
 
