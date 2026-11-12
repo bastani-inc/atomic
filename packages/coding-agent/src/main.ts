@@ -59,7 +59,7 @@ import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeo
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
-import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.ts";
+import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import type { ResumeNotice } from "./core/resume/session-resume.ts";

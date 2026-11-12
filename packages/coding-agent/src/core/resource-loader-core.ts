@@ -7,7 +7,7 @@ import { createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
-import { registerHostStoragePackages } from "./package-manager-storage-adapters.ts";
+import { registerHostStoragePackages } from "./package-manager-storage-adapters.js";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import {
 	updatePromptsFromPathsAsync,
