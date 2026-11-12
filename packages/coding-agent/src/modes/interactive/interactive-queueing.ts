@@ -261,12 +261,6 @@ export function showSubmissionAsQueued(
 	lane: CompactionQueuedMessage["mode"],
 ): CompactionQueuedMessage {
 	const message: CompactionQueuedMessage = { text, mode: lane };
-	if (!lastListedQueue.has(mode)) {
-		lastListedQueue.set(mode, {
-			steering: mode.session.getSteeringMessages(),
-			followUp: mode.session.getFollowUpMessages(),
-		});
-	}
 	unconfirmedHandOffs.set(mode, [...(unconfirmedHandOffs.get(mode) ?? []), message]);
 	mode.updatePendingMessagesDisplay();
 	mode.ui.requestRender();
