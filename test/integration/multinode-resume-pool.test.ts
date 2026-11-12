@@ -112,6 +112,35 @@ function heldBy(directory: string, host: string): number[] {
 	return markers(directory, `held-${host}-`).map((name) => Number(name.split("-")[2]));
 }
 
+/** How long the probe in `freezeHost` waits for the journal's write lock before it takes the lock to be held. */
+const FREEZE_PROBE_LOCK_WAIT_MS = 250;
+
+/**
+ * Cuts a host off as a partition does, without freezing it inside a journal write. SIGSTOP at an arbitrary instant can
+ * land while the host holds SQLite's write lock, and a stopped holder never releases it, so every other process
+ * (the root, the other hosts) fails after its lock wait and retries and dies on the journal: a failure of the test's
+ * fault, not of the behaviour under test, and one that only a loaded machine makes likely, because the host spends
+ * longer inside each write. So after each stop a write is tried: if the lock is free the host is frozen between
+ * writes; if not, it continues to finish its write and is stopped again.
+ */
+async function freezeHost(c: Campaign, host: BudgetedProcess): Promise<void> {
+	const group = -host.process.pid!;
+	for (;;) {
+		process.kill(group, "SIGSTOP");
+		const database = await openLibsqlDatabase({ url: c.url });
+		try {
+			await database.transaction(async () => undefined, { lockWaitMs: FREEZE_PROBE_LOCK_WAIT_MS });
+			return;
+		} catch {
+			process.kill(group, "SIGCONT");
+			await sleep(50);
+		} finally {
+			await database.close();
+		}
+		if (Date.now() >= c.deadline) assert.fail("the host never released the journal's write lock to be frozen");
+	}
+}
+
 /** A worker host in a process group of its own, so a fault reaches its coordinator and workers with it. */
 function startHost(c: Campaign, name: string, workers: number, extra: Record<string, string> = {}): BudgetedProcess {
 	return spawnWithinBudget(
@@ -297,7 +326,7 @@ describe("multi-node resume of a pooled campaign (#4329)", () => {
 				process.kill(-hosts.get("B")!.process.pid!, "SIGKILL");
 				await hosts.get("B")!.process.exited;
 				hosts.delete("B");
-				process.kill(-hosts.get("D")!.process.pid!, "SIGSTOP");
+				await freezeHost(c, hosts.get("D")!);
 				// Neither child can run elsewhere: their leases lapse and they wait in the queue, and the idle host without git
 				// leaves them there.
 				await until(

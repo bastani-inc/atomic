@@ -125,25 +125,33 @@ interface RestartProcessResult {
 	notices: { taskId: string; completionId: string }[];
 }
 
+// Two fresh Node processes each transpile and load the coding-agent source through jiti
+// before starting a session (~3.5 s each warm on Linux, ~7 s each cold); Windows CI took
+// 30.3 s for the pair when idle, and a loaded runner exceeded 90 s. The cost is process
+// startup, not the completion logic under test. Each process gets its own cap, so a hung
+// child fails with a spawn error instead of consuming the whole test budget; the test budget
+// is derived from it so the two cannot drift apart.
+const FRESH_PROCESS_TIMEOUT_MS = 120_000;
+const FRESH_PROCESS_COUNT = 2;
+const FRESH_PROCESS_RESTART_TIMEOUT_MS = FRESH_PROCESS_TIMEOUT_MS * FRESH_PROCESS_COUNT + 30_000;
+
 function runSessionProcess(args: string[]): RestartProcessResult {
-	const result = spawnSyncCollect([
-		process.execPath,
-		"--import",
-		"jiti/register",
-		"test/fixtures/subagent-completion-restart-process.ts",
-		...args,
-	]);
+	const result = spawnSyncCollect({
+		cmd: [
+			process.execPath,
+			"--import",
+			"jiti/register",
+			"test/fixtures/subagent-completion-restart-process.ts",
+			...args,
+		],
+		timeout: FRESH_PROCESS_TIMEOUT_MS,
+	});
 	const stdout = result.stdout.toString();
 	assert.equal(result.exitCode, 0, `${stdout}\n${result.stderr.toString()}`);
 	const line = stdout.split("\n").find((candidate) => candidate.startsWith("RESTART RESULT "));
 	assert.ok(line, stdout);
 	return JSON.parse(line.slice("RESTART RESULT ".length)) as RestartProcessResult;
 }
-
-// Two fresh Node processes each transpile and load the coding-agent source through jiti
-// before starting a session (~3.5 s each warm on Linux, ~7 s each cold); Windows CI took
-// 30.3 s for the pair. The cost is process startup, not the completion logic under test.
-const FRESH_PROCESS_RESTART_TIMEOUT_MS = 90_000;
 
 test(
 	"a parent session resumed in a fresh process gets new completion ids for repeated task ids (#3908)",

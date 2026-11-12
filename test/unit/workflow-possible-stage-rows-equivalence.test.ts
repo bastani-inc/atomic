@@ -541,6 +541,9 @@ test("a change to an omitted delivery state does not re-announce the root (#3951
 	}
 });
 
+/** Forced collections, each on its own macrotask, a released root's rows get before they count as still reachable. */
+const RELEASE_GC_PASSES = 50;
+
 test("a terminal root releases its cached possible-stage rows and rebuilds them if it runs again (#3951)", async () => {
 	setFlagsFromString("--expose-gc");
 	const gc = runInNewContext("gc") as () => void;
@@ -583,8 +586,13 @@ test("a terminal root releases its cached possible-stage rows and rebuilds them 
 		bridge.refresh();
 		assert.deepEqual(latest, []);
 		latest = undefined;
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		gc();
+		// A single collection can miss a dead object (it may still be pinned until its creating job ends, or by a
+		// conservative or incremental pass), so collect across fresh macrotasks until the rows are gone. A cache that
+		// still references them survives every pass and exhausts the bound.
+		for (let pass = 0; pass < RELEASE_GC_PASSES && cached.deref() !== undefined; pass++) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			gc();
+		}
 		assert.equal(cached.deref(), undefined, "a terminal root's cached delivery states stay reachable");
 		// A resumed root rebuilds its rows from scratch.
 		history.root.status = "running";

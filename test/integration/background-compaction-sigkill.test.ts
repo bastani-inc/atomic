@@ -10,8 +10,12 @@ import { fileExists, makeTempDirectory, moduleDir, readText, sleep, spawnProcess
 
 const ROOT = resolve(moduleDir(import.meta.url), "../..");
 const FIXTURE = join(ROOT, "test/fixtures/background-compaction-sigkill.ts");
-/** A TypeScript child process loads the session runtime through jiti before it reaches the marker. */
-const CHILD_STARTUP_AND_MARKER_TIMEOUT_MS = 60_000;
+/**
+ * A TypeScript child process compiles the session runtime through jiti before it reaches the marker. That is CPU the
+ * integration shard shares with the other files running in parallel: on a loaded linux-x64 runner the child needed more
+ * than 60 s (#4641, #4655), so this is headroom for a loaded host, not a measured start-up.
+ */
+const CHILD_STARTUP_AND_MARKER_TIMEOUT_MS = 180_000;
 const SIGKILL_RESTART_TIMEOUT_MS = 2 * CHILD_STARTUP_AND_MARKER_TIMEOUT_MS;
 
 async function runUntilKilled(mode: "planning" | "ready", directory: string): Promise<string> {
