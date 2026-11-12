@@ -2303,6 +2303,7 @@ type ToolSchemaObject = {
 	type?: string | string[];
 	properties?: Record<string, unknown>;
 	required?: string[];
+	additionalProperties?: unknown;
 	anyOf?: ToolSchemaObject[];
 	$defs?: unknown;
 	definitions?: unknown;
@@ -2380,8 +2381,10 @@ function convertTools(
 			type: "object" as const,
 			properties: projectedUnion?.properties ?? schema.properties ?? {},
 			required: projectedUnion?.required ?? schema.required ?? [],
-			// Keep shared definitions so property $refs still resolve. Other root keywords stay out:
+			// Keep shared definitions so property $refs still resolve, and additionalProperties so the
+			// model knows whether extra arguments are allowed. Other root keywords stay out:
 			// Anthropic rejects root anyOf/oneOf/allOf with a 400.
+			...(schema.additionalProperties === undefined ? {} : { additionalProperties: schema.additionalProperties }),
 			...(schema.$defs === undefined ? {} : { $defs: schema.$defs }),
 			...(schema.definitions === undefined ? {} : { definitions: schema.definitions }),
 		};

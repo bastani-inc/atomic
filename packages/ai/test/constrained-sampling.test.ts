@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
@@ -148,7 +149,17 @@ describe("constrained tool sampling", () => {
 		});
 	});
 
-	it("falls back or rejects schemas that cannot be safely converted", () => {
+	it("keeps strict mode for enum-only schemas (#12049)", () => {
+		const parameters = Type.Object({ level: Type.Enum({ Low: "low", High: "high" }) });
+		const tool = makeTool({ parameters, constrainedSampling: { type: "json_schema", strict: "prefer" } });
+
+		const converted = convertResponsesTools([tool], { supportsStrictMode: true })[0];
+		assert.equal("type" in parameters.properties.level, false);
+		assert.ok(converted.type === "function");
+		assert.equal(converted.strict, true);
+	});
+
+	it("falls back or rejects schemas that cannot be safely converted (#12049)", () => {
 		const cases: Array<{ parameters: Tool["parameters"]; error: string }> = [
 			{
 				parameters: Type.Object({ metadata: Type.Object({}, { additionalProperties: Type.String() }) }),
@@ -171,6 +182,22 @@ describe("constrained tool sampling", () => {
 					required: ["child"],
 				} as Tool["parameters"],
 				error: "$ref schemas are unsupported",
+			},
+			{
+				parameters: Type.Object({ commandArguments: Type.Optional(Type.Array(Type.Unknown())) }),
+				error: "schemas without a type are unsupported",
+			},
+			{
+				parameters: Type.Object({ value: Type.Any({ description: "Any JSON value" }) }),
+				error: "schemas without a type are unsupported",
+			},
+			{
+				parameters: {
+					type: "object",
+					properties: { mode: { const: "fast" } },
+					required: ["mode"],
+				} as Tool["parameters"],
+				error: "schemas without a type are unsupported",
 			},
 		];
 

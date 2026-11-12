@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { constants as bufferConstants } from "node:buffer";
 import { describe, expect, it } from "vitest";
 import { execCommand } from "../src/core/exec.ts";
@@ -111,6 +112,47 @@ describe("execCommand", () => {
 		},
 		10_000,
 	);
+
+	it("reports a nonzero exit code when a command times out (#12089)", async () => {
+		const result = await execCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], process.cwd(), {
+			timeout: 100,
+		});
+
+		assert.equal(result.killed, true);
+		assert.equal(result.truncated, false);
+		assert.notEqual(result.code, 0);
+	});
+
+	describe.skipIf(process.platform === "win32")("signal-terminated commands", () => {
+		const idle = ["-e", "setInterval(() => {}, 1000)"];
+
+		it("reports 128 + SIGTERM for a timeout (#12089)", async () => {
+			const result = await execCommand(process.execPath, idle, process.cwd(), { timeout: 100 });
+
+			assert.equal(result.code, 143);
+			assert.equal(result.killed, true);
+			assert.equal(result.truncated, false);
+		});
+
+		it("reports 128 + SIGTERM for an abort (#12089)", async () => {
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(), 100);
+			const result = await execCommand(process.execPath, idle, process.cwd(), { signal: controller.signal });
+
+			assert.equal(result.code, 143);
+			assert.equal(result.killed, true);
+			assert.equal(result.truncated, false);
+		});
+
+		it("reports 128 + the signal number for a command killed by someone else (#12089)", async () => {
+			const script = 'process.kill(process.pid, "SIGKILL")';
+			const result = await execCommand(process.execPath, ["-e", script], process.cwd());
+
+			assert.equal(result.code, 137);
+			assert.equal(result.killed, false);
+			assert.equal(result.truncated, false);
+		});
+	});
 
 	it.skipIf(process.platform === "win32")(
 		"force-kills a command that ignores SIGTERM",
