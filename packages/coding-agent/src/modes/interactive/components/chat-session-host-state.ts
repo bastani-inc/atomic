@@ -76,6 +76,8 @@ export class ChatSessionHostState<TExtraEntry extends ChatTranscriptEntryLike = 
 	disposed = false;
 	pendingSteeringMessages: readonly string[] = [];
 	pendingFollowUpMessages: readonly string[] = [];
+	/** Messages sent while the agent works that its queue does not list yet; shown as queued from submit (#4696). */
+	unconfirmedQueuedMessages: readonly { text: string; mode: "steer" | "followUp" }[] = [];
 	compactionQueuedMessages: readonly { text: string; mode: ChatSessionSubmitMode }[] = [];
 	/** True while compaction-queued messages are being sent one at a time. */
 	compactionFlushPending = false;

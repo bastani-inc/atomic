@@ -39,15 +39,18 @@ export function renderChatSessionPendingMessages<TExtraEntry extends ChatTranscr
 	if (
 		state.pendingSteeringMessages.length === 0 &&
 		state.pendingFollowUpMessages.length === 0 &&
+		state.unconfirmedQueuedMessages.length === 0 &&
 		state.compactionQueuedMessages.length === 0
 	) {
 		return [];
 	}
 	const lines = [state.style.blank(width)];
-	for (const message of state.pendingSteeringMessages) {
+	const unconfirmed = (mode: "steer" | "followUp") =>
+		state.unconfirmedQueuedMessages.filter((message) => message.mode === mode).map((message) => message.text);
+	for (const message of [...state.pendingSteeringMessages, ...unconfirmed("steer")]) {
 		lines.push(...pendingMessageLine(state, width, "Steering", message));
 	}
-	for (const message of state.pendingFollowUpMessages) {
+	for (const message of [...state.pendingFollowUpMessages, ...unconfirmed("followUp")]) {
 		lines.push(...pendingMessageLine(state, width, "Follow-up", message));
 	}
 	for (const message of state.compactionQueuedMessages) {

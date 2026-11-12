@@ -397,6 +397,8 @@ export async function runParallelPath(
 		return {
 			content: [{ type: "text", text: fullContent }],
 			details,
+			// #4697: the call fails only when no child started; even then each child's error is listed.
+			...(results.every((result) => result.taskResponse?.kind === "unstarted") ? { isError: true } : {}),
 		};
 	} finally {
 		runWorktrees?.release();

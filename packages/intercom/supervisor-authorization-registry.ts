@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { IntercomClient, SupervisorAuthorization } from "./broker/client.js";
+import { type IntercomClient, type SupervisorAuthorization, SupervisorAuthorizationTimeoutError } from "./broker/client.js";
 
 const DYNAMIC_SLOT = "*";
 
@@ -18,7 +18,13 @@ export class SupervisorAuthorizationRegistry {
 
 	async authorize(childName: string, connect: () => Promise<IntercomClient>): Promise<SupervisorAuthorization> {
 		const client = await connect();
-		const authorization = await client.authorizeSupervisorChild(childName.trim());
+		const authorization = await client.authorizeSupervisorChild(childName.trim()).catch((error: unknown) => {
+			// #4697: the broker answers authorization at once, so a timeout on a connection that then passed its health
+			// check is a passing stall. Ask once more; the broker handles requests in order, so this answer's
+			// capability is the one it keeps for the child, and the unanswered request's late reply is dropped.
+			if (!(error instanceof SupervisorAuthorizationTimeoutError)) throw error;
+			return client.authorizeSupervisorChild(childName.trim());
+		});
 		this.remember(authorization);
 		return authorization;
 	}
