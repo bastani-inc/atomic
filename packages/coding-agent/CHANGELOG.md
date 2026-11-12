@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the `bash` tool returning no output, with a broken truncation footer such as `[Showing lines 3-2 of 2]`, when output ends in one line longer than about 100 KB; it now shows the end of that line (upstream [#12092](https://github.com/earendil-works/pi/pull/12092))
+- Fixed `pi.exec` reporting `code: 0` when a command is terminated by a signal without a numeric exit code; signal-terminated commands now report `128 + signal` (`143` for SIGTERM, `137` for SIGKILL), or `1` when neither an exit code nor a signal is reported (upstream [#12089](https://github.com/earendil-works/pi/pull/12089))
+- Fixed provider errors reading `"Connection closed."` not triggering automatic retries in sessions, workflows, and subagents (upstream [#12093](https://github.com/earendil-works/pi/pull/12093))
+- Fixed tools with `strict: "prefer"` constrained sampling being sent in strict mode when their schema contains a node without a `type`, such as `items: {}`, `Type.Unknown()`, or a bare `const`, which OpenAI rejects with a 400 error; these tools now fall back to non-strict mode, `strict: "require"` fails locally, and nodes with only an `enum` stay strict (upstream [#12049](https://github.com/earendil-works/pi/issues/12049))
+- Fixed non-strict Anthropic tool schemas dropping the root `additionalProperties` keyword, including when `strict: "prefer"` falls back to non-strict mode (upstream [#12100](https://github.com/earendil-works/pi/pull/12100))
+
 ## [0.9.80] - 2026-11-12
 
 Embedding apps can pick storage adapters by package name, the UI shows less placeholder text, and Atomic no longer briefly locks your folder on Windows after it exits.

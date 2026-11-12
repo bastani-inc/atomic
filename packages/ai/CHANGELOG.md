@@ -4,6 +4,12 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed tools with `strict: "prefer"` constrained sampling being sent in strict mode when their schema contains a node without a `type`, such as `items: {}`, `Type.Unknown()`, or a bare `const`, which OpenAI rejects with a 400 error; these tools now fall back to non-strict mode, `strict: "require"` fails locally, and nodes with only an `enum` stay strict (upstream [#12049](https://github.com/earendil-works/pi/issues/12049))
+- Fixed provider errors reading `"Connection closed."` not being classified as retryable (upstream [#12093](https://github.com/earendil-works/pi/pull/12093))
+- Fixed non-strict Anthropic tool schemas dropping the root `additionalProperties` keyword, including when `strict: "prefer"` falls back to non-strict mode (upstream [#12100](https://github.com/earendil-works/pi/pull/12100))
+
 ## [0.9.79] - 2026-11-12
 
 Anthropic message threads follow the endpoint, not the provider name.
