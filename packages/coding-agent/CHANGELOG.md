@@ -13,6 +13,7 @@
 - Fixed provider errors reading `"Connection closed."` not triggering automatic retries in sessions, workflows, and subagents (upstream [#12093](https://github.com/earendil-works/pi/pull/12093))
 - Fixed tools with `strict: "prefer"` constrained sampling being sent in strict mode when their schema contains a node without a `type`, such as `items: {}`, `Type.Unknown()`, or a bare `const`, which OpenAI rejects with a 400 error; these tools now fall back to non-strict mode, `strict: "require"` fails locally, and nodes with only an `enum` stay strict (upstream [#12049](https://github.com/earendil-works/pi/issues/12049))
 - Fixed non-strict Anthropic tool schemas dropping the root `additionalProperties` keyword, including when `strict: "prefer"` falls back to non-strict mode (upstream [#12100](https://github.com/earendil-works/pi/pull/12100))
+- Fixed prompt cache miss notices showing a definitive `$0.000` for large re-billed misses. Notices now show the cost of the re-billed tokens and how much more that is than a cache hit, for example `257,225 tokens re-billed ($0.011, <$0.001 more than a cache hit)`. Amounts too small to show render as `<$0.001`. For models without pricing, notices show the provider-reported request cost when there is one, or `cost unknown`. The `/session` "Wasted Cache Cost" line follows the same rules ([#4688](https://github.com/bastani-inc/atomic/issues/4688))
 
 ## [0.9.80] - 2026-11-12
 

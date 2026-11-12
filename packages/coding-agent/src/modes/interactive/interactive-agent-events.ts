@@ -1,5 +1,10 @@
 import { APP_NAME, detectInstallChange, VERSION } from "../../config.js";
-import { createCacheMissModelSource, describeCacheMissCause, detectCacheMiss } from "../../core/cache-stats.ts";
+import {
+	createCacheMissModelSource,
+	detectCacheMiss,
+	formatCacheMissNotice,
+	formatCompactionCacheMissNotice,
+} from "../../core/cache-stats.ts";
 import { createCustomMessage } from "../../core/messages.ts";
 import { formatModelLabel } from "../../core/model-label.ts";
 import { observeLocalWorkflowActivity } from "../interactive-engine/extension-ui-bridge.ts";
@@ -321,19 +326,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 					event.message,
 					createCacheMissModelSource(this.session.modelRuntime),
 				);
-				if (miss) {
-					const cause = describeCacheMissCause(miss);
-					this.chatContainer.addChild(
-						new Text(
-							theme.fg(
-								"warning",
-								`Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`,
-							),
-							1,
-							0,
-						),
-					);
-				}
+				if (miss) this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 			}
 			this.ui.requestRender();
 			break;
@@ -469,14 +462,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 				if (event.result.usage) this.addCompactionCostNotice("compaction", event.result.usage);
 				if (event.cacheMiss && this.settingsManager.getShowCacheMissNotices()) {
 					this.chatContainer.addChild(
-						new Text(
-							theme.fg(
-								"warning",
-								`Prompt cache miss expected after background compaction: ${event.cacheMiss.expectedMissedTokens.toLocaleString()} tokens re-billed ($${event.cacheMiss.expectedMissedCost.toFixed(3)})`,
-							),
-							1,
-							0,
-						),
+						new Text(theme.fg("warning", formatCompactionCacheMissNotice(event.cacheMiss)), 1, 0),
 					);
 				}
 				this.footer.invalidate();
