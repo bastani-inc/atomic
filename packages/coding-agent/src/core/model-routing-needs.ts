@@ -199,7 +199,7 @@ export function taskDemand(needs: ResolvedTaskNeeds): number {
 	return Math.max(difficulty, mistake);
 }
 
-const EFFORT_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+export const EFFORT_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const EFFORT_FOR_DIFFICULTY: Record<Difficulty, string> = {
 	trivial: "minimal",
 	easy: "low",

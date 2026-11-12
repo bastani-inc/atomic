@@ -402,7 +402,7 @@ const shippedCatalog = async () =>
 		await readText(fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url))),
 	);
 
-test("one strong Terminal-Bench score no longer outranks broader coding evidence on hard coding (#4689)", async () => {
+test("one strong Terminal-Bench score no longer outranks long-task coding evidence on hard coding (#4689)", async () => {
 	const evals = await shippedCatalog();
 	const ids = ["gemini-4-carbon", "claude-fable-5.2", "claude-opus-5.5", "gpt-6-astra", "gpt-6.1-sol"];
 	const ranked = rankCandidates(
@@ -412,18 +412,50 @@ test("one strong Terminal-Bench score no longer outranks broader coding evidence
 	);
 	const find = (id: string) => ranked.find((candidate) => candidate.model === `p/${id}`)!;
 	const carbon = find("gemini-4-carbon");
-	for (const broader of ["claude-fable-5.2", "claude-opus-5.5"]) {
-		assert.ok(
-			carbon.workStanding! < find(broader).workStanding!,
-			`Gemini 4 Carbon stands below ${broader} on hard coding`,
+	assert.equal(carbon.longTaskEvidence, undefined, "Carbon has no DeepSWE or FrontierCode result");
+	assert.equal(ranked.at(-1), carbon, "it ranks behind every model with long-task evidence");
+	for (const id of ids.slice(1)) assert.equal(find(id).longTaskEvidence, true);
+	assert.deepEqual(carbon.estimate?.measured, ["aa:TB4"], "Carbon's only coding result at high is Terminal-Bench 4.0");
+});
+
+test("a model enters the long-task group once a DeepSWE or FrontierCode result exists for it (#4689)", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const ids = ["gemini-4-carbon", "claude-sonnet-5.5"];
+	const rank = (text: string) =>
+		rankCandidates(
+			parseEvalsCatalog(text),
+			ids.map((id) => model(id, 2)),
+			needs("hard", "high"),
 		);
-		assert.ok(
-			ranked.indexOf(carbon) > ranked.indexOf(find(broader)),
-			`Gemini 4 Carbon ranks below ${broader} at the same price`,
-		);
-	}
-	assert.deepEqual(carbon.estimate?.measured, ["aa:TB4"], "Carbon's only coding result is Terminal-Bench 4.0");
-	assert.ok(carbon.estimate!.error > find("gpt-6-astra").estimate!.error, "thin evidence carries more uncertainty");
+	assert.equal(rank(document)[0]?.model, "p/claude-sonnet-5.5");
+	const measured = document.replace(
+		/^(\| claude-opus-5-5 \| Opus 5\.5 \| medium \|.*)$/mu,
+		"$1\n| gemini-4-carbon | Gemini 4 Carbon | high | 50.0 | 55.0 | 62.0 | 68.0 | 0.0 | $1.00 |",
+	);
+	assert.notEqual(measured, document);
+	const ranked = rank(measured);
+	assert.equal(ranked.find((candidate) => candidate.model === "p/gemini-4-carbon")?.longTaskEvidence, true);
+	assert.equal(ranked[0]?.model, "p/gemini-4-carbon", "within the group the score orders them again");
+});
+
+test("GPT-6.1 Sol at high outranks Claude Sonnet 5.5 at high on hard coding (#4689)", async () => {
+	const ranked = rankCandidates(
+		await shippedCatalog(),
+		[
+			{ ...model("gpt-6.1-sol", 2), efforts: ["high"] },
+			{ ...model("claude-sonnet-5.5", 2), efforts: ["high"] },
+		],
+		needs("hard", "high"),
+	);
+	assert.deepEqual(
+		ranked.map((candidate) => [candidate.model, candidate.effort]),
+		[
+			["p/gpt-6.1-sol", "high"],
+			["p/claude-sonnet-5.5", "high"],
+		],
+	);
 });
 
 test("a model with no evidence cannot win on missing data, even when it is cheaper (#4689)", async () => {

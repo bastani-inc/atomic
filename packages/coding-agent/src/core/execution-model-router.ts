@@ -129,6 +129,31 @@ const CHOICE_INSTRUCTIONS =
 	"Pick the model that should do the task `agent` will perform. The task's needs are in `needs`; the task itself is not shown. Each option lists the model's release date, price tier and prices, whether it reads images, and its results for this kind of work and overall. The work standing compares a cautious estimate of the model's quality for this work with every benchmarked model; results marked estimated are inferred from the model's other results, not measured, and carry their uncertainty. For demanding or high-stakes tasks prefer the best-proven model; for easy, low-stakes tasks prefer an adequate cheaper one. Prefer newer models over older ones with similar results. Missing results are unknown, not weak.";
 
 /**
+ * What ranking needs to know about a catalog model, priced at its fast route's rates when it is one.
+ * `efforts` are the levels it may run at; they default to every level the model supports.
+ */
+export function routingCandidate(
+	model: Model<Api>,
+	efforts: readonly (string | null)[] = model.reasoning ? getSupportedThinkingLevels(model) : [null],
+): CandidateModel {
+	const routeCost = model.fastRoute?.serviceTier ? getServiceTierCost(model, model.fastRoute.serviceTier) : undefined;
+	return {
+		model: `${model.provider}/${model.id}`,
+		name: model.name,
+		cost: routeCost ?? model.cost,
+		input: model.input,
+		efforts,
+		...(model.fastRoute
+			? {
+					fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
+					fastRouteServiceTier: model.fastRoute.serviceTier,
+					fastRoutePriced: routeCost !== undefined,
+				}
+			: {}),
+	};
+}
+
+/**
  * One of `count` routes made together, for example parallel reviewers, which
  * gain little from running the same model twice.
  */
@@ -436,31 +461,22 @@ export async function routeExecutionModel(input: {
 		const usable = roomy.length ? roomy : seeing;
 		const pairsFor = new Map(usable.map((entry) => [`${entry.model.provider}/${entry.model.id}`, entry.pairs]));
 		const routedCandidates = [...pairsFor.keys()];
-		const toCandidate = (model: Model<Api>): CandidateModel => {
-			const routeCost = model.fastRoute?.serviceTier
-				? getServiceTierCost(model, model.fastRoute.serviceTier)
-				: undefined;
-			return {
-				model: `${model.provider}/${model.id}`,
-				name: model.name,
-				cost: routeCost ?? model.cost,
-				input: model.input,
-				...(model.fastRoute
-					? {
-							fastRouteOf: `${model.provider}/${model.fastRoute.baseModelId}`,
-							fastRouteServiceTier: model.fastRoute.serviceTier,
-							fastRoutePriced: routeCost !== undefined,
-						}
-					: {}),
-			};
-		};
 		// A caller that lists models (`allowedModels`) chooses the contenders itself,
 		// but price and recency still compare them with every model the user could route to.
 		const callerListed = constraints.some((constraint) => (constraint.allowedModels?.length ?? 0) > 0);
 		const reference = callerListed
 			? permittedModels().filter((model) => !needs.needsImages || model.input.includes("image"))
 			: usable.map((entry) => entry.model);
-		const standings = rankCandidates(catalogEvals, reference.map(toCandidate), needs);
+		const standings = rankCandidates(
+			catalogEvals,
+			reference.map((model) =>
+				routingCandidate(
+					model,
+					pairsFor.get(`${model.provider}/${model.id}`)?.map((pair) => pair.effort),
+				),
+			),
+			needs,
+		);
 		const ranked = slotCandidates(
 			standings.filter((candidate) => pairsFor.has(candidate.model)),
 			input.parallelSlot,

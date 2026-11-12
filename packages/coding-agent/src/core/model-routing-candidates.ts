@@ -1,11 +1,16 @@
-import { type BenchmarkCompletion, completeBenchmarks, type QualityEstimate } from "./model-routing-estimates.js";
+import {
+	type BenchmarkCompletion,
+	completeBenchmarks,
+	type Observation,
+	type QualityEstimate,
+} from "./model-routing-estimates.js";
 import {
 	candidateEvidenceRows,
 	catalogModelIdentity,
 	type EvalsCatalog,
 	modelEvidenceTokens,
 } from "./model-routing-evals.js";
-import { type ResolvedTaskNeeds, taskDemand } from "./model-routing-needs.js";
+import { EFFORT_ORDER, effortForDifficulty, type ResolvedTaskNeeds, taskDemand } from "./model-routing-needs.js";
 
 /** What ranking needs to know about one eligible model. */
 export interface CandidateModel {
@@ -20,6 +25,11 @@ export interface CandidateModel {
 	readonly fastRouteServiceTier?: "priority" | "ultrafast";
 	/** True when `cost` already holds the route tier's published rates rather than the base model's. */
 	readonly fastRoutePriced?: boolean;
+	/**
+	 * Reasoning efforts the model can run at (`null` without configurable reasoning). Routing ranks the
+	 * model at the effort it would run for the task; absent, every measured effort counts alike.
+	 */
+	readonly efforts?: readonly (string | null)[];
 }
 
 interface Metric {
@@ -34,6 +44,14 @@ const percent = (key: string, label: string, weight = 1): Metric => ({ key, labe
 const points = (key: string, label: string, weight = 1): Metric => ({ key, label, unit: "", weight });
 
 const OVERALL: Metric = points("aa:idx", "AA Intelligence Index");
+
+/**
+ * Weight of each long-task benchmark (DeepSWE, FrontierCode) for long coding and
+ * review: together they outweigh every other benchmark of the work, so the
+ * quality estimate rests mainly on them. A model without a measured result has
+ * them estimated, and the estimate's uncertainty lowers its cautious quality.
+ */
+const LONG_TASK_WEIGHT = 4;
 
 /** True when the task is long implementation work: hard, very hard, or holding a large codebase in context. */
 const longWork = (needs: ResolvedTaskNeeds) =>
@@ -63,16 +81,16 @@ function workMetrics(needs: ResolvedTaskNeeds): Metric[] {
 			case "coding":
 				return [
 					percent("aa:TB4", "Terminal-Bench 4.0", short ? 2 : 1),
-					percent("dswe:Pass@1", "DeepSWE", long ? 2 : short ? 0.5 : 1),
-					percent("pub:DSWE", "DeepSWE", long ? 2 : short ? 0.5 : 1),
-					percent("fc:Main", "FrontierCode", long ? 2 : short ? 0.5 : 1),
-					percent("pub:FC11", "FrontierCode", long ? 2 : short ? 0.5 : 1),
+					percent("dswe:Pass@1", "DeepSWE", long ? LONG_TASK_WEIGHT : short ? 0.5 : 1),
+					percent("pub:DSWE", "DeepSWE", long ? LONG_TASK_WEIGHT : short ? 0.5 : 1),
+					percent("fc:Main", "FrontierCode", long ? LONG_TASK_WEIGHT : short ? 0.5 : 1),
+					percent("pub:FC11", "FrontierCode", long ? LONG_TASK_WEIGHT : short ? 0.5 : 1),
 					percent("aa:TB21", "Terminal-Bench 2.1", 0.5),
 				];
 			case "code_review":
 				return [
-					percent("fc:Main", "FrontierCode", 2),
-					percent("pub:FC11", "FrontierCode", 2),
+					percent("fc:Main", "FrontierCode", long ? LONG_TASK_WEIGHT : 2),
+					percent("pub:FC11", "FrontierCode", long ? LONG_TASK_WEIGHT : 2),
 					percent("pub:XGym", "ExploitGym"),
 					percent("pub:SECPro", "SEC-Bench Pro"),
 					percent("pub:CWE", "CWE-bench"),
@@ -168,6 +186,56 @@ function abilityResults(values: ReadonlyMap<string, number>): {
 	return { results, reported };
 }
 
+/** A result reported under another harness counts as this many times noisier than a direct measurement. */
+const REPORTED_NOISE = 2;
+const EFFORT_WORD = /\b(non[- ]reasoning|minimal|low|medium|high|xhigh|max)\b/iu;
+const EFFORT_SETTING = /\b(non[- ]reasoning|(?:minimal|low|medium|high|xhigh|max)(?=\s+effort))\b/iu;
+
+/** The reasoning effort a measurement names, `off` for non-reasoning, or "" when it names none. */
+function effortLabel(text: string | undefined, pattern: RegExp = EFFORT_WORD): string {
+	const word = pattern.exec(text ?? "")?.[1]?.toLowerCase();
+	if (word === undefined) return "";
+	return word.startsWith("non") ? "off" : word;
+}
+
+/**
+ * Position of an effort on the reasoning scale, centered on `high`. A result
+ * that names no effort is taken at `high`, the setting leaderboards most often
+ * report by default.
+ */
+const effortPosition = (label: string) => (EFFORT_ORDER.indexOf(label || "high") - EFFORT_ORDER.indexOf("high")) / 2;
+
+/** A model's results at every effort it was measured at, as observations for the completion. */
+function observationsOf(byEffort: ReadonlyMap<string, ReadonlyMap<string, number>>, direct = false): Observation[] {
+	const observations: Observation[] = [];
+	for (const [label, values] of byEffort) {
+		const effort = effortPosition(label);
+		const { results, reported } = abilityResults(values);
+		for (const [key, value] of results) observations.push({ key, value, effort });
+		if (!direct)
+			for (const [key, value] of reported) observations.push({ key, value, effort, noise: REPORTED_NOISE });
+	}
+	return observations;
+}
+
+/** Benchmarks of long, multi-step software work: DeepSWE and FrontierCode, from their leaderboards or vendors. */
+const LONG_TASK_BENCHMARKS = ["dswe:Pass@1", "fc:Main", "pub:DSWE", "pub:FC11"];
+
+/** True when the model has a measured long-task result; an estimate of one never counts. */
+const hasLongTaskEvidence = (values: ReadonlyMap<string, number>) =>
+	[...values.keys()].some((key) =>
+		LONG_TASK_BENCHMARKS.some((benchmark) => key === benchmark || key.startsWith(`${benchmark}@`)),
+	);
+
+/**
+ * Hard coding and review, and long-context coding, are long tasks that short
+ * benchmarks predict poorly. For them, models measured on a long-task benchmark
+ * rank ahead of models that are not; the rest stay eligible behind them.
+ */
+const needsLongTaskEvidence = (needs: ResolvedTaskNeeds) =>
+	(needs.work === "coding" || needs.work === "code_review") &&
+	(needs.difficulty === "hard" || needs.difficulty === "very_hard" || (needs.work === "coding" && needs.longContext));
+
 /** Quality is ranked on the estimate minus this many standard errors, so thin evidence counts less. */
 const CONSERVATIVE_ERRORS = 1;
 
@@ -193,6 +261,13 @@ export interface RankedCandidate extends CandidateModel {
 	readonly overallStanding?: number;
 	/** Quality for this work, from measured results and the completion's estimates of missing ones. */
 	readonly estimate?: QualityEstimate;
+	/** True when the model has a measured DeepSWE or FrontierCode result, from a leaderboard or its vendor. */
+	readonly longTaskEvidence?: boolean;
+	/** The effort the model is ranked at: the one routing would run it at for this task. */
+	readonly effort?: string | null;
+	/** Results measured at `effort`, quoted in preference to results at other efforts. */
+	readonly effortValues?: ReadonlyMap<string, number>;
+	readonly effortConditions?: ReadonlyMap<string, string>;
 }
 
 function sectionKind(intro: readonly string[]): "aa" | "dswe" | "fc" | "pub" {
@@ -238,6 +313,8 @@ interface Reading {
 	readonly key: string;
 	readonly value: number;
 	readonly condition?: string;
+	/** The reasoning effort the row was measured at, or "" when it names none. */
+	readonly effort: string;
 }
 
 interface CatalogReadings {
@@ -245,8 +322,8 @@ interface CatalogReadings {
 	readonly rows: readonly (readonly Reading[])[];
 	/** Per measurement, the best value of each catalog model. */
 	readonly cohorts: ReadonlyMap<string, ReadonlyMap<string, number>>;
-	/** Per catalog model, its best value of each measurement. */
-	readonly models: ReadonlyMap<string, ReadonlyMap<string, number>>;
+	/** Per catalog model, its results at each measured effort. */
+	readonly models: ReadonlyMap<string, ReadonlyMap<string, ReadonlyMap<string, number>>>;
 	/** Low-rank completion of every ability measurement, fitted on first use. */
 	completion(): BenchmarkCompletion;
 	/** Per benchmark weighting, every fitted catalog model's conservative quality, computed on first use. */
@@ -276,9 +353,9 @@ function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
 		const rowCells = cells(row.line);
 		const column = (name: string) => (header.includes(name) ? rowCells[header.indexOf(name)] : undefined);
 		const readings: Reading[] = [];
-		const read = (key: string, raw: string | undefined, condition: string | undefined) => {
+		const read = (key: string, raw: string | undefined, condition: string | undefined, effort: string) => {
 			const value = Number.parseFloat(raw ?? "");
-			if (Number.isFinite(value)) readings.push({ key, value, ...(condition ? { condition } : {}) });
+			if (Number.isFinite(value)) readings.push({ key, value, effort, ...(condition ? { condition } : {}) });
 		};
 		if (kinds[row.section] === "pub") {
 			const reporter = column("Source");
@@ -286,13 +363,19 @@ function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
 			const condition = [setting, reporter ? `reported by ${reporter}` : undefined].filter(Boolean).join(", ");
 			// Each reporter's results form their own cohort: a vendor harness and an
 			// official leaderboard are not ranked against each other.
-			read(`pub:${column("Benchmark")}@${reporter ?? ""}`, column("Score"), condition);
+			read(
+				`pub:${column("Benchmark")}@${reporter ?? ""}`,
+				column("Score"),
+				condition,
+				effortLabel(setting, EFFORT_SETTING),
+			);
 		} else {
 			const effort = column("Effort");
 			const condition = effort ? `${effort} effort` : nameCondition(column("Model"));
+			const label = effortLabel(effort ?? /\(([^)]+)\)\s*$/u.exec(column("Model") ?? "")?.[1]);
 			for (const [index, name] of header.entries())
 				if (index > 1 && name !== "Effort" && name !== "Release date")
-					read(`${kinds[row.section]}:${name}`, rowCells[index], condition);
+					read(`${kinds[row.section]}:${name}`, rowCells[index], condition, label);
 		}
 		return readings;
 	});
@@ -305,13 +388,18 @@ function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
 			cohorts.set(key, cohort);
 		}
 	}
-	const models = new Map<string, Map<string, number>>();
-	for (const [key, cohort] of cohorts)
-		for (const [identity, value] of cohort) {
-			const values = models.get(identity) ?? new Map<string, number>();
-			values.set(key, value);
-			models.set(identity, values);
+	// Per catalog model and effort, the best value of each measurement.
+	const models = new Map<string, Map<string, Map<string, number>>>();
+	for (const row of catalog.rows) {
+		const identity = catalogModelIdentity(row.tokens);
+		const efforts = models.get(identity) ?? new Map<string, Map<string, number>>();
+		models.set(identity, efforts);
+		for (const { key, value, effort } of rows[row.order]!) {
+			const values = efforts.get(effort) ?? new Map<string, number>();
+			values.set(key, Math.max(values.get(key) ?? value, value));
+			efforts.set(effort, values);
 		}
+	}
 	let completion: BenchmarkCompletion | undefined;
 	const readings: CatalogReadings = {
 		rows,
@@ -319,9 +407,10 @@ function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
 		models,
 		completion: () => {
 			if (completion === undefined) {
-				const fitCohorts = new Map<string, Map<string, number>>();
-				for (const [key, cohort] of cohorts) if (!NOT_ABILITY.has(key)) fitCohorts.set(key, new Map(cohort));
-				completion = completeBenchmarks(fitCohorts, MIN_RANKED_MODELS);
+				completion = completeBenchmarks(
+					new Map([...models].map(([identity, efforts]) => [identity, observationsOf(efforts, true)])),
+					MIN_RANKED_MODELS,
+				);
 			}
 			return completion;
 		},
@@ -339,23 +428,46 @@ function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
 function measure(
 	catalog: EvalsCatalog,
 	model: string,
-): { values: Map<string, number>; conditions: Map<string, string>; identities: Set<string>; released?: string } {
+): {
+	values: Map<string, number>;
+	conditions: Map<string, string>;
+	byEffort: Map<string, Map<string, number>>;
+	effortConditions: Map<string, Map<string, string>>;
+	identities: Set<string>;
+	released?: string;
+} {
 	const readings = catalogReadings(catalog);
 	const values = new Map<string, number>();
 	const conditions = new Map<string, string>();
+	const byEffort = new Map<string, Map<string, number>>();
+	const effortConditions = new Map<string, Map<string, string>>();
 	const identities = new Set<string>();
 	let released: string | undefined;
+	const keepBest = (
+		into: Map<string, number>,
+		notes: Map<string, string>,
+		key: string,
+		value: number,
+		condition: string | undefined,
+	) => {
+		if (value <= (into.get(key) ?? Number.NEGATIVE_INFINITY)) return;
+		into.set(key, value);
+		if (condition) notes.set(key, condition);
+		else notes.delete(key);
+	};
 	for (const row of candidateEvidenceRows(catalog, model)) {
 		identities.add(catalogModelIdentity(row.tokens));
-		for (const { key, value, condition } of readings.rows[row.order]!) {
-			if (value <= (values.get(key) ?? Number.NEGATIVE_INFINITY)) continue;
-			values.set(key, value);
-			if (condition) conditions.set(key, condition);
-			else conditions.delete(key);
+		for (const { key, value, condition, effort } of readings.rows[row.order]!) {
+			keepBest(values, conditions, key, value, condition);
+			if (!byEffort.has(effort)) {
+				byEffort.set(effort, new Map());
+				effortConditions.set(effort, new Map());
+			}
+			keepBest(byEffort.get(effort)!, effortConditions.get(effort)!, key, value, condition);
 		}
 		if (row.releaseDate && (!released || row.releaseDate > released)) released = row.releaseDate;
 	}
-	return { values, conditions, identities, ...(released ? { released } : {}) };
+	return { values, conditions, byEffort, effortConditions, identities, ...(released ? { released } : {}) };
 }
 
 /** Value keys measuring `metric`: the column itself, or one per reporter for published results. */
@@ -376,21 +488,22 @@ function benchmarkWeights(completion: BenchmarkCompletion, metrics: readonly Met
 	return weights;
 }
 
-/** True when any of a model's results or reports is a benchmark the completion fitted. */
-const fitsAny = (completion: BenchmarkCompletion, ...results: readonly ReadonlyMap<string, number>[]) =>
-	results.some((map) => [...map.keys()].some((key) => completion.keys.has(key)));
+/** True when any of a model's observations is a benchmark the completion fitted. */
+const fitsAny = (completion: BenchmarkCompletion, observations: readonly Observation[]) =>
+	observations.some((observation) => completion.keys.has(observation.key));
 
 const conservative = (estimate: QualityEstimate) => estimate.mean - CONSERVATIVE_ERRORS * estimate.error;
 
 /**
- * Rank every eligible model for the task in code. Quality is the model's
- * standing among every benchmarked model in the catalog on a conservative
- * estimate for this kind of work: its weighted results on the work's
- * benchmarks, with missing ones estimated from all of its other results,
- * less one standard error. A model with one strong result therefore ranks
- * below models with broader, consistent evidence, and a standing does not
- * depend on which other models are eligible. Quality is weighed against price
- * by how demanding the task is, with a small preference for newer releases.
+ * Rank every eligible model for the task in code. Quality is a conservative
+ * estimate for this kind of work: the model's weighted results on the work's
+ * benchmarks, with missing ones estimated from all of its other results, less
+ * one standard error, scaled from the weakest to the strongest candidate. A
+ * model with one strong result therefore ranks below models with broader,
+ * consistent evidence. The standing quoted to the router compares the same
+ * estimate with every benchmarked catalog model, so it does not depend on
+ * which other models are eligible. Quality is weighed against price by how
+ * demanding the task is, with a small preference for newer releases.
  */
 export function rankCandidates(
 	catalog: EvalsCatalog,
@@ -404,20 +517,51 @@ export function rankCandidates(
 	const signature = JSON.stringify([...weights]);
 	let population = readings.populations.get(signature);
 	if (population === undefined) {
-		population = [...readings.models].flatMap(([identity, values]) => {
-			const { results, reported } = abilityResults(values);
-			if (!fitsAny(completion, results, reported)) return [];
-			const estimate = completion.estimate(results, weights, reported);
-			return estimate ? [[identity, conservative(estimate)] as const] : [];
+		// Every catalog model at each effort it was measured at.
+		population = [...readings.models].flatMap(([identity, efforts]) => {
+			const observations = observationsOf(efforts);
+			if (!fitsAny(completion, observations)) return [];
+			return [...efforts.keys()].flatMap((label) => {
+				const estimate = completion.estimate(observations, weights, effortPosition(label));
+				return estimate ? [[identity, conservative(estimate)] as const] : [];
+			});
 		});
 		readings.populations.set(signature, population);
 	}
 	const fitted = population;
-	const measured = candidates.map((candidate) => ({
-		candidate,
-		base: baseKey(candidate),
-		...measure(catalog, candidate.fastRouteOf ?? candidate.model),
-	}));
+	const measured = candidates.map((candidate) => {
+		const evidence = measure(catalog, candidate.fastRouteOf ?? candidate.model);
+		// The model is ranked at the effort routing would run it at for this task.
+		const effort = candidate.efforts
+			? effortForDifficulty(candidate.efforts, needs.difficulty, needs.latencySensitive)
+			: undefined;
+		// Without known efforts, the model is ranked at the highest effort it was measured at.
+		const label =
+			effort === undefined
+				? [...evidence.byEffort.keys()].sort((a, b) => EFFORT_ORDER.indexOf(b) - EFFORT_ORDER.indexOf(a))[0]
+				: (effort ?? "");
+		const observations = observationsOf(evidence.byEffort);
+		return {
+			candidate,
+			base: baseKey(candidate),
+			...evidence,
+			effort,
+			effortValues: label === undefined ? undefined : evidence.byEffort.get(label),
+			effortNotes: label === undefined ? undefined : evidence.effortConditions.get(label),
+			estimate: completion.estimate(observations, weights, effortPosition(label ?? "")),
+			// Only a model with a result in the fit has a standing of its own; an
+			// unbenchmarked model is ranked on the catalog-wide prior, whose wide
+			// uncertainty keeps it below measured models.
+			evidenced: fitsAny(completion, observations),
+		};
+	});
+	// Quality for ranking spans the candidates being ranked: catalog standings
+	// crowd every frontier model into the top few percent, where price would
+	// decide, while the cautious estimates themselves still separate them.
+	const cautious = measured.flatMap((entry) => (entry.estimate ? [conservative(entry.estimate)] : []));
+	const [weakest, strongest] = [Math.min(...cautious), Math.max(...cautious)];
+	const relativeQuality = (estimate: QualityEstimate) =>
+		strongest > weakest ? (conservative(estimate) - weakest) / (strongest - weakest) : 1;
 	const rankOf = (key: string, value: number, own: ReadonlySet<string>): number | undefined => {
 		const cohort = cohorts.get(key);
 		if (cohort === undefined || cohort.size < MIN_RANKED_MODELS) return undefined;
@@ -445,45 +589,68 @@ export function rankCandidates(
 		.sort()
 		.at(-1);
 	const demand = taskDemand(needs);
-	const qualityWeight = 0.25 + 0.65 * demand;
+	const gated = needsLongTaskEvidence(needs);
+	// Quality is relative to the candidates, so it spans the whole range between
+	// them even for modest tasks. Below moderate demand its weight therefore falls
+	// with the square of demand, and an easy, low-stakes task goes to an adequate
+	// cheaper model; from moderate demand up the weights are unchanged.
+	const qualityWeight = demand >= 0.5 ? 0.25 + 0.65 * demand : 0.575 * (demand / 0.5) ** 2;
 	const priceWeight = 0.65 - 0.65 * demand;
 
 	return measured
-		.map(({ candidate, base, values, conditions, identities, released }) => {
-			const { results, reported } = abilityResults(values);
-			const estimate = completion.estimate(results, weights, reported);
-			const standing = estimate ? estimateStanding(conservative(estimate), identities) : undefined;
-			// Only a model with a result in the fit has a standing of its own; an
-			// unbenchmarked model is ranked on the catalog-wide prior, whose wide
-			// uncertainty keeps it below measured models.
-			const evidenced = fitsAny(completion, results, reported);
-			const workStanding = evidenced ? standing : undefined;
-			const overallStanding = overallOf(values, identities);
-			const quality = standing ?? (overallStanding !== undefined ? 0.8 * overallStanding : 0.2);
-			const price = blended(candidate);
-			const cheapness = price > 0 && high > low ? 1 - (Math.log(price) - low) / (high - low) : 1;
-			const ageDays = released && newest ? (Date.parse(newest) - Date.parse(released)) / 86_400_000 : 365;
-			const recency = 1 - Math.min(1, ageDays / 365);
-			return {
-				...candidate,
-				baseKey: base,
-				score:
-					qualityWeight * quality +
-					priceWeight * cheapness +
-					0.1 * recency +
-					(needs.latencySensitive && candidate.fastRouteOf && candidate.fastRouteServiceTier !== "ultrafast"
-						? FAST_ROUTE_BONUS
-						: 0),
+		.map(
+			({
+				candidate,
+				base,
 				values,
 				conditions,
-				...(released ? { released } : {}),
-				...(workStanding !== undefined ? { workStanding } : {}),
-				...(overallStanding !== undefined ? { overallStanding } : {}),
-				...(estimate && evidenced ? { estimate } : {}),
-			};
-		})
+				identities,
+				released,
+				estimate,
+				evidenced,
+				effort,
+				effortValues,
+				effortNotes,
+			}) => {
+				const standing = estimate ? estimateStanding(conservative(estimate), identities) : undefined;
+				const workStanding = evidenced ? standing : undefined;
+				const overallStanding = overallOf(values, identities);
+				const quality =
+					estimate && standing !== undefined
+						? relativeQuality(estimate)
+						: overallStanding !== undefined
+							? 0.8 * overallStanding
+							: 0.2;
+				const price = blended(candidate);
+				const cheapness = price > 0 && high > low ? 1 - (Math.log(price) - low) / (high - low) : 1;
+				const ageDays = released && newest ? (Date.parse(newest) - Date.parse(released)) / 86_400_000 : 365;
+				const recency = 1 - Math.min(1, ageDays / 365);
+				return {
+					...candidate,
+					baseKey: base,
+					score:
+						qualityWeight * quality +
+						priceWeight * cheapness +
+						0.1 * recency +
+						(needs.latencySensitive && candidate.fastRouteOf && candidate.fastRouteServiceTier !== "ultrafast"
+							? FAST_ROUTE_BONUS
+							: 0),
+					values,
+					conditions,
+					...(released ? { released } : {}),
+					...(workStanding !== undefined ? { workStanding } : {}),
+					...(overallStanding !== undefined ? { overallStanding } : {}),
+					...(estimate && evidenced ? { estimate } : {}),
+					...(effort !== undefined ? { effort } : {}),
+					...(hasLongTaskEvidence(values) ? { longTaskEvidence: true } : {}),
+					...(effortValues ? { effortValues } : {}),
+					...(effortNotes ? { effortConditions: effortNotes } : {}),
+				};
+			},
+		)
 		.sort(
 			(a, b) =>
+				Number(gated && !a.longTaskEvidence) - Number(gated && !b.longTaskEvidence) ||
 				b.score - a.score ||
 				Number(a.fastRouteOf !== undefined) - Number(b.fastRouteOf !== undefined) ||
 				a.model.localeCompare(b.model),
@@ -534,34 +701,44 @@ export function describeOption(
 		.map((candidate) => candidate.released ?? "")
 		.sort()
 		.at(-1);
-	const measuredOf = (metrics: readonly Metric[]) =>
+	// Work results at the effort the model is ranked at take the place of its best results at
+	// other efforts; the overall result stays the best one, which its standing describes.
+	interface Source {
+		readonly values: ReadonlyMap<string, number>;
+		readonly notes: ReadonlyMap<string, string>;
+	}
+	const best: Source = { values: option.values, notes: option.conditions };
+	const atEffort: Source = {
+		values: new Map([...option.values, ...(option.effortValues ?? [])]),
+		notes: new Map([...option.conditions, ...(option.effortConditions ?? [])]),
+	};
+	const measuredOf = (metrics: readonly Metric[], source: Source) =>
 		metrics
 			.map((metric) => {
-				const keys = cohortKeys(option.values, metric);
-				const best = keys.sort((a, b) => option.values.get(b)! - option.values.get(a)!)[0];
-				return best === undefined ? undefined : { metric, key: best };
+				const keys = cohortKeys(source.values, metric);
+				const top = keys.sort((a, b) => source.values.get(b)! - source.values.get(a)!)[0];
+				return top === undefined ? undefined : { metric, key: top };
 			})
 			.filter((entry) => entry !== undefined);
-	const results = (metrics: readonly Metric[], count = 2) => {
-		const present = measuredOf(metrics).slice(0, count);
-		return present
+	const results = (metrics: readonly Metric[], source: Source, count = 2) =>
+		measuredOf(metrics, source)
+			.slice(0, count)
 			.map(({ metric, key }) => {
-				const condition = option.conditions.get(key);
-				return `${metric.label} ${option.values.get(key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
+				const condition = source.notes.get(key);
+				return `${metric.label} ${source.values.get(key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
 			})
 			.join("; ");
-	};
-	const quote = (metrics: readonly Metric[], standing: number | undefined) => {
-		const measured = results(metrics);
+	const quote = (metrics: readonly Metric[], standing: number | undefined, source: Source) => {
+		const measured = results(metrics, source);
 		if (!measured) return "no published results";
 		return `${standing === undefined ? "measured" : `${standingLabel(standing)} of models with the same benchmark and source`} (${measured})`;
 	};
 	const metrics = workMetrics(needs);
 	const work = () => {
 		const { estimate, workStanding } = option;
-		if (estimate === undefined || workStanding === undefined) return quote(metrics, undefined);
-		const measured = results(metrics, 3);
-		const quoted = new Set(measuredOf(metrics).map(({ metric }) => metric.label));
+		if (estimate === undefined || workStanding === undefined) return quote(metrics, undefined, atEffort);
+		const measured = results(metrics, atEffort, 3);
+		const quotedLabels = new Set(measuredOf(metrics, atEffort).map(({ metric }) => metric.label));
 		const estimated = metrics
 			.flatMap((metric) =>
 				estimate.estimated
@@ -570,7 +747,8 @@ export function describeOption(
 			)
 			.filter(
 				({ metric }, index, all) =>
-					!quoted.has(metric.label) && all.findIndex((entry) => entry.metric.label === metric.label) === index,
+					!quotedLabels.has(metric.label) &&
+					all.findIndex((entry) => entry.metric.label === metric.label) === index,
 			)
 			.slice(0, 2)
 			.map(
@@ -582,7 +760,8 @@ export function describeOption(
 			measured ? `measured: ${measured}` : "no result measured for this work",
 			...(estimated ? [`estimated from its other results, not measured: ${estimated}`] : []),
 		];
-		return `${standingLabel(workStanding)} of benchmarked models on a cautious estimate for this work, above ${round(100 * workStanding)}% of them (${parts.join("; ")})`;
+		const at = typeof option.effort === "string" ? ` at ${option.effort} effort` : "";
+		return `${standingLabel(workStanding)} of benchmarked models on a cautious estimate for this work${at}, above ${round(100 * workStanding)}% of them (${parts.join("; ")})`;
 	};
 	let released = "unknown";
 	if (option.released) {
@@ -602,7 +781,7 @@ export function describeOption(
 		price: `${tier}: ${money(option.cost.input)} / ${money(option.cost.output)} per million tokens`,
 		reads_images: option.input.includes("image"),
 		[needs.work]: work(),
-		overall: quote([OVERALL], option.overallStanding),
+		overall: quote([OVERALL], option.overallStanding, best),
 		...(option.fastRouteOf
 			? {
 					route:

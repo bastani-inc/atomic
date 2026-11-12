@@ -3,12 +3,17 @@
  *
  * Benchmarks are strongly correlated, so a model's missing results can be
  * estimated from the results it has. Each benchmark (column) is standardized
- * to z-scores over the models measured on it, and the partially observed
- * model × benchmark matrix is factored as `Z ≈ U Vᵀ` with regularized
- * alternating least squares. The benchmark factors `V`, the residual variance
- * and the spread of model factors then define a Gaussian model: a model's
- * factor has the empirical prior of the catalog's models, and its own results
- * update that prior by Bayesian linear regression. The posterior gives every
+ * to z-scores over the measured results, and the partially observed
+ * (model, reasoning effort) × benchmark matrix is factored with regularized
+ * alternating least squares. A row is one model at one effort; its factor is
+ * `a + t·b`, where `t` is the effort's position on the reasoning scale and
+ * `a`, `b` belong to the model, so every effort of a model, measured or not,
+ * shares its evidence: rows the catalog never measured are interpolated from
+ * the model's measured efforts and the effort trend of other models. The
+ * benchmark factors, the residual variance and the spread of model factors
+ * then define a Gaussian model: a model's factors have the empirical prior of
+ * the catalog's models, and its own results update that prior by Bayesian
+ * linear regression. The posterior gives every
  * result, measured or missing, a mean and a variance, so a model measured on
  * one benchmark carries more uncertainty than one measured on many, and one
  * outlying result moves the estimate only as far as the model's other results
@@ -25,8 +30,6 @@ const RANK = 3;
 const RIDGE = 1;
 const SWEEPS = 60;
 const SEED = 0x4689;
-/** A result reported under another harness counts as this many times noisier than a fitted measurement. */
-const REPORTED_NOISE = 2;
 /** Floor on the residual variance, in squared z units, so in-sample fit never claims certainty. */
 const MIN_RESIDUAL_VARIANCE = 0.05;
 
@@ -83,12 +86,22 @@ function gram(vectors: readonly Vector[], diagonal: Matrix): Matrix {
 	return result;
 }
 
-function ridgeFit(factors: readonly Vector[], targets: readonly number[]): Vector {
-	const rhs = zeros(RANK);
-	factors.forEach((factor, index) => {
-		for (let k = 0; k < RANK; k++) rhs[k]! += factor[k]! * targets[index]!;
+function ridgeFit(features: readonly Vector[], targets: readonly number[], size: number): Vector {
+	const rhs = zeros(size);
+	features.forEach((feature, index) => {
+		for (let k = 0; k < size; k++) rhs[k]! += feature[k]! * targets[index]!;
 	});
-	return solve(gram(factors, identity(RANK, RIDGE)), rhs);
+	return solve(gram(features, identity(size, RIDGE)), rhs);
+}
+
+/** One result a model has for a benchmark. */
+export interface Observation {
+	readonly key: string;
+	readonly value: number;
+	/** Position of the result's reasoning effort on the effort scale. */
+	readonly effort: number;
+	/** Multiple of the residual variance this result carries; 1, the default, is a direct measurement. */
+	readonly noise?: number;
 }
 
 /** A model's estimated result on one benchmark, in the benchmark's own unit. */
@@ -101,13 +114,13 @@ export interface EstimatedResult {
 
 /** A model's estimated quality for one weighting of benchmarks. */
 export interface QualityEstimate {
-	/** Weighted mean z-score over the weighted benchmarks, measured where available and estimated elsewhere. */
+	/** Weighted mean z-score over the weighted benchmarks at the requested effort. */
 	readonly mean: number;
-	/** Standard error of `mean`; zero when every weighted benchmark is measured. */
+	/** Standard error of `mean`. */
 	readonly error: number;
-	/** Weighted benchmarks the model has a result for. */
+	/** Weighted benchmarks the model has a direct result for at the requested effort. */
 	readonly measured: readonly string[];
-	/** Weighted benchmarks the model lacks, with the completion's estimate. */
+	/** Weighted benchmarks the model lacks at the requested effort, with the completion's estimate. */
 	readonly estimated: readonly EstimatedResult[];
 }
 
@@ -116,101 +129,129 @@ export interface BenchmarkCompletion {
 	/** Benchmarks with enough results to take part in the fit. */
 	readonly keys: ReadonlySet<string>;
 	/**
-	 * Estimate quality from a model's own results under per-benchmark `weights`.
-	 * `reported` holds results published for a fitted benchmark under another
-	 * harness; they inform the estimate as noisier observations but are not
-	 * counted as measured.
+	 * Estimate quality at `effort` from a model's own results under
+	 * per-benchmark `weights`. An observation with `noise` above 1, such as a
+	 * result reported under another harness, carries that many times the
+	 * residual variance and is not counted as measured.
 	 */
 	estimate(
-		values: ReadonlyMap<string, number>,
+		observations: readonly Observation[],
 		weights: ReadonlyMap<string, number>,
-		reported?: ReadonlyMap<string, number>,
+		effort: number,
 	): QualityEstimate | undefined;
 }
 
+interface Entry {
+	readonly column: number;
+	readonly z: number;
+	readonly effort: number;
+	readonly noise: number;
+}
+
+/** Regression features of one entry for a model's factors `[a, b]`: the benchmark loading, and it scaled by effort. */
+const features = (loading: Vector, effort: number): Vector => [...loading, ...loading.map((x) => x * effort)];
+
 /**
- * Fit the completion to `cohorts`: per benchmark key, each catalog model's
- * result. Benchmarks measured on fewer than `minModels` models, or without
- * spread, are left out.
+ * Fit the completion to each catalog model's direct results. Benchmarks
+ * measured on fewer than `minModels` models, or without spread, are left out.
  */
 export function completeBenchmarks(
-	cohorts: ReadonlyMap<string, ReadonlyMap<string, number>>,
+	models: ReadonlyMap<string, readonly Observation[]>,
 	minModels: number,
 ): BenchmarkCompletion {
+	const byKey = new Map<string, { values: number[]; models: Set<string> }>();
+	for (const [model, observations] of models)
+		for (const { key, value } of observations) {
+			const entry = byKey.get(key) ?? { values: [], models: new Set<string>() };
+			entry.values.push(value);
+			entry.models.add(model);
+			byKey.set(key, entry);
+		}
 	const keys: string[] = [];
 	const center: number[] = [];
 	const scale: number[] = [];
-	for (const [key, cohort] of cohorts) {
-		if (cohort.size < minModels) continue;
-		const values = [...cohort.values()];
+	const low: number[] = [];
+	const high: number[] = [];
+	for (const [key, { values, models: measured }] of byKey) {
+		if (measured.size < minModels) continue;
 		const mean = values.reduce((a, b) => a + b, 0) / values.length;
 		const sd = Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
 		if (!(sd > 0)) continue;
 		keys.push(key);
 		center.push(mean);
 		scale.push(sd);
+		low.push((Math.min(...values) - mean) / sd);
+		high.push((Math.max(...values) - mean) / sd);
 	}
 	const column = new Map(keys.map((key, index) => [key, index]));
-	const low = keys.map((key, index) => (Math.min(...cohorts.get(key)!.values()) - center[index]!) / scale[index]!);
-	const high = keys.map((key, index) => (Math.max(...cohorts.get(key)!.values()) - center[index]!) / scale[index]!);
-	const identities = new Map<string, Map<string, number>>();
-	for (const key of keys)
-		for (const [identity, value] of cohorts.get(key)!) {
-			const row = identities.get(identity) ?? new Map<string, number>();
-			row.set(key, value);
-			identities.set(identity, row);
-		}
 	const z = (key: string, value: number) => {
 		const index = column.get(key)!;
 		return (value - center[index]!) / scale[index]!;
 	};
-	const rows = [...identities.values()].map((row) =>
-		[...row].map(([key, value]) => ({ column: column.get(key)!, z: z(key, value) })),
-	);
-	const byColumn: { row: number; z: number }[][] = keys.map(() => []);
+	const toEntries = (observations: readonly Observation[]): Entry[] =>
+		observations
+			.filter((observation) => column.has(observation.key))
+			.map((observation) => ({
+				column: column.get(observation.key)!,
+				z: z(observation.key, observation.value),
+				effort: observation.effort,
+				noise: observation.noise ?? 1,
+			}));
+	const rows = [...models.values()].map(toEntries).filter((entries) => entries.length > 0);
+	const byColumn: { row: number; entry: Entry }[][] = keys.map(() => []);
 	rows.forEach((entries, row) => {
-		for (const entry of entries) byColumn[entry.column]!.push({ row, z: entry.z });
+		for (const entry of entries) byColumn[entry.column]!.push({ row, entry });
 	});
 
+	const size = 2 * RANK;
 	const draw = normalSource(SEED);
-	const u: Matrix = rows.map(() => Array.from({ length: RANK }, () => 0.1 * draw()));
+	const u: Matrix = rows.map(() => Array.from({ length: size }, () => 0.1 * draw()));
 	const v: Matrix = keys.map(() => Array.from({ length: RANK }, () => 0.1 * draw()));
+	/** A model's factor at one effort: `a + t·b`. */
+	const at = (factors: Vector, effort: number) =>
+		Array.from({ length: RANK }, (_, k) => factors[k]! + effort * factors[RANK + k]!);
 	for (let sweep = 0; sweep < SWEEPS && keys.length > 0; sweep++) {
 		rows.forEach((entries, row) => {
 			u[row] = ridgeFit(
-				entries.map((entry) => v[entry.column]!),
+				entries.map((entry) => features(v[entry.column]!, entry.effort)),
 				entries.map((entry) => entry.z),
+				size,
 			);
 		});
 		byColumn.forEach((entries, col) => {
 			v[col] = ridgeFit(
-				entries.map((entry) => u[entry.row]!),
-				entries.map((entry) => entry.z),
+				entries.map(({ row, entry }) => at(u[row]!, entry.effort)),
+				entries.map(({ entry }) => entry.z),
+				RANK,
 			);
 		});
 	}
 
-	// Empirical prior of a model's factor: the mean and covariance of the fitted model factors.
-	const priorMean = zeros(RANK);
-	for (const factor of u) for (let k = 0; k < RANK; k++) priorMean[k]! += factor[k]! / Math.max(1, u.length);
-	const priorCovariance = identity(RANK, 1e-6);
+	// Empirical prior of a model's factors: the mean and covariance of the fitted model factors.
+	const priorMean = zeros(size);
+	for (const factor of u) for (let k = 0; k < size; k++) priorMean[k]! += factor[k]! / Math.max(1, u.length);
+	const priorCovariance = identity(size, 1e-6);
 	for (const factor of u)
-		for (let i = 0; i < RANK; i++)
-			for (let j = 0; j < RANK; j++)
+		for (let i = 0; i < size; i++)
+			for (let j = 0; j < size; j++)
 				priorCovariance[i]![j]! +=
 					((factor[i]! - priorMean[i]!) * (factor[j]! - priorMean[j]!)) / Math.max(1, u.length - 1);
 	const priorPrecision = inverse(priorCovariance);
 	const priorShift = priorPrecision.map((row) => dot(row, priorMean));
 
-	/** Posterior mean and covariance of a model's factor given its standardized results. */
-	const posterior = (entries: readonly { column: number; z: number; noise?: number }[], residual: number) => {
+	/** Posterior mean and covariance of a model's factors given its standardized results. */
+	const posterior = (entries: readonly Entry[], residual: number) => {
 		const precision = gram(
-			entries.map((entry) => v[entry.column]!.map((x) => x / Math.sqrt(residual * (entry.noise ?? 1)))),
+			entries.map((entry) =>
+				features(v[entry.column]!, entry.effort).map((x) => x / Math.sqrt(residual * entry.noise)),
+			),
 			priorPrecision,
 		);
 		const shift = [...priorShift];
-		for (const entry of entries)
-			for (let k = 0; k < RANK; k++) shift[k]! += (v[entry.column]![k]! * entry.z) / (residual * (entry.noise ?? 1));
+		for (const entry of entries) {
+			const feature = features(v[entry.column]!, entry.effort);
+			for (let k = 0; k < size; k++) shift[k]! += (feature[k]! * entry.z) / (residual * entry.noise);
+		}
 		const covariance = inverse(precision);
 		return { factor: covariance.map((row) => dot(row, shift)), covariance };
 	};
@@ -230,9 +271,9 @@ export function completeBenchmarks(
 		for (const entries of rows) {
 			const { factor, covariance } = posterior(entries, residual);
 			for (const entry of entries) {
-				const loading = v[entry.column]!;
-				const leverage = Math.min(0.99, quadratic(covariance, loading) / residual);
-				squared += ((entry.z - dot(factor, loading)) / (1 - leverage)) ** 2;
+				const feature = features(v[entry.column]!, entry.effort);
+				const leverage = Math.min(0.99, quadratic(covariance, feature) / residual);
+				squared += ((entry.z - dot(factor, feature)) / (1 - leverage)) ** 2;
 				count++;
 			}
 		}
@@ -241,37 +282,31 @@ export function completeBenchmarks(
 
 	return {
 		keys: new Set(keys),
-		estimate(values, weights, reported = new Map()) {
+		estimate(observations, weights, effort) {
 			const weighted = [...weights].filter(([key, weight]) => weight > 0 && column.has(key));
 			const total = weighted.reduce((sum, [, weight]) => sum + weight, 0);
 			if (total === 0) return undefined;
-			const { factor, covariance } = posterior(
-				[
-					...[...values]
-						.filter(([key]) => column.has(key))
-						.map(([key, value]) => ({ column: column.get(key)!, z: z(key, value) })),
-					...[...reported]
-						.filter(([key]) => column.has(key))
-						.map(([key, value]) => ({ column: column.get(key)!, z: z(key, value), noise: REPORTED_NOISE })),
-				],
-				residual,
+			const entries = toEntries(observations);
+			const { factor, covariance } = posterior(entries, residual);
+			const direct = new Set(
+				entries.filter((entry) => entry.noise === 1 && entry.effort === effort).map((entry) => keys[entry.column]!),
 			);
-			// Quality is the model's inferred ability on each weighted benchmark: a
-			// measured result is weighed with everything else the model scored, so one
-			// outlying result moves the estimate only as far as the rest supports.
-			// Estimates stay within the range measured results span.
+			// Quality is the model's inferred ability on each weighted benchmark at
+			// this effort: a measured result is weighed with everything else the
+			// model scored, so one outlying result moves the estimate only as far as
+			// the rest supports. Estimates stay within the range measured results span.
 			let sum = 0;
 			let missingNoise = 0;
-			const direction = zeros(RANK);
+			const direction = zeros(size);
 			const measured: string[] = [];
 			const estimated: EstimatedResult[] = [];
 			for (const [key, weight] of weighted) {
 				const index = column.get(key)!;
-				const loading = v[index]!;
-				const ability = Math.min(high[index]!, Math.max(low[index]!, dot(factor, loading)));
+				const feature = features(v[index]!, effort);
+				const ability = Math.min(high[index]!, Math.max(low[index]!, dot(factor, feature)));
 				sum += weight * ability;
-				for (let k = 0; k < RANK; k++) direction[k]! += weight * loading[k]!;
-				if (values.has(key)) {
+				for (let k = 0; k < size; k++) direction[k]! += weight * feature[k]!;
+				if (direct.has(key)) {
 					measured.push(key);
 					continue;
 				}
@@ -280,7 +315,7 @@ export function completeBenchmarks(
 				estimated.push({
 					key,
 					value: center[index]! + ability * scale[index]!,
-					error: Math.sqrt(quadratic(covariance, loading) + residual) * scale[index]!,
+					error: Math.sqrt(quadratic(covariance, feature) + residual) * scale[index]!,
 				});
 			}
 			const variance = quadratic(covariance, direction) + missingNoise;
