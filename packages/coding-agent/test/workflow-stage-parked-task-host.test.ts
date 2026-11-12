@@ -21,6 +21,11 @@ import { type ParkedTaskSettlement, WorkflowStageAdmissionBoundary } from "../sr
 import { isToolDetachmentError, parkWorkflowStageForRelease, ToolDetachmentError } from "../src/index.js";
 import { createHarness, getMessageText, type Harness } from "./suite/harness.js";
 
+/** Bounded well inside the coding-agent 30 s / 90 s per-test timeout, with headroom for loaded shards. */
+const STAGE_TASK_WAIT_TIMEOUT_MS = 10_000;
+const OWNER_RECONCILE_HOLD_TIMEOUT_MS = STAGE_TASK_WAIT_TIMEOUT_MS;
+const POLL_INTERVAL_MS = 20;
+
 /** Removed after each test, once the stage's tasks have ended: Windows refuses to remove files a task still holds. */
 const harnesses: Harness[] = [];
 const gateDirectories: string[] = [];
@@ -92,7 +97,7 @@ async function untilSettlementParked(boundary: WorkflowStageAdmissionBoundary): 
 			parked.push(...boundary.takeParkedTaskSettlements());
 			assert.equal(parked.length, 1);
 		},
-		{ timeout: 10_000, interval: 20 },
+		{ timeout: STAGE_TASK_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 	);
 	vi.spyOn(boundary, "takeParkedTaskSettlements").mockReturnValueOnce(parked);
 }
@@ -106,16 +111,28 @@ async function untilCommandsSettled(host: AgentTaskHost): Promise<void> {
 			watched.value.dispose();
 			assert.ok(commands.length > 0 && commands.every((task) => task.execution.kind === "settled"));
 		},
-		{ timeout: 10_000, interval: 20 },
+		{ timeout: STAGE_TASK_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 	);
 }
 
-function deferOwnerReconcileUntilRebind(): { readonly deferred: number } {
+function deferOwnerReconcileUntilRebind(): { readonly deferred: number; untilHeld(): Promise<void> } {
 	const state = { deferred: 0, binding: false, rebound: false };
+	const disposed = new WeakSet<TaskSubscription>();
+	const held = Promise.withResolvers<void>();
+	const dispose = TaskSubscription.prototype.dispose;
+	vi.spyOn(TaskSubscription.prototype, "dispose").mockImplementation(function (
+		this: TaskSubscription,
+		...args: Parameters<TaskSubscription["dispose"]>
+	) {
+		disposed.add(this);
+		dispose.apply(this, args);
+	});
 	const drain = TaskSubscription.prototype.drain;
 	vi.spyOn(TaskSubscription.prototype, "drain").mockImplementation(function (this: TaskSubscription) {
+		if (disposed.has(this)) return;
 		if (!state.binding && !state.rebound) {
 			state.deferred++;
+			held.resolve();
 			return;
 		}
 		drain.call(this);
@@ -137,6 +154,30 @@ function deferOwnerReconcileUntilRebind(): { readonly deferred: number } {
 		get deferred() {
 			return state.deferred;
 		},
+		async untilHeld() {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				await Promise.race([
+					held.promise,
+					new Promise<never>((_, reject) => {
+						timer = setTimeout(
+							() =>
+								reject(
+									new assert.AssertionError({
+										message: "reconciles of the task owner were held while the command settled",
+										actual: state.deferred > 0,
+										expected: true,
+										operator: "==",
+									}),
+								),
+							OWNER_RECONCILE_HOLD_TIMEOUT_MS,
+						);
+					}),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
+		},
 	};
 }
 
@@ -147,7 +188,7 @@ async function assertNoticeWithoutTurn(reopened: Harness, text: RegExp): Promise
 			const entries = reopened.sessionManager.getEntries();
 			assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === "task-completion-ack"));
 		},
-		{ timeout: 5_000, interval: 20 },
+		{ timeout: STAGE_TASK_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 	);
 	await new Promise((resolve) => setTimeout(resolve, 100));
 
@@ -267,6 +308,7 @@ describe("a released stage's task host (#4309)", () => {
 		const reconcile = deferOwnerReconcileUntilRebind();
 		command.open();
 		await untilCommandsSettled(host);
+		await reconcile.untilHeld();
 		assert.ok(reconcile.deferred > 0, "reconciles of the task owner were held while the command settled");
 
 		const reopened = await stageSession(context, store, sessionId);
@@ -318,7 +360,7 @@ describe("a released stage's task host (#4309)", () => {
 				parked.push(...boundary.takeParkedTaskSettlements());
 				assert.equal(parked.length, 1);
 			},
-			{ timeout: 5_000, interval: 20 },
+			{ timeout: STAGE_TASK_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 		);
 		assert.equal(parked[0]?.kind, undefined);
 	});
@@ -356,7 +398,7 @@ describe("a released stage's task host (#4309)", () => {
 				assert.equal(parked.length, 1);
 				assert.equal(parked[0]?.kind, "command");
 			},
-			{ timeout: 10_000, interval: 20 },
+			{ timeout: STAGE_TASK_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 		);
 
 		assert.ok(opened >= 1, "the kind was read from the owner's tasks");
@@ -393,7 +435,7 @@ describe("a released stage's task host (#4309)", () => {
 				const entries = reopened.sessionManager.getEntries();
 				assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === "task-completion-ack"));
 			},
-			{ timeout: 5_000, interval: 20 },
+			{ timeout: STAGE_TASK_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 		);
 		const notice = reopened.sessionManager
 			.getEntries()
