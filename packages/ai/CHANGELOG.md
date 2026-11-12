@@ -4,11 +4,20 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Changed
+
+- Updated `@google/genai` to 2.32.0 with automatic continuation turned off, so a `CONTINUATION` finish reason ends the turn with stop reason `length` (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108))
+
 ### Fixed
 
 - Fixed tools with `strict: "prefer"` constrained sampling being sent in strict mode when their schema contains a node without a `type`, such as `items: {}`, `Type.Unknown()`, or a bare `const`, which OpenAI rejects with a 400 error; these tools now fall back to non-strict mode, `strict: "require"` fails locally, and nodes with only an `enum` stay strict (upstream [#12049](https://github.com/earendil-works/pi/issues/12049))
 - Fixed provider errors reading `"Connection closed."` not being classified as retryable (upstream [#12093](https://github.com/earendil-works/pi/pull/12093))
 - Fixed non-strict Anthropic tool schemas dropping the root `additionalProperties` keyword, including when `strict: "prefer"` falls back to non-strict mode (upstream [#12100](https://github.com/earendil-works/pi/pull/12100))
+- Fixed the `google-generative-ai` and `google-vertex` adapters rejecting a custom `fetch` option instead of forwarding it through `httpOptions.fetch`, and kept the global undici dispatcher's idle timeouts active when no custom `fetch` is supplied; Vertex ADC token requests still use `google-auth-library`'s own HTTP client (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108))
+
+### Removed
+
+- Removed the unused `mapStopReasonString` export from `@bastani/pi-ai/api/google-shared` (upstream [#12103](https://github.com/earendil-works/pi/pull/12103))
 
 ## [0.9.79] - 2026-11-12
 
