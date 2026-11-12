@@ -20,7 +20,7 @@ The interface has four main areas:
 - **Startup header** - shortcuts plus named lists of loaded context files, prompt templates, skills, and extensions; use the expand-tools shortcut (Ctrl+O by default) to switch those lists to source paths
 - **Messages** - user messages, assistant responses, tool calls, tool results, notifications, errors, and extension UI
 - **Editor** - where you type; border color indicates the current thinking level
-- **Footer** - working directory, session name, token/cache usage, cost, context usage, and current model
+- **Footer** - token/cache usage, cost, and context usage above the editor; below it, the current model, reasoning level, working directory, Git branch, and session name while the agent is idle, or `esc to interrupt` while it works (a turn, compaction, automatic retry, or `!` command)
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 

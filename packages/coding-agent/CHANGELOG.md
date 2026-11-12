@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The footer line with the model, reasoning level, folder, Git branch and session name now shows only while the chat's agent is idle, the same way in the main chat, workflow stage chats and subagent chats. While the agent works, including during a `!` command, a compaction or an automatic retry's backoff, the line shows `esc to interrupt`, or `working` where Escape does not interrupt (an open `/tasks` picker, or a subagent's chat) ([#4690](https://github.com/bastani-inc/atomic/issues/4690))
+
 ### Fixed
 
 - Fixed the `bash` tool returning no output, with a broken truncation footer such as `[Showing lines 3-2 of 2]`, when output ends in one line longer than about 100 KB; it now shows the end of that line (upstream [#12092](https://github.com/earendil-works/pi/pull/12092))

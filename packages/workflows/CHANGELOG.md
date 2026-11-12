@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Escape in a stage chat whose session is waiting out an automatic retry's backoff now interrupts the stage, as the chat's `esc to interrupt` footer offers, instead of closing the chat and leaving the retry running ([#4690](https://github.com/bastani-inc/atomic/issues/4690))
+
 ## [0.9.80] - 2026-11-12
 
 Resumed workflow runs look like every other run.

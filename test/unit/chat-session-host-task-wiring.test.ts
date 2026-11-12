@@ -323,14 +323,17 @@ test("a footer without a task list of its own counts nothing for a session that 
 	footer.dispose();
 });
 
-test("a chat that does not own its running session never offers to interrupt it from its footer (#4640)", () => {
+test("a chat that does not own its running session never offers to interrupt it, and shows its model once idle (#4640, #4690)", () => {
 	initTheme("dark");
-	const session = { ...boxSession("busy-model"), isStreaming: true } as ChatBoxSession;
+	let session = { ...boxSession("busy-model"), isStreaming: true } as ChatBoxSession;
 	const borrowed = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getChatBoxSession: () => session }));
 	const owned = new ChatSessionHost(hostOptions({ footerData: FOOTER_DATA, getAgentSession: () => session as never }));
 	try {
-		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), [`busy-model • ${BOX_FOOTER_CWD}`]);
+		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), ["working"]);
 		assert.match(text(owned.renderFooter(80)), /esc to interrupt/);
+		session = boxSession("busy-model");
+		assert.deepEqual(text(borrowed.renderFooter(80)).split("\n"), [`busy-model • ${BOX_FOOTER_CWD}`]);
+		assert.deepEqual(text(owned.renderFooter(80)).split("\n"), [`busy-model • ${BOX_FOOTER_CWD}`]);
 	} finally {
 		borrowed.dispose();
 		owned.dispose();
