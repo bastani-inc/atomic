@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [0.9.79] - 2026-11-12
+
+Background subagents survive a reboot, and one that cannot be restored comes with a ready relaunch call.
+
+- **Reboot-safe background subagents.** Child sessions now live under the agent directory instead of the system temporary directory, and one failed restore no longer hides the notices for the others ([#4660](https://github.com/bastani-inc/atomic/issues/4660), [#4664](https://github.com/bastani-inc/atomic/pull/4664)).
+- **Actionable restore notices.** A subagent that could not be restored is reported with its agent, task, ids, working directory, worktree, session and a ready `subagent` call to relaunch it ([#4660](https://github.com/bastani-inc/atomic/issues/4660), [#4664](https://github.com/bastani-inc/atomic/pull/4664)).
+
+### Fixed
+
+- Fixed background subagents being lost when a machine rebooted before their parent session was resumed: a parent on the default SQLite session store kept its children's sessions in the system temporary directory, which a reboot clears. They now live under the agent directory (`subagent-sessions/<parent session id>`), and a recorded session file that is gone is reported by its path instead of as a session-store loss ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed one background subagent whose restoration failed unexpectedly after a restart hiding the notices for every other subagent: each child is now reported on its own, and a child that failed this way is retried on the next resume instead of being recorded as gone ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed the notice for a subagent that could not be restored after a restart saying only to launch a fresh one: it now gives the agent, its task, run and child ids, working directory, worktree and branch, session, a ready `subagent` call to relaunch it in its worktree when its task was recorded (otherwise where to find the launching call), and how to inspect what it left behind ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+
 ## [0.9.79-alpha.1] - 2026-11-11
 
 ### Fixed

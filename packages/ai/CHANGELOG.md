@@ -4,6 +4,16 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.79] - 2026-11-12
+
+Anthropic message threads follow the endpoint, not the provider name.
+
+- **Anthropic threads for custom providers.** A provider whose `baseUrl` is on `api.anthropic.com`, such as a second Anthropic API provider, gets message threads by default (upstream [#11987](https://github.com/earendil-works/pi/issues/11987)).
+
+### Fixed
+
+- Fixed Anthropic message threads staying off for providers other than `anthropic` whose `baseUrl` is on `api.anthropic.com`, such as a second Anthropic API provider; the default now follows the endpoint, not the provider ID (upstream [#11987](https://github.com/earendil-works/pi/issues/11987))
+
 ## [0.9.79-alpha.1] - 2026-11-11
 
 ### Fixed
