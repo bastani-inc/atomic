@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.80-alpha.1] - 2026-11-12
+
 ### Removed
 
-- Removed the `● resumed` label from a resumed workflow run. A resumed run that is running looks like any other running run in the graph header, the widget, `/workflow status`, the `/workflow connect` picker, and the stage switcher; `↑ blocked`, `❚❚ paused`, and `○ quit` are unchanged.
+- Removed the `● resumed` label from a resumed workflow run. A resumed run that is running looks like any other running run in the graph header, the widget, `/workflow status`, the `/workflow connect` picker, and the stage switcher; `↑ blocked`, `❚❚ paused`, and `○ quit` are unchanged ([#4680](https://github.com/bastani-inc/atomic/pull/4680)).
 
 ## [0.9.79] - 2026-11-12
 
