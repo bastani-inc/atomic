@@ -22,7 +22,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
 import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
-import { handOffCompactionQueue } from "./interactive-queueing.ts";
+import { handOffCompactionQueue, settleSubmission, showSubmissionAsQueued } from "./interactive-queueing.ts";
 
 export function registerStartupInputListeners(mode: InteractiveModeBase): void {
 	mode.addTuiInputListener(() =>
@@ -471,6 +471,10 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
 				let accepted = false;
+				// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
+				const shownAsQueued = this.isExtensionCommand(text)
+					? undefined
+					: showSubmissionAsQueued(this, text, "steer");
 				// An engine sends its answer to this prompt together with the first events of the turn it started, and
 				// the host handles those events before the answer's callback runs. If the session already showed the
 				// message, echoing it again here would show it twice (#4272). It shows the message as sent, which an
@@ -481,6 +485,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 						streamingBehavior: "steer",
 						preflightResult: (success, disposition) => {
 							accepted = success;
+							if (shownAsQueued) settleSubmission(this, shownAsQueued);
 							if (
 								success &&
 								disposition === "started" &&
@@ -493,6 +498,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 						},
 					});
 				} catch (error) {
+					if (shownAsQueued) settleSubmission(this, shownAsQueued);
 					if (accepted) throw error;
 					if (isRpcRequestAcceptedFailure(error)) {
 						this.showError(error.message);
@@ -501,6 +507,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function (this: Interac
 					restoreRefusedSubmission(this, error, submittedDraft);
 					return;
 				}
+				if (shownAsQueued) settleSubmission(this, shownAsQueued);
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;

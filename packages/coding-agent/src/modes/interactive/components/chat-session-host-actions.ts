@@ -223,12 +223,13 @@ export async function submitChatSession<TExtraEntry extends ChatTranscriptEntryL
 			syncChatSessionAnimationTick(state);
 			return;
 		}
-		if (submitMode === "followUp" && isStreaming) {
-			await queueChatSessionFollowUp(state, submitText);
-			return;
-		}
 		if (isStreaming) {
-			await queueChatSessionSteer(state, submitText);
+			await queueChatSessionMessage(
+				state,
+				submitText,
+				submitMode === "followUp" ? "followUp" : "steer",
+				!submission,
+			);
 		} else {
 			state.statusMessage = "";
 			state.sdkBusy = true;
@@ -471,9 +472,90 @@ async function runChatSessionBashCommand<TExtraEntry extends ChatTranscriptEntry
 	}
 }
 
+type QueuedChatSessionMessage = ChatSessionHostState<never>["unconfirmedQueuedMessages"][number];
+
+/**
+ * Queue a message typed while the agent works, showing it as queued from submit rather than from the session's
+ * `queue_update` (#4696). The session confirms it only after its input hooks and earlier submissions, on an event loop
+ * the agent's own work, such as a running subagent, shares. The copy goes once the session answers or lists it. A
+ * refused message is reported by the caller and, when `restoreOnFailure`, given back to the editor; one the session
+ * accepted is not, even when its turn fails afterwards.
+ */
+async function queueChatSessionMessage<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	text: string,
+	lane: QueuedChatSessionMessage["mode"],
+	restoreOnFailure: boolean,
+): Promise<void> {
+	// A `/skill:` command is queued expanded, so its typed text never matches the row the session lists.
+	const shown: QueuedChatSessionMessage | undefined =
+		classifyChatCommand(text) === "skill" ? undefined : { text, mode: lane };
+	if (shown) {
+		state.unconfirmedQueuedMessages = [...state.unconfirmedQueuedMessages, shown];
+		state.requestRender?.();
+	}
+	const settle = () => {
+		if (!shown || !state.unconfirmedQueuedMessages.includes(shown)) return;
+		state.unconfirmedQueuedMessages = state.unconfirmedQueuedMessages.filter((message) => message !== shown);
+		state.requestRender?.();
+	};
+	// A message the session accepted was sent, even if its turn fails later, so it is never given back to the editor.
+	let accepted = false;
+	const answered = (success: boolean) => {
+		accepted ||= success;
+		settle();
+	};
+	try {
+		if (lane === "followUp") await queueChatSessionFollowUp(state, text, answered);
+		else await queueChatSessionSteer(state, text, answered);
+	} catch (err) {
+		if (restoreOnFailure && !accepted && !state.disposed) {
+			const typedSince = state.inputBuffer;
+			setChatSessionEditorText(state, typedSince.length === 0 ? text : `${text}\n${typedSince}`);
+		}
+		throw err;
+	} finally {
+		settle();
+	}
+}
+
+/**
+ * Drop the shown copies of messages a `queue_update` adds to the session's queue, oldest first, so a confirmed
+ * message is never listed twice (#4696). A message the queue already listed confirms nothing.
+ */
+export function confirmQueuedChatSessionMessages<TExtraEntry extends ChatTranscriptEntryLike>(
+	state: ChatSessionHostState<TExtraEntry>,
+	steering: readonly string[],
+	followUp: readonly string[],
+): void {
+	if (state.unconfirmedQueuedMessages.length === 0) return;
+	const added = {
+		steer: addedQueueEntries(state.pendingSteeringMessages, steering),
+		followUp: addedQueueEntries(state.pendingFollowUpMessages, followUp),
+	};
+	state.unconfirmedQueuedMessages = state.unconfirmedQueuedMessages.filter((message) => {
+		const lane = added[message.mode];
+		const index = lane.indexOf(message.text);
+		if (index === -1) return true;
+		lane.splice(index, 1);
+		return false;
+	});
+}
+
+function addedQueueEntries(before: readonly string[], after: readonly string[]): string[] {
+	const unmatched = [...before];
+	return after.filter((text) => {
+		const index = unmatched.indexOf(text);
+		if (index === -1) return true;
+		unmatched.splice(index, 1);
+		return false;
+	});
+}
+
 async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
+	onAnswered?: (success: boolean) => void,
 ): Promise<void> {
 	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
 		await state.commands.submitUserMessage(text, "auto");
@@ -482,7 +564,11 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming || agentSession?.queuedMessagesPaused) {
 		// Only `/skill:` expands (above); other text queues literally, as an idle submission is sent.
-		await agentSession.prompt(text, { streamingBehavior: "steer", expandPromptTemplates: false });
+		await agentSession.prompt(text, {
+			streamingBehavior: "steer",
+			expandPromptTemplates: false,
+			preflightResult: onAnswered,
+		});
 		return;
 	}
 	await requiredChatSessionCommand(state, "steer")(text);
@@ -491,6 +577,7 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
+	onAnswered?: (success: boolean) => void,
 ): Promise<void> {
 	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
 		await state.commands.submitUserMessage(text, "followUp");
@@ -498,7 +585,11 @@ async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryL
 	}
 	const agentSession = state.getAgentSession?.();
 	if (agentSession?.isStreaming || agentSession?.queuedMessagesPaused) {
-		await agentSession.prompt(text, { streamingBehavior: "followUp", expandPromptTemplates: false });
+		await agentSession.prompt(text, {
+			streamingBehavior: "followUp",
+			expandPromptTemplates: false,
+			preflightResult: onAnswered,
+		});
 		return;
 	}
 	await requiredChatSessionCommand(state, "followUp")(text);

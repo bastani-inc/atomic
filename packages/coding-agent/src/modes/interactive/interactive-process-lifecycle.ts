@@ -1,11 +1,17 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
+import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { APP_TITLE, chalk, killTrackedDetachedChildren } from "./interactive-mode-deps.ts";
 import { formatCrashExtensionHint, formatResumeCommand, isDeadTerminalError } from "./interactive-mode-helpers.ts";
 import { pauseAndAbortInteractiveSession } from "./interactive-pause.ts";
-import { restoreFailedSubmissionDraft } from "./interactive-prompt-restore.ts";
-import { handOffCompactionQueue, showQueueRestoreFailure } from "./interactive-queueing.ts";
+import { restoreFailedSubmissionDraft, restoreRefusedSubmission } from "./interactive-prompt-restore.ts";
+import {
+	handOffCompactionQueue,
+	settleSubmission,
+	showQueueRestoreFailure,
+	showSubmissionAsQueued,
+} from "./interactive-queueing.ts";
 import { isWindowsSubshellActive, openWindowsSubshell } from "./interactive-windows-subshell.ts";
 
 /** A second Ctrl+C on an empty, idle editor within this window exits. */
@@ -309,11 +315,34 @@ InteractiveModeBase.prototype.handleFollowUp = async function (this: Interactive
 	if (this.session.isStreaming) {
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
-		await dispatch(async () => {
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
-			this.updatePendingMessagesDisplay();
-			this.ui.requestRender();
-		});
+		// An extension command runs at once instead of queueing, so only other input is shown as queued (#4696).
+		const shownAsQueued = this.isExtensionCommand(text) ? undefined : showSubmissionAsQueued(this, text, "followUp");
+		const settle = () => {
+			if (shownAsQueued) settleSubmission(this, shownAsQueued);
+		};
+		let accepted = false;
+		try {
+			await this.session.prompt(text, {
+				streamingBehavior: "followUp",
+				preflightResult: (success) => {
+					accepted = success;
+					settle();
+				},
+			});
+		} catch (error) {
+			settle();
+			if (accepted) throw error;
+			if (isRpcRequestAcceptedFailure(error)) {
+				this.showError(error.message);
+				return;
+			}
+			// A refused follow-up goes back to the editor with the reason, as a refused steering message does (#4696).
+			restoreRefusedSubmission(this, error, rawText);
+			return;
+		}
+		settle();
+		this.updatePendingMessagesDisplay();
+		this.ui.requestRender();
 	}
 	// If not streaming, Alt+Enter acts like regular Enter (trigger onSubmit).
 	// Hand over the raw expanded buffer, not the trimmed text: Alt+Enter is an

@@ -30,6 +30,7 @@ import {
 	theme,
 } from "./interactive-mode-deps.ts";
 import { formatResumeCommand } from "./interactive-mode-helpers.ts";
+import { reconcileQueuedSubmissions } from "./interactive-queueing.ts";
 import { handleSummarizationRetryEvent } from "./interactive-summarization-retry-events.ts";
 import { disposeInteractiveTasks, refreshInteractiveTasks } from "./interactive-task-projection.js";
 import { applyAssistantMessageDelta, beginStreamingAssistantMessage } from "./streaming-assistant-message.ts";
@@ -166,6 +167,7 @@ InteractiveModeBase.prototype.handleEvent = async function (
 		}
 
 		case "queue_update":
+			reconcileQueuedSubmissions(this, event);
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 			break;
