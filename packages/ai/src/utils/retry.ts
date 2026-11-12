@@ -66,6 +66,7 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"connection.?error",
 	"connection.?refused",
 	"connection.?lost",
+	"connection.?closed",
 	"ECONNRESET",
 	"connection.?reset",
 	"other side closed",

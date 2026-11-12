@@ -4,6 +4,7 @@
 
 import { constants as bufferConstants } from "node:buffer";
 import { spawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 import { createChildProcessEnvironment, waitForChildProcess } from "../utils/child-process.ts";
 
@@ -33,6 +34,7 @@ export interface ExecOptions {
 export interface ExecResult {
 	stdout: string;
 	stderr: string;
+	/** Exit code, or 128 + signal number when a signal terminated the command (143 for SIGTERM). */
 	code: number;
 	/** The command was terminated by pi: timeout, abort, or output over `maxBuffer`. */
 	killed: boolean;
@@ -152,7 +154,7 @@ export async function execCommand(
 		stderr += stderrDecoder.end();
 	}
 
-	const exitCode = code ?? 0;
+	const exitCode = code ?? (proc.signalCode ? 128 + (osConstants.signals[proc.signalCode] ?? 0) : 1);
 	return {
 		stdout,
 		stderr,

@@ -403,6 +403,18 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		kind: "provider_unavailable",
 		retryable: true,
 	},
+	{
+		label: "gateway api_error Connection closed. (#12093)",
+		failure: new Error('{"type":"error","error":{"type":"api_error","message":"Connection closed."}}'),
+		kind: "provider_unavailable",
+		retryable: true,
+	},
+	{
+		label: "gateway connectionclosed without separator (#12093)",
+		failure: new Error("gateway_error: connectionclosed"),
+		kind: "provider_unavailable",
+		retryable: true,
+	},
 ];
 
 describe("model fallback classifier conformance (subagents vs workflows)", () => {
