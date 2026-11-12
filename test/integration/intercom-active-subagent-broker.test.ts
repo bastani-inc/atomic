@@ -25,7 +25,46 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import { runAgentTask, taskToolResult } from "../../packages/subagents/src/runs/foreground/task-execution.js";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
 import { createDispatchCounter } from "../helpers/intercom-interrupt-probe.js";
+import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 import { toolContext } from "../helpers/tool-context.js";
+
+const BROKER_STARTUP_TIMEOUT_MS = 10_000;
+const POLL_INTERVAL_MS = 20;
+/**
+ * Broker sends acknowledge `durableInbox` receipt before the recipient runs its
+ * 50 ms foreground-detach probe, drains `_agentEventQueue`, appends its durable
+ * card, and resolves the native task-wait yield back onto the Node event loop.
+ * Vitest's 1 s `waitFor` default can expire first on a loaded shard (#4655); keep
+ * inner waits well inside `TEST_TIMEOUT_MS` so a real hang still fails with its
+ * assertion message rather than a bare test timeout.
+ */
+const INNER_WAIT_TIMEOUT_MS = Math.floor((TEST_TIMEOUT_MS * 2) / 3);
+const INNER_WAIT = { timeout: INNER_WAIT_TIMEOUT_MS, interval: POLL_INTERVAL_MS } as const;
+
+async function awaitWithin(
+	promise: Promise<unknown>,
+	onTimeout: () => void,
+	timeoutMs = INNER_WAIT_TIMEOUT_MS,
+): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			promise,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					try {
+						onTimeout();
+						reject(new Error(`Timed out after ${timeoutMs} ms`));
+					} catch (error) {
+						reject(error);
+					}
+				}, timeoutMs);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 const root = resolve(import.meta.dirname, "../..");
 const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "intercom-active-child-")));
@@ -57,7 +96,7 @@ beforeAll(async () => {
 			});
 			assert.ok(connected);
 		},
-		{ timeout: 10_000, interval: 20 },
+		{ timeout: BROKER_STARTUP_TIMEOUT_MS, interval: POLL_INTERVAL_MS },
 	);
 });
 afterAll(() => brokerFixture.cleanup());
@@ -184,23 +223,30 @@ test("public same-group asks interrupt a busy child and correlate concurrent rep
 			{ action: "ask", to: child.id, message: "  FIRST-QUESTION\n", attachments, delivery: "interrupt" },
 			asks.signal,
 		);
-		await vi.waitFor(() =>
-			assert.equal(
-				child.session.messages.filter((message) => getMessageText(message).includes("FIRST-QUESTION")).length,
-				1,
-			),
+		await vi.waitFor(
+			() =>
+				assert.equal(
+					child.session.messages.filter((message) => getMessageText(message).includes("FIRST-QUESTION")).length,
+					1,
+				),
+			INNER_WAIT,
 		);
 		const second = peer.execute(
 			{ action: "ask", to: child.id, message: "SECOND-QUESTION", delivery: "interrupt" },
 			asks.signal,
 		);
-		await vi.waitFor(() =>
-			assert.equal(
-				child.session.messages.filter((message) => getMessageText(message).includes("SECOND-QUESTION")).length,
-				1,
-			),
+		await vi.waitFor(
+			() =>
+				assert.equal(
+					child.session.messages.filter((message) => getMessageText(message).includes("SECOND-QUESTION")).length,
+					1,
+				),
+			INNER_WAIT,
 		);
-		await vi.waitFor(() => assert.equal(activeSignal?.aborted, true, "the priority ask cancels the active tool"));
+		await vi.waitFor(
+			() => assert.equal(activeSignal?.aborted, true, "the priority ask cancels the active tool"),
+			INNER_WAIT,
+		);
 		release.resolve();
 		const [firstReply, secondReply] = await Promise.all([first, second]);
 		await execution;
@@ -295,6 +341,7 @@ async function observingParent(
 ) {
 	const started = Promise.withResolvers<void>();
 	const observing = Promise.withResolvers<void>();
+	const observed = Promise.withResolvers<ModelSingleResponse>();
 	const release = Promise.withResolvers<void>();
 	let host!: AgentTaskHost;
 	let intercomEvents: Parameters<typeof runSync>[4]["intercomEvents"];
@@ -349,6 +396,7 @@ async function observingParent(
 				assert.ok(waited.ok);
 				observation = { kind: "admitted", observation: waited.value };
 			} else observation = launched;
+			observed.resolve(observation);
 			return taskToolResult(observation, host);
 		},
 	};
@@ -365,6 +413,7 @@ async function observingParent(
 		host,
 		started: started.promise,
 		observing: observing.promise,
+		observed: observed.promise,
 		release: release.resolve,
 		get observation() {
 			return observation;
@@ -441,7 +490,9 @@ for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
 					await parent.observing;
 					const delivered = peer.execute({ action, to: parent.id, message: "PARENT-ONLY" }, asks.signal);
 					if (action === "send") assert.notEqual((await delivered).isError, true);
-					await vi.waitFor(() => assert.ok(parent.observation, "parent must yield before the held child settles"));
+					await awaitWithin(parent.observed, () =>
+						assert.ok(parent.observation, "parent must yield before the held child settles"),
+					);
 					const observation = parent.observation;
 					assert.ok(observation?.kind === "admitted" && observation.observation.kind === "yielded");
 					assert.equal(observation.observation.reason, "intercom-coordination");
@@ -526,7 +577,9 @@ test("public foreground child send receives first refusal before the parent's pr
 		const original = ownerSnapshot(parent).tasks[0].ref;
 		const sent = await child.execute({ action: "send", to: parent.id, message: "CHILD-HANDSHAKE" });
 		assert.notEqual(sent.isError, true);
-		await vi.waitFor(() => assert.ok(parent.observation, "exact child must yield before SDK writer admission"));
+		await awaitWithin(parent.observed, () =>
+			assert.ok(parent.observation, "exact child must yield before SDK writer admission"),
+		);
 		assert.ok(parent.observation?.kind === "admitted" && parent.observation.observation.kind === "yielded");
 		assert.equal(parent.observation.observation.reason, "intercom-coordination");
 		assert.equal(incomingCards(parent).length, 0, "first refusal must not bypass protected persistence");
@@ -535,7 +588,7 @@ test("public foreground child send receives first refusal before the parent's pr
 		assert.equal(ownerSnapshot(parent).tasks[0].execution.kind, "running");
 		releaseHook.resolve();
 		await turn;
-		await vi.waitFor(() => assert.equal(incomingCards(parent).length, 1));
+		await vi.waitFor(() => assert.equal(incomingCards(parent).length, 1), INNER_WAIT);
 		assert.equal(parent.starts, 1);
 	} finally {
 		releaseHook.resolve();
@@ -581,7 +634,10 @@ test("public parent input waits for its event writer, then yields only that owne
 		assert.equal(parent.observation, undefined);
 		assert.equal(incomingCards(parent).length, 0, "protected input must not overtake the assistant tool-call writer");
 		releaseHook.resolve();
-		await vi.waitFor(() => assert.ok(parent.observation, "admission must not cycle behind an event-hook write"));
+		await awaitWithin(parent.observed, () =>
+			assert.ok(parent.observation, "admission must not cycle behind an event-hook write"),
+		);
+		assert.ok(parent.observation, "admission must not cycle behind an event-hook write");
 		await turn;
 		assert.equal(hookDone, true);
 		assert.equal(incomingCards(parent).length, 1);
@@ -639,29 +695,35 @@ for (const winner of ["admission", "completion"] as const) {
 				(await peer.execute({ action: "send", to: parent.id, message: "RACING-INPUT" })).isError,
 				true,
 			);
-			await vi.waitFor(() =>
-				assert.ok(
-					sdkWrites.mock.calls.some(([message]) => message.customType === "intercom_message"),
-					"public inbound must reach the real SDK before releasing either barrier",
-				),
+			await vi.waitFor(
+				() =>
+					assert.ok(
+						sdkWrites.mock.calls.some(([message]) => message.customType === "intercom_message"),
+						"public inbound must reach the real SDK before releasing either barrier",
+					),
+				INNER_WAIT,
 			);
 			assert.equal(incomingCards(parent).length, 0);
 			if (winner === "completion") {
 				parent.release();
-				await vi.waitFor(() =>
+				await awaitWithin(parent.observed, () =>
 					assert.equal(parent.observation?.kind === "admitted" && parent.observation.observation.kind, "settled"),
 				);
+				assert.equal(parent.observation?.kind === "admitted" && parent.observation.observation.kind, "settled");
 			}
 			releaseWriter.resolve();
 			await turn;
-			await vi.waitFor(() => assert.equal(ownerSnapshot(parent).tasks[0].execution.kind, "settled"));
-			await vi.waitFor(() =>
-				assert.equal(
-					parent.sessionManager
-						.getEntries()
-						.filter((entry) => entry.type === "custom_message" && entry.customType === "task-completion").length,
-					1,
-				),
+			await vi.waitFor(() => assert.equal(ownerSnapshot(parent).tasks[0].execution.kind, "settled"), INNER_WAIT);
+			await vi.waitFor(
+				() =>
+					assert.equal(
+						parent.sessionManager
+							.getEntries()
+							.filter((entry) => entry.type === "custom_message" && entry.customType === "task-completion")
+							.length,
+						1,
+					),
+				INNER_WAIT,
 			);
 			assert.ok(parent.observation?.kind === "admitted");
 			assert.equal(parent.observation.observation.kind, winner === "admission" ? "yielded" : "settled");
@@ -758,12 +820,14 @@ for (const ui of [true, false]) {
 						assert.equal((await result).isError, true);
 						assert.match(getMessageText(await result), /busy in non-interactive mode/);
 					} else
-						await vi.waitFor(() =>
-							assert.ok(
-								peer.session.messages.some((message) =>
-									getMessageText(message).includes("Intercom delivery failed"),
+						await vi.waitFor(
+							() =>
+								assert.ok(
+									peer.session.messages.some((message) =>
+										getMessageText(message).includes("Intercom delivery failed"),
+									),
 								),
-							),
+							INNER_WAIT,
 						);
 				}
 				assert.equal(incomingCards(parent).length, 0);
@@ -807,6 +871,7 @@ for (const ui of [true, false]) {
 
 test("simultaneous public parent send and child priority interrupt preserve the original owned execution", async () => {
 	const working = Promise.withResolvers<void>();
+	const childInterrupted = Promise.withResolvers<void>();
 	const releaseChild = Promise.withResolvers<void>();
 	let activeSignal: AbortSignal | undefined;
 	const child = await endpoint("simultaneous-child", true, [
@@ -817,6 +882,8 @@ test("simultaneous public parent send and child priority interrupt preserve the 
 			parameters: Type.Object({}),
 			async execute(_id, _args, signal) {
 				activeSignal = signal;
+				if (signal?.aborted) childInterrupted.resolve();
+				else signal?.addEventListener("abort", () => childInterrupted.resolve(), { once: true });
 				working.resolve();
 				await releaseChild.promise;
 				return { content: [{ type: "text", text: "child tool finished" }], details: {} };
@@ -864,10 +931,12 @@ test("simultaneous public parent send and child priority interrupt preserve the 
 			peer.execute({ action: "send", to: child.id, message: "CHILD-ONLY", delivery: "interrupt" }),
 		]);
 		assert.ok(sent.every((result) => result.isError !== true));
-		await vi.waitFor(() => {
-			assert.ok(parent.observation);
-			assert.equal(activeSignal?.aborted, true);
+		await awaitWithin(Promise.all([parent.observed, childInterrupted.promise]), () => {
+			assert.ok(parent.observation, "parent must yield before the held child settles");
+			assert.equal(activeSignal?.aborted, true, "priority interrupt must cancel the child's active tool");
 		});
+		assert.ok(parent.observation, "parent must yield before the held child settles");
+		assert.equal(activeSignal?.aborted, true, "priority interrupt must cancel the child's active tool");
 		await turn;
 		assert.ok(parent.observation?.kind === "admitted" && parent.observation.observation.kind === "yielded");
 		assert.equal(parent.observation.observation.reason, "intercom-coordination");
