@@ -48,6 +48,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 	private currentLoading = false;
 	private allLoading = false;
+	private currentLoadSeq = 0;
 	private allLoadSeq = 0;
 	private disposed = false;
 
@@ -158,8 +159,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.sessionList.onToggleNameFilter = () => this.toggleNameFilter();
 		this.sessionList.onRenameSession = (session) => {
 			if (!renameSession) return;
-			if (this.scope === "current" && this.currentLoading) return;
-			if (this.scope === "all" && this.allLoading) return;
 			this.enterRenameMode(session);
 		};
 
@@ -290,14 +289,14 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.allLoading = true;
 		}
 
-		const seq = scope === "all" ? ++this.allLoadSeq : undefined;
+		const seq = scope === "current" ? ++this.currentLoadSeq : ++this.allLoadSeq;
+		const isActive = () => !this.disposed && (scope === "current" ? this.currentLoadSeq : this.allLoadSeq) === seq;
 		this.header.setScope(scope);
 		this.header.setLoading(true);
 		this.requestRender();
 
 		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
-			if (this.disposed) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
+			if (!isActive()) return;
 			if (partialSessions) {
 				const sessions = partialSessions.filter(isResumableSession);
 				if (scope === "current") {
@@ -319,6 +318,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress))
 			).filter(isResumableSession);
 
+			if (!isActive()) return;
+
 			if (scope === "current") {
 				this.currentSessions = sessions;
 				this.currentLoading = false;
@@ -327,11 +328,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.allLoading = false;
 			}
 
-			// Stale-result guards: ignore a resolved load after the selector was
-			// closed, the visible scope changed, or a newer all-scope load started.
-			if (this.disposed) return;
 			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
 			this.header.setLoading(false);
 			this.sessionList.setSessions(sessions, showCwd);
@@ -341,15 +338,15 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.onCancel();
 			}
 		} catch (err) {
+			if (!isActive()) return;
+
 			if (scope === "current") {
 				this.currentLoading = false;
 			} else {
 				this.allLoading = false;
 			}
 
-			if (this.disposed) return;
 			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
 			const message = err instanceof Error ? err.message : String(err);
 			this.header.setLoading(false);

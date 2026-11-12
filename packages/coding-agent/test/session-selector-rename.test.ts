@@ -141,4 +141,88 @@ describe("session selector rename", () => {
 		assert.equal(loads, 2);
 		assert.equal(selector.getSessionList().getSelectedSessionPath(), sessions[2]!.path);
 	});
+
+	it("renames progressively rendered sessions before in-flight loads settle (#12106)", async () => {
+		let currentName = "Old";
+		let allName = "Foreign";
+		let resolveInitialCurrent!: (value: SessionInfo[]) => void;
+		let rejectInitialAll!: (reason?: unknown) => void;
+		let reportInitialCurrentProgress!: (loaded: number, total: number, partial?: readonly SessionInfo[]) => void;
+		let reportInitialAllProgress!: (loaded: number, total: number, partial?: readonly SessionInfo[]) => void;
+		let currentLoads = 0;
+		let allLoads = 0;
+		const renameSession = vi.fn(async (session: SessionInfo, nextName: string | undefined) => {
+			if (session.id === "a") currentName = nextName ?? currentName;
+			if (session.id === "b") allName = nextName ?? allName;
+		});
+		const keybindings = new KeybindingsManager();
+		const selector = new SessionSelectorComponent(
+			(onProgress) => {
+				currentLoads += 1;
+				if (currentLoads === 1) {
+					reportInitialCurrentProgress = onProgress!;
+					return new Promise<SessionInfo[]>((resolve) => {
+						resolveInitialCurrent = resolve;
+					});
+				}
+				return Promise.resolve([makeSession({ id: "a", name: currentName })]);
+			},
+			(onProgress) => {
+				allLoads += 1;
+				if (allLoads === 1) {
+					reportInitialAllProgress = onProgress!;
+					return new Promise<SessionInfo[]>((_resolve, reject) => {
+						rejectInitialAll = reject;
+					});
+				}
+				return Promise.resolve([makeSession({ id: "b", name: allName })]);
+			},
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ renameSession, showRenameHint: true, keybindings },
+		);
+
+		const staleCurrent = makeSession({ id: "a", name: "Old" });
+		reportInitialCurrentProgress(1, 2, [staleCurrent]);
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "a");
+
+		selector.handleInput(CTRL_R);
+		assert.match(selector.render(120).join("\n"), /Rename Session/);
+
+		selector.handleInput("New ");
+		selector.handleInput("\r");
+		await flushPromises();
+
+		assert.equal(renameSession.mock.calls.length, 1);
+		assert.deepEqual(renameSession.mock.calls[0], [staleCurrent, "New Old"]);
+		assert.match(selector.render(120).join("\n"), /New Old/);
+
+		reportInitialCurrentProgress(2, 2, [staleCurrent]);
+		resolveInitialCurrent([staleCurrent]);
+		await flushPromises();
+		assert.match(selector.render(120).join("\n"), /New Old/);
+
+		const staleAll = makeSession({ id: "b" });
+		selector.handleInput("\t");
+		reportInitialAllProgress(1, 2, [staleAll]);
+		assert.equal(selector.getSessionList().getSelectedSessionId(), "b");
+
+		selector.handleInput(CTRL_R);
+		assert.match(selector.render(120).join("\n"), /Rename Session/);
+		selector.handleInput("All Foreign");
+		selector.handleInput("\r");
+		await flushPromises();
+
+		assert.equal(renameSession.mock.calls.length, 2);
+		assert.deepEqual(renameSession.mock.calls[1], [staleAll, "All Foreign"]);
+		assert.match(selector.render(120).join("\n"), /All Foreign/);
+
+		rejectInitialAll(new Error("stale failure"));
+		await flushPromises();
+		const settledAllFrame = selector.render(120).join("\n");
+		assert.doesNotMatch(settledAllFrame, /stale failure/);
+		assert.match(settledAllFrame, /All Foreign/);
+	});
 });
