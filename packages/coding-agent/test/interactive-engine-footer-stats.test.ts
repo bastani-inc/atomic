@@ -9,7 +9,7 @@ import { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { SessionStats } from "../src/core/agent-session-types.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { resolveSessionStore } from "../src/core/session-storage.js";
-import { UsageMeterComponent } from "../src/modes/interactive/components/footer.js";
+import { FooterComponent, UsageMeterComponent } from "../src/modes/interactive/components/footer.js";
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.js";
 import "../src/modes/interactive/interactive-slash-commands.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -697,6 +697,35 @@ test("stats that land after agent_end ask the host to repaint (#3328)", async ()
 		});
 		assert.equal(runtime.session.isStreaming, false);
 		assert.equal(usageLine(runtime), P1_LINE);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
+test("the isolated engine's main footer hides the model line during a retry's backoff (#4690)", async () => {
+	const harness = await createHarness();
+	try {
+		const probe = createStatsEngineClient();
+		const runtime = createRuntime(harness, probe);
+		const footer = new FooterComponent(runtime.session, {
+			getGitBranch: () => null,
+			getExtensionStatuses: () => new Map<string, string>(),
+			getAvailableProviderCount: () => 1,
+			onBranchChange: () => () => {},
+		});
+		const statusLine = () => stripAnsi(footer.render(120)[0] ?? "");
+		const idleLine = statusLine();
+		assert.doesNotMatch(idleLine, /esc to interrupt/);
+
+		probe.emit({ type: "agent_start" });
+		probe.emit({ type: "agent_end", messages: [] });
+		probe.emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "overloaded" });
+		assert.equal(runtime.session.isStreaming, false);
+		assert.equal(statusLine(), "esc to interrupt");
+
+		probe.emit({ type: "auto_retry_end", success: false, attempt: 3, finalError: "overloaded" });
+		assert.equal(statusLine(), idleLine);
+		footer.dispose();
 	} finally {
 		await harness.cleanup();
 	}

@@ -249,9 +249,14 @@ export class UsageMeterComponent implements Component {
 	}
 }
 
+/** Whether a chat's agent is working: a turn (with its tool calls), a compaction, a retry's backoff or a `!` command. */
+export function isChatSessionWorking(session: ChatBoxSession): boolean {
+	return session.isStreaming || session.isCompacting || session.isRetrying || session.isBashRunning;
+}
+
 /**
- * Sparse statusline below the composer. It mirrors the preview: model + cwd
- * when idle, or one semantic dot with short recovery copy while work is live.
+ * Sparse statusline below the composer: model + cwd only while the chat's agent is idle, and short live-state
+ * copy while it works. Main, workflow stage and subagent chats all render it, so they follow one rule.
  */
 export class FooterComponent implements Component {
 	private declare session: ChatBoxSession;
@@ -332,10 +337,11 @@ export class FooterComponent implements Component {
 				})
 			: "no-model";
 
-		const liveState =
-			this.session.isStreaming && !this.navigationActive() ? this.renderStyle.muted("esc to interrupt") : undefined;
-		let statusText =
-			liveState ?? `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
+		// The model line is idle information. While the agent works, a chat that can interrupt it from the composer
+		// offers to; a chat under navigation, or one that shows a session it does not own, says only that it works.
+		let statusText = isChatSessionWorking(this.session)
+			? this.renderStyle.muted(this.navigationActive() ? "working" : "esc to interrupt")
+			: `${this.renderStyle.dim(modelLabel)} ${this.renderStyle.dim("•")} ${this.renderStyle.muted(pwd)}`;
 		if (areExperimentalFeaturesEnabled()) statusText += ` ${this.renderStyle.warning("xp")}`;
 		if (isDebugEnabled()) statusText += ` ${this.renderStyle.warning("debug")}`;
 		const lines = [truncateToWidth(statusText, width, this.renderStyle.dim("..."))];
