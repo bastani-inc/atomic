@@ -412,22 +412,22 @@ const QWEN_TOKEN_PLAN_FALLBACK_THINKING_LEVEL_MAP = {
 	max: "max",
 } as const;
 const QWEN_TOKEN_PLAN_REASONING_EFFORT_FALLBACK_MODEL_IDS = new Set(["glm-5", "glm-5.1"]);
-// Retired preview id — models.dev may still list it after GA ships.
-const QWEN_TOKEN_PLAN_EXCLUDED_MODEL_IDS = new Set(["qwen3.8-max-preview"]);
 const QWEN_TOKEN_PLAN_PROVIDER_IDS = new Set<string>([
 	"qwen-token-plan",
 	"qwen-token-plan-cn",
 	"qwen-token-plan-individual",
 	"qwen-token-plan-individual-cn",
 ]);
-// QwenCloud Token Plan Individual text-model allowlist, verified 2026-11-01.
+// Token Plan Individual (Personal) text-model allowlist, verified 2026-11-09 against both regions' docs.
 // qwen-token-plan-individual-cn applies it to the China endpoint.
-// Retired models remain excluded above even if the public catalog lags.
 // https://docs.qwencloud.com/token-plan/personal/token-plan-personal-overview
+// https://platform.qianwenai.com/docs/token-plan/personal/token-plan-personal-overview
 const QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS = new Set<string>([
 	"deepseek-v4-flash-0731",
 	"deepseek-v4-pro",
 	"deepseek-v4-pro-0813",
+	"deepseek-v4.1-flash",
+	"deepseek-v4.1-flash-1017",
 	"glm-5.2",
 	"glm-5.3",
 	"qwen3.6-flash",
@@ -2940,25 +2940,25 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			{
 				source: "alibaba-token-plan",
 				provider: "qwen-token-plan",
-				baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+				baseUrl: "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1",
 				modelIds: undefined,
 			},
 			{
 				source: "alibaba-token-plan",
 				provider: "qwen-token-plan-individual",
-				baseUrl: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+				baseUrl: "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1",
 				modelIds: QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS,
 			},
 			{
 				source: "alibaba-token-plan-cn",
 				provider: "qwen-token-plan-cn",
-				baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+				baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
 				modelIds: undefined,
 			},
 			{
 				source: "alibaba-token-plan-cn",
 				provider: "qwen-token-plan-individual-cn",
-				baseUrl: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+				baseUrl: "https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
 				modelIds: QWEN_TOKEN_PLAN_INDIVIDUAL_MODEL_IDS,
 			},
 		] as const;
@@ -2970,7 +2970,7 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 			for (const [modelId, model] of Object.entries(providerModels ?? {})) {
 				const m = model as ModelsDevModel;
 				if (m.tool_call !== true) continue;
-				if (QWEN_TOKEN_PLAN_EXCLUDED_MODEL_IDS.has(modelId)) continue;
+				if (m.status === "deprecated") continue;
 				if (modelIds && !modelIds.has(modelId)) continue;
 				const thinkingLevelMap =
 					getEffortThinkingLevelMap(m.reasoning_options ?? []) ??

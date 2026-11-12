@@ -377,17 +377,17 @@ Catalog failures preserve the last usable models for each provider. See [catalog
 | MiniMax                            | `MINIMAX_API_KEY`                                                         | `minimax`                    |
 | MiniMax (China)                    | `MINIMAX_CN_API_KEY`                                                      | `minimax-cn`                 |
 | Moonshot AI                        | `MOONSHOT_API_KEY`                                                        | `moonshotai`                 |
-| Moonshot AI (China)                | `MOONSHOT_API_KEY`                                                        | `moonshotai-cn`              |
-| Qwen Token Plan (existing catalog) | `QWEN_TOKEN_PLAN_API_KEY`                                                 | `qwen-token-plan`            |
-| Qwen Token Plan (Individual)       | `QWEN_TOKEN_PLAN_API_KEY`                                                 | `qwen-token-plan-individual` |
-| Qwen Token Plan (China)            | `QWEN_TOKEN_PLAN_CN_API_KEY`                                              | `qwen-token-plan-cn`         |
-| Qwen Token Plan (Individual, China) | `QWEN_TOKEN_PLAN_CN_API_KEY`                                             | `qwen-token-plan-individual-cn` |
-| Xiaomi MiMo                        | `XIAOMI_API_KEY`                                                          | `xiaomi`                     |
-| Xiaomi MiMo Token Plan (China)     | `XIAOMI_TOKEN_PLAN_CN_API_KEY`                                            | `xiaomi-token-plan-cn`       |
-| Xiaomi MiMo Token Plan (Amsterdam) | `XIAOMI_TOKEN_PLAN_AMS_API_KEY`                                           | `xiaomi-token-plan-ams`      |
-| Xiaomi MiMo Token Plan (Singapore) | `XIAOMI_TOKEN_PLAN_SGP_API_KEY`                                           | `xiaomi-token-plan-sgp`      |
+| Moonshot AI (China)                 | `MOONSHOT_API_KEY`                                                        | `moonshotai-cn`                 |
+| Qwen Token Plan Team                | `QWEN_TOKEN_PLAN_TEAM_API_KEY`                                            | `qwen-token-plan`               |
+| Qwen Token Plan Individual          | `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY`                                      | `qwen-token-plan-individual`    |
+| Qwen Token Plan Team (China)        | `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY`                                         | `qwen-token-plan-cn`            |
+| Qwen Token Plan Individual (China)  | `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY`                                   | `qwen-token-plan-individual-cn` |
+| Xiaomi MiMo                         | `XIAOMI_API_KEY`                                                          | `xiaomi`                        |
+| Xiaomi MiMo Token Plan (China)      | `XIAOMI_TOKEN_PLAN_CN_API_KEY`                                            | `xiaomi-token-plan-cn`          |
+| Xiaomi MiMo Token Plan (Amsterdam)  | `XIAOMI_TOKEN_PLAN_AMS_API_KEY`                                           | `xiaomi-token-plan-ams`         |
+| Xiaomi MiMo Token Plan (Singapore)  | `XIAOMI_TOKEN_PLAN_SGP_API_KEY`                                           | `xiaomi-token-plan-sgp`         |
 
-Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`), and both direct providers also expose the multimodal `glm-5.3-flash`. Baseten defaults to its directly selectable `zai-org/GLM-5.3` and also exposes `zai-org/GLM-5.3-Fast` and the multimodal `zai-org/GLM-5.3-Flash`; OpenRouter exposes `z-ai/glm-5.3` and `z-ai/glm-5.3-flash`. The full and Flash entries support `low`, `high`, and `max` reasoning; Baseten's Fast entry also supports `off`. Use Baseten's `zai-org/GLM-5.2` or `zai-org/GLM-5.3-Fast` when fully disabled reasoning is required. Qwen Token Plan Individual defaults to `qwen3.8-max` and uses the international `QWEN_TOKEN_PLAN_API_KEY` shared with the existing Qwen Token Plan provider. These catalogs follow their upstream providers, so use `--list-models` for the current entries.
+Z.AI and Z.AI Coding Plan (China) default to `glm-5.3` (`zai/glm-5.3` and `zai-coding-cn/glm-5.3`), and both direct providers also expose the multimodal `glm-5.3-flash`. Baseten defaults to its directly selectable `zai-org/GLM-5.3` and also exposes `zai-org/GLM-5.3-Fast` and the multimodal `zai-org/GLM-5.3-Flash`; OpenRouter exposes `z-ai/glm-5.3` and `z-ai/glm-5.3-flash`. The full and Flash entries support `low`, `high`, and `max` reasoning; Baseten's Fast entry also supports `off`. Use Baseten's `zai-org/GLM-5.2` or `zai-org/GLM-5.3-Fast` when fully disabled reasoning is required. Qwen Token Plan has separate Team (`qwen-token-plan`, `qwen-token-plan-cn`) and Individual (`qwen-token-plan-individual`, `qwen-token-plan-individual-cn`) providers per region, all defaulting to `qwen3.8-max`. Set the key variable of your plan (`QWEN_TOKEN_PLAN_TEAM_API_KEY`, `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY`, `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY`, or `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY`); the shared `QWEN_TOKEN_PLAN_API_KEY` and `QWEN_TOKEN_PLAN_CN_API_KEY` remain supported as fallbacks. These catalogs follow their upstream providers, so use `--list-models` for the current entries.
 
 Xiaomi MiMo reasoning models on `xiaomi` and all three `xiaomi-token-plan-*` providers support only `off` (thinking disabled) and `high` (thinking enabled). Use these levels when selecting thinking; Xiaomi does not distinguish intermediate effort levels.
 
@@ -422,12 +422,7 @@ Store credentials in `~/.atomic/agent/auth.json`:
 }
 ```
 
-`qwen-token-plan-individual` uses the same international endpoint and `QWEN_TOKEN_PLAN_API_KEY` as
-`qwen-token-plan`, but limits the picker to the models documented for Individual subscriptions. The existing
-provider keeps its broader catalog for backward compatibility. When using `auth.json`, store the credential
-under the provider you select; an environment variable is shared by both international providers.
-`qwen-token-plan-individual-cn` applies the same Individual catalog to the China endpoint and shares
-`QWEN_TOKEN_PLAN_CN_API_KEY` with `qwen-token-plan-cn`.
+Qwen Token Plan has a Team (`qwen-token-plan`, `qwen-token-plan-cn`) and an Individual (`qwen-token-plan-individual`, `qwen-token-plan-individual-cn`) provider per region; each exposes only the models documented for its subscription. Store the credential in `auth.json` under the provider you select, or set the per-plan environment variable above.
 
 The file is created with `0600` permissions (user read/write only). Auth file credentials take priority over environment variables.
 

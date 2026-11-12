@@ -40,6 +40,8 @@ function runOpenRouterRetryFixture(
 		"deepseek-v4-flash-0731",
 		"deepseek-v4-pro",
 		"deepseek-v4-pro-0813",
+		"deepseek-v4.1-flash",
+		"deepseek-v4.1-flash-1017",
 		"glm-5.2",
 		"glm-5.3",
 		"qwen3.6-flash",
@@ -204,7 +206,7 @@ describe("strict model generation", () => {
 		assert.equal(chinaIndividualCatalog["deepseek-v4-pro"]?.compat?.thinkingFormat, "qwen");
 		assert.equal(
 			chinaIndividualCatalog["deepseek-v4-pro"]?.baseUrl,
-			"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+			"https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
 		);
 		const anthropicCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/anthropic.json"), "utf8"),
@@ -416,6 +418,8 @@ describe("strict model generation", () => {
 			"deepseek-v4-flash-0731",
 			"deepseek-v4-pro",
 			"deepseek-v4-pro-0813",
+			"deepseek-v4.1-flash",
+			"deepseek-v4.1-flash-1017",
 			"glm-5.2",
 			"glm-5.3",
 			"qwen3.6-flash",
@@ -432,6 +436,7 @@ describe("strict model generation", () => {
 					id,
 					name: id,
 					tool_call: id !== "deepseek-v4-flash-0731",
+					...(id === "qwen3.8-max-preview" ? { status: "deprecated" } : {}),
 				},
 			]),
 		);
