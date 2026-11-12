@@ -15,7 +15,7 @@ import { basename } from "node:path";
 import type { Readable } from "node:stream";
 import crossSpawn from "cross-spawn";
 import { applyDebugSettingToChildEnvironment } from "../core/debug-setting.ts";
-import { hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
+import { HOST_STORAGE_ADAPTERS_ENV, hostStorageAdaptersEnvironment } from "../core/storage/host-adapters.ts";
 import { ATOMIC_AI_AGENT } from "./agent-attribution.ts";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
@@ -29,7 +29,16 @@ export function createChildProcessEnvironment(
 	overrides?: NodeJS.ProcessEnv,
 	baseEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-	const env = { ...baseEnv, ...hostStorageAdaptersEnvironment(), ...overrides, AI_AGENT: ATOMIC_AI_AGENT };
+	// The host's adapters are the default. A caller that set the variable itself, to another map or to nothing, keeps
+	// its choice; an unchanged copy of this process's environment does not count as a choice.
+	const callerChose =
+		baseEnv !== process.env && baseEnv[HOST_STORAGE_ADAPTERS_ENV] !== process.env[HOST_STORAGE_ADAPTERS_ENV];
+	const env = {
+		...baseEnv,
+		...(callerChose ? {} : hostStorageAdaptersEnvironment()),
+		...overrides,
+		AI_AGENT: ATOMIC_AI_AGENT,
+	};
 	applyDebugSettingToChildEnvironment(env);
 	return env;
 }

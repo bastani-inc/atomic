@@ -3,7 +3,12 @@ import { join } from "node:path";
 import { DefaultResourceLoader } from "@bastani/atomic";
 import { loadStorageAdapter, StorageAdapterLoadError, StorageProvider } from "@bastani/atomic/storage";
 import { afterEach, test, vi } from "vitest";
+import {
+	addHostStorageAdapter,
+	HOST_STORAGE_ADAPTERS_ENV,
+} from "../../packages/coding-agent/src/core/storage/host-adapters.js";
 import { collectStorageStatus } from "../../packages/coding-agent/src/core/storage/storage-status.js";
+import { createChildProcessEnvironment } from "../../packages/coding-agent/src/utils/child-process.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
@@ -100,4 +105,40 @@ test("storage.adapter names an adapter from a package the host loaded through th
 	} finally {
 		removeTempDirectory(home);
 	}
+});
+
+test("a process started with its own adapter map, or none, keeps that choice over the host's adapters (#4678)", () => {
+	addHostStorageAdapter("@example/child-env-4678", "/opt/host/adapter.js");
+	const hostMap = (env: NodeJS.ProcessEnv) =>
+		JSON.parse(env[HOST_STORAGE_ADAPTERS_ENV] ?? "{}") as Record<string, string>;
+
+	assert.equal(hostMap(createChildProcessEnvironment())["@example/child-env-4678"], "/opt/host/adapter.js");
+	assert.equal(
+		hostMap(createChildProcessEnvironment(undefined, { ...process.env }))["@example/child-env-4678"],
+		"/opt/host/adapter.js",
+		"an unchanged copy of this environment still passes the host's adapters",
+	);
+
+	const replaced = JSON.stringify({ "@example/child-env-4678": "/opt/caller/adapter.js" });
+	assert.equal(
+		createChildProcessEnvironment(undefined, { ...process.env, [HOST_STORAGE_ADAPTERS_ENV]: replaced })[
+			HOST_STORAGE_ADAPTERS_ENV
+		],
+		replaced,
+	);
+	assert.equal(
+		createChildProcessEnvironment({ [HOST_STORAGE_ADAPTERS_ENV]: replaced })[HOST_STORAGE_ADAPTERS_ENV],
+		replaced,
+	);
+
+	assert.equal(
+		createChildProcessEnvironment(undefined, { ...process.env, [HOST_STORAGE_ADAPTERS_ENV]: "" })[
+			HOST_STORAGE_ADAPTERS_ENV
+		],
+		"",
+	);
+	const removed: NodeJS.ProcessEnv = { ...process.env, [HOST_STORAGE_ADAPTERS_ENV]: "" };
+	delete removed[HOST_STORAGE_ADAPTERS_ENV];
+	vi.stubEnv(HOST_STORAGE_ADAPTERS_ENV, "{}");
+	assert.equal(createChildProcessEnvironment(undefined, removed)[HOST_STORAGE_ADAPTERS_ENV], undefined);
 });
