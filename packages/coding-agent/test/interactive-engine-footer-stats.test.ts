@@ -373,6 +373,27 @@ test("/session keeps local stats when no isolated engine cache exists (#3383)", 
 	}
 });
 
+test("/session reports a tiny cache-miss waste as an upper bound instead of $0.0000 (#4688)", async () => {
+	const harness = await createHarness();
+	try {
+		const nearEqual = (input: number, cacheRead: number): Usage => ({
+			...usage(input, 10, cacheRead, 0),
+			cost: {
+				input: (input * 0.042) / 1_000_000,
+				output: 0,
+				cacheRead: (cacheRead * 0.041) / 1_000_000,
+				cacheWrite: 0,
+				total: 0,
+			},
+		});
+		await harness.sessionManager.appendMessage(assistantMessage(nearEqual(100, 31_000)));
+		await harness.sessionManager.appendMessage(assistantMessage(nearEqual(30_000, 1_000)));
+		assert.match(sessionInfo(harness.session), /Wasted Cache Cost: <\$0\.0001 \(1 miss\)/);
+	} finally {
+		await harness.cleanup();
+	}
+});
+
 test("footer follows engine stats after each message_end before agent_end (#3328)", async () => {
 	const harness = await createHarness();
 	try {
