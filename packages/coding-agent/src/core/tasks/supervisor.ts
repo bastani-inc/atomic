@@ -32,7 +32,15 @@ export type TaskMessageDelivery =
  */
 export type ChatBoxSession = Pick<
 	AgentSession,
-	"state" | "model" | "sessionManager" | "getContextUsage" | "modelRuntime" | "isStreaming"
+	| "state"
+	| "model"
+	| "sessionManager"
+	| "getContextUsage"
+	| "modelRuntime"
+	| "isStreaming"
+	| "isCompacting"
+	| "isRetrying"
+	| "isBashRunning"
 >;
 
 /** Messages a live session holds back until its turn ends. */

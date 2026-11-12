@@ -16,7 +16,8 @@ test("Windows task context preserves native backslashes and the full owner metad
 	const session = {
 		state: { model: { id: "gpt-6-astra", provider: "openai-codex", reasoning: true }, thinkingLevel: "medium" },
 		sessionManager: { getCwd: () => cwd },
-		isStreaming: true,
+		// The owner's identity line shows while its agent is idle (#4690).
+		isStreaming: false,
 	} as unknown as AgentSession;
 	const footer = new FooterComponent(
 		session,
