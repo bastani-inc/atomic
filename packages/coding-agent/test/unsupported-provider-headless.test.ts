@@ -1,11 +1,12 @@
-import { ChildProcess, type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { ChildProcess, type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { removeTempRootReleasingBroker } from "../../../test/helpers/detached-broker.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "../src/modes/rpc/jsonl.ts";
 import { terminateRpcClientProcess } from "../src/modes/rpc/rpc-client-process.js";
@@ -14,7 +15,7 @@ import { bunExecutable, cliPath, runCliProcess } from "./cli-test-helpers.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
 	const original = await importOriginal<typeof import("node:child_process")>();
-	return { ...original, spawn: vi.fn(original.spawn) };
+	return { ...original, spawn: vi.fn(original.spawn), spawnSync: vi.fn(original.spawnSync) };
 });
 
 const RPC_COMMAND_TIMEOUT_MS = 30_000;
@@ -23,6 +24,7 @@ const REAL_HEADLESS_RPC_TEST_TIMEOUT_MS = 120_000;
 const WARNING =
 	"Configured default model is unavailable or unsupported. Update defaultProvider/defaultModel or use /model.";
 const tempDirs: string[] = [];
+const activeRpcs = new Set<RpcHarness>();
 
 type RpcCommandBody = RpcCommand extends infer T ? (T extends { id?: string } ? Omit<T, "id"> : never) : never;
 
@@ -143,7 +145,14 @@ function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile
 		}
 		pending.clear();
 	});
-	return {
+	const closed =
+		child.pid !== undefined
+			? new Promise<void>((resolve) => {
+					child.once("close", () => resolve());
+				})
+			: Promise.resolve();
+	let stopping: Promise<void> | undefined;
+	const harness: RpcHarness = {
 		send(command) {
 			const id = `unsupported_${++nextId}`;
 			return new Promise<RpcResponse>((resolve, reject) => {
@@ -155,13 +164,43 @@ function startRpc(cwd: string, agentDir: string, sessionDir: string, sessionFile
 				child.stdin.write(serializeJsonLine({ ...command, id } as RpcCommand));
 			});
 		},
-		async stop() {
-			detach();
-			await terminateRpcClientProcess(child, false);
+		stop() {
+			stopping ??= (async () => {
+				try {
+					detach();
+					child.stdout.resume();
+					child.stderr.resume();
+					if (
+						process.platform === "win32" &&
+						child.pid !== undefined &&
+						child.exitCode === null &&
+						child.signalCode === null
+					) {
+						const systemRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+						spawnSync(
+							win32.join(systemRoot, "System32", "taskkill.exe"),
+							["/F", "/T", "/PID", String(child.pid)],
+							{
+								cwd: systemRoot,
+								stdio: "ignore",
+								windowsHide: true,
+							},
+						);
+					}
+					await terminateRpcClientProcess(child, false);
+					child.stdin.destroy();
+					await closed;
+				} finally {
+					activeRpcs.delete(harness);
+				}
+			})();
+			return stopping;
 		},
 		stderr: () => stderr,
 		records: () => [...records],
 	};
+	activeRpcs.add(harness);
+	return harness;
 }
 
 function responseSuccess(response: RpcResponse): boolean {
@@ -205,6 +244,54 @@ describe("headless RPC harness shutdown", () => {
 			}
 		});
 	}
+
+	it("kills the Windows process tree and waits for stdio close before cleanup (#4655)", async () => {
+		const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+		Object.defineProperty(process, "platform", { value: "win32" });
+		vi.stubEnv("SystemRoot", "D:\\Windows");
+		const events: string[] = [];
+		const child = Object.assign(new ChildProcess(), {
+			pid: 4242,
+			stdin: new PassThrough(),
+			stdout: new PassThrough(),
+			stderr: new PassThrough(),
+			exitCode: null,
+			signalCode: null,
+		}) as ChildProcessWithoutNullStreams;
+		child.kill = vi.fn(() => {
+			events.push("kill");
+			child.exitCode = 1;
+			child.emit("exit", 1, null);
+			return true;
+		});
+		vi.mocked(spawn).mockReturnValueOnce(child);
+		vi.mocked(spawnSync).mockImplementationOnce((command, args, options) => {
+			events.push("taskkill");
+			expect(command).toBe(win32.join("D:\\Windows", "System32", "taskkill.exe"));
+			expect(args).toEqual(["/F", "/T", "/PID", "4242"]);
+			expect(options?.cwd).toBe("D:\\Windows");
+			return { pid: 99, output: [], stdout: "", stderr: "", status: 0, signal: null };
+		});
+		try {
+			const rpc = startRpc("cwd", "agent", "sessions");
+			let stopped = false;
+			const stopping = rpc.stop().then(() => {
+				stopped = true;
+			});
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(events).toEqual(["taskkill", "kill"]);
+			expect(stopped).toBe(false);
+			child.emit("close", 1, null);
+			await stopping;
+			expect(stopped).toBe(true);
+		} finally {
+			vi.unstubAllEnvs();
+			Object.defineProperty(process, "platform", platform);
+			vi.mocked(spawn).mockReset();
+			vi.mocked(spawnSync).mockReset();
+		}
+	});
 });
 
 describe("unsupported provider in headless modes", () => {
@@ -274,9 +361,10 @@ describe("unsupported provider in headless modes", () => {
 	});
 
 	afterEach(async () => {
+		for (const rpc of [...activeRpcs]) await rpc.stop();
 		if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
 		server = undefined;
-		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+		for (const dir of tempDirs.splice(0)) await removeTempRootReleasingBroker(dir);
 	});
 
 	for (const mode of ["text", "json"] as const) {
@@ -323,6 +411,11 @@ describe("unsupported provider in headless modes", () => {
 					responseSuccess(await rpc.send({ type: "set_model", provider: "recovery", modelId: "recovery-model" })),
 				).toBe(true);
 				expect(responseSuccess(await rpc.send({ type: "prompt", message: "recovered" }))).toBe(true);
+				await expect
+					.poll(() => rpc.records().some((record) => record.type === "agent_end"), {
+						timeout: RPC_COMMAND_TIMEOUT_MS,
+					})
+					.toBe(true);
 				expect(rpc.stderr()).not.toContain("API key");
 			} finally {
 				await rpc.stop();
@@ -340,7 +433,11 @@ describe("unsupported provider in headless modes", () => {
 				expect(responseSuccess(cycled)).toBe(true);
 				const prompt = await rpc.send({ type: "prompt", message: "recovered by cycle" });
 				expect(responseSuccess(prompt)).toBe(true);
-				await expect.poll(() => rpc.records().some((record) => record.type === "agent_end")).toBe(true);
+				await expect
+					.poll(() => rpc.records().some((record) => record.type === "agent_end"), {
+						timeout: RPC_COMMAND_TIMEOUT_MS,
+					})
+					.toBe(true);
 				expect(rpc.stderr()).not.toContain("API key");
 			} finally {
 				await rpc.stop();
@@ -362,6 +459,11 @@ describe("unsupported provider in headless modes", () => {
 				expect(responseSuccess(recovered)).toBe(true);
 				const prompt = await rpc.send({ type: "prompt", message: "recovered" });
 				expect(responseSuccess(prompt)).toBe(true);
+				await expect
+					.poll(() => rpc.records().some((record) => record.type === "agent_end"), {
+						timeout: RPC_COMMAND_TIMEOUT_MS,
+					})
+					.toBe(true);
 				expect(rpc.stderr()).not.toContain("API key");
 			} finally {
 				await rpc.stop();
