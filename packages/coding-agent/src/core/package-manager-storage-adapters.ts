@@ -9,6 +9,7 @@ import { getBaseDirsForScope, resolvePathFromBase } from "./package-manager-path
 import { parseSource } from "./package-manager-source.ts";
 import type { PackageLocationContext } from "./package-manager-types.ts";
 import { SettingsManager } from "./settings-manager.ts";
+import { hostStorageAdapter } from "./storage/host-adapters.ts";
 
 /** Splits a bare module specifier into its package name and the adapter name after it, if any. */
 function parsePackageSpecifier(specifier: string): { name: string; adapter?: string } | undefined {
@@ -44,13 +45,16 @@ function installedPackageRoot(context: PackageLocationContext, source: string, n
 }
 
 /**
- * The module a bare `storage.adapter` value selects from the Atomic packages in the agent directory's settings, or
- * undefined when no installed package lists a matching adapter. `<package>` selects the package's first listed
- * `storageAdapters` entry, and `<package>/<name>` the entry whose file name without its extension is `<name>`.
+ * The module a bare `storage.adapter` value selects from the Atomic packages this process's host loaded, else from
+ * the packages in the agent directory's settings, or undefined when no such package lists a matching adapter.
+ * `<package>` selects the package's first listed `storageAdapters` entry, and `<package>/<name>` the entry whose file
+ * name without its extension is `<name>`.
  */
 export async function resolvePackageStorageAdapter(specifier: string, agentDir: string): Promise<string | undefined> {
 	const requested = parsePackageSpecifier(specifier);
 	if (!requested) return undefined;
+	const hosted = hostStorageAdapter(specifier);
+	if (hosted !== undefined) return hosted;
 	const settings = SettingsManager.create(agentDir, agentDir, { projectTrusted: false }).getGlobalSettings();
 	if (!Array.isArray(settings?.packages)) return undefined;
 	const context: PackageLocationContext = { cwd: agentDir, agentDir };

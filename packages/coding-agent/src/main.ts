@@ -69,6 +69,7 @@ import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/sess
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { isTeamProfileError, StorageConfigError } from "./core/storage/errors.js";
+import { registerHostStoragePackages } from "./core/storage/host-adapters.ts";
 import {
 	hasProcessStorageSelection,
 	processSharedStorageSelection,
@@ -518,6 +519,8 @@ export async function main(argv: string[], options?: MainOptions) {
 		(!startupHasTrustInputs || startupDefaultProjectTrust === "always");
 	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions),
 		resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
+	// Storage opens before the extensions load, and may select an adapter by the name of a package passed here.
+	registerHostStoragePackages(resolvedExtensionPaths, cwd);
 	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates),
 		resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const beginStartupInputCapture = (

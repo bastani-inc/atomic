@@ -35,6 +35,7 @@ import { type PackageSource, SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
+import { registerHostStoragePackages } from "./storage/host-adapters.ts";
 
 export class DefaultResourceLoader implements ResourceLoader {
 	private cwd: string;
@@ -115,6 +116,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			inheritanceSnapshot?.additionalExtensionPaths,
 			options.additionalExtensionPaths,
 		);
+		registerHostStoragePackages(this.additionalExtensionPaths, this.cwd);
 		this.additionalSkillPaths = mergeInheritedStrings(
 			inheritanceSnapshot?.additionalSkillPaths,
 			options.additionalSkillPaths,
