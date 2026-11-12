@@ -73,7 +73,7 @@ describe("Anthropic strict tool schemas", () => {
 		}
 	});
 
-	it("keeps root additionalProperties in non-strict schemas and omits it when absent", async () => {
+	it("keeps root additionalProperties in non-strict schemas and omits it when absent (#12100)", async () => {
 		for (const additionalProperties of [false, true, { type: "string" }] as const) {
 			const parameters = {
 				type: "object",

@@ -156,7 +156,7 @@ describe("Anthropic eager tool input streaming compatibility", () => {
 		expect(request.headers["anthropic-beta"]).toBeUndefined();
 	});
 
-	it("only sends the full input schema for strict JSON-schema tools", async () => {
+	it("only sends the full input schema for strict JSON-schema tools (#12100)", async () => {
 		const legacyRequest = await captureAnthropicRequest(
 			{ supportsStrictTools: true },
 			createContext([schemaCompatibilityTool]),
@@ -179,7 +179,7 @@ describe("Anthropic eager tool input streaming compatibility", () => {
 		});
 	});
 
-	it("falls back to a non-strict tool when the schema uses constraints Anthropic strict mode rejects", async () => {
+	it("falls back to a non-strict tool when the schema uses constraints Anthropic strict mode rejects (#12100)", async () => {
 		const request = await captureAnthropicRequest({ supportsStrictTools: true }, createContext([boundedStrictTool]));
 
 		expect(getFirstTool(request.body).strict).toBeUndefined();

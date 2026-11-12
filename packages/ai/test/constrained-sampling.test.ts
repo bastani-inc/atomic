@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { ResponseStreamEvent } from "openai/resources/responses/responses.js";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
@@ -148,15 +149,17 @@ describe("constrained tool sampling", () => {
 		});
 	});
 
-	it("keeps strict mode for enum-only schemas", () => {
+	it("keeps strict mode for enum-only schemas (#12049)", () => {
 		const parameters = Type.Object({ level: Type.Enum({ Low: "low", High: "high" }) });
 		const tool = makeTool({ parameters, constrainedSampling: { type: "json_schema", strict: "prefer" } });
 
-		expect(parameters.properties.level).not.toHaveProperty("type");
-		expect(convertResponsesTools([tool], { supportsStrictMode: true })[0]).toMatchObject({ strict: true });
+		const converted = convertResponsesTools([tool], { supportsStrictMode: true })[0];
+		assert.equal("type" in parameters.properties.level, false);
+		assert.ok(converted.type === "function");
+		assert.equal(converted.strict, true);
 	});
 
-	it("falls back or rejects schemas that cannot be safely converted", () => {
+	it("falls back or rejects schemas that cannot be safely converted (#12049)", () => {
 		const cases: Array<{ parameters: Tool["parameters"]; error: string }> = [
 			{
 				parameters: Type.Object({ metadata: Type.Object({}, { additionalProperties: Type.String() }) }),

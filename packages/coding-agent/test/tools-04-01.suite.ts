@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -251,7 +252,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toMatch(/\[Showing lines 1001-4000 of 4000\. Full output: /);
 			expect(output).not.toMatch(/^line-4001$/m);
 		});
-		it("should show the end of an over-long last line after a short line", async () => {
+		it("should show the end of an over-long last line after a short line (#12092)", async () => {
 			const longLine = `${"y".repeat(219_000)}END`;
 			const operations: BashOperations = {
 				exec: async (_command, _cwd, { onData }) => {
@@ -265,11 +266,11 @@ describe("Coding Agent Tools", () => {
 			const result = await bash.execute("test-call-long-last-line", { command: "grep -n x bundle.min.js" });
 			const output = getTextOutput(result);
 
-			expect(result.details?.truncation?.lastLinePartial).toBe(true);
-			expect(output).toContain("yyyyEND");
-			expect(output).toMatch(/\[Showing last 50\.0KB of line 2 /);
+			assert.equal(result.details?.truncation?.lastLinePartial, true);
+			assert.ok(output.includes("yyyyEND"));
+			assert.match(output, /\[Showing last 50\.0KB of line 2 /);
 		});
-		it("should drop a partial leading line when complete lines remain in the rolling tail", async () => {
+		it("should drop a partial leading line when complete lines remain in the rolling tail (#12092)", async () => {
 			const operations: BashOperations = {
 				exec: async (_command, _cwd, { onData }) => {
 					const data = Buffer.from(`${"x".repeat(210_000)}\ncomplete final line\n`, "utf-8");
@@ -282,8 +283,8 @@ describe("Coding Agent Tools", () => {
 			const result = await bash.execute("test-call-clipped-leading-line", { command: "mixed-lines" });
 			const output = getTextOutput(result);
 
-			expect(output).toContain("complete final line");
-			expect(output).not.toContain("xxx");
+			assert.ok(output.includes("complete final line"));
+			assert.ok(!output.includes("xxx"));
 		});
 		it("should decode UTF-8 characters split across output chunks", async () => {
 			const euro = Buffer.from("€\n", "utf-8");

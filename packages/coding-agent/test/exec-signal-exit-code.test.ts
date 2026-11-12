@@ -25,7 +25,7 @@ describe("execCommand exit code when waitForChildProcess returns null", () => {
 	});
 
 	it.skipIf(process.platform === "win32")(
-		"reports 128 plus the signal number for a signal-killed process",
+		"reports 128 plus the signal number for a signal-killed process (#12089)",
 		async () => {
 			const result = await execCommand(process.execPath, ["-e", 'process.kill(process.pid, "SIGTERM")'], tmpdir());
 			assert.equal(result.code, 128 + osConstants.signals.SIGTERM);
@@ -33,13 +33,13 @@ describe("execCommand exit code when waitForChildProcess returns null", () => {
 		},
 	);
 
-	it("reports 128 when proc.signalCode is an unrecognized signal name", async () => {
+	it("reports 128 when proc.signalCode is an unrecognized signal name (#12089)", async () => {
 		signalCodeOverride = "SIGUNKNOWN" as NodeJS.Signals;
 		const result = await execCommand(process.execPath, ["-e", "process.exit(0)"], tmpdir());
 		assert.equal(result.code, 128);
 	});
 
-	it("reports 1 when neither an exit code nor a signal is reported", async () => {
+	it("reports 1 when neither an exit code nor a signal is reported (#12089)", async () => {
 		signalCodeOverride = null;
 		const result = await execCommand(process.execPath, ["-e", "process.exit(0)"], tmpdir());
 		assert.equal(result.code, 1);
