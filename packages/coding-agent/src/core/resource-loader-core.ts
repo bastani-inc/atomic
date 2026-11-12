@@ -7,6 +7,7 @@ import { createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import { registerHostStoragePackages } from "./package-manager-storage-adapters.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import {
 	updatePromptsFromPathsAsync,
@@ -35,7 +36,6 @@ import { type PackageSource, SettingsManager } from "./settings-manager.ts";
 import { buildSkillCatalog, type SkillCatalog } from "./skill-catalog.ts";
 import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
-import { registerHostStoragePackages } from "./storage/host-adapters.ts";
 
 export class DefaultResourceLoader implements ResourceLoader {
 	private cwd: string;

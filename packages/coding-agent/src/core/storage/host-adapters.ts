@@ -1,8 +1,4 @@
-import { readFileSync } from "node:fs";
-import { basename, extname, isAbsolute, join, resolve } from "node:path";
-import { isLocalPath, resolvePath } from "../../utils/paths.ts";
-import { stripBom } from "../../utils/text.ts";
-import { getManifestFromPackageJson } from "../package-manager-manifest.ts";
+import { isAbsolute } from "node:path";
 
 /**
  * The storage adapters of the packages an Atomic process's host loaded, as the processes it starts receive them: a JSON
@@ -10,7 +6,8 @@ import { getManifestFromPackageJson } from "../package-manager-manifest.ts";
  */
 export const HOST_STORAGE_ADAPTERS_ENV = "ATOMIC_HOST_STORAGE_ADAPTERS";
 
-// Process-wide, and shared by every loaded copy of this module.
+// Process-wide, and shared by every loaded copy of this module. This module imports nothing of Atomic's, because every
+// child process environment reads it, including in processes that load Atomic's sources on their own.
 const HOST_ADAPTERS = Symbol.for("@bastani/atomic/storage/host-adapters");
 const registry: typeof globalThis & { [HOST_ADAPTERS]?: Map<string, string> } = globalThis;
 
@@ -37,40 +34,10 @@ function hostAdapters(): Map<string, string> {
 	return registry[HOST_ADAPTERS];
 }
 
-function readPackageJson(root: string): { name?: string } | undefined {
-	try {
-		const value: object | null = JSON.parse(stripBom(readFileSync(join(root, "package.json"), "utf8")));
-		return typeof value === "object" && value !== null ? value : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Makes the storage adapters of the package directories among `sources`, the extension paths a host passes to load as
- * code, selectable by name in this process and the processes it starts. Other sources are ignored, and relative paths
- * resolve against `cwd`. `<package>` selects the package's first listed `storageAdapters` entry and `<package>/<name>`
- * the first entry whose file name without its extension is `<name>`; a name registered first keeps its module.
- */
-export function registerHostStoragePackages(sources: readonly string[] | undefined, cwd: string): void {
-	for (const source of sources ?? []) {
-		if (!isLocalPath(source)) continue;
-		let root: string;
-		try {
-			root = resolvePath(source, cwd);
-		} catch {
-			continue;
-		}
-		const pkg = readPackageJson(root);
-		const adapters = getManifestFromPackageJson(pkg)?.storageAdapters ?? [];
-		if (typeof pkg?.name !== "string" || adapters.length === 0) continue;
-		const registered = hostAdapters();
-		const add = (name: string, module: string) => {
-			if (!registered.has(name)) registered.set(name, resolve(root, module));
-		};
-		add(pkg.name, adapters[0]!);
-		for (const module of adapters) add(`${pkg.name}/${basename(module, extname(module))}`, module);
-	}
+/** Makes `name` select the absolute adapter `module` in this process and the processes it starts; a registered name keeps its module. */
+export function addHostStorageAdapter(name: string, module: string): void {
+	const adapters = hostAdapters();
+	if (!adapters.has(name)) adapters.set(name, module);
 }
 
 /** The adapter module `name` selects from the packages this process's host loaded, or undefined. */
