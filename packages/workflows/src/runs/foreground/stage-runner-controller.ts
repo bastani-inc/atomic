@@ -700,6 +700,7 @@ export class StageSessionController {
 						signal: this.residency.startupWait.signal,
 						selection: options?.routerSelection,
 						...(options?.taskNeeds ? { taskNeeds: options.taskNeeds } : {}),
+						...(options?.parallelSlot ? { parallelSlot: options.parallelSlot } : {}),
 						...(setsProviders(parseModelConstraints(options?.modelConstraints))
 							? { overrideProviderSettings: true }
 							: {}),

@@ -79,6 +79,7 @@ export async function stripWorkflowOnlyOptions(
 		fallbackModels,
 		modelConstraints: _modelConstraints,
 		taskNeeds: _taskNeeds,
+		parallelSlot: _parallelSlot,
 		inheritedModelConstraints: _inheritedModelConstraints,
 		routerSelection: _routerSelection,
 		context,

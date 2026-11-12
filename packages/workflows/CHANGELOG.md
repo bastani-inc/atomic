@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `parallelSlot` stage option for `model: "auto"`: parallel stages that do the same job, such as two reviewers, each route to a different model family when enough families are eligible. The builtin `ralph` workflow's reviewers use it, so they no longer both land on the same model ([#4689](https://github.com/bastani-inc/atomic/issues/4689))
+
 ## [0.9.80] - 2026-11-12
 
 Resumed workflow runs look like every other run.

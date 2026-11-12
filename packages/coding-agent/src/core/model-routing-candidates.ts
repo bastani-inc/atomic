@@ -1,10 +1,11 @@
+import { type BenchmarkCompletion, completeBenchmarks, type QualityEstimate } from "./model-routing-estimates.js";
 import {
 	candidateEvidenceRows,
 	catalogModelIdentity,
 	type EvalsCatalog,
 	modelEvidenceTokens,
 } from "./model-routing-evals.js";
-import { type ResolvedTaskNeeds, taskDemand, type WorkKind } from "./model-routing-needs.js";
+import { type ResolvedTaskNeeds, taskDemand } from "./model-routing-needs.js";
 
 /** What ranking needs to know about one eligible model. */
 export interface CandidateModel {
@@ -25,64 +26,150 @@ interface Metric {
 	readonly key: string;
 	readonly label: string;
 	readonly unit: "%" | "";
+	/** How much this benchmark counts toward quality for the task; quoted results follow this order. */
+	readonly weight: number;
 }
 
-const percent = (key: string, label: string): Metric => ({ key, label, unit: "%" });
-const points = (key: string, label: string): Metric => ({ key, label, unit: "" });
+const percent = (key: string, label: string, weight = 1): Metric => ({ key, label, unit: "%", weight });
+const points = (key: string, label: string, weight = 1): Metric => ({ key, label, unit: "", weight });
 
 const OVERALL: Metric = points("aa:idx", "AA Intelligence Index");
 
-/** evals.md columns that measure each kind of work, in the order results are quoted. */
-const WORK_METRICS: Record<WorkKind, readonly Metric[]> = {
-	computer_use: [
-		percent("pub:OSW2", "OSWorld 2.0"),
-		percent("pub:SSP", "ScreenSpot-Pro"),
-		percent("pub:ALE", "Agents' Last Exam"),
-		percent("aa:MMMU", "MMMU-Pro"),
-	],
-	coding: [
-		percent("aa:TB4", "Terminal-Bench 4.0"),
-		percent("dswe:Pass@1", "DeepSWE"),
-		percent("pub:DSWE", "DeepSWE"),
-		percent("fc:Main", "FrontierCode"),
-		percent("aa:TB21", "Terminal-Bench 2.1"),
-	],
-	code_review: [
-		percent("fc:Main", "FrontierCode"),
-		percent("aa:TB4", "Terminal-Bench 4.0"),
-		percent("pub:XGym", "ExploitGym"),
-		percent("pub:SECPro", "SEC-Bench Pro"),
-	],
-	codebase_lookup: [
-		percent("aa:TB4", "Terminal-Bench 4.0"),
-		percent("aa:tau2", "τ²-Bench"),
-		percent("aa:IF", "IFBench"),
-	],
-	research: [
-		percent("aa:HLE", "Humanity's Last Exam"),
-		percent("pub:BComp", "BrowseComp"),
-		percent("aa:GPQA", "GPQA Diamond"),
-		percent("aa:LCR", "AA-LCR"),
-	],
-	business_workflow: [
-		percent("aa:Auto", "AutomationBench-AA"),
-		percent("pub:ABench", "AutomationBench"),
-		percent("aa:tau2", "τ²-Bench"),
-		percent("aa:Ent", "EnterpriseOps-Gym"),
-	],
-	math_science: [
-		percent("pub:FMT4", "FrontierMath Tier 4"),
-		percent("pub:TBSci", "Terminal-Bench-Science"),
-		percent("aa:Crit", "CritPt"),
-		percent("aa:Sci", "SciCode"),
-	],
-	writing: [
-		percent("aa:IF", "IFBench"),
-		points("aa:Gn", "GDPval"),
-		points("aa:Brief", "AA-Briefcase"),
-		percent("aa:LCR", "AA-LCR"),
-	],
+/** True when the task is long implementation work: hard, very hard, or holding a large codebase in context. */
+const longWork = (needs: ResolvedTaskNeeds) =>
+	needs.difficulty === "hard" || needs.difficulty === "very_hard" || needs.longContext;
+/** True when the task is short, terminal-shaped work: trivial or easy, or latency-sensitive. */
+const shortWork = (needs: ResolvedTaskNeeds) =>
+	needs.difficulty === "trivial" || needs.difficulty === "easy" || needs.latencySensitive;
+
+/**
+ * evals.md benchmarks that measure the task's kind of work, weighted by its
+ * shape: long implementation leans on DeepSWE and FrontierCode, short terminal
+ * work on Terminal-Bench 4.0, review on FrontierCode and security suites.
+ */
+function workMetrics(needs: ResolvedTaskNeeds): Metric[] {
+	const long = longWork(needs);
+	const short = shortWork(needs) && !long;
+	const metrics: Metric[] = (() => {
+		switch (needs.work) {
+			case "computer_use":
+				return [
+					percent("pub:OSW2", "OSWorld 2.0"),
+					percent("pub:OSW21", "OSWorld 2.1"),
+					percent("pub:SSP", "ScreenSpot-Pro"),
+					percent("pub:ALE", "Agents' Last Exam"),
+					percent("aa:MMMU", "MMMU-Pro"),
+				];
+			case "coding":
+				return [
+					percent("aa:TB4", "Terminal-Bench 4.0", short ? 2 : 1),
+					percent("dswe:Pass@1", "DeepSWE", long ? 2 : short ? 0.5 : 1),
+					percent("pub:DSWE", "DeepSWE", long ? 2 : short ? 0.5 : 1),
+					percent("fc:Main", "FrontierCode", long ? 2 : short ? 0.5 : 1),
+					percent("pub:FC11", "FrontierCode", long ? 2 : short ? 0.5 : 1),
+					percent("aa:TB21", "Terminal-Bench 2.1", 0.5),
+				];
+			case "code_review":
+				return [
+					percent("fc:Main", "FrontierCode", 2),
+					percent("pub:FC11", "FrontierCode", 2),
+					percent("pub:XGym", "ExploitGym"),
+					percent("pub:SECPro", "SEC-Bench Pro"),
+					percent("pub:CWE", "CWE-bench"),
+					percent("aa:TB4", "Terminal-Bench 4.0", 0.5),
+				];
+			case "codebase_lookup":
+				return [
+					percent("aa:TB4", "Terminal-Bench 4.0", 2),
+					percent("aa:tau2", "τ²-Bench", 0.5),
+					percent("aa:IF", "IFBench", 0.5),
+					percent("aa:LCR", "AA-LCR", needs.longContext ? 1.5 : 0.5),
+				];
+			case "research":
+				return [
+					percent("aa:HLE", "Humanity's Last Exam"),
+					percent("pub:BComp", "BrowseComp"),
+					percent("pub:HLEt", "Humanity's Last Exam with tools"),
+					percent("aa:GPQA", "GPQA Diamond"),
+					percent("aa:LCR", "AA-LCR", needs.longContext ? 2 : 1),
+				];
+			case "business_workflow":
+				return [
+					percent("aa:Auto", "AutomationBench-AA"),
+					percent("pub:ABench", "AutomationBench"),
+					percent("aa:tau2", "τ²-Bench"),
+					percent("aa:Ent", "EnterpriseOps-Gym"),
+				];
+			case "math_science":
+				return [
+					percent("pub:FMT4", "FrontierMath Tier 4"),
+					percent("pub:TBSci", "Terminal-Bench-Science"),
+					percent("aa:Crit", "CritPt"),
+					percent("aa:Sci", "SciCode"),
+				];
+			case "writing":
+				return [
+					percent("aa:IF", "IFBench"),
+					points("aa:Gn", "GDPval"),
+					points("aa:Brief", "AA-Briefcase"),
+					percent("aa:LCR", "AA-LCR", needs.longContext ? 2 : 1),
+				];
+		}
+	})();
+	return metrics.sort((a, b) => b.weight - a.weight);
+}
+
+/**
+ * Catalog columns that describe a run rather than a model's ability: price,
+ * tokens, steps, confidence intervals, flag rates, openness, and FrontierCode's
+ * pass-rate and Extended columns, which restate Main.
+ */
+const NOT_ABILITY = new Set([
+	"aa:Open",
+	"dswe:CI",
+	"dswe:Cost",
+	"dswe:Out tok",
+	"dswe:Steps",
+	"fc:Main pass",
+	"fc:Extended",
+	"fc:Ext pass",
+	"fc:Flag",
+	"fc:Cost",
+]);
+
+/**
+ * Published benchmarks that an independent table also measures. A vendor's
+ * report uses its own harness, so it is not ranked against the independent
+ * results, but it is evidence about the same ability: the completion takes it
+ * as a noisier observation of the independent benchmark.
+ */
+const SAME_BENCHMARK: Readonly<Record<string, string>> = {
+	"pub:DSWE": "dswe:Pass@1",
+	"pub:TB4": "aa:TB4",
+	"pub:FC11": "fc:Main",
+	"pub:GDPpdf": "aa:PDF",
+	"pub:HLE": "aa:HLE",
 };
+
+/** A model's results as the completion sees them: its ability measurements, and published reports of the same benchmarks. */
+function abilityResults(values: ReadonlyMap<string, number>): {
+	results: Map<string, number>;
+	reported: Map<string, number>;
+} {
+	const results = new Map<string, number>();
+	const reports = new Map<string, number[]>();
+	for (const [key, value] of values) {
+		if (NOT_ABILITY.has(key)) continue;
+		results.set(key, value);
+		const same = key.startsWith("pub:") ? SAME_BENCHMARK[key.slice(0, key.lastIndexOf("@"))] : undefined;
+		if (same) reports.set(same, [...(reports.get(same) ?? []), value]);
+	}
+	const reported = new Map([...reports].map(([key, all]) => [key, all.reduce((a, b) => a + b, 0) / all.length]));
+	return { results, reported };
+}
+
+/** Quality is ranked on the estimate minus this many standard errors, so thin evidence counts less. */
+const CONSERVATIVE_ERRORS = 1;
 
 /** When speed matters, a fast route edges out its standard route for the model's single slot. */
 const FAST_ROUTE_BONUS = 0.02;
@@ -98,8 +185,14 @@ export interface RankedCandidate extends CandidateModel {
 	/** How each quoted value was measured, for example its effort, harness or reporter. */
 	readonly conditions: ReadonlyMap<string, string>;
 	readonly released?: string;
+	/**
+	 * Standing among benchmarked catalog models of the conservative quality
+	 * estimate for this work, present when the model has any result in the fit.
+	 */
 	readonly workStanding?: number;
 	readonly overallStanding?: number;
+	/** Quality for this work, from measured results and the completion's estimates of missing ones. */
+	readonly estimate?: QualityEstimate;
 }
 
 function sectionKind(intro: readonly string[]): "aa" | "dswe" | "fc" | "pub" {
@@ -152,6 +245,12 @@ interface CatalogReadings {
 	readonly rows: readonly (readonly Reading[])[];
 	/** Per measurement, the best value of each catalog model. */
 	readonly cohorts: ReadonlyMap<string, ReadonlyMap<string, number>>;
+	/** Per catalog model, its best value of each measurement. */
+	readonly models: ReadonlyMap<string, ReadonlyMap<string, number>>;
+	/** Low-rank completion of every ability measurement, fitted on first use. */
+	completion(): BenchmarkCompletion;
+	/** Per benchmark weighting, every fitted catalog model's conservative quality, computed on first use. */
+	readonly populations: Map<string, readonly (readonly [string, number])[]>;
 }
 
 const readingsByCatalog = new WeakMap<EvalsCatalog, CatalogReadings>();
@@ -206,7 +305,28 @@ function catalogReadings(catalog: EvalsCatalog): CatalogReadings {
 			cohorts.set(key, cohort);
 		}
 	}
-	const readings = { rows, cohorts };
+	const models = new Map<string, Map<string, number>>();
+	for (const [key, cohort] of cohorts)
+		for (const [identity, value] of cohort) {
+			const values = models.get(identity) ?? new Map<string, number>();
+			values.set(key, value);
+			models.set(identity, values);
+		}
+	let completion: BenchmarkCompletion | undefined;
+	const readings: CatalogReadings = {
+		rows,
+		cohorts,
+		models,
+		completion: () => {
+			if (completion === undefined) {
+				const fitCohorts = new Map<string, Map<string, number>>();
+				for (const [key, cohort] of cohorts) if (!NOT_ABILITY.has(key)) fitCohorts.set(key, new Map(cohort));
+				completion = completeBenchmarks(fitCohorts, MIN_RANKED_MODELS);
+			}
+			return completion;
+		},
+		populations: new Map(),
+	};
 	readingsByCatalog.set(catalog, readings);
 	return readings;
 }
@@ -246,19 +366,53 @@ const baseKey = (candidate: CandidateModel) => modelEvidenceTokens(candidate.fas
 
 const blended = (candidate: CandidateModel) => (3 * candidate.cost.input + candidate.cost.output) / 4;
 
+/** The weight of each of `metrics` the completion fitted. */
+function benchmarkWeights(completion: BenchmarkCompletion, metrics: readonly Metric[]): Map<string, number> {
+	const weights = new Map<string, number>();
+	for (const metric of metrics) {
+		const keys = [...completion.keys].filter((key) => key === metric.key || key.startsWith(`${metric.key}@`));
+		for (const key of keys) weights.set(key, (weights.get(key) ?? 0) + metric.weight / keys.length);
+	}
+	return weights;
+}
+
+/** True when any of a model's results or reports is a benchmark the completion fitted. */
+const fitsAny = (completion: BenchmarkCompletion, ...results: readonly ReadonlyMap<string, number>[]) =>
+	results.some((map) => [...map.keys()].some((key) => completion.keys.has(key)));
+
+const conservative = (estimate: QualityEstimate) => estimate.mean - CONSERVATIVE_ERRORS * estimate.error;
+
 /**
  * Rank every eligible model for the task in code. Quality is the model's
- * standing among every benchmarked model in the catalog on the benchmarks for
- * this kind of work (overall intelligence when it has none), so it does not
- * depend on which other models are eligible. It is weighed against price by how
- * demanding the task is, with a small preference for newer releases.
+ * standing among every benchmarked model in the catalog on a conservative
+ * estimate for this kind of work: its weighted results on the work's
+ * benchmarks, with missing ones estimated from all of its other results,
+ * less one standard error. A model with one strong result therefore ranks
+ * below models with broader, consistent evidence, and a standing does not
+ * depend on which other models are eligible. Quality is weighed against price
+ * by how demanding the task is, with a small preference for newer releases.
  */
 export function rankCandidates(
 	catalog: EvalsCatalog,
 	candidates: readonly CandidateModel[],
 	needs: ResolvedTaskNeeds,
 ): RankedCandidate[] {
-	const { cohorts } = catalogReadings(catalog);
+	const readings = catalogReadings(catalog);
+	const { cohorts } = readings;
+	const completion = readings.completion();
+	const weights = benchmarkWeights(completion, workMetrics(needs));
+	const signature = JSON.stringify([...weights]);
+	let population = readings.populations.get(signature);
+	if (population === undefined) {
+		population = [...readings.models].flatMap(([identity, values]) => {
+			const { results, reported } = abilityResults(values);
+			if (!fitsAny(completion, results, reported)) return [];
+			const estimate = completion.estimate(results, weights, reported);
+			return estimate ? [[identity, conservative(estimate)] as const] : [];
+		});
+		readings.populations.set(signature, population);
+	}
+	const fitted = population;
 	const measured = candidates.map((candidate) => ({
 		candidate,
 		base: baseKey(candidate),
@@ -270,9 +424,13 @@ export function rankCandidates(
 		const others = [...cohort].filter(([identity]) => !own.has(identity)).map(([, other]) => other);
 		return others.length ? others.filter((other) => other < value).length / others.length : undefined;
 	};
-	const standingOf = (values: ReadonlyMap<string, number>, own: ReadonlySet<string>, metrics: readonly Metric[]) => {
-		const ranks = metrics
-			.flatMap((metric) => cohortKeys(values, metric))
+	const estimateStanding = (value: number, own: ReadonlySet<string>): number | undefined => {
+		if (fitted.length < MIN_RANKED_MODELS) return undefined;
+		const others = fitted.filter(([identity]) => !own.has(identity));
+		return others.length ? others.filter(([, other]) => other < value).length / others.length : undefined;
+	};
+	const overallOf = (values: ReadonlyMap<string, number>, own: ReadonlySet<string>) => {
+		const ranks = cohortKeys(values, OVERALL)
 			.map((key) => rankOf(key, values.get(key)!, own))
 			.filter((rank): rank is number => rank !== undefined);
 		return ranks.length ? ranks.reduce((a, b) => a + b, 0) / ranks.length : undefined;
@@ -292,9 +450,16 @@ export function rankCandidates(
 
 	return measured
 		.map(({ candidate, base, values, conditions, identities, released }) => {
-			const workStanding = standingOf(values, identities, WORK_METRICS[needs.work]);
-			const overallStanding = standingOf(values, identities, [OVERALL]);
-			const quality = workStanding ?? (overallStanding !== undefined ? 0.8 * overallStanding : 0.2);
+			const { results, reported } = abilityResults(values);
+			const estimate = completion.estimate(results, weights, reported);
+			const standing = estimate ? estimateStanding(conservative(estimate), identities) : undefined;
+			// Only a model with a result in the fit has a standing of its own; an
+			// unbenchmarked model is ranked on the catalog-wide prior, whose wide
+			// uncertainty keeps it below measured models.
+			const evidenced = fitsAny(completion, results, reported);
+			const workStanding = evidenced ? standing : undefined;
+			const overallStanding = overallOf(values, identities);
+			const quality = standing ?? (overallStanding !== undefined ? 0.8 * overallStanding : 0.2);
 			const price = blended(candidate);
 			const cheapness = price > 0 && high > low ? 1 - (Math.log(price) - low) / (high - low) : 1;
 			const ageDays = released && newest ? (Date.parse(newest) - Date.parse(released)) / 86_400_000 : 365;
@@ -314,6 +479,7 @@ export function rankCandidates(
 				...(released ? { released } : {}),
 				...(workStanding !== undefined ? { workStanding } : {}),
 				...(overallStanding !== undefined ? { overallStanding } : {}),
+				...(estimate && evidenced ? { estimate } : {}),
 			};
 		})
 		.sort(
@@ -345,12 +511,16 @@ function standingLabel(fraction: number): string {
 	return "bottom quarter";
 }
 
+const round = (value: number) => Number(value.toFixed(1));
+
 const money = (value: number) => `$${Number(value.toPrecision(3))}`;
 
 /**
  * One shortlisted option described with its own evidence, so the router compares
  * options directly: release date, price tier, image input, and results for this
- * kind of work and overall, with standings among catalog models measured on the same benchmark by the same source.
+ * kind of work and overall. The work standing compares the conservative
+ * quality estimate with every benchmarked catalog model's, and says which
+ * results are measured and which are estimated from the model's other results.
  */
 export function describeOption(
 	option: RankedCandidate,
@@ -364,23 +534,55 @@ export function describeOption(
 		.map((candidate) => candidate.released ?? "")
 		.sort()
 		.at(-1);
-	const quote = (metrics: readonly Metric[], standing: number | undefined) => {
-		const present = metrics
+	const measuredOf = (metrics: readonly Metric[]) =>
+		metrics
 			.map((metric) => {
 				const keys = cohortKeys(option.values, metric);
 				const best = keys.sort((a, b) => option.values.get(b)! - option.values.get(a)!)[0];
 				return best === undefined ? undefined : { metric, key: best };
 			})
-			.filter((entry) => entry !== undefined)
-			.slice(0, 2);
-		if (present.length === 0) return "no published results";
-		const results = present
+			.filter((entry) => entry !== undefined);
+	const results = (metrics: readonly Metric[], count = 2) => {
+		const present = measuredOf(metrics).slice(0, count);
+		return present
 			.map(({ metric, key }) => {
 				const condition = option.conditions.get(key);
 				return `${metric.label} ${option.values.get(key)}${metric.unit}${condition ? ` measured with ${condition}` : ""}`;
 			})
 			.join("; ");
-		return `${standing === undefined ? "measured" : `${standingLabel(standing)} of models with the same benchmark and source`} (${results})`;
+	};
+	const quote = (metrics: readonly Metric[], standing: number | undefined) => {
+		const measured = results(metrics);
+		if (!measured) return "no published results";
+		return `${standing === undefined ? "measured" : `${standingLabel(standing)} of models with the same benchmark and source`} (${measured})`;
+	};
+	const metrics = workMetrics(needs);
+	const work = () => {
+		const { estimate, workStanding } = option;
+		if (estimate === undefined || workStanding === undefined) return quote(metrics, undefined);
+		const measured = results(metrics, 3);
+		const quoted = new Set(measuredOf(metrics).map(({ metric }) => metric.label));
+		const estimated = metrics
+			.flatMap((metric) =>
+				estimate.estimated
+					.filter((result) => result.key === metric.key || result.key.startsWith(`${metric.key}@`))
+					.map((result) => ({ metric, result })),
+			)
+			.filter(
+				({ metric }, index, all) =>
+					!quoted.has(metric.label) && all.findIndex((entry) => entry.metric.label === metric.label) === index,
+			)
+			.slice(0, 2)
+			.map(
+				({ metric, result }) =>
+					`${metric.label} about ${round(result.value)}${metric.unit} ± ${round(result.error)}${metric.unit === "%" ? " points" : ""}`,
+			)
+			.join("; ");
+		const parts = [
+			measured ? `measured: ${measured}` : "no result measured for this work",
+			...(estimated ? [`estimated from its other results, not measured: ${estimated}`] : []),
+		];
+		return `${standingLabel(workStanding)} of benchmarked models on a cautious estimate for this work, above ${round(100 * workStanding)}% of them (${parts.join("; ")})`;
 	};
 	let released = "unknown";
 	if (option.released) {
@@ -399,7 +601,7 @@ export function describeOption(
 		released,
 		price: `${tier}: ${money(option.cost.input)} / ${money(option.cost.output)} per million tokens`,
 		reads_images: option.input.includes("image"),
-		[needs.work]: quote(WORK_METRICS[needs.work], option.workStanding),
+		[needs.work]: work(),
 		overall: quote([OVERALL], option.overallStanding),
 		...(option.fastRouteOf
 			? {

@@ -27,7 +27,7 @@ import {
 	parseModelConstraints,
 } from "./model-routing-constraints.js";
 import { reportModelRoutingDebug } from "./model-routing-debug.js";
-import { parseEvalsCatalog } from "./model-routing-evals.js";
+import { type EvalsCatalog, modelEvidenceTokens, parseEvalsCatalog } from "./model-routing-evals.js";
 import {
 	effortForDifficulty,
 	missingNeedsQuestions,
@@ -126,10 +126,48 @@ const LONG_CONTEXT_TOKENS = 400_000;
 const NEEDS_INSTRUCTIONS =
 	"Read `task`, which `agent` will perform, and answer each field: what kind of work it is, how hard it is, how costly a mistake would be, whether it needs screenshots or images, whether it must hold a very large amount of material in context, and whether speed matters more than extra reasoning. Each field's description lists its options. Judge the task as written; `caller_says` lists answers the caller already gave.";
 const CHOICE_INSTRUCTIONS =
-	"Pick the model that should do the task `agent` will perform. The task's needs are in `needs`; the task itself is not shown. Each option lists the model's release date, price tier and prices, whether it reads images, and its results for this kind of work and overall; standings compare it with every eligible model. For demanding or high-stakes tasks prefer the best-proven model; for easy, low-stakes tasks prefer an adequate cheaper one. Prefer newer models over older ones with similar results. Missing results are unknown, not weak.";
+	"Pick the model that should do the task `agent` will perform. The task's needs are in `needs`; the task itself is not shown. Each option lists the model's release date, price tier and prices, whether it reads images, and its results for this kind of work and overall. The work standing compares a cautious estimate of the model's quality for this work with every benchmarked model; results marked estimated are inferred from the model's other results, not measured, and carry their uncertainty. For demanding or high-stakes tasks prefer the best-proven model; for easy, low-stakes tasks prefer an adequate cheaper one. Prefer newer models over older ones with similar results. Missing results are unknown, not weak.";
+
+/**
+ * One of `count` routes made together, for example parallel reviewers, which
+ * gain little from running the same model twice.
+ */
+export interface ParallelSlot {
+	/** This route's position among the routes made together, from 0. */
+	readonly index: number;
+	readonly count: number;
+}
+
+/** A model's family: the vendor line its name starts with, such as `claude`, `gpt` or `gemini`. */
+const modelFamily = (candidate: RankedCandidate) => modelEvidenceTokens(candidate.fastRouteOf ?? candidate.model)[0];
+
+/**
+ * Candidates for one slot of routes made together. Model families, in ranking
+ * order, are dealt to slots in turn, so every slot of the same task routes to
+ * a different family while each still gets a strong one. A slot left without
+ * a family, because fewer families are eligible than slots, keeps every candidate.
+ */
+function slotCandidates(ranked: readonly RankedCandidate[], slot: ParallelSlot | undefined): RankedCandidate[] {
+	if (slot === undefined || slot.count < 2) return [...ranked];
+	const families = [...new Set(ranked.map(modelFamily))];
+	const own = new Set(families.filter((_, position) => position % slot.count === slot.index % slot.count));
+	const kept = ranked.filter((candidate) => own.has(modelFamily(candidate)));
+	return kept.length > 0 ? kept : [...ranked];
+}
 
 const EVALS_BUDGET_ERROR =
 	"Auto routing requires a nonempty evals.md document. Repair the Atomic installation or select a concrete execution model.";
+
+let lastEvals: { readonly text: string; readonly catalog: EvalsCatalog } | undefined;
+
+/**
+ * The parsed catalog for this evals.md text, reused while the text is unchanged
+ * so the benchmark completion fitted on it is computed once per process.
+ */
+function parsedEvals(text: string): EvalsCatalog {
+	if (lastEvals?.text !== text) lastEvals = { text, catalog: parseEvalsCatalog(text) };
+	return lastEvals.catalog;
+}
 
 async function readModelSelectionEvals(signal?: AbortSignal): Promise<string> {
 	try {
@@ -161,6 +199,8 @@ export async function routeExecutionModel(input: {
 	 */
 	overrideProviderSettings?: boolean;
 	inference?: RoutingInferenceBounds;
+	/** This route is one of several made together; each slot prefers a different model family. */
+	parallelSlot?: ParallelSlot;
 }): Promise<ModelRoute> {
 	const { ctx, signal } = input;
 	signal?.throwIfAborted();
@@ -304,7 +344,7 @@ export async function routeExecutionModel(input: {
 			throw new AutoRoutingInferenceError(message, await currentModelRoute().catch(() => undefined));
 		};
 		const catalogEvals = await readModelSelectionEvals(signal)
-			.then(parseEvalsCatalog)
+			.then(parsedEvals)
 			.catch((error: unknown) => {
 				signal?.throwIfAborted();
 				return fallBackToCurrentModel(error instanceof Error ? error.message : String(error));
@@ -421,7 +461,10 @@ export async function routeExecutionModel(input: {
 			? permittedModels().filter((model) => !needs.needsImages || model.input.includes("image"))
 			: usable.map((entry) => entry.model);
 		const standings = rankCandidates(catalogEvals, reference.map(toCandidate), needs);
-		const ranked = standings.filter((candidate) => pairsFor.has(candidate.model));
+		const ranked = slotCandidates(
+			standings.filter((candidate) => pairsFor.has(candidate.model)),
+			input.parallelSlot,
+		);
 		const choiceState = {
 			agent,
 			needs: {

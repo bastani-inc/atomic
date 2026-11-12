@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `model: "auto"` now ranks models on all of the evaluation evidence Atomic ships instead of averaging standings over the few benchmarks each model happens to have. Results a model lacks are estimated from its other results across every evals table, each with an uncertainty, and models are ranked on a cautious estimate, so a model with one strong benchmark score no longer outranks models with broader, consistent results. Benchmarks are weighted by the task: long implementation leans on DeepSWE and FrontierCode, short terminal work and lookups on Terminal-Bench 4.0, and review on FrontierCode and security suites. The router's evidence for each option says which results are measured and which are estimated. Parallel `auto` stages can take different model families with the new `parallelSlot` stage option, and the builtin `ralph` workflow's two reviewers now do ([#4689](https://github.com/bastani-inc/atomic/issues/4689))
+
 ## [0.9.80] - 2026-11-12
 
 Embedding apps can pick storage adapters by package name, the UI shows less placeholder text, and Atomic no longer briefly locks your folder on Windows after it exits.
