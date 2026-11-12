@@ -251,6 +251,40 @@ describe("Coding Agent Tools", () => {
 			expect(output).toMatch(/\[Showing lines 1001-4000 of 4000\. Full output: /);
 			expect(output).not.toMatch(/^line-4001$/m);
 		});
+		it("should show the end of an over-long last line after a short line", async () => {
+			const longLine = `${"y".repeat(219_000)}END`;
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => {
+					const data = Buffer.from(`first line\n${longLine}\n`, "utf-8");
+					for (let i = 0; i < data.length; i += 8192) onData(data.subarray(i, i + 8192));
+					return { exitCode: 0 };
+				},
+			};
+			const bash = createBashTool(testDir, { operations });
+
+			const result = await bash.execute("test-call-long-last-line", { command: "grep -n x bundle.min.js" });
+			const output = getTextOutput(result);
+
+			expect(result.details?.truncation?.lastLinePartial).toBe(true);
+			expect(output).toContain("yyyyEND");
+			expect(output).toMatch(/\[Showing last 50\.0KB of line 2 /);
+		});
+		it("should drop a partial leading line when complete lines remain in the rolling tail", async () => {
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => {
+					const data = Buffer.from(`${"x".repeat(210_000)}\ncomplete final line\n`, "utf-8");
+					for (let i = 0; i < data.length; i += 8192) onData(data.subarray(i, i + 8192));
+					return { exitCode: 0 };
+				},
+			};
+			const bash = createBashTool(testDir, { operations });
+
+			const result = await bash.execute("test-call-clipped-leading-line", { command: "mixed-lines" });
+			const output = getTextOutput(result);
+
+			expect(output).toContain("complete final line");
+			expect(output).not.toContain("xxx");
+		});
 		it("should decode UTF-8 characters split across output chunks", async () => {
 			const euro = Buffer.from("€\n", "utf-8");
 			const operations: BashOperations = {
