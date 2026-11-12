@@ -54,10 +54,15 @@ const QWEN_PROVIDERS = {
 
 const TEXT_MODELS = [
 	"MiniMax-M2.5",
+	"deepseek-v4-flash-0731",
 	"deepseek-v4-pro",
+	"deepseek-v4-pro-0813",
+	"deepseek-v4.1-flash",
+	"deepseek-v4.1-flash-1017",
 	"glm-5",
 	"glm-5.1",
 	"glm-5.2",
+	"glm-5.3",
 	"kimi-k2.5",
 	"kimi-k2.6",
 	"kimi-k2.7-code",
@@ -219,7 +224,10 @@ describe("Qwen Token Plan models", () => {
 
 	it("keeps a per-plan key away from the other plan (#11773)", () => {
 		assert.equal(findEnvKeys("qwen-token-plan", { QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY: "test" }), undefined);
-		assert.equal(findEnvKeys("qwen-token-plan-individual-cn", { QWEN_TOKEN_PLAN_TEAM_CN_API_KEY: "test" }), undefined);
+		assert.equal(
+			findEnvKeys("qwen-token-plan-individual-cn", { QWEN_TOKEN_PLAN_TEAM_CN_API_KEY: "test" }),
+			undefined,
+		);
 		for (const envVar of [
 			"QWEN_TOKEN_PLAN_TEAM_API_KEY",
 			"QWEN_TOKEN_PLAN_TEAM_CN_API_KEY",
@@ -230,12 +238,13 @@ describe("Qwen Token Plan models", () => {
 		}
 	});
 
-	it.each(["qwen-token-plan", "qwen-token-plan-cn"] as const)("exposes all text models on %s", (provider) => {
-		const modelIds = getModels(provider).map((model) => model.id);
-		for (const expected of TEXT_MODELS) {
-			expect(modelIds, `${provider} should include ${expected}`).toContain(expected);
-		}
-	});
+	it.each(["qwen-token-plan", "qwen-token-plan-cn"] as const)(
+		"exposes exactly the documented Team text models on %s (#11773)",
+		(provider) => {
+			const modelIds = getModels(provider).map((model) => model.id);
+			assert.deepEqual(modelIds.sort(), [...TEXT_MODELS].sort());
+		},
+	);
 
 	it.each(["qwen-token-plan", "qwen-token-plan-cn"] as const)("omits image models from %s", (provider) => {
 		const modelIds = getModels(provider).map((model) => model.id);
