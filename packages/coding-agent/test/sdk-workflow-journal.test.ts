@@ -11,6 +11,7 @@ import { MemoryRunJournal } from "../../workflows/src/durable/journal/memory-run
 import { openSqlRunJournal } from "../../workflows/src/durable/journal/sqlite-run-journal.js";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
+import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk.js";
 import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.js";
@@ -324,6 +325,59 @@ test("createAgentSession rejects a set but invalid storage variable even with an
 		}
 	}
 });
+
+test(
+	"storage variables select an adapter by the name of a package the host loaded through the SDK (#4678)",
+	async () => {
+		const cwd = join(root, "project");
+		const agentDir = join(root, "agent");
+		const app = join(root, "app");
+		mkdirSync(join(app, "storage"), { recursive: true });
+		writeFileSync(
+			join(app, "package.json"),
+			JSON.stringify({ name: "@atomic-test/sdk-host-app", atomic: { storageAdapters: ["./storage/adapter.ts"] } }),
+		);
+		writeFileSync(
+			join(app, "storage", "adapter.ts"),
+			`import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
+export default { atomicStorageAdapter: 1 as const, openDatabase: (options: { readonly path?: string }) => openNodeSqliteDatabase(String(options.path)) };\n`,
+		);
+		const shared = join(root, "app-store.sqlite");
+		const selection = JSON.stringify({ adapter: "@atomic-test/sdk-host-app", options: { path: shared } });
+		vi.stubEnv("ATOMIC_SESSIONS_STORAGE", selection);
+		vi.stubEnv("ATOMIC_WORKFLOWS_JOURNAL", selection);
+		const settingsManager = SettingsManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			additionalExtensionPaths: [app],
+		});
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			settingsManager,
+			resourceLoader,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: WORKFLOWS_ONLY,
+		});
+		sessions.push(session);
+		const runId = await runProbe(session);
+		const database = new DatabaseSync(shared, { readOnly: true });
+		try {
+			const stored = database.prepare("SELECT id FROM session_sessions").all();
+			assert.deepEqual(
+				stored.map((row) => row.id),
+				[session.sessionId],
+			);
+		} finally {
+			database.close();
+		}
+		assert.deepEqual(await runIdsAt(shared), [runId]);
+	},
+	REAL_SDK_WORKFLOW_TIMEOUT_MS,
+);
 
 test(
 	"a relative ATOMIC_STORAGE path puts a custom agentDir session and its workflow runs in one database (#3783)",

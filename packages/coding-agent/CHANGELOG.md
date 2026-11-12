@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A storage `adapter` given as a package name, `<package>` or `<package>/<name>`, now also resolves from the package directories the process was given to load as code, with `--extension <dir>` or the SDK's `additionalExtensionPaths`, before the packages in settings and then the agent directory. An application that embeds Atomic can select the adapter listed in its own package's `storageAdapters` by name in settings, `--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE` and `ATOMIC_WORKFLOWS_JOURNAL`, instead of an absolute module path that breaks when the application is reinstalled elsewhere. Local workflow workers, child workflow processes and the Intercom broker receive the resolved module, so they open the same storage without loading that package ([#4678](https://github.com/bastani-inc/atomic/issues/4678))
+
 ## [0.9.79] - 2026-11-12
 
 Resuming long sessions is faster and keeps your tools and subagents, long workflow runs stay responsive, and interrupts and status messages are calmer.

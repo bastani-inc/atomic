@@ -65,7 +65,7 @@ A package can provide [storage adapters](/storage#selecting-an-adapter) with `st
 }
 ```
 
-Users select the adapter with the package name, for example `"storage": { "adapter": "@example/atomic-libsql" }`, or with `<package>/<name>` when the package lists several adapters, where `<name>` is the adapter file's name without its extension. Storage adapters are only read from the manifest, never from a convention directory, and only from packages in user settings. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
+Users select the adapter with the package name, for example `"storage": { "adapter": "@example/atomic-libsql" }`, or with `<package>/<name>` when the package lists several adapters, where `<name>` is the adapter file's name without its extension. Storage adapters are only read from the manifest, never from a convention directory, and only from packages in user settings or package directories the process was given as extension paths. An application that embeds Atomic and loads its own package with `additionalExtensionPaths: [packageRoot]` or `--extension <dir>` can select its adapter by its package name without installing the package; Atomic checks those packages before the ones in settings. See [Adapters from Atomic packages](/storage#adapters-from-atomic-packages).
 
 ### Gallery Metadata
 
