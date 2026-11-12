@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [0.9.79] - 2026-11-12
+
+Resuming long sessions is faster and keeps your tools and subagents, long workflow runs stay responsive, and interrupts and status messages are calmer.
+
+- **Faster, more faithful resume.** Resume shows its slow steps before the TUI appears, keeps the tools a session last ran with, brings back `subagent`, `workflow`, `todo` and MCP tools that were missing for a turn, stays in your own checkout instead of a snapshot worktree, and reaches a usable prompt sooner on long histories. Background subagents survive a reboot, and one that cannot be restored is reported with a ready call to relaunch it ([#4660](https://github.com/bastani-inc/atomic/issues/4660), [#4664](https://github.com/bastani-inc/atomic/pull/4664)).
+- **Long workflow runs stay light.** The graph overlay and progress widget no longer slow down as stages finish, finished stages you reopened leave memory again once their chat closes, and released stages share one Intercom connection per session ([#4642](https://github.com/bastani-inc/atomic/issues/4642), [#4659](https://github.com/bastani-inc/atomic/pull/4659)).
+- **Calmer interrupts and quieter status.** Ctrl+C clears typed text before stopping work and exits only on a second press from an empty, idle editor; an interrupted response ends with a muted `Interrupted by user` line instead of a red error; the compaction card names only the model, a policy-refusal summary is labeled `summary (fallback)`, and a successful interactive engine restart no longer prints a message ([#4670](https://github.com/bastani-inc/atomic/pull/4670), [#4673](https://github.com/bastani-inc/atomic/pull/4673)).
+- **Simpler `/tasks` details.** The "Foreground wait" action, which never changed how a task ran, is gone ([#4662](https://github.com/bastani-inc/atomic/issues/4662), [#4665](https://github.com/bastani-inc/atomic/pull/4665)).
+- **Upstream fixes.** MCP tools loaded by `tool_search` survive resume and `/reload`, `/export` links are clickable, the standalone binary resolves extension dependencies declared in `main` or `exports`, llama.cpp defaults to port 9931, and Anthropic message threads follow the `api.anthropic.com` endpoint ([#4663](https://github.com/bastani-inc/atomic/pull/4663)).
+
+### Added
+
+- Resuming lists its slow steps on the terminal before the TUI appears (`Loading the session history (0.6 s)…`, `Checking 6 checkouts against the session's snapshots…`, `Restoring … from snapshot …`), a history of 100,000 entries or more before it is read, and any other step that blocks the terminal as soon as it ends; quick resumes stay silent ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Interactive startup notes `Tools this session was using aren't available right now: <names>` when a tool the session was using, or one its tool selection names, is not registered once startup finishes, and `/tools` lists such tools under **Missing**; tools left out with `--tools`, `--no-tools` or `--no-extensions` are never listed ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+
+### Changed
+
+- Workflow activity frames from `ctx.observeWorkflowActivity` and `session.workflows.observe`, and `workflow_activity_changed` events, share their root graph's nodes as deep-frozen objects instead of cloning every node for every observer, so a change to a long run no longer costs a copy of its whole graph. Each frame still has its own root, graph and `nodes` array; copy a node before changing it ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Ctrl+C clears the editor first when it has text, even while a response is streaming; with an empty editor it stops running work at once, as Escape does. On an empty, idle editor the first press shows "Press Ctrl+C again to exit" and a second press within 0.8 s exits. Clearing text or stopping work never counts toward exiting, so a quick second press after clearing no longer quits Atomic ([#4670](https://github.com/bastani-inc/atomic/pull/4670))
+- A response you interrupt with Escape or Ctrl+C ends with a muted `Interrupted by user` line instead of a red provider message such as "This operation was aborted" or "Aborted after 2 retry attempts" ([#4670](https://github.com/bastani-inc/atomic/pull/4670))
+- The compaction card names only the model that compacted the context, such as `github-copilot/claude-opus-5.5`, instead of `planner · github-copilot/claude-opus-5.5`. A policy-refusal summary is headed `Context compacted · summary (fallback)` instead of `summary (pi fallback)` ([#4673](https://github.com/bastani-inc/atomic/pull/4673)).
+- An interactive engine that stops or stops responding and is restarted successfully no longer shows "Interactive engine stopped unexpectedly; restarting." or "Interactive engine is not responding; restarting."; the cause goes to the debug log. A restart that fails is still reported ([#4673](https://github.com/bastani-inc/atomic/pull/4673)).
+
+### Fixed
+
+- Fixed MCP tools loaded by `tool_search` being dropped on resume and `/reload` when an extension deactivates only its own tool at `session_start` (upstream [#12054](https://github.com/earendil-works/pi/pull/12054))
+- Fixed `/export` HTML showing raw terminal hyperlink escape codes around links in custom tool output; links are now clickable, other terminal escape sequences are dropped, and clicking a link no longer expands or collapses the output (upstream [#12052](https://github.com/earendil-works/pi/pull/12052))
+- Fixed the standalone binary failing to resolve extension npm dependencies whose entry point is declared in `package.json` `main` or `exports`, including imports made from inside other dependencies (upstream [#12046](https://github.com/earendil-works/pi/pull/12046))
+- Fixed the llama.cpp provider defaulting to port 8080 while `llama serve` listens on 9931; the default server URL is now `http://127.0.0.1:9931`, and the llama.cpp guide starts the router, including the NVIDIA RTX recipe router, with `llama serve` on that port (upstream [#12001](https://github.com/earendil-works/pi/pull/12001), [#12004](https://github.com/earendil-works/pi/pull/12004))
+- Fixed Anthropic message threads staying off for custom providers whose `baseUrl` is on `api.anthropic.com`; the default now follows the endpoint, not the provider ID (upstream [#11987](https://github.com/earendil-works/pi/issues/11987))
+- Fixed a later plain resume bringing back tools an earlier run left out with `--tools`, `--no-tools`, `--exclude-tools` or a `-name` modifier, so resumed sessions keep the tools they last ran with, as in upstream pi ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed a resumed session losing `subagent`, `workflow`, `todo` and MCP tools for good after one turn ran while they were not registered, for example while their extensions were still loading or had failed to load: such tools now come back on resume like in a new session, while a tool an extension or SDK caller turned off with `setActiveTools` stays off ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed resume moving a session into a snapshot worktree under `~/.atomic/agent/worktree-snapshots/worktrees/` when its own project checkout had only changed since the snapshot, for example after work was merged: the session continues in its checkout without a notice, and a session an earlier resume moved into such a worktree returns to its checkout when it did no work there since ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed resuming a long session walking its whole history again and again: the session's branch, worktree restores, latest snapshots and name are kept current as entries are added, and recorded checkouts are compared with their snapshots once each, several at a time. On a 200,000-entry session with six checkouts, time to a usable prompt dropped from about 10.4 s to about 6.3 s; about 2 s of that is the session no longer being moved into a restored worktree, and about 4 s remains in full-history parses that this change does not remove ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+- Fixed a startup step that fails, such as a tool status that cannot be read or extension loading that did not finish, holding back session recovery: the session keeps its tools and working directory and interrupted work is still recovered ([#4660](https://github.com/bastani-inc/atomic/issues/4660))
+
+### Removed
+
+- Removed the "Foreground wait" action and the `app.tasks.foreground` keybinding from the `/tasks` detail page. It only showed a passing `yielded` or `settled` line and briefly dropped the task from the running-tasks count; it never changed how the task ran or what the agent was told ([#4662](https://github.com/bastani-inc/atomic/issues/4662))
+- Removed the "Loading remote component…" line that briefly appeared while an interactive component drew its first frame ([#4670](https://github.com/bastani-inc/atomic/pull/4670))
+
 ## [0.9.79-alpha.2] - 2026-11-11
 
 Quieter session status messages.

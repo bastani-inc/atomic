@@ -4,6 +4,23 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.79] - 2026-11-12
+
+Released workflow stages share one broker connection, and hosted-session failures say why.
+
+- **One connection for released stages.** Finished workflow stages released from memory share one broker connection per session through the new hosted sessions API, keeping their names, post-mortem asks and plain-send relay. The next session of this version replaces an older running broker ([#4642](https://github.com/bastani-inc/atomic/issues/4642), [#4659](https://github.com/bastani-inc/atomic/pull/4659)).
+- **Clear hosted-session errors.** A send to a released stage whose peer is gone, or a hosting request the broker never answers, fails with a typed error that names the reason and, where it helps, the `workflow:` target to use ([#4642](https://github.com/bastani-inc/atomic/issues/4642), [#4659](https://github.com/bastani-inc/atomic/pull/4659)).
+
+### Added
+
+- Added hosted sessions: `IntercomClient.hostSessions` lists and routes many lightweight sessions over one broker connection, with typed `HostedSessionRequestError` and `NotHostedSessionError` refusals. The broker now speaks Intercom protocol 1 to 3, so the next session of this version replaces an older running broker ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Added the typed `StageRecipientReleasedError` (`recipient_stage_released`) for a send to a released workflow stage whose hosted peer is gone: it names why and points to the stage's `workflow:` target instead of answering `Session not found` ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+- Added the typed, retryable `IntercomHostedSessionTimeoutError` (`hosted_session_timeout`) for a hosting request the broker never answers ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
+### Fixed
+
+- Fixed each finished workflow stage that was released from memory keeping its own broker connection open for the rest of the session: released stages now share one connection per session, keeping their names, `closed · reply: post-mortem only` listing, post-mortem asks and plain-send relay ([#4642](https://github.com/bastani-inc/atomic/issues/4642))
+
 ## [0.9.79-alpha.1] - 2026-11-11
 
 ### Added
