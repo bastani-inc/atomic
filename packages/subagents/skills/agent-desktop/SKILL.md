@@ -20,6 +20,8 @@ If `agent-desktop` is not on `PATH`, make one bounded attempt to install it: `np
 
 `agent-desktop status` is the readiness check. On macOS, `permissions.accessibility` must be `granted`, and `screen_recording` too for `screenshot`: run `agent-desktop permissions --guide` and let the user approve it. Windows needs no grant for apps at the terminal's integrity level. On Linux, run inside the user's graphical session; an empty `supported_surfaces` means the AT-SPI bus did not answer. Never script around a consent dialog.
 
+Run `agent-desktop sandbox install` or `agent-desktop sandbox create` only when the user explicitly asks for a sandbox: they build a local VM host and can download a multi-gigabyte macOS image. Ask first otherwise.
+
 For web pages use `agent-browser`. For the web contents of a Chromium or Electron app you launch, `agent-desktop launch <app> --cdp` opens a debugging port that `agent-browser connect <port>` drives (see `commands-system`).
 
 ## Shell syntax

@@ -54,7 +54,7 @@ const agentDesktopUpstream = {
 	ref: "refs/tags/v1.3.0",
 	treeSha: "ef953179861334f07a7ec948f1d34401de17b9b0",
 } as const;
-const agentDesktopSkillBodySha256 = "dc0b31d6f25ad5932bd0cae74d4624c0ec51dc79cd69cc06e571d959605dbb8c";
+const agentDesktopSkillBodySha256 = "79f5c7734df27cf7f33de308dc0bc90e9d861eb541d138b2824f01f86d7b52de";
 const agentDesktopUpstreamSkillBodySha256 = "8306c49e2d17f9399704aba7ce5c6ca5d7a2b22b8de929bf5284063cbaf135cc";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
@@ -490,6 +490,7 @@ describe("synced upstream skill trees", () => {
 		assert.match(adaptation, /agent-desktop status/u);
 		assert.match(adaptation, /agent-desktop permissions --guide/u);
 		assert.match(adaptation, /do not run `npx skills add`/u);
+		assert.match(adaptation, /`agent-desktop sandbox create` only when the user explicitly asks/u);
 		assert.equal(
 			sha256(body.slice(0, start) + body.slice(end)),
 			agentDesktopUpstreamSkillBodySha256,
