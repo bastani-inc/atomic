@@ -95,8 +95,8 @@ const FIXTURES: Readonly<Record<string, Fixture>> = {
 	"resumable budget_exceeded stop": { run: budgetStop, label: "↑ blocked", color: statusColor("blocked", theme) },
 	paused: { run: paused, label: "❚❚ paused", color: statusColor("paused", theme) },
 	quit: { run: quit, label: "○ quit", color: statusColor("paused", theme) },
-	"resumed after a pause": { run: resumedAfterPause, label: "● resumed", color: statusColor("running", theme) },
-	"resumed from a stop": { run: resumedFromBlock, label: "● resumed", color: statusColor("running", theme) },
+	"resumed after a pause": { run: resumedAfterPause },
+	"resumed from a stop": { run: resumedFromBlock },
 	running: { run: running },
 };
 
@@ -217,13 +217,12 @@ for (const width of [WIDE, NARROW]) {
 		}
 	});
 
-	test(`renderHeader shows a resumed live run as ● resumed at ${width} columns (#4643)`, () => {
+	test(`renderHeader shows a resumed live run like any running run, with no resumed label, at ${width} columns`, () => {
 		for (const target of [resumedAfterPause, resumedFromBlock]) {
 			const lines = renderHeader(target, { width, theme });
 			assertVisibleWidths(lines, width);
-			assert.equal(pillBorder(lines), hexToAnsi(statusColor("running", theme)));
-			assert.ok(lines[1]!.includes(`${hexToAnsi(statusColor("running", theme))}● resumed`));
-			assert.match(plain(lines[1]!), /● resumed {2}✓ 1 {2}● 1 {2}$/);
+			assert.doesNotMatch(plain(lines[1]!), /resumed/);
+			assert.match(plain(lines[1]!), /✓ 1 {2}● 1 {2}$/);
 		}
 	});
 
@@ -286,7 +285,7 @@ test("renderHeader shows a multi-line exit reason on one line without terminal c
 	assert.equal(lines.join("").includes("\n"), false);
 });
 
-test("renderHeader shows resumed only while the resumed run is live (#4643)", () => {
+test("renderHeader never labels a run resumed, whatever its state", () => {
 	const completed = run({ ...resumedFromBlock, status: "completed", endedAt: NOW - 1_000 });
 	assert.doesNotMatch(headerMid(completed, WIDE), /resumed/);
 	assert.equal(pillBorder(renderHeader(completed, { width: WIDE, theme })), hexToAnsi(theme.success));
@@ -295,10 +294,13 @@ test("renderHeader shows resumed only while the resumed run is live (#4643)", ()
 	const blockedAgain = run({ ...budgetStop, resumeSource: "run_control", resumedFromRunId: RUN_ID });
 	assert.match(headerMid(blockedAgain, WIDE), /↑ blocked {2}✓ 1/);
 	assert.doesNotMatch(headerMid(blockedAgain, WIDE), /resumed/);
-	assert.match(headerMid({ ...running, resumeSource: "run_control" }, WIDE), /● resumed/);
-	assert.match(headerMid({ ...running, resumedFromRunId: RUN_ID }, WIDE), /● resumed/);
+	assert.doesNotMatch(headerMid({ ...running, resumeSource: "run_control" }, WIDE), /resumed/);
+	assert.doesNotMatch(headerMid({ ...running, resumedFromRunId: RUN_ID }, WIDE), /resumed/);
 	assert.doesNotMatch(headerMid({ ...running, resumeSource: "prompt_answer" }, WIDE), /resumed/);
-	assert.match(headerMid({ ...running, resumedAt: NOW - 1_000, resumeSource: "prompt_answer" }, WIDE), /● resumed/);
+	assert.doesNotMatch(
+		headerMid({ ...running, resumedAt: NOW - 1_000, resumeSource: "prompt_answer" }, WIDE),
+		/resumed/,
+	);
 	for (const status of ["failed", "killed", "cancelled", "pending"] as const) {
 		assert.equal(runStateIndicator({ ...resumedFromBlock, status, resumedAt: NOW - 1_000 }), undefined, status);
 	}
@@ -309,7 +311,8 @@ test("runStateIndicator classifies run-level states with the status glyphs (#464
 	assert.deepEqual(runStateIndicator(budgetStop), { kind: "blocked", glyph: "↑", text: "↑ blocked" });
 	assert.deepEqual(runStateIndicator(paused), { kind: "paused", glyph: "❚❚", text: "❚❚ paused" });
 	assert.deepEqual(runStateIndicator(quit), { kind: "quit", glyph: "○", text: "○ quit" });
-	assert.deepEqual(runStateIndicator(resumedFromBlock), { kind: "resumed", glyph: "●", text: "● resumed" });
+	assert.equal(runStateIndicator(resumedFromBlock), undefined);
+	assert.equal(runStateIndicator(resumedAfterPause), undefined);
 	assert.equal(runStateIndicator(running), undefined);
 	assert.equal(runStateIndicator(run({ status: "paused", exitReason: "quit", endedAt: NOW }))?.kind, "paused");
 	assert.equal(runStateIndicator(run({ status: "running", exitReason: "quit" })), undefined);
@@ -321,7 +324,6 @@ test("runStateIndicator classifies run-level states with the status glyphs (#464
 		["blocked", "blocked"],
 		["paused", "paused"],
 		["quit", "paused"],
-		["resumed", "running"],
 	] as const) {
 		assert.equal(runStateColor({ kind, glyph: "", text: "" }, theme), statusColor(status, theme), kind);
 	}
@@ -355,13 +357,13 @@ test("graph header, widget trailer, status list, picker and switcher agree on th
 
 test("the widget trailer leads with the run state and fits the width (#4643)", () => {
 	assert.equal(plain(widgetTrailer(blockedExit)), " ↑ blocked · 1/1 done");
-	assert.equal(plain(widgetTrailer(resumedFromBlock)), " ● resumed · 1/2 done · 1 running");
+	assert.equal(plain(widgetTrailer(resumedFromBlock)), " 1/2 done · 1 running");
 	assert.equal(plain(widgetTrailer(running)), " 1/2 done · 1 running");
 	const narrow = widgetTrailer(
-		run({ ...resumedFromBlock, stages: [stage("a", "running"), stage("b", "failed"), stage("c", "blocked")] }),
+		run({ ...paused, stages: [stage("a", "running"), stage("b", "failed"), stage("c", "blocked")] }),
 		NARROW,
 	);
-	assert.equal(plain(narrow), " ● resumed · 0/3 done · 1 running · 1 f…");
+	assert.equal(plain(narrow), " ❚❚ paused · 0/3 done · 1 running · 1 f…");
 });
 
 test("the picker shows the run state beside the elapsed time and keeps the row width (#4643)", () => {
@@ -380,7 +382,7 @@ test("the picker keeps the awaiting-input glyph for a resumed run waiting on a p
 	const { idRow, nameRow } = pickerRows(awaiting);
 	assert.ok(plain(idRow).startsWith(`│ ${statusIcon("awaiting_input")} `));
 	assert.ok(idRow.includes(hexToAnsi(statusColor("awaiting_input", theme))));
-	assert.ok(nameRow.includes(`${hexToAnsi(statusColor("running", theme))}● resumed`));
+	assert.doesNotMatch(plain(nameRow), /resumed/);
 });
 
 test("renderSwitcher titles its border with the run state and keeps narrow borders closed (#4643)", () => {
@@ -391,7 +393,7 @@ test("renderSwitcher titles its border with the run state and keeps narrow borde
 	assert.equal(plain(titled[0]!), `╭─ ↑ blocked ${"─".repeat(26)}╮`);
 	assert.ok(titled[0]!.includes(`${hexToAnsi(statusColor("blocked", theme))} ↑ blocked `));
 	assert.equal(plain(renderSwitcher(stages, state, { width: 40, theme })[0]!), `╭${"─".repeat(38)}╮`);
-	const tiny = renderSwitcher(stages, state, { width: 8, theme, runState: runStateIndicator(resumedFromBlock) });
-	assert.equal(plain(tiny[0]!), "╭─ ● re╮");
+	const tiny = renderSwitcher(stages, state, { width: 8, theme, runState: runStateIndicator(quit) });
+	assert.equal(plain(tiny[0]!), "╭─ ○ qu╮");
 	assert.equal(plain(tiny[0]!).length, 8);
 });
