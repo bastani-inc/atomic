@@ -14,6 +14,7 @@ const internalPackageNames = new Set(["@bastani/atomic-natives", "@bastani/pi-ai
 const defaultNpmRegistry = "https://registry.npmjs.org";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
+	["@google/genai@2.32.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 

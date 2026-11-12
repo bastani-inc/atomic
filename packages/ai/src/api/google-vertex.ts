@@ -10,6 +10,7 @@ import { calculateCost, clampThinkingLevel } from "../models.ts";
 import type {
 	Api,
 	AssistantMessage,
+	FetchFunction,
 	Model,
 	ProviderEnv,
 	ProviderHeaders,
@@ -97,13 +98,10 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 		};
 
 		try {
-			if (options?.fetch && options.fetch !== globalThis.fetch) {
-				throw new Error("Custom fetch is not supported by the Google Vertex adapter");
-			}
-			const apiKey = resolveApiKey(options);
+			const apiKey = options && resolveApiKey(options);
 			// Create the client using either a Vertex API key, if provided, or ADC with project and location
 			const client = apiKey
-				? createClientWithApiKey(model, apiKey, options?.headers, options?.identity)
+				? createClientWithApiKey(model, apiKey, options.headers, options.identity, options.fetch)
 				: createClient(
 						model,
 						resolveProject(options),
@@ -111,6 +109,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 						options?.headers,
 						options?.env,
 						options?.identity,
+						options?.fetch,
 					);
 			recordGoogleThinkingOffFallback(model, options, output, (level) =>
 				getGoogleBudget(model, level, options?.thinkingBudgets),
@@ -371,6 +370,7 @@ function createClient(
 	optionsHeaders?: ProviderHeaders,
 	env?: ProviderEnv,
 	identity?: ClientIdentity,
+	fetch?: FetchFunction,
 ): GoogleGenAI {
 	const googleAuthOptions = buildGoogleAuthOptions(env);
 	return new GoogleGenAI({
@@ -379,7 +379,7 @@ function createClient(
 		location,
 		apiVersion: API_VERSION,
 		...(googleAuthOptions ? { googleAuthOptions } : {}),
-		httpOptions: buildHttpOptions(model, optionsHeaders, identity),
+		httpOptions: buildHttpOptions(model, optionsHeaders, identity, fetch),
 	});
 }
 
@@ -388,12 +388,13 @@ function createClientWithApiKey(
 	apiKey: string,
 	optionsHeaders?: ProviderHeaders,
 	identity?: ClientIdentity,
+	fetch?: FetchFunction,
 ): GoogleGenAI {
 	return new GoogleGenAI({
 		vertexai: true,
 		apiKey,
 		apiVersion: API_VERSION,
-		httpOptions: buildHttpOptions(model, optionsHeaders, identity),
+		httpOptions: buildHttpOptions(model, optionsHeaders, identity, fetch),
 	});
 }
 
@@ -401,8 +402,9 @@ function buildHttpOptions(
 	model: Model<"google-vertex">,
 	optionsHeaders?: ProviderHeaders,
 	identity?: ClientIdentity,
-): HttpOptions | undefined {
-	const httpOptions: HttpOptions = {};
+	fetch?: FetchFunction,
+): HttpOptions {
+	const httpOptions: HttpOptions = { fetch: fetch ?? globalThis.fetch };
 	const baseUrl = resolveCustomBaseUrl(model.baseUrl);
 	if (baseUrl) {
 		httpOptions.baseUrl = baseUrl;
@@ -417,7 +419,7 @@ function buildHttpOptions(
 		httpOptions.headers = headers;
 	}
 
-	return Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
+	return httpOptions;
 }
 
 function resolveCustomBaseUrl(baseUrl: string): string | undefined {
@@ -507,6 +509,7 @@ function buildParams(
 		...(functionCallingMode !== undefined && {
 			toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
 		}),
+		automaticContinuation: false,
 	};
 
 	if (options.thinking?.enabled && model.reasoning) {

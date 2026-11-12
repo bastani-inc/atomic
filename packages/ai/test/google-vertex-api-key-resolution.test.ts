@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const googleGenAiMock = vi.hoisted(() => ({
@@ -47,7 +48,7 @@ vi.mock("@google/genai", () => {
 
 import { stream as streamGoogleVertex } from "../src/api/google-vertex.ts";
 import { getModel, normalizeContext } from "../src/compat.ts";
-import type { Model } from "../src/types.ts";
+import type { FetchFunction, Model } from "../src/types.ts";
 import { formatUserAgent } from "../src/utils/identity.ts";
 
 const PI_USER_AGENT = formatUserAgent();
@@ -157,6 +158,7 @@ describe("google-vertex api key resolution", () => {
 
 		expect(googleGenAiMock.constructorCalls).toHaveLength(1);
 		expect(googleGenAiMock.constructorCalls[0]?.httpOptions).toEqual({
+			fetch: globalThis.fetch,
 			headers: { "User-Agent": PI_USER_AGENT },
 		});
 	});
@@ -172,8 +174,53 @@ describe("google-vertex api key resolution", () => {
 
 		expect(googleGenAiMock.constructorCalls).toHaveLength(1);
 		expect(googleGenAiMock.constructorCalls[0]?.httpOptions).toEqual({
+			fetch: globalThis.fetch,
 			headers: { "User-Agent": "custom-agent" },
 		});
+	});
+
+	it("forwards custom fetch to the ADC client (#12097)", async () => {
+		const customFetch: FetchFunction = async () => new Response("{}");
+		const stream = streamGoogleVertex(model, context, {
+			project: "test-project",
+			location: "us-central1",
+			fetch: customFetch,
+		});
+
+		await stream.result();
+
+		assert.equal(googleGenAiMock.constructorCalls.length, 1);
+		assert.deepEqual(googleGenAiMock.constructorCalls[0]?.httpOptions, {
+			fetch: customFetch,
+			headers: { "User-Agent": PI_USER_AGENT },
+		});
+	});
+
+	it("uses globalThis.fetch when options are omitted on the ADC client (#12097)", async () => {
+		const previousProject = process.env.GOOGLE_CLOUD_PROJECT;
+		const previousLocation = process.env.GOOGLE_CLOUD_LOCATION;
+		process.env.GOOGLE_CLOUD_PROJECT = "test-project";
+		process.env.GOOGLE_CLOUD_LOCATION = "us-central1";
+		try {
+			await streamGoogleVertex(model, context).result();
+
+			assert.equal(googleGenAiMock.constructorCalls.length, 1);
+			assert.deepEqual(googleGenAiMock.constructorCalls[0]?.httpOptions, {
+				fetch: globalThis.fetch,
+				headers: { "User-Agent": PI_USER_AGENT },
+			});
+		} finally {
+			if (previousProject === undefined) {
+				delete process.env.GOOGLE_CLOUD_PROJECT;
+			} else {
+				process.env.GOOGLE_CLOUD_PROJECT = previousProject;
+			}
+			if (previousLocation === undefined) {
+				delete process.env.GOOGLE_CLOUD_LOCATION;
+			} else {
+				process.env.GOOGLE_CLOUD_LOCATION = previousLocation;
+			}
+		}
 	});
 
 	it("forwards custom baseUrl to the ADC client", async () => {
