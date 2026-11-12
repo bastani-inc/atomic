@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test } from "vitest";
-import type { ExtensionFactory } from "../src/core/extensions/index.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { stripAnsi } from "../src/utils/ansi.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { stripAnsi } from "../src/utils/ansi.js";
 import {
 	createGate,
 	createRig,
@@ -13,8 +13,8 @@ import {
 	type Rig,
 	releaseOpenGates,
 	waitFor,
-} from "./helpers/busy-submission-rig.ts";
-import { pressAltEnter } from "./helpers/interactive-submission-host.ts";
+} from "./helpers/busy-submission-rig.js";
+import { pressAltEnter } from "./helpers/interactive-submission-host.js";
 
 /** An `input` hook that holds `text`, as a session busy with other work delays it. */
 function slowInputHook(gate: Gate, text: string): ExtensionFactory {

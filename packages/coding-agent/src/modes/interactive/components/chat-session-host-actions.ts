@@ -478,7 +478,8 @@ type QueuedChatSessionMessage = ChatSessionHostState<never>["unconfirmedQueuedMe
  * Queue a message typed while the agent works, showing it as queued from submit rather than from the session's
  * `queue_update` (#4696). The session confirms it only after its input hooks and earlier submissions, on an event loop
  * the agent's own work, such as a running subagent, shares. The copy goes once the session answers or lists it. A
- * refused message is reported by the caller and, when `restoreOnFailure`, given back to the editor.
+ * refused message is reported by the caller and, when `restoreOnFailure`, given back to the editor; one the session
+ * accepted is not, even when its turn fails afterwards.
  */
 async function queueChatSessionMessage<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
@@ -498,11 +499,17 @@ async function queueChatSessionMessage<TExtraEntry extends ChatTranscriptEntryLi
 		state.unconfirmedQueuedMessages = state.unconfirmedQueuedMessages.filter((message) => message !== shown);
 		state.requestRender?.();
 	};
+	// A message the session accepted was sent, even if its turn fails later, so it is never given back to the editor.
+	let accepted = false;
+	const answered = (success: boolean) => {
+		accepted ||= success;
+		settle();
+	};
 	try {
-		if (lane === "followUp") await queueChatSessionFollowUp(state, text, settle);
-		else await queueChatSessionSteer(state, text, settle);
+		if (lane === "followUp") await queueChatSessionFollowUp(state, text, answered);
+		else await queueChatSessionSteer(state, text, answered);
 	} catch (err) {
-		if (restoreOnFailure && !state.disposed) {
+		if (restoreOnFailure && !accepted && !state.disposed) {
 			const typedSince = state.inputBuffer;
 			setChatSessionEditorText(state, typedSince.length === 0 ? text : `${text}\n${typedSince}`);
 		}
@@ -548,7 +555,7 @@ function addedQueueEntries(before: readonly string[], after: readonly string[]):
 async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
-	onAnswered?: () => void,
+	onAnswered?: (success: boolean) => void,
 ): Promise<void> {
 	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
 		await state.commands.submitUserMessage(text, "auto");
@@ -570,7 +577,7 @@ async function queueChatSessionSteer<TExtraEntry extends ChatTranscriptEntryLike
 async function queueChatSessionFollowUp<TExtraEntry extends ChatTranscriptEntryLike>(
 	state: ChatSessionHostState<TExtraEntry>,
 	text: string,
-	onAnswered?: () => void,
+	onAnswered?: (success: boolean) => void,
 ): Promise<void> {
 	if (classifyChatCommand(text) === "skill" && state.commands.submitUserMessage) {
 		await state.commands.submitUserMessage(text, "followUp");

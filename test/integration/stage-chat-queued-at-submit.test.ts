@@ -56,7 +56,7 @@ for (const { lane, key, row, queue } of lanes) {
 		const fixture = await createStageSkillFixture({
 			extensionFactories: [slowInputHook(entered, releaseInput.promise)],
 		});
-		let turn: Promise<unknown> | undefined;
+		let turn: Awaited<ReturnType<typeof holdStage>>["turn"] | undefined;
 		try {
 			({ turn } = await holdStage(fixture, releaseTurn.promise));
 			const view = fixture.mount();
@@ -80,10 +80,52 @@ for (const { lane, key, row, queue } of lanes) {
 	});
 }
 
+test("a stage chat keeps a message the stage accepted out of the composer when its turn fails later (#4696)", async () => {
+	const releaseTurn = Promise.withResolvers<void>();
+	const fixture = await createStageSkillFixture();
+	let turn: Awaited<ReturnType<typeof holdStage>>["turn"] | undefined;
+	try {
+		({ turn } = await holdStage(fixture, releaseTurn.promise));
+		const view = fixture.mount();
+		const fail = Promise.withResolvers<void>();
+		const session = fixture.stage.session;
+		const prompt = session.prompt.bind(session);
+		session.prompt = async (text, options) => {
+			if (text !== TYPED) return prompt(text, options);
+			options?.preflightResult?.(true, "started");
+			await fail.promise;
+			throw new Error("the turn failed after it started");
+		};
+
+		submitStageSkillText(view, TYPED, "\r");
+		assert.deepEqual(queuedRows(view), [], "the stage answered at once, so nothing is left queued");
+
+		fail.resolve();
+		await vi.waitFor(() =>
+			assert.match(
+				view
+					.render(120)
+					.map((line) => stripAnsi(line))
+					.join("\n"),
+				/the turn failed after it started/,
+			),
+		);
+		const rendered = view
+			.render(120)
+			.map((line) => stripAnsi(line))
+			.join("\n");
+		assert.doesNotMatch(rendered, new RegExp(`❯ ${TYPED}`), "a sent message must not come back to be sent twice");
+	} finally {
+		releaseTurn.resolve();
+		await turn;
+		await fixture.cleanup();
+	}
+});
+
 test("a stage chat stops showing a refused message as queued and gives it back to the composer (#4696)", async () => {
 	const releaseTurn = Promise.withResolvers<void>();
 	const fixture = await createStageSkillFixture();
-	let turn: Promise<unknown> | undefined;
+	let turn: Awaited<ReturnType<typeof holdStage>>["turn"] | undefined;
 	try {
 		({ turn } = await holdStage(fixture, releaseTurn.promise));
 		const view = fixture.mount();
@@ -107,6 +149,7 @@ test("a stage chat stops showing a refused message as queued and gives it back t
 			.join("\n");
 		assert.match(rendered, /the stage refused the message/);
 		assert.match(rendered, new RegExp(`❯ ${TYPED}`), "the message is back in the composer");
+		assert.equal(rendered.split(TYPED).length - 1, 1, "and only once");
 	} finally {
 		releaseTurn.resolve();
 		await turn;
