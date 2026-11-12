@@ -54,6 +54,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/internal.?error/i,
 	/connection.?error/i,
 	/connection.?lost/i,
+	/connection.?closed/i,
 	/connection.?reset/i,
 	/ECONNRESET/i,
 	/other side closed/i,
