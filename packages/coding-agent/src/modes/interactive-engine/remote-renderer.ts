@@ -11,7 +11,8 @@ type RemoteRenderCommand = Extract<InteractiveEngineCommand, { type: "engine_too
 
 let nextRemoteRendererId = 0;
 
-const LOADING_LINES = ["Loading isolated renderer…"];
+/** A row the engine has not rendered yet draws nothing, rather than a placeholder that flickers in and out. */
+const NOT_RENDERED_YET: string[] = [];
 
 /**
  * How many rows' last frames are kept, by row identity (a tool call, a custom message), to repaint rebuilt rows. A chat
@@ -55,7 +56,7 @@ function jsonValue(value: unknown): JsonValue {
 
 abstract class RemoteRenderer implements Component {
 	protected readonly componentId = `remote_renderer_${++nextRemoteRendererId}`;
-	private lines = LOADING_LINES;
+	private lines = NOT_RENDERED_YET;
 	private width = 0;
 	private requestId = 0;
 	private appliedRequestId = 0;
@@ -102,7 +103,7 @@ abstract class RemoteRenderer implements Component {
 			this.dirty = false;
 			// A row rebuilt for a row the engine already rendered paints its last frame until the fresh one arrives.
 			const identity = this.frameIdentity();
-			if (this.lines === LOADING_LINES) this.lines = recentFrames.get(identity) ?? LOADING_LINES;
+			if (this.lines === NOT_RENDERED_YET) this.lines = recentFrames.get(identity) ?? NOT_RENDERED_YET;
 			this.requestIdentities.set(++this.requestId, identity);
 			this.runtime.sendEngineCommand(this.command(this.requestId, width));
 		}

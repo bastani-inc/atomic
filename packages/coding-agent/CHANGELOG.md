@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the "Loading isolated renderer…" line that appeared in a tool result or extension message row until the interactive engine drew it. The row now draws nothing until its first frame arrives, like other engine-drawn components.
+
 ## [0.9.79] - 2026-11-12
 
 Resuming long sessions is faster and keeps your tools and subagents, long workflow runs stay responsive, and interrupts and status messages are calmer.
