@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed one child's setup failure, such as `Supervisor authorization timeout`, turning a whole parallel subagent call into a single error: that child is now reported as not started with its error, the other children run to completion and report their own results, and the call fails only when no child started. The parallel card keeps a row per child, shows each failed child's error on one line (in full when expanded), and its header counts the outcomes, for example `subagent parallel (5) · 4 done · 1 failed` ([#4697](https://github.com/bastani-inc/atomic/issues/4697))
+
 ## [0.9.79] - 2026-11-12
 
 Background subagents survive a reboot, and one that cannot be restored comes with a ready relaunch call.
