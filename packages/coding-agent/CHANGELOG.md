@@ -2,9 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.80] - 2026-11-12
+
+Embedding apps can pick storage adapters by package name, the UI shows less placeholder text, and Atomic no longer briefly locks your folder on Windows after it exits.
+
+- **Pick an embedded app's storage adapter by name.** An application that embeds Atomic can select the adapter from its own package by name in settings, flags and environment variables, so the configuration survives reinstalling the app in a different location ([#4678](https://github.com/bastani-inc/atomic/issues/4678), [#4679](https://github.com/bastani-inc/atomic/pull/4679)).
+- **Fewer temporary labels.** Tool and extension message rows no longer show "Loading isolated renderer…" before their first frame, and a running workflow run that was resumed no longer carries a `● resumed` label ([#4681](https://github.com/bastani-inc/atomic/pull/4681), [#4680](https://github.com/bastani-inc/atomic/pull/4680)).
+- **No leftover folder lock on Windows.** Cleaning up released session history no longer holds your working directory open after Atomic exits, so you can delete or rename it right away ([#4655](https://github.com/bastani-inc/atomic/issues/4655), [#4684](https://github.com/bastani-inc/atomic/pull/4684)).
+
+### Added
+
+- A storage `adapter` given as a package name, `<package>` or `<package>/<name>`, now also resolves from the package directories the process was given to load as code, with `--extension <dir>` or the SDK's `additionalExtensionPaths`, before the packages in settings and then the agent directory. An application that embeds Atomic can select the adapter listed in its own package's `storageAdapters` by name in settings, `--storage`, `--storage-file`, `ATOMIC_STORAGE`, `ATOMIC_SESSIONS_STORAGE` and `ATOMIC_WORKFLOWS_JOURNAL`, instead of an absolute module path that breaks when the application is reinstalled elsewhere. Local workflow workers, child workflow processes and the Intercom broker receive the resolved module, so they open the same storage without loading that package ([#4678](https://github.com/bastani-inc/atomic/issues/4678))
+
 ### Fixed
 
-- On Windows, the background check that cleans up released session history no longer starts PowerShell in your working directory, so it can no longer keep that folder locked for a moment after Atomic exits.
+- On Windows, the background check that cleans up released session history no longer starts PowerShell in your working directory, so it can no longer keep that folder locked for a moment after Atomic exits ([#4655](https://github.com/bastani-inc/atomic/issues/4655), [#4684](https://github.com/bastani-inc/atomic/pull/4684))
+
+### Removed
+
+- Removed the "Loading isolated renderer…" line that appeared in a tool result or extension message row until the interactive engine drew it. The row now draws nothing until its first frame arrives, like other engine-drawn components ([#4681](https://github.com/bastani-inc/atomic/pull/4681)).
 
 ## [0.9.80-alpha.1] - 2026-11-12
 
