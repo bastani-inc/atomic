@@ -92,7 +92,7 @@ type CompactionEndEvent = {
 	midTurn?: boolean;
 	manualTakeoverPending?: boolean;
 	background?: true;
-	cacheMiss?: { expectedMissedTokens: number; expectedMissedCost: number };
+	cacheMiss?: { expectedMissedTokens: number; expectedMissedCost: number; expectedRebilledCost?: number };
 };
 type AgentEndEvent = { type: "agent_end" };
 type AgentContinueErrorEvent = {
@@ -400,11 +400,12 @@ describe("InteractiveMode compaction events", () => {
 				aborted: false,
 				willRetry: false,
 				background: true,
-				cacheMiss: { expectedMissedTokens: 41_000, expectedMissedCost: 0.1234 },
+				cacheMiss: { expectedMissedTokens: 41_000, expectedMissedCost: 0.1234, expectedRebilledCost: 0.1371 },
 			});
 
 			const text = renderedText(chatContainer);
-			const notice = "Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.123)";
+			const notice =
+				"Prompt cache miss expected after background compaction: 41,000 tokens re-billed ($0.137, $0.123 more than a cache hit)";
 			if (showCacheMissNotices) {
 				assert.ok(text.includes(notice));
 				assert.ok(text.indexOf("✻ Context compacted") < text.indexOf(notice));

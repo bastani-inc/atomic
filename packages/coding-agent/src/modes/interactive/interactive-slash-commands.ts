@@ -1,4 +1,4 @@
-import { computeCacheWaste, createCacheMissModelSource } from "../../core/cache-stats.ts";
+import { computeCacheWaste, createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
 import {
 	compareWorktreeSnapshot,
 	currentWorktreeSnapshots,
@@ -502,8 +502,7 @@ InteractiveModeBase.prototype.handleSessionCommand = function (this: Interactive
 	if (promptTokens > 0)
 		info += `${theme.fg("dim", "Cache Hit Rate:")} ${((cacheRead / promptTokens) * 100).toFixed(1)}%\n`;
 	const waste = computeCacheWaste(entries, createCacheMissModelSource(this.session.modelRuntime));
-	if (waste.missCount > 0)
-		info += `${theme.fg("dim", "Wasted Cache Cost:")} $${waste.missedCost.toFixed(4)} (${waste.missCount} misses)\n`;
+	if (waste.missCount > 0) info += `${theme.fg("dim", "Wasted Cache Cost:")} ${formatCacheWaste(waste)}\n`;
 
 	if (stats.cost > 0) {
 		info += `\n${theme.bold("Cost")}\n`;
