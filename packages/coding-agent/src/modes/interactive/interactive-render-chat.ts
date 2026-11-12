@@ -1,6 +1,6 @@
 import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
 import { CONFIG_DIR_NAME } from "../../config.js";
-import { collectCacheMisses, createCacheMissModelSource, describeCacheMissCause } from "../../core/cache-stats.ts";
+import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { stripVerbatimCompactionPrefix } from "../../core/messages.ts";
 import { serviceTierWarnings } from "../../core/service-tier-warnings.ts";
@@ -585,17 +585,7 @@ InteractiveModeBase.prototype.renderSessionEntries = function (
 			sessionEntries,
 			createCacheMissModelSource(this.session.modelRuntime),
 		).values()) {
-			const cause = describeCacheMissCause(miss);
-			this.chatContainer.addChild(
-				new Text(
-					theme.fg(
-						"warning",
-						`Prompt cache miss${cause}: ${miss.missedTokens.toLocaleString()} tokens re-billed ($${miss.missedCost.toFixed(3)})`,
-					),
-					1,
-					0,
-				),
-			);
+			this.chatContainer.addChild(new Text(theme.fg("warning", formatCacheMissNotice(miss)), 1, 0));
 		}
 	}
 	for (const input of deferredInputs) this.renderDeferredUserInput(input);
