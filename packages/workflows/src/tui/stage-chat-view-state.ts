@@ -630,8 +630,10 @@ export function isStreaming(ctx: StageChatViewContext): boolean {
 	return ctx.chatHost.isStreaming();
 }
 
+/** Whether Escape interrupts the stage's turn: it streams, or its session waits out a retry's backoff between attempts. */
 export function isAbortableStreamingSession(ctx: StageChatViewContext): boolean {
-	return isLiveHandleStreaming(ctx) || liveHandle(ctx)?.agentSession?.isStreaming === true;
+	const agentSession = liveHandle(ctx)?.agentSession;
+	return isLiveHandleStreaming(ctx) || agentSession?.isStreaming === true || agentSession?.isRetrying === true;
 }
 
 export function isBlocked(ctx: StageChatViewContext): boolean {

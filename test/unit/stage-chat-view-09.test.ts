@@ -365,6 +365,45 @@ describe("StageChatView", () => {
 		view.dispose();
 	});
 
+	test("Escape pauses a stage waiting out a retry's backoff, as its footer offers (#4690)", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a", "running");
+		const agentSession = Object.assign(fakeFooterAgentSession(false), { isRetrying: true });
+		const { handle, state } = makeHandle(
+			{ promptCalls: [], steerCalls: [], followUpCalls: [], pauseCalls: 0, resumeCalls: [], isStreaming: false },
+			[],
+			"running",
+			agentSession,
+		);
+		let closed = 0;
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			footerData: {
+				getGitBranch: () => "main",
+				getExtensionStatuses: () => new Map(),
+				getAvailableProviderCount: () => 1,
+				onBranchChange: () => () => {},
+			},
+			onDetach: () => {},
+			onClose: () => {
+				closed += 1;
+			},
+		});
+
+		assert.match(stripAnsi(view.render(120).join("\n")), /esc to interrupt/);
+		view.handleInput("\x1b");
+		await flush();
+		await flush();
+		assert.equal(closed, 0);
+		assert.equal(state.pauseCalls, 1);
+		view.dispose();
+	});
+
 	test("inherits custom message renderers from parent chat settings", () => {
 		const store = createStore();
 		setupRun(store, "run-1", "stage-a");
