@@ -170,7 +170,7 @@ test("computer-use guides route desktop apps to agent-desktop and never to PyAut
 			`${name} promises a resume the engine never does`,
 		);
 	}
-	assert.match(skills, /vercel-labs\/agent-desktop\/tree\/v1\.2\.0\/skills\/agent-desktop/);
+	assert.match(skills, /vercel-labs\/agent-desktop\/tree\/v1\.3\.0\/skills\/agent-desktop/);
 	assert.match(skills, /Apache-2\.0 licensed/);
 });
 

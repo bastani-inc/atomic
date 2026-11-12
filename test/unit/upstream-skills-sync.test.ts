@@ -41,8 +41,8 @@ const liteparseAdaptations: ReadonlyArray<readonly [atomic: string, canonical: s
 ];
 const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df93835d9a206bae6958c5e3c841c";
 
-// vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.2.0 (tree
-// 4647b3cc9b929688002a9ae0f3bdd983898e049b) is a discovery stub; its references are
+// vercel-labs/agent-desktop `skills/agent-desktop` at tag v1.3.0 (tree
+// ef953179861334f07a7ec948f1d34401de17b9b0) is a discovery stub; its references are
 // compiled into the CLI and printed by `agent-desktop skills get`, so only SKILL.md
 // is vendored. Its frontmatter is Atomic-owned and its body carries one documented
 // adaptation: the "Install and permissions" section. Removing that section must
@@ -51,11 +51,11 @@ const liteparseCanonicalSkillSha256 = "c4982f937fe569cd109801e9c6f0bd80219df9383
 const agentDesktopUpstream = {
 	repo: "https://github.com/vercel-labs/agent-desktop",
 	path: "skills/agent-desktop",
-	ref: "refs/tags/v1.2.0",
-	treeSha: "4647b3cc9b929688002a9ae0f3bdd983898e049b",
+	ref: "refs/tags/v1.3.0",
+	treeSha: "ef953179861334f07a7ec948f1d34401de17b9b0",
 } as const;
-const agentDesktopSkillBodySha256 = "459f7f3d3b64332bb999bb2cbe6627aa744bc74747ff2f5f466637fb7e4284ac";
-const agentDesktopUpstreamSkillBodySha256 = "b175d7d504bdbf0d151c42c6894f666f0429dba48aebc220f1141f98627f7ee9";
+const agentDesktopSkillBodySha256 = "79f5c7734df27cf7f33de308dc0bc90e9d861eb541d138b2824f01f86d7b52de";
+const agentDesktopUpstreamSkillBodySha256 = "8306c49e2d17f9399704aba7ce5c6ca5d7a2b22b8de929bf5284063cbaf135cc";
 
 // pbakaus/impeccable authoritative `.pi/skills/impeccable` distribution:
 // skill-v4.8.2 at 035c8f319edd019936525a062fe99e83ca8d12c6 (engine 0.1.21)
@@ -478,7 +478,7 @@ describe("synced upstream skill trees", () => {
 		assert.doesNotMatch(readFileSync(join(liteparseSkill, "SKILL.md"), "utf8"), /effective-liteparse/u);
 	});
 
-	test("pins the agent-desktop v1.2.0 discovery stub with only its documented adaptation", () => {
+	test("pins the agent-desktop v1.3.0 discovery stub with only its documented adaptation", () => {
 		assert.deepEqual(collectFiles(agentDesktopSkill, [], agentDesktopSkill), ["SKILL.md"]);
 		const { frontmatter, body } = splitFrontmatter(canonicalText(readFileSync(join(agentDesktopSkill, "SKILL.md"))));
 		assert.equal(sha256(body), agentDesktopSkillBodySha256, "agent-desktop SKILL.md body drifted");
@@ -490,6 +490,7 @@ describe("synced upstream skill trees", () => {
 		assert.match(adaptation, /agent-desktop status/u);
 		assert.match(adaptation, /agent-desktop permissions --guide/u);
 		assert.match(adaptation, /do not run `npx skills add`/u);
+		assert.match(adaptation, /`agent-desktop sandbox create` only when the user explicitly asks/u);
 		assert.equal(
 			sha256(body.slice(0, start) + body.slice(end)),
 			agentDesktopUpstreamSkillBodySha256,
