@@ -163,12 +163,16 @@ test("each option describes itself with this kind of work's results, standings a
 		released: "2026-09-20, among the newest",
 		price: "high: $10 / $50 per million tokens",
 		reads_images: true,
-		coding: "top 10% of models with the same benchmark and source (Terminal-Bench 4.0 60%)",
+		coding:
+			"top 10% of benchmarked models on a cautious estimate for this work, above 100% of them (measured: Terminal-Bench 4.0 60%)",
 		overall: "top 10% of models with the same benchmark and source (AA Intelligence Index 60)",
 	});
 	const old = JSON.parse(describeOption(ranked.find((c) => c.model === "p/old")!, needs("hard", "high"), ranked));
 	assert.equal(old.released, "2025-09-01, 13 months older than the newest");
-	assert.equal(old.coding, "bottom quarter of models with the same benchmark and source (Terminal-Bench 4.0 10%)");
+	assert.equal(
+		old.coding,
+		"bottom quarter of benchmarked models on a cautious estimate for this work, above 0% of them (measured: Terminal-Bench 4.0 10%)",
+	);
 });
 
 test("a model's standing is the same however few other models are eligible", () => {
@@ -188,7 +192,10 @@ test("with two eligible models a demanding task still ranks the better-benchmark
 	const ranked = rankCandidates(catalog, [model("strong", 10), model("cheap", 0.1)], needs("very_hard", "severe"));
 	assert.equal(ranked[0]?.model, "p/strong");
 	const option = JSON.parse(describeOption(ranked[1]!, needs("very_hard", "severe"), ranked));
-	assert.equal(option.coding, "below median of models with the same benchmark and source (Terminal-Bench 4.0 12%)");
+	assert.equal(
+		option.coding,
+		"below median of benchmarked models on a cautious estimate for this work, above 33.3% of them (measured: Terminal-Bench 4.0 12%)",
+	);
 });
 
 test("results shared by fewer than four benchmarked models are quoted without a standing", () => {
@@ -337,7 +344,10 @@ test("published results are ranked only against results from the same source", (
 	const a = ranked.find((candidate) => candidate.model === "p/a")!;
 	assert.equal(a.workStanding, 0, "A's 60% from another setup does not lift it above the vendor-harness results");
 	const d = JSON.parse(describeOption(ranked.find((candidate) => candidate.model === "p/d")!, science, ranked));
-	assert.match(d.math_science, /^top 10% of models with the same benchmark and source \(/u);
+	assert.match(
+		d.math_science,
+		/^top 10% of benchmarked models on a cautious estimate for this work, above 100% of them \(/u,
+	);
 });
 
 test("vendor DeepSWE evidence informs coding choices without borrowing another reporter's standing", () => {
@@ -385,4 +395,139 @@ test("shipped Sol 6.1 rankings retain effort, unknown metrics and independent sc
 	assert.equal(sol.values.has("aa:GPQA"), false);
 	assert.equal(sol.values.has("dswe:Pass@1"), false);
 	assert.equal(sol.values.has("pub:ARC3@ARC Prize"), false);
+});
+
+const shippedCatalog = async () =>
+	parseEvalsCatalog(
+		await readText(fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url))),
+	);
+
+test("one strong Terminal-Bench score no longer outranks long-task coding evidence on hard coding (#4689)", async () => {
+	const evals = await shippedCatalog();
+	const ids = ["gemini-4-carbon", "claude-fable-5.2", "claude-opus-5.5", "gpt-6-astra", "gpt-6.1-sol"];
+	const ranked = rankCandidates(
+		evals,
+		ids.map((id) => model(id, 4)),
+		needs("hard", "high"),
+	);
+	const find = (id: string) => ranked.find((candidate) => candidate.model === `p/${id}`)!;
+	const carbon = find("gemini-4-carbon");
+	assert.equal(carbon.longTaskEvidence, undefined, "Carbon has no DeepSWE or FrontierCode result");
+	assert.equal(ranked.at(-1), carbon, "it ranks behind every model with long-task evidence");
+	for (const id of ids.slice(1)) assert.equal(find(id).longTaskEvidence, true);
+	assert.deepEqual(carbon.estimate?.measured, ["aa:TB4"], "Carbon's only coding result at high is Terminal-Bench 4.0");
+});
+
+test("a model enters the long-task group once a DeepSWE or FrontierCode result exists for it (#4689)", async () => {
+	const document = await readText(
+		fileURLToPath(new URL("../../packages/coding-agent/docs/models/evals.md", import.meta.url)),
+	);
+	const ids = ["gemini-4-carbon", "claude-sonnet-5.5"];
+	const rank = (text: string) =>
+		rankCandidates(
+			parseEvalsCatalog(text),
+			ids.map((id) => model(id, 2)),
+			needs("hard", "high"),
+		);
+	assert.equal(rank(document)[0]?.model, "p/claude-sonnet-5.5");
+	const measured = document.replace(
+		/^(\| claude-opus-5-5 \| Opus 5\.5 \| medium \|.*)$/mu,
+		"$1\n| gemini-4-carbon | Gemini 4 Carbon | high | 50.0 | 55.0 | 62.0 | 68.0 | 0.0 | $1.00 |",
+	);
+	assert.notEqual(measured, document);
+	const ranked = rank(measured);
+	assert.equal(ranked.find((candidate) => candidate.model === "p/gemini-4-carbon")?.longTaskEvidence, true);
+	assert.equal(ranked[0]?.model, "p/gemini-4-carbon", "within the group the score orders them again");
+});
+
+test("GPT-6.1 Sol at high outranks Claude Sonnet 5.5 at high on hard coding (#4689)", async () => {
+	const ranked = rankCandidates(
+		await shippedCatalog(),
+		[
+			{ ...model("gpt-6.1-sol", 2), efforts: ["high"] },
+			{ ...model("claude-sonnet-5.5", 2), efforts: ["high"] },
+		],
+		needs("hard", "high"),
+	);
+	assert.deepEqual(
+		ranked.map((candidate) => [candidate.model, candidate.effort]),
+		[
+			["p/gpt-6.1-sol", "high"],
+			["p/claude-sonnet-5.5", "high"],
+		],
+	);
+});
+
+test("a model with no evidence cannot win on missing data, even when it is cheaper (#4689)", async () => {
+	const evals = await shippedCatalog();
+	const ranked = rankCandidates(
+		evals,
+		[model("unbenchmarked-model", 1), model("claude-opus-5.5", 4), model("gpt-6.1-sol", 2)],
+		needs("hard", "high"),
+	);
+	assert.equal(ranked.at(-1)?.model, "p/unbenchmarked-model");
+	assert.equal(ranked.at(-1)?.workStanding, undefined);
+	assert.equal(ranked.at(-1)?.estimate, undefined);
+});
+
+test("long implementation leans on DeepSWE and FrontierCode, short terminal work on Terminal-Bench 4.0 (#4689)", () => {
+	// [model, terminal skill, implementation skill]: Terminal-Bench measures the first, DeepSWE and FrontierCode the second.
+	const skills = [
+		["terminal", 9, 3],
+		["builder", 3, 9],
+		["m1", 6, 6],
+		["m2", 5, 4],
+		["m3", 4, 5],
+		["m4", 2, 2],
+		["m5", 7, 5],
+		["m6", 5, 7],
+		["m7", 1, 3],
+		["m8", 3, 1],
+	] as const;
+	const shaped = parseEvalsCatalog(
+		[
+			"## Artificial Analysis Intelligence Index",
+			"| slug | Model | Release date | TB4 | TB21 |",
+			"| --- | --- | --- | ---: | ---: |",
+			...skills.map(([id, terminal]) => `| ${id} | ${id} | 2026-09-01 | ${terminal * 8} | ${terminal * 7 + 20} |`),
+			"",
+			"## DeepSWE v1.1",
+			"| slug | Model | Effort | Pass@1 |",
+			"| --- | --- | --- | ---: |",
+			...skills.map(([id, , implementation]) => `| ${id} | ${id} | max | ${implementation * 8} |`),
+			"",
+			"## FrontierCode 1.1",
+			"| slug | Model | Effort | Main |",
+			"| --- | --- | --- | ---: |",
+			...skills.map(([id, , implementation]) => `| ${id} | ${id} | max | ${implementation * 6} |`),
+		].join("\n"),
+	);
+	const pair = [model("terminal", 2), model("builder", 2)];
+	assert.equal(rankCandidates(shaped, pair, needs("very_hard", "high"))[0]?.model, "p/builder");
+	assert.equal(
+		rankCandidates(shaped, pair, { ...needs("easy", "high"), latencySensitive: true })[0]?.model,
+		"p/terminal",
+	);
+	assert.equal(
+		rankCandidates(shaped, pair, { ...needs("moderate", "high"), work: "codebase_lookup" })[0]?.model,
+		"p/terminal",
+	);
+	assert.equal(
+		rankCandidates(shaped, pair, { ...needs("moderate", "high"), work: "code_review" })[0]?.model,
+		"p/builder",
+		"review leans on FrontierCode",
+	);
+});
+
+test("the router sees which results are estimated rather than measured (#4689)", async () => {
+	const evals = await shippedCatalog();
+	const task = needs("hard", "high");
+	const ranked = rankCandidates(evals, [model("gemini-4-carbon", 2), model("gpt-6-astra", 10)], task);
+	const describe = (id: string) =>
+		JSON.parse(describeOption(ranked.find((candidate) => candidate.model === `p/${id}`)!, task, ranked)).coding;
+	assert.match(
+		describe("gemini-4-carbon"),
+		/cautious estimate for this work, above [\d.]+% of them \(measured: Terminal-Bench 4\.0 65\.2% measured with high effort; estimated from its other results, not measured: DeepSWE about [\d.]+% ± [\d.]+ points; FrontierCode about [\d.]+% ± [\d.]+ points\)$/u,
+	);
+	assert.doesNotMatch(describe("gpt-6-astra"), /estimated from/u, "a fully measured model has nothing estimated");
 });
