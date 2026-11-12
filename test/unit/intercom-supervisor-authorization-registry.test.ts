@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import type { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { type IntercomClient, SupervisorAuthorizationTimeoutError } from "../../packages/intercom/broker/client.js";
+import { IntercomBrokerTimeoutError } from "../../packages/intercom/recoverable-disconnect.js";
 import { SupervisorAuthorizationRegistry } from "../../packages/intercom/supervisor-authorization-registry.js";
 
 test("parent registry restores the same child capability against a new broker supervisor id", async () => {
@@ -113,5 +114,47 @@ test("a child released while a reconnect is re-authorizing it is not brought bac
 		},
 	} as IntercomClient;
 	await registry.restore(racing);
+	assert.equal(registry.size, 0);
+});
+
+function timingOutClient(timeouts: Error[], calls: string[] = []): IntercomClient {
+	return {
+		async authorizeSupervisorChild(childName: string) {
+			calls.push(childName);
+			const error = timeouts.shift();
+			if (error) throw error;
+			return { childName, capability: `${childName}.capability`, supervisorSessionId: "owner" };
+		},
+	} as IntercomClient;
+}
+
+test("an authorization that timed out while the broker stayed healthy is asked once more (#4697)", async () => {
+	const registry = new SupervisorAuthorizationRegistry();
+	const calls: string[] = [];
+	const client = timingOutClient([new SupervisorAuthorizationTimeoutError()], calls);
+	const authorization = await registry.authorize("subagent-echo-run-3", async () => client);
+	assert.equal(authorization.capability, "subagent-echo-run-3.capability");
+	assert.deepEqual(calls, ["subagent-echo-run-3", "subagent-echo-run-3"]);
+	assert.equal(registry.size, 1);
+});
+
+test("a second timeout, or a broker that failed its health check, is not retried (#4697)", async () => {
+	const registry = new SupervisorAuthorizationRegistry();
+	const twice: string[] = [];
+	await assert.rejects(
+		registry.authorize("subagent-twice", async () =>
+			timingOutClient([new SupervisorAuthorizationTimeoutError(), new SupervisorAuthorizationTimeoutError()], twice),
+		),
+		{ message: "Supervisor authorization timeout" },
+	);
+	assert.equal(twice.length, 2);
+	const unhealthy: string[] = [];
+	await assert.rejects(
+		registry.authorize("subagent-unhealthy", async () =>
+			timingOutClient([new IntercomBrokerTimeoutError("Supervisor authorization timeout")], unhealthy),
+		),
+		IntercomBrokerTimeoutError,
+	);
+	assert.equal(unhealthy.length, 1);
 	assert.equal(registry.size, 0);
 });

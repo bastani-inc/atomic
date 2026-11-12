@@ -141,7 +141,7 @@ test("background receipt is readable without changing model-facing task identity
 test("parallel receipts identify each sibling and preserve errors at narrow widths", () => {
 	initTheme("dark");
 	const context = { toolCallId: "parallel-ui", state: {}, invalidate() {} };
-	renderSubagentToolCall(
+	const header = renderSubagentToolCall(
 		{
 			tasks: [
 				{ agent: "reader", task: "Read" },
@@ -187,8 +187,11 @@ test("parallel receipts identify each sibling and preserve errors at narrow widt
 		stripVTControlCharacters(
 			renderSubagentToolResult(result, { expanded, isPartial: false }, theme, context).render(80).join("\n"),
 		);
-	assert.match(text(false), /2 agent tasks/);
 	assert.match(text(false), /├─.*reader/);
+	assert.equal(
+		stripVTControlCharacters(header.render(80).join("\n")).trimEnd(),
+		"subagent parallel (2) · 1 running · 1 failed",
+	);
 	assert.match(text(false), /└─.*checker/);
 	assert.match(text(false), /Check failed/);
 	assert.doesNotMatch(text(false), /task-a/);

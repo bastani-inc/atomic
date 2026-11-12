@@ -28,6 +28,53 @@ type RenderContext = Parameters<typeof renderLiveSubagentResult>[3] & {
 type ThemeColor = Parameters<Theme["fg"]>[0];
 
 const renderRequests = new WeakMap<object, SubagentParamsLike>();
+/** The settled per-child counts a parallel result reported, shown on its call header (#4697). */
+const parallelSummaries = new WeakMap<object, string>();
+
+/** Outcome categories, in the order the header lists them. */
+const OUTCOME_CATEGORIES = [
+	{ key: "running", color: "accent" },
+	{ key: "done", color: "success" },
+	{ key: "failed", color: "error" },
+	{ key: "stopped", color: "warning" },
+	{ key: "skipped", color: "dim" },
+] as const satisfies ReadonlyArray<{ key: string; color: ThemeColor }>;
+type OutcomeCategory = (typeof OUTCOME_CATEGORIES)[number]["key"];
+
+function outcomeCategory(color: ThemeColor): OutcomeCategory {
+	if (color === "accent") return "running";
+	if (color === "success") return "done";
+	if (color === "error") return "failed";
+	return "stopped";
+}
+
+function parallelSummary(categories: readonly OutcomeCategory[], theme: Theme): string {
+	return OUTCOME_CATEGORIES.flatMap(({ key, color }) => {
+		const count = categories.filter((category) => category === key).length;
+		return count ? [`${theme.fg("dim", " · ")}${theme.fg(color, `${count} ${key}`)}`] : [];
+	}).join("");
+}
+
+/** One line cut to the width it is drawn at, ending in `…` when cut. */
+class OneLine implements Component {
+	constructor(private readonly text: string) {}
+	invalidate(): void {}
+	render(width: number): string[] {
+		return [truncateToWidth(this.text, width, "…")];
+	}
+}
+
+/** A parallel call header that reads its result's counts when drawn, after the result renderer recorded them. */
+class ParallelCallHeader implements Component {
+	constructor(
+		private readonly heading: string,
+		private readonly state: object,
+	) {}
+	invalidate(): void {}
+	render(width: number): string[] {
+		return new Text(`${this.heading}${parallelSummaries.get(this.state) ?? ""}`, 0, 0).render(width);
+	}
+}
 const displayText = (text: string) =>
 	text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
 
@@ -80,15 +127,21 @@ export function renderSubagentToolCall(args: SubagentParamsLike, theme: Theme, c
 		);
 	}
 	if (burst) {
-		return new Text(`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${burst.taskCount})`, 0, 0);
+		return new ParallelCallHeader(
+			`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${burst.taskCount})`,
+			context.state,
+		);
 	}
-	const isParallel = (args.tasks?.length ?? 0) > 0;
-	const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
+	if ((args.tasks?.length ?? 0) > 0) {
+		const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
+		return new ParallelCallHeader(
+			`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`,
+			context.state,
+		);
+	}
 	// Truncation adds full ANSI resets even to plain text; remove them before styling so the host background survives.
 	return new Text(
-		isParallel
-			? `${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`
-			: `${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", displayText(args.agent || "?"))}${args.task ? `\n${theme.fg("muted", displayText(truncateToWidth(displayText(args.task), 100)))}` : ""}`,
+		`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", displayText(args.agent || "?"))}${args.task ? `\n${theme.fg("muted", displayText(truncateToWidth(displayText(args.task), 100)))}` : ""}`,
 		0,
 		0,
 	);
@@ -171,14 +224,22 @@ export function renderSubagentToolResult(
 						),
 					]
 				: [];
-		const lines = outcomes.map((outcome, index) => {
+		const rows = outcomes.map((outcome, index): { line: string; error?: string; category: OutcomeCategory } => {
+			const identity = labels[index];
+			const name = outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
 			if (outcome.kind === "unstarted")
-				return theme.fg(
-					"error",
-					outcome.reason.kind === "rejected"
-						? `✗ ${index + 1}. Not started · ${displayText(outcome.reason.error.message)}`
-						: `○ ${index + 1}. Skipped`,
-				);
+				// #4697: a child that failed to start keeps its own row; its siblings report theirs.
+				return outcome.reason.kind === "rejected"
+					? {
+							line: theme.fg("error", `✗ ${name}Not started`),
+							error: outcome.reason.error.message,
+							category: "failed",
+						}
+					: { line: theme.fg("dim", `○ ${name}Skipped`), category: "skipped" };
+			const failure =
+				outcome.observation.kind === "settled" && outcome.observation.result.kind === "failed"
+					? outcome.observation.result.message
+					: undefined;
 			const observation = outcome.observation;
 			const task = result.details?.taskRecords?.find((task) => task.ref.taskId === observation.taskId);
 			const childId = task?.launchOperationId;
@@ -192,11 +253,8 @@ export function renderSubagentToolResult(
 			if (record) {
 				const view = childStateView(record);
 				const resumed = record.taskId !== undefined && record.taskId !== observation.taskId ? " · resumed" : "";
-				const identity = labels[index];
-				const name =
-					outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
 				const transcript = options.expanded ? subagentChildTranscript(context.state, record) : undefined;
-				return [
+				const line = [
 					theme.fg(view.color, `${view.icon} ${name}${view.label}${resumed}`),
 					theme.fg(
 						"dim",
@@ -212,6 +270,11 @@ export function renderSubagentToolResult(
 						? transcript.map((line) => `\n   ${theme.fg("muted", `│ ${displayText(line)}`)}`).join("")
 						: "",
 				].join("");
+				return {
+					line,
+					...(view.color === "error" && failure ? { error: failure } : {}),
+					category: outcomeCategory(view.color),
+				};
 			}
 			const state =
 				observation.kind === "yielded"
@@ -243,8 +306,6 @@ export function renderSubagentToolResult(
 						: observation.result.kind === "completed"
 							? "success"
 							: "warning";
-			const identity = labels[index];
-			const name = outcomes.length > 1 ? `${index + 1}. ${identity ? displayText(identity.agent) : "Agent"} · ` : "";
 			const summary = theme.fg(color, `${icon} ${name}${state}`);
 			const model = theme.fg(
 				"dim",
@@ -253,24 +314,31 @@ export function renderSubagentToolResult(
 			const metadata = options.expanded
 				? theme.fg("dim", `\n   ${observation.taskId}${identity?.task ? ` · ${displayText(identity.task)}` : ""}`)
 				: "";
-			const error =
-				observation.kind === "settled" && observation.result.kind === "failed"
-					? `\n   ${theme.fg("error", displayText(observation.result.message))}`
-					: "";
-			return summary + model + metadata + error;
+			return {
+				line: summary + model + metadata,
+				...(failure ? { error: failure } : {}),
+				category: outcomeCategory(color),
+			};
 		});
-		const heading = outcomes.length > 1 ? [theme.bold(`${outcomes.length} agent tasks`)] : [];
-		return new Text(
-			[
-				...heading,
-				...lines.map((line, index) =>
-					outcomes.length > 1 ? `${index === lines.length - 1 ? "└─" : "├─"} ${line}` : line,
+		if (outcomes.length > 1)
+			parallelSummaries.set(
+				context.state,
+				parallelSummary(
+					rows.map((row) => row.category),
+					theme,
 				),
-				theme.fg("dim", "/tasks to inspect output and manage tasks"),
-			].join("\n"),
-			0,
-			0,
-		);
+			);
+		const view = new Container();
+		for (const [index, row] of rows.entries()) {
+			const branch = outcomes.length > 1 ? `${index === rows.length - 1 ? "└─" : "├─"} ` : "";
+			view.addChild(new Text(`${branch}${row.line}`, 0, 0));
+			if (row.error === undefined) continue;
+			// Collapsed, an error is one truncated line; expanded shows all of it.
+			const error = `   ${theme.fg("error", displayText(row.error))}`;
+			view.addChild(options.expanded ? new Text(error, 0, 0) : new OneLine(error));
+		}
+		view.addChild(new Text(theme.fg("dim", "/tasks to inspect output and manage tasks"), 0, 0));
+		return view;
 	}
 	const text = result.content.find((part) => part.type === "text");
 	if (text?.type === "text" && text.text.startsWith("Executable agents:")) {

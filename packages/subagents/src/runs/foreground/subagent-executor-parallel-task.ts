@@ -134,12 +134,26 @@ export function runUnboundParallelTask(
 	return observed.promise.finally(() => options.intercomDetachSignal?.removeEventListener("abort", yieldQueued));
 }
 
+/** A child whose setup failed before it started: its own outcome, so its siblings still run and report (#4697). */
+function unstartedChildResult(task: TaskParam, error: unknown): SingleResult {
+	const message = error instanceof Error ? error.message : String(error);
+	return {
+		agent: task.agent,
+		task: task.task,
+		status: "error",
+		error: message,
+		messages: [],
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+		taskResponse: { kind: "unstarted", reason: { kind: "rejected", error: { code: "SpawnFailed", message } } },
+	};
+}
+
 export async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
 	const intercomDetachController = new AbortController();
 	const host = input.ctx.getAgentTaskHost?.();
 	// Admit observations independently; only actual execution holds a concurrency slot.
 	const schedule = input.schedule ?? createExecutionScheduler(input.concurrencyLimit);
-	return mapConcurrent(input.tasks, input.tasks.length, async (task, index) => {
+	const runChild = async (task: TaskParam, index: number): Promise<SingleResult> => {
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
@@ -347,5 +361,14 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				input.foregroundControl.updatedAt = Date.now();
 			}
 		});
+	};
+	return mapConcurrent(input.tasks, input.tasks.length, async (task, index) => {
+		try {
+			return await runChild(task, index);
+		} catch (error) {
+			// Cancelling the parent cancels the call; any other failure ends only this child.
+			if (input.signal.aborted) throw error;
+			return unstartedChildResult(task, error);
+		}
 	});
 }
