@@ -9,6 +9,8 @@ export const OUTBOUND_ASK_SETTLED_ENTRY = "intercom_ask_settled";
 
 export interface OutboundAsk {
 	readonly askId: string;
+	/** The Atomic session that asked; a fork inherits the entry but not the ask. */
+	readonly sessionId: string;
 	/** The target as the asker wrote it. */
 	readonly to: string;
 	/** The session the reply is expected from, as far as the asker knows. */
@@ -27,6 +29,8 @@ export interface OutboundAskRecord {
 interface OutboundAsksOptions {
 	readonly entries: () => Iterable<SessionEntry>;
 	readonly append: (customType: string, data: object) => Promise<void>;
+	/** The Atomic session these asks belong to. */
+	readonly sessionId: () => string | null;
 	readonly now?: () => number;
 }
 
@@ -35,6 +39,7 @@ function isOutboundAsk(value: unknown): value is OutboundAsk {
 	const ask = value as Partial<OutboundAsk>;
 	return (
 		typeof ask.askId === "string" &&
+		typeof ask.sessionId === "string" &&
 		typeof ask.to === "string" &&
 		typeof ask.recipientId === "string" &&
 		typeof ask.question === "string" &&
@@ -59,8 +64,8 @@ export class OutboundAsks {
 	constructor(private readonly options: OutboundAsksOptions) {}
 
 	/** Know about an ask before it is sent, so a reply racing the saved record is still framed as its reply. */
-	open(ask: Omit<OutboundAsk, "askedAt">): OutboundAsk {
-		const opened = { ...ask, askedAt: this.options.now?.() ?? Date.now() };
+	open(ask: Omit<OutboundAsk, "askedAt" | "sessionId">): OutboundAsk {
+		const opened = { ...ask, sessionId: this.options.sessionId() ?? "", askedAt: this.options.now?.() ?? Date.now() };
 		this.opened.set(ask.askId, opened);
 		return opened;
 	}
@@ -80,6 +85,19 @@ export class OutboundAsks {
 	find(askId: string): OutboundAskRecord | undefined {
 		const records = this.records();
 		return records.get(askId);
+	}
+
+	/**
+	 * The ask a message answers: it names the ask in `replyTo` and comes from the ask's recipient, by the session id the
+	 * broker authorized or by the name it was asked under. Another peer cannot answer someone else's ask.
+	 */
+	answeredBy(from: SessionInfo, message: Message): OutboundAskRecord | undefined {
+		if (message.replyTo === undefined || message.expectsReply === true) return undefined;
+		const record = this.find(message.replyTo);
+		if (record === undefined) return undefined;
+		const { recipientId, to } = record.ask;
+		const named = from.name !== undefined && from.name.toLowerCase() === to.trim().toLowerCase();
+		return from.id === recipientId || named ? record : undefined;
 	}
 
 	/** Asks still waiting for their reply, oldest first. */
@@ -112,9 +130,11 @@ export class OutboundAsks {
 		} catch {
 			entries = [];
 		}
+		const owner = this.options.sessionId();
 		for (const entry of entries) {
 			if (entry.type !== "custom") continue;
-			if (entry.customType === OUTBOUND_ASK_ENTRY && isOutboundAsk(entry.data)) asks.set(entry.data.askId, entry.data);
+			if (entry.customType === OUTBOUND_ASK_ENTRY && isOutboundAsk(entry.data) && entry.data.sessionId === owner)
+				asks.set(entry.data.askId, entry.data);
 			if (entry.customType === OUTBOUND_ASK_SETTLED_ENTRY) {
 				const data = entry.data as { askId?: unknown; state?: unknown } | undefined;
 				if (typeof data?.askId === "string" && isSettledState(data.state) && !states.has(data.askId)) {

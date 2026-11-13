@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@bastani/atomic";
 import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
+import { INTERCOM_SESSION_IDENTITY_ENTRY } from "./session-identity.js";
 import type { Message, SessionInfo } from "./types.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "./session-target.js";
 
@@ -157,12 +158,19 @@ export class ReplyTracker {
 
 /**
  * #4751: after a restart, the asks this session was sent and has not answered can still be answered. Their cards are
- * on the branch; a reply this session sent (`intercom_sent` with `replyTo`) marks one answered.
+ * on the branch; a reply this session sent (`intercom_sent` with `replyTo`) marks one answered. Only cards that arrived
+ * after this session first registered with Intercom count: a fork inherits its parent's cards, not its asks.
  */
-export function restorePendingInboundAsks(tracker: ReplyTracker, entries: Iterable<SessionEntry>): void {
+export function restorePendingInboundAsks(tracker: ReplyTracker, entries: Iterable<SessionEntry>, sessionId: string): void {
   const asks = new Map<string, IntercomContext>();
   const answered = new Set<string>();
+  let registered = false;
   for (const entry of entries) {
+    if (!registered) {
+      registered = entry.type === "custom" && entry.customType === INTERCOM_SESSION_IDENTITY_ENTRY &&
+        (entry.data as { sessionId?: unknown } | undefined)?.sessionId === sessionId;
+      continue;
+    }
     if (entry.type === "custom_message" && entry.customType === "intercom_message") {
       const details = entry.details as { from?: unknown; message?: unknown } | undefined;
       if (!isSessionInfo(details?.from) || !isMessage(details.message) || details.message.expectsReply !== true) continue;

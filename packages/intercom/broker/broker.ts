@@ -1935,6 +1935,12 @@ class IntercomBroker {
           flushHeldWrites(socket, held);
           // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
           this.pendingQuestions.restoreDormant(id, (sessionId) => this.sessions.has(sessionId));
+          for (const { question, peerName } of this.pendingQuestions.takeFailedWhileAway(id)) {
+            writeMessageIfOpen(socket, {
+              type: "peer_disconnected", replyTo: question.messageId, peerSessionId: question.targetSessionId,
+              ...(peerName === undefined ? {} : { peerName }),
+            });
+          }
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
@@ -3113,7 +3119,7 @@ class IntercomBroker {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
       this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
     } else {
-      if (ended) this.pendingQuestions.dropDormantForTarget(sessionId);
+      if (ended) this.pendingQuestions.failDormantForTarget(sessionId, departed.info.name);
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An

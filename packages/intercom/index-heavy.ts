@@ -319,10 +319,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const outboundAsks = new OutboundAsks({
     entries: sessionBranch,
     append: (customType, data) => pi.appendEntry(customType, data),
+    sessionId: () => currentSessionId,
   });
-  function outboundAskFor(message: Message): OutboundAskRecord | undefined {
-    if (message.replyTo === undefined || message.expectsReply === true) return undefined;
-    return outboundAsks.find(message.replyTo);
+  function outboundAskFor(from: SessionInfo, message: Message): OutboundAskRecord | undefined {
+    return outboundAsks.answeredBy(from, message);
   }
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   /**
@@ -680,7 +680,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
-    const ask = outboundAskFor(message);
+    const ask = outboundAskFor(from, message);
     if (ask !== undefined) return frameOutboundAskReply(rawEntry, ask);
     return isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : frameHistoricalSupervisorUpdate(rawEntry);
   }
@@ -751,7 +751,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       const admission = inboundDeliveries.admit(record.from, record.message);
       if (admission.kind !== "reserved") continue;
-      const askReply = outboundAskFor(record.message);
+      const askReply = outboundAskFor(record.from, record.message);
       if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, record.message.replyError === undefined ? "answered" : "failed");
       replyTracker.recordIncomingMessage(record.from, record.message);
       if (pendingIdleMessages.enqueue(entry)) queued += 1;
@@ -820,7 +820,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       return;
     }
     // #4751: a reply to one of this session's asks arrives as a message on its own thread; a refusal is a failed ask.
-    const askReply = outboundAskFor(message);
+    const askReply = outboundAskFor(from, message);
     if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, message.replyError === undefined ? "answered" : "failed");
     if (isDeliveryFeedback(message) && askReply === undefined) {
       // Correlated asks were resolved above. A refusal of a fire-and-forget
@@ -1136,12 +1136,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (!liveContext) return;
       const generation = runtimeGeneration;
       const entry = recipientClosedAskEntry(record.ask, { sessionId: notice.peerSessionId, ...(notice.peerName === undefined ? {} : { name: notice.peerName }) });
-      void outboundAsks.settle(record.ask.askId, "failed").then(() =>
-        retryStableDelivery({
+      // Saved like any arriving message first, so a restart before the card is written still shows it once.
+      void durableInbox.receive(entry.from, entry.message, undefined, () => {}).then(async (arrival) => {
+        if (arrival !== "fresh") return;
+        await retryStableDelivery({
           deliver: () => sendIncomingMessage(entry, "trigger", generation, false),
           isCurrent: () => Boolean(getLiveContext(liveContext, generation)),
-        }),
-      ).catch(() => {});
+        });
+        await outboundAsks.settle(record.ask.askId, "failed");
+      }).catch(() => {});
     });
     nextClient.on("peer_rebound", (notice: { replyTo: string; previousSessionId: string; sessionId: string }) => {
       if (client !== nextClient) return;
@@ -1956,7 +1959,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       replyTracker = bindWorkflowReplyTracker(ctx, replyTracker);
       // #4751: a restarted recipient can still answer the asks it was sent before the restart.
       try {
-        restorePendingInboundAsks(replyTracker, ctx.sessionManager.getBranch());
+        restorePendingInboundAsks(replyTracker, ctx.sessionManager.getBranch(), ctx.sessionManager.getSessionId());
       } catch {
         // A session without a readable branch has no earlier asks to restore.
       }

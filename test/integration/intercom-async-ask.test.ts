@@ -580,3 +580,57 @@ test("one workflow stage asks another and gets the reply as a message while it k
 	assert.ok(card?.content?.startsWith(`Reply to your ask ${askId} from ${stageNames.get("reviewer")}`), card?.content);
 	assert.match(card?.content ?? "", /safe to merge/);
 });
+
+test("only the asked recipient can answer an ask; another peer's message naming it is an ordinary message (#4751)", async () => {
+	const asker = await started({ name: "asker-spoof" });
+	await started({ name: "recipient-spoof" });
+	const stranger = await started({ name: "stranger-spoof" });
+
+	const asked = await asker.call({
+		action: "ask",
+		to: "recipient-spoof",
+		message: "who answers?",
+		wait: { kind: "background" },
+	});
+	const askId = String(asked.details.askId);
+	const spoofed = await stranger.call({
+		action: "send",
+		to: "asker-spoof",
+		message: "not your recipient",
+		replyTo: askId,
+	});
+	assert.equal(spoofed.isError, false, spoofed.content[0]?.text);
+	await until(() => asker.cards(/not your recipient/).length > 0, "the stranger's message arrives");
+	assert.equal(asker.cards(/^Reply to your ask/).length, 0);
+	assert.match(
+		(await asker.call({ action: "pending" })).content[0]?.text ?? "",
+		new RegExp(`${askId} → recipient-spoof`),
+	);
+});
+
+test("an asker that is away when its recipient ends gets the failed-ask message when it resumes (#4751)", async () => {
+	const first = await started({ name: "asker-away" });
+	const recipient = await started({ name: "recipient-ends-while-away", saved: false });
+
+	const asked = await first.call({
+		action: "ask",
+		to: "recipient-ends-while-away",
+		message: "still there later?",
+		wait: { kind: "background" },
+	});
+	const askId = String(asked.details.askId);
+	await questionArrives(recipient, "still there later\\?");
+	await first.shutdown();
+	await recipient.shutdown();
+
+	const resumed = session({ name: "asker-away", sessionId: first.sessionId, entries: first.entries });
+	await resumed.start("resume");
+	cleanups.push(() => resumed.shutdown());
+	assert.equal((await resumed.call({ action: "status" })).isError, false);
+	const [card] = await until(() => {
+		const cards = resumed.cards(/^Your ask .* failed/);
+		return cards.length > 0 ? cards : undefined;
+	}, "the resumed asker learns its recipient ended");
+	assert.ok(card?.content?.startsWith(`Your ask ${askId} to recipient-ends-while-away failed`));
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});

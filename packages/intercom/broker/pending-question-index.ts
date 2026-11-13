@@ -15,6 +15,7 @@ export class PendingQuestionIndex {
    * were kept. An ask has no expiry, so its route waits here for that session to register again under the same id.
    */
   private dormant: PendingQuestion[] = [];
+  private failedWhileAway: Array<{ readonly question: PendingQuestion; readonly peerName?: string }> = [];
 
   /** Keep questions whose peer is away until it is back. */
   keepDormant(questions: readonly PendingQuestion[]): void {
@@ -36,9 +37,26 @@ export class PendingQuestionIndex {
     return restored;
   }
 
-  /** Kept questions to a recipient whose session ended; their askers are away and learn nothing more of them. */
-  dropDormantForTarget(targetSessionId: string): void {
-    this.dormant = this.dormant.filter((question) => question.targetSessionId !== targetSessionId);
+  /**
+   * Kept questions to a recipient whose session ended. Their askers are away, so each keeps the failure until it is
+   * back to learn of it (#4751).
+   */
+  failDormantForTarget(targetSessionId: string, peerName: string | undefined): void {
+    this.dormant = this.dormant.filter((question) => {
+      if (question.targetSessionId !== targetSessionId) return true;
+      this.failedWhileAway.push({ question, ...(peerName === undefined ? {} : { peerName }) });
+      return false;
+    });
+    if (this.failedWhileAway.length > DORMANT_QUESTIONS_MAX)
+      this.failedWhileAway = this.failedWhileAway.slice(-DORMANT_QUESTIONS_MAX);
+  }
+
+  /** The asks of a returning asker whose recipient ended while it was away. */
+  takeFailedWhileAway(senderSessionId: string): Array<{ readonly question: PendingQuestion; readonly peerName?: string }> {
+    const taken = this.failedWhileAway.filter(({ question }) => question.senderSessionId === senderSessionId);
+    if (taken.length > 0)
+      this.failedWhileAway = this.failedWhileAway.filter(({ question }) => question.senderSessionId !== senderSessionId);
+    return taken;
   }
 
   private readonly parked = new Map<string, { ownerSessionId: string; questions: PendingQuestion[] }>();

@@ -327,7 +327,11 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   const ownOutboundAsks = deps.outboundAsks === undefined
-    ? new OutboundAsks({ entries: () => [], append: (customType, data) => pi.appendEntry(customType, data) })
+    ? new OutboundAsks({
+        entries: () => [],
+        append: (customType, data) => pi.appendEntry(customType, data),
+        sessionId: () => null,
+      })
     : undefined;
   const outboundAsks = (): OutboundAsks =>
     ownOutboundAsks ?? (typeof deps.outboundAsks === "function" ? deps.outboundAsks() : deps.outboundAsks!);
