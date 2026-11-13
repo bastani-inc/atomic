@@ -368,9 +368,15 @@ export async function exportWorkflowRuns(
 					listed.set(run.run_id, { source, run });
 				}
 			// A consolidation that moved a run between reading the catalog and opening the journal files leaves it only in
-			// a file the catalog did not name then: that copy is the run.
+			// a file the catalog did not name then: that copy is the run. A run whose named file could not be read is not
+			// taken from another file, which may hold an older copy an interrupted consolidation left behind.
+			const readable = new Set(sources.map((source) => source.shardId));
 			for (const source of sources)
-				for (const run of source.runs) if (!listed.has(run.run_id)) listed.set(run.run_id, { source, run });
+				for (const run of source.runs) {
+					const owner = owners?.get(run.run_id);
+					if (listed.has(run.run_id) || (owner !== undefined && !readable.has(owner))) continue;
+					listed.set(run.run_id, { source, run });
+				}
 			// A run whose journal file was read but does not hold it in the current tables is in the pre-0.9.38 format;
 			// the runs of a journal file that could not be read are covered by that file's own entry, and a root that is
 			// only reserved (no status yet) has nothing to export.
