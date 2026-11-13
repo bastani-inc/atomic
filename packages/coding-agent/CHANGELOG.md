@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed checking a worktree snapshot's remote URL for credentials taking quadratic time, so a crafted record with a very long remote could stall resume for seconds or minutes. The check is now linear, and it also strips credentials that contain `@` completely
+
 ## [0.9.85] - 2026-11-13
 
 Resumed sessions always open, and `/tree` navigation now sticks.
