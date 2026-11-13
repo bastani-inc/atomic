@@ -308,7 +308,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 	});
 
 	test("a second resume from a worktree Atomic restored still inherits the unchanged workspace: one repository identity, initialize ran once (#4588)", async () => {
-		const { clone } = await sandbox.remoteWithClone("two-hops", { "README.md": "hello\n" });
+		const { remote, clone } = await sandbox.remoteWithClone("two-hops", { "README.md": "hello\n" });
 		sandbox.write(
 			join(clone, ".atomic", "blueprint.yaml"),
 			forThisHost(`initialize: ${mark("initialize")}\nmaintenance: ${mark("maintenance")}\n`),
@@ -325,7 +325,7 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		});
 		assert.equal(capture.status, "captured");
 		if (capture.status !== "captured") throw new Error("unreachable");
-		assert.deepEqual(capture.snapshot.remotes, [], "a worktree restored from the object store has no remotes");
+		assert.deepEqual(capture.snapshot.remotes, [remote], "a restored worktree has the recorded remotes (#4732)");
 		await manager.appendWorktreeSnapshot(firstHop, capture.snapshot.id, capture.snapshot);
 		await removeRestoredWorktree(firstHop, { storeDir: sandbox.path("host") });
 
