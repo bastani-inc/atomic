@@ -15,7 +15,7 @@ const completed = Promise.withResolvers();
 const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth"), modelsPath: null, allowModelNetwork: false });
 await modelRuntime.setRuntimeApiKey("anthropic", "fixture", {});
 const settingsManager = SettingsManager.inMemory({ sessionSummary: { enabled: mode.startsWith("summary") }, retry: { enabled: false }, compaction: { enabled: false } });
-const options = { cwd, agentDir: cwd, modelRuntime, model: getModel("anthropic", "claude-sonnet-4-5"), settingsManager, sessionManager: SessionManager.inMemory(cwd), tools: [], builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } };
+const options = { cwd, agentDir: cwd, modelRuntime, model: getModel("anthropic", "claude-sonnet-4-5"), settingsManager, sessionManager: mode.startsWith("summary") ? await SessionManager.create(cwd, join(cwd, "sessions")) : SessionManager.inMemory(cwd), tools: [], builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false } };
 const active = new Set();
 const signals = [];
 let serial = 0;

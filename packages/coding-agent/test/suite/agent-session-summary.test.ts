@@ -486,8 +486,8 @@ describe("session summary generation", () => {
 		await runTwoTurns(harness);
 		await settle();
 
-		expect(summaryEntries(harness)).toHaveLength(0);
-		expect(harness.getPendingResponseCount()).toBe(1);
+		assert.equal(summaryEntries(harness).length, 0);
+		assert.equal(harness.getPendingResponseCount(), 1, "the summary response is never requested");
 	});
 
 	it("announces the saved summary so session stats can include its usage (#4726)", async () => {
@@ -504,8 +504,11 @@ describe("session summary generation", () => {
 		const summary = await waitForSummary(harness);
 
 		const announced = harness.eventsOfType("entry_appended").map((event) => event.entry);
-		expect(announced).toContainEqual(summary);
-		expect(summary.usage?.input ?? 0).toBeGreaterThan(0);
+		assert.deepEqual(
+			announced.filter((entry) => entry.type === "session_summary"),
+			[summary],
+		);
+		assert.ok((summary.usage?.input ?? 0) > 0, "the summary records its usage");
 	});
 
 	it("does not persist a summary once the conversation has outrun it", async () => {
