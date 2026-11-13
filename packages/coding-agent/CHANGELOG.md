@@ -6,6 +6,7 @@
 
 - Fixed `find` and `search` treating a glob directly after a filesystem root, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\*.ts`, as relative to the working directory; they now search that root ([#4707](https://github.com/bastani-inc/atomic/issues/4707))
 - Fixed `find` returning different results depending on which search engine ran: its fd fallback matched lowercase globs such as `*.ts` or `**/lib/*.ts` case-insensitively, while the native engine matched case-sensitively. Both now match case-sensitively on every platform ([#4708](https://github.com/bastani-inc/atomic/issues/4708))
+- Fixed RPC mode crashing with an unhandled `SessionClosed` error when a client sent `new_session` (or closed stdin) while the startup session was still starting its extensions; the startup bind now yields to the replacement or shutdown that closed its session ([#4711](https://github.com/bastani-inc/atomic/issues/4711))
 
 ## [0.9.81] - 2026-11-13
 
