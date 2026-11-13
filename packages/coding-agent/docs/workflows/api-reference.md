@@ -2464,12 +2464,12 @@ function listForkPoints(runId: string, options?: ListForkPointsOptions): AsyncIt
 interface ForkPoint {
   stagePath: string;
   sessionId?: string; // the stage's agent session, when it ran one
-  entryId?: string; // the last entry of that session
+  entryId?: string; // the entry that session continues from
   completedAt: number;
 }
 ```
 
-Lists the completed stages of a durable run that `forkRun` can fork from, in completion order. It only reads: the run is not claimed. `sessionId` and `entryId` are present for stages that ran an agent session and feed `forkFromSessionId` / `forkFromEntryId`; `entryId` is the last entry recorded in that session, which can be a label or other metadata entry rather than a message. Options select the journal (`journal`, `store`), the directory, and the `sourceSessionStore` that holds the run's stage sessions (omitted: the run's project store). Worker conversations absent from that store are read automatically from the journal. A session missing from both rejects with `ForkSessionNotFoundError`; a store that cannot be read rejects with the retryable `ForkSessionUnavailableError`. A nested run's id rejects with `ForkSourceNotFoundError` (`reason: "not-root"`) naming its root run.
+Lists the completed stages of a durable run that `forkRun` can fork from, in completion order. It only reads: the run is not claimed. `sessionId` and `entryId` are present for stages that ran an agent session and feed `forkFromSessionId` / `forkFromEntryId`; `entryId` is the entry that session continues from: its last entry, which can be a label or other metadata entry rather than a message, or the entry `/tree` last moved the session to without a summary. Options select the journal (`journal`, `store`), the directory, and the `sourceSessionStore` that holds the run's stage sessions (omitted: the run's project store). Worker conversations absent from that store are read automatically from the journal. A session missing from both rejects with `ForkSessionNotFoundError`; a store that cannot be read rejects with the retryable `ForkSessionUnavailableError`. A nested run's id rejects with `ForkSourceNotFoundError` (`reason: "not-root"`) naming its root run.
 
 ### Fork errors
 

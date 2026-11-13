@@ -837,11 +837,23 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 						options,
 					});
 					if (!result.cancelled && !result.aborted) {
+						// The engine moved its leaf. The chat, the tree cursor and `/clone` read the host's view (#3325).
+						await this.refreshSessionView();
 						this.sessionStats.reset();
 						this.sessionStats.refresh();
 					}
 					return result;
 				},
+			},
+			abortBranchSummary: {
+				configurable: true,
+				value: () =>
+					this.dispatchBestEffort(
+						"abort branch summary",
+						this.health.trackControlRequest(() =>
+							this.client.requestInternal<void>({ type: "abort_branch_summary" }),
+						),
+					),
 			},
 			reload: {
 				configurable: true,
