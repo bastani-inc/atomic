@@ -310,7 +310,10 @@ export function runWorktreeRestoreOutcomes(input: {
 	const { continuing, launchCwd } = input;
 	const leftHere =
 		continuing !== undefined &&
-		input.unrestored.some((checkout) => within(resolve(checkout.here), resolve(continuing)));
+		input.unrestored.some((checkout) =>
+			// Roots are Git's physical top levels: a directory reached through a link compares as the one it points at.
+			within(canonicalizeWorktreePath(checkout.here), canonicalizeWorktreePath(continuing)),
+		);
 	const launch = leftHere && launchCwd !== undefined && !existsSync(continuing);
 	const continuedIn = launch ? resolve(launchCwd) : undefined;
 	for (const checkout of input.unrestored) {

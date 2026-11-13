@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
 	currentWorktreeRestoreNotices,
 	isWorkspaceDriftError,
@@ -77,7 +86,12 @@ interface Observation {
  * A run on "node A" that wrote `state.txt` in its checkout, ran a stage, and stopped; `prepare` changes the clone before
  * the run starts. The checkout is then gone, as it is on another node.
  */
-async function runRecordedElsewhere(prepare: (clone: string) => Promise<void> = async () => {}, failures = 1) {
+async function runRecordedElsewhere(
+	prepare: (clone: string) => Promise<void> = async () => {},
+	failures = 1,
+	/** Run node A in the clone through a symbolic link to the directory that holds it. */
+	throughLink = false,
+) {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
 	const pushed = await sandbox.git(clone, "rev-parse", "HEAD");
 	await prepare(clone);
@@ -108,7 +122,12 @@ async function runRecordedElsewhere(prepare: (clone: string) => Promise<void> = 
 			return { ok: true };
 		},
 	});
-	const first = await run(definition, {}, { cwd: clone, durableBackend: fixture.backend, store, adapters });
+	let cwd = clone;
+	if (throughLink) {
+		symlinkSync(dirname(clone), sandbox.path("link"), "dir");
+		cwd = join(sandbox.path("link"), basename(clone));
+	}
+	const first = await run(definition, {}, { cwd, durableBackend: fixture.backend, store, adapters });
 	assert.equal(first.status, "failed");
 	const [boundary] = workflowSnapshotFrontier(
 		await listWorkflowSnapshotBoundaries(fixture.backend.snapshotJournal, first.runId),
@@ -138,6 +157,7 @@ async function runRecordedElsewhere(prepare: (clone: string) => Promise<void> = 
 	const removeCheckout = () => rmSync(clone, { recursive: true, force: true });
 	return {
 		clone,
+		cwd,
 		pushed,
 		runId: first.runId,
 		snapshot: boundary.snapshot,
@@ -257,6 +277,26 @@ describe("a workflow run's resume always resumes, restoring each checkout as wel
 		assert.deepEqual(observation!.notices, [outcome!.message]);
 		assert.deepEqual(restoredWorktrees(), []);
 	});
+
+	test.skipIf(process.platform === "win32")(
+		"without Git a run recorded in a directory reached through a link continues where its resume started (#4738)",
+		async () => {
+			const recorded = await runRecordedElsewhere(async () => {}, 1, true);
+			recorded.removeCheckout();
+			setWorktreeSnapshotGit(async () => {
+				throw missingGit();
+			});
+
+			const { result, status, failure } = await recorded.resume();
+
+			assert.equal(result.ok, true, result.ok ? "" : result.message);
+			assert.equal(status, "completed", String(failure));
+			assert.equal(recorded.observed[0]!.cwd, sandbox.root);
+			const handle = recorded.backend.getWorkflow(recorded.runId)!;
+			assert.equal(handle.invocationCwd, recorded.cwd);
+			assert.equal(handle.worktreeRestoreOutcomes?.[0]?.unrestored?.place, "launch");
+		},
+	);
 
 	test("without Git a direct run() given no directory continues in the process's directory (#4738)", async () => {
 		const recorded = await runRecordedElsewhere();
