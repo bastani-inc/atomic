@@ -41,7 +41,7 @@ test("#2884 stage skill suggestions use the attached catalog and source metadata
 	}
 });
 
-test("#2884 stage completion includes stage-cwd Tab paths but no @ file mentions", async () => {
+test("stage completion offers Tab paths and @ file mentions from the stage cwd (#2884, #4755)", async () => {
 	const fixture = await createStageSkillFixture();
 	try {
 		await writeFileEnsuringDir(
@@ -68,7 +68,10 @@ test("#2884 stage completion includes stage-cwd Tab paths but no @ file mentions
 				signal: new AbortController().signal,
 				force,
 			});
-			assert.deepEqual(mentions?.items ?? [], []);
+			assert.deepEqual(
+				mentions?.items.map((item) => item.value),
+				["@stage-only-marker.txt"],
+			);
 		}
 		assert.equal(fixture.userTexts().length, 1);
 		assert.equal(fixture.main.session.messages.length, 0);

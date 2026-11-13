@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed checking a worktree snapshot's remote URL for credentials taking quadratic time, so a crafted record with a very long remote could stall resume for seconds or minutes. The check is now linear, and it also strips credentials that contain `@` completely
+- Fixed a subagent's chat, opened from `/tasks`, having no autocomplete. Its prompt now offers `/tasks` and the subagent's own `/skill:` commands, and completes `@` file mentions and Tab paths in the subagent's working directory, from the same completion the workflow stage chat uses. A skill command typed there reaches the subagent expanded from its own skills ([#4755](https://github.com/bastani-inc/atomic/issues/4755))
 
 ## [0.9.85] - 2026-11-13
 

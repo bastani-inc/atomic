@@ -252,7 +252,7 @@ Mounted HIL and custom prompts take precedence: a `/skill:` answer is literal pr
 
 If inspection fails, the host displays the error and keeps your input for retry. It does not send the command to the model.
 
-`/tasks` is reserved for local task inspection; stage extensions cannot override it. Tab completes paths relative to the stage cwd; `@` file mentions are unavailable.
+`/tasks` is reserved for local task inspection; stage extensions cannot override it. `@` file mentions and Tab complete paths relative to the stage cwd.
 
 ## Monitor and Control Runs
 

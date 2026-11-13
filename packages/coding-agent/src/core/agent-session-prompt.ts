@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
 import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { processImage } from "../utils/image-process.ts";
 import { AgentSessionBusyError } from "./agent-session-busy-error.ts";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
@@ -43,7 +41,7 @@ import {
 	sessionQuitSignal,
 	trackSessionWork,
 } from "./session-lifecycle-work.ts";
-import { getSkillCatalog } from "./skill-catalog.ts";
+import { expandSkillCommand, getSkillCatalog } from "./skill-catalog.ts";
 import { ToolDetachmentError } from "./tool-detachment-errors.ts";
 
 const customPreparations = new WeakMap<AgentSession, Promise<void>>();
@@ -1068,38 +1066,9 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
  */
 
 export function _expandSkillCommand(this: AgentSession, text: string): string {
-	if (!text.startsWith("/skill:")) return text;
-
-	const spaceIndex = text.indexOf(" ");
-	const selector = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
-	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
-	const resolution = getSkillCatalog(this.resourceLoader).resolve(selector);
-	if (!resolution.ok) {
-		if (selector.includes("@")) {
-			this._extensionRunner.emitError({
-				extensionPath: `skill:${selector}`,
-				event: "skill_expansion",
-				error: resolution.message,
-			});
-		}
-		return text;
-	}
-	const { skill, id } = resolution.candidate;
-
-	try {
-		const content = readFileSync(skill.filePath, "utf-8");
-		const body = stripFrontmatter(content).trim();
-		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-		return args ? `${skillBlock}\n\n${args}` : skillBlock;
-	} catch (err) {
-		// Emit error like extension commands do
-		this._extensionRunner.emitError({
-			extensionPath: skill.filePath,
-			event: "skill_expansion",
-			error: err instanceof Error ? err.message : String(err),
-		});
-		return text; // Return original on error
-	}
+	return expandSkillCommand(getSkillCatalog(this.resourceLoader), text, (error) =>
+		this._extensionRunner.emitError({ extensionPath: error.path, event: "skill_expansion", error: error.message }),
+	);
 }
 
 async function queueUserInput(
