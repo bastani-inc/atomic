@@ -33,6 +33,8 @@ import {
 	buildSessionProjection,
 	buildSessionTree,
 	getBranchPath,
+	isLeafMoveEntry,
+	LEAF_MOVE_ENTRY_TYPE,
 } from "./session-manager-history.ts";
 import { listProjectSessions } from "./session-manager-list.ts";
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
@@ -688,11 +690,11 @@ export class SessionManager {
 		return this.byId.get(id);
 	}
 
-	/** Get all direct children of an entry. */
+	/** Get all direct children of an entry. Like `getTree()`, omits recorded leaf moves. */
 	getChildren(parentId: string): SessionEntry[] {
 		const children: SessionEntry[] = [];
 		for (const entry of this.byId.values()) {
-			if (entry.parentId === parentId) {
+			if (entry.parentId === parentId && !isLeafMoveEntry(entry)) {
 				children.push(entry);
 			}
 		}
@@ -789,6 +791,20 @@ export class SessionManager {
 	resetLeaf(): Promise<void> {
 		return this.runMutation(async () => {
 			this.leafId = null;
+		});
+	}
+
+	/**
+	 * Move the leaf like `branch()`, or like `resetLeaf()` for `null`, and record the move, so the session reopens at the
+	 * new leaf instead of its last entry. The record is a non-context entry under the new leaf; the tree omits it.
+	 */
+	recordBranch(branchFromId: string | null): Promise<void> {
+		return this.runMutation(async () => {
+			if (branchFromId !== null && !this.byId.has(branchFromId)) {
+				throw new SessionEntryError(branchFromId, "missing");
+			}
+			await this._appendEntry(createCustomEntry(LEAF_MOVE_ENTRY_TYPE, undefined, this.byId, branchFromId));
+			this.leafId = branchFromId;
 		});
 	}
 

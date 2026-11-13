@@ -253,6 +253,8 @@ Selecting an assistant, tool, compaction, or other non-user entry:
 
 Selecting the root user message resets the leaf to an empty conversation and places the original prompt in the editor.
 
+The chat, the tree's current marker, `/session`, and the context indicator switch to the selected branch as soon as you navigate. The move is saved, so quitting, resuming, or continuing the session before you send another message reopens it on the selected branch, and the abandoned turns stay out of the next request. Workflow runs started on the abandoned branch keep running and stay listed for the session. While a branch summary is being generated, Escape cancels it and reopens the tree at your selection.
+
 ## `/tree`, `/fork`, and `/clone`
 
 | Feature | `/tree` | `/fork` | `/clone` |

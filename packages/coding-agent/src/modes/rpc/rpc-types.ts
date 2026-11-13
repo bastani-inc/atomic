@@ -40,7 +40,13 @@ import type { CredentialSynchronizationOperation } from "../../core/model-runtim
 import type { OAuthProviderMetadata } from "../../core/oauth-login.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";
 import type { SerializedMissingSessionCwdError } from "../../core/session-cwd.ts";
-import type { SessionEntry, SessionInfo, SessionSummaryEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type {
+	BranchSummaryEntry,
+	SessionEntry,
+	SessionInfo,
+	SessionSummaryEntry,
+	SessionTreeNode,
+} from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import type { ToolStatusReport } from "../../core/tool-status.js";
 import type { QuestionAnswer, QuestionParams } from "../../core/tools/ask-user-question/tool/types.js";
@@ -141,6 +147,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_background_compaction"; enabled: boolean }
 	| { id?: string; type: "set_background_compaction_threshold"; percent: number }
 	| { id?: string; type: "abort_compaction" }
+	| { id?: string; type: "abort_branch_summary" }
 
 	// Extension UI
 	| { id?: string; type: "set_extension_ui_capabilities"; questionnaire?: boolean }
@@ -389,6 +396,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_background_compaction"; success: true }
 	| { id?: string; type: "response"; command: "set_background_compaction_threshold"; success: true }
 	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
+	| { id?: string; type: "response"; command: "abort_branch_summary"; success: true }
 
 	// Extension UI
 	| { id?: string; type: "response"; command: "set_extension_ui_capabilities"; success: true }
@@ -468,7 +476,7 @@ export type RpcResponse =
 			type: "response";
 			command: "navigate_tree";
 			success: true;
-			data: { cancelled: boolean; editorText?: string };
+			data: { cancelled: boolean; aborted?: boolean; editorText?: string; summaryEntry?: BranchSummaryEntry };
 	  }
 	| { id?: string; type: "response"; command: "set_label"; success: true; data: { entryId: string } }
 	| { id?: string; type: "response"; command: "reload"; success: true }

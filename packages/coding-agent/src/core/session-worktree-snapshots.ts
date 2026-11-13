@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import type { SessionManager } from "./session-manager.ts";
-import { getBranchPath } from "./session-manager-history.ts";
+import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import type { SessionStore } from "./storage/session/types.js";
 import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
@@ -741,7 +741,7 @@ function restoreMappings(branch: readonly SessionEntry[]): WorktreeRootMapping[]
 /** The restores and current snapshots of the branch of stored `entries` that ends at `leafId`, as resume finds them. */
 function storedBranchSnapshots(
 	entries: readonly SessionEntry[],
-	leafId: string | undefined,
+	leafId: string | null,
 ): { readonly mappings: WorktreeRootMapping[]; readonly current: Map<string, WorktreeSnapshot> } {
 	const branch = getBranchPath(leafId, new Map(entries.map((entry) => [entry.id, entry])));
 	const records = new Map<string, WorktreeSnapshot>();
@@ -765,7 +765,7 @@ function storedBranchSnapshots(
  */
 export async function sessionRunsInRecordedCheckout(store: SessionStore, sessionId: string): Promise<boolean> {
 	const { header, entries } = await store.load(sessionId);
-	const { mappings, current } = storedBranchSnapshots(entries, entries.at(-1)?.id);
+	const { mappings, current } = storedBranchSnapshots(entries, getSessionLeafId(entries));
 	const cwd = mapRestoredPath(header.cwd, mappings);
 	return [...current.keys()].some((root) => isInside(root, cwd));
 }

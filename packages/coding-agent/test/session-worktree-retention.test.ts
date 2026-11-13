@@ -135,3 +135,36 @@ test("retention follows a restored checkout to its newest snapshot and lets the 
 	assert.deepEqual(deleted, snapshotBlobHashes(recorded), "only the snapshot the restored checkout replaced goes");
 	assert.deepEqual([...(await store.snapshotBlobs.listBlobHashes())].sort(), snapshotBlobHashes(newer).sort());
 });
+
+test("retention keeps the snapshot a recorded /tree move reopens at, so resume restores that branch (#3325)", async () => {
+	const { clone } = await sandbox.remoteWithClone();
+	const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+	const store = await SqlSessionStore.open(database);
+	cleanups.push(async () => {
+		await store.close();
+		await database.close();
+	});
+	const manager = await SessionManager.create(store, clone);
+	const selected = await record(manager, store, clone, "selected\n");
+	const selectedLeaf = manager.getLeafId()!;
+	const abandoned = await record(manager, store, clone, "abandoned\n", selected);
+	await manager.recordBranch(selectedLeaf);
+
+	const { deleted } = await collectSnapshotGarbage(store.snapshotBlobs, { graceSeconds: 0 });
+	assert.deepEqual(deleted, [], "the selected branch and the abandoned one each keep their latest snapshot");
+	assert.deepEqual(
+		[...(await store.snapshotBlobs.listBlobHashes())].sort(),
+		[...new Set([selected, abandoned].flatMap(snapshotBlobHashes))].sort(),
+	);
+
+	writeFileSync(join(clone, "notes.txt"), "drifted\n");
+	const reopened = await SessionManager.open(store, manager.getSessionId());
+	assert.equal(reopened.getLeafId(), selectedLeaf);
+	const result = await resumeSessionWorktree(reopened, {
+		settings: DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
+		storeDir: sandbox.path("host"),
+	});
+	assert.equal(result.status, "restored");
+	if (result.status !== "restored") return;
+	assert.equal(readFileSync(join(result.cwd, "notes.txt"), "utf8"), "selected\n");
+});

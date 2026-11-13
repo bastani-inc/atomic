@@ -737,7 +737,7 @@ export interface ForkPoint {
 	readonly stagePath: string;
 	/** Agent session the stage ran in, when it ran one. */
 	readonly sessionId?: string;
-	/** Last entry of that session, for `forkFromEntryId`. */
+	/** The entry that session continues from (its leaf), for `forkFromEntryId`. */
 	readonly entryId?: string;
 	readonly completedAt: number;
 }
