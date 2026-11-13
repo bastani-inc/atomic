@@ -1,5 +1,6 @@
 import { modelsAreEqual } from "@bastani/pi-ai/compat";
 import { failureDebugFields, reportDebug } from "../../core/debug.ts";
+import { deduplicateDiagnostics } from "../../core/settings-diagnostics.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import {
@@ -14,6 +15,7 @@ import {
 import { releaseStartupChatOutput } from "./interactive-startup-chat-container.ts";
 import { reportUnavailableTools } from "./interactive-unavailable-tools.ts";
 import { exitOnRefusedDecisionSetting } from "./refused-decision-setting.ts";
+import { showSessionNotices } from "./session-notices.ts";
 
 export interface DeferredStartupMode {
 	deferredStartupPending: boolean;
@@ -52,7 +54,8 @@ InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function (
 InteractiveModeBase.prototype.completeDeferredStartup = async function (this: InteractiveModeBase): Promise<void> {
 	try {
 		await this.bindCurrentSessionExtensions();
-		if (!(await this.runtimeHost?.completeStartup?.())) await this.session.reload({ reason: "startup" });
+		const completedStartupTrust = Boolean(await this.runtimeHost?.completeStartup?.());
+		if (!completedStartupTrust) await this.session.reload({ reason: "startup" });
 		this.applyRuntimeSettings();
 		// Initial transcript rows precede deferred extension loading, so rebuild them
 		// against the new extension registry before releasing startup output.
@@ -71,7 +74,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function (this: In
 		await this.themeController.applyFromSettings();
 		this.setupAutocompleteProvider();
 		this.setupExtensionShortcuts(this.session.extensionRunner);
-		await applyDeferredModelScope(this);
+		if (completedStartupTrust) {
+			showSessionNotices(this, this.runtimeHost?.services.diagnostics);
+		} else {
+			await applyDeferredModelScope(this);
+		}
 		await this.retryDeferredModelRestore(this.startupNoticesContainer);
 		this.showLoadedResources({
 			force: true,
@@ -120,7 +127,7 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
 	}
 
 	const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, mode.session.modelRuntime);
-	for (const diagnostic of diagnostics) {
+	for (const diagnostic of deduplicateDiagnostics(diagnostics)) {
 		mode.showWarning(diagnostic.message);
 	}
 	mode.session.setScopedModels(scopedModels);

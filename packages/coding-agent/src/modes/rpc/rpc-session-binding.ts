@@ -34,6 +34,7 @@ interface RpcSessionBindingOptions {
 	requestShutdown: () => void;
 	checkShutdownRequested?: () => void;
 	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
+	onStartupReload?: (session: AgentSession) => Promise<void>;
 }
 
 export class RpcSessionBinding {
@@ -55,6 +56,7 @@ export class RpcSessionBinding {
 	private readonly requestShutdown: () => void;
 	private readonly checkShutdownRequested: (() => void) | undefined;
 	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
+	private readonly onStartupReload: ((session: AgentSession) => Promise<void>) | undefined;
 
 	private footerDataProvider: FooterDataProvider | undefined;
 	constructor({
@@ -70,6 +72,7 @@ export class RpcSessionBinding {
 		inputForm,
 		writeEngineLine,
 		reloadCoordinator,
+		onStartupReload,
 	}: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
@@ -83,6 +86,7 @@ export class RpcSessionBinding {
 		this.inputForm = inputForm;
 		this.writeEngineLine = writeEngineLine;
 		this.reloadCoordinator = reloadCoordinator;
+		this.onStartupReload = onStartupReload;
 		this.session = runtimeHost.session;
 		this.runtimeHost.setProjectTrustContextFactory?.((cwd) => this.createProjectTrustContext(cwd));
 	}
@@ -220,6 +224,7 @@ export class RpcSessionBinding {
 		try {
 			if (!(await this.runtimeHost.completeStartup?.())) {
 				await session.reload({ reason: "startup" });
+				await this.onStartupReload?.(session);
 			}
 		} finally {
 			for (const extensionError of session.resourceLoader.getExtensions().errors) {

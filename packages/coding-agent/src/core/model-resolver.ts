@@ -18,7 +18,6 @@ export type {
 export { findExactModelReferenceMatch, resolveModelReference } from "./model-resolver-patterns.ts";
 export type { ModelScopeDiagnostic, ResolveModelScopeResult } from "./model-resolver-scope.ts";
 export {
-	resolveModelScope,
 	resolveModelScopeFromModels,
 	resolveModelScopeWithDiagnostics,
 } from "./model-resolver-scope.ts";

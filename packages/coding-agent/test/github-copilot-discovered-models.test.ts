@@ -10,7 +10,7 @@ import { AuthStorage } from "../src/core/auth-storage.js";
 import {
 	findInitialModel,
 	resolveCliModel,
-	resolveModelScope,
+	resolveModelScopeWithDiagnostics,
 	restoreModelFromSession,
 } from "../src/core/model-resolver.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";
@@ -326,11 +326,15 @@ describe("saved GitHub Copilot fast model selections", () => {
 		assert.equal(cli.model?.id, SAVED_ID);
 		assert.equal(cli.warning, undefined);
 
-		const scoped = await resolveModelScope([`${PROVIDER}/${SAVED_ID}`], modelRuntime);
+		const { scopedModels: scoped, diagnostics: savedScopeDiagnostics } = await resolveModelScopeWithDiagnostics(
+			[`${PROVIDER}/${SAVED_ID}`],
+			modelRuntime,
+		);
 		assert.deepEqual(
 			scoped.map((entry) => entry.model.id),
 			[SAVED_ID],
 		);
+		assert.deepEqual(savedScopeDiagnostics, []);
 
 		const resumed = await resumeSession(modelRuntime, SAVED_ID);
 		assert.equal(resumed.session.model?.id, SAVED_ID);
@@ -449,12 +453,13 @@ describe("GitHub Copilot availability by an API key's account list (#4627)", () 
 		const listed = lines.map((line) => line.split("\t")[0]).slice(1);
 		assert.deepEqual(sorted(listed), sorted(LISTED.map((id) => `${PROVIDER}/${id}`)));
 
-		vi.spyOn(console, "warn").mockImplementation(() => {});
-		const scoped = await resolveModelScope(
+		const { scopedModels: scoped, diagnostics: unlistedDiagnostics } = await resolveModelScopeWithDiagnostics(
 			[`${PROVIDER}/*`, `${PROVIDER}/${UNLISTED_CATALOG_MODEL_ID}`],
 			modelRuntime,
 		);
 		assert.deepEqual(sorted(scoped.map((entry) => entry.model.id)), sorted(LISTED));
+		assert.equal(unlistedDiagnostics.length, 1);
+		assert.equal(unlistedDiagnostics[0]?.code, "no-match");
 	});
 
 	it("keeps an API key's lists across a restart without the network (#4627)", async () => {
