@@ -11,6 +11,16 @@
 - Fixed `atomic storage import` leaving earlier runs imported when another process changed a later run during the import. Import now takes the write lock of every journal file it writes to and checks every run again under those locks, so a concurrent change fails the import before anything is written. An import that fails after writing part of its files lists exactly what it imported and what it did not, and running it again finishes it without duplicates ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
 - Fixed `atomic storage export` leaving out a workflow run that `atomic storage consolidate` moved to another shard while the export read it, and reporting it as a run in the old journal format. Export now reads the catalog again and rereads the shard the run moved to, including a shard created during the export, and reports any run it still cannot export with the real reason ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
 
+## [0.9.83] - 2026-11-13
+
+Workflow runs that travel between machines.
+
+- **Carry workflow runs as plain files.** `atomic storage export <dir>` writes runs from the local journal to versioned JSONL files, and `atomic storage import <dir>` loads them back, so hosts that persist only files keep their runs and an interrupted run resumes on the new machine ([#4716](https://github.com/bastani-inc/atomic/issues/4716), [#4717](https://github.com/bastani-inc/atomic/pull/4717)).
+
+### Added
+
+- Added `atomic storage export <dir>` and `atomic storage import <dir>`, which move workflow runs between the local workflow journal and versioned JSONL files (one `<runId>.jsonl` per run), so hosts that persist only files can keep runs between machines. Export selects runs with `--run`, `--unfinished` and `--limit`, reads a consistent snapshot, writes each file atomically, and gives byte-identical output for an unchanged run. Import checks every file before writing, is idempotent, accepts files whose string values were redacted, and leaves imported runs unowned so an interrupted run resumes on the new machine ([#4716](https://github.com/bastani-inc/atomic/issues/4716), [#4717](https://github.com/bastani-inc/atomic/pull/4717))
+
 ## [0.9.83-alpha.1] - 2026-11-13
 
 Workflow runs that travel between machines.
