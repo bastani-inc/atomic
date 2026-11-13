@@ -125,8 +125,9 @@ atomic team status [--json]                                          # Profile i
 atomic team leave                                                    # Remove what team join wrote
 atomic storage adopt <path>... [--no-discover]                       # Register existing journal files in place
 atomic storage consolidate                                           # Move finished runs of adopted files into the store
-atomic storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]  # Write workflow runs as JSONL files
-atomic storage import <dir>                                          # Restore workflow runs from JSONL files
+atomic storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished] [--limit <n>] [--since <time>]
+                                                                     # Write sessions and workflow runs as JSONL files
+atomic storage import <dir> [--sessions] [--workflows]               # Restore sessions and workflow runs from them
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
 atomic intercom upgrade                                              # Replace a broker an older Atomic started, when safe
@@ -140,7 +141,34 @@ atomic intercom upgrade                                              # Replace a
 
 `atomic storage adopt` registers journal files in the workflow journal store in place, without copying them, so their runs resolve by ID and resume where they are. Each path is a journal `.sqlite` file or a directory holding `journal.sqlite`; every path is checked before the first is registered. It also adopts the journal files the adopted runs were written to, unless `--no-discover` is given. `atomic storage consolidate` moves finished runs from adopted files into the store's own shards and reports the runs it left in place with the reason, and exits `1`, printing each distinct error's message and hint, when a run was left because of an error (a missing shard file, a different copy in the destination). Both also exit `1` with the error's message and hint when they cannot proceed. See [The workflow journal store](/storage#the-workflow-journal-store).
 
-`atomic storage export` writes workflow runs to `<dir>/<runId>.jsonl`, one versioned JSONL file per run, each written whole through a temporary file; `--run`, `--unfinished` and `--limit` select runs. `atomic storage import` checks every `*.jsonl` file in `<dir>` before it writes anything, then adds new runs and the later events of runs this machine has an earlier part of; importing again changes nothing. Both exit `1` with the file and line when they cannot proceed, and refuse a shared libSQL or Turso selection. See [Exporting and importing workflow runs](/storage#exporting-and-importing-workflow-runs).
+`atomic storage export` writes sessions to `<dir>/sessions/<sessionId>.jsonl` (format-4 session files, the format `atomic --import` reads) and workflow runs to `<dir>/workflows/<runId>.jsonl`, each written whole through a temporary file; it never deletes files. Both kinds are exported by default, and `--sessions` or `--workflows` limits it to one. `--run`, `--unfinished` and `--limit` select workflow runs; `--limit` also keeps the most recently modified sessions, and `--since <time>` keeps sessions modified at or after a date or date and time. `atomic storage import` reads only `<dir>/sessions` and `<dir>/workflows`, checks every file of both kinds before it writes anything, then adds new sessions and runs and the later entries of ones this machine has an earlier part of; importing again changes nothing. Both exit `1` with the file and line when they cannot proceed. An import that fails after writing part of its files exits `1` and lists what it imported and what it did not; running it again finishes it. A kind kept in a shared libSQL or Turso database is refused, or skipped with a note when neither `--sessions` nor `--workflows` was given. See [Exporting and importing sessions and workflow runs](/storage#exporting-and-importing-sessions-and-workflow-runs).
+
+The help text:
+
+```text
+  export   Write sessions to <dir>/sessions/<sessionId>.jsonl (session format version
+           4, the format `atomic --import` reads) and workflow runs to
+           <dir>/workflows/<runId>.jsonl (workflow run export version 1), one file per
+           session or run. Both kinds by default; --sessions or --workflows limits it to one. Each
+           file is replaced whole, one that already holds the same bytes is not rewritten, and no
+           file is deleted. A kind kept in a shared libSQL / Turso database is skipped (an error
+           when --sessions or --workflows asks for it): every machine joined to it reads it already.
+  import   Restore the sessions in <dir>/sessions and the workflow runs in <dir>/workflows into
+           this directory's storage; other files are ignored. Every file of both kinds is checked
+           first, so a malformed or unsupported file changes nothing. Importing again adds
+           nothing; a newer export of a session or run adds its later entries. Imported runs are
+           not owned by any process: an interrupted one can be resumed here. If the import fails
+           after writing part of it, it names what was and was not written; run it again to finish.
+
+  --sessions            export, import: sessions only (with --workflows too: both)
+  --workflows           export, import: workflow runs only (with --sessions too: both)
+  --run <id>            export: only this workflow run; repeat for more
+  --unfinished          export: only workflow runs that are not completed, failed or cancelled
+  --limit <n>           export: at most n workflow runs, newest first, and at most n sessions,
+                        most recently modified first
+  --since <time>        export: only sessions modified at or after <time>, a date such as
+                        2026-11-01 or a date and time such as 2026-11-01T09:30:00Z
+```
 
 `atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
 

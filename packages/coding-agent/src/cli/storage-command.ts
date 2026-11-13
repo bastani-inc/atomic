@@ -4,12 +4,16 @@
  * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
  * `atomic storage adopt` registers existing journal files in the journal store in place, and `atomic storage
  * consolidate` moves their finished runs into the store's own shards. `atomic storage export` and `atomic storage
- * import` move workflow runs between the local workflow journal and versioned JSONL files (#4716).
+ * import` move sessions and workflow runs between their storage and JSONL files (#4716, #4720).
  */
 
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { APP_NAME } from "../config.js";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
+import { resolveSessionStore, selectSessionStorage } from "../core/session-storage.js";
+import { exportSessions } from "../core/session-transfer.ts";
+import { SettingsManager } from "../core/settings-manager.ts";
 import { isJournalStoreError, isTeamProfileConfigError, isTeamProfileError } from "../core/storage/errors.js";
 import {
 	adoptJournals,
@@ -18,8 +22,6 @@ import {
 } from "../core/storage/journal-adoption.js";
 import {
 	exportWorkflowRuns,
-	importWorkflowRuns,
-	isWorkflowRunTransferError,
 	WORKFLOW_RUN_EXPORT_VERSION,
 	type WorkflowRunTransferStorage,
 } from "../core/storage/journal-transfer.js";
@@ -30,15 +32,24 @@ import {
 	missingTeamToken,
 	STORAGE_TOKEN_FILE,
 } from "../core/storage/selection.js";
+import type { SessionStore } from "../core/storage/session/types.js";
+import { SESSION_FORMAT_VERSION } from "../core/storage/session/types.js";
 import {
 	collectStorageStatus,
 	type DomainStatus,
 	describeStorageError,
 	describeStorageSelection,
 	effectiveJournalSelection,
+	projectTrust,
 	type StorageStatus,
 } from "../core/storage/storage-status.js";
 import { joinSharedDatabase } from "../core/storage/team.js";
+import {
+	isStorageImportIncompleteError,
+	isStorageTransferError,
+	type TransferredIds,
+} from "../core/storage/transfer-files.js";
+import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } from "../core/storage-transfer.ts";
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
@@ -47,8 +58,9 @@ const HELP = `Usage:
   ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]
   ${APP_NAME} storage adopt <path>... [--no-discover]
   ${APP_NAME} storage consolidate
-  ${APP_NAME} storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]
-  ${APP_NAME} storage import <dir>
+  ${APP_NAME} storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished]
+                              [--limit <n>] [--since <time>]
+  ${APP_NAME} storage import <dir> [--sessions] [--workflows]
 
 Commands:
   status   Show, for sessions, workflow runs, and Intercom, the selected storage and where the
@@ -69,13 +81,19 @@ Commands:
            Move finished runs (completed, failed or cancelled, not leased, without local workers)
            from adopted journals into the journal store's own shards. Other runs stay where they
            are. An interrupted consolidation leaves every run readable; run it again to finish.
-  export   Write workflow runs to <dir>/<runId>.jsonl, one file per run (format version
-           ${WORKFLOW_RUN_EXPORT_VERSION}): a header line, then one line per journal event. Every run by default;
-           a file is replaced whole, and one that already holds the same run is not rewritten.
-  import   Restore every *.jsonl export in <dir> into this directory's workflow journal. All files
-           are checked first, so a malformed or unsupported file changes nothing. Importing again
-           adds nothing; a newer export of a run adds its later events. Imported runs are not
-           owned by any process: an interrupted one can be resumed here.
+  export   Write sessions to <dir>/sessions/<sessionId>.jsonl (session format version
+           ${SESSION_FORMAT_VERSION}, the format \`${APP_NAME} --import\` reads) and workflow runs to
+           <dir>/workflows/<runId>.jsonl (workflow run export version ${WORKFLOW_RUN_EXPORT_VERSION}), one file per
+           session or run. Both kinds by default; --sessions or --workflows limits it to one. Each
+           file is replaced whole, one that already holds the same bytes is not rewritten, and no
+           file is deleted. A kind kept in a shared libSQL / Turso database is skipped (an error
+           when --sessions or --workflows asks for it): every machine joined to it reads it already.
+  import   Restore the sessions in <dir>/sessions and the workflow runs in <dir>/workflows into
+           this directory's storage; other files are ignored. Every file of both kinds is checked
+           first, so a malformed or unsupported file changes nothing. Importing again adds
+           nothing; a newer export of a session or run adds its later entries. Imported runs are
+           not owned by any process: an interrupted one can be resumed here. If the import fails
+           after writing part of it, it names what was and was not written; run it again to finish.
 
 Options:
   --json                Print the status as JSON
@@ -83,9 +101,14 @@ Options:
                         surrounding whitespace is removed. Required except for file: URLs
   --prefix <prefix>     Table prefix, to share one database between projects or teams
   --no-discover         adopt: register only the given paths
-  --run <id>            export: only this run; repeat for more
-  --unfinished          export: only runs that are not completed, failed or cancelled
-  --limit <n>           export: at most n runs, newest first`;
+  --sessions            export, import: sessions only (with --workflows too: both)
+  --workflows           export, import: workflow runs only (with --sessions too: both)
+  --run <id>            export: only this workflow run; repeat for more
+  --unfinished          export: only workflow runs that are not completed, failed or cancelled
+  --limit <n>           export: at most n workflow runs, newest first, and at most n sessions,
+                        most recently modified first
+  --since <time>        export: only sessions modified at or after <time>, a date such as
+                        2026-11-01 or a date and time such as 2026-11-01T09:30:00Z`;
 
 const HELP_HINT = `Use "${APP_NAME} storage --help" for usage.`;
 
@@ -98,11 +121,22 @@ export type StorageCommand =
 	| {
 			readonly kind: "export";
 			readonly directory: string;
+			/** The kinds to export; both when neither `--sessions` nor `--workflows` is given. */
+			readonly kinds: TransferKinds;
 			readonly runs?: readonly string[];
 			readonly unfinished: boolean;
 			readonly limit?: number;
+			/** `--since`, in milliseconds since the epoch. */
+			readonly since?: number;
 	  }
-	| { readonly kind: "import"; readonly directory: string };
+	| { readonly kind: "import"; readonly directory: string; readonly kinds: TransferKinds };
+
+/** Which kinds an export or import covers, and whether `--sessions` or `--workflows` named them. */
+export interface TransferKinds {
+	readonly sessions: boolean;
+	readonly workflows: boolean;
+	readonly explicit: boolean;
+}
 
 export class StorageCommandError extends Error {}
 
@@ -117,6 +151,8 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	let json = false;
 	let discover = true;
 	let unfinished = false;
+	let sessions = false;
+	let workflows = false;
 	const runs: string[] = [];
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index]!;
@@ -126,6 +162,11 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		}
 		if (command === "adopt" && arg === "--no-discover") {
 			discover = false;
+			continue;
+		}
+		if ((command === "export" || command === "import") && (arg === "--sessions" || arg === "--workflows")) {
+			if (arg === "--sessions") sessions = true;
+			else workflows = true;
 			continue;
 		}
 		if (command === "export" && arg === "--unfinished") {
@@ -140,7 +181,7 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		}
 		if (
 			(command === "join" && (arg === "--token-file" || arg === "--prefix")) ||
-			(command === "export" && arg === "--limit")
+			(command === "export" && (arg === "--limit" || arg === "--since"))
 		) {
 			const value = rest[++index];
 			if (value === undefined) throw new StorageCommandError(`${arg} needs a value.`);
@@ -182,29 +223,47 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		if (positional.length > 0) throw new StorageCommandError(`Usage: ${APP_NAME} storage consolidate`);
 		return { kind: "consolidate" };
 	}
+	const kinds: TransferKinds =
+		sessions || workflows
+			? { sessions, workflows, explicit: true }
+			: { sessions: true, workflows: true, explicit: false };
 	if (command === "export") {
 		const [directory, ...extra] = positional;
 		if (directory === undefined || extra.length > 0)
 			throw new StorageCommandError(
-				`Usage: ${APP_NAME} storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]`,
+				`Usage: ${APP_NAME} storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished] [--limit <n>] [--since <time>]`,
 			);
 		const limitText = values.get("--limit");
 		const limit = limitText === undefined ? undefined : Number(limitText);
 		if (limit !== undefined && (!/^[0-9]+$/.test(limitText!) || !Number.isSafeInteger(limit) || limit < 1))
 			throw new StorageCommandError(`--limit needs a positive whole number, not "${limitText}".`);
+		const sinceText = values.get("--since");
+		const since = sinceText === undefined ? undefined : Date.parse(sinceText);
+		if (since !== undefined && Number.isNaN(since))
+			throw new StorageCommandError(
+				`--since needs a date such as 2026-11-01 or a date and time such as 2026-11-01T09:30:00Z, not "${sinceText}".`,
+			);
+		if (!kinds.workflows && (runs.length > 0 || unfinished))
+			throw new StorageCommandError(
+				`${runs.length > 0 ? "--run" : "--unfinished"} selects workflow runs, which --sessions alone does not export.`,
+			);
+		if (!kinds.sessions && since !== undefined)
+			throw new StorageCommandError("--since selects sessions, which --workflows alone does not export.");
 		return {
 			kind: "export",
 			directory,
+			kinds,
 			unfinished,
 			...(runs.length === 0 ? {} : { runs }),
 			...(limit === undefined ? {} : { limit }),
+			...(since === undefined ? {} : { since }),
 		};
 	}
 	if (command === "import") {
 		const [directory, ...extra] = positional;
 		if (directory === undefined || extra.length > 0)
-			throw new StorageCommandError(`Usage: ${APP_NAME} storage import <dir>`);
-		return { kind: "import", directory };
+			throw new StorageCommandError(`Usage: ${APP_NAME} storage import <dir> [--sessions] [--workflows]`);
+		return { kind: "import", directory, kinds };
 	}
 	throw new StorageCommandError(`Unknown storage command "${command}".\n${HELP_HINT}`);
 }
@@ -402,7 +461,7 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		if (command.kind === "adopt") return await adopt(command, options, log);
 		if (command.kind === "consolidate") return await consolidate(options, log);
 		if (command.kind === "export") return await exportRuns(command, options, log, error);
-		if (command.kind === "import") return await importRuns(command, options, log);
+		if (command.kind === "import") return await importRuns(command, options, log, error);
 		return await joinStorage(command, options, (...lines) => {
 			for (const line of lines) log(line);
 		});
@@ -414,7 +473,7 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		}
 		error(
 			caught instanceof StorageCommandError ||
-				isWorkflowRunTransferError(caught) ||
+				isStorageTransferError(caught) ||
 				isTeamProfileError(caught) ||
 				isTeamProfileConfigError(caught)
 				? caught.message
@@ -479,26 +538,74 @@ async function consolidate(options: StorageCommandOptions, log: (line: string) =
 	return failures.size === 0 ? 0 : 1;
 }
 
+/** What an export or import of one kind reads or writes, or why that kind is refused here. */
+type Transfer<T> = { readonly target: T } | { readonly refused: string };
+
 /**
  * The local workflow journal this directory's runs use, which `export` and `import` read and write. A shared database
  * is refused: every machine joined to it already reads its runs, so there is nothing to carry between them.
  */
-function transferStorage(options: StorageCommandOptions, command: "export" | "import"): WorkflowRunTransferStorage {
+function workflowTransfer(
+	options: StorageCommandOptions,
+	command: "export" | "import",
+): Transfer<WorkflowRunTransferStorage> {
 	const selection = effectiveJournalSelection(options.cwd, options.agentDir);
-	if (selection.kind === "sharded") return { kind: "store", directory: selection.dir };
+	if (selection.kind === "sharded") return { target: { kind: "store", directory: selection.dir } };
 	if (selection.kind === "sqlite" && selection.path !== ":memory:")
 		return {
-			kind: "sqlite",
-			path: resolve(options.cwd, selection.path),
-			...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
+			target: {
+				kind: "sqlite",
+				path: resolve(options.cwd, selection.path),
+				...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
+			},
 		};
-	throw new StorageCommandError(
-		`${APP_NAME} storage ${command} works with a local workflow journal (the journal store or a SQLite file), but workflow runs here use ${describeStorageSelection(selection)}.` +
+	return {
+		refused:
+			`${APP_NAME} storage ${command} works with a local workflow journal (the journal store or a SQLite file), but workflow runs here use ${describeStorageSelection(selection)}.` +
 			(selection.kind === "adapter"
 				? " A shared database already holds the runs of every machine joined to it, so there is nothing to export or import; use its own backups instead."
 				: ""),
-	);
+	};
 }
+
+/**
+ * The session storage this directory selects, as a session started here would open it: the default database, a JSONL
+ * directory, a SQLite file or an adapter. A shared libSQL / Turso database is refused as it is for workflow runs, and so
+ * is in-memory storage, which keeps nothing. Undefined target for an export when nothing has been stored yet, so an
+ * export creates no database.
+ */
+async function sessionTransfer(
+	options: StorageCommandOptions,
+	command: "export" | "import",
+): Promise<Transfer<SessionStore | undefined>> {
+	const settings = SettingsManager.create(options.cwd, options.agentDir, {
+		projectTrusted: projectTrust(options.cwd, options.agentDir),
+	}).getSettings();
+	const storageOptions = { agentDir: options.agentDir, settings };
+	const selection = selectSessionStorage(options.cwd, storageOptions);
+	if (!("load" in selection)) {
+		if (selection.kind === "memory" || (selection.kind === "sqlite" && selection.path === ":memory:"))
+			return {
+				refused: `${APP_NAME} storage ${command} needs stored sessions, but sessions here use ${describeStorageSelection(selection)}, which keeps nothing.`,
+			};
+		if (selection.kind === "adapter" && selection.module === LIBSQL_ADAPTER_PACKAGE)
+			return {
+				refused: `${APP_NAME} storage ${command} works with local session storage, but sessions here use ${describeStorageSelection(selection)}. A shared database already holds the sessions of every machine joined to it, so there is nothing to export or import; use its own backups instead.`,
+			};
+		if (command === "export") {
+			const stored =
+				selection.kind === "jsonl"
+					? existsSync(selection.dir)
+					: selection.kind !== "sqlite" ||
+						existsSync(resolve(options.cwd, selection.path)) ||
+						existsSync(join(options.agentDir, "sessions"));
+			if (!stored) return { target: undefined };
+		}
+	}
+	return { target: await resolveSessionStore(options.cwd, storageOptions) };
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
 async function exportRuns(
 	command: Extract<StorageCommand, { kind: "export" }>,
@@ -506,33 +613,124 @@ async function exportRuns(
 	log: (line: string) => void,
 	error: (line: string) => void,
 ): Promise<number> {
-	const storage = transferStorage(options, "export");
 	const directory = resolve(options.cwd, command.directory);
-	const report = await exportWorkflowRuns(storage, directory, {
-		unfinished: command.unfinished,
-		...(command.runs === undefined ? {} : { runs: command.runs }),
-		...(command.limit === undefined ? {} : { limit: command.limit }),
-	});
-	const total = report.written.length + report.unchanged.length;
-	log(
-		`Exported ${total} workflow run${total === 1 ? "" : "s"} to ${directory} (${report.written.length} written, ${report.unchanged.length} unchanged).`,
-	);
-	for (const skipped of report.skipped)
-		error(`Skipped ${skipped.runId === undefined ? skipped.path : `run ${skipped.runId}`}: ${skipped.reason}.`);
-	return 0;
+	const workflows = command.kinds.workflows ? workflowTransfer(options, "export") : undefined;
+	const sessions = command.kinds.sessions ? await sessionTransfer(options, "export") : undefined;
+	try {
+		const refusals = [workflows, sessions].flatMap((transfer) =>
+			transfer !== undefined && "refused" in transfer ? [transfer.refused] : [],
+		);
+		const kinds = Number(command.kinds.sessions) + Number(command.kinds.workflows);
+		if (refusals.length > 0 && (command.kinds.explicit || refusals.length === kinds))
+			throw new StorageCommandError(refusals.join("\n"));
+		for (const refused of refusals) error(`Skipped: ${refused}`);
+		if (sessions !== undefined && "target" in sessions) {
+			const target = sessionsTransferDirectory(directory);
+			const report =
+				sessions.target === undefined
+					? { written: [], unchanged: [] }
+					: await exportSessions(sessions.target, target, {
+							...(command.limit === undefined ? {} : { limit: command.limit }),
+							...(command.since === undefined ? {} : { since: command.since }),
+						});
+			const total = report.written.length + report.unchanged.length;
+			log(
+				`Exported ${plural(total, "session")} to ${target} (${report.written.length} written, ${report.unchanged.length} unchanged).`,
+			);
+		}
+		if (workflows !== undefined && "target" in workflows) {
+			const target = workflowsTransferDirectory(directory);
+			const report = await exportWorkflowRuns(workflows.target, target, {
+				unfinished: command.unfinished,
+				...(command.runs === undefined ? {} : { runs: command.runs }),
+				...(command.limit === undefined ? {} : { limit: command.limit }),
+			});
+			const total = report.written.length + report.unchanged.length;
+			log(
+				`Exported ${plural(total, "workflow run")} to ${target} (${report.written.length} written, ${report.unchanged.length} unchanged).`,
+			);
+			for (const skipped of report.skipped)
+				error(
+					`Skipped ${skipped.runId === undefined ? skipped.path : `run ${skipped.runId} (${skipped.path})`}: ${skipped.reason}.`,
+				);
+		}
+		return 0;
+	} finally {
+		await sessionStore(sessions)?.close();
+	}
+}
+
+function describeIds(ids: TransferredIds): string {
+	const parts = [
+		ids.sessions.length === 0
+			? undefined
+			: `${ids.sessions.length === 1 ? "session" : "sessions"} ${ids.sessions.join(", ")}`,
+		ids.workflows.length === 0
+			? undefined
+			: `${ids.workflows.length === 1 ? "workflow run" : "workflow runs"} ${ids.workflows.join(", ")}`,
+	].filter((part) => part !== undefined);
+	return parts.length === 0 ? "nothing" : parts.join("; ");
 }
 
 async function importRuns(
 	command: Extract<StorageCommand, { kind: "import" }>,
 	options: StorageCommandOptions,
 	log: (line: string) => void,
+	error: (line: string) => void,
 ): Promise<number> {
-	const storage = transferStorage(options, "import");
 	const directory = resolve(options.cwd, command.directory);
-	const report = await importWorkflowRuns(storage, directory);
-	const total = report.added.length + report.updated.length + report.unchanged.length;
-	log(
-		`Imported ${total} workflow run${total === 1 ? "" : "s"} from ${directory} (${report.added.length} added, ${report.updated.length} updated, ${report.unchanged.length} already up to date).`,
-	);
-	return 0;
+	if (!existsSync(directory)) throw new StorageCommandError(`${directory}: no such directory.`);
+	const workflows = command.kinds.workflows ? workflowTransfer(options, "import") : undefined;
+	const sessions = command.kinds.sessions ? await sessionTransfer(options, "import") : undefined;
+	try {
+		const refusals = [workflows, sessions].flatMap((transfer) =>
+			transfer !== undefined && "refused" in transfer ? [transfer.refused] : [],
+		);
+		const kinds = Number(command.kinds.sessions) + Number(command.kinds.workflows);
+		if (refusals.length > 0 && (command.kinds.explicit || refusals.length === kinds))
+			throw new StorageCommandError(refusals.join("\n"));
+		for (const refused of refusals) error(`Skipped: ${refused}`);
+		const sessionTarget = sessionStore(sessions);
+		const workflowStorage = workflows !== undefined && "target" in workflows ? workflows.target : undefined;
+		let report: Awaited<ReturnType<typeof importStorage>>;
+		try {
+			report = await importStorage(directory, {
+				...(sessionTarget === undefined ? {} : { sessions: sessionTarget }),
+				...(workflowStorage === undefined ? {} : { workflows: workflowStorage }),
+			});
+		} catch (caught) {
+			if (isStorageImportIncompleteError(caught)) {
+				error(caught.message);
+				error(`Imported before the failure: ${describeIds(caught.written)}.`);
+				error(`Not imported: ${describeIds(caught.notWritten)}.`);
+				error("Run the same import again to finish: it imports only what is missing.");
+				return 1;
+			}
+			if (isStorageTransferError(caught)) {
+				error(caught.message);
+				error("Nothing was imported.");
+				return 1;
+			}
+			throw caught;
+		}
+		if (report.sessions !== undefined) {
+			const { added, updated, unchanged } = report.sessions;
+			log(
+				`Imported ${plural(added.length + updated.length + unchanged.length, "session")} from ${sessionsTransferDirectory(directory)} (${added.length} added, ${updated.length} updated, ${unchanged.length} already up to date).`,
+			);
+		}
+		if (report.workflows !== undefined) {
+			const { added, updated, unchanged } = report.workflows;
+			log(
+				`Imported ${plural(added.length + updated.length + unchanged.length, "workflow run")} from ${workflowsTransferDirectory(directory)} (${added.length} added, ${updated.length} updated, ${unchanged.length} already up to date).`,
+			);
+		}
+		return 0;
+	} finally {
+		await sessionStore(sessions)?.close();
+	}
+}
+
+function sessionStore(transfer: Transfer<SessionStore | undefined> | undefined): SessionStore | undefined {
+	return transfer !== undefined && "target" in transfer ? transfer.target : undefined;
 }
