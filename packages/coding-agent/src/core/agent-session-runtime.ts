@@ -607,20 +607,25 @@ export class AgentSessionRuntime {
 	/**
 	 * Prepares a resumed session's checkout on this host (see {@link prepareSessionResume}) and returns the session
 	 * opened where it continues. Without a UI here, a dirty checkout of the session's repository is never used; the
-	 * snapshot is restored into a fresh worktree instead.
+	 * snapshot is restored into a fresh worktree instead. `unrecorded` are the notices the session records nothing for
+	 * (a checkout whose snapshot record it lacks, #4744), which the caller queues once the switch succeeds; a mirror of
+	 * a resume another process prepared gets that process's notices instead, so it has none.
 	 */
 	private async resumeWorktree(
 		sessionManager: SessionManager,
 		sessionDirectory?: string,
 		entryPoint: ResumeEntryPoint = "switch-session",
-	): Promise<SessionManager> {
+	): Promise<{ sessionManager: SessionManager; unrecorded: readonly ResumeNotice[] }> {
 		const prepared = await prepareSessionResume(sessionManager, {
 			...this.resumeOptions(entryPoint),
 			sessionDirectory,
 		});
-		if (prepared.status !== "ready") return sessionManager;
+		if (prepared.status !== "ready") return { sessionManager, unrecorded: [] };
 		this.resumeNoticeQueue.push(...prepared.blueprintNotices);
-		return prepared.sessionManager;
+		return {
+			sessionManager: prepared.sessionManager,
+			unrecorded: this.resumeBlueprints === "build" ? (prepared.missingRecordNotices ?? []) : [],
+		};
 	}
 
 	private resumeNoticeQueue: ResumeNotice[] = [];
@@ -681,7 +686,7 @@ export class AgentSessionRuntime {
 				this.session.sessionManager.openSessionById(sessionId, options?.cwdOverride, options?.sessionDirectory),
 				sessionId,
 			);
-			const sessionManager = await this.resumeWorktree(opened, options?.sessionDirectory);
+			const { sessionManager, unrecorded } = await this.resumeWorktree(opened, options?.sessionDirectory);
 			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
 			if (missingCwd !== undefined) throw new MissingSessionCwdError(missingCwd);
 			const runtimeOptions: CreateAgentSessionRuntimeOptions = {
@@ -699,6 +704,7 @@ export class AgentSessionRuntime {
 			this.assertOpen();
 			await this.teardownCurrent("resume", sessionManager.getSessionId());
 			await this.apply(await (complete ? complete() : this.createRuntime(runtimeOptions)), options?.withSession);
+			this.resumeNoticeQueue.push(...unrecorded);
 			return { cancelled: false };
 		});
 	}
@@ -801,7 +807,7 @@ export class AgentSessionRuntime {
 			this.assertOpen();
 			if (beforeResult.cancelled) return beforeResult;
 			const previousSessionId = this.session.sessionId;
-			const sessionManager = await this.resumeWorktree(
+			const { sessionManager, unrecorded } = await this.resumeWorktree(
 				await this.session.sessionManager.importFromJsonl(resolvedPath, cwdOverride),
 			);
 			const missingCwd = findMissingSessionCwdIssue(sessionManager, this.cwd);
@@ -819,6 +825,7 @@ export class AgentSessionRuntime {
 					sessionStartEvent: { type: "session_start", reason: "resume", previousSessionId },
 				}),
 			);
+			this.resumeNoticeQueue.push(...unrecorded);
 			return { cancelled: false };
 		});
 	}
