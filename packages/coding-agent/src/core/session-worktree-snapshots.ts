@@ -6,6 +6,7 @@ import type { SessionManager } from "./session-manager.ts";
 import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
 import type { SessionStore } from "./storage/session/types.js";
+import { type BestWorktreeRestore, restoreBestWorktree, unrestoredRecord } from "./worktree-snapshot/best-restore.ts";
 import { snapshotBlobHashes } from "./worktree-snapshot/blob-store.ts";
 import {
 	captureWorktreeSnapshot,
@@ -20,8 +21,6 @@ import {
 	type GitUnavailableError,
 	isGitUnavailableError,
 	isWorkspaceDriftError,
-	isWorkspaceError,
-	isWorkspaceRestoreError,
 	isWorkspaceSnapshotError,
 	unreadablePathError,
 	WorkspaceDriftError,
@@ -34,14 +33,7 @@ import { gitText, runGit } from "./worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "./worktree-snapshot/head-advance.ts";
 import { canonicalizeWorktreePath } from "./worktree-snapshot/paths.ts";
 import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
-import {
-	isDegradableRestoreFailure,
-	removeRestoredWorktree,
-	restoreDegradedWorktree,
-	restoreWorktree,
-	snapshotRestoreWarnings,
-	verifyWorktree,
-} from "./worktree-snapshot/restore.ts";
+import { removeRestoredWorktree, snapshotRestoreWarnings, verifyWorktree } from "./worktree-snapshot/restore.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -52,6 +44,8 @@ import type {
 	WorktreeSnapshotSettings,
 	WorktreeUnrestored,
 } from "./worktree-snapshot/types.ts";
+
+export { isRecoverableRestoreFailure } from "./worktree-snapshot/best-restore.ts";
 
 /** Why a turn's snapshot could not be recorded: Git is unavailable, or a typed workspace failure. */
 export type WorktreeSnapshotUnavailable = WorkspaceError | GitUnavailableError;
@@ -337,18 +331,6 @@ export interface ResumeSessionWorktreeOptions {
 	readonly skipMissingRecords?: boolean;
 }
 
-/**
- * Whether a failed restore of one checkout leaves the resume able to continue without the exact state (#4733): any
- * typed workspace or Git failure, except a snapshot record that fails the security checks (`invalid-snapshot`) and a
- * target that holds other files (`unsafe-target`), which refuse the resume.
- */
-export function isRecoverableRestoreFailure(error: unknown): error is Error {
-	if (isWorkspaceRestoreError(error) && (error.code === "invalid-snapshot" || error.code === "unsafe-target")) {
-		return false;
-	}
-	return (isWorkspaceError(error) && error.code !== "invalid-setting") || isGitUnavailableError(error);
-}
-
 /** The commits of the checkout's earlier snapshots on the branch, newest first, to restore when its own is out of reach. */
 function earlierSnapshotHeads(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
@@ -365,42 +347,6 @@ function earlierSnapshotHeads(
 		if (heads.length === 3) break;
 	}
 	return heads;
-}
-
-/** What a resume tells about a checkout it continued without: why, as a clause, and what to do. */
-function unrestoredReason(snapshot: WorktreeSnapshot, reason: Error): { detail: string; hint: string } {
-	const head = snapshot.head.slice(0, 12);
-	if (isGitUnavailableError(reason)) {
-		return {
-			detail: `Git is unavailable here (${reason.code}), which checking and restoring it need`,
-			hint: reason.hint ?? "",
-		};
-	}
-	if (isWorkspaceRestoreError(reason)) {
-		switch (reason.code) {
-			case "commits-unavailable":
-				return {
-					detail:
-						reason.reason === "denied-history"
-							? `its commit ${head} is not on its recorded remotes, and its unpushed commits touch files snapshots never copy`
-							: reason.reason === "bundle-over-cap"
-								? `its commit ${head} is not on its recorded remotes, and its unpushed commits were too large to record`
-								: `its commit ${head} and the commits around it are not on its recorded remotes`,
-					hint: reason.hint,
-				};
-			case "snapshot-not-found":
-				return { detail: "the session holds no record of its snapshot", hint: reason.hint };
-			case "blob-missing":
-			case "blob-corrupt":
-				return { detail: "part of its recorded content is not in this storage", hint: reason.hint };
-			default:
-				return { detail: reason.summary, hint: reason.hint };
-		}
-	}
-	return {
-		detail: isWorkspaceError(reason) ? reason.summary : reason.message,
-		hint: isWorkspaceError(reason) ? reason.hint : "",
-	};
 }
 
 /**
@@ -489,38 +435,24 @@ export async function resumeSessionWorktree(
 				sessionManager.getSessionStore().snapshotBlobs,
 				sessionManager.getEntries(),
 			);
-			let restored: {
-				path: string;
-				warnings: readonly WorktreeRestoreWarning[];
-				degraded?: WorktreeDegradedRestore;
-			};
+			let restored: Extract<BestWorktreeRestore, { status: "restored" }>;
 			try {
-				restored = await restoreWorktree(snapshot, { blobs, storeDir: options.storeDir, signal: options.signal });
+				// The exact state, else the best this host can restore, else continue without the checkout.
+				const best = await restoreBestWorktree(snapshot, {
+					blobs,
+					storeDir: options.storeDir,
+					signal: options.signal,
+					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+				});
+				if (best.status === "unrestored") {
+					left.push({ root, snapshot, reason: best.reason });
+					continue;
+				}
+				restored = best;
 			} catch (error) {
 				options.signal?.throwIfAborted();
 				if (!(error instanceof Error)) throw error;
-				if (!isRecoverableRestoreFailure(error)) throw refused(error);
-				// The exact state is out of reach: restore the best this host can, else continue without the checkout.
-				let degraded: Awaited<ReturnType<typeof restoreDegradedWorktree>> | undefined;
-				if (isDegradableRestoreFailure(error)) {
-					try {
-						degraded = await restoreDegradedWorktree(snapshot, error, {
-							blobs,
-							storeDir: options.storeDir,
-							signal: options.signal,
-							candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
-						});
-					} catch (degradedError) {
-						options.signal?.throwIfAborted();
-						if (!(degradedError instanceof Error)) throw degradedError;
-						if (!isRecoverableRestoreFailure(degradedError)) throw refused(degradedError);
-					}
-				}
-				if (degraded === undefined) {
-					left.push({ root, snapshot, reason: error });
-					continue;
-				}
-				restored = degraded;
+				throw refused(error);
 			}
 			const mapping: WorktreeRootMapping = {
 				from: root,
@@ -558,21 +490,12 @@ export async function resumeSessionWorktree(
 		const launch = recordedHere && !existsSync(continuing) && options.fallbackCwd !== undefined;
 		continuedIn = launch ? resolve(options.fallbackCwd!) : continuing;
 		for (const checkout of left) {
-			const at = new Date().toISOString();
-			const record: WorktreeUnrestored = {
-				snapshotId: checkout.snapshot.id,
+			const record = unrestoredRecord(
+				checkout.snapshot,
+				checkout.reason,
 				continuedIn,
-				place: launch ? "launch" : "recorded",
-				cause:
-					isWorkspaceError(checkout.reason) || isGitUnavailableError(checkout.reason)
-						? checkout.reason.code
-						: "error",
-				...(isWorkspaceRestoreError(checkout.reason) && checkout.reason.reason !== undefined
-					? { causeReason: String(checkout.reason.reason) }
-					: {}),
-				...unrestoredReason(checkout.snapshot, checkout.reason),
-				at,
-			};
+				launch ? "launch" : "recorded",
+			);
 			await sessionManager.appendWorktreeSnapshot(
 				checkout.root,
 				checkout.snapshot.id,
@@ -646,13 +569,20 @@ function short(id: string): string {
 	return id.slice(0, 12);
 }
 
+/** Whose checkout a restore notice is about: a session's, or a workflow run's (#4738). */
+export type WorktreeRestoreOwner = "session" | "workflow run";
+
 /** What a degraded restore checked out, for its notice. */
-function degradedBasis(degraded: WorktreeDegradedRestore, snapshot: WorktreeSnapshot | undefined): string {
+function degradedBasis(
+	degraded: WorktreeDegradedRestore,
+	snapshot: WorktreeSnapshot | undefined,
+	owner: WorktreeRestoreOwner,
+): string {
 	switch (degraded.basis) {
 		case "pushed-base":
 			return `the last pushed commit before it, ${short(degraded.head)}`;
 		case "earlier-snapshot":
-			return `${short(degraded.head)}, the commit of an earlier snapshot of this session`;
+			return `${short(degraded.head)}, the commit of an earlier snapshot of this ${owner}`;
 		default:
 			return `${short(degraded.head)}, the tip of ${snapshot?.branch ? `branch ${snapshot.branch}` : "the default branch"} on its remote`;
 	}
@@ -672,15 +602,20 @@ export function formatDegradedRestoreNotice(
 	mapping: WorktreeRootMapping,
 	snapshot: WorktreeSnapshot | undefined,
 	warnings: readonly WorktreeRestoreHostWarning[] = [],
+	owner: WorktreeRestoreOwner = "session",
 ): string {
 	const lfs = warnings
 		.filter((warning) => warning.code === "lfs-objects-unavailable")
 		.map((warning) => ` ${formatWorktreeRestoreWarning(warning)}.`)
 		.join("");
-	return `${degradedRestoreSummary(mapping, snapshot)}${lfs}`;
+	return `${degradedRestoreSummary(mapping, snapshot, owner)}${lfs}`;
 }
 
-function degradedRestoreSummary(mapping: WorktreeRootMapping, snapshot: WorktreeSnapshot | undefined): string {
+function degradedRestoreSummary(
+	mapping: WorktreeRootMapping,
+	snapshot: WorktreeSnapshot | undefined,
+	owner: WorktreeRestoreOwner,
+): string {
 	const degraded = mapping.degraded!;
 	const links = snapshot?.chain.length ?? 0;
 	const restored = `Restored ${mapping.from} into ${mapping.to}`;
@@ -695,7 +630,7 @@ function degradedRestoreSummary(mapping: WorktreeRootMapping, snapshot: Worktree
 	const commits = degraded.missingCommits.length;
 	const recorded = snapshot === undefined ? "" : ` instead of the recorded commit ${short(snapshot.head)}`;
 	const changes = degraded.missingLinks.length > 0 ? " and the snapshot's uncommitted changes" : "";
-	return `${restored} at ${degradedBasis(degraded, snapshot)}${recorded}, the closest commit available here. Not restored: ${commits} commit${commits === 1 ? "" : "s"} (${listed(degraded.missingCommits.map(short), 3)})${changes} of snapshot ${short(mapping.snapshotId)}. ${degraded.hint}`;
+	return `${restored} at ${degradedBasis(degraded, snapshot, owner)}${recorded}, the closest commit available here. Not restored: ${commits} commit${commits === 1 ? "" : "s"} (${listed(degraded.missingCommits.map(short), 3)})${changes} of snapshot ${short(mapping.snapshotId)}. ${degraded.hint}`;
 }
 
 /** The notice for a checkout whose snapshot the session holds no record of, which a resume continued without. */
@@ -704,9 +639,17 @@ export function formatMissingRecordNotice(missing: MissingSnapshotRecord): strin
 }
 
 /** The one notice for a checkout a resume continued without (#4733). */
-export function formatUnrestoredNotice(root: string, unrestored: WorktreeUnrestored): string {
+export function formatUnrestoredNotice(
+	root: string,
+	unrestored: WorktreeUnrestored,
+	owner: WorktreeRestoreOwner = "session",
+): string {
 	const place =
-		unrestored.place === "launch" ? "the directory the resume started from" : "the session's own directory";
+		unrestored.place === "launch"
+			? "the directory the resume started from"
+			: owner === "session"
+				? "the session's own directory"
+				: "the run's own directory";
 	return `Continuing in ${unrestored.continuedIn} (${place}) without restoring ${root} from snapshot ${short(unrestored.snapshotId)}: ${unrestored.detail}. ${unrestored.hint}`.trimEnd();
 }
 

@@ -37,6 +37,8 @@ export interface WorkflowRunStatusDigest {
 	readonly ownerActiveElsewhere?: true;
 	/** Empty for runs that completed, were cancelled or were killed. */
 	readonly blockers: readonly WorkflowStatusBlocker[];
+	/** One notice per checkout the latest resume restored with less than its snapshot, or continued without (#4738). */
+	readonly worktreeRestore?: readonly string[];
 }
 
 function promptMessage(prompt: PendingPrompt | undefined, request: StageInputRequest | undefined): string | undefined {
@@ -91,5 +93,6 @@ export function buildWorkflowRunStatusDigest(detail: RunDetail): WorkflowRunStat
 		...(detail.resumeGuidance === undefined ? {} : { resumeGuidance: detail.resumeGuidance }),
 		...(detail.ownerActiveElsewhere === true ? { ownerActiveElsewhere: true as const } : {}),
 		blockers: blockers(detail),
+		...(detail.worktreeRestore === undefined ? {} : { worktreeRestore: detail.worktreeRestore }),
 	};
 }

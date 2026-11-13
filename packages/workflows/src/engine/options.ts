@@ -35,6 +35,7 @@ export type EngineChildRunOptions = Pick<
 	| "config"
 	| "snapshots"
 	| "worktreeRootMappings"
+	| "worktreeRestoreOutcomes"
 	| "models"
 	| "registry"
 	| "stageControlRegistry"

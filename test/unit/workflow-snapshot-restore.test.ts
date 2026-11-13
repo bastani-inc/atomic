@@ -19,7 +19,7 @@ import {
 } from "../../packages/workflows/src/workers/placement-errors.js";
 import { snapshotRestore } from "../../packages/workflows/src/workers/snapshot-restore.js";
 import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
-import { GitSandbox } from "../helpers/worktree-snapshot.js";
+import { GitSandbox, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
 const binding: WorkspaceBinding = {
 	remotes: ["https://user:secret@example.invalid/r.git"],
@@ -86,11 +86,8 @@ test("the snapshot restore restores a binding from the snapshots recorded with i
 });
 
 test("a failed restore keeps its own error and reads the binding's snapshots again next time (#4416)", async () => {
-	const unreachable = new WorkspaceRestoreError("commits-unavailable", {
-		snapshotId: null,
-		head: binding.head,
-		commits: [binding.head],
-	});
+	// A failure no degraded restore can follow (#4738): nothing of the binding is restored.
+	const unreachable = new WorkspaceRestoreError("snapshot-not-found", { snapshotId: "s2", target: "/node-a/repo" });
 	let fail = true;
 	const { port, lookups } = counted(async () => {
 		if (fail) throw unreachable;
@@ -200,7 +197,8 @@ test("work that carries its root's snapshot restores that snapshot, without read
 });
 
 test("a carried snapshot that fails to restore keeps its own error and leaves the binding's recorded snapshots alone (#4492)", async () => {
-	const missing = new WorkspaceRestoreError("blob-missing", { snapshotId: "carried", blob: "b", role: "patch" });
+	// A failure no degraded restore can follow (#4738): nothing of the carried snapshot is restored.
+	const missing = new WorkspaceRestoreError("snapshot-not-found", { snapshotId: "carried", target: "/node-a/repo" });
 	let fail = false;
 	const { port, lookups } = counted(async () => {
 		if (fail) throw missing;
@@ -253,7 +251,42 @@ test("a carried snapshot restores on a cold host into a verified worktree with i
 			snapshot,
 		},
 	);
+	assert.equal(typeof path, "string", "an exact restore resolves the worktree's path alone");
+	if (typeof path !== "string") return;
 	assert.ok(path.startsWith(sandbox.path("host", "worktree-snapshots", "worktrees")), path);
 	assert.equal(await sandbox.git(path, "rev-parse", "HEAD"), snapshot.head);
 	assert.equal(readFileSync(join(path, "a.txt"), "utf8"), "uncommitted\n");
+});
+
+test("a carried snapshot whose change set is lost restores at its recorded commit without it, and says so (#4738)", async () => {
+	const store = new MemorySnapshotBlobStore();
+	const snapshot = await capturedSnapshot(store);
+	await loseSnapshotBlobs(
+		store,
+		snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch])),
+	);
+	const port = snapshotRestore({
+		recorded: async () => {
+			throw new Error("work that carries a snapshot reads no recorded snapshot");
+		},
+		blobs: store,
+		storeDir: sandbox.path("host", "worktree-snapshots"),
+		git: { path: sandbox.executable.path, env: { ...sandbox.executable.env } as Record<string, string> },
+	});
+
+	const restored = await port(
+		{ remotes: [...snapshot.remotes], head: snapshot.head, tree: snapshot.tree, envHash: "e" },
+		{ signal, snapshot },
+	);
+
+	assert.equal(typeof restored, "object", "a partial restore says so");
+	if (typeof restored !== "object") return;
+	assert.ok(restored.path.startsWith(sandbox.path("host", "worktree-snapshots", "worktrees")), restored.path);
+	assert.equal(await sandbox.git(restored.path, "rev-parse", "HEAD"), snapshot.head);
+	assert.equal(readFileSync(join(restored.path, "a.txt"), "utf8"), "committed\n");
+	assert.equal(restored.partial?.root, snapshot.root);
+	assert.equal(restored.partial?.snapshotId, snapshot.id);
+	assert.equal(restored.partial?.degraded?.stage, "partial-changes");
+	assert.match(restored.partial?.message ?? "", /0 of the 1 change sets/);
+	assert.doesNotMatch(restored.partial?.message ?? "", /fail/i);
 });

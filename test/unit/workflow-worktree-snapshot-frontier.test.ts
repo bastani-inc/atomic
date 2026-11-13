@@ -25,7 +25,7 @@ afterEach(async () => {
 	sandbox.dispose();
 });
 
-test("resume validates the latest boundary once, fails on drift, and can restore it (#4245)", async () => {
+test("resume validates the latest boundary once, restores it on drift, and restores what it can when a change set is lost (#4245, #4738)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
 	const fixture = await openSqlSnapshotJournal(sandbox.path("journal.sqlite"));
 	const { journal } = fixture;
@@ -67,26 +67,19 @@ test("resume validates the latest boundary once, fails on drift, and can restore
 	const blobData = await journal.snapshotBlobs.getBlob(missingBlob);
 	assert.ok(blobData);
 	await loseSnapshotBlobs(journal.snapshotBlobs, [missingBlob]);
-	await assert.rejects(
-		resolveWorkflowSnapshotFrontier(journal, "run", { storeDir: sandbox.path("other-host") }),
-		(error: unknown) => {
-			assert.ok(isWorkspaceDriftError(error));
-			assert.equal(error.code, "tree-drift");
-			assert.equal(error.root, clone);
-			assert.equal(error.expectedTree, snapshots[2]!.tree);
-			assert.notEqual(error.actualTree, snapshots[2]!.tree);
-			assert.equal((error.cause as { code?: string }).code, "blob-missing");
-			assert.equal(error.reason, "restore-failed");
-			assert.equal(error.restoreCode, "blob-missing");
-			assert.equal(error.hint, (error.cause as { hint?: string }).hint);
-			assert.ok(
-				error.message.includes(
-					`, and the automatic restore failed: Cannot restore snapshot ${snapshots[2]!.id}: patch blob ${missingBlob} is missing from storage (tree-drift). Use the storage the snapshot was recorded in`,
-				),
-				error.message,
-			);
-			return true;
-		},
+	const lostLink = snapshots[2]!.chain.findIndex((link) => link.patch === missingBlob);
+	const [partial, ...others] = await resolveWorkflowSnapshotFrontier(journal, "run", {
+		storeDir: sandbox.path("other-host"),
+	});
+	assert.deepEqual(others, []);
+	assert.equal(partial?.from, clone);
+	assert.equal(partial?.degraded?.stage, "partial-changes");
+	assert.equal(partial?.degraded?.cause, "blob-missing");
+	assert.equal(partial?.degraded?.missingLinks[0], lostLink, "restoring stops at the lost change set");
+	assert.equal(await sandbox.git(partial!.to, "rev-parse", "HEAD"), snapshots[2]!.head);
+	assert.notEqual(
+		existsSync(join(partial!.to, "state.txt")) ? readFileSync(join(partial!.to, "state.txt"), "utf8") : undefined,
+		"T3\n",
 	);
 	await journal.snapshotBlobs.putBlobs([{ hash: missingBlob, data: blobData }]);
 	const boundary = (await listWorkflowSnapshotBoundaries(journal, "run"))[1]!;
@@ -112,19 +105,21 @@ test("failed multi-root restore removes earlier fresh worktrees and records no m
 		const capture = await captureWorktreeSnapshot(clone, { blobs: journal.snapshotBlobs });
 		assert.equal(capture.status, "captured");
 		if (capture.status !== "captured") throw new Error("capture failed");
+		// The second record names a remote helper, which the security checks refuse (#4738).
+		const snapshot =
+			index === 1 ? { ...capture.snapshot, remotes: ["ext::sh -c touch% /tmp/pwned"] } : capture.snapshot;
 		await journal.append(acquired.lease, {
 			type: RUN_EVENT_TYPES.checkpointRecorded,
-			payload: { kind: "tool", checkpointId: `tool-${index}`, worktreeSnapshots: [capture.snapshot] },
+			payload: { kind: "tool", checkpointId: `tool-${index}`, worktreeSnapshots: [snapshot] },
 		} as unknown as RunEvent);
 		sandbox.write(join(clone, "change.txt"), `drift ${index}\n`);
-		if (index === 1) await loseSnapshotBlobs(journal.snapshotBlobs, [capture.snapshot.chain[0]!.patch!]);
 	}
 	const storeDir = sandbox.path("rollback-host");
 	await assert.rejects(resolveWorkflowSnapshotFrontier(journal, "run", { storeDir }), (error: unknown) => {
 		assert.ok(isWorkspaceDriftError(error));
 		assert.equal(error.code, "tree-drift");
 		assert.equal(error.root, second.clone);
-		assert.equal((error.cause as { code?: string }).code, "blob-missing");
+		assert.equal((error.cause as { code?: string }).code, "invalid-snapshot");
 		return true;
 	});
 	const worktrees = join(storeDir, "worktrees");

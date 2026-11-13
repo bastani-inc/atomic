@@ -69,6 +69,11 @@ export interface DurableWorkflowHandle {
 	readonly gitWorktreeRoot?: string;
 	/** Restored worktree locations, retaining the original roots for later resume and path mapping. */
 	readonly worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
+	/**
+	 * The checkouts the latest resume restored with less than their snapshots, or continued without (#4738); empty
+	 * after a resume that restored every checkout exactly.
+	 */
+	readonly worktreeRestoreOutcomes?: readonly import("../shared/store-types.js").WorkflowWorktreeRestoreOutcome[];
 	/** Session file path that caches this workflow's durable metadata. */
 	readonly sessionFile?: string;
 	/** Number of completed durable checkpoints. */
@@ -379,6 +384,7 @@ export interface DurableWorkflowMetadata {
 	readonly origin?: WorkflowActor;
 	readonly modelOwner?: string;
 	readonly worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
+	readonly worktreeRestoreOutcomes?: readonly import("../shared/store-types.js").WorkflowWorktreeRestoreOutcome[];
 	readonly releasedModelOwner?: string;
 	readonly workflowCwd?: string;
 	readonly repositoryRoot?: string;

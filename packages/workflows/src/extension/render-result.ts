@@ -352,6 +352,7 @@ function statusDigestNoticeText(digest: WorkflowRunStatusDigest): string {
 	for (const blocker of digest.blockers) {
 		lines.push(`${blocker.kind}: ${blocker.name}${blocker.message === undefined ? "" : ` — ${blocker.message}`}`);
 	}
+	for (const notice of digest.worktreeRestore ?? []) lines.push(`checkout: ${notice}`);
 	return lines.join("\n");
 }
 

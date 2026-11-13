@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	captureWorktreeSnapshot,
@@ -44,16 +44,22 @@ async function startRun() {
 	let count = 0;
 	return {
 		/** Changes `file` in `dir`, records the checkout in the journal, and returns the snapshot. */
-		async record(dir: string, content: string, settings?: Parameters<typeof captureWorktreeSnapshot>[1]) {
+		async record(
+			dir: string,
+			content: string,
+			settings?: Parameters<typeof captureWorktreeSnapshot>[1],
+			remotes?: readonly string[],
+		) {
 			sandbox.write(join(dir, "state.txt"), content);
 			const capture = await captureWorktreeSnapshot(dir, { blobs: journal.snapshotBlobs, ...settings });
 			assert.equal(capture.status, "captured");
 			if (capture.status !== "captured") throw new Error("capture failed");
+			const snapshot = remotes === undefined ? capture.snapshot : { ...capture.snapshot, remotes: [...remotes] };
 			await journal.append(acquired.lease, {
 				type: RUN_EVENT_TYPES.checkpointRecorded,
-				payload: { kind: "tool", checkpointId: `tool-${++count}`, worktreeSnapshots: [capture.snapshot] },
+				payload: { kind: "tool", checkpointId: `tool-${++count}`, worktreeSnapshots: [snapshot] },
 			} as unknown as RunEvent);
-			return capture.snapshot;
+			return snapshot;
 		},
 	};
 }
@@ -103,40 +109,74 @@ test("a checkout that is gone is restored from the journal's blobs into a fresh 
 	assert.equal(readFileSync(join(mapping.to, "state.txt"), "utf8"), "recorded\n");
 });
 
-test("a checkout that is gone and cannot be rebuilt fails with a drift error naming it, with the restore failure as cause (#4245)", async () => {
+test("a checkout that is gone and whose change set is lost is restored at its recorded commit without it (#4738)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
 	const run = await startRun();
 	const snapshot = await run.record(clone, "recorded\n");
 	await loseSnapshotBlobs(fixture.journal.snapshotBlobs, [snapshot.chain[0]!.patch!]);
+	rmSync(clone, { recursive: true, force: true });
+	const restores: WorktreeRootMapping[] = [];
+	const unrestored: string[] = [];
+
+	const [mapping, ...rest] = await resolveWorkflowSnapshotFrontier(fixture.journal, "run", {
+		storeDir: sandbox.path("host"),
+		onRestore: (restored) => restores.push(restored),
+		onUnrestored: (checkout) => unrestored.push(checkout.root),
+	});
+
+	assert.deepEqual(rest, []);
+	assert.equal(mapping?.from, clone);
+	assert.equal(mapping?.degraded?.stage, "partial-changes");
+	assert.equal(mapping?.degraded?.cause, "blob-missing");
+	assert.deepEqual(mapping?.degraded?.missingLinks, [0]);
+	assert.equal(await sandbox.git(mapping!.to, "rev-parse", "HEAD"), snapshot.head);
+	assert.equal(existsSync(join(mapping!.to, "state.txt")), false, "the lost change set is left out whole");
+	assert.deepEqual(restores, [mapping]);
+	assert.deepEqual(unrestored, []);
+});
+
+test("a snapshot record naming a remote helper refuses the pass with a drift error and restores nothing (#4738)", async () => {
+	const { clone } = await sandbox.remoteWithClone();
+	const run = await startRun();
+	const snapshot = await run.record(clone, "recorded\n", undefined, ["ext::sh -c touch% /tmp/pwned"]);
 	rmSync(clone, { recursive: true, force: true });
 	await assert.rejects(
 		resolveWorkflowSnapshotFrontier(fixture.journal, "run", { storeDir: sandbox.path("host") }),
 		(error: unknown) => {
 			assert.ok(isWorkspaceDriftError(error));
 			assert.equal(error.root, clone);
-			assert.equal(error.expectedHead, snapshot.head);
-			assert.equal(error.expectedTree, snapshot.tree);
-			assert.equal(error.actualHead, null);
-			assert.equal(error.actualTree, null);
 			assert.equal(error.snapshotId, snapshot.id);
 			assert.ok(isWorkspaceRestoreError(error.cause));
-			assert.equal(error.cause.code, "blob-missing");
+			assert.deepEqual([error.cause.code, error.cause.reason], ["invalid-snapshot", "unsafe-remote"]);
 			return true;
 		},
 	);
 	assert.deepEqual(worktreesIn(sandbox.path("host")), []);
 });
 
-test("a failure that is not drift, such as missing Git, surfaces as itself and restores nothing (#4245)", async () => {
+test("a checkout this host cannot check without Git is left as it is and reported once the pass ends (#4738)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
 	const run = await startRun();
-	await run.record(clone, "recorded\n");
+	const snapshot = await run.record(clone, "recorded\n");
 	sandbox.write(join(clone, "state.txt"), "drift\n");
 	setWorktreeSnapshotGit(async () => ({ path: sandbox.path("missing-git"), env: {} }));
-	await assert.rejects(
-		resolveWorkflowSnapshotFrontier(fixture.journal, "run", { storeDir: sandbox.path("host") }),
-		(error: unknown) => isGitUnavailableError(error) && error.fields.systemGit?.path === sandbox.path("missing-git"),
-	);
+	const unrestored: Array<{ root: string; snapshotId: string; gitMissing: boolean }> = [];
+
+	const restored = await resolveWorkflowSnapshotFrontier(fixture.journal, "run", {
+		storeDir: sandbox.path("host"),
+		onUnrestored: (checkout) =>
+			unrestored.push({
+				root: checkout.root,
+				snapshotId: checkout.snapshot.id,
+				gitMissing:
+					isGitUnavailableError(checkout.reason) &&
+					checkout.reason.fields.systemGit?.path === sandbox.path("missing-git"),
+			}),
+	});
+
+	assert.deepEqual(restored, []);
+	assert.deepEqual(unrestored, [{ root: clone, snapshotId: snapshot.id, gitMissing: true }]);
+	assert.equal(readFileSync(join(clone, "state.txt"), "utf8"), "drift\n", "nothing is written to the checkout");
 	assert.deepEqual(worktreesIn(sandbox.path("host")), []);
 });
 
@@ -176,9 +216,11 @@ interface Sabotage {
 	readonly journal: RunJournal;
 	/** Worktrees broken by the sabotage, in the order they were restored. */
 	readonly restoredInOrder: readonly string[];
-	/** Breaks every worktree restored so far when the blob of `failing` is read. */
+	/** Breaks every worktree restored so far when the blob of `failing` is read, which then fails. */
 	readonly arm: (failing: WorktreeSnapshot, storeDir: string) => void;
 }
+
+const STORAGE_OFFLINE = "snapshot storage is offline";
 
 function sabotagingJournal(): Sabotage {
 	let target: { readonly hash: string; readonly storeDir: string } | undefined;
@@ -198,7 +240,8 @@ function sabotagingJournal(): Sabotage {
 				restoredInOrder.push(join(root, name));
 				rmSync(join(root, name, ".git"), { force: true });
 			}
-			return undefined;
+			// Storage that cannot be read refuses the pass: no restore can tell what it holds (#4738).
+			throw new Error(STORAGE_OFFLINE);
 		},
 	};
 	const journal = new Proxy(fixture.journal, {
@@ -217,12 +260,15 @@ function sabotagingJournal(): Sabotage {
 	};
 }
 
+/** A remote helper: a snapshot record naming it fails the security checks, which refuses the pass (#4738). */
+const UNSAFE_REMOTE = "ext::sh -c touch% /tmp/pwned";
+
 test("a failed pass removes the worktrees it created and records no mapping; callbacks never fire (#4245)", async () => {
 	const clones = [await sandbox.remoteWithClone("a"), await sandbox.remoteWithClone("b")];
 	const run = await startRun();
-	const snapshots = [await run.record(clones[0]!.clone, "a\n"), await run.record(clones[1]!.clone, "b\n")];
+	await run.record(clones[0]!.clone, "a\n");
+	await run.record(clones[1]!.clone, "b\n", undefined, [UNSAFE_REMOTE]);
 	for (const { clone } of clones) sandbox.write(join(clone, "state.txt"), "drift\n");
-	await loseSnapshotBlobs(fixture.journal.snapshotBlobs, [snapshots[1]!.chain[0]!.patch!]);
 	const storeDir = sandbox.path("host");
 	const events: string[] = [];
 	await assert.rejects(
@@ -245,8 +291,10 @@ test("a failed pass removes the worktrees it created and records no mapping; cal
 test("a leftover a rollback finds is reported with the restore it was removing, and needs no listener (#4245)", async () => {
 	const clones = [await sandbox.remoteWithClone("a"), await sandbox.remoteWithClone("b")];
 	const run = await startRun();
-	const snapshots = [await run.record(clones[0]!.clone, "a\n"), await run.record(clones[1]!.clone, "b\n")];
-	await loseSnapshotBlobs(fixture.journal.snapshotBlobs, [snapshots[1]!.chain[0]!.patch!]);
+	const snapshots = [
+		await run.record(clones[0]!.clone, "a\n"),
+		await run.record(clones[1]!.clone, "b\n", undefined, [UNSAFE_REMOTE]),
+	];
 	for (const listen of [true, false]) {
 		for (const { clone } of clones) sandbox.write(join(clone, "state.txt"), `drift ${listen}\n`);
 		const storeDir = sandbox.path(`host-${listen}`);
@@ -282,7 +330,7 @@ test("a rollback that cannot remove a worktree keeps the original error and atta
 	await assert.rejects(resolveWorkflowSnapshotFrontier(sabotage.journal, "run", { storeDir }), (error: unknown) => {
 		assert.ok(isWorkspaceDriftError(error));
 		assert.equal(error.root, clones[1]!.clone);
-		assert.ok(isWorkspaceRestoreError(error.cause) && error.cause.code === "blob-missing");
+		assert.ok(error.cause instanceof Error && error.cause.message === STORAGE_OFFLINE);
 		const cleanup = (error as { cleanupCause?: unknown }).cleanupCause;
 		assert.ok(isWorkspaceRestoreError(cleanup));
 		assert.equal(cleanup.code, "unsafe-target");

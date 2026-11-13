@@ -740,6 +740,9 @@ class JournalProjection {
 			...((handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings) !== undefined
 				? { worktreeRootMappings: handle.worktreeRootMappings ?? existing?.handle.worktreeRootMappings }
 				: {}),
+			...((handle.worktreeRestoreOutcomes ?? existing?.handle.worktreeRestoreOutcomes) !== undefined
+				? { worktreeRestoreOutcomes: handle.worktreeRestoreOutcomes ?? existing?.handle.worktreeRestoreOutcomes }
+				: {}),
 			pendingStageMessages: handle.pendingStageMessages ?? existing?.handle.pendingStageMessages ?? [],
 			...(handle.possibleStages !== undefined
 				? { possibleStages: handle.possibleStages }
@@ -1137,6 +1140,7 @@ class JournalProjection {
 			...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
 			...(h.snapshots !== undefined ? { snapshots: h.snapshots } : {}),
 			...(h.worktreeRootMappings !== undefined ? { worktreeRootMappings: h.worktreeRootMappings } : {}),
+			...(h.worktreeRestoreOutcomes !== undefined ? { worktreeRestoreOutcomes: h.worktreeRestoreOutcomes } : {}),
 			...(h.forkedFrom !== undefined ? { forkedFrom: h.forkedFrom } : {}),
 			...(h.workspace !== undefined ? { workspace: h.workspace } : {}),
 			...(h.snapshot !== undefined ? { snapshot: h.snapshot } : {}),

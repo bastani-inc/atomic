@@ -89,6 +89,8 @@ export interface RunDetail extends RunExecutionObservation {
 	readonly strandedRoot?: true;
 	/** Decision-model stage-name predictions of a root run, each with whether it came true. */
 	readonly stagePredictions?: StagePredictionStatus;
+	/** One notice per checkout the latest resume restored with less than its snapshot, or continued without (#4738). */
+	readonly worktreeRestore?: readonly string[];
 }
 
 export type InspectRunResult =
@@ -178,6 +180,9 @@ export function inspectRun(
 		blockedAt: copy.blockedAt,
 		...(strandedRoot ? { strandedRoot: true as const } : {}),
 		...stagePredictionsOf(copy, activeStore.runs()),
+		...(copy.worktreeRestoreOutcomes !== undefined && copy.worktreeRestoreOutcomes.length > 0
+			? { worktreeRestore: copy.worktreeRestoreOutcomes.map((outcome) => outcome.message) }
+			: {}),
 	};
 
 	return { ok: true, runId: copy.id, detail };
