@@ -10,6 +10,7 @@
 
 - Fixed `atomic storage import` leaving earlier runs imported when another process changed a later run during the import. Import now takes the write lock of every journal file it writes to and checks every run again under those locks, so a concurrent change fails the import before anything is written. An import that fails after writing part of its files lists exactly what it imported and what it did not, and running it again finishes it without duplicates ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
 - Fixed `atomic storage export` leaving out a workflow run that `atomic storage consolidate` moved to another shard while the export read it, and reporting it as a run in the old journal format. Export now reads the catalog again and rereads the shard the run moved to, including a shard created during the export, and reports any run it still cannot export with the real reason ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
+- Updated the bundled `hono` (4.13.13 → 4.13.16) and `@hono/node-server` (2.1.5 → 2.1.8), which the MCP SDK pulls in, to clear five moderate and low `hono` advisories and two moderate `@hono/node-server` advisories reported against the installed versions
 
 ## [0.9.83] - 2026-11-13
 
