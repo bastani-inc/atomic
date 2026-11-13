@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.81-alpha.1] - 2026-11-13
+
 ### Fixed
 
 - Fixed a subagent failing to start with `Supervisor authorization timeout` when the Intercom broker was briefly slow to answer: a timed-out authorization is now asked once more when the broker connection is still healthy, and fails only if that second request also goes unanswered ([#4697](https://github.com/bastani-inc/atomic/issues/4697))
