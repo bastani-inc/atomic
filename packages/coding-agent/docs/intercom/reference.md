@@ -62,6 +62,20 @@ Exact names and IDs take precedence, and an Atomic session ID is tried only afte
 
 A reopened session or a restored background subagent registers under the Intercom session ID it had before the restart, so peers can keep using the ID they saw in `intercom list`. The session records that ID in its history as an `intercom_session_identity` entry. The broker never gives an ID to a new registration while a live session holds it; the restarted session then gets a fresh ID. While the broker remembers who last held an ID, only that same Atomic session can take it back.
 
+#### Sending to several sessions at once
+
+`send` also accepts targets that name several recipients:
+
+| Target | Reaches |
+| --- | --- |
+| `subagent-worker-*`, `subagent-*`, `*` | Every live session visible in your groups whose name matches, except you. `*` matches any run of characters and is case-insensitive; `*` alone reaches every visible session. |
+| `subagents:*` | Every subagent this session launched, in any run, that is running (foreground or background), released, or paused. |
+| `subagents:<runId>/*` | The same, for the children of one `subagent` run. |
+
+Each recipient gets its own direct send, with the same delivery, refusals, receipts, and reconnect retries as sending to it by name. A paused subagent's message is held for it exactly as a direct send to it would be. The result lists every recipient with its outcome: `delivered`, `queued`, `not delivered` with the reason, or `outcome unknown`. It is an error only when no recipient was reached. A glob that matches no visible session is an error that lists the closest visible names, and `subagents:` with no such child is an error too.
+
+Patterns match only sessions you can already see in `intercom list`: they never reach outside your groups. `ask` and `replyTo` need one exact target, because a reply to a broadcast question would be ambiguous, so a pattern there is an error. Workflow-stage paths below keep their own pattern rules, including sticky delivery to future stages; plain session patterns match live sessions only.
+
 Workflow stages use the canonical `workflow:<rootRunId>/<segment>[/<segment>...]` path printed by `intercom list` and workflow status surfaces. An exact target works while the row is `PENDING` and after it becomes `RUNNING`. Each segment may be a stage name, run id, or glob: `*` matches one segment and may be embedded, while `**` matches any depth.
 
 Status surfaces label pending stages whose pre-start delivery capability is unavailable without presenting a usable target. They never advertise a retained pending stage after its run terminates. The `sessionId` shown by `workflow status` is the stage's Atomic session ID, not a workflow path: it reaches the stage only while the stage is connected and visible to you, and it never queues for a pending stage.
