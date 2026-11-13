@@ -176,6 +176,20 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		const notices = worktreeRestoreNotices(prepared.sessionManager, since);
 		assert.deepEqual(notices, prepared.notices);
 		assert.equal(describeWorktreeRestoreStatus(prepared.sessionManager, restored.to), notices[0]!.message);
+
+		sandbox.write(join(restored.to, "README.md"), "worked on after the resume\n");
+		const later = await captureWorktreeSnapshot(restored.to, {
+			settings,
+			blobs: prepared.sessionManager.getSessionStore().snapshotBlobs,
+		});
+		assert.equal(later.status, "captured");
+		if (later.status !== "captured") return;
+		await prepared.sessionManager.appendWorktreeSnapshot(restored.to, later.snapshot.id, later.snapshot);
+		assert.equal(
+			describeWorktreeRestoreStatus(prepared.sessionManager, restored.to),
+			undefined,
+			"a later snapshot replaces what the resume left out",
+		);
 	});
 
 	test("a checkout whose snapshot record is missing is left out with a notice, and the others are restored (#4733)", async () => {

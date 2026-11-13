@@ -928,18 +928,24 @@ export function describeWorktreeRestoreStatus(
 	root: string,
 ): string | undefined {
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	let status: string | undefined;
+	let status: { readonly snapshotId: string; readonly message: string } | undefined;
 	for (const entry of sessionManager.getBranch()) {
 		if (entry.type !== "worktree_snapshot") continue;
 		if (entry.restore && resolve(entry.restore.to) === resolve(root)) {
 			status = entry.restore.degraded
-				? formatDegradedRestoreNotice(entry.restore, records.get(entry.snapshotId))
+				? {
+						snapshotId: entry.snapshotId,
+						message: formatDegradedRestoreNotice(entry.restore, records.get(entry.snapshotId)),
+					}
 				: undefined;
 		} else if (entry.unrestored && resolve(entry.root) === resolve(root)) {
-			status = formatUnrestoredNotice(entry.root, entry.unrestored);
+			status = { snapshotId: entry.snapshotId, message: formatUnrestoredNotice(entry.root, entry.unrestored) };
+		} else if (status && resolve(entry.root) === resolve(root) && entry.snapshotId !== status.snapshotId) {
+			// A later snapshot of the checkout records what it holds now, which replaces what the resume left out.
+			status = undefined;
 		}
 	}
-	return status;
+	return status?.message;
 }
 
 /** Lines describing `snapshot` for `/session snapshot`. */
