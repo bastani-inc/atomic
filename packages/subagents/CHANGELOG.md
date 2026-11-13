@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.9.81] - 2026-11-13
+
+Parallel subagent calls survive a single child's failure, and the desktop skill learns sandboxes.
+
+- **Partial results from parallel calls.** A child that fails to start is reported on its own row while the others finish, and the card header counts each outcome ([#4697](https://github.com/bastani-inc/atomic/issues/4697), [#4698](https://github.com/bastani-inc/atomic/pull/4698)).
+- **Desktop sandboxes on request.** The bundled agent-desktop skill can set up and drive macOS VM sandboxes on Apple Silicon, only when you ask for one ([#4699](https://github.com/bastani-inc/atomic/pull/4699)).
+
+### Changed
+
+- Updated the bundled agent-desktop skill to upstream `v1.3.0`. It adds a Sandboxes section for the new `agent-desktop sandbox` command: on an Apple Silicon Mac running macOS 13 or later it can install the macOS VM provider, create, start, stop and remove sandboxes, and run commands in the guest, and it explains each sandbox state and what to do next. It also notes that a sandbox isolates the desktop but not the network or the host. The agent installs the sandbox provider or creates a sandbox only when you ask for one, since that builds a local VM host and can download a multi-gigabyte macOS image. Install guidance, the readiness check and permission handling are unchanged.
+
+### Fixed
+
+- Fixed one child's setup failure, such as `Supervisor authorization timeout`, turning a whole parallel subagent call into a single error: that child is now reported as not started with its error, the other children run to completion and report their own results, and the call fails only when no child started. The parallel card keeps a row per child, shows each failed child's error on one line (in full when expanded), and its header counts the outcomes, for example `subagent parallel (5) · 4 done · 1 failed` ([#4697](https://github.com/bastani-inc/atomic/issues/4697))
+
 ## [0.9.81-alpha.1] - 2026-11-13
 
 ### Changed

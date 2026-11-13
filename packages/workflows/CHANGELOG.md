@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.81] - 2026-11-13
+
+Parallel reviewers pick different models, and Escape stops a retrying stage.
+
+- **Diverse parallel `auto` stages.** The new `parallelSlot` option sends stages that do the same job to different model families, and `ralph`'s reviewers use it ([#4689](https://github.com/bastani-inc/atomic/issues/4689), [#4691](https://github.com/bastani-inc/atomic/pull/4691)).
+- **Escape interrupts retry backoff.** Escape in a stage chat waiting out a retry now interrupts the stage instead of closing the chat ([#4690](https://github.com/bastani-inc/atomic/issues/4690), [#4692](https://github.com/bastani-inc/atomic/pull/4692)).
+
+### Added
+
+- `parallelSlot` stage option for `model: "auto"`: parallel stages that do the same job, such as two reviewers, each route to a different model family when enough families are eligible. The builtin `ralph` workflow's reviewers use it, so they no longer both land on the same model ([#4689](https://github.com/bastani-inc/atomic/issues/4689))
+
+### Fixed
+
+- Escape in a stage chat whose session is waiting out an automatic retry's backoff now interrupts the stage, as the chat's `esc to interrupt` footer offers, instead of closing the chat and leaving the retry running ([#4690](https://github.com/bastani-inc/atomic/issues/4690))
+
 ## [0.9.81-alpha.1] - 2026-11-13
 
 ### Added
