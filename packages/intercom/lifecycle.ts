@@ -16,6 +16,11 @@ interface LifecycleDeps {
   incrementRuntimeGeneration(): number;
   resetReconnectAttempt(): void;
   clearReconnectTimer(): void;
+  /**
+   * #4727: cancel the broker starts this session began and any it would begin until the next session starts; resolves
+   * once those in flight have settled, a launched broker having finished starting or been stopped.
+   */
+  abortBrokerStarts?(): Promise<void>;
   setRuntimeContext(ctx: ExtensionContext | null): void;
   setCurrentSessionId(id: string | null): void;
   setCurrentModel(model: string): void;
@@ -52,6 +57,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setDisposed(true);
     deps.incrementRuntimeGeneration();
     deps.clearReconnectTimer();
+    const brokerStarts = deps.abortBrokerStarts?.();
     if (deps.releaseRunningReplyWaits !== undefined) deps.releaseRunningReplyWaits(new Error(reason));
     else deps.rejectReplyWaiter(new Error(reason));
     if (deps.preserveReplyTrackerOnCleanup?.() !== true) activeReplyTracker().reset();
@@ -68,6 +74,8 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
         if (!reportOwnedIntercomDiagnostic()) console.error(`Intercom failed to disconnect during ${reason.toLowerCase()}; continuing cleanup:`, error);
       }
     }
+    // A broker this session already launched is waited for, so it never writes into the agent directory afterwards.
+    await brokerStarts;
     if (deps.disconnectAuxiliaryClients) {
       try {
         await deps.disconnectAuxiliaryClients();
