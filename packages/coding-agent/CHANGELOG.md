@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `--no-session` and other unsaved sessions no longer generate session summaries, so they no longer send one extra model request after each turn. Summaries exist for the `/resume` picker, which never lists unsaved sessions. RPC `get_session_summary` returns `null` for an unsaved session ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
+
 ### Fixed
 
+- Fixed the footer usage, the context indicator, and `/session` leaving out the tokens and cost of the latest session summary until a later turn or `/reload`. They now update as soon as the summary is saved, and also when a cache warm records its usage ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
 - Fixed snapshots captured in a worktree Atomic restored recording no remotes and bundling the checkout's whole history as unpushed, which made a resume on a third machine fail with `commits-unavailable` even for a fully pushed repository. A restored worktree now has the snapshot's recorded remotes (`origin`, then `origin-2`, …, credential-free as recorded, and only over the transports a restore fetches over) and remote-tracking refs under `refs/remotes/atomic/pushed/` for the commits a recorded remote is known to have, so later captures record the remotes and bundle only commits that are really unpushed. A repository without remotes restores and captures as before ([#4732](https://github.com/bastani-inc/atomic/issues/4732))
 
 ## [0.9.84] - 2026-11-13

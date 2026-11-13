@@ -55,6 +55,9 @@ async function generateOwnedSessionSummary(this: AgentSession): Promise<void> {
 		// it lands. "tui" and "rpc" are the resumable, interactive modes.
 		if (this._extensionMode === "print" || this._extensionMode === "json") return;
 
+		// The summary exists for the /resume picker, which never lists an unsaved (--no-session) session.
+		if (!this.sessionManager.isPersisted()) return;
+
 		const model = this.model;
 		if (!model) return;
 
@@ -148,8 +151,11 @@ async function generateOwnedSessionSummary(this: AgentSession): Promise<void> {
 		if (this._sessionSummaryRun !== run) return;
 		if (getLastConversationMessageId(this.sessionManager.getBranch()) !== throughId) return;
 
-		await this.sessionManager.appendSessionSummary(result.summary, throughId, result.usage);
+		const entryId = await this.sessionManager.appendSessionSummary(result.summary, throughId, result.usage);
 		this._lastSummarizedMessageId = throughId;
+		// The entry carries the request's usage, so listeners showing session stats must refresh (#4726).
+		const entry = this.sessionManager.getEntry(entryId);
+		if (entry) this._emit({ type: "entry_appended", entry });
 	} catch {
 		// Nothing awaits this call, so an escaping rejection would surface as an unhandled
 		// rejection and can take the process down. Credential resolution throws outright when no
