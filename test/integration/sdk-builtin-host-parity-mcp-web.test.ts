@@ -40,6 +40,18 @@ test(
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
 );
 
+test.each([false, true])(
+	"built Node dispose leaves nothing writing into the agent directory of a broker still starting, startsAfterRemoval=%s (#4727)",
+	(startsAfterRemoval) => {
+		expectSilentVerifiedFixture(
+			"sdk-host-intercom-dispose-broker-spawn.mjs",
+			startsAfterRemoval ? ["--starts-after-removal"] : [],
+			{ allowSqliteWarning: true },
+		);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
+);
+
 // #3105: missing optional providers/extractors must not become empty successful tool results.
 test(
 	"built Node unavailable web dependencies return explicit errors and exit naturally",

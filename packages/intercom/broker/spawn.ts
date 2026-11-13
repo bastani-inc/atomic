@@ -376,24 +376,34 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+/**
+ * Start the broker unless one answers. #4727: `signal` cancels the start until the broker process exists: nothing is
+ * written into the agent directory once it aborts, and waiting for another spawner's broker stops at once. A broker
+ * this call already launched is waited for until it listens, and stopped if it does not within the startup timeout, so
+ * the call never returns while that broker is still writing its start-up files. An aborted call rejects with
+ * `signal.reason`.
+ */
 export async function spawnBrokerIfNeeded(
   brokerCommand: string,
   brokerArgs: string[],
   readyTimeoutMs: number = BROKER_READY_TIMEOUT_MS,
   extensionDir: string = EXTENSION_DIR,
+  signal?: AbortSignal,
 ): Promise<void> {
+  signal?.throwIfAborted();
   ensurePrivateDirectory(getIntercomDirPath());
 
   if (await isBrokerRunning()) {
     return;
   }
 
+  signal?.throwIfAborted();
   const lockOwner = acquireSpawnLock();
   if (lockOwner === undefined) {
-    await waitForBroker(readyTimeoutMs);
+    await waitForBroker(readyTimeoutMs, undefined, signal);
     return;
   }
-  await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true);
+  await spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, true, signal);
 }
 
 /**
@@ -407,12 +417,14 @@ async function spawnBrokerHoldingLock(
   readyTimeoutMs: number,
   extensionDir: string,
   recheck: boolean,
+  signal?: AbortSignal,
 ): Promise<void> {
   let keepLock = false;
   try {
     if (recheck && (await isBrokerRunning())) {
       return;
     }
+    signal?.throwIfAborted();
 
     const brokerPath = resolveBrokerEntrypoint(extensionDir);
     const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, extensionDir);
@@ -432,9 +444,11 @@ async function spawnBrokerHoldingLock(
     }
     // Reset before spawning either way: the Windows launcher appends to this same path.
     if (!(await resetBrokerLogOnceReleased())) {
-      await waitForBroker(readyTimeoutMs);
+      await waitForBroker(readyTimeoutMs, undefined, signal);
       return;
     }
+    // The last point before the broker exists; from here it is waited for, never abandoned while it starts.
+    signal?.throwIfAborted();
     // The Windows launcher redirects the broker's own stderr, so only the direct spawn
     // needs the descriptor. Node duplicates it during spawn, so the parent copy is closed
     // immediately afterwards rather than being held open for the broker's lifetime.
@@ -489,16 +503,22 @@ async function spawnBrokerHoldingLock(
         resolve();
       }, (error) => {
         cleanup();
+        const starting = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
+        if (starting && signal?.aborted) {
+          // #4727: the session that launched this broker is gone and the broker did not start in time; it is stopped
+          // before this call returns, so it never writes into an agent directory its host may already be removing.
+          child.once("exit", () => reject(toError(error)));
+          // The broker was unreferenced to outlive this process; its exit is awaited now, so it must keep the loop alive.
+          child.ref();
+          child.kill("SIGKILL");
+          return;
+        }
         // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
         // Only now does the lock name the broker: until this hand-off it follows this live spawner, so no other
         // spawner can judge it stale and replace it while this one may still release it.
         // The Windows launcher hides the broker's pid, so its lock could only follow this live spawner and would
         // block every later spawn; there the broker's own live-socket check is what prevents a takeover.
-        keepLock =
-          launch.kind === "direct" &&
-          child.exitCode === null &&
-          child.signalCode === null &&
-          handSpawnLockToBroker(child.pid, lockOwner);
+        keepLock = starting && handSpawnLockToBroker(child.pid, lockOwner);
         reject(toError(error));
       });
     });
@@ -538,7 +558,8 @@ export type BrokerUpgradeOutcome =
  * ({@link BROKER_SPAWN_LOCK_MAX_AGE_MS} after its last renewal, about a minute). Once the process exits or the lock ages
  * out, the next spawner of either version takes it, so an older session can start an older broker, which the next
  * session of this version replaces again. A failure to stop the older broker, or to start the successor once it
- * stopped, is an {@link IntercomBrokerUpgradeError} whose cause is that step's failure.
+ * stopped, is an {@link IntercomBrokerUpgradeError} whose cause is that step's failure. `signal` cancels the upgrade
+ * before it starts and the successor's start as {@link spawnBrokerIfNeeded} does (#4727).
  */
 export async function upgradeBroker(
   brokerCommand: string,
@@ -547,7 +568,9 @@ export async function upgradeBroker(
   extensionDir: string = EXTENSION_DIR,
   own: BrokerProtocolRange = BROKER_PROTOCOL,
   stopTimeoutMs: number = BROKER_UPGRADE_STOP_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<BrokerUpgradeOutcome> {
+  signal?.throwIfAborted();
   ensurePrivateDirectory(getIntercomDirPath());
   const acquired = await acquireSpawnLockWithin(readyTimeoutMs + stopTimeoutMs);
   if (acquired === undefined) return "busy";
@@ -555,7 +578,7 @@ export async function upgradeBroker(
   let lockPassedOn = false;
   const spawnHoldingLock = (): Promise<void> => {
     lockPassedOn = true;
-    return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false);
+    return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false, signal);
   };
   try {
     const answer = await controlRequest(getBrokerSocketPath(), "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
@@ -760,10 +783,12 @@ export function releaseSpawnLock(owner: string, lockPath: string = getBrokerSpaw
 export async function waitForBroker(
   timeoutMs = BROKER_READY_TIMEOUT_MS,
   announcedPid?: () => number | undefined,
+  signal?: AbortSignal,
 ): Promise<void> {
   const start = Date.now();
   let interval = BROKER_POLL_INITIAL_INTERVAL_MS;
   while (Date.now() - start < timeoutMs) {
+    signal?.throwIfAborted();
     if (await checkSocketConnectable()) {
       return;
     }

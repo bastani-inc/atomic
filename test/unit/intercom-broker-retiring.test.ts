@@ -53,7 +53,14 @@ vi.mock("node:timers/promises", async (importOriginal) => {
 			if (held === undefined) return original.setTimeout(delay, value, options);
 			heldDelay.next = undefined;
 			held.entered.resolve();
-			return held.ends.promise.then(() => value);
+			// A held delay still ends early when its signal aborts, as the real one does (#4727).
+			const signal = options?.signal;
+			const aborted = new Promise<never>((_, reject) => {
+				const abort = () => reject(new Error("The operation was aborted", { cause: signal?.reason }));
+				if (signal?.aborted) abort();
+				else signal?.addEventListener("abort", abort, { once: true });
+			});
+			return Promise.race([held.ends.promise.then(() => value), aborted]);
 		},
 	};
 });
@@ -350,8 +357,8 @@ describe("a session that starts while its broker retires", () => {
 			assert.deepEqual(await connectThroughExtension(), []);
 			assert.equal(registrations, 2);
 
-			// The first session's retry wakes. Its session is gone, so it gives up without spawning a broker or
-			// registering a session of its own, and the replacement's connection is still the one the extension uses.
+			// The replacement cancelled the first session's retry (#4727); even woken, it gives up without spawning a broker
+			// or registering a session of its own, and the replacement's connection is still the one the extension uses.
 			retryDelay.end();
 			assert.ok((await replacedAttempt) instanceof Error);
 			assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 2);
@@ -403,8 +410,8 @@ describe("a session that starts while its broker retires", () => {
 			assert.deepEqual(await connectThroughExtension(), []);
 			assert.equal(registrations, 2);
 
-			// The wait ends. The stage's session is gone, so its start-up gives up without spawning a broker or
-			// registering a session of its own, and the replacement's connection is still the one the extension uses.
+			// The replacement cancelled the wait (#4727); even ended, the stage's start-up gives up without spawning a broker
+			// or registering a session of its own, and the replacement's connection is still the one the extension uses.
 			ownerWait.end();
 			assert.ok((await staleStart) instanceof Error);
 			assert.equal(vi.mocked(spawnBrokerIfNeeded).mock.calls.length, 2);
