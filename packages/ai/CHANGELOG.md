@@ -4,6 +4,34 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.81] - 2026-11-13
+
+Qwen Token Plan moves to its current gateways, and tool schemas and Google requests fail less often.
+
+- **Current Qwen Token Plan gateways.** The Team providers use the current hosts, the Individual providers gain `deepseek-v4.1-flash` models, and each plan can have its own API key variable (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112)).
+- **Fewer rejected tool calls.** Tools whose schemas cannot be strict fall back to non-strict mode instead of drawing a 400 from OpenAI, and non-strict Anthropic schemas keep their root `additionalProperties` (upstream [#12049](https://github.com/earendil-works/pi/issues/12049), [#12100](https://github.com/earendil-works/pi/pull/12100)).
+- **Steadier Google and retry handling.** Google adapters accept a custom `fetch` and end `CONTINUATION` turns cleanly, and `"Connection closed."` errors count as retryable (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108), [#12093](https://github.com/earendil-works/pi/pull/12093)).
+
+### Added
+
+- Added `deepseek-v4.1-flash` and `deepseek-v4.1-flash-1017` to the Qwen Token Plan Individual providers, and per-plan key variables `QWEN_TOKEN_PLAN_TEAM_API_KEY`, `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY`, `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY`, and `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY`; the shared `QWEN_TOKEN_PLAN_API_KEY` and `QWEN_TOKEN_PLAN_CN_API_KEY` still work as fallbacks (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112))
+
+### Changed
+
+- Updated `@google/genai` to 2.32.0 with automatic continuation turned off, so a `CONTINUATION` finish reason ends the turn with stop reason `length` (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108))
+- Qwen Token Plan providers now use the current gateways (`token-plan.maas.qwencloudapi.com` international, `token-plan.maas.qianwenaiapi.com` China), and `qwen-token-plan` and `qwen-token-plan-cn` are named "Qwen Token Plan Team" and "Qwen Token Plan Team CN". Provider IDs are unchanged, and the old `aliyuncs.com` hosts still work (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112))
+
+### Fixed
+
+- Fixed tools with `strict: "prefer"` constrained sampling being sent in strict mode when their schema contains a node without a `type`, such as `items: {}`, `Type.Unknown()`, or a bare `const`, which OpenAI rejects with a 400 error; these tools now fall back to non-strict mode, `strict: "require"` fails locally, and nodes with only an `enum` stay strict. Non-strict Anthropic tool schemas, including those that fell back from `strict: "prefer"`, also keep their root `additionalProperties` keyword instead of dropping it (upstream [#12049](https://github.com/earendil-works/pi/issues/12049), [#12100](https://github.com/earendil-works/pi/pull/12100))
+- Fixed provider errors reading `"Connection closed."` not being classified as retryable (upstream [#12093](https://github.com/earendil-works/pi/pull/12093))
+- Fixed the `google-generative-ai` and `google-vertex` adapters rejecting a custom `fetch` option instead of forwarding it through `httpOptions.fetch`, and kept the global undici dispatcher's idle timeouts active when no custom `fetch` is supplied; Vertex ADC token requests still use `google-auth-library`'s own HTTP client (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108))
+
+### Removed
+
+- Removed the unused `mapStopReasonString` export from `@bastani/pi-ai/api/google-shared` (upstream [#12103](https://github.com/earendil-works/pi/pull/12103))
+- Removed the retired `deepseek-v3.2` and `deepseek-v4-flash` from the Qwen Token Plan Team providers; use `deepseek-v4-flash-0731` or `deepseek-v4.1-flash` (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112))
+
 ## [0.9.81-alpha.1] - 2026-11-13
 
 ### Added
