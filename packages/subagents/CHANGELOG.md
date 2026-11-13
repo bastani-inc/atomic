@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.81-alpha.1] - 2026-11-13
+
 ### Changed
 
 - Updated the bundled agent-desktop skill to upstream `v1.3.0`. It adds a Sandboxes section for the new `agent-desktop sandbox` command: on an Apple Silicon Mac running macOS 13 or later it can install the macOS VM provider, create, start, stop and remove sandboxes, and run commands in the guest, and it explains each sandbox state and what to do next. It also notes that a sandbox isolates the desktop but not the network or the host. The agent installs the sandbox provider or creates a sandbox only when you ask for one, since that builds a local VM host and can download a multi-gigabyte macOS image. Install guidance, the readiness check and permission handling are unchanged.
