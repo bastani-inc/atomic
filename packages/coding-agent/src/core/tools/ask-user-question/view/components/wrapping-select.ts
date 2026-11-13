@@ -2,6 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
+import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
 
 /**
  * Row-intent discriminated union. `kind` is the single discriminator —
@@ -26,7 +27,8 @@ export type WrappingSelectItem =
 	| { kind: "next"; label: string; description?: string };
 
 export interface WrappingSelectTheme {
-	selectedText: (text: string) => string;
+	/** Paints a row or inline field in its tone; tones come from `field-tone.ts`. */
+	field: (tone: FieldTone, text: string) => string;
 	description: (text: string) => string;
 	scrollInfo: (text: string) => string;
 }
@@ -53,7 +55,8 @@ export class WrappingSelect implements Component {
 	private static readonly INACTIVE_POINTER = "  ";
 	private static readonly NUMBER_SEPARATOR = ". ";
 	private static readonly CURSOR_INVERSE_START = "\x1b[7m";
-	private static readonly CURSOR_INVERSE_END = "\x1b[0m";
+	// Reverse-video off only: a full reset would drop the field color after the caret (#4741).
+	private static readonly CURSOR_INVERSE_END = "\x1b[27m";
 	private static readonly CONFIRMED_MARK = " ✔";
 	private static readonly MIN_CONTENT_WIDTH = 1;
 
@@ -70,9 +73,9 @@ export class WrappingSelect implements Component {
 	private inputCursor: number | undefined = undefined;
 	/**
 	 * Index of the row that was previously confirmed for this list (e.g. the user's prior
-	 * answer when re-entering a multi-question tab). Renders `<label> ✔` in the active-row
-	 * styling but WITHOUT the `❯` pointer — pointer is reserved for the live cursor. When
-	 * `selectedIndex === confirmedIndex && focused`, the active rendering wins (no double-mark).
+	 * answer when re-entering a multi-question tab). Renders `<label> ✔` in the `answered`
+	 * tone WITHOUT the `❯` pointer — pointer is reserved for the live cursor. When
+	 * `selectedIndex === confirmedIndex && focused`, the row takes the `editing` tone.
 	 */
 	private confirmedIndex: number | undefined = undefined;
 	/**
@@ -192,26 +195,46 @@ export class WrappingSelect implements Component {
 		const continuationPrefix = " ".repeat(visibleWidth(rowPrefix));
 		const contentWidth = Math.max(WrappingSelect.MIN_CONTENT_WIDTH, width - visibleWidth(rowPrefix));
 
-		if (this.shouldRenderAsInlineInput(item, isActive)) {
-			return this.renderInlineInputRow(rowPrefix, continuationPrefix, contentWidth);
+		if (this.isInlineField(item)) {
+			if (isActive) return this.renderInlineInputRow(rowPrefix, continuationPrefix, contentWidth);
+			return [
+				...this.renderInlineFieldAtRest(item, index, rowPrefix, continuationPrefix, contentWidth),
+				...this.renderDescriptionBlock(item.description, continuationPrefix, contentWidth),
+			];
 		}
 
-		// Confirmed row gets a trailing ` ✔` and accent+bold styling; pointer is independent
-		// (still ❯ when active). When `index === confirmedIndex` AND `isActive`, both `❯` and
-		// `✔` appear on the same row — load-bearing for the case where the prior answer was
-		// row 0 (cursor resets to 0 on tab-back, so the confirmed row IS the active row).
-		// Optional `confirmedLabelOverride` replaces the static label (used for `kind: "other"`
-		// + `kind: "custom"` answer); the inline-input branch above still wins for `kind: "other" + isActive`.
+		// Confirmed row gets a trailing ` ✔`; pointer is independent (still ❯ when active).
+		// When `index === confirmedIndex` AND `isActive`, both `❯` and `✔` appear on the same
+		// row — load-bearing for the case where the prior answer was row 0 (cursor resets to
+		// 0 on tab-back, so the confirmed row IS the active row).
 		const isConfirmed = index === this.confirmedIndex;
-		const label = isConfirmed
-			? `${this.confirmedLabelOverride ?? item.label}${WrappingSelect.CONFIRMED_MARK}`
-			: item.label;
-		const applySelectedStyle = isActive || isConfirmed;
+		const label = isConfirmed ? `${item.label}${WrappingSelect.CONFIRMED_MARK}` : item.label;
 
 		return [
-			...this.renderLabelBlock(label, rowPrefix, continuationPrefix, contentWidth, applySelectedStyle),
+			...this.renderLabelBlock(label, rowPrefix, continuationPrefix, contentWidth, rowTone(isActive, isConfirmed)),
 			...this.renderDescriptionBlock(item.description, continuationPrefix, contentWidth),
 		];
+	}
+
+	/**
+	 * An inline field without focus shows what it holds: the in-flight draft, else the
+	 * confirmed answer (`confirmedLabelOverride`), else its own label as the placeholder.
+	 * The ` ✔` mark only follows text that is the confirmed answer.
+	 */
+	private renderInlineFieldAtRest(
+		item: WrappingSelectItem,
+		index: number,
+		rowPrefix: string,
+		continuationPrefix: string,
+		contentWidth: number,
+	): string[] {
+		const confirmedValue = index === this.confirmedIndex ? (this.confirmedLabelOverride ?? "") : "";
+		const value = this.inputBuffer.trim().length > 0 ? this.inputBuffer : confirmedValue;
+		const tone = fieldTone(false, value);
+		const text = tone === "placeholder" ? item.label : value;
+		const label =
+			confirmedValue.length > 0 && value === confirmedValue ? `${text}${WrappingSelect.CONFIRMED_MARK}` : text;
+		return this.renderLabelBlock(label, rowPrefix, continuationPrefix, contentWidth, tone);
 	}
 
 	private buildRowPrefix(index: number, isActive: boolean, numberWidth: number): string {
@@ -221,8 +244,8 @@ export class WrappingSelect implements Component {
 		return `${pointer}${paddedNumber}${WrappingSelect.NUMBER_SEPARATOR}`;
 	}
 
-	private shouldRenderAsInlineInput(item: WrappingSelectItem, isActive: boolean): boolean {
-		return this.inlineInputEnabled && isActive && ROW_INTENT_META[item.kind].activatesInputMode;
+	private isInlineField(item: WrappingSelectItem): boolean {
+		return this.inlineInputEnabled && ROW_INTENT_META[item.kind].activatesInputMode;
 	}
 
 	/**
@@ -230,7 +253,7 @@ export class WrappingSelect implements Component {
 	 * so long input doesn't run off the right edge or trip the parent renderer's
 	 * width invariant. Mirrors `renderLabelBlock`'s contract: first line carries
 	 * `rowPrefix`, continuation lines carry `continuationPrefix` (spaces), and every
-	 * emitted line passes through `theme.selectedText`. The cursor mirrors the
+	 * emitted line is painted in the `editing` tone. The cursor mirrors the
 	 * main chat editor: inverse-video over the character at the caret, or an
 	 * inverse-video space at end-of-line.
 	 */
@@ -239,7 +262,7 @@ export class WrappingSelect implements Component {
 		const wrapped = wrapTextWithAnsi(raw, contentWidth);
 		return wrapped.map((segment, index) => {
 			const prefix = index === 0 ? rowPrefix : continuationPrefix;
-			return this.theme.selectedText(`${prefix}${segment}`);
+			return this.theme.field("editing", `${prefix}${segment}`);
 		});
 	}
 
@@ -265,13 +288,13 @@ export class WrappingSelect implements Component {
 		rowPrefix: string,
 		continuationPrefix: string,
 		contentWidth: number,
-		applySelectedStyle: boolean,
+		tone: FieldTone | undefined,
 	): string[] {
 		const wrapped = wrapTextWithAnsi(label, contentWidth);
 		return wrapped.map((segment, index) => {
 			const prefix = index === 0 ? rowPrefix : continuationPrefix;
 			const line = `${prefix}${segment}`;
-			return applySelectedStyle ? this.theme.selectedText(line) : line;
+			return tone ? this.theme.field(tone, line) : line;
 		});
 	}
 

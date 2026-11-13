@@ -24,6 +24,7 @@ import type { TabComponents } from "../view/tab-components.ts";
 import { ROW_INTENT_META } from "./row-intent.ts";
 import type { PerTabSelector } from "./selectors/contract.ts";
 import { selectActivePreviewPaneIndex } from "./selectors/derivations.ts";
+import { styleFieldTone } from "./selectors/field-tone.ts";
 import {
 	selectChatRowProps,
 	selectDialogProps,
@@ -123,7 +124,7 @@ class QuestionnaireBuilder {
 	private makeSelectTheme(): WrappingSelectTheme {
 		const t = this.theme;
 		return {
-			selectedText: (s) => t.fg("accent", t.bold(s)),
+			field: (tone, s) => styleFieldTone(t, tone, s),
 			description: (s) => t.fg("muted", s),
 			scrollInfo: (s) => t.fg("dim", s),
 		};

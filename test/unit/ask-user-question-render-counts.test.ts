@@ -257,7 +257,7 @@ test("an option list measures and paints from one layout per props and width (#4
 	const items = buildItemsForQuestion(previewQuestionnaire());
 	const list = new OptionListView({
 		items,
-		theme: { selectedText: (s) => s, description: (s) => s, scrollInfo: (s) => s },
+		theme: { field: (_tone, s) => s, description: (s) => s, scrollInfo: (s) => s },
 	});
 	list.setProps({ selectedIndex: 0, focused: true, inputBuffer: "", inputCaret: 0 });
 	const select = vi.spyOn(WrappingSelect.prototype, "render");
