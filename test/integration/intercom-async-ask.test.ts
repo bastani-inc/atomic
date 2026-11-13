@@ -32,6 +32,8 @@ delete process.env.PI_CODING_AGENT_DIR;
 // The broker paths are read at module load, so every Intercom import follows the agent-dir override.
 const { default: intercomHeavy } = await import("../../packages/intercom/index-heavy.js");
 const { default: intercomLightweight } = await import("../../packages/intercom/index.js");
+const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
+type ReleasedChildReply = import("../../packages/intercom/broker/client.js").ReleasedChildReply;
 const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js");
 
 interface ToolResult {
@@ -68,6 +70,8 @@ function session(options: {
 	readonly saved?: boolean;
 	/** A workflow stage's orchestration context, as the stage runner gives its session. */
 	readonly orchestrationContext?: object;
+	/** An admitted subagent child's policy, as its launcher gives its session. */
+	readonly subagentPolicy?: object;
 }) {
 	const sessionId = options.sessionId ?? randomUUID();
 	const entries: Entry[] = options.entries ?? [];
@@ -90,6 +94,7 @@ function session(options: {
 		},
 		ui: { confirm: async () => true, notify() {} },
 		...(options.orchestrationContext === undefined ? {} : { orchestrationContext: options.orchestrationContext }),
+		...(options.subagentPolicy === undefined ? {} : { subagentPolicy: options.subagentPolicy }),
 		...(options.automaticBudgetMs === undefined
 			? {}
 			: { getAgentTaskHost: () => ({ commandWaitBudgetMs: options.automaticBudgetMs, hasActiveTaskWaits: false }) }),
@@ -633,4 +638,209 @@ test("an asker that is away when its recipient ends gets the failed-ask message 
 	}, "the resumed asker learns its recipient ended");
 	assert.ok(card?.content?.startsWith(`Your ask ${askId} to recipient-ends-while-away failed`));
 	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});
+
+test("a background subagent that yields an ask, is released, and is woken by the reply gets it once as a message (#4751)", async () => {
+	const childName = "subagent-worker-async-1";
+	// The launching session: it authorizes the child, keeps it reserved while it is released, and wakes it.
+	const owner = new IntercomClient(randomUUID());
+	await owner.connect(
+		{
+			name: "owner-async",
+			model: "m",
+			cwd: repoRoot,
+			pid: process.pid,
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+		},
+		undefined,
+		randomUUID(),
+	);
+	cleanups.push(() => owner.disconnect().catch(() => undefined));
+	const policy = (supervisor: { capability: string; supervisorSessionId: string }) => ({
+		intercom: {
+			orchestratorTarget: "owner-async",
+			runId: "async-run",
+			agent: "worker",
+			index: 0,
+			sessionName: childName,
+			supervisor,
+		},
+	});
+	const peer = await started({ name: "peer-busy-for-child" });
+	await peer.busy();
+	const first = session({
+		name: childName,
+		automaticBudgetMs: SHORT_BUDGET_MS,
+		subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)),
+	});
+	await first.start();
+
+	// The default wait yields while the peer is busy; the child's call returns and the ask stays pending.
+	const asked = await first.call({ action: "ask", to: "peer-busy-for-child", message: "which port?" });
+	assert.equal(asked.isError, false, asked.content[0]?.text);
+	assert.equal(asked.details.pending, true);
+	const askId = String(asked.details.askId);
+
+	// The child is released while it waits on something else: its owner reserves it, and its session closes.
+	await owner.reserveReleasedChildren([{ childName, wake: true }]);
+	await first.shutdown();
+	const handoffs: string[] = [];
+	owner.on("released_child_reply", (notice: ReleasedChildReply) => {
+		handoffs.push(notice.replyTo);
+		// No call of the child waits for this reply, as Subagents answers for such a child.
+		owner.acknowledgeReleasedChildReply(notice, false, true);
+	});
+	const woken = Promise.withResolvers<Session>();
+	owner.on("restoring_recipient_wake", () => {
+		void (async () => {
+			const resumed = session({
+				name: childName,
+				sessionId: first.sessionId,
+				entries: first.entries,
+				subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)),
+			});
+			cleanups.push(() => resumed.shutdown());
+			await resumed.start("resume");
+			woken.resolve(resumed);
+		})();
+	});
+
+	await peer.becomeIdle();
+	await questionArrives(peer, "which port\\?");
+	const replied = await peer.call({ action: "reply", to: childName, message: "port 8080", replyTo: askId });
+	assert.equal(replied.isError, false, replied.content[0]?.text);
+	const resumed = await woken.promise;
+	await until(() => resumed.cards(/port 8080/).length > 0, "the woken child receives the reply");
+	assert.ok(resumed.cards(/port 8080/)[0]?.content?.startsWith(`Reply to your ask ${askId} from peer-busy-for-child`));
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, SHORT_BUDGET_MS));
+	assert.equal(
+		first.entries.filter((entry) => entry.type === "custom_message" && /port 8080/.test(String(entry.content)))
+			.length,
+		1,
+		"the reply is shown exactly once",
+	);
+	assert.deepEqual(handoffs, [askId]);
+});
+
+test("a workflow stage released after asking gets the reply once it reopens (#4751)", async () => {
+	const host = session({ name: "workflow-host-released" });
+	intercomLightweight(host.pi as never);
+	await host.start();
+	cleanups.push(() => host.shutdown());
+	const peers = new Map<string, Session[]>();
+	const ids = new Map<string, string>();
+	let askId = "";
+	const released = Promise.withResolvers<void>();
+	const reviewerReplied = Promise.withResolvers<void>();
+	const stageFixture = createPersistedStageFixture({
+		reply: (text) => `done: ${text}`,
+		async onCreate(createOptions) {
+			const manager = createOptions.sessionManager;
+			const orchestration = createOptions.orchestrationContext;
+			assert.ok(manager && orchestration?.kind === "workflow-stage");
+			const name = orchestration.workflowStageName;
+			const earlier = peers.get(name)?.at(-1);
+			// A reopened stage continues from its saved session.
+			const peer = session({
+				name: "",
+				sessionId: manager.getSessionId(),
+				orchestrationContext: orchestration,
+				...(earlier === undefined ? {} : { entries: earlier.entries }),
+			});
+			await peer.start(earlier === undefined ? "startup" : "resume");
+			peers.set(name, [...(peers.get(name) ?? []), peer]);
+			ids.set(name, manager.getSessionId());
+			return () => peer.shutdown();
+		},
+		async onPrompt(text) {
+			if (text.includes("ask then wait")) {
+				const author = peers.get("author")?.at(-1);
+				assert.ok(author);
+				const reviewerId = await until(() => ids.get("reviewer"), "the reviewer stage starts");
+				const asked = await author.call({
+					action: "ask",
+					to: `subagent-chat-${reviewerId}`,
+					message: "is it safe while I am away?",
+					wait: { kind: "background" },
+				});
+				assert.equal(asked.isError, false, asked.content[0]?.text);
+				askId = String(asked.details.askId);
+			}
+			if (text.includes("review while the author is away")) {
+				await released.promise;
+				const reviewer = await until(() => peers.get("reviewer")?.at(-1), "the reviewer stage peer starts");
+				await until(
+					() => reviewer.cards(/is it safe while I am away\?/).length > 0,
+					"the reviewer receives the question",
+				);
+				const replied = await reviewer.call({
+					action: "reply",
+					to: `subagent-chat-${ids.get("author")}`,
+					message: "safe once you are back",
+					replyTo: askId,
+				});
+				assert.equal(replied.isError, false, replied.content[0]?.text);
+				reviewerReplied.resolve();
+			}
+			if (text.includes("continue after the reply")) {
+				// The reopened author took the reply that waited for it while it was released.
+				await until(
+					() =>
+						peers
+							.get("author")
+							?.at(-1)
+							?.cards(/safe once you are back/).length,
+					"the reopened author receives the reply",
+				);
+			}
+		},
+	});
+	const store = createStore();
+	const registry = createStageControlRegistry();
+	const runId = randomUUID();
+	const backend = await createMemoryTestBackend();
+	configureTestStoreBackend(store, backend);
+	await backend.commitWorkflowRegistration({
+		workflowId: runId,
+		name: "stage-ask-released",
+		inputs: {},
+		status: "running",
+		createdAt: 1,
+	});
+	cleanups.push(registerPendingStageIntercomBridge(host.pi as never, store));
+	cleanups.push(() => registry.clear());
+	const definition = workflow({
+		name: "stage-ask-released",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			const author = ctx.stage("author");
+			await Promise.all([
+				(async () => {
+					await author.prompt("ask then wait");
+					// The stage is released between turns while its ask is pending.
+					await author.release();
+					released.resolve();
+					await reviewerReplied.promise;
+					// The workflow's next message reopens the stage's saved session.
+					await author.sendUserMessage("continue after the reply");
+				})(),
+				ctx.stage("reviewer").prompt("review while the author is away"),
+			]);
+			return {};
+		},
+	});
+	const result = await run(
+		definition,
+		{},
+		{ runId, store, stageControlRegistry: registry, adapters: stageFixture.adapters },
+	);
+	assert.equal(result.status, "completed", JSON.stringify(result));
+	const reopened = peers.get("author")?.at(-1);
+	assert.ok(reopened);
+	const cards = (peers.get("author") ?? []).flatMap((peer) => peer.cards(/safe once you are back/));
+	assert.equal(cards.length, 1, "the reply is shown exactly once");
+	assert.ok(cards[0]?.content?.startsWith(`Reply to your ask ${askId} from subagent-chat-`), cards[0]?.content);
 });

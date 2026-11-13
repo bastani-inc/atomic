@@ -24,6 +24,25 @@ export class PendingQuestionIndex {
     if (this.dormant.length > DORMANT_QUESTIONS_MAX) this.dormant = this.dormant.slice(-DORMANT_QUESTIONS_MAX);
   }
 
+  /**
+   * A reply from `replierSessionId` to the kept question `questionId`, whose asker is away: the route is taken, so the
+   * reply goes to the asker as an ordinary message wherever the asker is reached while away (#4751).
+   */
+  hasDormantReply(questionId: string, replierSessionId: string): boolean {
+    return this.dormant.some(
+      (question) => question.messageId === questionId && question.targetSessionId === replierSessionId,
+    );
+  }
+
+  takeDormantReply(questionId: string, replierSessionId: string): PendingQuestion | undefined {
+    const index = this.dormant.findIndex(
+      (question) => question.messageId === questionId && question.targetSessionId === replierSessionId,
+    );
+    if (index < 0) return undefined;
+    const [question] = this.dormant.splice(index, 1);
+    return question;
+  }
+
   /** A session is back under its id: its kept questions route again once both of their peers are connected. */
   restoreDormant(sessionId: string, isConnected: (sessionId: string) => boolean): PendingQuestion[] {
     const restored: PendingQuestion[] = [];
@@ -60,6 +79,20 @@ export class PendingQuestionIndex {
   }
 
   private readonly parked = new Map<string, { ownerSessionId: string; questions: PendingQuestion[] }>();
+  /** #4751: asks of released subagents whose reply is held for them, by owner and child name. */
+  private readonly parkedAskers = new Map<string, PendingQuestion[]>();
+
+  parkAsker(childName: string, ownerSessionId: string, question: PendingQuestion): void {
+    const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
+    this.parkedAskers.set(key, [...(this.parkedAskers.get(key) ?? []), question]);
+  }
+
+  takeParkedAskers(childName: string, ownerSessionId: string): PendingQuestion[] {
+    const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
+    const questions = this.parkedAskers.get(key) ?? [];
+    this.parkedAskers.delete(key);
+    return questions;
+  }
 
   parkTarget(targetSessionId: string, childName: string, ownerSessionId: string): void {
     const questions = this.takeForTarget(targetSessionId);

@@ -1722,7 +1722,7 @@ export class IntercomClient extends EventEmitter {
     return this.restoringRecipientRequest({ type: "acknowledge_released_child_wake", childName });
   }
 
-  acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean): boolean {
+  acknowledgeReleasedChildReply(reply: ReleasedChildReply, accepted: boolean, deliverToChild = false): boolean {
     if (!this.socket || this.socket.destroyed) return false;
     this.requireBrokerProtocol("released_child_reply_ack");
     writeMessage(this.socket, {
@@ -1730,6 +1730,7 @@ export class IntercomClient extends EventEmitter {
       messageId: reply.message.id,
       handoffId: reply.handoffId,
       accepted,
+      ...(deliverToChild ? { deliverToChild: true as const } : {}),
     });
     return true;
   }

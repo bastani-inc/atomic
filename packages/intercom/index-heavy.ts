@@ -1109,7 +1109,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const request: ReleasedChildReplyRequest = { childName: notice.childName, replyTo: notice.replyTo, message: notice.message };
       if (client === nextClient && getLiveContext()) pi.events.emit(RELEASED_CHILD_REPLY_EVENT, request);
       void (request.completion ?? Promise.resolve(false)).then(
-        (accepted) => nextClient.acknowledgeReleasedChildReply(notice, accepted),
+        (accepted) => nextClient.acknowledgeReleasedChildReply(notice, accepted === true, accepted === "deliver"),
         () => nextClient.acknowledgeReleasedChildReply(notice, false),
       );
     });

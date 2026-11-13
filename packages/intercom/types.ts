@@ -335,7 +335,11 @@ export type ClientMessage =
   /** #4326: the owner is waking this child; the broker extends the sends held for it once per wake. */
   | { type: "acknowledge_released_child_wake"; requestId: string; childName: string }
   /** #4326: the owner answers one `released_child_reply` handoff; an ack that names another handoff is ignored. */
-  | { type: "released_child_reply_ack"; messageId: string; handoffId: string; accepted: boolean }
+  /**
+   * #4751: `deliverToChild`: the released child has no call waiting for this reply (its `ask` already returned), so the
+   * broker delivers the reply to the child as an ordinary send, held for the child and waking it.
+   */
+  | { type: "released_child_reply_ack"; messageId: string; handoffId: string; accepted: boolean; deliverToChild?: true }
   /** #4642: host sessions without a connection each; protocol 3. The broker answers `hosted_sessions_ack`. */
   | { type: "host_sessions"; requestId: string; sessions: HostedSessionFrameItem[] }
   /** #4642: remove sessions this connection hosts, in a frame of at most 500. */

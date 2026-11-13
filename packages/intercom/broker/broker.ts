@@ -232,6 +232,8 @@ type ConnectedSession = BrokerConnectedSession;
 
 interface PendingReleasedReplyAck {
   readonly handoffId: string;
+  /** The reply itself, delivered to the child as an ordinary send when no call of the child waits for it (#4751). */
+  readonly message: Message;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly socket: net.Socket;
   readonly attemptId?: string;
@@ -1945,6 +1947,9 @@ class IntercomBroker {
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
           if (registered !== undefined && supervisorId !== undefined) {
+            // #4751: a released subagent back for a reply held for it takes up the route of the ask it answers.
+            for (const question of this.pendingQuestions.takeParkedAskers(registered, supervisorId))
+              this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
             for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
               this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
               const asker = this.sessions.get(question.senderSessionId);
@@ -2563,7 +2568,10 @@ class IntercomBroker {
 			}
 			const pending = this.releasedReplyAcks.get(clientMessage.messageId);
 			if (pending?.ownerSessionId === currentId && pending.handoffId === clientMessage.handoffId) {
-				this.settleReleasedReply(clientMessage.messageId, clientMessage.accepted ? "accepted" : "refused");
+				this.settleReleasedReply(
+					clientMessage.messageId,
+					clientMessage.accepted ? "accepted" : clientMessage.deliverToChild === true ? "deliver" : "refused",
+				);
 			}
 			break;
 		}
@@ -2673,6 +2681,7 @@ class IntercomBroker {
     const handoffId = randomUUID();
     const pending: PendingReleasedReplyAck = {
       handoffId,
+      message,
       timer,
       socket,
       ...(attemptId === undefined ? {} : { attemptId }),
@@ -2696,12 +2705,13 @@ class IntercomBroker {
     return true;
   };
 
-  private settleReleasedReply(messageId: string, outcome: "accepted" | "refused" | "uncertain"): void {
+  private settleReleasedReply(messageId: string, outcome: "accepted" | "refused" | "uncertain" | "deliver"): void {
     const pending = this.releasedReplyAcks.get(messageId);
     if (pending === undefined) return;
     clearTimeout(pending.timer);
     this.releasedReplyAcks.delete(messageId);
     const attempt = pending.attemptId === undefined ? {} : { attemptId: pending.attemptId };
+    if (outcome === "deliver" && this.deliverReplyToReleasedChild(pending)) return;
     if (outcome === "accepted") {
       this.deliveredMessages.settleQuestion(pending.questionId);
       writeMessageIfOpen(pending.socket, { type: "delivered", messageId, ...attempt });
@@ -2905,6 +2915,35 @@ class IntercomBroker {
     return true;
   };
 
+  /**
+   * #4751: a reply to an ask of a released subagent whose call no longer waits for it is delivered like any other send
+   * to the child: held for it, waking it, and its ask's route comes back with it. False when it cannot be held.
+   */
+  private deliverReplyToReleasedChild(pending: PendingReleasedReplyAck): boolean {
+    const replier = this.sessions.get(pending.route.replierSessionId);
+    if (replier === undefined || replier.socket !== pending.socket) return false;
+    this.pendingQuestions.parkAsker(pending.childName, pending.ownerSessionId, {
+      senderSessionId: pending.route.askerSessionId,
+      targetSessionId: pending.route.replierSessionId,
+      messageId: pending.questionId,
+    });
+    return this.holdForRestoringRecipient({
+      socket: pending.socket,
+      from: replier,
+      clientMessage: {
+        type: "send",
+        to: pending.childName,
+        message: pending.message,
+        // The replier's client sent a `send`, which always waits for a held recipient.
+        awaitRestoringRecipient: true,
+        ...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
+      },
+      target: pending.childName,
+      messageId: pending.message.id,
+      ...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
+    });
+  }
+
   /** #4639: a subagent whose session is gone: hold the send for its return or its owner's verdict, or refuse it with why. */
   private holdForDepartedChild(held: HeldSend, target: string, from: ConnectedSession, canHold: boolean): boolean {
     const admission = this.departedChildren.admit(target, { id: from.info.id, info: from.info }, held, canHold);
@@ -3100,8 +3139,8 @@ class IntercomBroker {
         unanswered,
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
-    } else if (departed.supervisorId === undefined && departed.hostedBy === undefined) {
-      // #4751: an ask has no expiry and survives its asker's restart: the route waits for the asker to come back.
+    } else if (departed.supervisorId === undefined) {
+      // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
