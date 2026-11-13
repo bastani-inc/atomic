@@ -254,3 +254,21 @@ test("answered rows follow focus after navigating back (#4741)", () => {
 	d.press(DOWN);
 	assert.equal(d.colorOf("Grid ✔"), "text", "the confirmed row without focus shows the answered color");
 });
+
+test("a long draft without focus keeps the dialog height after navigating back (#4741)", () => {
+	const d = openDialog();
+	const height = d.frame().length;
+	const long = "word ".repeat(80).trim();
+
+	d.press(UP);
+	d.type(long);
+	d.press(DOWN);
+	assert.equal(d.frame().length, height, "a long chat draft at rest stays on one row");
+	d.press(DOWN, DOWN);
+	d.type(long);
+	d.press(UP);
+	assert.equal(d.frame().length, height, "a long custom draft at rest stays on one row");
+
+	d.press(TAB, LEFT);
+	assert.equal(d.frame().length, height, "← back keeps the height");
+});

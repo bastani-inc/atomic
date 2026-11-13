@@ -1,5 +1,5 @@
 import type { Component } from "@earendil-works/pi-tui";
-import { visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
 import { type FieldTone, fieldTone, rowTone } from "../../state/selectors/field-tone.ts";
@@ -198,7 +198,7 @@ export class WrappingSelect implements Component {
 		if (this.isInlineField(item)) {
 			if (isActive) return this.renderInlineInputRow(rowPrefix, continuationPrefix, contentWidth);
 			return [
-				...this.renderInlineFieldAtRest(item, index, rowPrefix, continuationPrefix, contentWidth),
+				...this.renderInlineFieldAtRest(item, index, rowPrefix, contentWidth),
 				...this.renderDescriptionBlock(item.description, continuationPrefix, contentWidth),
 			];
 		}
@@ -219,22 +219,23 @@ export class WrappingSelect implements Component {
 	/**
 	 * An inline field without focus shows what it holds: the in-flight draft, else the
 	 * confirmed answer (`confirmedLabelOverride`), else its own label as the placeholder.
-	 * The ` ✔` mark only follows text that is the confirmed answer.
+	 * The ` ✔` mark only follows text that is the confirmed answer. The row stays one line,
+	 * truncated, so a long draft does not change the dialog's height once focus leaves it;
+	 * the editor shows the full text again on focus.
 	 */
 	private renderInlineFieldAtRest(
 		item: WrappingSelectItem,
 		index: number,
 		rowPrefix: string,
-		continuationPrefix: string,
 		contentWidth: number,
 	): string[] {
 		const confirmedValue = index === this.confirmedIndex ? (this.confirmedLabelOverride ?? "") : "";
 		const value = this.inputBuffer.trim().length > 0 ? this.inputBuffer : confirmedValue;
 		const tone = fieldTone(false, value);
 		const text = tone === "placeholder" ? item.label : value;
-		const label =
-			confirmedValue.length > 0 && value === confirmedValue ? `${text}${WrappingSelect.CONFIRMED_MARK}` : text;
-		return this.renderLabelBlock(label, rowPrefix, continuationPrefix, contentWidth, tone);
+		const mark = confirmedValue.length > 0 && value === confirmedValue ? WrappingSelect.CONFIRMED_MARK : "";
+		const fitted = truncateToWidth(text, Math.max(1, contentWidth - visibleWidth(mark)), "…");
+		return [this.theme.field(tone, `${rowPrefix}${fitted}${mark}`)];
 	}
 
 	private buildRowPrefix(index: number, isActive: boolean, numberWidth: number): string {
