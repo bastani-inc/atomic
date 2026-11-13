@@ -7,7 +7,9 @@ import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,
 	formatMissingRecordNotice,
+	type MissingSnapshotRecord,
 	mapRestoredPath,
+	missingSnapshotRecords,
 	openResumedSession,
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
@@ -315,6 +317,8 @@ export async function prepareSessionResume(
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	if (!options.settings.enabled || sessionManager.getLatestWorktreeSnapshots().size === 0) {
+		const missing = options.settings.enabled ? missingSnapshotRecords(sessionManager) : [];
+		if (missing.length > 0) return continueWithoutRecords(sessionManager, missing, storeDir, options);
 		const unchanged = await describeBlueprintsInPlace(sessionManager, storeDir, options);
 		return { status: "ready", sessionManager, notices: [], blueprintNotices: [], blueprintContext: unchanged };
 	}
@@ -360,7 +364,12 @@ export async function prepareSessionResume(
 		needsRestore &&
 		(await isDirectory(match.root)) &&
 		(await orFallBack(options, "own-checkout", new Set([match.root]), () =>
-			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options),
+			checkoutsWorkedHere(
+				new Map([[match.root, match.snapshot]]),
+				match.cwd,
+				options,
+				partialRestores(sessionManager),
+			),
 		).then((worked) => worked.has(match.root)));
 	// The checkout the session returned to stays as it is, whatever it changed since: only the others are restored.
 	const kept = [...(keepsOwnCheckout && match !== undefined ? [match.root] : [])];
@@ -443,6 +452,7 @@ async function continueWithoutGit(
 		keepInPlace: options.keepInPlace,
 		cannotRestore: new Map(roots.map((root) => [root, git])),
 		fallbackCwd: options.launchCwd,
+		skipMissingRecords: true,
 	});
 	const cwd = resumed.status === "none" ? sessionManager.getCwd() : resumed.cwd;
 	const opened = await openResumedSession(
@@ -456,7 +466,37 @@ async function continueWithoutGit(
 	return {
 		status: "ready",
 		sessionManager: opened.sessionManager,
-		notices: opened.notices,
+		notices: [
+			...opened.notices,
+			...(resumed.missingRecords ?? []).map((missing) => ({
+				type: "warning" as const,
+				message: formatMissingRecordNotice(missing),
+			})),
+		],
+		blueprintNotices: [],
+		blueprintContext: context,
+	};
+}
+
+/**
+ * Opens a session whose every recorded checkout refers to a snapshot the session holds no record of (#4733): nothing
+ * can be restored, so it continues in its recorded directory, or the directory the resume started from when that is
+ * not here, with one notice per checkout.
+ */
+async function continueWithoutRecords(
+	sessionManager: SessionManager,
+	missing: readonly MissingSnapshotRecord[],
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<PreparedSessionResume> {
+	const recorded = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
+	const cwd = existsSync(recorded) ? recorded : resolve(options.launchCwd);
+	const opened = await openResumedSession(sessionManager, cwd, [], options.sessionDirectory);
+	const context = await describeBlueprintsInPlace(opened.sessionManager, storeDir, options);
+	return {
+		status: "ready",
+		sessionManager: opened.sessionManager,
+		notices: missing.map((record) => ({ type: "warning" as const, message: formatMissingRecordNotice(record) })),
 		blueprintNotices: [],
 		blueprintContext: context,
 	};
@@ -649,7 +689,13 @@ async function restoreCandidates(
 		}
 		if (!comparison.value) continue;
 		const absent = !(await isDirectory(root));
-		if (!runsHere && !absent && (await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options)).has(root)) {
+		if (
+			!runsHere &&
+			!absent &&
+			(await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options, partialRestores(sessionManager))).has(
+				root,
+			)
+		) {
 			left.set(
 				root,
 				notRestored(
@@ -838,7 +884,7 @@ export async function continueSessionWhereItWorked(
 ): Promise<SessionManager> {
 	const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
 	const checkouts = currentWorktreeSnapshots(opened);
-	const own = await checkoutsWorkedHere(checkouts, cwd, options);
+	const own = await checkoutsWorkedHere(checkouts, cwd, options, partialRestores(opened));
 	if (own.size < checkouts.size) {
 		const prepared = await prepareSessionResume(opened, { ...options, keepInPlace: own });
 		if (prepared.status !== "ready") return opened;
@@ -865,14 +911,31 @@ async function checkoutsWorkedHere(
 	checkouts: ReadonlyMap<string, WorktreeSnapshot>,
 	cwd: string,
 	options: PrepareSessionResumeOptions,
+	partial: ReadonlySet<string> = new Set(),
 ): Promise<Set<string>> {
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const own = new Set<string>();
 	for (const [root, snapshot] of checkouts) {
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
-		if (isInside(storeDir, root) || (await holdsSnapshotCommit(snapshot, root, options.signal))) own.add(root);
+		const restoredHere = isInside(storeDir, root) && !partial.has(resolve(root));
+		if (restoredHere || (await holdsSnapshotCommit(snapshot, root, options.signal))) own.add(root);
 	}
 	return own;
+}
+
+/**
+ * The worktrees a resume restored with less than their snapshot (#4733) whose checkout recorded no snapshot since:
+ * the session has not worked in them yet, so the next resume tries the snapshot again instead of keeping them.
+ */
+function partialRestores(sessionManager: SessionCheckouts): Set<string> {
+	const current = currentWorktreeSnapshots(sessionManager);
+	const partial = new Set<string>();
+	for (const mapping of sessionManager.getWorktreeRootMappings()) {
+		if (mapping.degraded !== undefined && current.get(mapping.to)?.id === mapping.snapshotId) {
+			partial.add(resolve(mapping.to));
+		}
+	}
+	return partial;
 }
 
 /**

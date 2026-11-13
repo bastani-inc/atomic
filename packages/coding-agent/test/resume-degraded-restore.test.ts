@@ -261,4 +261,69 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 			);
 		}
 	});
+
+	test("the next resume retries the snapshot of a partly restored worktree the session has not worked in (#4733)", async () => {
+		const { clone, head } = await editedClone();
+		const { manager, snapshot } = await recordSession(clone);
+		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+		const bundle = (await blobs.getBlob(snapshot.bundle!.blob))!;
+		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+		const first = ready(await prepareSessionResume(manager, options()));
+		assert.equal(first.sessionManager.getWorktreeRootMappings().at(-1)?.degraded?.stage, "closest-commit");
+
+		await blobs.putBlobs([{ hash: snapshot.bundle!.blob, data: bundle }]);
+		const again = ready(await prepareSessionResume(first.sessionManager, options()));
+
+		const restored = again.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.degraded, undefined);
+		assert.equal(again.sessionManager.getCwd(), restored.to);
+		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), head);
+		assert.equal(readFileSync(join(restored.to, "README.md"), "utf8"), "edited\n");
+	});
+
+	test("a session whose only snapshot record is missing opens in the launch directory with one notice (#4733)", async () => {
+		const store = await sqlStore("sessions");
+		const gone = sandbox.path("gone");
+		const manager = await SessionManager.create(store, gone);
+		await manager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
+		const ghost: WorktreeSnapshotEntry = {
+			type: "worktree_snapshot",
+			id: "ghost-entry",
+			parentId: manager.getLeafId(),
+			timestamp: new Date().toISOString(),
+			root: gone,
+			snapshotId: "0123456789abcdef0123456789abcdef",
+		};
+		const { lastSeq } = await store.load(manager.getSessionId());
+		await store.append(manager.getSessionId(), [ghost], { expectSeq: lastSeq });
+		const reopened = await SessionManager.open(store, manager.getSessionId());
+
+		const prepared = ready(await prepareSessionResume(reopened, options()));
+
+		assert.equal(prepared.sessionManager.getCwd(), sandbox.root);
+		assert.equal(prepared.notices.length, 1, JSON.stringify(prepared.notices));
+		assert.match(prepared.notices[0]!.message, /holds no record of its snapshot 0123456789ab/);
+	});
+
+	test("a branch name Git accepts, such as feature/c++, gives its own tip, not the default branch's (#4733)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		await sandbox.git(clone, "checkout", "-q", "-b", "feature/c++");
+		sandbox.write(join(clone, "feature.txt"), "on the feature branch\n");
+		const tip = await sandbox.commitAll(clone, "pushed feature work");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:refs/heads/feature/c++");
+		sandbox.write(join(clone, "local.txt"), "unpushed\n");
+		await sandbox.commitAll(clone, "unpushed feature work");
+		const { manager, snapshot } = await recordSession(clone);
+		assert.equal(snapshot.branch, "feature/c++");
+		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+
+		const prepared = ready(await prepareSessionResume(manager, options()));
+
+		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.degraded?.basis, "branch-tip");
+		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), tip);
+		assert.equal(readFileSync(join(restored.to, "feature.txt"), "utf8"), "on the feature branch\n");
+	});
 });

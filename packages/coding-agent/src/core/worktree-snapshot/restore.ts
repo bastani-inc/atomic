@@ -979,9 +979,6 @@ export interface DegradedWorktree {
 	readonly warnings: readonly WorktreeRestoreWarning[];
 }
 
-/** A branch name a restore may fetch: what `git check-ref-format --branch` accepts, without shell or option forms. */
-const FETCHABLE_BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9._/-]+(?<![./])$/;
-
 /**
  * Restores the best state of `snapshot` that this host can reach after an exact restore failed with `failure` (#4733),
  * into a new worktree: the recorded `HEAD` with the change sets of the patch chain that apply, each whole or not at
@@ -1176,6 +1173,13 @@ async function applicableChanges(
 	return { tree, missingLinks, missingPaths: [...missingPaths].sort() };
 }
 
+/** Whether Git accepts `name`, a branch name from a snapshot record, as a branch name (`git check-ref-format --branch`). */
+async function isBranchName(git: GitRunOptions, name: string): Promise<boolean> {
+	if (name.startsWith("-") || name.includes("@{") || /[\u0000-\u001f\u007f]/.test(name)) return false;
+	const { exitCode } = await runGit(["check-ref-format", "--branch", name], { ...git, allowExitCodes: [1, 128] });
+	return exitCode === 0;
+}
+
 /**
  * The commit nearest `snapshot`'s `HEAD` that the store holds or a recorded remote supplies: the pushed base of its
  * bundle, when the bundle is readable, then each of `candidates`, then the tip of the recorded branch (the remote's
@@ -1212,11 +1216,14 @@ async function closestCommit(
 		const found = await reachable(commit);
 		if (found) return { ...found, basis: "earlier-snapshot" };
 	}
-	const branch = snapshot.branch !== null && FETCHABLE_BRANCH.test(snapshot.branch) ? snapshot.branch : null;
+	// The recorded branch's tip, when Git accepts its name as a branch; the remote's default branch only for a
+	// detached HEAD, never in place of a branch that has a name.
+	if (snapshot.branch !== null && !(await isBranchName(git, snapshot.branch))) return undefined;
+	const source = snapshot.branch === null ? "HEAD" : `refs/heads/${snapshot.branch}`;
 	const ref = `refs/atomic/tips/${snapshot.id}`;
 	for (const remote of snapshot.remotes) {
 		try {
-			await runFetch(git, remote, [`+${branch === null ? "HEAD" : `refs/heads/${branch}`}:${ref}`]);
+			await runFetch(git, remote, [`+${source}:${ref}`]);
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			continue;

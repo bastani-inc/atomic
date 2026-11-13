@@ -237,6 +237,19 @@ function latestSnapshotIdsByCheckout(
 	return latestIds;
 }
 
+/** The checkouts on the active branch whose latest snapshot the session holds no record of, where they are now (#4733). */
+export function missingSnapshotRecords(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">,
+): MissingSnapshotRecord[] {
+	const mappings = sessionManager.getWorktreeRootMappings();
+	const records = sessionManager.getWorktreeSnapshotRecords();
+	const missing: MissingSnapshotRecord[] = [];
+	for (const [original, snapshotId] of latestSnapshotIdsByCheckout(sessionManager, mappings)) {
+		if (!records.has(snapshotId)) missing.push({ root: mapRestoredPath(original, mappings), snapshotId });
+	}
+	return missing;
+}
+
 /**
  * The latest snapshot of each checkout on the active branch, keyed by where that checkout is now: a checkout restored
  * elsewhere appears once, under its newest location. A snapshot whose record is missing is left out.
@@ -423,7 +436,7 @@ export async function resumeSessionWorktree(
 	const reportedLeftovers = new Set<string>();
 	const left: { root: string; snapshot: WorktreeSnapshot; reason: Error }[] = [];
 	const unrestored: UnrestoredWorktree[] = [];
-	let continuedIn = cwd;
+	let continuedIn: string;
 	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
 	try {
 		for (const [original, snapshot] of latest) {
