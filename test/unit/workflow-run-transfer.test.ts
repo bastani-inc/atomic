@@ -389,6 +389,24 @@ test("export and import refuse a shared database selection with a clear message 
 	}
 });
 
+test("the default journal of Atomic before the journal store is exported and compared like the store's runs (#4716)", async () => {
+	const source = machine("a");
+	const legacy = await openSqlRunJournal(join(root, "a", "workflows", "journal.sqlite"));
+	await record(legacy, { id: RUN_A, status: "completed", createdAt: 1_000 });
+	await legacy.close();
+	assert.equal((await storage(source, ["export", exports])).code, 0);
+	assert.deepEqual(Object.keys(files(exports)), [`${RUN_A}.jsonl`]);
+
+	// A machine whose earlier default journal holds a different run with the same ID refuses the file.
+	const target = machine("b");
+	const other = await openSqlRunJournal(join(root, "b", "workflows", "journal.sqlite"));
+	await record(other, { id: RUN_A, status: "failed", createdAt: 1_000, checkpoints: 1 });
+	await other.close();
+	const conflict = await storage(target, ["import", exports]);
+	assert.equal(conflict.code, 1);
+	assert.match(conflict.err.join("\n"), /the run continued differently there/);
+});
+
 test("export and import use a configured SQLite journal file (#4716)", async () => {
 	const source = machine("a");
 	const path = join(root, "a", "custom.sqlite");

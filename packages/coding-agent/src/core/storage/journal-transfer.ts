@@ -16,10 +16,12 @@ import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
 import { StorageError, type StorageFailureCause } from "./errors.js";
 import {
+	discoverLegacyJournal,
 	ensureRunJournalSchema,
 	type JournalEventTableRow,
 	type JournalLeaseTableRow,
 	type JournalRunTableRow,
+	legacyDefaultJournalPath,
 	runJournalTables,
 } from "./journal-adoption.js";
 import {
@@ -299,6 +301,23 @@ async function openExportSource(
 	}
 }
 
+/**
+ * Adopts the default journal of Atomic before the journal store, as opening the store does, so its runs are exported
+ * and compared like every other run; whether the store has a catalog.
+ */
+async function adoptLegacyJournal(directory: string): Promise<boolean> {
+	if (existsSync(legacyDefaultJournalPath(directory))) {
+		const catalog = await JournalCatalog.open(directory);
+		await withCleanup(
+			async () => {
+				await discoverLegacyJournal(catalog, legacyDefaultJournalPath(directory));
+			},
+			() => catalog.close(),
+		);
+	}
+	return existsSync(join(directory, JOURNAL_CATALOG_FILE));
+}
+
 function newestFirst(left: JournalRunTableRow, right: JournalRunTableRow): number {
 	const created = Number(right.created_at) - Number(left.created_at);
 	if (created !== 0) return created;
@@ -328,7 +347,7 @@ export async function exportWorkflowRuns(
 		async () => {
 			if (storage.kind === "sqlite") {
 				if (existsSync(storage.path)) add(await openExportSource(storage.path, t, undefined));
-			} else if (existsSync(join(storage.directory, JOURNAL_CATALOG_FILE))) {
+			} else if (await adoptLegacyJournal(storage.directory)) {
 				const catalog = await JournalCatalog.open(storage.directory);
 				let shards: readonly JournalShardRecord[];
 				await withCleanup(
@@ -348,6 +367,10 @@ export async function exportWorkflowRuns(
 					if (owner === undefined ? listed.has(run.run_id) : owner !== source.shardId) continue;
 					listed.set(run.run_id, { source, run });
 				}
+			// A consolidation that moved a run between reading the catalog and opening the journal files leaves it only in
+			// a file the catalog did not name then: that copy is the run.
+			for (const source of sources)
+				for (const run of source.runs) if (!listed.has(run.run_id)) listed.set(run.run_id, { source, run });
 			// A run whose journal file was read but does not hold it in the current tables is in the pre-0.9.38 format;
 			// the runs of a journal file that could not be read are covered by that file's own entry, and a root that is
 			// only reserved (no status yet) has nothing to export.
@@ -755,7 +778,7 @@ export async function importWorkflowRuns(
 		[];
 	await withCleanup(
 		async () => {
-			const catalogExists = storage.kind === "store" && existsSync(join(storage.directory, JOURNAL_CATALOG_FILE));
+			const catalogExists = storage.kind === "store" && (await adoptLegacyJournal(storage.directory));
 			const catalog = catalogExists ? await JournalCatalog.open(storage.directory) : undefined;
 			await withCleanup(
 				async () => {
