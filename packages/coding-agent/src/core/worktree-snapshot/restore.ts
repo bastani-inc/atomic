@@ -498,59 +498,46 @@ function runFetch(git: GitRunOptions, repository: string, refspecs: readonly str
 	return runGit(fetchArgs(repository, refspecs), { ...git, nonInteractive: true });
 }
 
-interface FetchedCommits {
-	/** Why the last failed fetch failed, when a commit is still missing. */
-	readonly failure: Error | undefined;
-	/** The missing commits a recorded remote provided. */
-	readonly fetched: readonly string[];
-}
-
 async function fetchCommits(
 	git: GitRunOptions,
 	remotes: readonly string[],
 	commits: readonly string[],
-): Promise<FetchedCommits> {
+): Promise<Error | undefined> {
 	let failure: Error | undefined;
-	const requested: string[] = [];
-	for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) requested.push(commit);
-	let missing = requested;
 	for (const remote of remotes) {
-		if (missing.length === 0) break;
+		const missing = [];
+		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
+		if (missing.length === 0) return undefined;
 		try {
 			await runFetch(git, remote, missing);
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			failure = error;
 		}
-		const still: string[] = [];
-		for (const commit of missing) if (!(await hasObject(git, `${commit}^{commit}`))) still.push(commit);
-		missing = still;
 	}
-	return {
-		failure: missing.length === 0 ? undefined : failure,
-		fetched: requested.filter((commit) => !missing.includes(commit)),
-	};
+	return failure;
 }
 
+/**
+ * Makes `snapshot.head` available in the store, from the recorded remotes or else its bundle, and resolves whether
+ * it came from a recorded remote.
+ */
 async function ensureHead(
 	git: GitRunOptions,
 	snapshot: Pick<WorktreeSnapshot, "head" | "remotes" | "bundle" | "omitted"> & { readonly id: string | null },
 	blobs: SnapshotBlobStore | undefined,
 	scratch: string,
-): Promise<string[]> {
+): Promise<boolean> {
 	const { head } = snapshot;
-	const fetched: string[] = [];
+	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
-		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head]);
-		let failure = fromRemotes.failure;
-		fetched.push(...fromRemotes.fetched);
-		if (!(await hasObject(git, `${head}^{commit}`)) && snapshot.bundle) {
+		let failure = await fetchCommits(git, snapshot.remotes, [head]);
+		fetched = await hasObject(git, `${head}^{commit}`);
+		if (!fetched && snapshot.bundle) {
 			const data = await loadBlob(blobs, snapshot.bundle.blob, { snapshotId: snapshot.id, role: "bundle" });
 			const prerequisites = bundlePrerequisites(data);
 			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
-			const bases = await fetchCommits(git, snapshot.remotes, prerequisites);
-			failure = bases.failure ?? failure;
-			fetched.push(...bases.fetched);
+			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)) ?? failure;
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
@@ -593,7 +580,6 @@ async function ensureHead(
 			);
 		}
 	}
-	await runGit(["update-ref", `refs/atomic/heads/${head}`, head], git);
 	return fetched;
 }
 
@@ -630,17 +616,19 @@ async function configuredRemoteUrls(git: GitRunOptions): Promise<string[]> {
  */
 async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
 	if (remotes.length === 0 || !remotes.every(isConfigurableRemote)) return false;
-	if ((await configuredRemoteUrls(git)).length === 0) {
+	let configured = await configuredRemoteUrls(git);
+	if (configured.length === 0) {
 		try {
 			for (const [index, remote] of remotes.entries()) {
 				await runGit(["remote", "add", "--", index === 0 ? "origin" : `origin-${index + 1}`, remote], git);
 			}
+			return true;
 		} catch (error) {
 			// Another process configured the store at the same moment; what it wrote is compared below.
 			if (!isWorkspaceGitError(error)) throw error;
 		}
+		configured = await configuredRemoteUrls(git);
 	}
-	const configured = await configuredRemoteUrls(git);
 	return configured.length === remotes.length && configured.every((remote, index) => remote === remotes[index]);
 }
 
@@ -648,41 +636,36 @@ async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly st
 const PUSHED_REFS = "refs/remotes/atomic/pushed/";
 
 /**
- * Records, as remote-tracking refs, the commits a restore knows a recorded remote has: those it fetched from one, and
- * the snapshot's pushed boundary, its `head` when nothing was unpushed, else the parents of its bundled commits that
- * the bundle does not hold. Later captures in the store's worktrees then bundle only commits that are really
- * unpushed, and never count a commit that only a bundle carried as pushed.
+ * The commits a restore knows a recorded remote has, to record as remote-tracking refs: the snapshot's `head` when the
+ * restore fetched it from one or the snapshot recorded nothing unpushed, else the parents of its bundled commits that
+ * the bundle does not hold, its pushed boundary. Later captures in the store's worktrees then bundle only commits that
+ * are really unpushed, and never count a commit that only a bundle carried as pushed.
  */
-async function recordPushedCommits(
+async function pushedCommits(
 	git: GitRunOptions,
 	snapshot: WorktreeSnapshot | null,
-	fetched: readonly string[],
-): Promise<void> {
-	const pushed = new Set(fetched);
-	if (snapshot !== null) {
-		const historyOmitted = snapshot.omitted.some(
-			(omission) => omission.reason === "unpushed-history-denied" || omission.reason === "bundle-over-cap",
-		);
-		if (snapshot.bundle === null && !historyOmitted) pushed.add(snapshot.head);
-		else if (snapshot.bundle !== null) {
-			const bundled = new Set(snapshot.bundle.commits);
-			const parents = await runGit(["rev-list", "--no-walk=unsorted", "--parents", "--stdin"], {
-				...git,
-				input: `${snapshot.bundle.commits.join("\n")}\n`,
-				allowExitCodes: [128],
-			});
-			if (parents.exitCode === 0) {
-				for (const line of parents.stdout.toString("utf8").split("\n")) {
-					for (const parent of line.split(" ").slice(1)) if (!bundled.has(parent)) pushed.add(parent);
-				}
+	head: string,
+	fetched: boolean,
+): Promise<Set<string>> {
+	const pushed = new Set<string>();
+	const historyOmitted = snapshot?.omitted.some(
+		(omission) => omission.reason === "unpushed-history-denied" || omission.reason === "bundle-over-cap",
+	);
+	if (fetched || (snapshot !== null && snapshot.bundle === null && !historyOmitted)) pushed.add(head);
+	else if (snapshot?.bundle) {
+		const bundled = new Set(snapshot.bundle.commits);
+		const parents = await runGit(["rev-list", "--no-walk=unsorted", "--parents", "--stdin"], {
+			...git,
+			input: `${snapshot.bundle.commits.join("\n")}\n`,
+			allowExitCodes: [128],
+		});
+		if (parents.exitCode === 0) {
+			for (const line of parents.stdout.toString("utf8").split("\n")) {
+				for (const parent of line.split(" ").slice(1)) if (!bundled.has(parent)) pushed.add(parent);
 			}
 		}
 	}
-	if (pushed.size === 0) return;
-	await runGit(["update-ref", "--stdin"], {
-		...git,
-		input: [...pushed].map((commit) => `update ${PUSHED_REFS}${commit} ${commit}\n`).join(""),
-	});
+	return pushed;
 }
 
 async function reconstructTree(
@@ -916,7 +899,16 @@ async function restoreValidated(
 				options.blobs,
 				scratch,
 			);
-			if (await configureRecordedRemotes(git, target.remotes)) await recordPushedCommits(git, snapshot, fetched);
+			const pushed = (await configureRecordedRemotes(git, target.remotes))
+				? await pushedCommits(git, snapshot, target.head, fetched)
+				: new Set<string>();
+			await runGit(["update-ref", "--stdin"], {
+				...git,
+				input: [
+					`update refs/atomic/heads/${target.head} ${target.head}\n`,
+					...[...pushed].map((commit) => `update ${PUSHED_REFS}${commit} ${commit}\n`),
+				].join(""),
+			});
 			if (!(await hasObject(git, `${target.tree}^{tree}`))) {
 				if (!snapshot) {
 					throw new WorkspaceRestoreError("snapshot-not-found", {
