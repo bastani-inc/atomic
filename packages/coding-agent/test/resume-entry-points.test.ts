@@ -31,6 +31,7 @@ import type { CreateAgentSessionOptions } from "../src/core/sdk-types.js";
 import { getMissingStoredSessionCwdIssue } from "../src/core/session-cwd.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { resolveSessionStore } from "../src/core/session-storage.js";
+import { worktreeRestoreNotices } from "../src/core/session-worktree-snapshots.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import { isSyntheticPath } from "../src/core/source-info.js";
 import {
@@ -988,6 +989,46 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.match(context[0] ?? "", /NOT RUN: the build of this blueprint failed before its maintenance/);
 		assert.match(context[0] ?? "", /make test/);
 	});
+
+	for (const checkout of ["restored", "already here"] as const) {
+		test(`/resume shows the one notice of a checkout whose snapshot record is missing when the other checkout is ${checkout} (#4744)`, async () => {
+			const agentDir = sandbox.path("agent");
+			const { sessionId } = await (checkout === "restored" ? sessionRecordedElsewhere : recordSessionWithSnapshot)(
+				sqliteSelection("shared"),
+			);
+			const other = await sandbox.remoteWithClone("other", { "README.md": "other\n" });
+			const store = await storeFor(sqliteSelection("shared"));
+			const manager = await SessionManager.open(store, sessionId);
+			const { lastSeq } = await store.load(sessionId);
+			await store.append(
+				sessionId,
+				[
+					{
+						type: "worktree_snapshot",
+						id: "ghost-entry",
+						parentId: manager.getLeafId(),
+						timestamp: new Date().toISOString(),
+						root: other.clone,
+						snapshotId: "0123456789abcdef0123456789abcdef",
+					},
+				],
+				{ expectSeq: lastSeq },
+			);
+			const { runtime } = await runtimeOn(agentDir, {});
+			const since = new Date().toISOString();
+
+			assert.deepEqual(await runtime.switchSession(sessionId), { cancelled: false });
+
+			// What the TUI shows after /resume: the notices the session records, then those the runtime collected.
+			const shown = [
+				...worktreeRestoreNotices(runtime.session.sessionManager, since),
+				...runtime.takeResumeNotices(),
+			].filter((notice) => /holds no record of its snapshot 0123456789ab/.test(notice.message));
+			assert.equal(shown.length, 1, JSON.stringify(shown));
+			assert.ok(shown[0]!.message.includes(other.clone), shown[0]!.message);
+			assert.deepEqual(runtime.takeResumeNotices(), []);
+		});
+	}
 
 	/** Makes the runtime's store look like `adapter` and delays each session load by `delayMs` of timer time. */
 	function slowStore(runtime: AgentSessionRuntime, adapter: string, delayMs: number): SessionStore {
