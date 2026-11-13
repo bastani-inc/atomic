@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.82-alpha.1] - 2026-11-13
+
+File search that respects root paths and matches globs the same way every time.
+
+- **Root-anchored globs work.** `find` and `search` now search from the filesystem root when a glob starts there, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\*.ts`, instead of searching the working directory ([#4707](https://github.com/bastani-inc/atomic/issues/4707)).
+- **Consistent glob case.** `find` matches globs case-sensitively on every platform, so the same pattern returns the same files whichever search engine runs ([#4708](https://github.com/bastani-inc/atomic/issues/4708)).
+
 ### Fixed
 
 - Fixed `find` and `search` treating a glob directly after a filesystem root, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\*.ts`, as relative to the working directory; they now search that root ([#4707](https://github.com/bastani-inc/atomic/issues/4707))
