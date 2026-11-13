@@ -44,10 +44,10 @@ function latestRestoreInto(restores: readonly RestoreLink[], root: string): Rest
 }
 
 /**
- * The remotes that identify the repository of the checkout at `root` for the build ledger. A worktree Atomic restored
- * comes from a store without remotes, so a snapshot captured inside it records none; the repository's remotes are then
- * found by following the recorded restores back, from the worktree to the checkout it replaced, to the first snapshot
- * that has some. `own` are the remotes of the checkout's own latest snapshot. Empty when the chain has none, in which
+ * The remotes that identify the repository of the checkout at `root` for the build ledger. A worktree that an Atomic
+ * before 0.9.85 restored comes from a store without remotes, so a snapshot captured inside it records none; the
+ * repository's remotes are then found by following the recorded restores back, from the worktree to the checkout it
+ * replaced, to the first snapshot that has some. `own` are the remotes of the checkout's own latest snapshot. Empty when the chain has none, in which
  * case the repository is identified by its root.
  */
 export function inheritedRemotes(

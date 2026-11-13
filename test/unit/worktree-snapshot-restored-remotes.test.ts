@@ -1,0 +1,209 @@
+import assert from "node:assert/strict";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, test } from "vitest";
+import {
+	captureWorktreeSnapshot,
+	MemorySnapshotBlobStore,
+	restoreWorktree,
+	type WorktreeSnapshot,
+} from "../../packages/coding-agent/src/core/worktree-snapshot/index.ts";
+import { GitSandbox } from "../helpers/worktree-snapshot.js";
+
+let sandbox: GitSandbox;
+beforeEach(() => {
+	sandbox = new GitSandbox();
+});
+afterEach(() => sandbox.dispose());
+
+async function capture(dir: string, blobs: MemorySnapshotBlobStore): Promise<WorktreeSnapshot> {
+	const result = await captureWorktreeSnapshot(dir, { blobs });
+	assert.equal(result.status, "captured");
+	return (result as Extract<typeof result, { status: "captured" }>).snapshot;
+}
+
+/** Restores `snapshot` on a "machine" of its own: a fresh host directory with its own shared object store. */
+async function restoreOn(machine: string, snapshot: WorktreeSnapshot, blobs: MemorySnapshotBlobStore) {
+	return restoreWorktree(snapshot, { blobs, storeDir: sandbox.path(machine) });
+}
+
+/**
+ * A fully pushed repository whose history, like many public ones, once committed a deny-listed file (`.env.example`),
+ * and a clone of it with an uncommitted edit.
+ */
+async function pushedRepository(): Promise<{ remote: string; clone: string }> {
+	const { remote, clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	sandbox.write(join(clone, ".env.example"), "TOKEN=placeholder\n");
+	await sandbox.commitAll(clone, "add an example environment");
+	sandbox.write(join(clone, "src.txt"), "one\n");
+	await sandbox.commitAll(clone, "add source");
+	await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+	sandbox.write(join(clone, "README.md"), "edited on machine 1\n");
+	return { remote, clone };
+}
+
+async function assertNoBlobHolds(blobs: MemorySnapshotBlobStore, text: string): Promise<void> {
+	for (const hash of await blobs.listBlobHashes()) {
+		assert.ok(
+			!Buffer.from((await blobs.getBlob(hash))!)
+				.toString("latin1")
+				.includes(text),
+			`blob ${hash}`,
+		);
+	}
+}
+
+describe("captures in a restored worktree know the recorded remotes and what is pushed (#4732)", () => {
+	test("a three-machine resume chain of a pushed repository succeeds, bundling only unpushed commits (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { remote, clone } = await pushedRepository();
+		const first = await capture(clone, blobs);
+		assert.deepEqual(first.remotes, [remote]);
+		assert.equal(first.bundle, null);
+
+		const second = await restoreOn("machine-2", first, blobs);
+		assert.equal(await sandbox.git(second.path, "remote", "get-url", "origin"), remote);
+		sandbox.write(join(second.path, "src.txt"), "two\n");
+		const unpushed = await sandbox.commitAll(second.path, "work on machine 2");
+		sandbox.write(join(second.path, "README.md"), "edited on machine 2\n");
+		const recorded = await capture(second.path, blobs);
+		assert.deepEqual(recorded.remotes, [remote], "the second capture records the remotes");
+		assert.deepEqual(recorded.bundle?.commits, [unpushed], "only the commit made on machine 2 travels");
+		assert.deepEqual(
+			recorded.omitted.filter((omission) => !("path" in omission)),
+			[],
+		);
+
+		const third = await restoreOn("machine-3", recorded, blobs);
+		assert.equal(await sandbox.git(third.path, "rev-parse", "HEAD"), unpushed);
+		assert.equal(readFileSync(join(third.path, "README.md"), "utf8"), "edited on machine 2\n");
+		assert.equal(readFileSync(join(third.path, "src.txt"), "utf8"), "two\n");
+		assert.deepEqual((await capture(third.path, blobs)).remotes, [remote], "and so does every later capture");
+	});
+
+	test("commits that only a bundle carried stay unpushed in the next capture (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { clone } = await pushedRepository();
+		const local = await sandbox.commitAll(clone, "unpushed on machine 1");
+		const first = await capture(clone, blobs);
+		assert.deepEqual(first.bundle?.commits, [local]);
+
+		const second = await restoreOn("machine-2", first, blobs);
+		sandbox.write(join(second.path, "src.txt"), "two\n");
+		const next = await sandbox.commitAll(second.path, "work on machine 2");
+		const recorded = await capture(second.path, blobs);
+		assert.deepEqual(recorded.bundle?.commits, [next, local]);
+
+		const third = await restoreOn("machine-3", recorded, blobs);
+		assert.equal(await sandbox.git(third.path, "rev-parse", "HEAD"), next);
+	});
+
+	test("an unpushed commit that adds a denied file in a restored worktree is still left out (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { clone } = await pushedRepository();
+		const second = await restoreOn("machine-2", await capture(clone, blobs), blobs);
+		sandbox.write(join(second.path, ".env"), "SECRET=restored-worktree-secret\n");
+		const denied = await sandbox.commitAll(second.path, "commit a secret on machine 2");
+		const recorded = await capture(second.path, blobs);
+		assert.equal(recorded.bundle, null);
+		assert.deepEqual(
+			recorded.omitted.filter((omission) => omission.reason === "unpushed-history-denied"),
+			[{ reason: "unpushed-history-denied", commits: [denied], paths: [".env"] }],
+			"only the new commit is named, not the pushed history that holds .env.example",
+		);
+		await assertNoBlobHolds(blobs, "restored-worktree-secret");
+	});
+
+	test("a restore completes the remotes an interrupted earlier restore only partly configured (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { remote, clone } = await pushedRepository();
+		const mirror = sandbox.path("mirror.git");
+		await sandbox.git(sandbox.root, "clone", "-q", "--bare", remote, mirror);
+		await sandbox.git(clone, "remote", "add", "mirror", mirror);
+		const first = await capture(clone, blobs);
+		assert.deepEqual(first.remotes, [remote, mirror]);
+
+		const earlier = await restoreOn("machine-2", first, blobs);
+		await sandbox.git(earlier.path, "remote", "remove", "origin-2");
+		const markers = await sandbox.git(earlier.path, "for-each-ref", "--format=%(refname)", "refs/remotes/atomic");
+		for (const ref of markers.split("\n").filter(Boolean)) await sandbox.git(earlier.path, "update-ref", "-d", ref);
+		const second = await restoreOn("machine-2", first, blobs);
+		assert.equal(await sandbox.git(second.path, "remote", "get-url", "origin-2"), mirror);
+		sandbox.write(join(second.path, "src.txt"), "two\n");
+		const unpushed = await sandbox.commitAll(second.path, "work on machine 2");
+		const recorded = await capture(second.path, blobs);
+		assert.deepEqual(recorded.remotes, [remote, mirror]);
+		assert.deepEqual(recorded.bundle?.commits, [unpushed]);
+	});
+
+	test.skipIf(process.platform === "win32")(
+		"a commit that appears in the store while a remote's fetch fails is not taken as pushed (#4732)",
+		async () => {
+			const blobs = new MemorySnapshotBlobStore();
+			const { remote, clone } = await pushedRepository();
+			const local = await sandbox.commitAll(clone, "unpushed on machine 1");
+			const bundle = sandbox.path("concurrent.bundle");
+			await sandbox.git(clone, "bundle", "create", "-q", bundle, "HEAD", "--not", "--remotes");
+			const first = await capture(clone, blobs);
+			assert.deepEqual(first.bundle?.commits, [local]);
+			// Another restore imports the commit from its bundle while this restore's fetch from the remote fails.
+			const wrapper = sandbox.path("git-wrapper");
+			writeFileSync(
+				wrapper,
+				`#!/bin/sh\ncase " $* " in *" fetch "*" ${remote} "*) git fetch -q --no-tags "${remote}" main && git fetch -q --no-tags "${bundle}" HEAD; exit 1;; esac\nexec git "$@"\n`,
+			);
+			chmodSync(wrapper, 0o755);
+			const second = await restoreWorktree(first, {
+				blobs,
+				storeDir: sandbox.path("machine-2"),
+				git: { ...sandbox.executable, path: wrapper },
+			});
+			assert.equal(await sandbox.git(second.path, "rev-parse", "HEAD"), local);
+			sandbox.write(join(second.path, "src.txt"), "two\n");
+			const next = await sandbox.commitAll(second.path, "work on machine 2");
+			assert.deepEqual((await capture(second.path, blobs)).bundle?.commits, [next, local]);
+		},
+	);
+
+	test("a binding of other remotes never takes pushed state from a snapshot of the same commit (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { clone } = await pushedRepository();
+		const recorded = await capture(clone, blobs);
+		assert.equal(recorded.bundle, null, "pushed to its own remote");
+		const fork = sandbox.path("fork.git");
+		await sandbox.git(sandbox.root, "init", "-q", "--bare", fork);
+		const binding = { remotes: [fork], head: recorded.head, tree: recorded.tree, envHash: recorded.envHash };
+		const restored = await restoreWorktree(binding, {
+			blobs,
+			snapshots: [recorded],
+			storeDir: sandbox.path("machine-2"),
+		});
+		sandbox.write(join(restored.path, "src.txt"), "two\n");
+		const next = await sandbox.commitAll(restored.path, "work on machine 2");
+		assert.deepEqual((await capture(restored.path, blobs)).remotes, [fork]);
+		const unpushed = (await sandbox.git(restored.path, "rev-list", "HEAD", "--not", "--remotes")).split("\n");
+		assert.ok(unpushed.includes(next) && unpushed.includes(recorded.head), "the fork has none of these commits");
+	});
+
+	test("a repository without remotes restores and captures as before, carrying its whole history (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const repo = sandbox.path("local");
+		await sandbox.git(sandbox.root, "init", "-q", repo);
+		sandbox.write(join(repo, "README.md"), "hello\n");
+		const base = await sandbox.commitAll(repo, "initial");
+		const first = await capture(repo, blobs);
+		assert.deepEqual(first.remotes, []);
+
+		const second = await restoreOn("machine-2", first, blobs);
+		assert.equal(await sandbox.git(second.path, "remote"), "");
+		assert.equal(await sandbox.git(second.path, "for-each-ref", "refs/remotes"), "");
+		sandbox.write(join(second.path, "README.md"), "two\n");
+		const next = await sandbox.commitAll(second.path, "work on machine 2");
+		const recorded = await capture(second.path, blobs);
+		assert.deepEqual(recorded.remotes, []);
+		assert.deepEqual(recorded.bundle?.commits, [next, base]);
+
+		const third = await restoreOn("machine-3", recorded, blobs);
+		assert.equal(await sandbox.git(third.path, "rev-parse", "HEAD"), next);
+	});
+});
