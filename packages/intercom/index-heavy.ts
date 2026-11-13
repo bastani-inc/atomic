@@ -246,6 +246,28 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
   let reconnectAttempt = 0;
+  /**
+   * #4727: aborted when the runtime is cleaned up, so a broker start this session began stops before it writes into the
+   * agent directory; renewed when the next session starts. Each connect reads the current one.
+   */
+  let connectAbort = new AbortController();
+  /** #4727: the broker starts in flight, settled either way; the cleanup waits for them. */
+  const brokerStarts = new Set<Promise<void>>();
+  function trackBrokerStart<T>(begin: () => Promise<T>): Promise<T> {
+    const start = (async () => begin())();
+    const settled = start.then(
+      () => {},
+      () => {},
+    );
+    brokerStarts.add(settled);
+    void settled.then(() => brokerStarts.delete(settled));
+    return start;
+  }
+  function startBrokerIfNeeded(signal: AbortSignal): Promise<void> {
+    return trackBrokerStart(() =>
+      spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs, undefined, signal),
+    );
+  }
   let shuttingDown = false;
   let disposed = true;
   let runtimeStarted = false;
@@ -318,7 +340,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const releasedStagePeers = new ReleasedStagePeers({
     report: ({ error, retrying, attempt, peers }) =>
       reportReleasedStageFailure("released-stage-reconnect-failed", error, { retrying, attempt, peers }),
-    prepare: () => spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs),
+    prepare: () => startBrokerIfNeeded(connectAbort.signal),
     createClient: (returnAddress) => new IntercomClient(returnAddress),
     cwd: () => getLiveContext()?.cwd ?? process.cwd(),
     relay: (from, message, channel) => {
@@ -393,10 +415,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    */
   async function upgradeOlderBroker(
     agentDir: string,
+    signal: AbortSignal,
   ): Promise<{ routing: BrokerRouting; upgradeFailure: Error | undefined }> {
     let upgradeFailure: Error | undefined;
     try {
-      await upgradeBroker(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
+      await trackBrokerStart(() =>
+        upgradeBroker(
+          config.brokerCommand,
+          config.brokerArgs,
+          config.brokerStartupTimeoutMs,
+          undefined,
+          undefined,
+          undefined,
+          signal,
+        ),
+      );
     } catch (error) {
       if (!isIntercomBrokerUpgradeError(error)) throw error;
       // An older broker that shut down but is still exiting serves no session, so this attempt fails and the reconnect
@@ -405,7 +438,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (isIntercomBrokerStopTimeoutError(error.cause)) throw error;
       upgradeFailure = error;
     }
-    await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
+    await startBrokerIfNeeded(signal);
     return { routing: await queryBrokerRouting(agentDir), upgradeFailure };
   }
   /**
@@ -413,7 +446,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
    * without `register_verified`) is used on this machine only, with one warning, unless multi-node routing is
    * configured here or reported by the broker; then the session is refused with `broker-routing-unavailable`.
    */
-  async function settleBrokerRouting(ctx: ExtensionContext, generation: number): Promise<ExpectedRouting> {
+  async function settleBrokerRouting(
+    ctx: ExtensionContext,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<ExpectedRouting> {
     const agentDir = dirname(getIntercomDirPath());
     const selectedShared = multiNodeSelected(agentDir, processStorageEnvironment());
     let routing: BrokerRouting | undefined;
@@ -422,7 +459,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       routing = await queryBrokerRouting(agentDir);
       let upgradeFailure: Error | undefined;
       if (decideBrokerProtocol(BROKER_PROTOCOL, routing.protocol) === "upgrade") {
-        ({ routing, upgradeFailure } = await upgradeOlderBroker(agentDir));
+        ({ routing, upgradeFailure } = await upgradeOlderBroker(agentDir, signal));
       }
       const agreed = agreedProtocol(BROKER_PROTOCOL, routing.protocol);
       if (agreed === undefined || agreed < VERIFIED_REGISTRATION_PROTOCOL) {
@@ -1214,10 +1251,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     if (connection.client?.isConnected()) return Promise.resolve(connection.client);
     if (connection.promise !== null) return connection.promise;
     const owner = connection;
+    const { signal } = connectAbort;
     const promise = registerWithBrokerSuccessor(() => routeClientConnectGate
       .run(async () => {
         if (pendingStageRouteConnections.get(key) !== owner) throw new IntercomClientDisconnectedError();
-        await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
+        await startBrokerIfNeeded(signal);
         if (pendingStageRouteConnections.get(key) !== owner) throw new IntercomClientDisconnectedError();
         const routeReturnAddress = `${currentSessionId}:pending-stage-route:${key}`;
         const nextClient = new IntercomClient(routeReturnAddress, {
@@ -1474,6 +1512,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const sessionIdAtStart = currentSessionId;
     // #3760: a resumed session or restored subagent registers under the Intercom id its peers already know.
     const preferredSessionId = persistedIntercomSessionId(contextAtStart, sessionIdAtStart);
+    const { signal } = connectAbort;
     const nextReconnectPromise = (async () => {
       let connectFailed = false;
       await ownershipRecorded.promise;
@@ -1491,8 +1530,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
           attachClientHandlers(nextClient);
           try {
             await testOverrides.beforeConnectAttempt?.(reason);
-            await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs, config.brokerStartupTimeoutMs);
-            const expectedRouting = await settleBrokerRouting(contextAtStart, generationAtStart);
+            await startBrokerIfNeeded(signal);
+            const expectedRouting = await settleBrokerRouting(contextAtStart, generationAtStart, signal);
             const childMetadata = currentChildOrchestratorMetadata();
             // Snapshot after startup awaits: execution may have ended while disconnected.
             // connect writes registration synchronously, so no abort can interleave before that write.
@@ -1581,7 +1620,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
               !shuttingDown &&
               getLiveContext(contextAtStart, generationAtStart)
             ) {
-              await delay(liveRouteOwnerRetryDelayMs(ownerWait));
+              await delay(liveRouteOwnerRetryDelayMs(ownerWait), undefined, { signal });
               // The session can be replaced during the wait: the next attempt would then assign its client over the
               // replacement's and register a session that is gone, so the wait is followed by an attempt only while
               // the session is still this one. (`nextClient` was disconnected above, so there is nothing to close.)
@@ -1598,7 +1637,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
                 !shuttingDown &&
                 getLiveContext(contextAtStart, generationAtStart)
               ) {
-                await delay(brokerRetiringRetryDelayMs(retiringRetries++));
+                await delay(brokerRetiringRetryDelayMs(retiringRetries++), undefined, { signal });
                 // The session can be replaced during the wait: the next attempt would then assign its client over the
                 // replacement's and register a session that is gone, so the retry goes on only while it is still this one.
                 if (getLiveContext(contextAtStart, generationAtStart)) continue;
@@ -1837,7 +1876,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     incrementRuntimeGeneration: () => { runtimeGeneration += 1; foregroundDetachHandoff.reset(); return runtimeGeneration; },
     resetReconnectAttempt: () => { reconnectAttempt = 0; },
     clearReconnectTimer,
+    abortBrokerStarts: async () => {
+      connectAbort.abort(new IntercomRuntimeInactiveError());
+      await Promise.all(brokerStarts);
+    },
     setRuntimeContext: (value) => {
+      if (value !== null && connectAbort.signal.aborted) connectAbort = new AbortController();
       brokerRouting = null;
       homeRoutedAcrossMachines = null;
       defaultGroupWarned = false;
