@@ -326,4 +326,26 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), tip);
 		assert.equal(readFileSync(join(restored.to, "feature.txt"), "utf8"), "on the feature branch\n");
 	});
+
+	test("a partly restored worktree edited by hand stays the session's checkout on the next resume (#4733)", async () => {
+		const { clone } = await editedClone();
+		const { manager, snapshot } = await recordSession(clone);
+		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+		const bundle = (await blobs.getBlob(snapshot.bundle!.blob))!;
+		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+		const first = ready(await prepareSessionResume(manager, options()));
+		const partial = first.sessionManager.getWorktreeRootMappings().at(-1)!;
+		sandbox.write(join(partial.to, "README.md"), "edited by hand in the partial worktree\n");
+
+		await blobs.putBlobs([{ hash: snapshot.bundle!.blob, data: bundle }]);
+		const again = ready(await prepareSessionResume(first.sessionManager, options()));
+
+		assert.equal(again.sessionManager.getCwd(), partial.to);
+		assert.equal(
+			again.sessionManager.getWorktreeRootMappings().length,
+			first.sessionManager.getWorktreeRootMappings().length,
+		);
+		assert.equal(readFileSync(join(partial.to, "README.md"), "utf8"), "edited by hand in the partial worktree\n");
+	});
 });

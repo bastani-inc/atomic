@@ -363,12 +363,12 @@ export async function prepareSessionResume(
 		project === undefined &&
 		needsRestore &&
 		(await isDirectory(match.root)) &&
-		(await orFallBack(options, "own-checkout", new Set([match.root]), () =>
+		(await orFallBack(options, "own-checkout", new Set([match.root]), async () =>
 			checkoutsWorkedHere(
 				new Map([[match.root, match.snapshot]]),
 				match.cwd,
 				options,
-				partialRestores(sessionManager),
+				await partialRestores(sessionManager, options),
 			),
 		).then((worked) => worked.has(match.root)));
 	// The checkout the session returned to stays as it is, whatever it changed since: only the others are restored.
@@ -692,9 +692,14 @@ async function restoreCandidates(
 		if (
 			!runsHere &&
 			!absent &&
-			(await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options, partialRestores(sessionManager))).has(
-				root,
-			)
+			(
+				await checkoutsWorkedHere(
+					new Map([[root, snapshot]]),
+					cwd,
+					options,
+					await partialRestores(sessionManager, options),
+				)
+			).has(root)
 		) {
 			left.set(
 				root,
@@ -884,7 +889,7 @@ export async function continueSessionWhereItWorked(
 ): Promise<SessionManager> {
 	const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
 	const checkouts = currentWorktreeSnapshots(opened);
-	const own = await checkoutsWorkedHere(checkouts, cwd, options, partialRestores(opened));
+	const own = await checkoutsWorkedHere(checkouts, cwd, options, await partialRestores(opened, options));
 	if (own.size < checkouts.size) {
 		const prepared = await prepareSessionResume(opened, { ...options, keepInPlace: own });
 		if (prepared.status !== "ready") return opened;
@@ -924,20 +929,36 @@ async function checkoutsWorkedHere(
 }
 
 /**
- * The worktrees a resume restored with less than their snapshot (#4733) whose checkout recorded no snapshot since:
- * the session has not worked in them yet, so the next resume tries the snapshot again instead of keeping them.
+ * The worktrees a resume restored with less than their snapshot (#4733) that are still exactly as it left them: the
+ * session recorded no snapshot there since, and their HEAD and files are what the restore put there. The next resume
+ * tries the snapshot again instead of keeping them. A worktree changed since, even by hand, is the session's work and
+ * stays; one that cannot be compared stays too.
  */
-function partialRestores(sessionManager: SessionCheckouts): Set<string> {
+async function partialRestores(
+	sessionManager: SessionCheckouts,
+	options: Pick<PrepareSessionResumeOptions, "settings" | "signal">,
+): Promise<Set<string>> {
 	const current = currentWorktreeSnapshots(sessionManager);
 	const partial = new Set<string>();
 	for (const mapping of sessionManager.getWorktreeRootMappings()) {
-		if (mapping.degraded !== undefined && current.get(mapping.to)?.id === mapping.snapshotId) {
+		const degraded = mapping.degraded;
+		const snapshot = current.get(mapping.to);
+		if (degraded === undefined || snapshot?.id !== mapping.snapshotId || !existsSync(mapping.to)) continue;
+		const restored = {
+			remotes: [...snapshot.remotes],
+			head: degraded.head,
+			tree: degraded.tree,
+			envHash: snapshot.envHash,
+		};
+		try {
+			await verifyWorktree(restored, mapping.to, { settings: options.settings, signal: options.signal });
 			partial.add(resolve(mapping.to));
+		} catch (error) {
+			if (options.signal?.aborted) throw error;
 		}
 	}
 	return partial;
 }
-
 /**
  * Whether resuming in `root` restores `snapshot` into a fresh worktree: the checkout is gone, is not a repository of
  * the recorded tree, or no longer matches it. A path that cannot be read fails with its typed `unreadable-path` error
