@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.82-alpha.1] - 2026-11-13
+
+More predictable file search and a steadier RPC startup.
+
+- **File search that does what the glob says.** `find` and `search` now search from a filesystem root when a glob starts at one, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\*.ts`, and `find` matches globs case-sensitively whichever search engine runs, so results no longer change between machines ([#4707](https://github.com/bastani-inc/atomic/issues/4707), [#4708](https://github.com/bastani-inc/atomic/issues/4708), [#4709](https://github.com/bastani-inc/atomic/pull/4709)).
+- **RPC clients can start fresh right away.** Sending `new_session` or closing stdin while the startup session is still loading extensions no longer crashes RPC mode with `SessionClosed` ([#4711](https://github.com/bastani-inc/atomic/issues/4711), [#4713](https://github.com/bastani-inc/atomic/pull/4713)).
+
 ### Fixed
 
 - Fixed `find` and `search` treating a glob directly after a filesystem root, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\*.ts`, as relative to the working directory; they now search that root ([#4707](https://github.com/bastani-inc/atomic/issues/4707))
