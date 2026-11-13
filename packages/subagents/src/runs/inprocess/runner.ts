@@ -7,6 +7,7 @@ import {
 	type AgentSessionEventListener,
 	applyAssistantMessageDelta,
 	beginStreamingAssistantMessage,
+	buildSkillCatalog,
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	DefaultResourceLoader,
@@ -15,6 +16,7 @@ import {
 	findSessionStartError,
 	getAgentDir,
 	getBuiltinPackagePaths,
+	getSkillCatalog,
 	isSessionStartTimeoutError,
 	type PackageSource,
 	SessionManager,
@@ -739,14 +741,30 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 
 type TranscriptSource = Parameters<NonNullable<TaskExecutionHooks["bindTranscript"]>>[0];
 
+type TranscriptCommands = ReturnType<NonNullable<TranscriptSource["commands"]>>;
+
+/** What a chat of the child completes and expands: its cwd and its own skills. A test session has no resources. */
+function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands {
+	const loader = session.resourceLoader as AgentSession["resourceLoader"] | undefined;
+	return {
+		cwd,
+		skills: loader === undefined ? buildSkillCatalog([]) : getSkillCatalog(loader),
+		skillCommandsEnabled: session.settingsManager?.getEnableSkillCommands() ?? false,
+	};
+}
+
 /**
- * What a settled child keeps for task inspection: its entries, with no reference back to the
- * disposed session. The task owner holds the last bound source for as long as the task exists.
+ * What a settled child keeps for task inspection: its entries and the commands it had when it settled, with no
+ * reference back to the disposed session. The task owner holds the last bound source for as long as the task exists.
  */
-function settledTranscript(manager: SessionManager): TranscriptSource {
+function settledTranscript(manager: SessionManager, commands: TranscriptCommands | undefined): TranscriptSource {
 	const sessionId = manager.getSessionId();
 	const entries = manager.getEntries();
-	return { getSessionId: () => sessionId, getEntries: () => [...entries] };
+	return {
+		getSessionId: () => sessionId,
+		getEntries: () => [...entries],
+		...(commands === undefined ? {} : { commands: () => commands }),
+	};
 }
 
 function releasedIntercomId(manager: SessionManager): { intercomId: string } | Record<string, never> {
@@ -754,9 +772,13 @@ function releasedIntercomId(manager: SessionManager): { intercomId: string } | R
 	return intercomId === undefined ? {} : { intercomId };
 }
 
-/** What a released child keeps for task inspection: only its session id. Its history is in its session store. */
-function releasedTranscript(sessionId: string): TranscriptSource {
-	return { getSessionId: () => sessionId, getEntries: () => [] };
+/** What a released child keeps for task inspection: its session id and commands. Its history is in its session store. */
+function releasedTranscript(sessionId: string, commands: TranscriptCommands | undefined): TranscriptSource {
+	return {
+		getSessionId: () => sessionId,
+		getEntries: () => [],
+		...(commands === undefined ? {} : { commands: () => commands }),
+	};
 }
 
 function nativeStatus(value: ChildStatus): NativeAgentStatus {
@@ -1666,6 +1688,7 @@ export class SubagentControlRuntime {
 				getStreamingMessage: () => observedStreamingMessage,
 				getCompactionReason: compactionReasonReader(transcriptSession),
 				chatSession: transcriptSession,
+				commands: () => sessionCommands(transcriptSession, sessionManager.getCwd()),
 				isRunning: () => transcriptSession.isStreaming,
 				getQueuedMessages: () => ({
 					steering: transcriptSession.getSteeringMessages(),
@@ -2008,14 +2031,19 @@ export class SubagentControlRuntime {
 			} catch {
 				// Listener teardown must not replace the attempt result.
 			}
+			// Read before the session is disposed: a settled chat keeps the cwd and skills its child had.
+			const settledCommands =
+				session === undefined || transcriptManager === undefined
+					? undefined
+					: sessionCommands(session, transcriptManager.getCwd());
 			const settleTranscript = (): void => {
 				statusesOpen = false;
 				taskHooks?.clearExtensionStatuses?.();
 				if (transcriptManager === undefined) return;
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
-						? releasedTranscript(transcriptManager.getSessionId())
-						: settledTranscript(transcriptManager),
+						? releasedTranscript(transcriptManager.getSessionId(), settledCommands)
+						: settledTranscript(transcriptManager, settledCommands),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {

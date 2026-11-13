@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import v8 from "node:v8";
@@ -125,6 +125,46 @@ test("a running in-process child offers its live session to a chat of its task, 
 			for (const member of ["chatSession", "isRunning", "getQueuedMessages"])
 				assert.equal(Object.hasOwn(source, member), false, `a completed child offers no ${member}`);
 		}
+	} finally {
+		clearSubagentControls();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("a running and a completed in-process child offer their chat the child's own cwd to complete paths in (#4755)", async () => {
+	const root = mkdtempSync(join(tmpdir(), "atomic-inprocess-chat-commands-"));
+	const childCwd = join(root, "child-cwd");
+	mkdirSync(childCwd);
+	clearSubagentControls();
+	try {
+		const bound: TaskTranscriptSource[] = [];
+		let cleanup: Promise<Cleanup> | undefined;
+		const hooks: TaskExecutionHooks = {
+			signal: new AbortController().signal,
+			reportActivity() {},
+			bindTranscript: (source) => void bound.push(source),
+			onExecution(execution) {
+				cleanup = execution.cleanup;
+			},
+			yieldTaskWait() {},
+			isParentObserving: () => false,
+		};
+
+		await runSingleInProcess(root, analysisAgent(), "inspect the fixture", {
+			cwd: childCwd,
+			runId: "chat-commands",
+			sessionDir: root,
+			taskExecution: hooks,
+			testSession: { output: "child answer" },
+		});
+		await cleanup;
+
+		const liveIndex = bound.findIndex((source) => source.subscribe !== undefined);
+		const settled = bound.slice(liveIndex + 1);
+		assert.equal(bound[liveIndex]?.commands?.().cwd, childCwd, "the running child's chat completes in its cwd");
+		assert.ok(settled.length > 0, "the completed child's transcript replaced the live one");
+		for (const source of settled)
+			assert.equal(source.commands?.().cwd, childCwd, "the completed child's chat keeps the cwd it had");
 	} finally {
 		clearSubagentControls();
 		rmSync(root, { recursive: true, force: true });

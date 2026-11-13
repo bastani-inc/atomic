@@ -1,9 +1,11 @@
 import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
-import { getSkillCatalog } from "../../core/skill-catalog.ts";
+import { getSkillCatalog, type SkillCatalogCommand } from "../../core/skill-catalog.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { parseGitUrl } from "../../utils/git.ts";
+import { getToolPath } from "../../utils/tools-manager.ts";
+import { createChatAutocompleteProvider } from "./chat-autocomplete.ts";
 
 export function getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {
 	if (!sourceInfo) return undefined;
@@ -28,7 +30,14 @@ export function getSessionSkillCommands(
 	session: Pick<AgentSession, "settingsManager" | "resourceLoader">,
 ): SlashCommand[] {
 	if (!session.settingsManager.getEnableSkillCommands()) return [];
-	return getSkillCatalog(session.resourceLoader).commands.map((command) => ({
+	return getSkillCatalogCommands(getSkillCatalog(session.resourceLoader).commands);
+}
+
+/** Skill commands as a chat's completion lists them: `skill:<name>`, described with their source. */
+export function getSkillCatalogCommands(
+	commands: readonly Pick<SkillCatalogCommand, "name" | "description" | "sourceInfo">[],
+): SlashCommand[] {
+	return commands.map((command) => ({
 		name: `skill:${command.name}`,
 		description: prefixAutocompleteDescription(command.description, command.sourceInfo),
 	}));
@@ -63,7 +72,18 @@ function isCommandCatalog(
 	return "skillCommands" in value && Array.isArray(value.skillCommands);
 }
 
+let fdPath: string | null | undefined;
+
+/** Located once per process: finding fd on `PATH` runs it, which a keystroke must not wait on each time. */
+function sharedFdPath(): string | null {
+	if (fdPath === undefined) fdPath = getToolPath("fd");
+	return fdPath;
+}
+
 /**
+ * The completion of a chat whose session the main chat does not own, such as a workflow stage's or a subagent's:
+ * `/tasks`, the session's skill commands, and `@` and Tab paths under the session's cwd.
+ *
  * Resolve again for every completion so lazy attachment and resource reload cannot leave a stale catalog.
  * `resolveSession` returns the live session, or the command catalog of a session that runs elsewhere, or a
  * pending catalog while that session is still starting.
@@ -105,10 +125,10 @@ export function createSessionSkillAutocompleteProvider(
 				}
 				catalog = getSessionCommandCatalog(session);
 			}
-			return new CombinedAutocompleteProvider(
+			return createChatAutocompleteProvider(
 				[...BUILTIN_SLASH_COMMANDS.filter((command) => command.name === "tasks"), ...catalog.skillCommands],
 				catalog.cwd,
-				null,
+				sharedFdPath(),
 			).getSuggestions(lines, cursorLine, cursorCol, options);
 		},
 		applyCompletion: (...args) => completion.applyCompletion(...args),

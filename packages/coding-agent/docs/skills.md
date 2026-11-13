@@ -167,7 +167,9 @@ Toggle skill commands via `/settings` in interactive mode or in `settings.json`:
 
 An editable attached stage chat supports the same `/skill:<selector> [arguments]` commands. Its suggestions come from that stage's effective catalog and settings, not the main chat's catalog. Source tags use the main chat format: `[p]` for project, `[u]` for user, and `[t]` for temporary resources, with npm or Git source details when available. After the stage's resources reload, the next completion request reads the updated catalog and qualified aliases.
 
-Stage chat supports `/skill:` discovery and Tab completion of paths relative to its working directory, but not `@` file-mention suggestions.
+Stage chat supports `/skill:` discovery, `@` file-mention suggestions and Tab completion of paths relative to its working directory.
+
+A subagent's chat, opened from `/tasks`, completes the same way from the subagent's own skills and working directory. A finished subagent keeps the skills and directory it had when it finished. A `/skill:<selector>` command typed there reaches the subagent expanded from its own skills, as the subagent itself would expand it; a selector that names none of its skills is sent as typed.
 
 Enter starts a turn when idle or steers a streaming turn. Ctrl+F keeps follow-up intent. The stage session expands the command once through its admission route; skill-relative references use the skill directory while ordinary tools keep the stage cwd. Turning off `enableSkillCommands` hides suggestions but does not disable manually typed skill commands. Unknown bare selectors pass through as text; unknown or ambiguous qualified selectors and file-read failures show diagnostics in the attached chat without selecting another skill.
 

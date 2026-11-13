@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { basename, dirname, sep } from "node:path";
+import { stripFrontmatter } from "../utils/frontmatter.ts";
 import { canonicalizePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { ResourceLoader } from "./resource-loader-types.ts";
@@ -299,6 +301,45 @@ export function buildSkillCatalog(allSkills: readonly Skill[], winners?: readonl
 
 export function getSkillCatalog(loader: ResourceLoader): SkillCatalog {
 	return loader.getSkillCatalog?.() ?? buildSkillCatalog(loader.getSkills().skills);
+}
+
+/** Why a `/skill:` command was left as typed: the file it names, or the selector, and the reason. */
+export interface SkillExpansionError {
+	readonly path: string;
+	readonly message: string;
+}
+
+/**
+ * Expand a skill command (`/skill:name args`) to the skill's content from `catalog`. Text that is not a skill
+ * command, or names no skill, is returned as typed; `onError` hears why an ambiguous selector or an unreadable
+ * skill file was left as typed.
+ */
+export function expandSkillCommand(
+	catalog: SkillCatalog,
+	text: string,
+	onError: (error: SkillExpansionError) => void = () => {},
+): string {
+	if (!text.startsWith("/skill:")) return text;
+
+	const spaceIndex = text.indexOf(" ");
+	const selector = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
+	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
+	const resolution = catalog.resolve(selector);
+	if (!resolution.ok) {
+		if (selector.includes("@")) onError({ path: `skill:${selector}`, message: resolution.message });
+		return text;
+	}
+	const { skill, id } = resolution.candidate;
+
+	try {
+		const content = readFileSync(skill.filePath, "utf-8");
+		const body = stripFrontmatter(content).trim();
+		const skillBlock = `<skill name="${selector}" location="${skill.filePath}" candidate="${id}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+		return args ? `${skillBlock}\n\n${args}` : skillBlock;
+	} catch (err) {
+		onError({ path: skill.filePath, message: err instanceof Error ? err.message : String(err) });
+		return text;
+	}
 }
 
 export function decorateSkillDiagnostics(

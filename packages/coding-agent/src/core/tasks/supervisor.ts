@@ -7,6 +7,7 @@ import type { AgentSession, AgentSessionEvent, CompactionReason } from "../agent
 import { currentResourceAdmission } from "../resource-admission-scope.ts";
 import type { ResourceAdmission, ResourcePermit } from "../sdk-types.ts";
 import type { SessionManager } from "../session-manager.ts";
+import type { SkillCatalog } from "../skill-catalog.ts";
 import { TaskCleanupAdmissionTimeoutError, type TaskCleanupFailure } from "./cleanup-error.js";
 import { COMMAND_FOREGROUND_BUDGET_MS } from "./command-output.js";
 import type { TaskCompletionSource } from "./completion-ordering.js";
@@ -49,7 +50,19 @@ export interface QueuedTaskMessages {
 	readonly followUp: readonly string[];
 }
 
+/** What a chat of a task completes and expands: its session's working directory and skills. */
+export interface TaskTranscriptCommands {
+	/** The working directory `@` and path completions resolve against. */
+	readonly cwd: string;
+	/** The skills `/skill:<name>` names, as the task's session resolves them. */
+	readonly skills: SkillCatalog;
+	/** Whether the session's settings offer its skills as commands. */
+	readonly skillCommandsEnabled: boolean;
+}
+
 export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEntries"> & {
+	/** The session's commands now; a settled transcript keeps those it had when it settled. */
+	commands?(): TaskTranscriptCommands;
 	/** The live session's usage and footer data; absent from a transcript that has settled or been released. */
 	readonly chatSession?: ChatBoxSession;
 	/** Whether the session is part-way through a turn, for a viewer that missed `agent_start`. */

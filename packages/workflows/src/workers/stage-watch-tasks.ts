@@ -60,6 +60,10 @@ export async function runStageTaskAction(
 			return { kind: "detail", detail: await source.taskDetailText(taskId) };
 		case "message":
 			return sendStageTaskMessage(source, taskId, action.text);
+		case "commands": {
+			const catalog = await source.taskCommands?.(taskId);
+			return catalog === undefined ? { kind: "commands" } : { kind: "commands", catalog };
+		}
 		case "transcript": {
 			const result = await source.readTaskTranscript(taskId, action.cursor);
 			// A viewer in another process cannot follow the task's session live; the latest page carries the

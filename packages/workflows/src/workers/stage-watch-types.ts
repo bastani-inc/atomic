@@ -6,6 +6,7 @@ import type {
 	SerializedTaskMessageError,
 	SessionCommandCatalog,
 	TaskActivity,
+	TaskCommandCatalog,
 	TaskDetailText,
 	TaskId,
 	TaskOutputView,
@@ -161,7 +162,8 @@ export type PooledTaskAction =
 	| { readonly kind: "output"; readonly start: string; readonly maximumBytes: number }
 	| { readonly kind: "detail" }
 	| { readonly kind: "transcript"; readonly cursor?: string }
-	| { readonly kind: "message"; readonly text: string };
+	| { readonly kind: "message"; readonly text: string }
+	| { readonly kind: "commands" };
 
 /** The answer to a {@link PooledTaskAction}. */
 export type PooledTaskReply =
@@ -172,7 +174,9 @@ export type PooledTaskReply =
 	| { readonly kind: "detail"; readonly detail: TaskDetailText }
 	| { readonly kind: "transcript"; readonly result: TaskViewResult<TaskTranscriptView> }
 	/** `error` is the serialized `TaskMessageError` when the message did not reach the task. */
-	| { readonly kind: "message"; readonly error?: SerializedTaskMessageError };
+	| { readonly kind: "message"; readonly error?: SerializedTaskMessageError }
+	/** What a chat of the task completes; absent when the worker does not know. */
+	| { readonly kind: "commands"; readonly catalog?: TaskCommandCatalog };
 
 /**
  * A session command the stage chat runs on a pooled stage's session (#3996): `/compact`, a `!`
