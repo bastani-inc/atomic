@@ -119,6 +119,10 @@ Custom hosts may declare an optional `recipientPurpose` on session registration 
 
 Configuration and diagnostics live in `~/.atomic/agent/intercom/`, or under `ATOMIC_CODING_AGENT_DIR`. The legacy `PI_CODING_AGENT_DIR` applies when the Atomic variable is unset. Edit `config.json` for [Intercom settings](/intercom/reference#configuration).
 
+A local broker keeps these files in that directory: `broker.pid` and, outside Windows, `broker.sock` while it runs, which it removes when it exits; `broker.log` from the session that started it; and `delivered-messages.sqlite` with its `delivered-messages.key`, which a broker creates when the first session registers and keeps so that a restarted broker still recognizes messages it already delivered. A broker that exits without serving a session leaves no delivered-message files.
+
+Disposing a session cancels a broker start it has not launched yet, and waits for a broker it already launched to finish starting, stopping it if it does not start in time. Once `dispose()` resolves, nothing that session started writes into the agent directory, so a host that uses a temporary `ATOMIC_CODING_AGENT_DIR` can remove it then.
+
 When startup fails, read the `broker.log` path printed in the error. Ordinary diagnostics are capped at 8 KiB per broker. The next spawn keeps a bounded copy in `broker.log.previous`; `broker-watchdog.log` separately retains the latest automatic termination's time, PID, and reason. Preserve these files when reporting repeated stalls or restarts. They live under the Intercom directory above.
 
 ## Workflow and Subagent Notifications
