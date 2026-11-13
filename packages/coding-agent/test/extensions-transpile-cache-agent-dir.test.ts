@@ -94,6 +94,20 @@ describe("extension transpile cache follows the agent directory", () => {
 		assert.equal(fs.existsSync(agentDir), false, "a removed agent directory must not be recreated");
 	});
 
+	it("does not recreate a removed agent directory whose first cache setup failed (#4728)", async () => {
+		const agentDir = path.join(tempDir("atomic-4728-blocked-"), "agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(path.join(agentDir, "cache"), "not a directory");
+		const entry = writeExtension(tempDir("atomic-4728-ext-"));
+
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		await loadUnderCurrentAgentDir(entry);
+		fs.rmSync(agentDir, { recursive: true, force: true });
+		await loadUnderCurrentAgentDir(entry);
+
+		assert.equal(fs.existsSync(agentDir), false, "a removed agent directory must not be recreated");
+	});
+
 	it("prunes stale cache versions under each agent directory (#4728)", async () => {
 		const agentDirs = [
 			path.join(tempDir("atomic-4728-prune-a-"), "agent"),
