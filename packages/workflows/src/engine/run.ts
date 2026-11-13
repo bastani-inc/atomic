@@ -293,9 +293,11 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				unrestored,
 				snapshots: restoreSnapshots,
 				continuing,
-				launchCwd: opts[resumeLaunchCwd] ?? opts.cwd,
+				launchCwd: opts[resumeLaunchCwd] ?? opts.cwd ?? process.cwd(),
+				previous: previous.worktreeRestoreOutcomes ?? [],
+				mappings: allMappings,
 			});
-			for (const outcome of outcomes.list) {
+			for (const outcome of outcomes.fresh) {
 				activeStore.recordNotice({
 					id: `workflow-worktree-restore-outcome:${runId}:${outcome.snapshotId}:${outcome.at}`,
 					runId,

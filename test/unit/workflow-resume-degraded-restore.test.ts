@@ -8,9 +8,10 @@ import {
 	setWorktreeSnapshotGit,
 } from "@bastani/atomic";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { missingGit } from "../../packages/coding-agent/test/helpers/missing-git.ts";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { durableWorkflowRunSnapshots } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
 import {
 	listWorkflowSnapshotBoundaries,
@@ -71,7 +72,7 @@ interface Observation {
  * A run on "node A" that wrote `state.txt` in its checkout, ran a stage, and stopped; `prepare` changes the clone before
  * the run starts. The checkout is then gone, as it is on another node.
  */
-async function runRecordedElsewhere(prepare: (clone: string) => Promise<void> = async () => {}) {
+async function runRecordedElsewhere(prepare: (clone: string) => Promise<void> = async () => {}, failures = 1) {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
 	const pushed = await sandbox.git(clone, "rev-parse", "HEAD");
 	await prepare(clone);
@@ -91,8 +92,14 @@ async function runRecordedElsewhere(prepare: (clone: string) => Promise<void> = 
 				return "written";
 			});
 			await ctx.stage("plan").complete("plan");
-			if (attempt++ < 1) throw new Error("node A stopped");
+			if (attempt++ === 0) throw new Error("node A stopped");
 			observed.push({ cwd: ctx.cwd!, notices: currentWorktreeRestoreNotices() });
+			// Work after a resume is recorded in the worktree the run continues in.
+			await ctx.tool(`after-resume-${attempt}`, {}, async () => {
+				sandbox.write(join(ctx.cwd!, `after-resume-${attempt}.txt`), "written after the resume\n");
+				return "written";
+			});
+			if (attempt <= failures) throw new Error("stopped again");
 			return { ok: true };
 		},
 	});
@@ -190,6 +197,8 @@ describe("a workflow run's resume always resumes, restoring each checkout as wel
 		assert.deepEqual(observation!.notices, [outcome!.message], "the run's stages are told");
 		const inspected = inspectRun(recorded.runId, { store: recorded.store });
 		assert.deepEqual(inspected.ok && inspected.detail.worktreeRestore, [outcome!.message]);
+		const [saved] = durableWorkflowRunSnapshots(recorded.backend, handle);
+		assert.deepEqual(saved?.worktreeRestoreOutcomes, [outcome], "a run inspected from its journal keeps the outcome");
 	});
 
 	test("a lost bundle of unpushed commits restores the last pushed commit (#4738)", async () => {
@@ -242,6 +251,31 @@ describe("a workflow run's resume always resumes, restoring each checkout as wel
 		]);
 		assert.deepEqual(observation!.notices, [outcome!.message]);
 		assert.deepEqual(restoredWorktrees(), []);
+	});
+
+	test("without Git a direct run() given no directory continues in the process's directory (#4738)", async () => {
+		const recorded = await runRecordedElsewhere();
+		recorded.removeCheckout();
+		setWorktreeSnapshotGit(async () => {
+			throw missingGit();
+		});
+		const launch = sandbox.path("launch");
+		mkdirSync(launch);
+		const cwd = vi.spyOn(process, "cwd").mockReturnValue(launch);
+
+		const finished = await run(
+			recorded.definition,
+			{},
+			{
+				runId: recorded.runId,
+				durableBackend: recorded.backend,
+				store: recorded.store,
+				adapters,
+			},
+		).finally(() => cwd.mockRestore());
+
+		assert.equal(finished.status, "completed", finished.error);
+		assert.equal(recorded.observed[0]!.cwd, launch);
 	});
 
 	test("a snapshot record naming a remote helper refuses the resume and restores nothing (#4738)", async () => {
@@ -313,6 +347,29 @@ describe("a workflow run's resume always resumes, restoring each checkout as wel
 		assert.deepEqual(observation.notices, [outcome!.message], "the fork's stages are told");
 		assert.equal(existsSync(join(observation.cwd, "state.txt")), false);
 	});
+});
+
+test("a later resume keeps saying a checkout is partial after work there was recorded (#4738)", async () => {
+	const recorded = await runRecordedElsewhere(async () => {}, 2);
+	await recorded.lose(recorded.snapshot.chain.map((link) => link.patch));
+	recorded.removeCheckout();
+	const first = await recorded.resume();
+	assert.equal(first.status, "failed", "the first resume stops again after it recorded work");
+	const [outcome] = recorded.backend.getWorkflow(recorded.runId)!.worktreeRestoreOutcomes ?? [];
+	assert.equal(outcome?.degraded?.stage, "partial-changes");
+
+	const second = await recorded.resume();
+
+	assert.equal(second.status, "completed", String(second.failure));
+	const handle = recorded.backend.getWorkflow(recorded.runId)!;
+	assert.deepEqual(handle.worktreeRestoreOutcomes, [outcome], "the partial checkout is still reported");
+	assert.equal(recorded.observed.at(-1)!.cwd, recorded.observed[0]!.cwd, "the run continued in the same worktree");
+	assert.deepEqual(recorded.observed.at(-1)!.notices, [outcome!.message]);
+	assert.equal(
+		checkoutNotices(recorded.store, recorded.runId).filter((notice) => notice.level === "warning").length,
+		1,
+		"it is announced once",
+	);
 });
 
 test("a pooled child placed on a partly restored worktree runs there, and its stages are told (#4738)", async () => {

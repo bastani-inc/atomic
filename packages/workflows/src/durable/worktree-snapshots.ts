@@ -286,7 +286,16 @@ export function runWorktreeRestoreOutcomes(input: {
 	readonly snapshots: ReadonlyMap<string, WorktreeSnapshot>;
 	readonly continuing: string | undefined;
 	readonly launchCwd: string | undefined;
-}): { readonly list: WorkflowWorktreeRestoreOutcome[]; readonly continuedIn?: string } {
+	/** The outcomes earlier resumes recorded. */
+	readonly previous: readonly WorkflowWorktreeRestoreOutcome[];
+	/** Every restore of the run, this resume's included, oldest first. */
+	readonly mappings: readonly WorktreeRootMapping[];
+}): {
+	readonly list: WorkflowWorktreeRestoreOutcome[];
+	/** The outcomes of this resume, each to be announced once. */
+	readonly fresh: readonly WorkflowWorktreeRestoreOutcome[];
+	readonly continuedIn?: string;
+} {
 	const list: WorkflowWorktreeRestoreOutcome[] = [];
 	for (const mapping of input.restored) {
 		if (mapping.degraded === undefined) continue;
@@ -319,5 +328,14 @@ export function runWorktreeRestoreOutcomes(input: {
 			unrestored: record,
 		});
 	}
-	return continuedIn === undefined ? { list } : { list, continuedIn };
+	const fresh = [...list];
+	// A partly restored worktree this resume kept, because a later snapshot recorded what it holds, still lacks what
+	// its restore left out: its outcome stays until a restore of that checkout replaces it.
+	const touched = new Set(list.map((outcome) => outcome.root));
+	for (const outcome of input.previous) {
+		if (outcome.degraded === undefined || touched.has(outcome.root)) continue;
+		const current = input.mappings.findLast((mapping) => mapping.from === outcome.root);
+		if (current?.degraded !== undefined && current.snapshotId === outcome.snapshotId) list.push(outcome);
+	}
+	return continuedIn === undefined ? { list, fresh } : { list, fresh, continuedIn };
 }
