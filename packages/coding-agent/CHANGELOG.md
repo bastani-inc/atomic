@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SessionManager.recordBranch(entryId | null)` moves the leaf like `branch()` or `resetLeaf()` and saves the move, so the session reopens there, and `getSessionLeafId(entries)` returns the entry a stored session reopens at ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+
+### Fixed
+
+- Fixed `/tree` in interactive mode leaving the abandoned turns in the chat, keeping the tree cursor and `/clone` on the old leaf, and not showing a requested branch summary until the next turn. The chat, the tree, `/session` and the context indicator now follow the selected branch as soon as you navigate, and Escape while the summary is generated cancels it ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+- Fixed a `/tree` move without a summary being lost when you quit, resumed, continued, or the interactive engine restarted before the next turn, which put the abandoned turns back into the next request. The move is now saved in the session, so it reopens on the selected branch; `listForkPoints()` and workflow run forks use that branch too ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+
 ## [0.9.84] - 2026-11-13
 
 Sessions now move between machines alongside workflow runs.

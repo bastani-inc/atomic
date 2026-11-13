@@ -5,6 +5,7 @@ const INTERRUPT_COMMANDS: ReadonlySet<string> = new Set([
 	"abort",
 	"cancel_login_provider",
 	"abort_compaction",
+	"abort_branch_summary",
 	"abort_retry",
 	"abort_bash",
 	"pause_queued_messages",

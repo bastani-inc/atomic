@@ -734,6 +734,7 @@ export {
 	type FileEntry,
 	getDefaultSessionDirPath,
 	getLatestCompactionBoundaryEntry,
+	getSessionLeafId,
 	type ModelChangeEntry,
 	type ModelFallbackRecord,
 	type NewSessionOptions,
