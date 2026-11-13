@@ -401,4 +401,50 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 			assert.equal(comparisons.length, 1, `${comparisons.length} comparisons`);
 		},
 	);
+
+	test.skipIf(process.platform === "win32")(
+		"files a checkout filter changes are recorded as they are and named in the notice (#4733)",
+		async () => {
+			const { clone } = await sandbox.remoteWithClone("repo", { ".gitattributes": "*.txt filter=mangle\n" });
+			sandbox.write(join(clone, "note.txt"), "alpha\n");
+			const { manager, snapshot } = await recordSession(clone);
+			writeFileSync(
+				sandbox.globalConfig,
+				`${readFileSync(sandbox.globalConfig, "utf8")}[filter "mangle"]\n\tsmudge = sed s/alpha/omega/\n`,
+			);
+			renameSync(clone, sandbox.path("machine-a-gone"));
+
+			const prepared = ready(await prepareSessionResume(manager, options()));
+
+			const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+			assert.equal(readFileSync(join(restored.to, "note.txt"), "utf8"), "omega\n");
+			assert.equal(restored.degraded?.cause, "tree-mismatch");
+			assert.notEqual(restored.degraded?.tree, snapshot.tree, "the record holds the tree that was written");
+			assert.deepEqual(restored.degraded?.missingPaths, ["note.txt"]);
+			assert.equal(prepared.notices.length, 1, JSON.stringify(prepared.notices));
+			assert.match(prepared.notices[0]!.message, /Not restored: the recorded content of note\.txt/);
+		},
+	);
+
+	test("a degraded restore's one notice also names the files Git LFS left as pointers (#4733)", async () => {
+		const { clone } = await editedClone();
+		const { manager, snapshot } = await recordSession(clone);
+		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+		const prepared = ready(await prepareSessionResume(manager, options()));
+		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+		const since = new Date(Date.now() + 1).toISOString();
+		await new Promise((done) => setTimeout(done, 5));
+		const again = { ...restored, restoredAt: new Date().toISOString() };
+		await prepared.sessionManager.appendWorktreeSnapshot(again.to, again.snapshotId, undefined, again, [
+			{ code: "lfs-objects-unavailable", paths: ["assets/big.bin"] },
+		]);
+
+		const notices = worktreeRestoreNotices(prepared.sessionManager, since);
+
+		assert.equal(notices.length, 1, JSON.stringify(notices));
+		assert.match(notices[0]!.message, /Not restored: 1 commit/);
+		assert.match(notices[0]!.message, /LFS pointers: assets\/big\.bin/);
+		assert.equal(describeWorktreeRestoreStatus(prepared.sessionManager, again.to), notices[0]!.message);
+	});
 });

@@ -671,13 +671,26 @@ function listed(items: readonly string[], limit = 5): string {
 export function formatDegradedRestoreNotice(
 	mapping: WorktreeRootMapping,
 	snapshot: WorktreeSnapshot | undefined,
+	warnings: readonly WorktreeRestoreHostWarning[] = [],
 ): string {
+	const lfs = warnings
+		.filter((warning) => warning.code === "lfs-objects-unavailable")
+		.map((warning) => ` ${formatWorktreeRestoreWarning(warning)}.`)
+		.join("");
+	return `${degradedRestoreSummary(mapping, snapshot)}${lfs}`;
+}
+
+function degradedRestoreSummary(mapping: WorktreeRootMapping, snapshot: WorktreeSnapshot | undefined): string {
 	const degraded = mapping.degraded!;
 	const links = snapshot?.chain.length ?? 0;
 	const restored = `Restored ${mapping.from} into ${mapping.to}`;
 	const missingPaths = degraded.missingPaths.length > 0 ? `: ${listed(degraded.missingPaths)}` : "";
 	if (degraded.stage === "partial-changes") {
-		return `${restored} at its recorded commit ${short(degraded.head)} with ${links - degraded.missingLinks.length} of the ${links} change sets of snapshot ${short(mapping.snapshotId)}. Not restored: change set${degraded.missingLinks.length === 1 ? "" : "s"} ${degraded.missingLinks.join(", ")}${missingPaths}. ${degraded.hint}`;
+		const missing =
+			degraded.missingLinks.length > 0
+				? `change set${degraded.missingLinks.length === 1 ? "" : "s"} ${degraded.missingLinks.join(", ")}${missingPaths}`
+				: `the recorded content of ${listed(degraded.missingPaths)}, which differs on this machine`;
+		return `${restored} at its recorded commit ${short(degraded.head)} with ${links - degraded.missingLinks.length} of the ${links} change sets of snapshot ${short(mapping.snapshotId)}. Not restored: ${missing}. ${degraded.hint}`;
 	}
 	const commits = degraded.missingCommits.length;
 	const recorded = snapshot === undefined ? "" : ` instead of the recorded commit ${short(snapshot.head)}`;
@@ -726,7 +739,8 @@ function restoreNotices(
 		if (!entry.restore) return [];
 		const snapshot = records.get(entry.snapshotId);
 		if (entry.restore.degraded) {
-			return [{ type: "warning" as const, message: formatDegradedRestoreNotice(entry.restore, snapshot) }];
+			const message = formatDegradedRestoreNotice(entry.restore, snapshot, entry.restoreWarnings);
+			return [{ type: "warning" as const, message }];
 		}
 		return [
 			{ type: "info" as const, message: formatWorktreeRestoreNotice(entry.restore) },
@@ -935,7 +949,11 @@ export function describeWorktreeRestoreStatus(
 			status = entry.restore.degraded
 				? {
 						snapshotId: entry.snapshotId,
-						message: formatDegradedRestoreNotice(entry.restore, records.get(entry.snapshotId)),
+						message: formatDegradedRestoreNotice(
+							entry.restore,
+							records.get(entry.snapshotId),
+							entry.restoreWarnings,
+						),
 					}
 				: undefined;
 		} else if (entry.unrestored && resolve(entry.root) === resolve(root)) {

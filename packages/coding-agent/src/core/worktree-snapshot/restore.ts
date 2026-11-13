@@ -1078,7 +1078,7 @@ async function restoreDegradedValidated(
 				...cause,
 			};
 		});
-		await publishWorktree({
+		const measured = await publishWorktree({
 			git,
 			store,
 			storeDir,
@@ -1092,7 +1092,13 @@ async function restoreDegradedValidated(
 			signal,
 			verify: failure.code === "tree-mismatch" ? "head" : "tree",
 		});
-		return { path, degraded, warnings };
+		if (measured === degraded.tree) return { path, degraded, warnings };
+		// This host's checkout filters changed files: record what the worktree holds, and which files differ.
+		const differing = nulFields(
+			(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git)).stdout,
+		);
+		const missingPaths = [...new Set([...degraded.missingPaths, ...differing])].sort();
+		return { path, degraded: { ...degraded, tree: measured, missingPaths }, warnings };
 	});
 }
 
@@ -1262,8 +1268,9 @@ interface PublishWorktree {
  * Checks `head` and `tree` out of `store` into a staging worktree, verifies it, and moves it to `path`, under a crash
  * record, so a final path never holds an unverified worktree.
  */
-async function publishWorktree(publish: PublishWorktree): Promise<void> {
+async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const { git, store, storeDir, path, head, tree, snapshot, scratch, warn, signal } = publish;
+	let measured = tree;
 	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 	const snapshotId = snapshot?.id ?? null;
 	await checkTarget(path, snapshotId);
@@ -1293,6 +1300,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<void> {
 				attributesFile: join(scratch, "empty-attributes"),
 			}),
 		);
+		measured = actual.tree;
 		if (checkout.head !== head || (publish.verify === "tree" && actual.tree !== tree)) {
 			throw new WorkspaceRestoreError("tree-mismatch", {
 				snapshotId,
@@ -1329,6 +1337,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<void> {
 		}
 		assertActive();
 	});
+	return measured;
 }
 
 /** The entry at `path`, or undefined when there is none. */

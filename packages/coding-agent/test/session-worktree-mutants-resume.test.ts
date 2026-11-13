@@ -16,7 +16,7 @@ import {
 	isWorkspaceGitError,
 	isWorkspaceRestoreError,
 	type WorkspaceGitError,
-} from "../src/core/worktree-snapshot/errors.ts";
+} from "../src/core/worktree-snapshot/errors.js";
 import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
 import { verifyWorktree } from "../src/core/worktree-snapshot/restore.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
