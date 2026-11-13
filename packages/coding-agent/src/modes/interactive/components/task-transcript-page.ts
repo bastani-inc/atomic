@@ -1,9 +1,8 @@
 import { getKeybindings, type KeybindingsManager, matchesKey, Text } from "@earendil-works/pi-tui";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { expandSkillCommand } from "../../../core/skill-catalog.ts";
 import type { TaskId } from "../../../core/tasks/contracts.js";
 import { TaskMessageError } from "../../../core/tasks/message-error.js";
-import type { TaskTranscriptCommands, TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
+import type { TaskTranscriptSource } from "../../../core/tasks/supervisor.js";
 import {
 	launchedTaskViewSource,
 	type TaskTranscriptView,
@@ -157,12 +156,10 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
 			// The completion a stage chat offers, from the subagent's own cwd and skills.
 			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
-				const commands = this.commands();
-				if (commands === undefined) return undefined;
-				return {
-					cwd: commands.cwd,
-					skillCommands: commands.skillCommandsEnabled ? getSkillCatalogCommands(commands.skills) : [],
-				};
+				const commands = await source.taskCommands?.(taskId);
+				return commands === undefined
+					? undefined
+					: { cwd: commands.cwd, skillCommands: getSkillCatalogCommands(commands.skillCommands) };
 			}),
 			commands: {
 				send: (text) => this.send(text),
@@ -355,27 +352,11 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 		})();
 	}
 
-	/** The subagent's commands: those of its live session, or those it had when it settled. */
-	private commands(): TaskTranscriptCommands | undefined {
-		return this.source.followTaskTranscript(this.taskId)?.session?.commands?.();
-	}
-
 	private async send(text: string): Promise<void> {
 		const send = this.source.sendTaskMessage;
 		if (send === undefined) throw new TaskMessageError("messages-unsupported", { taskId: this.taskId });
-		// The message reaches the subagent as Intercom text, which its session does not expand, so a skill command is
-		// expanded here from the subagent's own skills, as its session would expand it.
-		const skills = this.commands()?.skills;
-		let warning: string | undefined;
-		const message =
-			skills === undefined
-				? text
-				: expandSkillCommand(skills, text, (error) => {
-						warning = error.message;
-					});
-		if (warning !== undefined) this.chat.showWarning(warning);
 		try {
-			await send.call(this.source, this.taskId, message);
+			await send.call(this.source, this.taskId, text);
 		} catch (error) {
 			if (!this.disposed) throw error;
 			this.keepUndelivered(text, failureText(error));

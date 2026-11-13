@@ -1,6 +1,6 @@
 import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
-import { getSkillCatalog, type SkillCatalog } from "../../core/skill-catalog.ts";
+import { getSkillCatalog, type SkillCatalogCommand } from "../../core/skill-catalog.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { parseGitUrl } from "../../utils/git.ts";
@@ -30,12 +30,14 @@ export function getSessionSkillCommands(
 	session: Pick<AgentSession, "settingsManager" | "resourceLoader">,
 ): SlashCommand[] {
 	if (!session.settingsManager.getEnableSkillCommands()) return [];
-	return getSkillCatalogCommands(getSkillCatalog(session.resourceLoader));
+	return getSkillCatalogCommands(getSkillCatalog(session.resourceLoader).commands);
 }
 
-/** The `skill:<name>` commands of a skill catalog, as a chat's completion lists them. */
-export function getSkillCatalogCommands(catalog: SkillCatalog): SlashCommand[] {
-	return catalog.commands.map((command) => ({
+/** Skill commands as a chat's completion lists them: `skill:<name>`, described with their source. */
+export function getSkillCatalogCommands(
+	commands: readonly Pick<SkillCatalogCommand, "name" | "description" | "sourceInfo">[],
+): SlashCommand[] {
+	return commands.map((command) => ({
 		name: `skill:${command.name}`,
 		description: prefixAutocompleteDescription(command.description, command.sourceInfo),
 	}));

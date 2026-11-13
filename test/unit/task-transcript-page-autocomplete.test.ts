@@ -7,18 +7,21 @@ import { buildSkillCatalog, createSyntheticSourceInfo, getSkillCatalog, type Ski
 import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
 import { getKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, test, vi } from "vitest";
-import type { TaskId } from "../../packages/coding-agent/src/core/tasks/contracts.js";
-import type {
-	TaskTranscriptCommands,
-	TaskTranscriptSource,
-} from "../../packages/coding-agent/src/core/tasks/supervisor.js";
-import type { TaskViewSource } from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
+import type { TaskTranscriptCommands } from "../../packages/coding-agent/src/core/tasks/supervisor.js";
+import {
+	ownerTaskViewSource,
+	type TaskViewSource,
+} from "../../packages/coding-agent/src/core/tasks/task-view-source.js";
 import { TaskAgentTranscriptPage } from "../../packages/coding-agent/src/modes/interactive/components/task-transcript-page.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
 import { createHarness, getUserTexts } from "../../packages/coding-agent/test/suite/harness.js";
 import { createTestResourceLoader } from "../../packages/coding-agent/test/utilities.js";
+import { PooledStageTaskSource } from "../../packages/workflows/src/workers/pooled-stage-task-source.js";
+import { runStageTaskAction, snapshotStageTasks } from "../../packages/workflows/src/workers/stage-watch-tasks.js";
+import type { PooledTaskAction, PooledTaskReply } from "../../packages/workflows/src/workers/stage-watch-types.js";
 import { writeFileEnsuringDir } from "../helpers/runtime.js";
-import { taskTranscriptEnvironment, transcriptOnlySource } from "../helpers/task-transcript-environment.js";
+import { taskFixture } from "../helpers/task-projection.js";
+import { taskTranscriptEnvironment } from "../helpers/task-transcript-environment.js";
 import { makeTestTui } from "../support/fake-tui.js";
 
 const TAB = "\t";
@@ -57,36 +60,45 @@ function childCommands(): TaskTranscriptCommands {
 	return { cwd: childCwd, skills: buildSkillCatalog([skill]), skillCommandsEnabled: true };
 }
 
-/** A subagent task whose transcript offers the child's commands, live or as kept after it finished. */
-function subagentSource(
-	live: boolean,
-	sent: string[],
-	commands: () => TaskTranscriptCommands = childCommands,
-): TaskViewSource {
-	const session: TaskTranscriptSource = {
+type Fixture = ReturnType<typeof taskFixture>;
+const fixtures: Fixture[] = [];
+
+afterEach(async () => {
+	for (const fixture of fixtures.splice(0)) await fixture.dispose();
+});
+
+/**
+ * A subagent task in a real owner task store, whose transcript offers the child's commands, live or as kept after
+ * it finished, and records what reaches its Intercom channel.
+ */
+async function childTaskSource(live: boolean, sent: string[], commands: () => TaskTranscriptCommands) {
+	const fixture = taskFixture();
+	fixtures.push(fixture);
+	await fixture.start("Subagent");
+	fixture.runners[0]!.context.bindTranscript({
 		getSessionId: () => "child-session",
 		getEntries: () => [],
 		...(live ? { subscribe: () => () => {} } : {}),
 		completionSource: { runId: "run", intercomTarget: "subagent-worker-1" },
 		commands,
-	};
-	return transcriptOnlySource({
-		readTaskTranscript: () => ({ ok: true, value: { messages: [] } }),
-		followTaskTranscript: () => ({ session, historyOnly: !live }),
-		sendTaskMessage: async (_id, text) => {
+		sendMessage: async (text) => {
 			sent.push(text);
+			return { delivered: true };
 		},
 	});
+	return ownerTaskViewSource(fixture.store);
 }
 
 async function openChat(
 	live: boolean,
 	sent: string[] = [],
-	commands?: () => TaskTranscriptCommands,
+	commands: () => TaskTranscriptCommands = childCommands,
+	viewFrom: (source: TaskViewSource) => TaskViewSource = (source) => source,
 ): Promise<TaskAgentTranscriptPage> {
+	const source = await childTaskSource(live, sent, commands);
 	const page = new TaskAgentTranscriptPage(
-		subagentSource(live, sent, commands),
-		"child" as TaskId,
+		viewFrom(source),
+		source.tasks[0]!.ref.taskId,
 		taskTranscriptEnvironment({ tui: makeTestTui(ROWS), keybindings: getKeybindings() }),
 		() => {},
 	);
@@ -94,11 +106,21 @@ async function openChat(
 	return page;
 }
 
+/** The root's view of a stage's tasks on a local worker: every action crosses the process boundary as JSON. */
+function throughWorker(worker: TaskViewSource): TaskViewSource {
+	const root = new PooledStageTaskSource(async (taskId, action) => {
+		const crossed = JSON.parse(JSON.stringify(action)) as PooledTaskAction;
+		return JSON.parse(JSON.stringify(await runStageTaskAction(worker, taskId, crossed))) as PooledTaskReply;
+	});
+	root.apply(JSON.parse(JSON.stringify(snapshotStageTasks(worker))));
+	return root;
+}
+
 const screen = (page: TaskAgentTranscriptPage) =>
 	page
 		.render(WIDTH, ROWS)
 		// The composer marks its cursor with APC sequences, which are not text.
-		.map((row) => stripVTControlCharacters(row.replace(/\x1b_[^\x07]*\x07/g, "")))
+		.map((row) => stripVTControlCharacters(row.replace(/\x1b_[^\x07\x1b]*\x07/g, "")))
 		.join("\n");
 
 function type(page: TaskAgentTranscriptPage, text: string): void {
@@ -176,6 +198,25 @@ test("a subagent chat sends a command naming no skill of the subagent as typed (
 		page.handleInput(ENTER);
 		await vi.waitFor(() => assert.deepEqual(sent, ["/skill:not-a-skill check the notes"]));
 		assert.doesNotMatch(screen(page), /not-a-skill.*(?:not found|unknown)|Error/i);
+	} finally {
+		page.dispose();
+	}
+});
+
+test("a chat of a subagent launched by a stage on a local worker completes and expands from that subagent (#4755)", async () => {
+	const sent: string[] = [];
+	const page = await openChat(true, sent, childCommands, throughWorker);
+	try {
+		type(page, "/skill:de");
+		await vi.waitFor(() => assert.match(screen(page), /→ skill:demo-skill\s+\[p\] Demo skill/));
+		page.handleInput(TAB);
+		await vi.waitFor(() => assert.match(screen(page), /^❯ \/skill:demo-skill\s*$/m));
+		type(page, "go");
+		page.handleInput(ENTER);
+		await vi.waitFor(() => assert.equal(sent.length, 1));
+		assert.match(sent[0]!, /^<skill name="demo-skill"[\s\S]*DEMO SKILL BODY\.[\s\S]*\n\ngo$/);
+		type(page, "@child-only");
+		await vi.waitFor(() => assert.match(screen(page), /child-only-notes\.txt/));
 	} finally {
 		page.dispose();
 	}

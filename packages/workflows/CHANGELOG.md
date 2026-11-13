@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed workflow stage chats offering no `@` file-mention suggestions. Typing `@` now completes paths in the stage's working directory, as in the main chat ([#4755](https://github.com/bastani-inc/atomic/issues/4755))
+- Fixed workflow stage chats offering no `@` file-mention suggestions. Typing `@` now completes paths in the stage's working directory, as in the main chat. A subagent launched by a stage on a local worker gets the same completion in its chat, from its own working directory and skills ([#4755](https://github.com/bastani-inc/atomic/issues/4755))
 
 ## [0.9.85] - 2026-11-13
 
