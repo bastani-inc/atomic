@@ -45,7 +45,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/connection\s*refused/i,
 	/upstream/i,
 	/timeout/i,
-	/timed\s*out/i,
+	/timed\s+out/i,
 	/\b50[0-4]\b/,
 	/\b52[0-4]\b/,
 	/\b529\b/,
@@ -56,7 +56,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/connection.?lost/i,
 	/connection.?closed/i,
 	/connection.?reset/i,
-	/ECONNRESET/i,
+	/(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])/i,
 	/other side closed/i,
 	/websocket.?closed/i,
 	/websocket.?error/i,
@@ -92,6 +92,7 @@ const CANCELLED_FAILURE_PATTERNS: readonly RegExp[] = [/cancel/i, /abort/i, /int
 
 const TRANSPORT_CANCELLATION_FAILURE_PATTERNS: readonly RegExp[] = [
 	/getaddrinfo|ENOTFOUND|EAI_AGAIN/i,
+	/(?<![a-z0-9_])ECONNABORTED(?![a-z0-9_])|software caused connection abort/i,
 	/pending stream has been canceled/i,
 ];
 
@@ -335,6 +336,8 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "etimedout":
 		case "econnreset":
 		case "econnrefused":
+		case "econnaborted":
+		case "epipe":
 		case "enotfound":
 		case "eai_again":
 		case "fetch_failed":
@@ -489,7 +492,11 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	)
 		return "auth_on_candidate_provider";
 	if (messageLooksLikeModelUnavailable(message)) return "model_unavailable";
-	if (/network|fetch|socket|connection\s*refused|getaddrinfo|ENOTFOUND|EAI_AGAIN|timeout|timed\s*out/i.test(message))
+	if (
+		/network|fetch|socket|connection\s*refused|(?<![a-z0-9_])(?:ECONNRESET|ECONNABORTED|ECONNREFUSED|ETIMEDOUT|EPIPE)(?![a-z0-9_])|getaddrinfo|ENOTFOUND|EAI_AGAIN|timeout|timed\s+out/i.test(
+			message,
+		)
+	)
 		return "network_timeout";
 	return "provider_unavailable";
 }
@@ -525,6 +532,7 @@ function fallbackSignalFromDirectMessage(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
+	if (normalizeCode(codeFrom(value)) === "econnaborted") return undefined;
 	const message = directMessageFrom(value);
 	if (message === undefined) return undefined;
 	const kind = fallbackKindFromMessage(message, errorName(value));
@@ -545,6 +553,7 @@ function classifyAssistantRefusalSignal(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
+	if (normalizeCode(codeFrom(value)) === "econnaborted") return undefined;
 	const codeRefusalKind =
 		refusalKindFromCode(codeFrom(value)) ??
 		refusalKindFromCode(errorName(value)) ??
