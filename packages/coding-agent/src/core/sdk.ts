@@ -383,7 +383,7 @@ async function constructAgentSession(
 		);
 	}
 	if (options.builtins?.intercom !== false) {
-		resourceLoader = await withMandatoryResourceLoader(resourceLoader, cwd);
+		resourceLoader = await withMandatoryResourceLoader(resourceLoader, cwd, agentDir);
 	}
 
 	// Check if session has existing data to restore
