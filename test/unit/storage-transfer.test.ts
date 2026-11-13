@@ -348,6 +348,38 @@ test("importing sessions again adds nothing, a newer export appends the entries 
 	assert.equal(await sessionEntries(target, sessionId), first + 2);
 });
 
+test("an unknown --run fails the export before a session file is written (#4720)", async () => {
+	const source = machine("a");
+	await recordSession(source, ["hello"]);
+	await seedRuns(source, [[RUN_A, "completed", 1_000]]);
+	const failed = await storage(source, ["export", exports, "--run", "not-a-run"]);
+	assert.equal(failed.code, 1);
+	assert.match(failed.err, /run not-a-run is not in this workflow journal/);
+	assert.ok(!existsSync(exports), "no file of either kind was written");
+});
+
+test("importing again stores the tool outputs of a session an interrupted import added without them (#4720)", async () => {
+	const source = machine("a");
+	const sessionId = await recordSession(source, ["hello"]);
+	await storage(source, ["export", exports, "--sessions"]);
+	const file = join(exports, "sessions", `${sessionId}.jsonl`);
+	const content = readFileSync(file, "utf8");
+	const hash = JSON.parse(content.trimEnd().split("\n").at(-1)!).data.hash as string;
+	// What an import stopped between writing the session's entries and its tool output leaves behind.
+	const interrupted = join(root, "interrupted", `${sessionId}.jsonl`);
+	mkdirSync(join(root, "interrupted"), { recursive: true });
+	writeFileSync(interrupted, content.replace(/,"base64":"[^"]+"/, ""));
+	const target = machine("b");
+	const targetSessions = await sessionStore(target);
+	await SessionManager.importFromJsonl(interrupted, project, targetSessions);
+	assert.equal(await targetSessions.getBlob!(sessionId, hash), undefined);
+
+	const rerun = await storage(target, ["import", exports]);
+	assert.equal(rerun.code, 0, rerun.err);
+	assert.match(rerun.out, /1 session .*1 already up to date/);
+	assert.deepEqual(Buffer.from((await targetSessions.getBlob!(sessionId, hash))!).toString(), "tool output for hello");
+});
+
 test("session and workflow files whose strings a tool redacted import as what they came from (#4720)", async () => {
 	const source = machine("a");
 	const sessionId = await recordSession(source, [`my token is ${SECRET}`]);

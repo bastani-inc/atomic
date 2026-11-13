@@ -215,7 +215,7 @@ interface ExportSource {
 	readonly shardId?: number;
 	readonly database: SqliteDatabase;
 	readonly runs: readonly JournalRunTableRow[];
-	readonly runIds: ReadonlySet<string>;
+	readonly byId: ReadonlyMap<string, JournalRunTableRow>;
 }
 
 /** A journal file an export could not read, and whether that is because it holds only the format before 0.9.38. */
@@ -256,7 +256,7 @@ async function openExportSource(
 			path,
 			database,
 			runs,
-			runIds: new Set(runs.map((run) => run.run_id)),
+			byId: new Map(runs.map((run) => [run.run_id, run])),
 			...(shardId === undefined ? {} : { shardId }),
 		};
 	} catch (error) {
@@ -344,7 +344,7 @@ class ExportSources {
 	missing(view: CatalogView): JournalCatalogRun[] {
 		return view.runs.filter((run) => {
 			const source = this.opened.get(run.shard);
-			return run.status !== undefined && source !== undefined && !source.runIds.has(run.runId);
+			return run.status !== undefined && source !== undefined && !source.byId.has(run.runId);
 		});
 	}
 
@@ -443,7 +443,7 @@ export async function exportWorkflowRuns(
 					if (!catalogued.has(id)) skipped.push({ path: unreadable.path, reason: unreadable.reason });
 				for (const run of view.runs) {
 					const source = sources.opened.get(run.shard);
-					const row = source?.runs.find((candidate) => candidate.run_id === run.runId);
+					const row = source?.byId.get(run.runId);
 					if (source !== undefined && row !== undefined) listed.set(run.runId, { source, run: row });
 					else if (run.status !== undefined) unexported.set(run.runId, await missingRunReason(run, view, sources));
 				}

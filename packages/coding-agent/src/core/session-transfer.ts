@@ -294,7 +294,9 @@ function assertBlobs(store: SessionStore, session: ParsedSession): void {
  * compared: a session another process created or added entries to since fails with the file, and nothing of it is
  * written. Session storage has no lock an import can hold across sessions, so when a write fails after earlier writes
  * (or after `workflowsWritten`, the runs the same import already wrote), `StorageImportIncompleteError` names what was
- * written and what was not; importing again writes only what is missing.
+ * written and what was not; importing again writes only what is missing. A session the store already holds in full
+ * gets the tool outputs of the file it lacks, so a rerun also finishes a session whose outputs an interrupted import
+ * did not store.
  */
 export async function applySessionImport(
 	plan: SessionImportPlan,
@@ -302,10 +304,16 @@ export async function applySessionImport(
 ): Promise<SessionImportReport> {
 	const { store } = plan;
 	const report = { added: [] as string[], updated: [] as string[], unchanged: [] as string[] };
-	const pending = plan.sessions.filter((planned) => {
-		if (planned.action === "unchanged") report.unchanged.push(planned.session.header.id);
-		return planned.action !== "unchanged";
-	});
+	const pending = plan.sessions.filter((planned) => planned.action !== "unchanged");
+	for (const planned of plan.sessions) {
+		if (planned.action !== "unchanged") continue;
+		// An import stopped between writing a new session's entries and its tool outputs left the session complete but
+		// its outputs missing: the rerun stores the ones the store lacks.
+		const { header, blobs } = planned.session;
+		for (const blob of blobs)
+			if ((await store.getBlob?.(header.id, blob.hash)) === undefined) await store.putBlob?.(header.id, blob.read());
+		report.unchanged.push(header.id);
+	}
 	for (const [index, planned] of pending.entries()) {
 		const { header, file, blobs } = planned.session;
 		try {

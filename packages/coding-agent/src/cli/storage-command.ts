@@ -624,20 +624,7 @@ async function exportRuns(
 		if (refusals.length > 0 && (command.kinds.explicit || refusals.length === kinds))
 			throw new StorageCommandError(refusals.join("\n"));
 		for (const refused of refusals) error(`Skipped: ${refused}`);
-		if (sessions !== undefined && "target" in sessions) {
-			const target = sessionsTransferDirectory(directory);
-			const report =
-				sessions.target === undefined
-					? { written: [], unchanged: [] }
-					: await exportSessions(sessions.target, target, {
-							...(command.limit === undefined ? {} : { limit: command.limit }),
-							...(command.since === undefined ? {} : { since: command.since }),
-						});
-			const total = report.written.length + report.unchanged.length;
-			log(
-				`Exported ${plural(total, "session")} to ${target} (${report.written.length} written, ${report.unchanged.length} unchanged).`,
-			);
-		}
+		// Workflow runs first: an unknown --run fails the export before any file of either kind is written.
 		if (workflows !== undefined && "target" in workflows) {
 			const target = workflowsTransferDirectory(directory);
 			const report = await exportWorkflowRuns(workflows.target, target, {
@@ -653,6 +640,20 @@ async function exportRuns(
 				error(
 					`Skipped ${skipped.runId === undefined ? skipped.path : `run ${skipped.runId} (${skipped.path})`}: ${skipped.reason}.`,
 				);
+		}
+		if (sessions !== undefined && "target" in sessions) {
+			const target = sessionsTransferDirectory(directory);
+			const report =
+				sessions.target === undefined
+					? { written: [], unchanged: [] }
+					: await exportSessions(sessions.target, target, {
+							...(command.limit === undefined ? {} : { limit: command.limit }),
+							...(command.since === undefined ? {} : { since: command.since }),
+						});
+			const total = report.written.length + report.unchanged.length;
+			log(
+				`Exported ${plural(total, "session")} to ${target} (${report.written.length} written, ${report.unchanged.length} unchanged).`,
+			);
 		}
 		return 0;
 	} finally {
