@@ -1,6 +1,6 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
-import type { SessionManager } from "../../src/core/session-manager.ts";
+import type { SessionManager } from "../../src/core/session-manager.js";
 import { IsolatedInteractiveRuntime } from "../../src/modes/interactive-engine/isolated-runtime.ts";
 import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
 import { toJsonEvent } from "../../src/modes/json-event.ts";

@@ -273,6 +273,35 @@ describe("interactive engine resource readiness", () => {
 		}
 	});
 
+	it("answers get_entries before optional resources are ready, so an unsaved session's view can bind (#4703)", async () => {
+		const harness = await createHarness();
+		const waitForResources = vi.fn(() => new Promise<void>(() => {}));
+		const runtime = new AgentSessionRuntime(
+			harness.session,
+			{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+		);
+		const handle = createRpcCommandHandler({
+			runtimeHost: runtime,
+			getSession: () => harness.session,
+			rebindSession: async () => {},
+			output: vi.fn(),
+			waitForResources,
+		});
+
+		try {
+			await expect(handle({ id: "entries", type: "get_entries" })).resolves.toMatchObject({
+				success: true,
+				data: { entries: [], leafId: null },
+			});
+			expect(waitForResources).not.toHaveBeenCalled();
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	it("holds resource-dependent control commands and reacquires the current session", async () => {
 		const harness = await createHarness();
 		const replacement = await createHarness();
