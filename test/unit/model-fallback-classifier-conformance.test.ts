@@ -268,6 +268,30 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		retryable: true,
 	},
 	{
+		label: "message timeout with multiple spaces (#4729)",
+		failure: new Error("request timed  out"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "message refused connection with multiple spaces (#4729)",
+		failure: new Error("connection  refused"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "delimited transport code with abort wording (#4729)",
+		failure: new Error("read ECONNABORTED: connection aborted"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "content filter finish reason outranks provider status (#4729)",
+		failure: { status: 503, finish_reason: "content_filter" },
+		kind: "content_filter",
+		retryable: true,
+	},
+	{
 		label: "code etimedout",
 		failure: { code: "ETIMEDOUT", message: "socket timed out" },
 		kind: "network_timeout",
@@ -413,6 +437,127 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		label: "gateway connectionclosed without separator (#12093)",
 		failure: new Error("gateway_error: connectionclosed"),
 		kind: "provider_unavailable",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ECONNRESET (#12128)",
+		failure: new Error("read ECONNRESET"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ETIMEDOUT (#12128)",
+		failure: new Error("connect ETIMEDOUT 140.82.113.3:443"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket EPIPE (#12128)",
+		failure: new Error("write EPIPE"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ECONNREFUSED (#12128)",
+		failure: new Error("connect ECONNREFUSED 127.0.0.1:443"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ECONNABORTED (#12128)",
+		failure: new Error("ECONNABORTED"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code EPIPE (#12128)",
+		failure: { code: "EPIPE", message: "broken pipe" },
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code ECONNABORTED (#12128)",
+		failure: { code: "ECONNABORTED", message: "software caused connection abort" },
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code ECONNABORTED with generic connection aborted wording (#12128)",
+		failure: { code: "ECONNABORTED", message: "connection aborted" },
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code ECONNABORTED with Windows Winsock 10053 wording (#12128)",
+		failure: Object.assign(new Error("An established connection was aborted by the software in your host machine"), {
+			code: "ECONNABORTED",
+		}),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "fetch failed wrapping Windows Winsock 10053 ECONNABORTED cause (#12128)",
+		failure: new TypeError("fetch failed", {
+			cause: Object.assign(new Error("An established connection was aborted by the software in your host machine"), {
+				code: "ECONNABORTED",
+			}),
+		}),
+		kind: "transport_error",
+		retryable: true,
+	},
+	{
+		label: "generic wrapper around Windows Winsock 10053 ECONNABORTED cause (#12128)",
+		failure: new Error("provider call failed", {
+			cause: Object.assign(new Error("An established connection was aborted by the software in your host machine"), {
+				code: "ECONNABORTED",
+			}),
+		}),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "AbortError name still wins over code ECONNABORTED (#12128)",
+		failure: Object.assign(new Error("The operation was aborted"), {
+			name: "AbortError",
+			code: "ECONNABORTED",
+		}),
+		kind: "cancelled",
+		retryable: false,
+	},
+	{
+		label: "aborted stopReason still wins over code ECONNABORTED (#12128)",
+		failure: { stopReason: "aborted", code: "ECONNABORTED", errorMessage: "connection aborted" },
+		kind: "cancelled",
+		retryable: false,
+	},
+	{
+		label: "Node wording Connection reset by peer (#12128)",
+		failure: new Error("Connection reset by peer"),
+		kind: "provider_unavailable",
+		retryable: true,
+	},
+	{
+		label: "lookalike identifier EXECONNRESET (#12128)",
+		failure: new Error("Invalid value EXECONNRESET"),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "lookalike identifier ETIMEDOUTX (#12128)",
+		failure: new Error("Unknown field ETIMEDOUTX"),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "lookalike identifier ERR_EPIPE_ID without auth wording (#12128)",
+		failure: new Error("Unknown option ERR_EPIPE_ID"),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "lookalike identifier ERR_EPIPE_ID with Invalid key stays auth (#12128)",
+		failure: new Error("Invalid key ERR_EPIPE_ID"),
+		kind: "auth_on_candidate_provider",
 		retryable: true,
 	},
 ];
