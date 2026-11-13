@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `--no-session` and other unsaved sessions no longer generate session summaries, so they no longer send one extra model request after each turn. Summaries exist for the `/resume` picker, which never lists unsaved sessions. RPC `get_session_summary` returns `null` for an unsaved session ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
+
 ### Fixed
 
+- Fixed the footer usage, the context indicator, and `/session` leaving out the tokens and cost of the latest session summary until a later turn or `/reload`. They now update as soon as the summary is saved, and also when a cache warm records its usage ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
 - Fixed the extension transpile cache staying under the first agent directory a process used: each load now caches under the agent directory in effect for it (`ATOMIC_CODING_AGENT_DIR` at that time, or the SDK session's `agentDir`), stale cache versions are pruned in every agent directory, and an agent directory removed while the process runs is no longer recreated ([#4728](https://github.com/bastani-inc/atomic/issues/4728))
 
 ## [0.9.84] - 2026-11-13

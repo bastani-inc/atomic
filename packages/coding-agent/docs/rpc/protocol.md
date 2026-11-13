@@ -13,7 +13,7 @@ These read-only commands do not start a model turn. Stored summaries remain avai
 
 | Command | Response `data` | TypeScript `RpcClient` method |
 | --- | --- | --- |
-| `{"type":"get_session_summary"}` | `{ summary: SessionSummaryEntry \| null }`, including `summary` and `summarizedThroughId` | `getSessionSummary()` |
+| `{"type":"get_session_summary"}` | `{ summary: SessionSummaryEntry \| null }`, including `summary` and `summarizedThroughId`; always `null` for an unsaved (`--no-session`) session | `getSessionSummary()` |
 | `{"type":"list_sessions"}` | `{ sessions: RpcSessionInfo[] }` for the current project/session directory, including `summary` and `summarizedThroughId`; `created` and `modified` are ISO strings | `listSessions()` |
 | `{"type":"list_workflow_runs"}` | `{ runs: WorkflowRunSummary[] }`, including live runs and current-project resumable and completed history | `listWorkflowRuns(status?)` |
 | `{"type":"get_workflow_run_summary","runId":"<uuid>"}` | `WorkflowRunDetail` for that run | `getWorkflowRunSummary(runId)` |
