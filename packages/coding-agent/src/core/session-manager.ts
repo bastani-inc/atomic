@@ -6,6 +6,7 @@ export {
 	buildSessionContext,
 	buildSessionProjection,
 	getLatestCompactionBoundaryEntry,
+	getSessionLeafId,
 	sessionEntryToContextMessages,
 } from "./session-manager-history.ts";
 export { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";

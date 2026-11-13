@@ -221,12 +221,10 @@ export async function navigateTree(
 			if (label) {
 				await this.sessionManager.appendLabelChange(summaryId, label);
 			}
-		} else if (newLeafId === null) {
-			// No summary, navigating to root - reset leaf
-			await this.sessionManager.resetLeaf();
 		} else {
-			// No summary, navigating to non-root
-			await this.sessionManager.branch(newLeafId);
+			// No summary: move the leaf (null resets it to the root) and record the move, so reopening the session does
+			// not bring the abandoned branch back into context (#3325).
+			await this.sessionManager.recordBranch(newLeafId);
 		}
 
 		// Attach label to target entry when not summarizing (no summary entry to label)

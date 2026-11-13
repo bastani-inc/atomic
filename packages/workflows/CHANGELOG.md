@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `listForkPoints()` naming a stage session's last entry as its `entryId` after `/tree` moved the stage chat back to an earlier entry without a summary. It now names the entry the stage continues from, and a run fork's copy of that stage session reopens on the same branch ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+
 ## [0.9.81] - 2026-11-13
 
 Parallel reviewers pick different models, and Escape stops a retrying stage.

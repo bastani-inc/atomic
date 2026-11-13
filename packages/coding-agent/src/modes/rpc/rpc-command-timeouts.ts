@@ -22,6 +22,7 @@ export const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
 	"abort",
 	"abort_bash",
 	"abort_compaction",
+	"abort_branch_summary",
 	"abort_retry",
 	"cancel_login_provider",
 	// Interaction- or turn-gated work.
