@@ -381,6 +381,8 @@ The repository state of one checkout at the end of a turn that called a file-wri
 
 - `snapshot`: Present when the state changed. An entry without it refers to the earlier entry whose snapshot has the same `snapshotId`.
 - `restore`: Present on the entry written when a resume restored the snapshot into a new worktree: `{ "from", "to", "snapshotId", "tree", "restoredAt" }`. Later resumes map `from` to `to`.
+- `restore.degraded`: Present when the resume restored less than the snapshot (#4733): `{ "stage": "partial-changes" | "closest-commit", "head", "tree", "basis"?, "missingLinks", "missingPaths", "missingCommits", "cause", "causeReason"?, "hint" }`. `head` and `tree` are what the worktree holds; `basis` (`pushed-base`, `earlier-snapshot` or `branch-tip`) says where a `closest-commit` restore's commit came from.
+- `unrestored`: Present on an entry written when a resume continued without restoring the checkout at `root` (#4733), never together with `restore`: `{ "snapshotId", "continuedIn", "place": "recorded" | "launch", "cause", "causeReason"?, "detail", "hint", "at" }`.
 - `restoreWarnings`: Optional, only with `restore`: what that restore reported beyond the snapshot record, `{ "code": "lfs-objects-unavailable", "paths": [...] }` or `{ "code": "stale-restore-retained", "path": "...", "kind": "worktree" | "record" | "records-directory" }`.
 - `blobs`: Present only in exported files: base64 patch and bundle content keyed by SHA-256. Import verifies and stores them, then drops this field.
 

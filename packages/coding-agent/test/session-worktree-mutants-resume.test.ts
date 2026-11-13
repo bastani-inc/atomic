@@ -13,8 +13,8 @@ import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
 import {
-	isWorkspaceDriftError,
 	isWorkspaceGitError,
+	isWorkspaceRestoreError,
 	type WorkspaceGitError,
 } from "../src/core/worktree-snapshot/errors.ts";
 import { setWorktreeSnapshotGit } from "../src/core/worktree-snapshot/git.ts";
@@ -56,12 +56,30 @@ function failWorktreeRemoval(): void {
 	setWorktreeSnapshotGit(async () => ({ path: wrapper, env: sandbox.executable.env }));
 }
 
-/** A clone whose only unpushed commit adds a denied file, so its snapshot cannot be restored anywhere else. */
+/** A clone whose only unpushed commit adds a denied file, so its snapshot cannot be restored exactly anywhere else. */
 async function deniedHistory(name: string): Promise<string> {
 	const { clone } = await sandbox.remoteWithClone(name);
 	sandbox.write(join(clone, "private.pem"), "private\n");
 	await sandbox.commitAll(clone, "denied history");
 	return clone;
+}
+
+/**
+ * Records `root` with a remote that holds credentials, as no capture writes: a record that fails the security
+ * checks, whose restore refuses the resume rather than degrading it (#4733).
+ */
+async function recordUnsafe(manager: SessionManager, root: string): Promise<void> {
+	const result = await captureWorktreeSnapshot(root, { blobs: store.snapshotBlobs });
+	if (result.status !== "captured") throw new Error(`no snapshot of ${root}`);
+	const unsafe = { ...result.snapshot, remotes: ["https://user:token@example.invalid/repo.git"] };
+	await manager.appendWorktreeSnapshot(root, unsafe.id, unsafe);
+}
+
+/** The refusal of a resume whose record fails the security checks: `invalid-snapshot`, naming the unsafe remote. */
+function assertRefusedRecord(error: unknown): void {
+	assert.ok(isWorkspaceRestoreError(error), String(error));
+	assert.equal(error.code, "invalid-snapshot");
+	assert.equal(error.reason, "unsafe-remote");
 }
 
 function worktreeOf(snapshot: WorktreeSnapshot): string {
@@ -166,12 +184,11 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const denied = await deniedHistory("b");
 		const manager = await SessionManager.create(store, a.clone);
 		await record(manager, a.clone);
-		await record(manager, denied);
+		await recordUnsafe(manager, denied);
 		renameSync(a.clone, sandbox.path("a-away"));
 		renameSync(denied, sandbox.path("b-away"));
 		await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
-			assert.ok(isWorkspaceDriftError(error));
-			assert.equal(error.reason, "restore-failed");
+			assertRefusedRecord(error);
 			assert.equal(Object.hasOwn(error, "cleanupCause"), false);
 			return true;
 		});
@@ -183,13 +200,12 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const denied = await deniedHistory("b");
 		const manager = await SessionManager.create(store, a.clone);
 		const restorable = await record(manager, a.clone);
-		await record(manager, denied);
+		await recordUnsafe(manager, denied);
 		renameSync(a.clone, sandbox.path("a-away"));
 		renameSync(denied, sandbox.path("b-away"));
 		failWorktreeRemoval();
 		await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
-			assert.ok(isWorkspaceDriftError(error));
-			assert.equal(error.reason, "restore-failed");
+			assertRefusedRecord(error);
 			const descriptor = Object.getOwnPropertyDescriptor(error, "cleanupCause");
 			assert.equal(descriptor?.configurable, true);
 			assert.equal(descriptor?.enumerable, false);
@@ -206,11 +222,11 @@ describe.skipIf(process.platform === "win32")("rolling back restores whose remov
 		const manager = await SessionManager.create(store, a.clone);
 		const first = await record(manager, a.clone);
 		const second = await record(manager, b.clone);
-		await record(manager, denied);
+		await recordUnsafe(manager, denied);
 		for (const clone of [a.clone, b.clone, denied]) renameSync(clone, sandbox.path(`${basename(clone)}-away`));
 		failWorktreeRemoval();
 		await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
-			assert.ok(isWorkspaceDriftError(error));
+			assertRefusedRecord(error);
 			const cleanup = (error as { cleanupCause?: unknown }).cleanupCause;
 			assert.ok(cleanup instanceof AggregateError);
 			assert.equal(cleanup.errors.length, 2);

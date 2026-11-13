@@ -15,6 +15,7 @@ import {
 import { computeEnvironmentHash, sha256Hex } from "./env-hash.ts";
 import {
 	isWorkspaceGitError,
+	isWorkspaceRestoreError,
 	unreadablePathError,
 	unwritablePathError,
 	WorkspaceConfigError,
@@ -29,18 +30,24 @@ import {
 	type GitRunResult,
 	gitText,
 	nulFields,
-	redactUrlCredentials,
 	runGit,
 	withWorktreeSnapshotGit,
 } from "./git.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
-import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord } from "./records.ts";
+import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	resolveWorktreeSnapshotSettings,
 	type WorktreeSnapshotSettingsInput,
 } from "./settings.ts";
-import type { SnapshotBlobStore, WorkspaceBinding, WorktreeRestoreWarning, WorktreeSnapshot } from "./types.ts";
+import type {
+	SnapshotBlobStore,
+	WorkspaceBinding,
+	WorktreeDegradedRestore,
+	WorktreeDegradedRestoreBasis,
+	WorktreeRestoreWarning,
+	WorktreeSnapshot,
+} from "./types.ts";
 
 export interface RestoreWorktreeSnapshotOptions {
 	/** New or empty directory for the restored worktree. Default: a new directory under `storeDir`/worktrees. */
@@ -594,23 +601,6 @@ async function ensureHead(
 	return fetched;
 }
 
-/**
- * Transports a restored worktree's repository may name as a remote, the same ones a restore fetches over. A URL with
- * another scheme or a remote helper (`ext::`, `<name>::`) is never configured.
- */
-const REMOTE_SCHEMES = new Set(["https", "http", "ssh", "git", "file"]);
-
-/**
- * Whether a recorded remote may be configured in a shared object store: credential-free, never an option, and a URL
- * of an allowed scheme, an scp-like `host:path`, or a local path.
- */
-function isConfigurableRemote(remote: string): boolean {
-	if (remote.startsWith("-") || redactUrlCredentials(remote) !== remote) return false;
-	if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(remote)) return false;
-	const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(remote)?.[1];
-	return scheme === undefined || REMOTE_SCHEMES.has(scheme.toLowerCase());
-}
-
 async function configuredRemoteUrls(git: GitRunOptions): Promise<string[]> {
 	const { stdout } = await runGit(["config", "-z", "--get-regexp", "^remote\\..+\\.url$"], {
 		...git,
@@ -626,7 +616,7 @@ async function configuredRemoteUrls(git: GitRunOptions): Promise<string[]> {
  * restore fetches over, is left without any, as before.
  */
 async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
-	if (remotes.length === 0 || !remotes.every(isConfigurableRemote)) return false;
+	if (remotes.length === 0 || !remotes.every(isAllowedRemote)) return false;
 	let configured = await configuredRemoteUrls(git);
 	// A store holding the start of the recorded list was set up by a restore that stopped partway; finish it.
 	if (configured.length < remotes.length && configured.every((remote, index) => remote === remotes[index])) {
@@ -869,7 +859,6 @@ async function restoreValidated(
 	target: WorkspaceBinding,
 	options: RestoreWorktreeSnapshotOptions,
 ): Promise<RestoredWorktree> {
-	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
 	assertUsableSnapshotRecord(target, snapshot);
@@ -938,68 +927,19 @@ async function restoreValidated(
 				await reconstructTree(git, snapshot, patches, scratch);
 			}
 		});
-		await checkTarget(path, snapshotId);
-		const createdTarget = (await statIfPresent(path)) === undefined;
-		const id = randomUUID();
-		const staging =
-			options.into === undefined
-				? join(storeDir, "worktrees", `.staging-${id}`)
-				: join(dirname(path), `.${basename(path)}.atomic-restore-${id}`);
-		const record: RestoreRecord = { staging, target: path, store, createdTarget };
-		await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
-			await materialize(git, staging, target.head, target.tree, scratch, snapshotId, signal);
-			assertActive();
-			if (snapshot?.filters?.drivers.includes("lfs")) {
-				const worktree: GitRunOptions = { cwd: staging, signal };
-				const pointers = await pullLfsObjects(worktree, target.head, target.tree, snapshot.remotes);
-				if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
-			}
-			const checkout = await locateCheckout(staging, signal);
-			if (checkout instanceof Error) throw checkout;
-			const policy = await loadSnapshotPathPolicy(staging);
-			const actual = await withScratchDirectory((verifyScratch) =>
-				writeWorkingTree(checkout, settings, policy, verifyScratch, {
-					signal,
-					neutral: true,
-					seedTree: target.tree,
-					attributesFile: join(scratch, "empty-attributes"),
-				}),
-			);
-			if (checkout.head !== target.head || actual.tree !== target.tree) {
-				throw new WorkspaceRestoreError("tree-mismatch", {
-					snapshotId,
-					target: path,
-					expectedTree: target.tree,
-					actualTree: actual.tree,
-				});
-			}
-			assertActive();
-			if (createdTarget) {
-				if ((await statIfPresent(path)) !== undefined) {
-					throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-				}
-			} else {
-				await writing(path, snapshotId, () => rmdir(path));
-			}
-			await runGit(["worktree", "move", staging, path], git);
-			// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
-			// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone.
-			const registered = await registeredWorktrees(git);
-			const destination = await physicalPath(path);
-			if (!includesPath(registered, destination)) {
-				const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-				const nested = join(destination, basename(staging));
-				if (includesPath(registered, nested)) {
-					try {
-						await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
-					} catch (cleanupCause) {
-						Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-						warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
-					}
-				}
-				throw error;
-			}
-			assertActive();
+		await publishWorktree({
+			git,
+			store,
+			storeDir,
+			path,
+			into: options.into,
+			head: target.head,
+			tree: target.tree,
+			snapshot,
+			scratch,
+			warn,
+			signal,
+			verify: "tree",
 		});
 		if (snapshot) for (const warning of snapshotRestoreWarnings(snapshot)) warn(warning);
 		return {
@@ -1008,6 +948,379 @@ async function restoreValidated(
 			binding: { remotes: [...target.remotes], head: target.head, tree: target.tree, envHash: target.envHash },
 			warnings,
 		};
+	});
+}
+
+/** Restore errors after which a degraded restore can still give the session part of its snapshot (#4733). */
+const DEGRADABLE_RESTORE_CODES: ReadonlySet<string> = new Set([
+	"blob-missing",
+	"blob-corrupt",
+	"commits-unavailable",
+	"delta-failed",
+	"tree-mismatch",
+]);
+
+/** Whether a degraded restore can follow `error`, the failure of an exact restore. */
+export function isDegradableRestoreFailure(error: unknown): error is WorkspaceRestoreError {
+	return isWorkspaceRestoreError(error) && DEGRADABLE_RESTORE_CODES.has(error.code);
+}
+
+export interface RestoreDegradedWorktreeOptions extends Omit<RestoreWorktreeSnapshotOptions, "into" | "snapshots"> {
+	/**
+	 * Commits close to the snapshot's `HEAD` to try, nearest first, after its pushed base and before its branch tip:
+	 * the `HEAD`s of the checkout's earlier snapshots, for example.
+	 */
+	readonly candidates?: readonly string[];
+}
+
+export interface DegradedWorktree {
+	readonly path: string;
+	readonly degraded: WorktreeDegradedRestore;
+	readonly warnings: readonly WorktreeRestoreWarning[];
+}
+
+/** A branch name a restore may fetch: what `git check-ref-format --branch` accepts, without shell or option forms. */
+const FETCHABLE_BRANCH = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9._/-]+(?<![./])$/;
+
+/**
+ * Restores the best state of `snapshot` that this host can reach after an exact restore failed with `failure` (#4733),
+ * into a new worktree: the recorded `HEAD` with the change sets of the patch chain that apply, each whole or not at
+ * all, up to the first that cannot; else the closest commit it can fetch from the recorded remotes, trying the
+ * snapshot's pushed base, then `candidates`, then the recorded branch's tip. Rejects with `failure` when no commit is
+ * reachable, and with `invalid-snapshot` for a record that fails the security checks, before any Git work.
+ */
+export async function restoreDegradedWorktree(
+	snapshot: WorktreeSnapshot,
+	failure: WorkspaceRestoreError,
+	options: RestoreDegradedWorktreeOptions = {},
+): Promise<DegradedWorktree> {
+	return withWorktreeSnapshotGit(options.git, () => restoreDegradedValidated(snapshot, failure, options));
+}
+
+async function restoreDegradedValidated(
+	snapshot: WorktreeSnapshot,
+	failure: WorkspaceRestoreError,
+	options: RestoreDegradedWorktreeOptions,
+): Promise<DegradedWorktree> {
+	const { signal } = options;
+	assertUsableSnapshotRecord(
+		{ remotes: [...snapshot.remotes], head: snapshot.head, tree: snapshot.tree, envHash: snapshot.envHash },
+		snapshot,
+	);
+	const candidates = options.candidates ?? [];
+	const unusable = candidates.findIndex((commit) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit));
+	if (unusable >= 0) throw new WorkspaceConfigError("sdk", `candidates[${unusable}]`, "a Git commit id");
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	const path = join(storeDir, "worktrees", `${snapshot.id.slice(0, 12)}-${randomUUID().slice(0, 8)}`);
+	await checkTarget(path, snapshot.id);
+	const warnings: WorktreeRestoreWarning[] = [];
+	const warn = (warning: WorktreeRestoreWarning) => {
+		warnings.push(warning);
+		options.onWarning?.(warning);
+	};
+	await sweepRestoreRecords(storeDir, warn, signal);
+	return withScratchDirectory(async (scratch) => {
+		const store = objectStorePath(storeDir, snapshot.remotes);
+		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
+		const cause = {
+			cause: failure.code,
+			...(failure.reason ? { causeReason: failure.reason } : {}),
+			hint: failure.hint,
+		};
+		const degraded = await withRepositoryLock(store, async (): Promise<WorktreeDegradedRestore> => {
+			await ensureObjectStore(store, snapshot.id, signal);
+			const configured = await configureRecordedRemotes(git, snapshot.remotes);
+			// The exact restore may have stopped before it reached the recorded commit: fetch it, or take it from the bundle.
+			const reached = await ensureHead(git, snapshot, options.blobs, scratch).then(
+				(fetched) => ({ fetched }),
+				(error: unknown) => {
+					if (isWorkspaceRestoreError(error)) return undefined;
+					throw error;
+				},
+			);
+			if (reached !== undefined) {
+				const partial = await applicableChanges(git, snapshot, options.blobs, scratch);
+				await runGit(["update-ref", "--stdin"], {
+					...git,
+					input: [
+						`update refs/atomic/heads/${snapshot.head} ${snapshot.head}\n`,
+						...(configured && reached.fetched
+							? [`update ${PUSHED_REFS}${snapshot.head} ${snapshot.head}\n`]
+							: []),
+					].join(""),
+				});
+				return {
+					stage: "partial-changes",
+					head: snapshot.head,
+					tree: partial.tree,
+					missingLinks: partial.missingLinks,
+					missingPaths: partial.missingPaths,
+					missingCommits: [],
+					...cause,
+				};
+			}
+			const closest = await closestCommit(git, snapshot, candidates, options.blobs);
+			if (closest === undefined) throw failure;
+			await runGit(["update-ref", "--stdin"], {
+				...git,
+				input: [
+					`update refs/atomic/heads/${closest.commit} ${closest.commit}\n`,
+					...(configured && closest.fromRemote
+						? [`update ${PUSHED_REFS}${closest.commit} ${closest.commit}\n`]
+						: []),
+				].join(""),
+			});
+			return {
+				stage: "closest-commit",
+				head: closest.commit,
+				tree: await gitText(["rev-parse", `${closest.commit}^{tree}`], git),
+				basis: closest.basis,
+				missingLinks: snapshot.chain.flatMap((link, index) => (link.patch === null ? [] : [index])),
+				missingPaths: [],
+				missingCommits: unpushedCommits(snapshot),
+				...cause,
+			};
+		});
+		await publishWorktree({
+			git,
+			store,
+			storeDir,
+			path,
+			into: undefined,
+			head: degraded.head,
+			tree: degraded.tree,
+			snapshot,
+			scratch,
+			warn,
+			signal,
+			verify: failure.code === "tree-mismatch" ? "head" : "tree",
+		});
+		return { path, degraded, warnings };
+	});
+}
+
+/** The commits `snapshot` recorded as not pushed: its bundle's, else those its omissions name, else its `HEAD`. */
+function unpushedCommits(snapshot: WorktreeSnapshot): string[] {
+	if (snapshot.bundle) return [...snapshot.bundle.commits];
+	const named = snapshot.omitted.flatMap((omission) => ("commits" in omission ? omission.commits : []));
+	return named.length > 0 ? [...new Set(named)] : [snapshot.head];
+}
+
+/**
+ * The tree of `snapshot`'s `HEAD` with its patch chain applied in the store, link by link, up to the first link whose
+ * patch is missing, corrupt or does not give the link's tree; that link and every later one are left out whole. Lists
+ * the paths the left-out links touch where their patches are readable.
+ */
+async function applicableChanges(
+	git: GitRunOptions,
+	snapshot: WorktreeSnapshot,
+	blobs: SnapshotBlobStore | undefined,
+	scratch: string,
+): Promise<{ tree: string; missingLinks: number[]; missingPaths: string[] }> {
+	const indexed: GitRunOptions = { ...git, env: { ...git.env, GIT_INDEX_FILE: join(scratch, "degraded-index") } };
+	let tree = await gitText(["rev-parse", `${snapshot.head}^{tree}`], git);
+	await runGit(["read-tree", tree], indexed);
+	let stop = snapshot.chain.length;
+	const patches: (Uint8Array | undefined)[] = [];
+	for (const [deltaIndex, link] of snapshot.chain.entries()) {
+		const patch =
+			link.patch === null
+				? null
+				: await loadBlob(blobs, link.patch, { snapshotId: snapshot.id, role: "patch", deltaIndex }).catch(
+						(error: unknown) => {
+							if (isWorkspaceRestoreError(error)) return undefined;
+							throw error;
+						},
+					);
+		patches.push(patch ?? undefined);
+		if (stop < snapshot.chain.length) continue;
+		if (patch === undefined) {
+			stop = deltaIndex;
+			continue;
+		}
+		if (patch !== null) {
+			const file = join(scratch, `degraded-${deltaIndex}.patch`);
+			await writing(file, snapshot.id, () => writeFile(file, patch));
+			// `git apply` changes nothing when any hunk does not apply, so a link is applied whole or not at all.
+			const applied = await runGit(
+				["apply", "--cached", "--binary", "--whitespace=nowarn", "--no-ignore-whitespace", "--no-3way", file],
+				{ ...indexed, allowExitCodes: [1, 128] },
+			);
+			if (applied.exitCode !== 0) {
+				stop = deltaIndex;
+				continue;
+			}
+		}
+		const written = await gitText(["write-tree"], indexed);
+		if (written !== link.tree) {
+			await runGit(["read-tree", tree], indexed);
+			stop = deltaIndex;
+			continue;
+		}
+		tree = written;
+	}
+	const missingLinks = snapshot.chain.flatMap((_link, index) => (index >= stop ? [index] : []));
+	const missingPaths = new Set<string>();
+	for (const index of missingLinks) {
+		const patch = patches[index];
+		if (!patch) continue;
+		const file = join(scratch, `degraded-${index}.patch`);
+		await writing(file, snapshot.id, () => writeFile(file, patch));
+		const listed = await runGit(["apply", "--numstat", "-z", file], { ...git, allowExitCodes: [1, 128] });
+		if (listed.exitCode !== 0) continue;
+		for (const field of nulFields(listed.stdout)) {
+			const path = field.split("\t").at(-1);
+			if (path) missingPaths.add(path);
+		}
+	}
+	return { tree, missingLinks, missingPaths: [...missingPaths].sort() };
+}
+
+/**
+ * The commit nearest `snapshot`'s `HEAD` that the store holds or a recorded remote supplies: the pushed base of its
+ * bundle, when the bundle is readable, then each of `candidates`, then the tip of the recorded branch (the remote's
+ * default branch for a detached `HEAD`).
+ */
+async function closestCommit(
+	git: GitRunOptions,
+	snapshot: WorktreeSnapshot,
+	candidates: readonly string[],
+	blobs: SnapshotBlobStore | undefined,
+): Promise<{ commit: string; basis: WorktreeDegradedRestoreBasis; fromRemote: boolean } | undefined> {
+	const tried = new Set<string>([snapshot.head]);
+	const reachable = async (commit: string): Promise<{ commit: string; fromRemote: boolean } | undefined> => {
+		if (tried.has(commit)) return undefined;
+		tried.add(commit);
+		if (await hasObject(git, `${commit}^{commit}`)) return { commit, fromRemote: false };
+		const fetched = await fetchCommits(git, snapshot.remotes, [commit]);
+		return fetched.supplied && (await hasObject(git, `${commit}^{commit}`))
+			? { commit, fromRemote: true }
+			: undefined;
+	};
+	if (snapshot.bundle) {
+		const data = await blobs?.getBlob(snapshot.bundle.blob).catch(() => undefined);
+		if (data !== undefined && sha256Hex(data) === snapshot.bundle.blob) {
+			const prerequisites = bundlePrerequisites(data);
+			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
+			for (const commit of prerequisites) {
+				const found = await reachable(commit);
+				if (found) return { ...found, basis: "pushed-base" };
+			}
+		}
+	}
+	for (const commit of candidates) {
+		const found = await reachable(commit);
+		if (found) return { ...found, basis: "earlier-snapshot" };
+	}
+	const branch = snapshot.branch !== null && FETCHABLE_BRANCH.test(snapshot.branch) ? snapshot.branch : null;
+	const ref = `refs/atomic/tips/${snapshot.id}`;
+	for (const remote of snapshot.remotes) {
+		try {
+			await runFetch(git, remote, [`+${branch === null ? "HEAD" : `refs/heads/${branch}`}:${ref}`]);
+		} catch (error) {
+			if (!isWorkspaceGitError(error)) throw error;
+			continue;
+		}
+		const tip = await runGit(["rev-parse", "-q", "--verify", `${ref}^{commit}`], {
+			...git,
+			allowExitCodes: [1, 128],
+		});
+		await runGit(["update-ref", "-d", ref], git);
+		if (tip.exitCode === 0)
+			return { commit: tip.stdout.toString("utf8").trim(), basis: "branch-tip", fromRemote: true };
+	}
+	return undefined;
+}
+
+interface PublishWorktree {
+	readonly git: GitRunOptions;
+	readonly store: string;
+	readonly storeDir: string;
+	readonly path: string;
+	readonly into: string | undefined;
+	readonly head: string;
+	readonly tree: string;
+	readonly snapshot: WorktreeSnapshot | null;
+	readonly scratch: string;
+	readonly warn: (warning: WorktreeRestoreWarning) => void;
+	readonly signal: AbortSignal | undefined;
+	/**
+	 * What the staged worktree is checked against before it is moved to `path`: its HEAD and recomputed tree (`tree`),
+	 * or its HEAD alone (`head`), for a degraded restore whose content this host's filters may change.
+	 */
+	readonly verify: "tree" | "head";
+}
+
+/**
+ * Checks `head` and `tree` out of `store` into a staging worktree, verifies it, and moves it to `path`, under a crash
+ * record, so a final path never holds an unverified worktree.
+ */
+async function publishWorktree(publish: PublishWorktree): Promise<void> {
+	const { git, store, storeDir, path, head, tree, snapshot, scratch, warn, signal } = publish;
+	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
+	const snapshotId = snapshot?.id ?? null;
+	await checkTarget(path, snapshotId);
+	const createdTarget = (await statIfPresent(path)) === undefined;
+	const id = randomUUID();
+	const staging =
+		publish.into === undefined
+			? join(storeDir, "worktrees", `.staging-${id}`)
+			: join(dirname(path), `.${basename(path)}.atomic-restore-${id}`);
+	const record: RestoreRecord = { staging, target: path, store, createdTarget };
+	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
+		await materialize(git, staging, head, tree, scratch, snapshotId, signal);
+		assertActive();
+		if (snapshot?.filters?.drivers.includes("lfs")) {
+			const worktree: GitRunOptions = { cwd: staging, signal };
+			const pointers = await pullLfsObjects(worktree, head, tree, snapshot.remotes);
+			if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
+		}
+		const checkout = await locateCheckout(staging, signal);
+		if (checkout instanceof Error) throw checkout;
+		const policy = await loadSnapshotPathPolicy(staging);
+		const actual = await withScratchDirectory((verifyScratch) =>
+			writeWorkingTree(checkout, settings, policy, verifyScratch, {
+				signal,
+				neutral: true,
+				seedTree: tree,
+				attributesFile: join(scratch, "empty-attributes"),
+			}),
+		);
+		if (checkout.head !== head || (publish.verify === "tree" && actual.tree !== tree)) {
+			throw new WorkspaceRestoreError("tree-mismatch", {
+				snapshotId,
+				target: path,
+				expectedTree: tree,
+				actualTree: actual.tree,
+			});
+		}
+		assertActive();
+		if (createdTarget) {
+			if ((await statIfPresent(path)) !== undefined) {
+				throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+			}
+		} else {
+			await writing(path, snapshotId, () => rmdir(path));
+		}
+		await runGit(["worktree", "move", staging, path], git);
+		// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
+		// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone.
+		const registered = await registeredWorktrees(git);
+		const destination = await physicalPath(path);
+		if (!includesPath(registered, destination)) {
+			const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+			const nested = join(destination, basename(staging));
+			if (includesPath(registered, nested)) {
+				try {
+					await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
+				} catch (cleanupCause) {
+					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
+					warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
+				}
+			}
+			throw error;
+		}
+		assertActive();
 	});
 }
 

@@ -9,7 +9,6 @@ import { SessionManager } from "../src/core/session-manager.js";
 import { resolveSessionStore } from "../src/core/session-storage.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
-import { setWorktreeSnapshotGit } from "../src/index.js";
 import { main } from "../src/main.js";
 
 useTemporaryAgentDir();
@@ -54,8 +53,11 @@ afterEach(async () => {
 	sandbox.dispose();
 });
 
-/** A session recorded in the SQLite file `database` whose checkout then disappears from this machine. */
-async function sessionRecordedElsewhere(database: string): Promise<string> {
+/**
+ * A session recorded in the SQLite file `database` whose checkout then disappears from this machine. With `remotes`,
+ * its snapshot record names those remotes instead of the clone's.
+ */
+async function sessionRecordedElsewhere(database: string, remotes?: readonly string[]): Promise<string> {
 	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
 	sandbox.write(join(clone, "README.md"), "edited on node A\n");
 	const store = await resolveSessionStore(clone, {
@@ -70,35 +72,28 @@ async function sessionRecordedElsewhere(database: string): Promise<string> {
 		blobs: store.snapshotBlobs,
 	});
 	if (capture.status !== "captured") throw new Error(capture.status);
-	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	const snapshot = remotes === undefined ? capture.snapshot : { ...capture.snapshot, remotes: [...remotes] };
+	await manager.appendWorktreeSnapshot(clone, snapshot.id, snapshot);
 	renameSync(clone, sandbox.path("node-a-offline"));
 	return manager.getSessionId();
 }
 
-test("atomic --session prints a resume failure with its fix once and exits 1 (#4329)", async () => {
+test("atomic --session prints a resume failure with its fix once and exits 1 (#4329, #4733)", async () => {
 	const database = sandbox.path("sessions.sqlite");
-	const sessionId = await sessionRecordedElsewhere(database);
+	const sessionId = await sessionRecordedElsewhere(database, ["https://user:token@example.invalid/repo.git"]);
 	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", sandbox.path("agent"));
-	const previousGit = setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-	cleanups.push(() => {
-		setWorktreeSnapshotGit(previousGit);
-	});
 	const errors = vi.spyOn(console, "error").mockImplementation(() => {});
 	vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
 		throw new Error(`process.exit(${code})`);
 	}) as typeof process.exit);
-
 	await assert.rejects(
 		main(["--no-extensions", "--session-store", database, "--session", sessionId, "-p", "continue"]),
 		/^Error: process\.exit\(1\)$/,
 	);
-
 	const printed = errors.mock.calls.map(([message]) => String(message));
 	assert.equal(printed.length, 1);
-	assert.match(
-		printed[0] ?? "",
-		/^\S*Error: Cannot resume here: git \(\S+\) \(git-unavailable\): session [0-9a-f-]+ must be restored/,
-	);
+	assert.match(printed[0] ?? "", /Invalid snapshot record [0-9a-f]+: remotes\[0\] is not .*\(invalid-snapshot\)/);
+	assert.doesNotMatch(printed[0] ?? "", /token/);
 });
 
 test("a failure that is not a resume failure is not printed as one: it propagates (#4329)", async () => {

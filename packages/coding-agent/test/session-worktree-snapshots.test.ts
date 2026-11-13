@@ -25,8 +25,6 @@ import type { SessionStore } from "../src/core/storage/session/types.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import {
 	GitUnavailableError,
-	isWorkspaceDriftError,
-	isWorkspaceRestoreError,
 	rehydrateWorkspaceError,
 	setWorktreeSnapshotGit,
 	WorkspaceConfigError,
@@ -271,25 +269,26 @@ describe("resumeSessionWorktree", () => {
 		assert.deepEqual(again.status === "verified" && again.cwd, resume.cwd);
 	});
 
-	test("fails closed with a drift error when the snapshot cannot be restored (#4245)", async () => {
+	test("restores the closest pushed commit when the snapshot's unpushed history is denied, without its denied file (#4733)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
+		const pushed = await sandbox.git(clone, "rev-parse", "HEAD");
 		writeFileSync(join(clone, "deploy.key"), "PRIVATE\n");
-		await sandbox.commitAll(clone, "unpushed key");
+		const denied = await sandbox.commitAll(clone, "unpushed key");
 		const manager = await SessionManager.create(await sqlStore("sessions"), clone);
 		await writeTurn(await harnessFor(manager), join(clone, "a.txt"), "a\n");
 		renameSync(clone, sandbox.path("moved-away"));
-		await assert.rejects(
-			resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") }),
-			(error: unknown) => {
-				assert.ok(isWorkspaceDriftError(error));
-				assert.equal(error.root, clone);
-				assert.equal(error.actualTree, null);
-				assert.ok(isWorkspaceRestoreError(error.cause));
-				assert.equal(error.cause.code, "commits-unavailable");
-				assert.deepEqual(error.cause.paths, ["deploy.key"]);
-				return true;
-			},
-		);
+		const result = await resumeSessionWorktree(manager, { settings, storeDir: sandbox.path("host") });
+		assert.equal(result.status, "restored");
+		if (result.status !== "restored") return;
+		const [mapping] = result.mappings;
+		assert.equal(mapping?.from, clone);
+		assert.equal(result.cwd, mapping?.to);
+		assert.equal(mapping?.degraded?.stage, "closest-commit");
+		assert.equal(mapping?.degraded?.causeReason, "denied-history");
+		assert.deepEqual(mapping?.degraded?.missingCommits, [denied]);
+		assert.equal(await sandbox.git(mapping!.to, "rev-parse", "HEAD"), pushed);
+		assert.equal(existsSync(join(mapping!.to, "deploy.key")), false);
+		assert.equal(existsSync(join(mapping!.to, "a.txt")), false);
 	});
 
 	test("rejects with GitUnavailableError when Git cannot verify a recorded snapshot, and records no restore", async () => {

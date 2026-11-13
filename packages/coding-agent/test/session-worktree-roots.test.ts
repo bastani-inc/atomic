@@ -144,9 +144,10 @@ test("a session inside one drifted repository restores it and another drifted re
 	assert.equal(readFileSync(join(result.mappings[1]!.to, "file.txt"), "utf8"), "b\n");
 });
 
-test("an unavailable second repository fails closed and rolls back the first restore (#4245)", async () => {
+test("a second repository whose unpushed history is denied is restored at its closest commit, keeping the first restore (#4733)", async () => {
 	const a = await sandbox.remoteWithClone("a");
 	const b = await sandbox.remoteWithClone("b");
+	const pushed = await sandbox.git(b.clone, "rev-parse", "HEAD");
 	sandbox.write(join(a.clone, "file.txt"), "recorded\n");
 	sandbox.write(join(b.clone, "private.pem"), "private\n");
 	const deniedCommit = await sandbox.commitAll(b.clone, "denied history");
@@ -155,18 +156,17 @@ test("an unavailable second repository fails closed and rolls back the first res
 	await record(manager, b.clone);
 	renameSync(a.clone, sandbox.path("a-away"));
 	renameSync(b.clone, sandbox.path("b-away"));
-	await assert.rejects(resumeSessionWorktree(manager, options()), (error: unknown) => {
-		assert.ok(isWorkspaceDriftError(error));
-		assert.equal(error.code, "tree-drift");
-		assert.equal(error.reason, "restore-failed");
-		assert.ok(isWorkspaceRestoreError(error.cause));
-		assert.equal(error.cause.code, "commits-unavailable");
-		assert.deepEqual(error.cause.commits, [deniedCommit]);
-		return true;
-	});
-	assert.deepEqual(manager.getWorktreeRootMappings(), []);
-	const worktrees = join(options().storeDir, "worktrees");
-	assert.deepEqual(existsSync(worktrees) ? readdirSync(worktrees) : [], []);
+	const result = await resumeSessionWorktree(manager, options());
+	assert.equal(result.status, "restored");
+	if (result.status !== "restored") return;
+	const [first, second] = manager.getWorktreeRootMappings();
+	assert.equal(first?.degraded, undefined);
+	assert.equal(readFileSync(join(first!.to, "file.txt"), "utf8"), "recorded\n");
+	assert.equal(second?.degraded?.stage, "closest-commit");
+	assert.equal(second?.degraded?.cause, "commits-unavailable");
+	assert.deepEqual(second?.degraded?.missingCommits, [deniedCommit]);
+	assert.equal(await sandbox.git(second!.to, "rev-parse", "HEAD"), pushed);
+	assert.equal(existsSync(join(second!.to, "private.pem")), false);
 });
 
 test("a retry heals a mapping persisted before a later mapping append failed (#4245)", async () => {

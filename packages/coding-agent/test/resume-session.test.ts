@@ -29,9 +29,8 @@ import {
 	type DirtyCheckoutPrompt,
 	GitProvisionTimeoutError,
 	GitUnavailableError,
-	isGitUnavailableError,
-	isWorkspaceDriftError,
 	isWorkspaceGitError,
+	isWorkspaceRestoreError,
 	isWorkspaceSnapshotError,
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
@@ -198,30 +197,32 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 		assert.equal(io.probes, 1);
 	});
 
-	test("fails before any write when Git cannot be started and a restore is needed", async () => {
+	test("continues without the checkout, writing no worktree, when Git cannot be started and a restore is needed (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("node-a-gone"));
 		const io = new CountingGitIo(missingGit());
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 
-		await assert.rejects(prepareSessionResume(manager, options({ io })), (error: unknown) => {
-			assert.ok(error instanceof ResumePreconditionError);
-			assert.equal(error.code, "preconditions-unmet");
-			assert.deepEqual(
-				error.problems.map((problem) => problem.code),
-				["git-unavailable"],
-			);
-			assert.match(error.problems[0]!.why, /does not exist on this node/);
-			assert.equal(error.hint, missingGit().hint);
-			return true;
-		});
+		const prepared = await prepareSessionResume(manager, options({ io }));
+
+		assert.equal(prepared.status, "ready");
+		if (prepared.status !== "ready") return;
 		assert.equal(io.probes, 1);
 		assert.equal(existsSync(sandbox.path("host")), false);
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(cwdOf(prepared), sandbox.root, "the recorded directory is gone, so the launch directory");
+		assert.deepEqual(
+			prepared.notices.map((notice) => notice.type),
+			["warning"],
+		);
+		assert.equal(
+			prepared.notices[0]!.message,
+			`Continuing in ${sandbox.root} (the directory the resume started from) without restoring ${clone} from snapshot ${manager.getLatestWorktreeSnapshots().get(clone)!.id.slice(0, 12)}: Git is unavailable here (not-installed), which checking and restoring it need. ${missingGit().hint}`,
+		);
 	});
 
-	test("Git that cannot be provisioned is probed once, before the launch checkout is read, and causes the precondition error", async () => {
+	test("Git that cannot be provisioned is probed once, before the launch checkout is read, and is named in the notice (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("node-a-gone"));
@@ -237,30 +238,38 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 			throw new Error("Git must not be resolved again after the probe failed");
 		});
 
-		await assert.rejects(prepareSessionResume(manager, options({ io, launchCwd })), (error: unknown) => {
-			assert.ok(error instanceof ResumePreconditionError);
-			assert.deepEqual(
-				error.problems.map((problem) => [problem.code, problem.subject]),
-				[["git-unavailable", "git (not-installed)"]],
-			);
-			assert.equal(error.cause, unavailable);
-			return true;
-		});
+		const prepared = await prepareSessionResume(manager, options({ io, launchCwd }));
+
+		assert.equal(cwdOf(prepared), launchCwd);
 		assert.equal(io.probes, 1);
 		assert.equal(existsSync(sandbox.path("host")), false);
+		assert.equal(prepared.status === "ready" && prepared.notices.length, 1);
+		assert.match(
+			prepared.status === "ready" ? prepared.notices[0]!.message : "",
+			/Git is unavailable here \(not-installed\)/,
+		);
 	});
 
-	test("propagates #4245's typed drift error when the snapshot cannot be restored", async () => {
+	test("restores the closest pushed commit when the unpushed history touches a denied path, with one notice (#4733)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
+		const pushed = await sandbox.git(clone, "rev-parse", "HEAD");
 		sandbox.write(join(clone, "deploy.key"), "PRIVATE\n");
-		await sandbox.commitAll(clone, "unpushed key");
+		const denied = await sandbox.commitAll(clone, "unpushed key");
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("node-a-gone"));
-		await assert.rejects(prepareSessionResume(manager, options()), (error: unknown) => {
-			assert.ok(isWorkspaceDriftError(error));
-			return true;
-		});
-		assert.equal(setupRuns(), 0);
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ blueprint: setupBlueprint({ setupCommand: undefined }) }),
+		);
+		assert.equal(prepared.status, "ready");
+		if (prepared.status !== "ready") return;
+		const restored = manager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(cwdOf(prepared), restored.to);
+		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), pushed);
+		assert.equal(existsSync(join(restored.to, "deploy.key")), false);
+		assert.equal(prepared.notices.length, 1);
+		assert.ok(prepared.notices[0]!.message.includes(denied.slice(0, 12)), prepared.notices[0]!.message);
+		assert.ok(prepared.notices[0]!.message.includes(`Push commit ${denied}`), prepared.notices[0]!.message);
 	});
 
 	test("does nothing when snapshots are disabled or the session recorded none", async () => {
@@ -809,34 +818,23 @@ describe("prepareSessionResume: failure paths and notices (#4329)", () => {
 		assert.equal(asked, false);
 	});
 
-	test("the git precondition names the session, the 12-character snapshot id and the missing root", async () => {
+	test("without Git a session whose checkout is still here continues in it as it is, with one notice (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		const id = manager.getLatestWorktreeSnapshots().get(clone)!.id;
-		renameSync(clone, sandbox.path("gone"));
+		sandbox.write(join(clone, "README.md"), "changed since the snapshot\n");
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(
-			prepareSessionResume(manager, options({ io: new CountingGitIo(missingGit()) })),
-			(error: unknown) => {
-				assert.ok(error instanceof ResumePreconditionError);
-				assert.equal(
-					error.problems[0]?.why,
-					`session ${manager.getSessionId()} must be restored from snapshot ${id.slice(0, 12)} because ${clone} does not exist on this node`,
-				);
-				return true;
-			},
+		const prepared = await prepareSessionResume(manager, options());
+		assert.equal(cwdOf(prepared), clone);
+		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "changed since the snapshot\n");
+		assert.equal(existsSync(sandbox.path("host")), false);
+		assert.equal(prepared.status === "ready" && prepared.notices.length, 1);
+		assert.match(
+			prepared.status === "ready" ? prepared.notices[0]!.message : "",
+			/^Continuing in .* \(the session's own directory\) without restoring .*Git is unavailable here/,
 		);
 	});
 
-	test("without Git a session whose checkout is still here fails typed instead of resuming unverified (#4329)", async () => {
-		const { clone } = await editedClone();
-		const manager = await recordSession(clone);
-		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(prepareSessionResume(manager, options()), (error: unknown) => isGitUnavailableError(error));
-		assert.equal(existsSync(sandbox.path("host")), false);
-	});
-
-	test("without Git a session already in a restored worktree fails typed without running setup", async () => {
+	test("without Git a session already in a restored worktree continues there without running setup (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		renameSync(clone, sandbox.path("gone"));
@@ -845,7 +843,9 @@ describe("prepareSessionResume: failure paths and notices (#4329)", () => {
 		assert.equal(setupRuns(), 1);
 		rmSync(sandbox.path("host", "blueprint-builds"), { recursive: true });
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(prepareSessionResume(manager, options()), (error: unknown) => isGitUnavailableError(error));
+		if (first.status !== "ready") return;
+		const again = await prepareSessionResume(first.sessionManager, options());
+		assert.equal(cwdOf(again), cwdOf(first));
 		assert.equal(setupRuns(), 1);
 	});
 
@@ -1281,22 +1281,24 @@ describe("whether a checkout holds a snapshot's commit (#4329)", () => {
 });
 
 describe("resume failure presentation (#4329)", () => {
-	test("a restore that cannot rebuild unpushed denied-path commits names the commit and the remedy in its message", async () => {
+	test("a snapshot record with a credentialed remote refuses the resume, naming the field and the remedy (#4733)", async () => {
 		const { resumeFailureMessage } = await import("../src/core/resume/failure.ts");
 		const { clone } = await sandbox.remoteWithClone();
-		sandbox.write(join(clone, "deploy.key"), "PRIVATE\n");
-		const commit = await sandbox.commitAll(clone, "unpushed key");
 		const manager = await recordSession(clone);
+		const recorded = manager.getLatestWorktreeSnapshots().get(clone)!;
+		const unsafe = { ...recorded, remotes: ["https://user:token@example.invalid/repo.git"] };
+		await manager.appendWorktreeSnapshot(clone, unsafe.id, unsafe);
 		renameSync(clone, sandbox.path("gone"));
 		const error = await prepareSessionResume(manager, options()).then(
-			() => assert.fail("restore must fail"),
+			() => assert.fail("the resume must be refused"),
 			(failure: Error) => failure,
 		);
-		assert.ok(isWorkspaceDriftError(error));
-		assert.deepEqual([error.reason, error.restoreCode], ["restore-failed", "commits-unavailable"]);
-		assert.ok(error.message.includes(commit), error.message);
+		assert.ok(isWorkspaceRestoreError(error), String(error));
+		assert.deepEqual([error.code, error.reason, error.field], ["invalid-snapshot", "unsafe-remote", "remotes[0]"]);
+		assert.doesNotMatch(error.message, /token/);
 		assert.equal(resumeFailureMessage(error), error.message);
 		assert.equal(resumeFailureMessage(new TypeError("bug")), undefined);
+		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 	});
 
 	test("typed resume, workspace and Git failures are shown with their own message; anything else is not one", async () => {
@@ -1405,7 +1407,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.ok(prepared.blueprintNotices.every((notice) => notice.type === "warning"));
 	});
 
-	test("continuing in a matching checkout records nothing when the restore of another checkout cannot start", async () => {
+	test("without Git a matching checkout here is not verified, and the resume continues in it without restoring either checkout (#4733)", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
 		const checkout = sandbox.path("node-b", "repo");
@@ -1414,15 +1416,19 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		renameSync(second, sandbox.path("second-gone"));
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 
-		await assert.rejects(
-			prepareSessionResume(manager, options({ launchCwd: checkout, io: new CountingGitIo(missingGit()) })),
-			(error: unknown) => error instanceof ResumePreconditionError && error.problems[0]?.code === "git-unavailable",
+		const prepared = await prepareSessionResume(
+			manager,
+			options({ launchCwd: checkout, io: new CountingGitIo(missingGit()) }),
 		);
 
+		assert.equal(cwdOf(prepared), checkout);
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("host", "worktrees")), false);
+		assert.equal(warningsNaming(prepared, clone).length, 1, warningsOf(prepared).join("\n"));
+		assert.equal(warningsNaming(prepared, second).length, 1, warningsOf(prepared).join("\n"));
 	});
 
-	test("continuing in a matching checkout leaves out another checkout whose restore fails (#4584)", async () => {
+	test("continuing in a matching checkout restores another checkout whose history is denied at its closest commit (#4733)", async () => {
 		const { clone } = await editedClone();
 		const { clone: keyed } = await sandbox.remoteWithClone("keyed", { "README.md": "keyed\n" });
 		sandbox.write(join(keyed, "deploy.key"), "PRIVATE\n");
@@ -1442,10 +1448,13 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout }));
 
 		assert.equal(cwdOf(prepared), checkout);
+		const mappings = manager.getWorktreeRootMappings();
 		assert.deepEqual(
-			manager.getWorktreeRootMappings().map((mapping) => resolve(mapping.from)),
-			[clone],
+			mappings.map((mapping) => resolve(mapping.from)),
+			[clone, keyed],
 		);
+		assert.equal(mappings[1]?.degraded?.stage, "closest-commit");
+		assert.equal(existsSync(join(mappings[1]!.to, "deploy.key")), false);
 		const warnings =
 			prepared.status === "ready" ? prepared.notices.filter((notice) => notice.type === "warning") : [];
 		assert.equal(warnings.filter((notice) => notice.message.includes(keyed)).length, 1);
@@ -1531,7 +1540,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		assert.deepEqual(prepared.status === "ready" ? prepared.notices.map((notice) => notice.type) : [], ["warning"]);
 	});
 
-	test("a missing Git names every checkout the resume would restore", async () => {
+	test("a missing Git leaves out every checkout the resume would restore, with one notice each (#4733)", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
 		renameSync(clone, sandbox.path("first-gone"));
@@ -1539,14 +1548,14 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const snapshots = manager.getLatestWorktreeSnapshots();
 		const io = new CountingGitIo(missingGit());
 
-		await assert.rejects(prepareSessionResume(manager, options({ io })), (error: unknown) => {
-			assert.ok(error instanceof ResumePreconditionError);
-			assert.equal(
-				error.problems[0]?.why,
-				`session ${manager.getSessionId()} must be restored from snapshot ${snapshots.get(clone)!.id.slice(0, 12)} because ${clone} does not exist on this node, and from snapshot ${snapshots.get(second)!.id.slice(0, 12)} because ${second} does not exist on this node`,
-			);
-			return true;
-		});
+		const prepared = await prepareSessionResume(manager, options({ io }));
+
+		assert.equal(cwdOf(prepared), sandbox.root);
+		for (const root of [clone, second]) {
+			const named = warningsNaming(prepared, root);
+			assert.equal(named.length, 1, warningsOf(prepared).join("\n"));
+			assert.ok(named[0]!.includes(snapshots.get(root)!.id.slice(0, 12)), named[0]);
+		}
 	});
 });
 
@@ -1707,7 +1716,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		assert.equal(setupRuns(), 0);
 	});
 
-	test("a checkout the session runs in that cannot be restored refuses the resume with the missing Git as its one problem (#4584)", async () => {
+	test("a checkout the session runs in that cannot be restored without Git is recorded as left out, and the resume goes on (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
@@ -1715,20 +1724,19 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		renameSync(second, sandbox.path("second-gone"));
 		const io = new CountingGitIo(missingGit());
 
-		await assert.rejects(prepareSessionResume(manager, options({ io })), (error: unknown) => {
-			assert.ok(error instanceof ResumePreconditionError);
-			assert.deepEqual(
-				error.problems.map((problem) => [problem.code, problem.checkout]),
-				[["git-unavailable", undefined]],
-			);
-			assert.ok(isGitUnavailableError(error.cause));
-			assert.ok(error.problems[0]!.why.includes(`because ${clone} does not exist on this node`));
-			assert.ok(error.problems[0]!.why.includes(`because ${second} does not exist on this node`));
-			return true;
-		});
+		const prepared = await prepareSessionResume(manager, options({ io }));
+
+		assert.equal(prepared.status, "ready");
 		assert.equal(io.probes, 1);
 		assert.deepEqual(manager.getWorktreeRootMappings(), []);
 		assert.equal(existsSync(sandbox.path("host")), false);
+		const left = manager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "worktree_snapshot" && entry.unrestored ? [[entry.root, entry.unrestored.cause]] : [],
+			);
+		assert.deepEqual(left, [[clone, "not-installed"]]);
+		assert.equal(warningsNaming(prepared, second).length, 1);
 	});
 
 	test("a failing setup command in the checkout the session runs in resumes with a warning and is not a refusal (#4588)", async () => {
@@ -1788,12 +1796,12 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		assert.deepEqual(warningsOf(prepared), []);
 	});
 
-	test("a restore of another checkout that fails is skipped with its failure named, and the resume goes on (#4584)", async () => {
+	test("another checkout whose history is denied is restored at its closest commit with one notice, and the resume goes on (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const { clone: keyed } = await sandbox.remoteWithClone("keyed", { "README.md": "keyed\n" });
 		sandbox.write(join(keyed, "deploy.key"), "PRIVATE\n");
-		await sandbox.commitAll(keyed, "unpushed key");
+		const denied = await sandbox.commitAll(keyed, "unpushed key");
 		const capture = await captureWorktreeSnapshot(keyed, {
 			settings,
 			blobs: manager.getSessionStore().snapshotBlobs,
@@ -1805,11 +1813,17 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone }));
 
 		assert.equal(cwdOf(prepared), clone);
-		assert.deepEqual(manager.getWorktreeRootMappings(), []);
-		assert.deepEqual(restoredWorktrees(), []);
+		const mappings = manager.getWorktreeRootMappings();
+		assert.deepEqual(
+			mappings.map((mapping) => resolve(mapping.from)),
+			[keyed],
+		);
+		assert.deepEqual(mappings[0]?.degraded?.missingCommits, [denied]);
+		assert.equal(restoredWorktrees().length, 1);
 		const warnings = warningsNaming(prepared, keyed);
 		assert.equal(warnings.length, 1, warningsOf(prepared).join("\n"));
-		assert.match(warnings[0]!, /restoring it failed/);
+		assert.match(warnings[0]!, /the closest commit available here/);
+		assert.doesNotMatch(warnings[0]!, /fail/i);
 	});
 
 	test("a setup command that fails in a restored checkout other than the current one is a warning, the worktree is kept, and the next resume runs it again (#4588)", async () => {

@@ -125,6 +125,35 @@ export type WorktreeRestoreWarning =
 			readonly kind: "worktree" | "record" | "records-directory";
 	  };
 
+/** Which commit a restore that could not reach a snapshot's recorded `HEAD` checked out instead. */
+export type WorktreeDegradedRestoreBasis = "pushed-base" | "earlier-snapshot" | "branch-tip";
+
+/**
+ * What a restore that could not reproduce its snapshot exactly restored instead (#4733): the recorded `HEAD` with the
+ * change sets of the patch chain that could be applied (`partial-changes`), or the closest commit it could fetch, with
+ * none of the snapshot's changes (`closest-commit`).
+ */
+export interface WorktreeDegradedRestore {
+	readonly stage: "partial-changes" | "closest-commit";
+	/** The commit the worktree has checked out. */
+	readonly head: string;
+	/** The Git tree of the worktree's content when it was restored. */
+	readonly tree: string;
+	/** With `closest-commit`, where `head` came from. */
+	readonly basis?: WorktreeDegradedRestoreBasis;
+	/** Indexes of the patch chain's change sets that are not in the worktree. */
+	readonly missingLinks: readonly number[];
+	/** Paths those change sets touch, where their content was available to list them. */
+	readonly missingPaths: readonly string[];
+	/** Recorded commits that are not in the worktree. */
+	readonly missingCommits: readonly string[];
+	/** The code of the restore error that kept the exact state from being restored, and its reason when it has one. */
+	readonly cause: string;
+	readonly causeReason?: string;
+	/** What to do to get the rest: the restore error's hint. */
+	readonly hint: string;
+}
+
 /** A checkout restored on this host in place of one recorded elsewhere: work under `from` now happens under `to`. */
 export interface WorktreeRootMapping {
 	readonly from: string;
@@ -132,4 +161,22 @@ export interface WorktreeRootMapping {
 	readonly snapshotId: string;
 	readonly tree: string;
 	readonly restoredAt: string;
+	/** Present when `to` holds less than the snapshot: what it holds and what is missing (#4733). */
+	readonly degraded?: WorktreeDegradedRestore;
+}
+
+/**
+ * A checkout a resume continued without (#4733): nothing of its snapshot could be restored on this host, so the
+ * session went on in `continuedIn`, as it was.
+ */
+export interface WorktreeUnrestored {
+	readonly snapshotId: string;
+	readonly continuedIn: string;
+	/** Whether `continuedIn` is the session's recorded working directory, or the directory the resume started in. */
+	readonly place: "recorded" | "launch";
+	readonly cause: string;
+	readonly causeReason?: string;
+	readonly detail: string;
+	readonly hint: string;
+	readonly at: string;
 }

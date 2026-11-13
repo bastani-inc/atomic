@@ -85,7 +85,7 @@ import { JsonlSessionStore } from "./storage/session/jsonl-session-store.js";
 import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/session/memory-session-store.js";
 import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
-import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
+import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
 
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
@@ -561,7 +561,8 @@ export class SessionManager {
 	/**
 	 * Record a checkout's snapshot at the current leaf. Pass the snapshot when it is new; omit it to refer to an earlier
 	 * entry's snapshot with the same id (an unchanged capture). `restore` records that the snapshot was restored on
-	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record.
+	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record. `unrestored`
+	 * records that a resume continued without restoring the checkout at `root` (#4733).
 	 */
 	appendWorktreeSnapshot(
 		root: string,
@@ -569,6 +570,7 @@ export class SessionManager {
 		snapshot?: WorktreeSnapshot,
 		restore?: WorktreeRootMapping,
 		restoreWarnings: readonly WorktreeRestoreHostWarning[] = [],
+		unrestored?: WorktreeUnrestored,
 	): Promise<string> {
 		return this.runMutation(async () => {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
@@ -579,6 +581,9 @@ export class SessionManager {
 			}
 			if (restore !== undefined && (restore.to !== root || restore.snapshotId !== snapshotId)) {
 				throw new WorkspaceConfigError("sdk", "restore", "a mapping to root for snapshotId");
+			}
+			if (unrestored !== undefined && (restore !== undefined || unrestored.snapshotId !== snapshotId)) {
+				throw new WorkspaceConfigError("sdk", "unrestored", "an unrestored record of snapshotId without a restore");
 			}
 			if (restore === undefined && restoreWarnings.length > 0) {
 				throw new WorkspaceConfigError("sdk", "restoreWarnings", "warnings recorded together with their restore");
@@ -591,6 +596,7 @@ export class SessionManager {
 				restoreWarnings,
 				this.byId,
 				this.leafId,
+				unrestored,
 			);
 			await this._appendEntry(entry);
 			return entry.id;

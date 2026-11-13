@@ -1,4 +1,5 @@
 import { type InvalidSnapshotReason, WorkspaceRestoreError } from "./errors.ts";
+import { redactUrlCredentials } from "./git.ts";
 import type { WorkspaceBinding, WorktreeSnapshot } from "./types.ts";
 
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -20,9 +21,20 @@ function isBlobHash(value: unknown): boolean {
 	return typeof value === "string" && BLOB_HASH.test(value);
 }
 
-/** Whether `remote` can be passed to `git fetch` as a repository: never an option, never a control character. */
-function isSafeRemote(remote: string): boolean {
-	return remote.length > 0 && !remote.startsWith("-") && !CONTROL_CHARACTER.test(remote);
+/** The transports a restore fetches over, and a restored worktree's repository may name as a remote. */
+const REMOTE_SCHEMES = new Set(["https", "http", "ssh", "git", "file"]);
+
+/**
+ * Whether `remote` is a remote Atomic fetches from and configures: never an option or a control character, without
+ * credentials, and a local path, an scp-like `host:path`, or a URL of an allowed transport. A Git remote helper
+ * (`ext::`, `<name>::`) or any other scheme is not.
+ */
+export function isAllowedRemote(remote: string): boolean {
+	if (remote.length === 0 || remote.startsWith("-") || CONTROL_CHARACTER.test(remote)) return false;
+	if (redactUrlCredentials(remote) !== remote) return false;
+	if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(remote)) return false;
+	const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(remote)?.[1];
+	return scheme === undefined || REMOTE_SCHEMES.has(scheme.toLowerCase());
 }
 
 function firstObjectIdProblem(values: unknown, field: string): SnapshotRecordProblem | undefined {
@@ -35,7 +47,7 @@ function firstObjectIdProblem(values: unknown, field: string): SnapshotRecordPro
 export function bindingRecordProblem(
 	binding: Pick<WorktreeSnapshot, "remotes" | "head" | "tree">,
 ): SnapshotRecordProblem | undefined {
-	const remote = binding.remotes.findIndex((value) => !isSafeRemote(value));
+	const remote = binding.remotes.findIndex((value) => !isAllowedRemote(value));
 	if (remote >= 0) return { field: `remotes[${remote}]`, reason: "unsafe-remote" };
 	if (!isObjectId(binding.head)) return { field: "head", reason: "invalid-object-id" };
 	if (!isObjectId(binding.tree)) return { field: "tree", reason: "invalid-object-id" };
