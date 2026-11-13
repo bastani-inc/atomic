@@ -680,3 +680,33 @@ test("a session and an interrupted workflow exported from one agent directory co
 	release();
 	await running;
 });
+
+test("an exported session keeps the branch a /tree move without a summary selected, through import and --import (#3325)", async () => {
+	const source = machine("a");
+	const sourceStore = await resolveSessionStore(project, { agentDir: source });
+	let sessionId: string;
+	let selectedId: string;
+	try {
+		const manager = await SessionManager.create(sourceStore, project);
+		await manager.appendMessage({ role: "user", content: "kept", timestamp: 1 });
+		selectedId = manager.getLeafId()!;
+		await manager.appendMessage({ role: "user", content: "abandoned", timestamp: 2 });
+		await manager.recordBranch(selectedId);
+		sessionId = manager.getSessionId();
+	} finally {
+		await sourceStore.close();
+	}
+	assert.equal((await storage(source, ["export", exports, "--sessions"])).code, 0);
+
+	const target = machine("b");
+	assert.equal((await storage(target, ["import", exports, "--sessions"])).code, 0);
+	const imported = await SessionManager.open(await sessionStore(target), sessionId);
+	assert.equal(imported.getLeafId(), selectedId);
+
+	const viaImportFlag = await SessionManager.importFromJsonl(
+		join(exports, "sessions", `${sessionId}.jsonl`),
+		project,
+		await sessionStore(machine("flag")),
+	);
+	assert.equal(viaImportFlag.getLeafId(), selectedId);
+});

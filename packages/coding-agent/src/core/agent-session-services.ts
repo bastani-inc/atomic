@@ -215,7 +215,7 @@ async function prepareOwnedAgentSessionServices(
 	let initialServices = true;
 	return async () => {
 		await completeReload();
-		const resourceLoader = await withMandatoryResourceLoader(defaultResourceLoader, cwd);
+		const resourceLoader = await withMandatoryResourceLoader(defaultResourceLoader, cwd, agentDir);
 		endTimingSpan(reloadSpan);
 
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [];

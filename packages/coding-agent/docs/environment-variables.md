@@ -6,7 +6,7 @@ Atomic accepts environment variables for configuration, provider credentials, an
 
 | Atomic variable | Legacy alias | Purpose |
 |---|---|---|
-| `ATOMIC_CODING_AGENT_DIR` | `PI_CODING_AGENT_DIR` | Agent/config directory; default `~/.atomic/agent` |
+| `ATOMIC_CODING_AGENT_DIR` | `PI_CODING_AGENT_DIR` | Agent/config directory; default `~/.atomic/agent`. Read each time a session or extension load starts, so caches under it, such as the extension transpile cache, follow the value in effect for that load. An SDK session's `agentDir` option takes precedence |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | None | Non-empty value selects a JSONL session directory; `--session-dir` and `--no-session` take precedence. Without a selection, sessions use the shared local SQLite database. |
 | `ATOMIC_PACKAGE_DIR` | `PI_PACKAGE_DIR` | Package directory override |
 | `ATOMIC_OFFLINE` | `PI_OFFLINE` | Disable automatic network activity, including update checks, package updates, telemetry, model catalog refreshes, and downloads of `fd`, `rg`, and [git](/getting-started/installation#git) |

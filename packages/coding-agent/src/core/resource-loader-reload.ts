@@ -519,7 +519,7 @@ export async function prepareDefaultResourceLoaderReload(
 	};
 	if (options?.deferProjectTrust && preTrustExtensions) {
 		state.extensionsResult = preTrustExtensions;
-		preTrustExtensions = (await withMandatoryResourceLoader(loader, state.cwd)).getExtensions();
+		preTrustExtensions = (await withMandatoryResourceLoader(loader, state.cwd, state.agentDir)).getExtensions();
 		state.extensionsResult = preTrustExtensions;
 		let trustResolution: Promise<void> | undefined;
 		options.deferProjectTrust(async () => {

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SessionManager.recordBranch(entryId | null)` moves the leaf like `branch()` or `resetLeaf()` and saves the move, so the session reopens there, and `getSessionLeafId(entries)` returns the entry a stored session reopens at ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+
 ### Changed
 
 - `--no-session` and other unsaved sessions no longer generate session summaries, so they no longer send one extra model request after each turn. Summaries exist for the `/resume` picker, which never lists unsaved sessions. RPC `get_session_summary` returns `null` for an unsaved session ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
@@ -9,6 +13,9 @@
 ### Fixed
 
 - Fixed the footer usage, the context indicator, and `/session` leaving out the tokens and cost of the latest session summary until a later turn or `/reload`. They now update as soon as the summary is saved, and also when a cache warm records its usage ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
+- Fixed `/tree` in interactive mode leaving the abandoned turns in the chat, keeping the tree cursor and `/clone` on the old leaf, and not showing a requested branch summary until the next turn. The chat, the tree, `/session` and the context indicator now follow the selected branch as soon as you navigate, and Escape while the summary is generated cancels it ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+- Fixed a `/tree` move without a summary being lost when you quit, resumed, continued, or the interactive engine restarted before the next turn, which put the abandoned turns back into the next request. The move is now saved in the session, so it reopens on the selected branch; `listForkPoints()` and workflow run forks use that branch too ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+- Fixed the extension transpile cache staying under the first agent directory a process used: each load now caches under the agent directory in effect for it (`ATOMIC_CODING_AGENT_DIR` at that time, or the SDK session's `agentDir`), stale cache versions are pruned in every agent directory, and extension loads no longer create or recreate a missing agent directory; they skip the cache instead ([#4728](https://github.com/bastani-inc/atomic/issues/4728))
 - Fixed `/copy` and RPC `get_last_assistant_text` skipping past a reply that ended normally without text and copying an earlier turn's answer instead, while still skipping empty turns that ended via abort, error, or tool calls (upstream [#12119](https://github.com/earendil-works/pi/issues/12119), [#12121](https://github.com/earendil-works/pi/pull/12121))
 - Fixed provider errors that report only a Node socket error code (`ECONNRESET`, `ECONNABORTED`, `ECONNREFUSED`, `ETIMEDOUT`, `EPIPE`) not triggering automatic retries in sessions, workflows, and subagents, without matching those codes inside longer identifiers (upstream [#12128](https://github.com/earendil-works/pi/issues/12128), [#12136](https://github.com/earendil-works/pi/pull/12136))
 - Fixed `read` storing a note that the current model does not support images in the tool result sent to the model, which replayed as stale text after switching to a vision model; the warning is now recorded in `details.imageUnsupportedByModel` and shown in the TUI both collapsed and expanded while `@bastani/pi-ai` still replaces unsupported images per request (upstream [#12131](https://github.com/earendil-works/pi/issues/12131), [#12139](https://github.com/earendil-works/pi/pull/12139))

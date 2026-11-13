@@ -9,6 +9,7 @@ import { isAbsolute, resolve } from "node:path";
 import {
 	assertSessionBlobStore,
 	copySessionBlobs,
+	getSessionLeafId,
 	type SessionEntry,
 	SessionManager,
 	type SessionStore,
@@ -84,7 +85,7 @@ export interface ForkPoint {
 	readonly stagePath: string;
 	/** Agent session the stage ran in, when it ran one. */
 	readonly sessionId?: string;
-	/** Last entry of that session, for `forkFromEntryId`. */
+	/** The entry that session continues from (its leaf), for `forkFromEntryId`. */
 	readonly entryId?: string;
 	readonly completedAt: number;
 }
@@ -469,7 +470,8 @@ export async function* durableForkPoints(
 				runId: source.runId,
 				stagePath: record.stagePath,
 			});
-			const entryId = snapshot.entries.at(-1)?.id;
+			// The session's leaf: its last entry, unless `/tree` recorded a move to an earlier one (#3325).
+			const entryId = getSessionLeafId(snapshot.entries) ?? undefined;
 			yield {
 				stagePath: record.stagePath,
 				sessionId: record.sessionId,

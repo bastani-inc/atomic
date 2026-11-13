@@ -13,6 +13,7 @@ Object.defineProperty(process, "platform", {
 });
 const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "atomic-host-alias-"));
 process.env.ATOMIC_CODING_AGENT_DIR = path.join(root, "agent");
+fs.mkdirSync(process.env.ATOMIC_CODING_AGENT_DIR);
 
 try {
 	const { loadExtensionModule, clearExtensionCache, useExtensionCacheCwd, readExtensionGraphManifest } = await import(
