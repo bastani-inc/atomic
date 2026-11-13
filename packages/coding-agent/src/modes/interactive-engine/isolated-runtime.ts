@@ -1256,6 +1256,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				this.mirrorBackgroundCompaction(rehydrateBackgroundCompactionState(event.compaction));
 				break;
 			case "message_end":
+			// An appended entry can carry usage of its own, as a session summary or a cache warm does (#4726).
+			case "entry_appended":
 				this.sessionStats.refresh();
 				break;
 			case "queue_update":

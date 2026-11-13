@@ -2979,7 +2979,7 @@ test.each([1, 2])("disposal cancels %i admitted background summaries without wai
 		modelRuntime,
 		model: getModel("anthropic", "claude-sonnet-4-5"),
 		settingsManager: SettingsManager.inMemory({ sessionSummary: { enabled: true } }),
-		sessionManager: SessionManager.inMemory(cwd),
+		sessionManager: await SessionManager.create(cwd, join(cwd, "sessions")),
 		tools: [],
 		builtins: { workflows: false, subagents: false, mcp: false, intercom: false, "web-access": false },
 		extensionBindings: { mode: "rpc" },
