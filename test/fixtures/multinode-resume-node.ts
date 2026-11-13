@@ -51,6 +51,8 @@ interface ResumeArgs {
 	readonly readPath: string;
 	readonly setupCommand?: string;
 	readonly catalogTimeoutMs?: number;
+	/** Only open the session and report where it continues, without running a turn in it. */
+	readonly openOnly?: boolean;
 }
 
 function emit(value: object): void {
@@ -115,6 +117,11 @@ async function resume(args: ResumeArgs): Promise<void> {
 	});
 	if (opened === "cancelled") throw new Error("resume was cancelled");
 	const { sessionManager, notices } = opened;
+	if (args.openOnly) {
+		emit({ cwd: sessionManager.getCwd(), notices, mappings: sessionManager.getWorktreeRootMappings() });
+		await sessionManager.getSessionStore().close();
+		return;
+	}
 	const harness = await createHarness({ sessionManager, cwd: sessionManager.getCwd() });
 	harness.setResponses([
 		fauxAssistantMessage([fauxToolCall("read", { path: args.readPath })], { stopReason: "toolUse" }),
