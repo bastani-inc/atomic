@@ -3,7 +3,8 @@
  * selection comes from, whether its adapter loads and its database answers, and what the running Intercom broker
  * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
  * `atomic storage adopt` registers existing journal files in the journal store in place, and `atomic storage
- * consolidate` moves their finished runs into the store's own shards.
+ * consolidate` moves their finished runs into the store's own shards. `atomic storage export` and `atomic storage
+ * import` move workflow runs between the local workflow journal and versioned JSONL files (#4716).
  */
 
 import { join, resolve } from "node:path";
@@ -15,6 +16,13 @@ import {
 	consolidateJournalStore,
 	defaultJournalStoreDirectory,
 } from "../core/storage/journal-adoption.js";
+import {
+	exportWorkflowRuns,
+	importWorkflowRuns,
+	isWorkflowRunTransferError,
+	WORKFLOW_RUN_EXPORT_VERSION,
+	type WorkflowRunTransferStorage,
+} from "../core/storage/journal-transfer.js";
 import {
 	checkTeamUrl,
 	isFileUrl,
@@ -39,6 +47,8 @@ const HELP = `Usage:
   ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]
   ${APP_NAME} storage adopt <path>... [--no-discover]
   ${APP_NAME} storage consolidate
+  ${APP_NAME} storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]
+  ${APP_NAME} storage import <dir>
 
 Commands:
   status   Show, for sessions, workflow runs, and Intercom, the selected storage and where the
@@ -59,13 +69,23 @@ Commands:
            Move finished runs (completed, failed or cancelled, not leased, without local workers)
            from adopted journals into the journal store's own shards. Other runs stay where they
            are. An interrupted consolidation leaves every run readable; run it again to finish.
+  export   Write workflow runs to <dir>/<runId>.jsonl, one file per run (format version
+           ${WORKFLOW_RUN_EXPORT_VERSION}): a header line, then one line per journal event. Every run by default;
+           a file is replaced whole, and one that already holds the same run is not rewritten.
+  import   Restore every *.jsonl export in <dir> into this directory's workflow journal. All files
+           are checked first, so a malformed or unsupported file changes nothing. Importing again
+           adds nothing; a newer export of a run adds its later events. Imported runs are not
+           owned by any process: an interrupted one can be resumed here.
 
 Options:
   --json                Print the status as JSON
   --token-file <path>   File holding the database token, for example from \`turso db tokens create\`;
                         surrounding whitespace is removed. Required except for file: URLs
   --prefix <prefix>     Table prefix, to share one database between projects or teams
-  --no-discover         adopt: register only the given paths`;
+  --no-discover         adopt: register only the given paths
+  --run <id>            export: only this run; repeat for more
+  --unfinished          export: only runs that are not completed, failed or cancelled
+  --limit <n>           export: at most n runs, newest first`;
 
 const HELP_HINT = `Use "${APP_NAME} storage --help" for usage.`;
 
@@ -74,7 +94,15 @@ export type StorageCommand =
 	| { readonly kind: "status"; readonly json: boolean }
 	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
-	| { readonly kind: "consolidate" };
+	| { readonly kind: "consolidate" }
+	| {
+			readonly kind: "export";
+			readonly directory: string;
+			readonly runs?: readonly string[];
+			readonly unfinished: boolean;
+			readonly limit?: number;
+	  }
+	| { readonly kind: "import"; readonly directory: string };
 
 export class StorageCommandError extends Error {}
 
@@ -88,6 +116,8 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	const values = new Map<string, string>();
 	let json = false;
 	let discover = true;
+	let unfinished = false;
+	const runs: string[] = [];
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index]!;
 		if (command === "status" && arg === "--json") {
@@ -98,7 +128,20 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			discover = false;
 			continue;
 		}
-		if (command === "join" && (arg === "--token-file" || arg === "--prefix")) {
+		if (command === "export" && arg === "--unfinished") {
+			unfinished = true;
+			continue;
+		}
+		if (command === "export" && arg === "--run") {
+			const value = rest[++index];
+			if (value === undefined || value === "") throw new StorageCommandError("--run needs a run ID.");
+			runs.push(value);
+			continue;
+		}
+		if (
+			(command === "join" && (arg === "--token-file" || arg === "--prefix")) ||
+			(command === "export" && arg === "--limit")
+		) {
 			const value = rest[++index];
 			if (value === undefined) throw new StorageCommandError(`${arg} needs a value.`);
 			values.set(arg, value);
@@ -138,6 +181,30 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	if (command === "consolidate") {
 		if (positional.length > 0) throw new StorageCommandError(`Usage: ${APP_NAME} storage consolidate`);
 		return { kind: "consolidate" };
+	}
+	if (command === "export") {
+		const [directory, ...extra] = positional;
+		if (directory === undefined || extra.length > 0)
+			throw new StorageCommandError(
+				`Usage: ${APP_NAME} storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]`,
+			);
+		const limitText = values.get("--limit");
+		const limit = limitText === undefined ? undefined : Number(limitText);
+		if (limit !== undefined && (!/^[0-9]+$/.test(limitText!) || !Number.isSafeInteger(limit) || limit < 1))
+			throw new StorageCommandError(`--limit needs a positive whole number, not "${limitText}".`);
+		return {
+			kind: "export",
+			directory,
+			unfinished,
+			...(runs.length === 0 ? {} : { runs }),
+			...(limit === undefined ? {} : { limit }),
+		};
+	}
+	if (command === "import") {
+		const [directory, ...extra] = positional;
+		if (directory === undefined || extra.length > 0)
+			throw new StorageCommandError(`Usage: ${APP_NAME} storage import <dir>`);
+		return { kind: "import", directory };
 	}
 	throw new StorageCommandError(`Unknown storage command "${command}".\n${HELP_HINT}`);
 }
@@ -334,6 +401,8 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 		if (command.kind === "status") return await status(command.json, options, log);
 		if (command.kind === "adopt") return await adopt(command, options, log);
 		if (command.kind === "consolidate") return await consolidate(options, log);
+		if (command.kind === "export") return await exportRuns(command, options, log, error);
+		if (command.kind === "import") return await importRuns(command, options, log);
 		return await joinStorage(command, options, (...lines) => {
 			for (const line of lines) log(line);
 		});
@@ -344,7 +413,10 @@ export async function runStorageCommand(args: readonly string[], options: Storag
 			return 1;
 		}
 		error(
-			caught instanceof StorageCommandError || isTeamProfileError(caught) || isTeamProfileConfigError(caught)
+			caught instanceof StorageCommandError ||
+				isWorkflowRunTransferError(caught) ||
+				isTeamProfileError(caught) ||
+				isTeamProfileConfigError(caught)
 				? caught.message
 				: `Error: ${errorText(caught as Error)}`,
 		);
@@ -405,4 +477,62 @@ async function consolidate(options: StorageCommandOptions, log: (line: string) =
 	const note = storeSelectionNote(options, directory);
 	if (note !== undefined) log(note);
 	return failures.size === 0 ? 0 : 1;
+}
+
+/**
+ * The local workflow journal this directory's runs use, which `export` and `import` read and write. A shared database
+ * is refused: every machine joined to it already reads its runs, so there is nothing to carry between them.
+ */
+function transferStorage(options: StorageCommandOptions, command: "export" | "import"): WorkflowRunTransferStorage {
+	const selection = effectiveJournalSelection(options.cwd, options.agentDir);
+	if (selection.kind === "sharded") return { kind: "store", directory: selection.dir };
+	if (selection.kind === "sqlite" && selection.path !== ":memory:")
+		return {
+			kind: "sqlite",
+			path: resolve(options.cwd, selection.path),
+			...(selection.prefix === undefined ? {} : { prefix: selection.prefix }),
+		};
+	throw new StorageCommandError(
+		`${APP_NAME} storage ${command} works with a local workflow journal (the journal store or a SQLite file), but workflow runs here use ${describeStorageSelection(selection)}.` +
+			(selection.kind === "adapter"
+				? " A shared database already holds the runs of every machine joined to it, so there is nothing to export or import; use its own backups instead."
+				: ""),
+	);
+}
+
+async function exportRuns(
+	command: Extract<StorageCommand, { kind: "export" }>,
+	options: StorageCommandOptions,
+	log: (line: string) => void,
+	error: (line: string) => void,
+): Promise<number> {
+	const storage = transferStorage(options, "export");
+	const directory = resolve(options.cwd, command.directory);
+	const report = await exportWorkflowRuns(storage, directory, {
+		unfinished: command.unfinished,
+		...(command.runs === undefined ? {} : { runs: command.runs }),
+		...(command.limit === undefined ? {} : { limit: command.limit }),
+	});
+	const total = report.written.length + report.unchanged.length;
+	log(
+		`Exported ${total} workflow run${total === 1 ? "" : "s"} to ${directory} (${report.written.length} written, ${report.unchanged.length} unchanged).`,
+	);
+	for (const skipped of report.skipped)
+		error(`Skipped ${skipped.runId === undefined ? skipped.path : `run ${skipped.runId}`}: ${skipped.reason}.`);
+	return 0;
+}
+
+async function importRuns(
+	command: Extract<StorageCommand, { kind: "import" }>,
+	options: StorageCommandOptions,
+	log: (line: string) => void,
+): Promise<number> {
+	const storage = transferStorage(options, "import");
+	const directory = resolve(options.cwd, command.directory);
+	const report = await importWorkflowRuns(storage, directory);
+	const total = report.added.length + report.updated.length + report.unchanged.length;
+	log(
+		`Imported ${total} workflow run${total === 1 ? "" : "s"} from ${directory} (${report.added.length} added, ${report.updated.length} updated, ${report.unchanged.length} already up to date).`,
+	);
+	return 0;
 }
