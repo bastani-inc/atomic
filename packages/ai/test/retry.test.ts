@@ -137,6 +137,24 @@ describe("provider retry classification", () => {
 		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
 	});
 
+	it.each([
+		"read ECONNRESET",
+		"connect ETIMEDOUT 140.82.113.3:443",
+		"write EPIPE",
+		"connect ECONNREFUSED 127.0.0.1:443",
+		"ECONNABORTED",
+		"Connection reset by peer",
+	])("matches Node socket error codes (#12128): %s", (errorMessage) => {
+		assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), true);
+	});
+
+	it.each(["Invalid value EXECONNRESET", "Unknown field ETIMEDOUTX", "Invalid key ERR_EPIPE_ID"])(
+		"does not match socket error codes inside longer identifiers (#12128): %s",
+		(errorMessage) => {
+			assert.equal(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage })), false);
+		},
+	);
+
 	it("matches OpenAI Responses streams that end before terminal events", () => {
 		expect(
 			isRetryableAssistantError(

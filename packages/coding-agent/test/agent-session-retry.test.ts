@@ -399,6 +399,62 @@ describe("AgentSession retry", () => {
 		assert.equal(callCount, 2);
 	});
 
+	it.each([
+		"read ECONNRESET",
+		"connect ETIMEDOUT 140.82.113.3:443",
+		"write EPIPE",
+		"connect ECONNREFUSED 127.0.0.1:443",
+		"ECONNABORTED",
+		"Connection reset by peer",
+	])("retries bare Node socket error codes (#12128): %s", async (errorMessage) => {
+		let callCount = 0;
+		await createSessionWithStream(() => {
+			callCount++;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				if (callCount === 1) {
+					const error = createAssistantMessage("", {
+						stopReason: "error",
+						errorMessage,
+					});
+					stream.push({ type: "start", partial: error });
+					stream.push({ type: "error", reason: "error", error });
+					return;
+				}
+				const recovered = createAssistantMessage("Recovered after socket error");
+				stream.push({ type: "start", partial: recovered });
+				stream.push({ type: "done", reason: "stop", message: recovered });
+			});
+			return stream;
+		});
+
+		await session.prompt("Test");
+		assert.equal(callCount, 2);
+	});
+
+	it.each(["Invalid value EXECONNRESET", "Unknown field ETIMEDOUTX", "Invalid key ERR_EPIPE_ID"])(
+		"does not retry socket error codes inside longer identifiers (#12128): %s",
+		async (errorMessage) => {
+			let callCount = 0;
+			await createSessionWithStream(() => {
+				callCount++;
+				const stream = createAssistantMessageEventStream();
+				queueMicrotask(() => {
+					const error = createAssistantMessage("", {
+						stopReason: "error",
+						errorMessage,
+					});
+					stream.push({ type: "start", partial: error });
+					stream.push({ type: "error", reason: "error", error });
+				});
+				return stream;
+			});
+
+			await session.prompt("Test");
+			assert.equal(callCount, 1);
+		},
+	);
+
 	it("retries degenerate empty completions and bounds them by maxRetries", async () => {
 		let callCount = 0;
 		await createSessionWithStream(() => {

@@ -415,6 +415,78 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		kind: "provider_unavailable",
 		retryable: true,
 	},
+	{
+		label: "bare Node socket ECONNRESET (#12128)",
+		failure: new Error("read ECONNRESET"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ETIMEDOUT (#12128)",
+		failure: new Error("connect ETIMEDOUT 140.82.113.3:443"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket EPIPE (#12128)",
+		failure: new Error("write EPIPE"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ECONNREFUSED (#12128)",
+		failure: new Error("connect ECONNREFUSED 127.0.0.1:443"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "bare Node socket ECONNABORTED (#12128)",
+		failure: new Error("ECONNABORTED"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code EPIPE (#12128)",
+		failure: { code: "EPIPE", message: "broken pipe" },
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code ECONNABORTED (#12128)",
+		failure: { code: "ECONNABORTED", message: "software caused connection abort" },
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "Node wording Connection reset by peer (#12128)",
+		failure: new Error("Connection reset by peer"),
+		kind: "provider_unavailable",
+		retryable: true,
+	},
+	{
+		label: "lookalike identifier EXECONNRESET (#12128)",
+		failure: new Error("Invalid value EXECONNRESET"),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "lookalike identifier ETIMEDOUTX (#12128)",
+		failure: new Error("Unknown field ETIMEDOUTX"),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "lookalike identifier ERR_EPIPE_ID without auth wording (#12128)",
+		failure: new Error("Unknown option ERR_EPIPE_ID"),
+		kind: "unknown",
+		retryable: false,
+	},
+	{
+		label: "lookalike identifier ERR_EPIPE_ID with Invalid key stays auth (#12128)",
+		failure: new Error("Invalid key ERR_EPIPE_ID"),
+		kind: "auth_on_candidate_provider",
+		retryable: true,
+	},
 ];
 
 describe("model fallback classifier conformance (subagents vs workflows)", () => {
