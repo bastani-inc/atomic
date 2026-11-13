@@ -1,6 +1,5 @@
 import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { normalizeModelReference } from "./azure-provider-compat.js";
@@ -128,12 +127,4 @@ export async function resolveModelScopeWithDiagnostics(
 	modelRuntime: ModelRuntime,
 ): Promise<ResolveModelScopeResult> {
 	return resolveModelScopeFromModels(patterns, modelRuntime.getAvailableSnapshot());
-}
-
-export async function resolveModelScope(patterns: string[], modelRuntime: ModelRuntime): Promise<ScopedModel[]> {
-	const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRuntime);
-	for (const diagnostic of diagnostics) {
-		console.warn(chalk.yellow(`Warning: ${diagnostic.message}`));
-	}
-	return scopedModels;
 }

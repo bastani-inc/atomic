@@ -71,12 +71,12 @@ function hasVertexAdcCredentials(env?: ProviderEnv): boolean {
 	return cachedVertexAdcCredentialsExists;
 }
 
-const apiKeyEnvMap: Record<string, string> = {
+const apiKeyEnvMap: Record<string, string | readonly string[]> = {
 	"ant-ling": "ANT_LING_API_KEY",
-	"qwen-token-plan": "QWEN_TOKEN_PLAN_API_KEY",
-	"qwen-token-plan-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
-	"qwen-token-plan-individual": "QWEN_TOKEN_PLAN_API_KEY",
-	"qwen-token-plan-individual-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
+	"qwen-token-plan": ["QWEN_TOKEN_PLAN_TEAM_API_KEY", "QWEN_TOKEN_PLAN_API_KEY"],
+	"qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_TEAM_CN_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY"],
+	"qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY", "QWEN_TOKEN_PLAN_API_KEY"],
+	"qwen-token-plan-individual-cn": ["QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY", "QWEN_TOKEN_PLAN_CN_API_KEY"],
 	openai: "OPENAI_API_KEY",
 	"openai-api": "OPENAI_API_KEY",
 	"anthropic-api": ANTHROPIC_API_KEY_ENV,
@@ -123,14 +123,14 @@ function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
 	if (provider === "anthropic") {
 		return [ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV];
 	}
-	const envVar = apiKeyEnvMap[normalizeProviderId(provider)];
-	return envVar ? [envVar] : undefined;
+	const envVars = apiKeyEnvMap[normalizeProviderId(provider)];
+	return typeof envVars === "string" ? [envVars] : envVars;
 }
 
 /** Boolean-only privacy check; never resolves ambient SDK credentials or performs auth work. */
 export function containsKnownEnvCredential(serialized: string, env?: ProviderEnv): boolean {
 	const names = [
-		...Object.values(apiKeyEnvMap),
+		...Object.values(apiKeyEnvMap).flat(),
 		ANTHROPIC_AUTH_TOKEN_ENV,
 		ANTHROPIC_OAUTH_TOKEN_ENV,
 		ANTHROPIC_API_KEY_ENV,

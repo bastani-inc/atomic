@@ -2,10 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `deepseek-v4.1-flash` and `deepseek-v4.1-flash-1017` to the Qwen Token Plan Individual providers, and per-plan key variables `QWEN_TOKEN_PLAN_TEAM_API_KEY`, `QWEN_TOKEN_PLAN_TEAM_CN_API_KEY`, `QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY`, and `QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY`; the shared `QWEN_TOKEN_PLAN_API_KEY` and `QWEN_TOKEN_PLAN_CN_API_KEY` still work as fallbacks (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112))
+
 ### Changed
 
 - `model: "auto"` now ranks models on all of the evaluation evidence Atomic ships instead of averaging standings over the few benchmarks each model happens to have. Results a model lacks are estimated from its other results across every evals table, each with an uncertainty, and models are ranked on a cautious estimate compared across the eligible models, so a model with one strong benchmark score no longer outranks models with broader, consistent results, and on demanding tasks a cheaper model no longer wins only because every frontier model shares the same top catalog standing. Each model is judged at the reasoning effort the task will run at, with unmeasured efforts estimated from its measured ones. Benchmarks are weighted by the task: hard coding and review rely mostly on DeepSWE and FrontierCode, and models with a measured DeepSWE or FrontierCode result rank ahead of models without one; short terminal work and lookups lean on Terminal-Bench 4.0. Easy, low-stakes tasks favour cheaper models more strongly. The router's evidence for each option says which results are measured and which are estimated. Parallel `auto` stages can take different model families with the new `parallelSlot` stage option, and the builtin `ralph` workflow's two reviewers now do ([#4689](https://github.com/bastani-inc/atomic/issues/4689))
 - The footer line with the model, reasoning level, folder, Git branch and session name now shows only while the chat's agent is idle, the same way in the main chat, workflow stage chats and subagent chats. While the agent works, including during a `!` command, a compaction or an automatic retry's backoff, the line shows `esc to interrupt`, or `working` where Escape does not interrupt (an open `/tasks` picker, or a subagent's chat) ([#4690](https://github.com/bastani-inc/atomic/issues/4690))
+- Updated `@google/genai` to 2.32.0 with automatic continuation turned off, so a `CONTINUATION` finish reason ends the turn with stop reason `length` (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108))
+- Qwen Token Plan providers now use the current gateways (`token-plan.maas.qwencloudapi.com` international, `token-plan.maas.qianwenaiapi.com` China), and `qwen-token-plan` and `qwen-token-plan-cn` are named "Qwen Token Plan Team" and "Qwen Token Plan Team CN" ("Qwen Token Plan (Team)" and "Qwen Token Plan (Team, China)" in `/login`). Provider IDs are unchanged, and the old `aliyuncs.com` hosts still work (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112))
 
 ### Fixed
 
@@ -16,6 +22,14 @@
 - Fixed non-strict Anthropic tool schemas dropping the root `additionalProperties` keyword, including when `strict: "prefer"` falls back to non-strict mode (upstream [#12100](https://github.com/earendil-works/pi/pull/12100))
 - Fixed prompt cache miss notices showing a definitive `$0.000` for large re-billed misses. Notices now show the cost of the re-billed tokens and how much more that is than a cache hit, for example `257,225 tokens re-billed ($0.011, <$0.001 more than a cache hit)`. Amounts too small to show render as `<$0.001`. For models without pricing, notices show the provider-reported request cost when there is one, or `cost unknown`. The `/session` "Wasted Cache Cost" line follows the same rules ([#4688](https://github.com/bastani-inc/atomic/issues/4688))
 - Fixed a steering or follow-up message sent while the agent was busy, for example running a parallel `subagent` call, appearing in the queued-messages area only after a delay of up to a few seconds. In the main chat and workflow stage chats the message now shows as queued as soon as you submit it, whatever the agent is doing. If the agent refuses it, the row is removed and the message goes back to the editor with the reason ([#4696](https://github.com/bastani-inc/atomic/issues/4696))
+- Fixed the `google-generative-ai` and `google-vertex` adapters rejecting a custom `fetch` option instead of forwarding it through `httpOptions.fetch`, and kept the global undici dispatcher's idle timeouts active when no custom `fetch` is supplied; Vertex ADC token requests still use `google-auth-library`'s own HTTP client (upstream [#12103](https://github.com/earendil-works/pi/pull/12103), [#12108](https://github.com/earendil-works/pi/pull/12108))
+- Fixed `/resume` sometimes selecting an unrelated session while the session list reloads progressively after deleting or renaming a session. Visible sessions can be renamed while loading and stay selected as more rows arrive, and an older load no longer overwrites the refreshed list (upstream [#12106](https://github.com/earendil-works/pi/issues/12106), [#12111](https://github.com/earendil-works/pi/pull/12111))
+- Fixed unmatched `enabledModels` and `--models` warnings being printed over the interactive interface again when switching or creating sessions. They now appear as startup diagnostics instead (upstream [#11973](https://github.com/earendil-works/pi/pull/11973))
+- Fixed `find` glob paths matching directories above the search root when using its fd fallback, so `**/src/**/*.ts` no longer includes unrelated files under a parent `src` directory (upstream [#12116](https://github.com/earendil-works/pi/pull/12116))
+
+### Removed
+
+- Removed the retired `deepseek-v3.2` and `deepseek-v4-flash` from the Qwen Token Plan Team providers; use `deepseek-v4-flash-0731` or `deepseek-v4.1-flash` (upstream [#11773](https://github.com/earendil-works/pi/issues/11773), [#12112](https://github.com/earendil-works/pi/pull/12112))
 
 ## [0.9.80] - 2026-11-12
 

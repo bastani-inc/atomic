@@ -8,6 +8,20 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const temporaryRoots: string[] = [];
+const individualFixtureModelIds = [
+	"deepseek-v4-flash-0731",
+	"deepseek-v4-pro",
+	"deepseek-v4-pro-0813",
+	"deepseek-v4.1-flash",
+	"deepseek-v4.1-flash-1017",
+	"glm-5.2",
+	"glm-5.3",
+	"qwen3.6-flash",
+	"qwen3.7-max",
+	"qwen3.7-plus",
+	"qwen3.8-flash",
+	"qwen3.8-max",
+];
 
 afterEach(() => {
 	for (const root of temporaryRoots.splice(0)) rmSync(root, { force: true, recursive: true });
@@ -36,18 +50,7 @@ function runOpenRouterRetryFixture(
 		cpSync(join(packageRoot, entry), join(isolatedPackageRoot, entry), { recursive: true });
 	}
 
-	const modelIds = [
-		"deepseek-v4-flash-0731",
-		"deepseek-v4-pro",
-		"deepseek-v4-pro-0813",
-		"glm-5.2",
-		"glm-5.3",
-		"qwen3.6-flash",
-		"qwen3.7-max",
-		"qwen3.7-plus",
-		"qwen3.8-flash",
-		"qwen3.8-max",
-	];
+	const modelIds = [...individualFixtureModelIds, "qwen3.8-max-preview"];
 	const sourceModels = Object.fromEntries(
 		modelIds.map((id) => [
 			id,
@@ -55,6 +58,7 @@ function runOpenRouterRetryFixture(
 				id,
 				name: id,
 				tool_call: true,
+				...(id === "qwen3.8-max-preview" ? { status: "deprecated" } : {}),
 				...(id.startsWith("qwen3.8-")
 					? { reasoning: true, reasoning_options: [{ type: "effort", values: ["low", "medium", "xhigh"] }] }
 					: {}),
@@ -173,7 +177,7 @@ function runOpenRouterRetryFixture(
 }
 
 describe("strict model generation", () => {
-	it("retries a transient model-catalog fetch before succeeding in strict mode", () => {
+	it("retries a transient model-catalog fetch before succeeding in strict mode (#11773)", () => {
 		const result = runOpenRouterRetryFixture("transient-success");
 
 		expect(result.status).toBe(0);
@@ -184,6 +188,11 @@ describe("strict model generation", () => {
 		const individualCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/qwen-token-plan-individual.json"), "utf8"),
 		) as Record<string, { thinkingLevelMap?: Record<string, string | null> }>;
+		assert.deepEqual(Object.keys(individualCatalog).sort(), [...individualFixtureModelIds].sort());
+		const teamCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/qwen-token-plan.json"), "utf8"),
+		) as Record<string, object>;
+		assert.deepEqual(Object.keys(teamCatalog).sort(), [...individualFixtureModelIds].sort());
 		assert.deepEqual(individualCatalog["qwen3.8-flash"]?.thinkingLevelMap, {
 			off: null,
 			minimal: null,
@@ -201,10 +210,15 @@ describe("strict model generation", () => {
 		const chinaIndividualCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/qwen-token-plan-individual-cn.json"), "utf8"),
 		) as Record<string, { baseUrl?: string; compat?: { thinkingFormat?: string } }>;
+		const chinaTeamCatalog = JSON.parse(
+			readFileSync(join(result.outputPath, "providers/qwen-token-plan-cn.json"), "utf8"),
+		) as Record<string, object>;
+		assert.deepEqual(Object.keys(chinaIndividualCatalog).sort(), [...individualFixtureModelIds].sort());
+		assert.deepEqual(Object.keys(chinaTeamCatalog).sort(), [...individualFixtureModelIds].sort());
 		assert.equal(chinaIndividualCatalog["deepseek-v4-pro"]?.compat?.thinkingFormat, "qwen");
 		assert.equal(
 			chinaIndividualCatalog["deepseek-v4-pro"]?.baseUrl,
-			"https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+			"https://token-plan.maas.qianwenaiapi.com/compatible-mode/v1",
 		);
 		const anthropicCatalog = JSON.parse(
 			readFileSync(join(result.outputPath, "providers/anthropic.json"), "utf8"),
@@ -416,6 +430,8 @@ describe("strict model generation", () => {
 			"deepseek-v4-flash-0731",
 			"deepseek-v4-pro",
 			"deepseek-v4-pro-0813",
+			"deepseek-v4.1-flash",
+			"deepseek-v4.1-flash-1017",
 			"glm-5.2",
 			"glm-5.3",
 			"qwen3.6-flash",
@@ -432,6 +448,7 @@ describe("strict model generation", () => {
 					id,
 					name: id,
 					tool_call: id !== "deepseek-v4-flash-0731",
+					...(id === "qwen3.8-max-preview" ? { status: "deprecated" } : {}),
 				},
 			]),
 		);

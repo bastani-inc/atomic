@@ -56,7 +56,7 @@ import type { LoadExtensionsResult } from "./core/extensions/types.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { limitMandatoryIntercomToTool } from "./core/mandatory-resource-loader.ts";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "./core/model-refresh-timeout.ts";
-import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
+import { resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
@@ -904,12 +904,14 @@ export async function main(argv: string[], options?: MainOptions) {
 			const modelPatterns = isolateInteractiveHost
 				? undefined
 				: (parsed.models ?? settingsManager.getEnabledModels());
-			const scopedModels =
+			const deferModelScopeDiagnostics = deferExtensions || deferStartupTrust;
+			const { scopedModels, diagnostics: modelScopeDiagnostics } =
 				modelPatterns && modelPatterns.length > 0
-					? deferredExtensionLoad
-						? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)).scopedModels
-						: await resolveModelScope(modelPatterns, modelRuntime)
-					: [];
+					? await resolveModelScopeWithDiagnostics(modelPatterns, modelRuntime)
+					: { scopedModels: [], diagnostics: [] };
+			if (!deferModelScopeDiagnostics) {
+				diagnostics.push(...modelScopeDiagnostics);
+			}
 			const sessionArgs = isolateInteractiveHost
 				? { ...parsed, provider: undefined, model: undefined, apiKey: undefined, models: undefined }
 				: parsed;
@@ -979,7 +981,10 @@ export async function main(argv: string[], options?: MainOptions) {
 							...collectExtensionLoadDiagnostics(finalServices.resourceLoader.getExtensions(), true),
 						);
 						const patterns = parsed.models ?? settingsManager.getEnabledModels();
-						const finalScope = patterns?.length ? await resolveModelScope(patterns, modelRuntime) : [];
+						const { scopedModels: finalScope, diagnostics: finalScopeDiagnostics } = patterns?.length
+							? await resolveModelScopeWithDiagnostics(patterns, modelRuntime)
+							: { scopedModels: [], diagnostics: [] };
+						finalServices.diagnostics.push(...finalScopeDiagnostics);
 						const finalSelection = buildSessionOptions(
 							parsed,
 							finalScope,
@@ -1015,7 +1020,11 @@ export async function main(argv: string[], options?: MainOptions) {
 							);
 						}
 						await created.session.completeStartupResources(finalServices.resourceLoader);
-						for (const diagnostic of finalServices.diagnostics) reportDiagnostics([diagnostic]);
+						const completedDiagnostics = deduplicateDiagnostics(finalServices.diagnostics);
+						services.diagnostics = completedDiagnostics;
+						if (appMode !== "interactive") {
+							reportDiagnostics(completedDiagnostics);
+						}
 					})().catch((error) => {
 						completion = undefined;
 						throw error;
@@ -1125,7 +1134,19 @@ export async function main(argv: string[], options?: MainOptions) {
 			void modelRuntime.refresh().catch(() => {});
 		}
 		printTimings();
-		await runRpcMode(runtime, { deferInteractiveEngineResources: deferredExtensionLoad });
+		await runRpcMode(runtime, {
+			deferInteractiveEngineResources: deferredExtensionLoad,
+			onStartupReload: deferredExtensionLoad
+				? async (reloadedSession) => {
+						const patterns = parsed.models ?? reloadedSession.settingsManager.getEnabledModels();
+						if (!patterns || patterns.length === 0) return;
+						const { scopedModels: deferredScope, diagnostics: deferredScopeDiagnostics } =
+							await resolveModelScopeWithDiagnostics(patterns, reloadedSession.modelRuntime);
+						reloadedSession.setScopedModels(deferredScope);
+						reportDiagnostics(deduplicateDiagnostics(deferredScopeDiagnostics));
+					}
+				: undefined,
+		});
 	} else if (appMode === "interactive") {
 		const modelScopeNotice =
 			scopedModels.length > 0 && (parsed.verbose || settingsManager.getQuietStartup() === false)

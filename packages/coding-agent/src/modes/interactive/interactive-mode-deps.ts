@@ -87,7 +87,6 @@ export {
 	defaultModelPerProvider,
 	findExactModelReferenceMatch,
 	findInitialModel,
-	resolveModelScope,
 	resolveModelScopeFromModels,
 	resolveModelScopeWithDiagnostics,
 	resolveRestoredModelReference,

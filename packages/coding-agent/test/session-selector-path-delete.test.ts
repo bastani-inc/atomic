@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import { type SessionInfo, SessionManager } from "../src/core/session-manager.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import { type SessionInfo, SessionManager } from "../src/core/session-manager.js";
 import { resolveSessionStore } from "../src/core/session-storage.js";
-import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 type Deferred<T> = {
 	promise: Promise<T>;
@@ -341,5 +341,215 @@ describe("session selector path/delete interactions", () => {
 
 		expect(confirmationChanges).toEqual([]);
 		expect(errorMessage).toBe("Cannot delete the currently active session");
+	});
+
+	it("keeps the next session selected when a progressive reload after delete starts with another session (#12106)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-session-selector-"));
+		tempDirs.push(dir);
+		const sessions = [1, 2, 3, 4, 5].map((i) => {
+			const path = join(dir, `s${i}.jsonl`);
+			writeFileSync(path, "session\n");
+			return makeSession({ id: `s${i}`, path, modified: new Date(10_000 - i * 1000) });
+		});
+
+		const selector = new SessionSelectorComponent(
+			async (onProgress) => {
+				const remaining = sessions.filter((session) => existsSync(session.path));
+				onProgress?.(1, remaining.length, [remaining[remaining.length - 1]!]);
+				onProgress?.(remaining.length, remaining.length, remaining);
+				return remaining;
+			},
+			async () => [],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings },
+		);
+		await flushPromises();
+
+		const list = selector.getSessionList();
+		list.handleInput("\x1b[B");
+		assert.equal(list.getSelectedSessionPath(), sessions[1]!.path);
+
+		list.handleInput(CTRL_D);
+		list.handleInput("\r");
+		await vi.waitFor(() => {
+			assert.equal(existsSync(sessions[1]!.path), false);
+			assert.equal(list.getSelectedSessionPath(), sessions[2]!.path);
+		});
+
+		list.handleInput("\x1b[A");
+		assert.equal(list.getSelectedSessionPath(), sessions[0]!.path);
+		list.handleInput(CTRL_D);
+		list.handleInput("\r");
+		await vi.waitFor(() => {
+			assert.equal(existsSync(sessions[0]!.path), false);
+			assert.equal(list.getSelectedSessionPath(), sessions[2]!.path);
+		});
+	});
+
+	it("handles untouched progressive loads, scope toggles, and user navigation during partial reloads (#12106)", async () => {
+		const s1 = makeSession({
+			id: "s1",
+			path: "/tmp/s1.jsonl",
+			cwd: "/proj/a",
+			firstMessage: "msg-s1",
+			modified: new Date(5000),
+		});
+		const s2 = makeSession({
+			id: "s2",
+			path: "/tmp/s2.jsonl",
+			cwd: "/proj/a",
+			firstMessage: "msg-s2",
+			modified: new Date(4000),
+		});
+		const s3 = makeSession({
+			id: "s3",
+			path: "/tmp/s3.jsonl",
+			cwd: "/proj/b",
+			firstMessage: "msg-s3",
+			modified: new Date(3000),
+		});
+		const emptyDraft = makeSession({
+			id: "empty",
+			path: "/tmp/empty.jsonl",
+			messageCount: 0,
+			firstMessage: "empty-draft",
+		});
+		let emitCurrentProgress: ((loaded: number, total: number, partial?: readonly SessionInfo[]) => void) | undefined;
+		let emitAllProgress: ((loaded: number, total: number, partial?: readonly SessionInfo[]) => void) | undefined;
+		const currentInitial = createDeferred<SessionInfo[]>();
+		const allLoad = createDeferred<SessionInfo[]>();
+		let allLoadCalls = 0;
+		const requestRender = vi.fn();
+
+		const selector = new SessionSelectorComponent(
+			(onProgress) => {
+				emitCurrentProgress = onProgress;
+				return currentInitial.promise;
+			},
+			(onProgress) => {
+				allLoadCalls += 1;
+				emitAllProgress = onProgress;
+				return allLoad.promise;
+			},
+			() => {},
+			() => {},
+			() => {},
+			requestRender,
+			{ keybindings },
+		);
+
+		const list = selector.getSessionList();
+		const rendersBeforeProgress = requestRender.mock.calls.length;
+		emitCurrentProgress?.(1, 3, [s2, emptyDraft]);
+		assert.equal(requestRender.mock.calls.length, rendersBeforeProgress + 1);
+		assert.equal(list.getSelectedSessionPath(), s2.path);
+		const progressFrame = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(progressFrame.includes("Loading 1/3"), true);
+		assert.equal(progressFrame.includes("empty-draft"), false);
+		assert.equal(progressFrame.includes("/proj/a"), false);
+
+		const rendersBeforeToggleToAll = requestRender.mock.calls.length;
+		list.handleInput("\t");
+		assert.equal(requestRender.mock.calls.length > rendersBeforeToggleToAll, true);
+		assert.equal(allLoadCalls, 1);
+
+		list.handleInput("\t");
+		const backToLoadingCurrent = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(backToLoadingCurrent.includes("Loading ..."), true);
+		assert.equal(backToLoadingCurrent.includes("msg-s2"), true);
+		assert.equal(backToLoadingCurrent.includes("/proj/a"), false);
+
+		const rendersBeforeBgAllProgress = requestRender.mock.calls.length;
+		emitAllProgress?.(2, 3, [s3]);
+		assert.equal(requestRender.mock.calls.length, rendersBeforeBgAllProgress);
+		const duringBgAllFrame = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(duringBgAllFrame.includes("Loading ..."), true);
+		assert.equal(duringBgAllFrame.includes("Loading 2/3"), false);
+		assert.equal(duringBgAllFrame.includes("msg-s3"), false);
+
+		currentInitial.resolve([s1, s2]);
+		await flushPromises();
+		assert.equal(list.getSelectedSessionPath(), s1.path);
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("◉ Current Folder"), true);
+
+		list.handleInput("\x1b[B");
+		assert.equal(list.getSelectedSessionPath(), s2.path);
+
+		list.handleInput("\t");
+		const partialAllFrame = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(partialAllFrame.includes("Loading ..."), true);
+		assert.equal(partialAllFrame.includes("msg-s3"), true);
+		assert.equal(partialAllFrame.includes("/proj/b"), true);
+
+		list.handleInput("\t");
+		const settledCurrentFrame = stripAnsi(selector.render(120).join("\n"));
+		assert.equal(settledCurrentFrame.includes("◉ Current Folder"), true);
+		assert.equal(settledCurrentFrame.includes("/proj/a"), false);
+		assert.equal(list.getSelectedSessionPath(), s2.path);
+
+		list.handleInput("\t");
+		emitAllProgress?.(3, 3, [s1, s2, s3]);
+		assert.equal(list.getSelectedSessionPath(), s2.path);
+		allLoad.resolve([s1, s3]);
+		await flushPromises();
+		assert.equal(list.getSelectedSessionPath(), s3.path);
+		assert.equal(stripAnsi(selector.render(120).join("\n")).includes("◉ All"), true);
+
+		list.handleInput("\t");
+		list.handleInput("\x1b[A");
+		list.handleInput("\x1b[B");
+		assert.equal(list.getSelectedSessionPath(), s2.path);
+		const rendersBeforeLoadedToggle = requestRender.mock.calls.length;
+		list.handleInput("\t");
+		assert.equal(requestRender.mock.calls.length, rendersBeforeLoadedToggle + 1);
+		assert.equal(allLoadCalls, 1);
+		assert.equal(list.getSelectedSessionPath(), s3.path);
+		list.setSessions([s2, s1, s3], true, false);
+		assert.equal(list.getSelectedSessionPath(), s3.path);
+
+		const firstToggleSelector = new SessionSelectorComponent(
+			async () => [s1, s2],
+			async () => [s1, s2],
+			() => {},
+			() => {},
+			() => {},
+			() => {},
+			{ keybindings },
+		);
+		await flushPromises();
+		const firstToggleList = firstToggleSelector.getSessionList();
+		firstToggleList.handleInput("\x1b[B");
+		assert.equal(firstToggleList.getSelectedSessionPath(), s2.path);
+		firstToggleList.handleInput("\t");
+		await flushPromises();
+		assert.equal(firstToggleList.getSelectedSessionPath(), s2.path);
+
+		const s0 = makeSession({
+			id: "s0",
+			path: "/tmp/s0.jsonl",
+			cwd: "/proj/a",
+			firstMessage: "msg-s0",
+			modified: new Date(6000),
+		});
+		list.setSessions([s0, s1, s2, s3], true, false);
+		list.handleInput("\x1b[A");
+		list.handleInput("\x1b[A");
+		assert.equal(list.getSelectedSessionPath(), s1.path);
+		list.setSessions([s2, s3], true, true);
+		assert.equal(list.getSelectedSessionPath(), s3.path);
+		list.setSessions([s1, s2, s3], true, false);
+		assert.equal(list.getSelectedSessionPath(), s1.path);
+
+		list.setSessions([s3], true, true);
+		list.handleInput("\x1b[B");
+		list.setSessions([s1, s3], true, false);
+		assert.equal(list.getSelectedSessionPath(), s3.path);
+
+		selector.dispose();
+		emitAllProgress?.(1, 1, [s2]);
+		assert.equal(list.getSelectedSessionPath(), s3.path);
 	});
 });

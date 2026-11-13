@@ -1,7 +1,9 @@
+import assert from "node:assert/strict";
 import type { Model } from "@bastani/pi-ai/compat";
-import { describe, expect, test } from "vitest";
-import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
+import { describe, expect, test, vi } from "vitest";
+import * as modelResolver from "../src/core/model-resolver.js";
+import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.js";
+import type { ModelRuntime } from "../src/core/model-runtime.js";
 
 function model(id: string, provider = "openrouter"): Model<"openai-completions"> {
 	return {
@@ -172,5 +174,27 @@ describe("upstream model scope resolution", () => {
 				pattern: "openrouter/missing",
 			},
 		]);
+	});
+
+	test("returns unmatched, invalid-thinking, and ambiguous warnings as diagnostics without console writes (#4694)", async () => {
+		assert.equal("resolveModelScope" in modelResolver, false);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const result = await resolve(
+				["missing", "openrouter/available:bogus", "shared"],
+				[model("available", "openrouter"), model("shared", "openrouter"), model("shared", "openai")],
+			);
+
+			assert.equal(warn.mock.calls.length, 0);
+			assert.equal(error.mock.calls.length, 0);
+			assert.deepEqual(
+				result.diagnostics.map((diagnostic) => diagnostic.code),
+				["no-match", "invalid-thinking-level", "ambiguous"],
+			);
+		} finally {
+			warn.mockRestore();
+			error.mockRestore();
+		}
 	});
 });

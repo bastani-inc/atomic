@@ -23,9 +23,15 @@ export class SessionList implements Component, Focusable {
 		const selected = this.filteredSessions[this.selectedIndex];
 		return selected?.session.id;
 	}
+	public getSelectedSessionPath(): string | undefined {
+		const selected = this.filteredSessions[this.selectedIndex];
+		return selected?.session.path;
+	}
 	private allSessions: SessionInfo[] = [];
 	private filteredSessions: FlatSessionNode[] = [];
 	private selectedIndex: number = 0;
+	private selectionTouched = false;
+	private pendingSelectedPath?: string;
 	private searchInput: Input;
 	private showCwd = false;
 	private sortMode: SortMode = "threaded";
@@ -96,10 +102,21 @@ export class SessionList implements Component, Focusable {
 		this.filterSessions(this.searchInput.getValue());
 	}
 
-	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
+	setSessions(sessions: SessionInfo[], showCwd: boolean, partial = false): void {
+		const selectedPath = this.selectionTouched
+			? (this.pendingSelectedPath ?? this.getSelectedSessionPath())
+			: undefined;
 		this.allSessions = sessions;
 		this.showCwd = showCwd;
 		this.filterSessions(this.searchInput.getValue());
+		if (!selectedPath) return;
+		const selectedIndex = this.filteredSessions.findIndex((node) => node.session.path === selectedPath);
+		if (selectedIndex >= 0) {
+			this.selectedIndex = selectedIndex;
+			this.pendingSelectedPath = undefined;
+		} else {
+			this.pendingSelectedPath = partial ? selectedPath : undefined;
+		}
 	}
 
 	private filterSessions(query: string): void {
@@ -360,6 +377,8 @@ export class SessionList implements Component, Focusable {
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected) {
+				this.selectionTouched = true;
+				this.pendingSelectedPath = selected.session.path;
 				this.onRenameSession?.(selected.session);
 			}
 			return true;
@@ -378,6 +397,8 @@ export class SessionList implements Component, Focusable {
 			return true;
 		}
 
+		this.selectionTouched = true;
+		this.pendingSelectedPath = undefined;
 		// Up arrow
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);

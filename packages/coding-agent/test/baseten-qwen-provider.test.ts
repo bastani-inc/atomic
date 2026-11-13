@@ -3,14 +3,15 @@ import { isDeepStrictEqual } from "node:util";
 import type { Api, Model } from "@bastani/pi-ai";
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
-import { afterEach, describe, test } from "vitest";
-import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
-import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.ts";
-import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.ts";
+import { afterEach, describe, test, vi } from "vitest";
+import { printHelp } from "../src/cli/args.js";
+import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
+import { _getRequiredRequestAuth } from "../src/core/agent-session-models.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.js";
+import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.js";
 
 type ProviderCase = {
 	provider: "baseten" | "qwen-token-plan-individual";
@@ -52,6 +53,8 @@ const PROVIDERS: readonly ProviderCase[] = [
 			"deepseek-v4-flash-0731",
 			"deepseek-v4-pro",
 			"deepseek-v4-pro-0813",
+			"deepseek-v4.1-flash",
+			"deepseek-v4.1-flash-1017",
 			"glm-5.2",
 			"glm-5.3",
 			"qwen3.6-flash",
@@ -167,7 +170,25 @@ describe("Baseten and Qwen Token Plan Individual providers", () => {
 		const options = getBuiltinApiKeyLoginOptions((id) => BUILT_IN_PROVIDER_DISPLAY_NAMES[id] ?? id);
 		const names = new Map(options.map((option) => [option.id, option.name]));
 
+		assert.equal(names.get("qwen-token-plan"), "Qwen Token Plan (Team)");
+		assert.equal(names.get("qwen-token-plan-cn"), "Qwen Token Plan (Team, China)");
 		assert.equal(names.get("qwen-token-plan-individual"), "Qwen Token Plan (Individual)");
 		assert.equal(names.get("qwen-token-plan-individual-cn"), "Qwen Token Plan (Individual, China)");
+	});
+
+	test("lists per-plan Qwen Token Plan key variables in CLI help (#11773)", () => {
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			printHelp();
+			const help = log.mock.calls.flat().join("\n");
+			assert.equal(help.includes("QWEN_TOKEN_PLAN_TEAM_API_KEY"), true);
+			assert.equal(help.includes("QWEN_TOKEN_PLAN_TEAM_CN_API_KEY"), true);
+			assert.equal(help.includes("QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY"), true);
+			assert.equal(help.includes("QWEN_TOKEN_PLAN_INDIVIDUAL_CN_API_KEY"), true);
+			assert.equal(help.includes("QWEN_TOKEN_PLAN_API_KEY "), false);
+			assert.equal(help.includes("QWEN_TOKEN_PLAN_CN_API_KEY "), false);
+		} finally {
+			log.mockRestore();
+		}
 	});
 });

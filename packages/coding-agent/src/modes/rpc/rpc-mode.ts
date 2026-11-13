@@ -48,6 +48,7 @@ export type {
 
 export interface RpcModeOptions {
 	deferInteractiveEngineResources?: boolean;
+	onStartupReload?: (session: AgentSession) => Promise<void>;
 }
 
 /**
@@ -124,6 +125,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime, options: RpcM
 		inputForm,
 		writeEngineLine: interactiveEngineChild ? writeRawStdout : undefined,
 		reloadCoordinator,
+		onStartupReload: deferInteractiveEngineResources ? options.onStartupReload : undefined,
 	});
 	const loadDeferredResources = () =>
 		resourceReadiness.run(async () => {

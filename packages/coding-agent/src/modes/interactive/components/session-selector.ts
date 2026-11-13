@@ -1,6 +1,6 @@
 import { type Component, Container, type Focusable, getKeybindings, Input, Spacer, Text } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../../core/keybindings.ts";
-import type { SessionInfo } from "../../../core/session-manager.ts";
+import type { SessionInfo, SessionListProgress } from "../../../core/session-manager.ts";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.ts";
 import { keyText } from "./keybinding-hints.js";
@@ -48,6 +48,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	private renameSession?: (session: SessionInfo, currentName: string | undefined) => Promise<void>;
 	private currentLoading = false;
 	private allLoading = false;
+	private currentLoadSeq = 0;
 	private allLoadSeq = 0;
 	private disposed = false;
 
@@ -158,8 +159,6 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		this.sessionList.onToggleNameFilter = () => this.toggleNameFilter();
 		this.sessionList.onRenameSession = (session) => {
 			if (!renameSession) return;
-			if (this.scope === "current" && this.currentLoading) return;
-			if (this.scope === "all" && this.allLoading) return;
 			this.enterRenameMode(session);
 		};
 
@@ -290,15 +289,26 @@ export class SessionSelectorComponent extends Container implements Focusable {
 			this.allLoading = true;
 		}
 
-		const seq = scope === "all" ? ++this.allLoadSeq : undefined;
+		const seq = scope === "current" ? ++this.currentLoadSeq : ++this.allLoadSeq;
+		const isActive = () => !this.disposed && (scope === "current" ? this.currentLoadSeq : this.allLoadSeq) === seq;
 		this.header.setScope(scope);
 		this.header.setLoading(true);
 		this.requestRender();
 
-		const onProgress = (loaded: number, total: number) => {
-			if (this.disposed) return;
+		const onProgress: SessionListProgress = (loaded, total, partialSessions) => {
+			if (!isActive()) return;
+			if (partialSessions) {
+				const sessions = partialSessions.filter(isResumableSession);
+				if (scope === "current") {
+					this.currentSessions = sessions;
+				} else {
+					this.allSessions = sessions;
+				}
+				if (scope === this.scope) {
+					this.sessionList.setSessions(sessions, showCwd, true);
+				}
+			}
 			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
 			this.header.setProgress(loaded, total);
 			this.requestRender();
 		};
@@ -308,6 +318,8 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				await (scope === "current" ? this.currentSessionsLoader(onProgress) : this.allSessionsLoader(onProgress))
 			).filter(isResumableSession);
 
+			if (!isActive()) return;
+
 			if (scope === "current") {
 				this.currentSessions = sessions;
 				this.currentLoading = false;
@@ -316,11 +328,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.allLoading = false;
 			}
 
-			// Stale-result guards: ignore a resolved load after the selector was
-			// closed, the visible scope changed, or a newer all-scope load started.
-			if (this.disposed) return;
 			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
 			this.header.setLoading(false);
 			this.sessionList.setSessions(sessions, showCwd);
@@ -330,15 +338,15 @@ export class SessionSelectorComponent extends Container implements Focusable {
 				this.onCancel();
 			}
 		} catch (err) {
+			if (!isActive()) return;
+
 			if (scope === "current") {
 				this.currentLoading = false;
 			} else {
 				this.allLoading = false;
 			}
 
-			if (this.disposed) return;
 			if (scope !== this.scope) return;
-			if (seq !== undefined && seq !== this.allLoadSeq) return;
 
 			const message = err instanceof Error ? err.message : String(err);
 			this.header.setLoading(false);
@@ -375,28 +383,16 @@ export class SessionSelectorComponent extends Container implements Focusable {
 	}
 
 	private toggleScope(): void {
-		if (this.scope === "current") {
-			this.scope = "all";
-			this.header.setScope(this.scope);
-
-			if (this.allSessions !== null) {
-				this.header.setLoading(false);
-				this.sessionList.setSessions(this.allSessions, true);
-				this.requestRender();
-				return;
-			}
-
-			if (!this.allLoading) {
-				void this.loadScope("all", "toggle");
-			}
-			return;
-		}
-
-		this.scope = "current";
+		this.scope = this.scope === "current" ? "all" : "current";
+		const sessions = this.scope === "current" ? this.currentSessions : this.allSessions;
+		const loading = this.scope === "current" ? this.currentLoading : this.allLoading;
 		this.header.setScope(this.scope);
-		this.header.setLoading(this.currentLoading);
-		this.sessionList.setSessions(this.currentSessions ?? [], false);
+		this.header.setLoading(loading);
+		this.sessionList.setSessions(sessions ?? [], this.scope === "all", loading || sessions === null);
 		this.requestRender();
+		if (sessions === null && !loading) {
+			void this.loadScope(this.scope, "toggle");
+		}
 	}
 
 	getSessionList(): SessionList {
