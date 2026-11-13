@@ -125,6 +125,8 @@ atomic team status [--json]                                          # Profile i
 atomic team leave                                                    # Remove what team join wrote
 atomic storage adopt <path>... [--no-discover]                       # Register existing journal files in place
 atomic storage consolidate                                           # Move finished runs of adopted files into the store
+atomic storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]  # Write workflow runs as JSONL files
+atomic storage import <dir>                                          # Restore workflow runs from JSONL files
 atomic intercom status                                               # This machine's Intercom broker and multi-node state
 atomic intercom restart                                              # Replace the broker so it reads the current selection
 atomic intercom upgrade                                              # Replace a broker an older Atomic started, when safe
@@ -137,6 +139,8 @@ atomic intercom upgrade                                              # Replace a
 `atomic team join` runs the same checks and token handling as `atomic storage join`, then writes the global `storage` setting (the team database) and `sessions.storage` (the local default store) in one update, restarts the Intercom broker, and prints the profile and the `atomic storage status` report. Nothing is written when a check fails. `atomic team status` adds the profile in effect (`individual`, `team`, `ci`, or `custom`) and the current project's Intercom group to that report. `atomic team leave` removes only the values `team join` wrote, deletes their token file unless another setting references it, and restarts the broker. See [Team and CI setup](/guides/team-setup).
 
 `atomic storage adopt` registers journal files in the workflow journal store in place, without copying them, so their runs resolve by ID and resume where they are. Each path is a journal `.sqlite` file or a directory holding `journal.sqlite`; every path is checked before the first is registered. It also adopts the journal files the adopted runs were written to, unless `--no-discover` is given. `atomic storage consolidate` moves finished runs from adopted files into the store's own shards and reports the runs it left in place with the reason, and exits `1`, printing each distinct error's message and hint, when a run was left because of an error (a missing shard file, a different copy in the destination). Both also exit `1` with the error's message and hint when they cannot proceed. See [The workflow journal store](/storage#the-workflow-journal-store).
+
+`atomic storage export` writes workflow runs to `<dir>/<runId>.jsonl`, one versioned JSONL file per run, each written whole through a temporary file; `--run`, `--unfinished` and `--limit` select runs. `atomic storage import` checks every `*.jsonl` file in `<dir>` before it writes anything, then adds new runs and the later events of runs this machine has an earlier part of; importing again changes nothing. Both exit `1` with the file and line when they cannot proceed, and refuse a shared libSQL or Turso selection. See [Exporting and importing workflow runs](/storage#exporting-and-importing-workflow-runs).
 
 `atomic intercom restart` asks the broker to shut down (an older broker gets SIGTERM), waits for it to exit, and then for a reconnecting session to start a new broker, whose state it prints. Without connected sessions, the next session that uses Intercom starts one.
 

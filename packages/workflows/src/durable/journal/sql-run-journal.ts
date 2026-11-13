@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
 	openNodeSqliteDatabase,
 	renderStorageIdentifiers,
+	runJournalTableDefinitions,
 	type SqliteDatabase,
 	type SqliteExecutor,
 	type SqliteRow,
@@ -210,22 +211,7 @@ export class SqlRunJournal implements RunJournal {
 			if (versions.length === 0) {
 				await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
 			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
-			await tx.exec(`
-				CREATE TABLE IF NOT EXISTS ${t.runs}(
-					${c.runId} TEXT PRIMARY KEY, ${c.name} TEXT NOT NULL, ${c.cwd} TEXT NOT NULL,
-					${c.createdAt} INTEGER NOT NULL, ${c.status} TEXT NOT NULL, ${c.headerJson} TEXT NOT NULL
-				);
-				CREATE TABLE IF NOT EXISTS ${t.events}(
-					${c.runId} TEXT NOT NULL,
-					${c.seq} INTEGER NOT NULL, ${c.epoch} INTEGER NOT NULL, ${c.key} TEXT,
-					${c.type} TEXT NOT NULL, ${c.payload} TEXT NOT NULL, ${c.at} INTEGER NOT NULL,
-					PRIMARY KEY(${c.runId}, ${c.seq}), UNIQUE(${c.runId}, ${c.key})
-				);
-				CREATE TABLE IF NOT EXISTS ${t.leases}(
-					${c.runId} TEXT PRIMARY KEY,
-					${c.holderId} TEXT, ${c.epoch} INTEGER NOT NULL, ${c.renewedAt} INTEGER NOT NULL
-				);
-			`);
+			await tx.exec(runJournalTableDefinitions(prefix));
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
 			await SqlSnapshotBlobStore.initialize(tx, prefix);
 		}, JOURNAL_WRITE_TRANSACTION);

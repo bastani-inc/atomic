@@ -11,6 +11,7 @@ import {
 	type JournalAdoptErrorCode,
 	JournalCatalogError,
 	JournalShardUnavailableError,
+	StorageSchemaVersionError,
 } from "./errors.js";
 import { isSameFile } from "./file-identity.js";
 import {
@@ -35,6 +36,53 @@ export function defaultJournalStoreDirectory(agentDir: string): string {
  */
 export function legacyDefaultJournalPath(directory: string): string {
 	return join(dirname(resolve(directory)), "journal.sqlite");
+}
+
+/** The tables of a SQL run journal, before the storage prefix and the `wf_` domain prefix. */
+export const RUN_JOURNAL_TABLE_NAMES = { meta: "meta", runs: "runs", events: "events", leases: "leases" } as const;
+
+/** A SQL run journal's table names under `prefix`. */
+export function runJournalTables(prefix = ""): Readonly<Record<keyof typeof RUN_JOURNAL_TABLE_NAMES, string>> {
+	return renderStorageIdentifiers("journal", RUN_JOURNAL_TABLE_NAMES, prefix);
+}
+
+/** `CREATE TABLE IF NOT EXISTS` statements for a SQL run journal's runs, events and leases tables. */
+export function runJournalTableDefinitions(prefix = ""): string {
+	const t = runJournalTables(prefix);
+	return `
+		CREATE TABLE IF NOT EXISTS ${t.runs}(
+			run_id TEXT PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL,
+			created_at INTEGER NOT NULL, status TEXT NOT NULL, header_json TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS ${t.events}(
+			run_id TEXT NOT NULL,
+			seq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,
+			type TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,
+			PRIMARY KEY(run_id, seq), UNIQUE(run_id, key)
+		);
+		CREATE TABLE IF NOT EXISTS ${t.leases}(
+			run_id TEXT PRIMARY KEY,
+			holder_id TEXT, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL
+		);
+	`;
+}
+
+/**
+ * Creates a SQL run journal's metadata and tables inside the caller's transaction when they are missing, and checks
+ * that an existing journal has the supported schema version. Throws `StorageSchemaVersionError` otherwise.
+ */
+export async function ensureRunJournalSchema(tx: SqliteExecutor, prefix = ""): Promise<void> {
+	const t = runJournalTables(prefix);
+	await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(schema_version INTEGER NOT NULL)`);
+	const versions = await tx.all<SqliteRow & { schema_version: SqliteValue }>(`SELECT schema_version FROM ${t.meta}`);
+	if (versions.length === 0) await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
+	else if (versions.length > 1 || versions[0]!.schema_version !== RUN_JOURNAL_SCHEMA_VERSION)
+		throw new StorageSchemaVersionError(
+			"journal",
+			versions.length > 1 ? `${versions.length} rows` : versions[0]!.schema_version,
+			RUN_JOURNAL_SCHEMA_VERSION,
+		);
+	await tx.exec(runJournalTableDefinitions(prefix));
 }
 
 /** Most journals one adoption follows through the run references it finds. */
@@ -397,7 +445,8 @@ export interface JournalConsolidationReport {
 	readonly runs: readonly JournalConsolidationRun[];
 }
 
-type RunRow = SqliteRow & {
+/** A row of a SQL run journal's runs table. */
+export type JournalRunTableRow = SqliteRow & {
 	run_id: string;
 	name: string;
 	cwd: string;
@@ -405,7 +454,8 @@ type RunRow = SqliteRow & {
 	status: string;
 	header_json: string;
 };
-type EventRow = SqliteRow & {
+/** A row of a SQL run journal's events table: one journal entry, its payload as JSON text. */
+export type JournalEventTableRow = SqliteRow & {
 	run_id: string;
 	seq: number;
 	epoch: number;
@@ -414,7 +464,16 @@ type EventRow = SqliteRow & {
 	payload: string;
 	at: number;
 };
-type LeaseRow = SqliteRow & { run_id: string; holder_id: string | null; epoch: number; renewed_at: number };
+type RunRow = JournalRunTableRow;
+type EventRow = JournalEventTableRow;
+/** A row of a SQL run journal's leases table. */
+export type JournalLeaseTableRow = SqliteRow & {
+	run_id: string;
+	holder_id: string | null;
+	epoch: number;
+	renewed_at: number;
+};
+type LeaseRow = JournalLeaseTableRow;
 
 interface FencedRun {
 	readonly run: RunRow;
@@ -574,10 +633,12 @@ async function unfence(database: SqliteDatabase, runId: string, holder: string):
 	);
 }
 
-interface RunSnapshot {
-	readonly run: RunRow;
-	readonly events: readonly EventRow[];
+/** A run's row and its events in sequence order, as one journal file holds them. */
+export interface JournalRunSnapshot {
+	readonly run: JournalRunTableRow;
+	readonly events: readonly JournalEventTableRow[];
 }
+type RunSnapshot = JournalRunSnapshot;
 
 function sameEvent(left: EventRow, right: EventRow): boolean {
 	return (
