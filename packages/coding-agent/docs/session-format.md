@@ -316,6 +316,12 @@ Atomic records one of its own: when the oversized result of an agent released wh
 
 `hash` is the SHA-256 of the stored bytes and `bytes` their size. In exported files `data` also has `base64`, the bytes themselves, each blob once; importing or forking the file checks every one against its `hash`, stores it with the new session and drops the field.
 
+`/tree` without a summary records its move with a `custom` entry of `customType: "atomic.leaf"` and no `data`. Its parent is the selected entry, or it has `parentId: null` when the move reset the leaf to an empty conversation. When it is the session's last entry, the session reopens at its parent instead of at the entry itself. It contributes nothing to context and `getTree()` and `getChildren()` omit it. A reader that takes a session's last entry as its leaf follows the selected branch either way; older Atomic versions load it as an ordinary custom entry.
+
+```json
+{"type":"custom","id":"j0k1l2m3","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:22:00.000Z","customType":"atomic.leaf"}
+```
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.
@@ -511,8 +517,9 @@ for (const stage of stages.filter((session) => session.internal)) {
 - `getTree()` - Get full tree structure
 - `getChildren(parentId)` - Get direct children
 - `getLabel(id)` - Get label for entry
-- `branch(entryId)` - Move leaf to earlier entry
-- `resetLeaf()` - Reset leaf to null (before any entries)
+- `branch(entryId)` - Move leaf to earlier entry, in memory only; the session reopens at its last entry
+- `resetLeaf()` - Reset leaf to null (before any entries), in memory only
+- `recordBranch(entryId | null)` - Move the leaf like `branch()` (or `resetLeaf()` for `null`) and save the move, so the session reopens there
 - `branchWithSummary(entryId, summary, details?, fromHook?)` - Branch with context summary
 
 ### Instance Methods - Context & Info

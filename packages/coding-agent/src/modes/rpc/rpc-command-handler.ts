@@ -52,6 +52,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "abort":
 		case "abort_bash":
 		case "abort_compaction":
+		case "abort_branch_summary":
 		case "abort_retry":
 		case "cancel_login_provider":
 		case "clear_queue":
@@ -397,6 +398,9 @@ export function createRpcCommandHandler({
 			case "abort_compaction":
 				session.abortCompaction();
 				return createRpcSuccessResponse(id, "abort_compaction");
+			case "abort_branch_summary":
+				session.abortBranchSummary();
+				return createRpcSuccessResponse(id, "abort_branch_summary");
 			case "set_extension_ui_capabilities":
 				if (extensionUICapabilities && command.questionnaire !== undefined)
 					extensionUICapabilities.questionnaire = command.questionnaire === true;
@@ -588,7 +592,9 @@ export function createRpcCommandHandler({
 				const result = await session.navigateTree(command.targetId, command.options);
 				return createRpcSuccessResponse(id, "navigate_tree", {
 					cancelled: result.cancelled,
+					aborted: result.aborted,
 					editorText: result.editorText,
+					summaryEntry: result.summaryEntry,
 				});
 			}
 

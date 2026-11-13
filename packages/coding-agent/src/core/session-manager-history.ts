@@ -318,6 +318,17 @@ export function buildSessionContext(
 	return { messages, thinkingLevel, model };
 }
 
+/**
+ * `customType` of the entry that records a leaf move made without a new entry, such as `/tree` without a summary. It is
+ * a child of the new leaf and never a leaf itself, so it adds nothing to the context and a reader that takes the last
+ * entry as the leaf still follows the selected branch (#3325).
+ */
+export const LEAF_MOVE_ENTRY_TYPE = "atomic.leaf";
+
+export function isLeafMoveEntry(entry: SessionEntry): boolean {
+	return entry.type === "custom" && entry.customType === LEAF_MOVE_ENTRY_TYPE;
+}
+
 export interface SessionIndex {
 	byId: Map<string, SessionEntry>;
 	labelsById: Map<string, string>;
@@ -325,7 +336,7 @@ export interface SessionIndex {
 	leafId: string | null;
 }
 
-export function buildSessionIndex(fileEntries: FileEntry[]): SessionIndex {
+export function buildSessionIndex(fileEntries: readonly FileEntry[]): SessionIndex {
 	const byId = new Map<string, SessionEntry>();
 	const labelsById = new Map<string, string>();
 	const labelTimestampsById = new Map<string, string>();
@@ -346,7 +357,17 @@ export function buildSessionIndex(fileEntries: FileEntry[]): SessionIndex {
 		}
 	}
 
+	const last = leafId === null ? undefined : byId.get(leafId);
+	if (last && isLeafMoveEntry(last)) leafId = last.parentId;
 	return { byId, labelsById, labelTimestampsById, leafId };
+}
+
+/**
+ * The entry a session continues from when it is opened: its last entry, or the entry a recorded leaf move selected
+ * (#3325). `null` when the session continues from before its first entry.
+ */
+export function getSessionLeafId(entries: readonly SessionEntry[]): string | null {
+	return buildSessionIndex(entries).leafId;
 }
 
 export function getBranchPath(
@@ -371,7 +392,8 @@ export function buildSessionTree(
 	const nodeMap = new Map<string, SessionTreeNode>();
 	const roots: SessionTreeNode[] = [];
 
-	// Create nodes with resolved labels
+	// Create nodes with resolved labels. A recorded leaf move is bookkeeping, not a node of the tree.
+	entries = entries.filter((entry) => !isLeafMoveEntry(entry));
 	for (const entry of entries) {
 		const label = labelsById.get(entry.id);
 		const labelTimestamp = labelTimestampsById.get(entry.id);
