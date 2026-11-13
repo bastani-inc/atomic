@@ -4,6 +4,16 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.85] - 2026-11-13
+
+Disposed sessions leave the agent directory alone.
+
+- **No writes after `dispose()`.** A disposed session cancels or stops the Intercom broker it started, so hosts that delete a temporary agent directory no longer see it reappear or fail with `ENOTEMPTY` ([#4727](https://github.com/bastani-inc/atomic/issues/4727), [#4737](https://github.com/bastani-inc/atomic/pull/4737)).
+
+### Fixed
+
+- Fixed an Intercom broker started by a session that was then disposed writing into the agent directory after `dispose()` resolved: disposing a session now cancels a broker start it has not launched and waits for one it has (stopping it if it does not start in time), and a broker creates its `delivered-messages` files only when the first session registers, so one that exits without serving a session leaves none behind. Hosts that remove a temporary `ATOMIC_CODING_AGENT_DIR` after disposal no longer see it reappear or fail with `ENOTEMPTY` ([#4727](https://github.com/bastani-inc/atomic/issues/4727))
+
 ## [0.9.85-alpha.1] - 2026-11-13
 
 ### Fixed

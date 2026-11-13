@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.85] - 2026-11-13
+
+Run forks follow `/tree` moves in stage chats.
+
+- **Fork points match the selected branch.** `listForkPoints()` and run forks use the entry a stage continues from after `/tree` moves its chat, so a forked stage reopens on the same branch ([#3325](https://github.com/bastani-inc/atomic/issues/3325), [#4736](https://github.com/bastani-inc/atomic/pull/4736)).
+
+### Fixed
+
+- Fixed `listForkPoints()` naming a stage session's last entry as its `entryId` after `/tree` moved the stage chat back to an earlier entry without a summary. It now names the entry the stage continues from, and a run fork's copy of that stage session reopens on the same branch ([#3325](https://github.com/bastani-inc/atomic/issues/3325))
+
 ## [0.9.85-alpha.1] - 2026-11-13
 
 ### Fixed
