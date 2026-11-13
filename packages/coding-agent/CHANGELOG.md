@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.83-alpha.1] - 2026-11-13
+
+Workflow runs that travel between machines.
+
+- **Carry workflow runs as plain files.** `atomic storage export <dir>` writes runs from the local journal to versioned JSONL files, and `atomic storage import <dir>` loads them back, so hosts that persist only files keep their runs and an interrupted run resumes on the new machine ([#4716](https://github.com/bastani-inc/atomic/issues/4716), [#4717](https://github.com/bastani-inc/atomic/pull/4717)).
+
 ### Added
 
 - Added `atomic storage export <dir>` and `atomic storage import <dir>`, which move workflow runs between the local workflow journal and versioned JSONL files (one `<runId>.jsonl` per run), so hosts that persist only files can keep runs between machines. Export selects runs with `--run`, `--unfinished` and `--limit`, reads a consistent snapshot, writes each file atomically, and gives byte-identical output for an unchanged run. Import checks every file before writing, is idempotent, accepts files whose string values were redacted, and leaves imported runs unowned so an interrupted run resumes on the new machine ([#4716](https://github.com/bastani-inc/atomic/issues/4716))
