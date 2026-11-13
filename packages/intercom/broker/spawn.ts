@@ -504,13 +504,16 @@ async function spawnBrokerHoldingLock(
       }, (error) => {
         cleanup();
         const starting = launch.kind === "direct" && child.exitCode === null && child.signalCode === null;
-        if (starting && signal?.aborted) {
-          // #4727: the session that launched this broker is gone and the broker did not start in time; it is stopped
-          // before this call returns, so it never writes into an agent directory its host may already be removing.
-          child.once("exit", () => reject(toError(error)));
-          // The broker was unreferenced to outlive this process; its exit is awaited now, so it must keep the loop alive.
-          child.ref();
-          child.kill("SIGKILL");
+        // #4727: the session that launched this broker is gone and the broker did not start in time; it is stopped
+        // before this call returns, so it never writes into an agent directory its host may already be removing. Behind
+        // the Windows launcher the broker is found by the pid it announced; one that never announced cannot be found.
+        let abandonedPid: number | undefined;
+        if (signal?.aborted) {
+          if (launch.kind === "direct") abandonedPid = starting ? child.pid : undefined;
+          else if (announcement !== undefined) abandonedPid = readBrokerStartAnnouncement(announcement);
+        }
+        if (abandonedPid !== undefined) {
+          void stopStartingBroker(abandonedPid).finally(() => reject(toError(error)));
           return;
         }
         // A broker still starting keeps the lock, so later spawners wait for it instead of starting another.
@@ -525,6 +528,20 @@ async function spawnBrokerHoldingLock(
   } finally {
     if (!keepLock) releaseSpawnLock(lockOwner);
   }
+}
+
+/** Bound on waiting for a killed, still-starting broker to be gone; a kill that has not taken by then never will. */
+const STARTING_BROKER_KILL_WAIT_MS = 5_000;
+
+/** Kill a broker that has not started listening, and wait until its process is gone. */
+async function stopStartingBroker(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + STARTING_BROKER_KILL_WAIT_MS;
+  while (isProcessAlive(pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
 }
 
 /** How often a session waiting to upgrade the broker checks whether the spawn lock is free. */
@@ -559,7 +576,8 @@ export type BrokerUpgradeOutcome =
  * out, the next spawner of either version takes it, so an older session can start an older broker, which the next
  * session of this version replaces again. A failure to stop the older broker, or to start the successor once it
  * stopped, is an {@link IntercomBrokerUpgradeError} whose cause is that step's failure. `signal` cancels the upgrade
- * before it starts and the successor's start as {@link spawnBrokerIfNeeded} does (#4727).
+ * until it asks the running broker to shut down, and a start where none is running as {@link spawnBrokerIfNeeded} does
+ * (#4727).
  */
 export async function upgradeBroker(
   brokerCommand: string,
@@ -576,14 +594,14 @@ export async function upgradeBroker(
   if (acquired === undefined) return "busy";
   let lockOwner = acquired;
   let lockPassedOn = false;
-  const spawnHoldingLock = (): Promise<void> => {
+  const spawnHoldingLock = (startSignal: AbortSignal | undefined): Promise<void> => {
     lockPassedOn = true;
-    return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false, signal);
+    return spawnBrokerHoldingLock(lockOwner, brokerCommand, brokerArgs, readyTimeoutMs, extensionDir, false, startSignal);
   };
   try {
     const answer = await controlRequest(getBrokerSocketPath(), "broker_status", "broker_status", BROKER_CONTROL_TIMEOUT_MS);
     if (!answer.connected) {
-      await spawnHoldingLock();
+      await spawnHoldingLock(signal);
       return "started";
     }
     const reply = answer.reply;
@@ -597,6 +615,9 @@ export async function upgradeBroker(
     if (report.storage?.digest !== successorStorageDigest()) return "storage-differs";
     const failed = (phase: "stop" | "start", cause?: Error): IntercomBrokerUpgradeError =>
       new IntercomBrokerUpgradeError({ phase, previousPid: report.pid, previousProtocolMax: running.max }, { cause });
+    // #4727: a cancelled upgrade leaves the running broker alone; one that has asked it to shut down starts its successor
+    // whatever happens, so the broker's other sessions have one to reconnect to.
+    signal?.throwIfAborted();
     if ((await requestBrokerShutdown(getBrokerSocketPath())) === "unanswered") throw failed("stop");
     try {
       await waitForBrokerExit(report.pid, stopTimeoutMs, () => {
@@ -610,7 +631,7 @@ export async function upgradeBroker(
       throw error;
     }
     try {
-      await spawnHoldingLock();
+      await spawnHoldingLock(undefined);
     } catch (error) {
       throw failed("start", toError(error));
     }
