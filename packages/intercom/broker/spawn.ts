@@ -536,15 +536,29 @@ async function spawnBrokerHoldingLock(
 /** Bound on waiting for a killed, still-starting broker to be gone; a kill that has not taken by then never will. */
 const STARTING_BROKER_KILL_WAIT_MS = 5_000;
 
-/** Kill a broker that has not started listening, and wait until its process is gone. */
+/**
+ * Kill a broker that has not started listening, with every process it started, and wait until they are gone. A custom
+ * broker command can run the broker as its own child rather than replacing itself with it. Elsewhere than Windows the
+ * broker was spawned detached, so it leads a process group of its own; on Windows `pid` is the broker's announced pid,
+ * and `taskkill /T` ends its process tree.
+ */
 async function stopStartingBroker(pid: number): Promise<void> {
+  const deadline = Date.now() + STARTING_BROKER_KILL_WAIT_MS;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      const taskkill = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      taskkill.once("error", () => resolve());
+      taskkill.once("exit", () => resolve());
+    });
+    while (isProcessAlive(pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
+    return;
+  }
   try {
-    process.kill(pid, "SIGKILL");
+    process.kill(-pid, "SIGKILL");
   } catch {
     return;
   }
-  const deadline = Date.now() + STARTING_BROKER_KILL_WAIT_MS;
-  while (isProcessAlive(pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
+  while (isProcessAlive(-pid) && Date.now() < deadline) await sleep(BROKER_POLL_MAX_INTERVAL_MS);
 }
 
 /** How often a session waiting to upgrade the broker checks whether the spawn lock is free. */

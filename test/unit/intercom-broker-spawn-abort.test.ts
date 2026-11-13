@@ -179,3 +179,25 @@ test("an upgrade waiting for another spawner's lock stops when aborted (#4727)",
 	await assert.rejects(pending, reason);
 	assert.ok(performance.now() - started < ABORTED_WAIT_BOUND_MS, "the aborted upgrade kept waiting for the lock");
 });
+
+directSpawnTest("a disposed start stops the broker a wrapper command runs as its own child (#4727)", async () => {
+	const markerPath = join(agentDir, "..", "wrapped-broker.pid");
+	// The wrapper runs the "broker" as a child, without exec, as a shell or launcher script may.
+	const brokerScript = `require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, String(process.pid)); setInterval(() => {}, 1000);`;
+	const wrapper = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(brokerScript)}], { stdio: "ignore" }); setInterval(() => {}, 1000);`;
+	const controller = new AbortController();
+	const start = spawnBrokerIfNeeded(
+		process.execPath,
+		["-e", wrapper],
+		NEVER_READY_TIMEOUT_MS,
+		undefined,
+		controller.signal,
+	);
+	while (!existsSync(markerPath)) await sleep(10);
+	const brokerPid = Number(readFileSync(markerPath, "utf8"));
+	cleanups.push(() => killIfAlive(brokerPid));
+	controller.abort(new Error("session disposed"));
+
+	await assert.rejects(start);
+	assert.equal(await waitUntilGone(brokerPid), true, "the wrapped broker is still running after the start settled");
+});
