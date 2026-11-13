@@ -27,7 +27,7 @@ import {
 	type WorktreeSnapshotEntry,
 } from "./session-manager-types.ts";
 import { generateId } from "./session-manager-validation.ts";
-import type { WorktreeRootMapping, WorktreeSnapshot } from "./worktree-snapshot/types.ts";
+import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
 
 function entryBase(
 	byId: { has(id: string): boolean },
@@ -176,6 +176,7 @@ export function createWorktreeSnapshotEntry(
 	restoreWarnings: readonly WorktreeRestoreHostWarning[],
 	byId: { has(id: string): boolean },
 	parentId: string | null,
+	unrestored?: WorktreeUnrestored,
 ): WorktreeSnapshotEntry {
 	return {
 		type: "worktree_snapshot",
@@ -185,6 +186,7 @@ export function createWorktreeSnapshotEntry(
 		...(snapshot === undefined ? {} : { snapshot }),
 		...(restore === undefined ? {} : { restore }),
 		...(restoreWarnings.length === 0 ? {} : { restoreWarnings: [...restoreWarnings] }),
+		...(unrestored === undefined ? {} : { unrestored }),
 	};
 }
 

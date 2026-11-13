@@ -792,13 +792,18 @@ export {
 	serializeSessionStartError,
 } from "./core/session-start-errors.ts";
 export {
+	formatDegradedRestoreNotice,
+	formatUnrestoredNotice,
 	formatWorktreeRestoreNotice,
 	formatWorktreeRestoreWarning,
+	isRecoverableRestoreFailure,
+	type MissingSnapshotRecord,
 	mapRestoredPath,
 	openSessionInWorktree,
 	type ResumeSessionWorktreeOptions,
 	resumeSessionWorktree,
 	type SessionWorktreeResume,
+	type UnrestoredWorktree,
 } from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {

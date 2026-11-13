@@ -125,13 +125,15 @@ test("the snapshot restore remembers a bounded number of bindings (#4416)", asyn
 });
 
 test("a restore that cannot run because the host's git does not run is refused typed, with its cause (#4416)", async () => {
+	// A binding whose remote holds credentials is refused as `invalid-snapshot` before any Git runs (#4733).
+	const safe = { ...binding, remotes: ["https://example.invalid/r.git"] };
 	const port = snapshotRestore({
 		recorded: async () => [],
 		blobs: undefined,
 		storeDir: sandbox.path("host"),
 		git: { path: sandbox.path("no-such-git"), env: {} },
 	});
-	const refused = (await port(binding, { signal }).then(
+	const refused = (await port(safe, { signal }).then(
 		() => undefined,
 		(error: unknown) => error,
 	)) as WorkspaceRestoreUnavailableError;
@@ -140,11 +142,11 @@ test("a restore that cannot run because the host's git does not run is refused t
 		[refused.code, refused.reason, refused.retryable, refused.childRunId, refused.claimWindowMs],
 		["workspace-restore-unavailable", "no-restore-port", false, undefined, undefined],
 	);
-	assert.deepEqual(refused.binding, { ...binding, remotes: ["https://example.invalid/r.git"] }, "credentials removed");
+	assert.deepEqual(refused.binding, safe);
 	assert.ok(isGitUnavailableError(refused.cause), String(refused.cause));
 	assert.equal(
 		refused.message,
-		`Workspace restore unavailable: tree ${binding.tree} at ${binding.head} of https://example.invalid/r.git (workspace-restore-unavailable): this host cannot run a restore. ${refused.hint}`,
+		`Workspace restore unavailable: tree ${safe.tree} at ${safe.head} of https://example.invalid/r.git (workspace-restore-unavailable): this host cannot run a restore. ${refused.hint}`,
 	);
 	assert.match(refused.hint ?? "", /git: \{ path \}/);
 	const crossed = rehydrateWorkerPlacementError(JSON.parse(JSON.stringify(serializeWorkerPlacementError(refused))));

@@ -43,7 +43,6 @@ import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapsho
 import {
 	isGitUnavailableError,
 	isWorkspaceConfigError,
-	isWorkspaceDriftError,
 	isWorkspaceRestoreError,
 	isWorkspaceSnapshotError,
 	MemorySnapshotBlobStore,
@@ -461,7 +460,7 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		);
 	});
 
-	test("a snapshot that cannot be restored fails with the drift it would have repaired, and its cause", async () => {
+	test("a snapshot nothing of which can be restored is recorded as left out, and the session continues (#4733)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const store = await sqlStore();
 		const capture = (await captureWorktreeSnapshot(clone, { blobs: store.snapshotBlobs })) as {
@@ -470,27 +469,34 @@ describe("choosing the checkout a resumed session belongs to", () => {
 		const unreachable = { ...capture.snapshot, remotes: [sandbox.path("nowhere.git")], head: "5".repeat(40) };
 		const detached = await SessionManager.create(store, sandbox.path("gone"));
 		await detached.appendWorktreeSnapshot(sandbox.path("gone"), unreachable.id, unreachable);
-		await assert.rejects(
-			resumeSessionWorktree(detached, { settings, storeDir: sandbox.path("host") }),
-			(error: unknown) => {
-				assert.ok(isWorkspaceDriftError(error));
-				assert.equal(error.root, sandbox.path("gone"));
-				assert.equal(error.expectedHead, "5".repeat(40));
-				assert.equal(error.expectedTree, unreachable.tree);
-				assert.equal(error.snapshotId, unreachable.id);
-				assert.equal(error.actualHead, null);
-				assert.equal(error.actualTree, null);
-				assert.ok(isWorkspaceRestoreError(error.cause));
-				assert.equal(error.reason, "restore-failed");
-				assert.equal(error.restoreCode, "commits-unavailable");
-				assert.equal(
-					error.message,
-					`Worktree drifted from its recorded snapshot: ${sandbox.path("gone")} has tree none at no HEAD, expected ${unreachable.tree} at ${"5".repeat(40)}, and the automatic restore failed: Cannot restore snapshot ${unreachable.id}: commit ${"5".repeat(40)} could not be fetched from ${sandbox.path("nowhere.git")} (tree-drift). Check access with \`git ls-remote ${sandbox.path("nowhere.git")}\` and that ${"5".repeat(40)} is pushed, then retry.`,
-				);
-				return true;
+		const result = await resumeSessionWorktree(detached, {
+			settings,
+			storeDir: sandbox.path("host"),
+			fallbackCwd: sandbox.root,
+		});
+		assert.equal(result.status, "verified");
+		if (result.status !== "verified") return;
+		assert.equal(result.cwd, sandbox.root);
+		assert.deepEqual(detached.getWorktreeRootMappings(), []);
+		const [left] = result.unrestored;
+		assert.equal(left?.root, sandbox.path("gone"));
+		assert.ok(isWorkspaceRestoreError(left?.reason));
+		assert.equal(left.reason.code, "commits-unavailable");
+		assert.deepEqual(
+			{ ...left.record, at: "" },
+			{
+				snapshotId: unreachable.id,
+				continuedIn: sandbox.root,
+				place: "launch",
+				cause: "commits-unavailable",
+				causeReason: "not-fetched",
+				detail: `its commit ${"5".repeat(12)} and the commits around it are not on its recorded remotes`,
+				hint: left.reason.hint,
+				at: "",
 			},
 		);
-		assert.deepEqual(detached.getWorktreeRootMappings(), []);
+		const entry = detached.getBranch().at(-1);
+		assert.equal(entry?.type === "worktree_snapshot" && entry.unrestored?.at, left.record.at);
 	});
 });
 

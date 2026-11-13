@@ -110,12 +110,15 @@ export const MULTINODE_RESUME_SCENARIOS: readonly AcceptanceScenario[] = [
 	{
 		id: 6,
 		title: "a git-less node provisions Git and takes part",
-		invariants: ["Git is provisioned automatically", "an impossible provision is a typed GitUnavailableError"],
+		invariants: [
+			"Git is provisioned automatically",
+			"an impossible provision opens the session without its checkout, naming the GitUnavailableError's code (#4733)",
+		],
 		chaos: ["provisioning download fails"],
 		prerequisites: [{ module: ATOMIC, name: "resolveGit", dependency: "#4322" }],
 		implementedBy: {
 			file: "test/integration/multinode-resume.test.ts",
-			test: "scenario 6: a git-less node provisions Git to restore and continue a session; a failed download is a typed precondition error that writes nothing",
+			test: "scenario 6: a git-less node provisions Git to restore and continue a session; a failed download opens it without its checkout and writes no worktree (#4733)",
 		},
 	},
 	{

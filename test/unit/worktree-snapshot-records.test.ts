@@ -224,21 +224,21 @@ describe("what a restore fetch may run", () => {
 	test.each([
 		["a remote helper", (marker: string) => `ext::sh -c touch% ${marker}`],
 		["a custom transport", () => "atomic-test-transport::anything"],
-	])("%s is refused by the transport allowlist: the commit is not fetched and nothing runs", async (_name, remote) => {
-		const { clone } = await sandbox.remoteWithClone();
-		const blobs = new MemorySnapshotBlobStore();
-		const recorded = await capture(clone, blobs);
-		const marker = sandbox.path("pwned");
-		const snapshot = { ...recorded, head: HEX40, remotes: [remote(marker)] };
-		await assert.rejects(restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") }), (error: unknown) => {
-			assert.ok(isWorkspaceRestoreError(error));
-			assert.equal(error.code, "commits-unavailable");
-			assert.equal(error.reason, "not-fetched");
-			assert.match(String((error.cause as { detail?: string }).detail), /transport '.+' not allowed/);
-			return true;
-		});
-		assert.equal(existsSync(marker), false);
-	});
+	])(
+		"%s is refused as an unsafe remote before any Git runs, so nothing is fetched and nothing runs (#4733)",
+		async (_name, remote) => {
+			const { clone } = await sandbox.remoteWithClone();
+			const blobs = new MemorySnapshotBlobStore();
+			const recorded = await capture(clone, blobs);
+			const marker = sandbox.path("pwned");
+			const snapshot = { ...recorded, head: HEX40, remotes: [remote(marker)] };
+			await assert.rejects(restoreWorktree(snapshot, { blobs, storeDir: sandbox.path("host") }), (error: unknown) =>
+				assertInvalid(error, "remotes[0]", "unsafe-remote", recorded.id),
+			);
+			assert.equal(existsSync(marker), false);
+			assert.equal(existsSync(sandbox.path("host", "repositories")), false);
+		},
+	);
 
 	test("a bundle whose header lists a prerequisite that is not an object id is refused before fetching it", async () => {
 		const { clone } = await sandbox.remoteWithClone();

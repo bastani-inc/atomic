@@ -3,6 +3,7 @@ import {
 	compareWorktreeSnapshot,
 	currentWorktreeSnapshots,
 	describeSnapshotExport,
+	describeWorktreeRestoreStatus,
 	describeWorktreeSnapshot,
 	worktreeRestoreNotices,
 } from "../../core/session-worktree-snapshots.ts";
@@ -415,6 +416,8 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 	const lines = [theme.bold("Worktree Snapshots"), ""];
 	for (const [root, snapshot] of latest) {
 		lines.push(...describeWorktreeSnapshot(root, snapshot));
+		const restoreStatus = describeWorktreeRestoreStatus(this.sessionManager, root);
+		if (restoreStatus) lines.push(theme.fg("warning", `  ${restoreStatus}`));
 		const comparison = await compareWorktreeSnapshot(snapshot, root, settings);
 		if (comparison.status === "match")
 			lines.push(

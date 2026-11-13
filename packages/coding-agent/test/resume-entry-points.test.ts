@@ -7,6 +7,7 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -45,10 +46,10 @@ import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.j
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import {
 	type GitUnavailableError,
-	isGitUnavailableError,
 	isResumeCatalogTimeoutError,
 	isResumeCatalogUnavailableError,
 	isResumePreconditionError,
+	isWorkspaceRestoreError,
 	type ResumePreflightIo,
 	resolveWorkspace,
 	setWorktreeSnapshotGit,
@@ -108,8 +109,13 @@ async function storeFor(selection: StorageSelection): Promise<SessionStore> {
 }
 
 /** A session recorded "on node A" in `selection` whose last turn snapshotted its checkout. */
-async function recordSessionWithSnapshot(selection: StorageSelection, files: Record<string, string> = {}) {
-	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n", ...files });
+async function recordSessionWithSnapshot(
+	selection: StorageSelection,
+	files: Record<string, string> = {},
+	remotes?: readonly string[],
+	name = "repo",
+) {
+	const { clone } = await sandbox.remoteWithClone(name, { "README.md": "hello\n", ...files });
 	sandbox.write(join(clone, "README.md"), "edited on node A\n");
 	const store = await storeFor(selection);
 	const manager = await SessionManager.create(store, clone);
@@ -119,8 +125,32 @@ async function recordSessionWithSnapshot(selection: StorageSelection, files: Rec
 		blobs: store.snapshotBlobs,
 	});
 	if (capture.status !== "captured") throw new Error(capture.status);
-	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
+	const snapshot = remotes === undefined ? capture.snapshot : { ...capture.snapshot, remotes: [...remotes] };
+	await manager.appendWorktreeSnapshot(clone, snapshot.id, snapshot);
 	return { clone, sessionId: manager.getSessionId() };
+}
+
+/**
+ * A session recorded elsewhere whose snapshot names a remote with credentials, as no capture writes: a record that
+ * fails the security checks, so resuming it is refused (#4733).
+ */
+async function unsafeSessionRecordedElsewhere(selection: StorageSelection) {
+	const recorded = await recordSessionWithSnapshot(selection, {}, ["https://user:token@example.invalid/repo.git"]);
+	renameSync(recorded.clone, sandbox.path("node-a-offline"));
+	return recorded;
+}
+
+/** The refusal of a resume whose snapshot record fails the security checks. */
+function isRefusedRecord(error: unknown): boolean {
+	return isWorkspaceRestoreError(error) && error.code === "invalid-snapshot" && error.reason === "unsafe-remote";
+}
+
+/** The last record of a checkout the resume of `manager`'s session continued without (#4733). */
+function lastUnrestored(manager: SessionManager) {
+	const entry = manager
+		.getBranch()
+		.findLast((candidate) => candidate.type === "worktree_snapshot" && candidate.unrestored !== undefined);
+	return entry?.type === "worktree_snapshot" ? entry.unrestored : undefined;
 }
 
 /** Node B's own clone of the session's repository at the session's recorded path, which never held node A's snapshot. */
@@ -337,9 +367,8 @@ describe("resume progress (#4660)", () => {
 
 	test("a resume that fails after loading still stops its progress (#4660)", async () => {
 		const selection = sqliteSelection("shared");
-		const { sessionId } = await sessionRecordedElsewhere(selection);
+		const { sessionId } = await unsafeSessionRecordedElsewhere(selection);
 		const { events, progress } = recordingProgress();
-		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 		await assert.rejects(
 			openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
 				agentDir: sandbox.path("agent"),
@@ -347,6 +376,7 @@ describe("resume progress (#4660)", () => {
 				trusted: () => true,
 				progress,
 			}),
+			isRefusedRecord,
 		);
 		assert.equal(events.at(-1), "done");
 		assert.equal(events.filter((event) => event === "done").length, 1);
@@ -616,8 +646,15 @@ describe("openCliSession edge cases (#4329)", () => {
 		const checkout = sandbox.path("node-b-checkout");
 		renameSync(sandbox.path("node-a-offline"), checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
-		const resume = (cwd: string) =>
-			openCliSession(parseArgs(["--session", sessionId]), cwd, settings(), {
+		const unsafe = await recordSessionWithSnapshot(
+			selection,
+			{},
+			["https://user:token@example.invalid/repo.git"],
+			"unsafe",
+		);
+		rmSync(unsafe.clone, { recursive: true, force: true });
+		const resume = (id: string, cwd: string) =>
+			openCliSession(parseArgs(["--session", id]), cwd, settings(), {
 				agentDir: sandbox.path("agent"),
 				sessionStorage: selection,
 				trusted: () => false,
@@ -626,42 +663,35 @@ describe("openCliSession edge cases (#4329)", () => {
 		const close = vi.spyOn(SqlSessionStore.prototype, "close");
 		cleanups.push(() => close.mockRestore());
 
-		const withoutGit = () => setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-
-		const git = withoutGit();
-		await assert.rejects(resume(sandbox.root), (error: unknown) => isResumePreconditionError(error));
+		await assert.rejects(resume(unsafe.sessionId, sandbox.root), isRefusedRecord);
 		assert.equal(close.mock.calls.length, 1);
-		setWorktreeSnapshotGit(git);
-		assert.equal(await resume(checkout), "cancelled");
+		assert.equal(await resume(sessionId, checkout), "cancelled");
 		assert.equal(close.mock.calls.length, 2);
 
 		const diskGone = new Error("disk gone");
 		close.mockRejectedValue(diskGone);
-		withoutGit();
-		await assert.rejects(resume(sandbox.root), (error: unknown) => {
-			assert.ok(isResumePreconditionError(error));
+		await assert.rejects(resume(unsafe.sessionId, sandbox.root), (error: unknown) => {
+			assert.ok(isRefusedRecord(error));
 			assert.equal((error as Error & { cleanupCause?: unknown }).cleanupCause, diskGone);
-			assert.equal(Object.keys(error).includes("cleanupCause"), false);
+			assert.equal(Object.keys(error as object).includes("cleanupCause"), false);
 			return true;
 		});
-		setWorktreeSnapshotGit(git);
-		await assert.rejects(resume(checkout), (error: unknown) => error === diskGone);
+		await assert.rejects(resume(sessionId, checkout), (error: unknown) => error === diskGone);
 	});
 
 	test("a resume that fails leaves a store the caller supplied open", async () => {
 		const selection = sqliteSelection("shared");
-		const { sessionId } = await sessionRecordedElsewhere(selection, { "package-lock.json": "{}\n" });
+		const { sessionId } = await unsafeSessionRecordedElsewhere(selection);
 		const store = await storeFor(selection);
 		const close = vi.spyOn(store, "close");
 		cleanups.push(() => close.mockRestore());
-		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 		await assert.rejects(
 			openCliSession(parseArgs(["--session", sessionId]), sandbox.root, settings(), {
 				agentDir: sandbox.path("agent"),
 				sessionStorage: store,
 				trusted: () => false,
 			}),
-			(error: unknown) => isResumePreconditionError(error),
+			isRefusedRecord,
 		);
 		assert.equal(close.mock.calls.length, 0);
 	});
@@ -1298,17 +1328,14 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "edited on node A\n");
 	});
 
-	test("rehydrating a session released on another node, on a node without Git, fails as a rehydrate precondition", async () => {
+	test("rehydrating a session released on another node, on a node without Git, continues without its checkout (#4733)", async () => {
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(runtime.rehydrate(sessionId), (error: unknown) => {
-			assert.ok(isResumePreconditionError(error));
-			assert.equal(error.entryPoint, "rehydrate");
-			assert.equal(error.problems[0]?.code, "git-unavailable");
-			return true;
-		});
-		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+		const rehydrated = await runtime.rehydrate(sessionId);
+		assert.equal(rehydrated.sessionManager.getSessionId(), sessionId);
+		assert.equal(lastUnrestored(rehydrated.sessionManager)?.cause, "not-installed");
+		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 	});
 
 	test("a rehydration whose shared storage does not answer fails at the lookup deadline", async () => {
@@ -1335,16 +1362,16 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		}
 	});
 
-	test("a /resume that needs a restore on a node without Git fails as a switch-session precondition", async () => {
+	test("a /resume that needs a restore on a node without Git opens the session without its checkout (#4733)", async () => {
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(sandbox.path("agent"), {});
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(runtime.switchSession(sessionId), (error: unknown) => {
-			assert.ok(isResumePreconditionError(error));
-			assert.equal(error.entryPoint, "switch-session");
-			assert.equal(error.problems[0]?.code, "git-unavailable");
-			return true;
-		});
+		const switched = await runtime.switchSession(sessionId);
+		assert.equal(switched.cancelled, false);
+		const record = lastUnrestored(runtime.session.sessionManager);
+		assert.equal(record?.cause, "not-installed");
+		assert.equal(record?.place, "launch");
+		assert.equal(runtime.session.sessionManager.getCwd(), record?.continuedIn);
 	});
 });
 
@@ -1403,28 +1430,25 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		assert.match(await readWithTools(session, join(recorded, "state.txt")), /in the run's restored worktree/);
 	});
 
-	test("fails typed before restoring when Git is missing", async () => {
+	test("continues without the checkout, in the launch directory, when Git is missing (#4733)", async () => {
 		const selection = sqliteSelection("shared");
-		const { sessionId } = await sessionRecordedElsewhere(selection);
+		const { sessionId, clone } = await sessionRecordedElsewhere(selection);
 		const store = await storeFor(selection);
 		const { createAgentSession } = await import("../src/core/sdk.ts");
 		const { getModel } = await import("@bastani/pi-ai/compat");
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(
-			createAgentSession({
-				agentDir: sandbox.path("agent"),
-				model: getModel("anthropic", "claude-sonnet-4-5")!,
-				builtins: NO_BUILTINS,
-				settingsManager: settings(),
-				sessionManager: await SessionManager.open(store, sessionId),
-			}),
-			(error: unknown) => {
-				assert.ok(isResumePreconditionError(error));
-				assert.equal(error.entryPoint, "create-agent-session");
-				assert.equal(error.problems[0]?.code, "git-unavailable");
-				return true;
-			},
-		);
+		const { session } = await createAgentSession({
+			agentDir: sandbox.path("agent"),
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			builtins: NO_BUILTINS,
+			settingsManager: settings(),
+			sessionManager: await SessionManager.open(store, sessionId),
+		});
+		cleanups.push(() => session.dispose());
+		const record = lastUnrestored(session.sessionManager);
+		assert.equal(record?.cause, "not-installed");
+		assert.notEqual(session.sessionManager.getCwd(), clone);
+		assert.equal(session.sessionManager.getCwd(), record?.continuedIn);
 	});
 
 	const createOn = async (options: Partial<CreateAgentSessionOptions>) => {
@@ -1570,20 +1594,19 @@ describe("createAgentSession with a session recorded on another node (#4329)", (
 		);
 	});
 
-	test("a session whose recorded path holds a different tree fails typed with nothing written when Git is missing", async () => {
+	test("a session whose recorded path holds a different tree continues there untouched when Git is missing (#4733)", async () => {
 		const selection = sqliteSelection("shared");
 		const { clone, sessionId } = await recordSessionWithSnapshot(selection);
 		await anotherCloneAtRecordedPath(clone);
 		const store = await storeFor(selection);
 		const sessionManager = await SessionManager.open(store, sessionId);
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
-		await assert.rejects(createOn({ settingsManager: settings(), sessionManager }), (error: unknown) => {
-			assert.ok(isGitUnavailableError(error));
-			assert.equal(error.code, "not-installed");
-			return true;
-		});
-		assert.deepEqual(sessionManager.getWorktreeRootMappings(), []);
-		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+		const session = await createOn({ settingsManager: settings(), sessionManager });
+		assert.equal(session.sessionManager.getCwd(), clone);
+		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "node B's own checkout at the same path\n");
+		assert.equal(lastUnrestored(session.sessionManager)?.cause, "not-installed");
+		assert.deepEqual(session.sessionManager.getWorktreeRootMappings(), []);
+		assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 	});
 
 	test("the host's snapshots option decides whether a supplied session's checkout changed, and can turn preparation off", async () => {

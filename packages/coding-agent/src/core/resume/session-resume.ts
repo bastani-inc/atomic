@@ -6,7 +6,10 @@ import { failureDebugFields, reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,
+	formatMissingRecordNotice,
+	type MissingSnapshotRecord,
 	mapRestoredPath,
+	missingSnapshotRecords,
 	openResumedSession,
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
@@ -25,7 +28,12 @@ import {
 	type VerifyWorktreeOptions,
 	verifyWorktree,
 } from "../worktree-snapshot/restore.ts";
-import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeSnapshotSettings } from "../worktree-snapshot/types.ts";
+import type {
+	WorktreeRootMapping,
+	WorktreeSnapshot,
+	WorktreeSnapshotSettings,
+	WorktreeUnrestored,
+} from "../worktree-snapshot/types.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
 import {
 	type BlueprintCheckout,
@@ -36,10 +44,10 @@ import {
 	recordBlueprintContext,
 	setUpResumedBlueprints,
 } from "./blueprint/resume.ts";
-import { isResumePreconditionError, type ResumeEntryPoint, ResumePreconditionError } from "./errors.ts";
+import { isResumePreconditionError, type ResumeEntryPoint } from "./errors.ts";
 import { isResumeFailure } from "./failure.ts";
 import { isInside } from "./path-mapping.ts";
-import { defaultResumePreflightIo, gitUnavailableProblem, type ResumePreflightIo } from "./preflight.ts";
+import { defaultResumePreflightIo, type ResumePreflightIo } from "./preflight.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
 export type DirtyCheckoutChoice = "restore" | "use" | "cancel";
@@ -289,9 +297,12 @@ async function hasLocalChanges(root: string, signal: AbortSignal | undefined): P
  * the checkout it was restored from when that checkout is here. When the checkout the session works in is missing or
  * belongs to another clone here, a checkout of the same
  * repository the resume started in is used as-is if it matches (and, if it differs, only when the user chooses it).
- * The checkout the session works in is the only one the resume cannot go without: when it must be restored, the
- * precondition of restoring the recorded checkouts, that Git can run, is checked first, and an unmet one refuses the
- * resume before anything is written. Every other checkout the session recorded that is gone or changed here, except
+ * Resume always opens the session (#4733): a checkout whose snapshot cannot be restored exactly gets the best state
+ * this node can reach, its recorded commit with the change sets that apply or the closest commit it can fetch, and one
+ * notice saying what is missing; when nothing of it can be restored, Git being unavailable included, the session
+ * continues in its recorded directory, or the directory the resume started from when that is not here, with the same
+ * kind of notice. Only a snapshot record that fails the security checks, or a restore target that holds other files,
+ * refuses the resume. Every other checkout the session recorded that is gone or changed here, except
  * those in `keepInPlace`, never blocks the resume: one the session worked in on this node, changed since, continues as
  * it is; the rest are restored into fresh worktrees one by one by #4245's {@link resumeSessionWorktree}, and one that
  * cannot be (Git is unavailable, or its restore fails) is left out with a warning that names its path and why. Each
@@ -306,6 +317,8 @@ export async function prepareSessionResume(
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	if (!options.settings.enabled || sessionManager.getLatestWorktreeSnapshots().size === 0) {
+		const missing = options.settings.enabled ? missingSnapshotRecords(sessionManager) : [];
+		if (missing.length > 0) return continueWithoutRecords(sessionManager, missing, storeDir, options);
 		const unchanged = await describeBlueprintsInPlace(sessionManager, storeDir, options);
 		return { status: "ready", sessionManager, notices: [], blueprintNotices: [], blueprintContext: unchanged };
 	}
@@ -324,11 +337,23 @@ export async function prepareSessionResume(
 		}
 		return verification;
 	};
+	// Which partly restored worktrees are still as the restore left them, compared once per resume.
+	let partialOnce: Promise<Set<string>> | undefined;
+	const partial = (): Promise<Set<string>> => {
+		partialOnce ??= partialRestores(sessionManager, options);
+		return partialOnce;
+	};
 	const match = latestSessionSnapshot(sessionManager);
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
-	const needsRestore =
-		match !== undefined && !options.keepInPlace?.has(match.root) && (await verifyOnce(match.snapshot, match.root));
+	let needsRestore: boolean;
+	try {
+		needsRestore =
+			match !== undefined && !options.keepInPlace?.has(match.root) && (await verifyOnce(match.snapshot, match.root));
+	} catch (error) {
+		if (!isGitUnavailableError(error)) throw error;
+		return continueWithoutGit(sessionManager, error, storeDir, options);
+	}
 	const project =
 		match !== undefined && !needsRestore && !options.keepInPlace?.has(match.root)
 			? await orFallBack(options, "return-to-checkout", undefined, () =>
@@ -344,8 +369,8 @@ export async function prepareSessionResume(
 		project === undefined &&
 		needsRestore &&
 		(await isDirectory(match.root)) &&
-		(await orFallBack(options, "own-checkout", new Set([match.root]), () =>
-			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options),
+		(await orFallBack(options, "own-checkout", new Set([match.root]), async () =>
+			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options, await partial()),
 		).then((worked) => worked.has(match.root)));
 	// The checkout the session returned to stays as it is, whatever it changed since: only the others are restored.
 	const kept = [...(keepsOwnCheckout && match !== undefined ? [match.root] : [])];
@@ -371,14 +396,21 @@ export async function prepareSessionResume(
 		mapRestoredPath(sessionManager.getCwd(), checkouts.getWorktreeRootMappings()),
 		resume,
 		verifyOnce,
+		partial,
 	);
 	if (candidates.targets.length > 0) git ??= { unavailable: await io.probeGit(options.signal) };
-	const plan = planRestores(sessionManager, candidates, resume, git?.unavailable);
+	const plan = planRestores(candidates, git?.unavailable);
 	notices.push(...plan.left.values());
 	const recordedBefore = sessionManager.getWorktreeRootMappings().length;
 	const resumed = await restorePlanned(sessionManager, plan, reused, storeDir, resume);
-	const cwd = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
-	const opened = await openResumedSession(sessionManager, cwd, resumed.restored, options.sessionDirectory);
+	const cwd = resumed.cwd ?? mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
+	const opened = await openResumedSession(
+		sessionManager,
+		cwd,
+		resumed.restored,
+		options.sessionDirectory,
+		resumed.unrestored,
+	);
 	notices.push(...opened.notices, ...resumed.failed);
 	const restoredNow = new Set(
 		opened.sessionManager
@@ -399,6 +431,76 @@ export async function prepareSessionResume(
 		notices,
 		blueprintNotices: blueprints.notices,
 		blueprintContext: blueprints.context,
+	};
+}
+
+/**
+ * Opens a session whose checkouts cannot even be compared with their snapshots, because Git cannot run here (#4733):
+ * it continues in its recorded directory as it is, or in the directory the resume started from when that is not
+ * here, without restoring any checkout, and each is recorded as left out with a notice. Nothing is written to any
+ * checkout.
+ */
+async function continueWithoutGit(
+	sessionManager: SessionManager,
+	git: GitUnavailableError,
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<PreparedSessionResume> {
+	const roots = [...currentWorktreeSnapshots(sessionManager).keys()].filter((root) => !options.keepInPlace?.has(root));
+	const resumed = await resumeSessionWorktree(sessionManager, {
+		settings: options.settings,
+		storeDir,
+		signal: options.signal,
+		keepInPlace: options.keepInPlace,
+		cannotRestore: new Map(roots.map((root) => [root, git])),
+		fallbackCwd: options.launchCwd,
+		skipMissingRecords: true,
+	});
+	const cwd = resumed.status === "none" ? sessionManager.getCwd() : resumed.cwd;
+	const opened = await openResumedSession(
+		sessionManager,
+		cwd,
+		[],
+		options.sessionDirectory,
+		resumed.status === "none" ? [] : resumed.unrestored.map((checkout) => checkout.record),
+	);
+	const context = await describeBlueprintsInPlace(opened.sessionManager, storeDir, options);
+	return {
+		status: "ready",
+		sessionManager: opened.sessionManager,
+		notices: [
+			...opened.notices,
+			...(resumed.missingRecords ?? []).map((missing) => ({
+				type: "warning" as const,
+				message: formatMissingRecordNotice(missing),
+			})),
+		],
+		blueprintNotices: [],
+		blueprintContext: context,
+	};
+}
+
+/**
+ * Opens a session whose every recorded checkout refers to a snapshot the session holds no record of (#4733): nothing
+ * can be restored, so it continues in its recorded directory, or the directory the resume started from when that is
+ * not here, with one notice per checkout.
+ */
+async function continueWithoutRecords(
+	sessionManager: SessionManager,
+	missing: readonly MissingSnapshotRecord[],
+	storeDir: string,
+	options: PrepareSessionResumeOptions,
+): Promise<PreparedSessionResume> {
+	const recorded = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
+	const cwd = existsSync(recorded) ? recorded : resolve(options.launchCwd);
+	const opened = await openResumedSession(sessionManager, cwd, [], options.sessionDirectory);
+	const context = await describeBlueprintsInPlace(opened.sessionManager, storeDir, options);
+	return {
+		status: "ready",
+		sessionManager: opened.sessionManager,
+		notices: missing.map((record) => ({ type: "warning" as const, message: formatMissingRecordNotice(record) })),
+		blueprintNotices: [],
+		blueprintContext: context,
 	};
 }
 
@@ -510,6 +612,8 @@ interface RestorePlan {
 	readonly optional: readonly RestoreTarget[];
 	/** The warning for each other checkout the resume continues without restoring, by its root. */
 	readonly left: ReadonlyMap<string, ResumeNotice>;
+	/** Why Git cannot run here, when it cannot: the checkouts the session works in are then not restored (#4733). */
+	readonly git: GitUnavailableError | undefined;
 }
 
 /** Records that the session continues in a checkout already here, so paths follow it. */
@@ -569,6 +673,7 @@ async function restoreCandidates(
 	cwd: string,
 	options: PrepareSessionResumeOptions,
 	needsRestore: (snapshot: WorktreeSnapshot, root: string) => Promise<boolean>,
+	partial: () => Promise<ReadonlySet<string>>,
 ): Promise<{ readonly targets: RestoreTarget[]; readonly left: Map<string, ResumeNotice> }> {
 	const targets: RestoreTarget[] = [];
 	const left = new Map<string, ResumeNotice>();
@@ -587,7 +692,11 @@ async function restoreCandidates(
 		}
 		if (!comparison.value) continue;
 		const absent = !(await isDirectory(root));
-		if (!runsHere && !absent && (await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options)).has(root)) {
+		if (
+			!runsHere &&
+			!absent &&
+			(await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options, await partial())).has(root)
+		) {
 			left.set(
 				root,
 				notRestored(
@@ -631,8 +740,10 @@ async function settleBounded<T, R>(
 /**
  * Restores what `plan` says into fresh worktrees with #4245's {@link resumeSessionWorktree}, recording each restore on
  * `sessionManager`, and returns the mappings it recorded. The checkouts the session works in are restored together,
- * with the mapping to the launch checkout `reused`, and any failure refuses the resume. Every other checkout is
- * restored on its own, and one whose restore fails is reported in `failed` and left out.
+ * with the mapping to the launch checkout `reused`; one that cannot be restored exactly is restored as far as it can be,
+ * or recorded as left out, in `unrestored` (#4733), and only a failure that is not about a checkout refuses the resume.
+ * Every other checkout is restored on its own the same way, and one whose restore is refused is reported in `failed`
+ * and left out. `cwd` is where the session continues after the restore of the checkouts it works in.
  */
 async function restorePlanned(
 	sessionManager: SessionManager,
@@ -640,11 +751,25 @@ async function restorePlanned(
 	reused: WorktreeRootMapping | undefined,
 	storeDir: string,
 	options: PrepareSessionResumeOptions,
-): Promise<{ restored: WorktreeRootMapping[]; failed: ResumeNotice[] }> {
-	const outcome = { restored: [] as WorktreeRootMapping[], failed: [] as ResumeNotice[] };
+): Promise<{
+	restored: WorktreeRootMapping[];
+	failed: ResumeNotice[];
+	unrestored: WorktreeUnrestored[];
+	cwd: string | undefined;
+}> {
+	const outcome = {
+		restored: [] as WorktreeRootMapping[],
+		failed: [] as ResumeNotice[],
+		unrestored: [] as WorktreeUnrestored[],
+		cwd: undefined as string | undefined,
+		missing: new Set<string>(),
+	};
 	const restore = async (targets: readonly RestoreTarget[], pending: WorktreeRootMapping | undefined) => {
+		const git = plan.git;
 		for (const target of targets) {
-			options.onProgress?.(`Restoring ${target.root} from snapshot ${target.snapshot.id.slice(0, 12)}`);
+			if (git === undefined) {
+				options.onProgress?.(`Restoring ${target.root} from snapshot ${target.snapshot.id.slice(0, 12)}`);
+			}
 		}
 		const restoring = new Set(targets.map((target) => target.root));
 		const resumed = await resumeSessionWorktree(sessionManager, {
@@ -657,10 +782,21 @@ async function restorePlanned(
 					(root) => !restoring.has(root),
 				),
 			),
+			...(git === undefined ? {} : { cannotRestore: new Map(targets.map((target) => [target.root, git])) }),
+			fallbackCwd: options.launchCwd,
+			skipMissingRecords: true,
 		});
+		for (const missing of resumed.missingRecords ?? []) {
+			if (outcome.missing.has(missing.root)) continue;
+			outcome.missing.add(missing.root);
+			outcome.failed.push({ type: "warning", message: formatMissingRecordNotice(missing) });
+		}
+		if (resumed.status === "none") return undefined;
 		if (resumed.status === "restored") outcome.restored.push(...resumed.mappings);
+		outcome.unrestored.push(...resumed.unrestored.map((checkout) => checkout.record));
+		return resumed.cwd;
 	};
-	await restore(plan.required, reused);
+	if (plan.required.length > 0 || reused !== undefined) outcome.cwd = await restore(plan.required, reused);
 	for (const target of plan.optional) {
 		try {
 			await restore([target], undefined);
@@ -749,7 +885,7 @@ export async function continueSessionWhereItWorked(
 ): Promise<SessionManager> {
 	const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
 	const checkouts = currentWorktreeSnapshots(opened);
-	const own = await checkoutsWorkedHere(checkouts, cwd, options);
+	const own = await checkoutsWorkedHere(checkouts, cwd, options, await partialRestores(opened, options));
 	if (own.size < checkouts.size) {
 		const prepared = await prepareSessionResume(opened, { ...options, keepInPlace: own });
 		if (prepared.status !== "ready") return opened;
@@ -776,16 +912,49 @@ async function checkoutsWorkedHere(
 	checkouts: ReadonlyMap<string, WorktreeSnapshot>,
 	cwd: string,
 	options: PrepareSessionResumeOptions,
+	partial: ReadonlySet<string> = new Set(),
 ): Promise<Set<string>> {
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const own = new Set<string>();
 	for (const [root, snapshot] of checkouts) {
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
-		if (isInside(storeDir, root) || (await holdsSnapshotCommit(snapshot, root, options.signal))) own.add(root);
+		const restoredHere = isInside(storeDir, root) && !partial.has(resolve(root));
+		if (restoredHere || (await holdsSnapshotCommit(snapshot, root, options.signal))) own.add(root);
 	}
 	return own;
 }
 
+/**
+ * The worktrees a resume restored with less than their snapshot (#4733) that are still exactly as it left them: the
+ * session recorded no snapshot there since, and their HEAD and files are what the restore put there. The next resume
+ * tries the snapshot again instead of keeping them. A worktree changed since, even by hand, is the session's work and
+ * stays; one that cannot be compared stays too.
+ */
+async function partialRestores(
+	sessionManager: SessionCheckouts,
+	options: Pick<PrepareSessionResumeOptions, "settings" | "signal">,
+): Promise<Set<string>> {
+	const current = currentWorktreeSnapshots(sessionManager);
+	const partial = new Set<string>();
+	for (const mapping of sessionManager.getWorktreeRootMappings()) {
+		const degraded = mapping.degraded;
+		const snapshot = current.get(mapping.to);
+		if (degraded === undefined || snapshot?.id !== mapping.snapshotId || !existsSync(mapping.to)) continue;
+		const restored = {
+			remotes: [...snapshot.remotes],
+			head: degraded.head,
+			tree: degraded.tree,
+			envHash: snapshot.envHash,
+		};
+		try {
+			await verifyWorktree(restored, mapping.to, { settings: options.settings, signal: options.signal });
+			partial.add(resolve(mapping.to));
+		} catch (error) {
+			if (options.signal?.aborted) throw error;
+		}
+	}
+	return partial;
+}
 /**
  * Whether resuming in `root` restores `snapshot` into a fresh worktree: the checkout is gone, is not a repository of
  * the recorded tree, or no longer matches it. A path that cannot be read fails with its typed `unreadable-path` error
@@ -815,20 +984,16 @@ interface GitProbe {
 /**
  * Decides what the resume does about the `candidates` that are gone or changed here, before anything is written. The
  * precondition of restoring them on this node is that Git can be started or provisioned (`git`, the probe's typed
- * failure). When it is unmet and the session works in a checkout that must be restored, the resume is refused; for any
- * other checkout it leaves that checkout out, with a warning. A blueprint is never a precondition.
+ * failure). When it is unmet, the checkouts the session works in are not restored and the session continues without
+ * them, with a notice and a record in the session (#4733); any other checkout is left out with a warning. A blueprint
+ * is never a precondition.
  */
 function planRestores(
-	sessionManager: SessionManager,
 	candidates: { readonly targets: readonly RestoreTarget[]; readonly left: ReadonlyMap<string, ResumeNotice> },
-	options: PrepareSessionResumeOptions,
 	git: GitUnavailableError | undefined,
 ): RestorePlan {
 	const required = candidates.targets.filter((target) => target.runsHere);
 	const others = candidates.targets.filter((target) => !target.runsHere);
-	if (required.length > 0 && git !== undefined) {
-		throw preconditionFailure(sessionManager, [...required, ...others], options, git);
-	}
 	const left = new Map(candidates.left);
 	const optional: RestoreTarget[] = [];
 	for (const target of others) {
@@ -845,27 +1010,7 @@ function planRestores(
 			optional.push(target);
 		}
 	}
-	return { required, optional, left };
-}
-
-/** The refusal to resume because `targets` cannot be restored here: Git cannot be started or provisioned. */
-function preconditionFailure(
-	sessionManager: SessionManager,
-	targets: readonly RestoreTarget[],
-	options: PrepareSessionResumeOptions,
-	git: GitUnavailableError,
-): ResumePreconditionError {
-	const reasons = targets.map(
-		(target) =>
-			`snapshot ${target.snapshot.id.slice(0, 12)} because ${target.root} ${target.absent ? "does not exist on this node" : "no longer matches it"}`,
-	);
-	const problems = [
-		gitUnavailableProblem(
-			git,
-			`session ${sessionManager.getSessionId()} must be restored from ${reasons.join(", and from ")}`,
-		),
-	];
-	return new ResumePreconditionError({ entryPoint: options.entryPoint, problems }, git);
+	return { required, optional, left, git };
 }
 
 /**

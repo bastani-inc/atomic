@@ -261,19 +261,23 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 
 			const nodeCPath = join(root, "node-c", "bin");
 			mkdirSync(nodeCPath, { recursive: true });
+			// Without Git the session still opens, without its checkout and with one notice saying why (#4733).
 			const gitless = await startNode(
 				"resume",
-				{ sessionId, launchCwd: join(root, "node-c", "home"), readPath: join(clone, "notes", "agent-wrote.txt") },
+				{
+					sessionId,
+					launchCwd: join(root, "node-c", "home"),
+					readPath: join(clone, "notes", "agent-wrote.txt"),
+					openOnly: true,
+				},
 				nodeEnv("node-c", { PATH: `${nodeCPath}:${dirname(bunExecutable())}`, ATOMIC_OFFLINE: "1" }),
 			).run;
-			assert.equal(gitless.code, 2, gitless.stderr);
-			assert.deepEqual(
-				[gitless.output?.error?.name, gitless.output?.error?.code],
-				["ResumePreconditionError", "preconditions-unmet"],
-			);
-			assert.deepEqual(gitless.output?.error?.problems, [{ code: "git-unavailable", subject: "git (offline)" }]);
-			assert.deepEqual(gitless.output?.error?.cause, { name: "GitUnavailableError", code: "offline" });
-			assert.equal(existsSync(join(root, "node-c", "agent", "worktree-snapshots")), false);
+			assert.equal(gitless.code, 0, gitless.stderr);
+			assert.deepEqual(gitless.output?.mappings, []);
+			assert.equal(gitless.output?.cwd, join(root, "node-c", "home"));
+			assert.equal(gitless.output?.notices?.length, 1, JSON.stringify(gitless.output?.notices));
+			assert.match(gitless.output?.notices?.[0]?.message ?? "", /Git is unavailable here \(offline\)/);
+			assert.equal(existsSync(join(root, "node-c", "agent", "worktree-snapshots", "worktrees")), false);
 
 			const partition = await silentServer();
 			const partitioned = await startNode(
@@ -467,7 +471,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 	);
 
 	test(
-		"scenario 6: a git-less node provisions Git to restore and continue a session; a failed download is a typed precondition error that writes nothing",
+		"scenario 6: a git-less node provisions Git to restore and continue a session; a failed download opens it without its checkout and writes no worktree (#4733)",
 		async () => {
 			const recordedClone = join(root, "prov-node-a", "home", "repo");
 			mkdirSync(dirname(recordedClone), { recursive: true });
@@ -508,17 +512,13 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 				readPath: join(recordedClone, "provisioned.txt"),
 			};
 
-			const failed = await startNode("resume", resumeArgs, gitless({ PROVISION_FAIL: "1" })).run;
-			assert.equal(failed.code, 2, failed.stderr);
-			assert.deepEqual(
-				[failed.output?.error?.name, failed.output?.error?.code],
-				["ResumePreconditionError", "preconditions-unmet"],
-			);
-			assert.deepEqual(failed.output?.error?.problems, [
-				{ code: "git-unavailable", subject: "git (download-failed)" },
-			]);
-			assert.deepEqual(failed.output?.error?.cause, { name: "GitUnavailableError", code: "download-failed" });
-			assert.equal(existsSync(join(agentDir, "worktree-snapshots")), false);
+			const failed = await startNode("resume", { ...resumeArgs, openOnly: true }, gitless({ PROVISION_FAIL: "1" }))
+				.run;
+			assert.equal(failed.code, 0, failed.stderr);
+			assert.deepEqual(failed.output?.mappings, []);
+			assert.equal(failed.output?.notices?.length, 1, JSON.stringify(failed.output?.notices));
+			assert.match(failed.output?.notices?.[0]?.message ?? "", /Git is unavailable here \(download-failed\)/);
+			assert.equal(existsSync(join(agentDir, "worktree-snapshots", "worktrees")), false);
 			assert.equal(existsSync(join(agentDir, "bin", "git", "bin", "git")), false);
 
 			const resumed = await startNode("resume", resumeArgs, gitless()).run;

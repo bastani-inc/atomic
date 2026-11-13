@@ -70,10 +70,14 @@ export { isHeadOnlyAdvance } from "./head-advance.ts";
 export { canonicalizeWorktreePath } from "./paths.ts";
 export { SNAPSHOT_DENY_PATTERNS, SNAPSHOT_IGNORE_FILE, SNAPSHOT_KEY_FILE_PATTERNS } from "./policy.ts";
 export {
+	type DegradedWorktree,
 	defaultWorktreeSnapshotStoreDir,
+	isDegradableRestoreFailure,
+	type RestoreDegradedWorktreeOptions,
 	type RestoredWorktree,
 	type RestoreWorktreeSnapshotOptions,
 	removeRestoredWorktree,
+	restoreDegradedWorktree,
 	restoreWorktree,
 	restoreWorktreeSnapshot,
 	type VerifyWorktreeOptions,
@@ -88,6 +92,8 @@ export type {
 	SnapshotBlob,
 	SnapshotBlobStore,
 	WorkspaceBinding,
+	WorktreeDegradedRestore,
+	WorktreeDegradedRestoreBasis,
 	WorktreeRestoreWarning,
 	WorktreeRootMapping,
 	WorktreeSnapshot,
@@ -99,4 +105,5 @@ export type {
 	WorktreeSnapshotPathOmissionReason,
 	WorktreeSnapshotSettings,
 	WorktreeSnapshotSizeOmissionReason,
+	WorktreeUnrestored,
 } from "./types.ts";

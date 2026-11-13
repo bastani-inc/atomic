@@ -86,7 +86,19 @@ function validPayload(entry: SessionEntry): boolean {
 						typeof entry.restore === "object" &&
 						typeof entry.restore.from === "string" &&
 						entry.restore.to === entry.root &&
-						entry.restore.snapshotId === entry.snapshotId)) &&
+						entry.restore.snapshotId === entry.snapshotId &&
+						(entry.restore.degraded === undefined || validDegradedRestore(entry.restore.degraded)))) &&
+				(entry.unrestored === undefined ||
+					(entry.restore === undefined &&
+						entry.unrestored !== null &&
+						typeof entry.unrestored === "object" &&
+						entry.unrestored.snapshotId === entry.snapshotId &&
+						typeof entry.unrestored.continuedIn === "string" &&
+						(entry.unrestored.place === "recorded" || entry.unrestored.place === "launch") &&
+						typeof entry.unrestored.cause === "string" &&
+						typeof entry.unrestored.detail === "string" &&
+						typeof entry.unrestored.hint === "string" &&
+						typeof entry.unrestored.at === "string")) &&
 				(entry.restoreWarnings === undefined ||
 					(entry.restore !== undefined &&
 						Array.isArray(entry.restoreWarnings) &&
@@ -134,4 +146,25 @@ function validMessage(message: SessionMessageEntry["message"]): boolean {
 		default:
 			return false;
 	}
+}
+
+function isStringList(value: unknown): boolean {
+	return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** A restore's record of what it restored in place of its snapshot (#4733), as Atomic writes it. */
+function validDegradedRestore(value: unknown): boolean {
+	if (value === null || typeof value !== "object") return false;
+	const degraded = value as Record<string, unknown>;
+	return (
+		(degraded.stage === "partial-changes" || degraded.stage === "closest-commit") &&
+		typeof degraded.head === "string" &&
+		typeof degraded.tree === "string" &&
+		Array.isArray(degraded.missingLinks) &&
+		degraded.missingLinks.every((index) => Number.isInteger(index)) &&
+		isStringList(degraded.missingPaths) &&
+		isStringList(degraded.missingCommits) &&
+		typeof degraded.cause === "string" &&
+		typeof degraded.hint === "string"
+	);
 }
