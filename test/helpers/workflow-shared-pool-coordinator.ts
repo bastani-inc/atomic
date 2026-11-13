@@ -23,7 +23,7 @@ import { PoolCoordinator } from "../../packages/workflows/src/workers/pool-coord
 import { poolDurableJournal } from "../../packages/workflows/src/workers/pool-journal.js";
 import type { AdmissionConfiguration } from "../../packages/workflows/src/workers/resource-admission.js";
 import type { RestoreBackoff } from "../../packages/workflows/src/workers/restore-backoff.js";
-import type { WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
+import type { RestoredWorkspace, WorkspaceBinding } from "../../packages/workflows/src/workers/workspace-binding.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { sleep } from "../helpers/runtime.js";
 
@@ -154,7 +154,7 @@ export async function fixture(
 				.filter(
 					(line) =>
 						line !== "" &&
-						!/^(answer|start|question|user|intercom|received) /.test(line) &&
+						!/^(answer|start|question|user|intercom|received|restore-outcome) /.test(line) &&
 						!line.startsWith("place-released "),
 				)
 				.map((line) => line.split(" ")),
@@ -231,7 +231,10 @@ export async function satellite(
 	root: SharedPoolRoot,
 	placement: {
 		prefer?: (binding: WorkspaceBinding) => Promise<string | undefined>;
-		restore?: (binding: WorkspaceBinding, options: { readonly signal: AbortSignal }) => Promise<string>;
+		restore?: (
+			binding: WorkspaceBinding,
+			options: { readonly signal: AbortSignal },
+		) => Promise<string | RestoredWorkspace>;
 		restoreBackoff?: RestoreBackoff;
 	},
 	failures: Error[] = [],

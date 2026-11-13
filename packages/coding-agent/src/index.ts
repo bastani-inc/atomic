@@ -805,6 +805,7 @@ export {
 	resumeSessionWorktree,
 	type SessionWorktreeResume,
 	type UnrestoredWorktree,
+	type WorktreeRestoreOwner,
 } from "./core/session-worktree-snapshots.ts";
 export type { DefaultProjectTrust, QuietStartup } from "./core/settings-manager.ts";
 export {

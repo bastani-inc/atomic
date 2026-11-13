@@ -1,4 +1,10 @@
 export {
+	type BestWorktreeRestore,
+	type RestoreBestWorktreeOptions,
+	restoreBestWorktree,
+	unrestoredRecord,
+} from "./best-restore.ts";
+export {
 	MemorySnapshotBlobStore,
 	SNAPSHOT_COLLECTION_BATCH,
 	type SnapshotIndexTables,

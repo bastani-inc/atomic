@@ -1,15 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	captureWorktreeSnapshot,
@@ -36,7 +26,6 @@ import { missingGit } from "../../packages/coding-agent/test/helpers/missing-git
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { JournalOwnershipError } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
-import { restorePreconditionsChecked } from "../../packages/workflows/src/durable/run-restore-preconditions.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
@@ -279,53 +268,26 @@ test("a run whose restore has no blueprint and no setup command resumes in the w
 	assert.deepEqual(blueprintNotices(recorded.store), []);
 });
 
-test("a direct run() of a run recorded elsewhere checks its restore preconditions before restoring anything (#4329)", async () => {
+test("a direct run() of a run recorded elsewhere on a node without Git continues where it was started, restoring nothing (#4738)", async () => {
 	writeSettings({});
-	let liveRuns = 0;
-	const recorded = await runRecordedElsewhere(() => {
-		liveRuns++;
-	});
+	const cwds: string[] = [];
+	const recorded = await runRecordedElsewhere((cwd) => cwds.push(cwd));
 	setWorktreeSnapshotGit(async () => {
 		throw missingGit();
 	});
 
-	await assert.rejects(recorded.rerun(), (error: unknown) => {
-		assert.ok(isResumePreconditionError(error));
-		assert.equal(error.entryPoint, "workflow-resume");
-		assert.deepEqual(
-			error.problems.map((problem) => problem.code),
-			["git-unavailable"],
-		);
-		return true;
-	});
-	assert.equal(liveRuns, 0);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
-});
+	const result = await recorded.rerun();
 
-test("a run whose restore needs Git that this node cannot start fails typed before it is claimed (#4329)", async () => {
-	writeSettings({});
-	const recorded = await runRecordedElsewhere();
-	const statusBefore = recorded.backend.getWorkflow(recorded.runId)?.status;
-	setWorktreeSnapshotGit(async () => {
-		throw missingGit();
-	});
-
-	const { result } = await recorded.resume();
-
-	assert.equal(result.ok, false);
-	if (result.ok) return;
-	assert.equal(result.reason, "startup_failed");
-	assert.ok(isResumePreconditionError(result.error));
-	assert.equal(result.error.entryPoint, "workflow-resume");
-	assert.deepEqual(
-		result.error.problems.map((problem) => problem.code),
-		["git-unavailable"],
-	);
-	assert.equal(result.message, result.error.message);
+	assert.equal(result.status, "completed", result.error);
+	assert.deepEqual(cwds, [sandbox.root]);
 	assert.deepEqual(restoredWorktrees(), []);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
-	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.status, statusBefore);
+	const handle = recorded.backend.getWorkflow(recorded.runId);
+	assert.equal(handle?.worktreeRootMappings, undefined);
+	assert.equal(handle?.invocationCwd, recorded.clone);
+	assert.deepEqual(
+		handle?.worktreeRestoreOutcomes?.map((outcome) => [outcome.root, outcome.unrestored?.place]),
+		[[recorded.clone, "launch"]],
+	);
 });
 
 test("a direct run() of a run another node still holds is refused before anything is restored or set up (#4329)", async () => {
@@ -365,52 +327,6 @@ test("a direct run() judges its own checkout under the snapshot settings the run
 	assert.equal(liveRuns, 1);
 	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
 });
-
-test.skipIf(process.platform === "win32")(
-	"a run's resume checks its restore preconditions once: run() trusts the check made before the claim (#4329)",
-	async () => {
-		writeSettings({});
-		const recorded = await runRecordedElsewhere();
-		const calls = sandbox.path("git-calls.log");
-		const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
-		const shim = sandbox.path("counting-git");
-		writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexec "${realGit}" "$@"\n`);
-		chmodSync(shim, 0o755);
-		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
-
-		const { result, finished } = await recorded.resume();
-		assert.equal(result.ok, true, result.message);
-		await finished;
-
-		const probes = readFileSync(calls, "utf8")
-			.split("\n")
-			.filter((line) => line.endsWith("--version"));
-		assert.equal(probes.length, 1);
-	},
-);
-
-test.skipIf(process.platform === "win32")(
-	"run() does not check the restore preconditions again when the resume that launched it already did (#4329)",
-	async () => {
-		writeSettings({});
-		const recorded = await runRecordedElsewhere();
-		const calls = sandbox.path("git-calls.log");
-		const realGit = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
-		const shim = sandbox.path("counting-git");
-		writeFileSync(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${calls}"\nexec "${realGit}" "$@"\n`);
-		chmodSync(shim, 0o755);
-		setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
-
-		const result = await recorded.rerun({ [restorePreconditionsChecked]: true });
-
-		assert.equal(result.status, "completed", result.error);
-		const probes = readFileSync(calls, "utf8")
-			.split("\n")
-			.filter((line) => line.endsWith("--version"));
-		assert.deepEqual(probes, []);
-		assert.equal(restoredWorktrees().length, 1);
-	},
-);
 
 test("a trusted restore builds its repository's own blueprint in the restored worktree and keeps it (#4588)", async () => {
 	writeSettings({ defaultProjectTrust: "always" });
@@ -969,6 +885,8 @@ describe("the restore port of a worker host (#4329)", () => {
 				signal: new AbortController().signal,
 				snapshot: capture.snapshot,
 			});
+			assert.equal(typeof path, "string", "an exact restore resolves the worktree's path alone");
+			if (typeof path !== "string") return;
 
 			assert.ok(path.startsWith(join(hostAgentDir, "worktree-snapshots")), path);
 			assert.equal(existsSync(path), true);

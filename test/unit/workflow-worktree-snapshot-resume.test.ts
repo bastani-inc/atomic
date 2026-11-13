@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { isWorkspaceDriftError, isWorkspaceRestoreError } from "@bastani/atomic";
+
 import { openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { afterEach, beforeEach, test } from "vitest";
@@ -186,7 +186,7 @@ test("SDK runId reuse validates once and automatically restores before live code
 	await fixture.close();
 });
 
-test("resume fails with typed drift and the missing blob as cause before callbacks run (#4245)", async () => {
+test("a resume whose change set is lost runs live code at the recorded commit without it (#4245, #4738)", async () => {
 	const { clone } = await sandbox.remoteWithClone();
 	const fixture = await openSqlSnapshotJournalBackend(sandbox.path("journal.sqlite"));
 	const { journal, backend } = fixture;
@@ -212,24 +212,20 @@ test("resume fails with typed drift and the missing blob as cause before callbac
 	const hash = snapshot.chain[0]!.patch!;
 	await loseSnapshotBlobs(journal.snapshotBlobs, [hash]);
 	sandbox.write(join(clone, "changed.txt"), "drift\n");
-	await assert.rejects(
-		resumeDurableWorkflow(first.runId, {
-			registry: createRegistry().register(definition),
-			durableBackend: backend,
-			baseRunOpts: { cwd: clone, store, durableBackend: backend },
-			jobs: createJobTracker(),
-		}),
-		(error: unknown) => {
-			assert.ok(isWorkspaceDriftError(error));
-			assert.equal(error.code, "tree-drift");
-			assert.equal(error.expectedTree, snapshot.tree);
-			assert.ok(isWorkspaceRestoreError(error.cause));
-			assert.equal(error.cause.code, "blob-missing");
-			assert.equal(error.cause.blob, hash);
-			assert.match(error.cause.hint, /import/i);
-			return true;
-		},
-	);
-	assert.equal(attempts, 1);
+	const jobs = createJobTracker();
+	const resumed = await resumeDurableWorkflow(first.runId, {
+		registry: createRegistry().register(definition),
+		durableBackend: backend,
+		baseRunOpts: { cwd: clone, store, durableBackend: backend },
+		jobs,
+	});
+	assert.equal(resumed.ok, true, resumed.ok ? "" : resumed.message);
+	await jobs.get(first.runId)?.promise.catch(() => {});
+	const mapping = backend.getWorkflow(first.runId)?.worktreeRootMappings?.at(-1);
+	assert.equal(mapping?.degraded?.stage, "partial-changes");
+	assert.equal(mapping?.degraded?.cause, "blob-missing");
+	assert.equal(existsSync(join(mapping!.to, "changed.txt")), false);
+	assert.equal(readFileSync(join(clone, "changed.txt"), "utf8"), "drift\n", "the checkout is never written to");
+	assert.equal(attempts, 2, "live code ran again in the partly restored worktree");
 	await fixture.close();
 });

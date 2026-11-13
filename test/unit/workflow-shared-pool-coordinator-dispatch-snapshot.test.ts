@@ -588,30 +588,53 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a child whose carried snapshot lost its blobs fails typed with the restore's own failure as the cause (#4492)",
+	"a child whose carried snapshot lost its change sets runs on a cold host at the recorded commit without them, and is told (#4492, #4738)",
 	async () => {
 		const sandbox = new GitSandbox();
 		try {
 			const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "committed\n" });
+			const head = await sandbox.git(clone, "rev-parse", "HEAD");
 			sandbox.write(join(clone, "a.txt"), "uncommitted\n");
 			const { placement, worktree } = await recordedPlacement({
 				placement: "shared",
 				workspace: workspace({ repo: clone, branch: "main", base: "main", worktree: clone }),
 			});
-			const lost = await unrestorable(
-				"shared-dispatch-snapshot-blob-missing",
-				{ workspace: placement.workspace!, workspaceWorktree: worktree },
-				async (f) => {
-					const [snapshot] = await carriedSnapshots(f, 1);
-					assert.ok(snapshot);
-					await loseSnapshotBlobs(rootBlobs(f), snapshotBlobHashes(snapshot));
-				},
+			const f = await fixture("shared-dispatch-snapshot-blob-missing", {
+				workspace: placement.workspace!,
+				workspaceWorktree: worktree,
+			});
+			const { parent, outcomes } = await fanOut(1)((await boundChild()) as never);
+			const execution = run(
+				parent,
+				{},
+				{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
 			);
-			assert.equal(lost.failure.reason, "no-capable-host");
-			const cause = lost.failure.cause;
-			assert.ok(isWorkspaceRestoreError(cause), String(cause));
-			assert.deepEqual([cause.code, cause.fields.role], ["blob-missing", "patch"]);
-			assert.equal(lost.unavailable, undefined);
+			let cold: Awaited<ReturnType<typeof coldHost>> | undefined;
+			try {
+				await f.root();
+				const [snapshot] = await carriedSnapshots(f, 1);
+				assert.ok(snapshot);
+				await loseSnapshotBlobs(rootBlobs(f), snapshotBlobHashes(snapshot));
+				cold = await coldHost(f);
+				const result = await execution;
+				assert.equal(result.status, "completed", JSON.stringify(result));
+				assert.deepEqual(outcomes, ["completed"]);
+				const [claim, ...others] = f.claims();
+				assert.deepEqual(others, []);
+				const [claimer, , cwd] = claim!;
+				assert.equal(claimer, "host-c");
+				assert.ok(cwd?.startsWith(join(cold.agentDir, "worktree-snapshots", "worktrees")), cwd);
+				assert.equal(await sandbox.git(cwd!, "rev-parse", "HEAD"), head);
+				assert.equal(readFileSync(join(cwd!, "a.txt"), "utf8"), "committed\n", "the lost change set is left out");
+				const told = readFileSync(f.log, "utf8")
+					.split("\n")
+					.filter((line) => line.startsWith("restore-outcome "));
+				assert.deepEqual(told, [`restore-outcome host-c ${claim![1]} partial-changes`]);
+			} finally {
+				await cold?.host.stop();
+				await execution.catch(() => {});
+				await f.close();
+			}
 		} finally {
 			sandbox.dispose();
 		}

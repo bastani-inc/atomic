@@ -47,7 +47,7 @@ import {
 } from "../shared/pending-stage-route-capability.js";
 import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-readiness.js";
 import { createStore, type Store } from "../shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, WorkflowWorktreeRestoreOutcome } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import { isStaleWorkLeaseError, PoolNotInitializedError } from "../shared/worker-pool-errors.js";
 import {
@@ -2464,7 +2464,7 @@ export class PoolCoordinator {
 					if (message.kind === "claim") {
 						if (slot.work) throw new Error("Worker already holds an attempt");
 						if (this.retiresIdle(slot)) return undefined;
-						let claimed: { readonly work: PoolWork; readonly worktree?: string } | undefined;
+						let claimed: Awaited<ReturnType<typeof this.claimFor>>;
 						if (!this.budgetBlocked && !this.draining) {
 							if (!this.places.claim(slot)) return undefined;
 							slot.claiming = true;
@@ -2496,7 +2496,10 @@ export class PoolCoordinator {
 						// A child placed on a warm or restored worktree runs there, not in the root's recorded directory.
 						return claimed.worktree === undefined
 							? claimed.work
-							: { ...claimed.work, execution: placedExecution(claimed.work.execution, claimed.worktree) };
+							: {
+									...claimed.work,
+									execution: placedExecution(claimed.work.execution, claimed.worktree, claimed.partial),
+								};
 					}
 					const held = slot.work;
 					if (!held) throw new Error("Worker has no active attempt");
@@ -2656,7 +2659,14 @@ export class PoolCoordinator {
 		worker: string,
 		leaseMs: number,
 		slot: WorkerSlot,
-	): Promise<{ readonly work: PoolWork; readonly worktree?: string } | undefined> {
+	): Promise<
+		| {
+				readonly work: PoolWork;
+				readonly worktree?: string;
+				readonly partial?: WorkflowWorktreeRestoreOutcome;
+		  }
+		| undefined
+	> {
 		const definitions = this.sources.map((source) => ({
 			definition: `${source.path}#${source.exportName}`,
 			digest: source.digest,
@@ -2691,12 +2701,21 @@ export class PoolCoordinator {
 		const restore = satellite.restore;
 		if (!chosen.restore || binding === undefined || restore === undefined)
 			return worktree === undefined ? { work } : { work, worktree };
+		let partial: WorkflowWorktreeRestoreOutcome | undefined;
 		const restored = await this.whileHolding(
 			queue,
 			lease,
 			work,
 			leaseMs,
-			(signal) => restore(binding, this.restoreOptions(satellite, signal, carriedSnapshot(work.execution))),
+			async (signal) => {
+				const result = await restore(
+					binding,
+					this.restoreOptions(satellite, signal, carriedSnapshot(work.execution)),
+				);
+				if (typeof result === "string") return result;
+				partial = result.partial;
+				return result.path;
+			},
 			AbortSignal.any([this.closedSignal.signal, slot.exited.signal]),
 		);
 		// A host that closed put the child back with the rest its workers held; one whose worker exited puts it back here.
@@ -2707,7 +2726,8 @@ export class PoolCoordinator {
 		}
 		if ("path" in restored) {
 			await this.restoreSucceeded(satellite, backoff, binding);
-			return { work, worktree: restored.path };
+			// A worktree restored with less than the binding's tree still runs the child, which is told (#4738).
+			return partial === undefined ? { work, worktree: restored.path } : { work, worktree: restored.path, partial };
 		}
 		satellite.placementFailed(restored.error);
 		// The work goes back to the queue unplaced, for a host that can restore it; an attempt replaced meanwhile has

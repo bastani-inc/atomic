@@ -192,6 +192,9 @@ for (;;) {
 	held = work;
 	const bound = work.execution.workspace?.kind === "bound-workspace" ? ` ${work.execution.workspace.worktree}` : "";
 	appendFileSync(log, `${host} ${work.id} ${work.execution.cwd}${bound}\n`);
+	// A child placed on a partly restored worktree carries the restore's outcome for its stages (#4738).
+	for (const outcome of work.execution.worktreeRestoreOutcomes ?? [])
+		appendFileSync(log, `restore-outcome ${host} ${work.id} ${outcome.degraded?.stage ?? "unrestored"}\n`);
 	await request({ kind: "stage-workspace", runId: work.childRunId, stageId: "stage" });
 	if (process.env.SHARED_POOL_STUB_CRASH === "1") process.exit(1);
 	const startedAt = Date.now();

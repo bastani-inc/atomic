@@ -5,6 +5,8 @@ import {
 	scheduleSnapshotCollection,
 	setUpResumedRunWorktrees,
 	type WorktreeRootMapping,
+	type WorktreeSnapshot,
+	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
@@ -14,7 +16,11 @@ import { initializeDurableBackend } from "../durable/factory.js";
 import { JournalDurableBackend, JournalOwnershipError } from "../durable/journal/journal-backend.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/run-owner-backend.js";
-import { restorePreconditionsChecked, runRestorePreconditionFailure } from "../durable/run-restore-preconditions.js";
+import {
+	recordedInvocationCwd,
+	restorePreconditionsChecked,
+	resumeLaunchCwd,
+} from "../durable/run-restore-preconditions.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
 import { inheritedRunElapsedMs, priorRunAccounting, recordRunTimingCheckpointAsync } from "../durable/run-timing.js";
 import { ScopedDurableBackend } from "../durable/scoped-backend.js";
@@ -38,6 +44,8 @@ import {
 	listWorkflowSnapshotBoundaries,
 	mapWorkflowWorktreePath,
 	resolveWorkflowSnapshotFrontier,
+	runWorktreeRestoreOutcomes,
+	type WorkflowUnrestoredCheckout,
 } from "../durable/worktree-snapshots.js";
 import {
 	findWorkflowExitSignal,
@@ -215,51 +223,52 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 		const journal = backend.snapshotJournal;
 		if (previous !== undefined && journal !== undefined) {
 			const mappings = previous.worktreeRootMappings ?? [];
-			if (opts[restorePreconditionsChecked] !== true) {
-				if ((await backend.workflowOwnership(runId)) === "foreign")
-					throw new JournalOwnershipError(runId, (await journal.leaseState(runId))?.holderId ?? null);
-				const precondition = await runRestorePreconditionFailure(
-					journal,
-					runId,
-					mappings,
-					previous.snapshots ?? opts.snapshots,
-					opts.signal,
-				);
-				if (precondition !== undefined) throw precondition;
-			}
+			if (opts[restorePreconditionsChecked] !== true && (await backend.workflowOwnership(runId)) === "foreign")
+				throw new JournalOwnershipError(runId, (await journal.leaseState(runId))?.holderId ?? null);
 			let warningCount = 0;
+			const unrestored: WorkflowUnrestoredCheckout[] = [];
 			const restored = await resolveWorkflowSnapshotFrontier(journal, runId, {
 				mappings,
 				settings: previous.snapshots ?? opts.snapshots,
 				signal: opts.signal,
-				onRestore: (mapping) =>
+				onRestore: (mapping) => {
+					if (mapping.degraded !== undefined) return;
 					activeStore.recordNotice({
 						id: `workflow-worktree-restore:${runId}:${mapping.snapshotId}:${mapping.restoredAt}`,
 						runId,
 						level: "info",
 						message: formatWorktreeRestoreNotice(mapping),
 						createdAt: Date.now(),
-					}),
-				onWarning: (warning, mapping) =>
+					});
+				},
+				onWarning: (warning, mapping) => {
+					// A worktree restored with less than its snapshot has one notice of what it holds instead.
+					if (mapping.degraded !== undefined && (warning.code === "omitted-content" || warning.code === "filters"))
+						return;
 					activeStore.recordNotice({
 						id: `workflow-worktree-restore-warning:${runId}:${mapping.snapshotId}:${mapping.restoredAt}:${warningCount++}`,
 						runId,
 						level: "warning",
 						message: formatWorktreeRestoreWarning(warning),
 						createdAt: Date.now(),
-					}),
+					});
+				},
+				onUnrestored: (checkout) => unrestored.push(checkout),
 			});
+			const restoreSnapshots =
+				mappings.length > 0 || restored.length > 0
+					? new Map(
+							(await listWorkflowSnapshotBoundaries(journal, runId)).map((boundary) => [
+								boundary.snapshot.id,
+								boundary.snapshot,
+							]),
+						)
+					: new Map<string, WorktreeSnapshot>();
 			if (mappings.length > 0 || restored.length > 0) {
-				const snapshots = new Map(
-					(await listWorkflowSnapshotBoundaries(journal, runId)).map((boundary) => [
-						boundary.snapshot.id,
-						boundary.snapshot,
-					]),
-				);
 				const resumeToken = crypto.randomUUID();
 				let blueprintNoticeCount = 0;
 				await setUpResumedRunWorktrees(
-					{ restored, mappings, snapshots },
+					{ restored, mappings, snapshots: restoreSnapshots },
 					{
 						signal: opts.signal,
 						onNotices: (notices) => {
@@ -277,15 +286,46 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 				);
 			}
 			const allMappings = [...mappings, ...restored];
-			if (restored.length > 0) {
-				await backend.commitWorkflowRegistration({ ...previous, worktreeRootMappings: allMappings });
+			const recordedCwd = previous.invocationCwd ?? opts.cwd;
+			const continuing = recordedCwd === undefined ? undefined : mapWorkflowWorktreePath(recordedCwd, allMappings);
+			const outcomes = runWorktreeRestoreOutcomes({
+				restored,
+				unrestored,
+				snapshots: restoreSnapshots,
+				continuing,
+				launchCwd: opts[resumeLaunchCwd] ?? opts.cwd ?? process.cwd(),
+				previous: previous.worktreeRestoreOutcomes ?? [],
+				mappings: allMappings,
+			});
+			for (const outcome of outcomes.fresh) {
+				activeStore.recordNotice({
+					id: `workflow-worktree-restore-outcome:${runId}:${outcome.snapshotId}:${outcome.at}`,
+					runId,
+					level: "warning",
+					message: outcome.message,
+					createdAt: Date.now(),
+				});
 			}
-			if (allMappings.length > 0) {
-				const cwd = previous.invocationCwd ?? opts.cwd;
+			if (restored.length > 0 || outcomes.list.length > 0 || (previous.worktreeRestoreOutcomes?.length ?? 0) > 0) {
+				await backend.commitWorkflowRegistration({
+					...previous,
+					...(allMappings.length > 0 ? { worktreeRootMappings: allMappings } : {}),
+					// Cleared by a resume that restored every checkout exactly.
+					...(outcomes.list.length > 0 || previous.worktreeRestoreOutcomes !== undefined
+						? { worktreeRestoreOutcomes: outcomes.list }
+						: {}),
+				});
+			}
+			const cwd = outcomes.continuedIn ?? continuing;
+			if (allMappings.length > 0 || outcomes.list.length > 0) {
 				opts = {
 					...opts,
-					...(cwd === undefined ? {} : { cwd: mapWorkflowWorktreePath(cwd, allMappings) }),
-					worktreeRootMappings: allMappings,
+					...(cwd === undefined ? {} : { cwd }),
+					...(outcomes.continuedIn === undefined || recordedCwd === undefined
+						? {}
+						: { [recordedInvocationCwd]: recordedCwd }),
+					...(allMappings.length > 0 ? { worktreeRootMappings: allMappings } : {}),
+					...(outcomes.list.length > 0 ? { worktreeRestoreOutcomes: outcomes.list } : {}),
 				};
 			}
 		}
@@ -318,7 +358,10 @@ export async function run<TInputs extends WorkflowInputValues, TRunInputs extend
 						evictionPolicy,
 					),
 				);
-			return await withWorktreeRootMappings(opts.worktreeRootMappings ?? [], admitted);
+			const restoreNotices = (opts.worktreeRestoreOutcomes ?? []).map((outcome) => outcome.message);
+			return await withWorktreeRootMappings(opts.worktreeRootMappings ?? [], () =>
+				withWorktreeRestoreNotices(restoreNotices, admitted),
+			);
 		} finally {
 			try {
 				await publicPool?.close();
@@ -537,6 +580,7 @@ async function executeRun(
 		stages: [],
 		toolNodes: [],
 		...(opts.worktreeRootMappings !== undefined ? { worktreeRootMappings: opts.worktreeRootMappings } : {}),
+		...(opts.worktreeRestoreOutcomes !== undefined ? { worktreeRestoreOutcomes: opts.worktreeRestoreOutcomes } : {}),
 		pendingStageMessages: [
 			...pendingStageMessagesForDurableRun(rootBackend, runId, opts.parentRun?.rootRunId ?? runId),
 		],
@@ -820,6 +864,7 @@ async function executeRun(
 		durableRootBackend: rootBackend,
 		snapshots: opts.snapshots,
 		worktreeRootMappings: opts.worktreeRootMappings,
+		worktreeRestoreOutcomes: opts.worktreeRestoreOutcomes,
 	};
 	/** Set once the run is evicted: its index record, which this execution returns instead of a result. */
 	let evicted: EvictedRun | undefined;
@@ -1507,6 +1552,7 @@ async function executeRun(
 						gitWorktreeSetupCache,
 						runSnapshot.origin,
 					),
+					...(opts[recordedInvocationCwd] === undefined ? {} : { invocationCwd: opts[recordedInvocationCwd] }),
 				});
 			} else {
 				await durableBackend.commitWorkflowStatus(runId, "running");

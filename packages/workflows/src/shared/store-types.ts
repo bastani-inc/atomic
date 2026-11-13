@@ -14,6 +14,7 @@ import type {
 	WorkflowSerializableValue,
 } from "./types.js";
 import type { WorkflowInfrastructureFault } from "./workflow-infrastructure-error.js";
+import type { WorkflowWorktreeRestoreOutcome } from "./worktree-restore-outcome.js";
 
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "killed";
 export type StageStatus =
@@ -577,6 +578,8 @@ export type WorkflowActor = "user" | "agent";
  */
 export type RunResumeSource = "run_control" | "prompt_answer" | "stage_control" | "acknowledgement";
 
+export type { WorkflowWorktreeRestoreOutcome } from "./worktree-restore-outcome.js";
+
 export interface RunSnapshot extends RunExecutionState {
 	readonly label?: string;
 	readonly summary?: string;
@@ -592,6 +595,8 @@ export interface RunSnapshot extends RunExecutionState {
 	snapshotUnavailable?: import("@bastani/atomic").SerializedWorkspaceError;
 	/** Mapping from recorded roots to fresh restored worktrees. */
 	worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
+	/** The checkouts this run's latest resume, or its worker host, could not restore exactly (#4738). */
+	worktreeRestoreOutcomes?: readonly WorkflowWorktreeRestoreOutcome[];
 	/** Resolved duration budget and persisted wrap-up state; omitted when unbudgeted. */
 	budget?: RunBudgetSnapshot;
 	budgetState?: RunBudgetState;

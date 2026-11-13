@@ -232,6 +232,7 @@ function summaryRows(detail: RunDetail, now: number): Array<[string, string | un
 	if (detail.phase !== undefined) rows.push(["phase", `${detail.phase} (${detail.phaseAgeMs ?? 0}ms)`]);
 	if (detail.lastProgressAt !== undefined) rows.push(["last progress", formatTime(detail.lastProgressAt)]);
 	if (detail.dependencyError !== undefined) rows.push(["dependency", detail.dependencyError]);
+	for (const notice of detail.worktreeRestore ?? []) rows.push(["checkout", notice]);
 	if (detail.intercomDeliveryIssue !== undefined) rows.push(["intercom", detail.intercomDeliveryIssue]);
 	if (detail.controlPersistence !== undefined) {
 		rows.push(["control", `${detail.controlRequestedStatus} (${detail.controlPersistence})`]);

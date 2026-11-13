@@ -165,6 +165,9 @@ export async function completedWorkflowRunSnapshots(
 			endedAt: handle.updatedAt,
 			durationMs: rootDuration,
 			...(handle.worktreeRootMappings !== undefined ? { worktreeRootMappings: handle.worktreeRootMappings } : {}),
+			...(handle.worktreeRestoreOutcomes !== undefined
+				? { worktreeRestoreOutcomes: handle.worktreeRestoreOutcomes }
+				: {}),
 			...(handle.error !== undefined ? { error: handle.error } : {}),
 			...(handle.exited !== undefined ? { exited: handle.exited } : {}),
 			...(handle.exitReason !== undefined ? { exitReason: handle.exitReason } : {}),
@@ -225,6 +228,9 @@ function rootSnapshot(
 		stages: graph.stages,
 		toolNodes: graph.toolNodes,
 		...(handle.worktreeRootMappings !== undefined ? { worktreeRootMappings: handle.worktreeRootMappings } : {}),
+		...(handle.worktreeRestoreOutcomes !== undefined
+			? { worktreeRestoreOutcomes: handle.worktreeRestoreOutcomes }
+			: {}),
 		startedAt: handle.createdAt,
 		...(terminal
 			? { endedAt: handle.updatedAt, durationMs: terminalDurationMs }
