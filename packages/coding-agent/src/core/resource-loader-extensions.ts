@@ -31,6 +31,7 @@ export async function loadExtensionPaths(
 		workflowResourceProvider,
 		runtime,
 		inheritanceSnapshotProvider,
+		state.agentDir,
 	);
 	for (const path of paths.filter((path) => path.startsWith(BUILTIN_PATH_PREFIX))) {
 		const builtin = state.extensionFactories.find(

@@ -5,12 +5,11 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { getModel } from "@bastani/pi-ai/compat";
-import { afterAll, afterEach, beforeAll, beforeEach, test, vi } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import type { DurableBackendProcessOwner } from "../../workflows/src/durable/backend-process-owner.js";
 import { MemoryRunJournal } from "../../workflows/src/durable/journal/memory-run-journal.js";
 import { openSqlRunJournal } from "../../workflows/src/durable/journal/sqlite-run-journal.js";
 import type { AgentSession } from "../src/core/agent-session.js";
-import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "../src/core/sdk.js";
 import { createAgentSession } from "../src/core/sdk.js";
@@ -34,22 +33,7 @@ const WORKFLOWS_ONLY: CreateAgentSessionOptions["builtins"] = {
 const DURABLE_BACKENDS = Symbol.for("atomic-workflows/durable-backend-process-owner@1");
 
 let root: string;
-let transpileCacheHome: string;
 const sessions: AgentSession[] = [];
-
-// The extension loader memoizes its transpile cache directory from the first agent directory it sees and keeps
-// writing there for the life of the process. Pin it to a directory that outlives every test so a per-test root is
-// never recreated after its cleanup.
-beforeAll(() => {
-	transpileCacheHome = mkdtempSync(join(tmpdir(), "atomic-sdk-workflow-journal-cache-"));
-	vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(transpileCacheHome, "agent"));
-	extensionLoaderTestHooks.getTranspileCacheDir();
-	vi.unstubAllEnvs();
-});
-
-afterAll(() => {
-	rmSync(transpileCacheHome, { recursive: true, force: true });
-});
 
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "atomic-sdk-workflow-journal-"));

@@ -148,6 +148,7 @@ class BuiltinResourceLoader implements ResourceLoader {
 			},
 			target.runtime,
 			() => this.delegate.getInheritanceSnapshot?.() ?? {},
+			this.agentDir,
 		);
 		for (const extension of loaded.extensions) markTrustedMandatoryRuntimeExtension(extension);
 		this.extensions = {
