@@ -620,6 +620,9 @@ export class AgentSessionRuntime {
 		});
 		if (prepared.status !== "ready") return sessionManager;
 		this.resumeNoticeQueue.push(...prepared.blueprintNotices);
+		// The session records nothing for a checkout whose snapshot record it lacks, so its notice is handed over here
+		// (#4744). A mirror of a resume another process prepared gets that process's notices instead.
+		if (this.resumeBlueprints === "build") this.resumeNoticeQueue.push(...(prepared.missingRecordNotices ?? []));
 		return prepared.sessionManager;
 	}
 

@@ -109,6 +109,11 @@ export type PreparedSessionResume =
 			readonly notices: readonly ResumeNotice[];
 			/** The warnings of the blueprint builds this resume ran, also in `notices`. */
 			readonly blueprintNotices: readonly ResumeNotice[];
+			/**
+			 * The notices of checkouts whose snapshot record the session does not hold, also in `notices` (#4744). The
+			 * session records nothing for them, so a caller that shows the notices its entries carry shows these too.
+			 */
+			readonly missingRecordNotices?: readonly ResumeNotice[];
 			/** The blueprint context the session's next turn carries, already recorded in it; undefined when none. */
 			readonly blueprintContext: string | undefined;
 	  };
@@ -430,6 +435,7 @@ export async function prepareSessionResume(
 		sessionManager: opened.sessionManager,
 		notices,
 		blueprintNotices: blueprints.notices,
+		missingRecordNotices: resumed.missingNotices,
 		blueprintContext: blueprints.context,
 	};
 }
@@ -465,17 +471,16 @@ async function continueWithoutGit(
 		resumed.status === "none" ? [] : resumed.unrestored.map((checkout) => checkout.record),
 	);
 	const context = await describeBlueprintsInPlace(opened.sessionManager, storeDir, options);
+	const missingRecordNotices = (resumed.missingRecords ?? []).map((missing) => ({
+		type: "warning" as const,
+		message: formatMissingRecordNotice(missing),
+	}));
 	return {
 		status: "ready",
 		sessionManager: opened.sessionManager,
-		notices: [
-			...opened.notices,
-			...(resumed.missingRecords ?? []).map((missing) => ({
-				type: "warning" as const,
-				message: formatMissingRecordNotice(missing),
-			})),
-		],
+		notices: [...opened.notices, ...missingRecordNotices],
 		blueprintNotices: [],
+		missingRecordNotices,
 		blueprintContext: context,
 	};
 }
@@ -495,11 +500,13 @@ async function continueWithoutRecords(
 	const cwd = existsSync(recorded) ? recorded : resolve(options.launchCwd);
 	const opened = await openResumedSession(sessionManager, cwd, [], options.sessionDirectory);
 	const context = await describeBlueprintsInPlace(opened.sessionManager, storeDir, options);
+	const notices = missing.map((record) => ({ type: "warning" as const, message: formatMissingRecordNotice(record) }));
 	return {
 		status: "ready",
 		sessionManager: opened.sessionManager,
-		notices: missing.map((record) => ({ type: "warning" as const, message: formatMissingRecordNotice(record) })),
+		notices,
 		blueprintNotices: [],
+		missingRecordNotices: notices,
 		blueprintContext: context,
 	};
 }
@@ -754,6 +761,8 @@ async function restorePlanned(
 ): Promise<{
 	restored: WorktreeRootMapping[];
 	failed: ResumeNotice[];
+	/** The notices in `failed` of checkouts whose snapshot record the session lacks (#4744). */
+	missingNotices: ResumeNotice[];
 	unrestored: WorktreeUnrestored[];
 	cwd: string | undefined;
 }> {
@@ -763,6 +772,7 @@ async function restorePlanned(
 		unrestored: [] as WorktreeUnrestored[],
 		cwd: undefined as string | undefined,
 		missing: new Set<string>(),
+		missingNotices: [] as ResumeNotice[],
 	};
 	const restore = async (targets: readonly RestoreTarget[], pending: WorktreeRootMapping | undefined) => {
 		const git = plan.git;
@@ -789,7 +799,9 @@ async function restorePlanned(
 		for (const missing of resumed.missingRecords ?? []) {
 			if (outcome.missing.has(missing.root)) continue;
 			outcome.missing.add(missing.root);
-			outcome.failed.push({ type: "warning", message: formatMissingRecordNotice(missing) });
+			const notice: ResumeNotice = { type: "warning", message: formatMissingRecordNotice(missing) };
+			outcome.failed.push(notice);
+			outcome.missingNotices.push(notice);
 		}
 		if (resumed.status === "none") return undefined;
 		if (resumed.status === "restored") outcome.restored.push(...resumed.mappings);
