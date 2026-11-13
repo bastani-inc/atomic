@@ -15,6 +15,7 @@ const { IntercomClient } = await import("../../packages/intercom/broker/client.j
 const { registerIntercomTool } = await import("../../packages/intercom/intercom-tool.js");
 const { ReplyTracker } = await import("../../packages/intercom/reply-tracker.js");
 const { ReplyWaiterRegistry } = await import("../../packages/intercom/reply-waiter.js");
+const { IntercomClientDisconnectedError } = await import("../../packages/intercom/recoverable-disconnect.js");
 
 type Client = InstanceType<typeof IntercomClient>;
 interface RecipientDetail {
@@ -104,7 +105,11 @@ function eventBus(): EventBus {
 	};
 }
 
-function registerTool(sender: Client, events: EventBus = eventBus()): Tool {
+function registerTool(
+	sender: Client,
+	events: EventBus = eventBus(),
+	ensureConnected: () => Promise<Client> = async () => sender,
+): Tool {
 	let tool: Tool | undefined;
 	const waiters = new ReplyWaiterRegistry();
 	registerIntercomTool(
@@ -116,7 +121,7 @@ function registerTool(sender: Client, events: EventBus = eventBus()): Tool {
 			events,
 		} as never,
 		{
-			ensureConnected: async () => sender,
+			ensureConnected,
 			syncPresenceIdentity() {},
 			homeGroup: () => "default",
 			setJoinedGroups() {},
@@ -247,6 +252,36 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 			assert.equal(outcomes.get(leavingId)?.outcome, "refused");
 			assert.ok(outcomes.get(leavingId)?.reason, "a refusal carries its reason");
 			assert.match(text(result), /reached 1 of 2 recipients/);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a glob send retries a recoverable disconnect while it looks up its recipients (#4752)",
+		async () => {
+			const group = `reconnect-${randomUUID()}`;
+			const sender = await connect("reconnect-lead", { group });
+			const inbox: string[] = [];
+			await connect("reconnect-worker-1", { group, received: inbox });
+			let connects = 0;
+			const tool = registerTool(sender, eventBus(), async () => {
+				connects += 1;
+				if (connects === 1) throw new IntercomClientDisconnectedError();
+				return sender;
+			});
+
+			const result = await tool.execute(
+				"reconnect",
+				{ action: "send", to: "reconnect-worker-*", message: "after the restart" },
+				undefined,
+				undefined,
+				contextFor("reconnect-host"),
+			);
+
+			assert.equal(result.isError, false, text(result));
+			assert.equal(result.details?.recipients?.[0]?.outcome, "delivered");
+			await waitFor(() => inbox.length === 1, "the worker receives the message once");
+			assert.deepEqual(inbox, ["after the restart"]);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);

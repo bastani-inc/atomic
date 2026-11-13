@@ -2,7 +2,7 @@ import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError, isRetry
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
-import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
+import type { Attachment, BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -291,6 +291,8 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
       readonly message: string | undefined;
       readonly replyTo: string | undefined;
       readonly toolSessionId: string;
+      readonly attachments: Attachment[] | undefined;
+      readonly signal: AbortSignal | undefined;
       readonly ctx: { readonly hasUI: boolean; readonly ui: { confirm(title: string, message: string): Promise<boolean> } };
       readonly sendOne: (recipient: string) => Promise<IntercomAttemptResult>;
     },
@@ -300,43 +302,54 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     if (request.replyTo) {
       return patternError(`replyTo answers one ask, so it needs one exact target; "${target}" is a pattern.`);
     }
-    let client: IntercomClient;
-    try {
-      client = await ensureConnected("tool");
-    } catch (error) {
-      return patternError(`Intercom not connected: ${getErrorMessage(error)}`);
-    }
-    syncPresenceIdentity(request.toolSessionId);
-    let recipients: Array<{ readonly target: string; readonly label: string }>;
-    try {
-      if (pattern.kind === "sessions") {
-        const sessions = await client.listSessions();
-        const matches = matchSessionPattern(sessions, pattern.pattern, client.sessionId);
-        if (matches.length === 0) {
-          const close = closeSessionNames(sessions, pattern.pattern, client.sessionId);
-          return patternError(`No session visible in your groups matches "${pattern.pattern}". ${
-            close.length === 0 ? "No other sessions are visible in your groups." : `Close names: ${close.join(", ")}.`
-          }`);
+    let recipients: Array<{ readonly target: string; readonly label: string }> = [];
+    let lookupFailure = "";
+    // Connecting and finding the recipients retry recoverable disconnects as a direct send does; nothing is sent yet.
+    const lookup = await runIntercomOperation(async () => {
+      try {
+        const client = await ensureConnected("tool");
+        syncPresenceIdentity(request.toolSessionId);
+        if (pattern.kind === "sessions") {
+          const sessions = await client.listSessions();
+          const matches = matchSessionPattern(sessions, pattern.pattern, client.sessionId);
+          if (matches.length === 0) {
+            const close = closeSessionNames(sessions, pattern.pattern, client.sessionId);
+            return patternError(`No session visible in your groups matches "${pattern.pattern}". ${
+              close.length === 0 ? "No other sessions are visible in your groups." : `Close names: ${close.join(", ")}.`
+            }`);
+          }
+          recipients = matches.map((session) => ({
+            target: session.id,
+            label: session.name ? `${session.name} (${session.id})` : session.id,
+          }));
+        } else {
+          const children = await listIntercomChildren(pi.events, request.toolSessionId, pattern.runId);
+          if (children.length === 0) {
+            return patternError(`This session has no running, released or paused subagents${
+              pattern.runId === undefined ? "" : ` in run ${pattern.runId}`
+            } to send to.`);
+          }
+          recipients = children.map((child) => ({ target: child.childName, label: `${child.childName} (${child.childId})` }));
         }
-        recipients = matches.map((session) => ({
-          target: session.id,
-          label: session.name ? `${session.name} (${session.id})` : session.id,
-        }));
-      } else {
-        const children = await listIntercomChildren(pi.events, request.toolSessionId, pattern.runId);
-        if (children.length === 0) {
-          return patternError(`This session has no running, released or paused subagents${
-            pattern.runId === undefined ? "" : ` in run ${pattern.runId}`
-          } to send to.`);
-        }
-        recipients = children.map((child) => ({ target: child.childName, label: `${child.childName} (${child.childId})` }));
+        return { content: [], isError: false, details: {} };
+      } catch (error) {
+        const retryable = isRecoverableIntercomDisconnect(error) || isRetryableIntercomRoutingError(error);
+        lookupFailure = getErrorMessage(error);
+        return {
+          content: [{ type: "text", text: `Failed to send: ${lookupFailure}` }],
+          isError: true,
+          details: { error: true, retryable },
+        };
       }
-    } catch (error) {
-      return patternError(`Failed to send: ${getErrorMessage(error)}`);
+    }, () => {}, request.signal);
+    if (lookup.isError && lookup.details.terminal === true) {
+      return patternError(`Could not find the recipients of "${target}"${lookupFailure ? `: ${lookupFailure}` : ""}. Nothing was sent.`);
     }
+    if (lookup.isError) return lookup;
     if (deps.confirmSend && request.ctx.hasUI) {
       const names = recipients.map((recipient) => `- ${recipient.label}`).join("\n");
-      const confirmed = await request.ctx.ui.confirm("Send Message", `Send to "${target}":\n${names}\n\n${request.message}`);
+      const attachmentText = request.attachments?.length ? formatAttachments(request.attachments) : "";
+      const confirmed = await request.ctx.ui.confirm("Send Message", `Send to "${target}":\n${names}\n\n${request.message}${attachmentText}`);
       if (!confirmed) return { content: [{ type: "text", text: "Message cancelled by user" }], isError: false, details: {} };
     }
     const outcomes = await Promise.all(recipients.map(async (recipient): Promise<PatternRecipientOutcome> => {
@@ -1446,6 +1459,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           message,
           replyTo,
           toolSessionId,
+          attachments,
+          signal,
           ctx,
           sendOne: (recipient) =>
             runIntercomOperation(
