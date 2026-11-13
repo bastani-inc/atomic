@@ -337,6 +337,12 @@ export async function prepareSessionResume(
 		}
 		return verification;
 	};
+	// Which partly restored worktrees are still as the restore left them, compared once per resume.
+	let partialOnce: Promise<Set<string>> | undefined;
+	const partial = (): Promise<Set<string>> => {
+		partialOnce ??= partialRestores(sessionManager, options);
+		return partialOnce;
+	};
 	const match = latestSessionSnapshot(sessionManager);
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
@@ -364,12 +370,7 @@ export async function prepareSessionResume(
 		needsRestore &&
 		(await isDirectory(match.root)) &&
 		(await orFallBack(options, "own-checkout", new Set([match.root]), async () =>
-			checkoutsWorkedHere(
-				new Map([[match.root, match.snapshot]]),
-				match.cwd,
-				options,
-				await partialRestores(sessionManager, options),
-			),
+			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options, await partial()),
 		).then((worked) => worked.has(match.root)));
 	// The checkout the session returned to stays as it is, whatever it changed since: only the others are restored.
 	const kept = [...(keepsOwnCheckout && match !== undefined ? [match.root] : [])];
@@ -395,6 +396,7 @@ export async function prepareSessionResume(
 		mapRestoredPath(sessionManager.getCwd(), checkouts.getWorktreeRootMappings()),
 		resume,
 		verifyOnce,
+		partial,
 	);
 	if (candidates.targets.length > 0) git ??= { unavailable: await io.probeGit(options.signal) };
 	const plan = planRestores(candidates, git?.unavailable);
@@ -671,6 +673,7 @@ async function restoreCandidates(
 	cwd: string,
 	options: PrepareSessionResumeOptions,
 	needsRestore: (snapshot: WorktreeSnapshot, root: string) => Promise<boolean>,
+	partial: () => Promise<ReadonlySet<string>>,
 ): Promise<{ readonly targets: RestoreTarget[]; readonly left: Map<string, ResumeNotice> }> {
 	const targets: RestoreTarget[] = [];
 	const left = new Map<string, ResumeNotice>();
@@ -692,14 +695,7 @@ async function restoreCandidates(
 		if (
 			!runsHere &&
 			!absent &&
-			(
-				await checkoutsWorkedHere(
-					new Map([[root, snapshot]]),
-					cwd,
-					options,
-					await partialRestores(sessionManager, options),
-				)
-			).has(root)
+			(await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options, await partial())).has(root)
 		) {
 			left.set(
 				root,

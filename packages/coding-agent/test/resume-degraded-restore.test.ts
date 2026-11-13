@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
@@ -19,6 +19,7 @@ import {
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
+	setWorktreeSnapshotGit,
 } from "../src/index.js";
 
 useTemporaryAgentDir();
@@ -348,4 +349,42 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		);
 		assert.equal(readFileSync(join(partial.to, "README.md"), "utf8"), "edited by hand in the partial worktree\n");
 	});
+
+	test.skipIf(process.platform === "win32")(
+		"a resume compares a partly restored worktree with what it restored once, however many checkouts it checks (#4733)",
+		async () => {
+			const { clone } = await editedClone();
+			const { manager, snapshot } = await recordSession(clone);
+			const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+			const others: string[] = [];
+			for (const name of ["second", "third"]) {
+				const other = (await sandbox.remoteWithClone(name, { "README.md": `${name}\n` })).clone;
+				const captured = await captureWorktreeSnapshot(other, { settings, blobs });
+				if (captured.status !== "captured") throw new Error(captured.status);
+				await manager.appendWorktreeSnapshot(other, captured.snapshot.id, captured.snapshot);
+				others.push(other);
+			}
+			await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
+			renameSync(clone, sandbox.path("machine-a-gone"));
+			const first = ready(await prepareSessionResume(manager, options()));
+			const partial = first.sessionManager.getWorktreeRootMappings().find((mapping) => mapping.degraded)!;
+			for (const other of others) sandbox.write(join(other, "README.md"), "changed here since\n");
+
+			const log = sandbox.path("git.log");
+			const wrapper = sandbox.path("git-logging");
+			writeFileSync(wrapper, `#!/bin/sh\nprintf '%s %s\\n' "$PWD" "$*" >> "${log}"\nexec git "$@"\n`);
+			chmodSync(wrapper, 0o755);
+			setWorktreeSnapshotGit(async () => ({ ...sandbox.executable, path: wrapper }));
+			ready(await prepareSessionResume(first.sessionManager, options()));
+
+			const comparisons = readFileSync(log, "utf8")
+				.split("\n")
+				.filter(
+					(line) =>
+						line.startsWith(`${realpathSync(partial.to)} `) &&
+						line.includes(`read-tree --reset ${partial.degraded!.tree}`),
+				);
+			assert.equal(comparisons.length, 1, `${comparisons.length} comparisons`);
+		},
+	);
 });
