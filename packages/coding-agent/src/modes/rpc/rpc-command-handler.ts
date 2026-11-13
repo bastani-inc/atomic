@@ -55,6 +55,7 @@ function canRunBeforeOptionalResources(command: RpcCommand): boolean {
 		case "abort_retry":
 		case "cancel_login_provider":
 		case "clear_queue":
+		case "get_entries":
 		case "get_messages":
 		case "get_state":
 		case "pause_queued_messages":

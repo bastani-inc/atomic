@@ -144,6 +144,7 @@ function createStatsEngineClient(model?: Model<Api>) {
 	let messageEnds = 0;
 	let eventListener: ((event: RpcEvent) => void) | undefined;
 	let navigateTreeResult: { cancelled: boolean; aborted?: boolean } = { cancelled: false };
+	let engineSession: SessionManager | undefined;
 	const statsRequests: StatsRequest[] = [];
 	const requestStats = (): Promise<SessionStats> => {
 		const deferred = Promise.withResolvers<SessionStats>();
@@ -178,6 +179,10 @@ function createStatsEngineClient(model?: Model<Api>) {
 			if (command.type === "navigate_tree") return Promise.resolve(navigateTreeResult as T);
 			return Promise.resolve(undefined as T);
 		},
+		getEntries: async () => ({
+			entries: engineSession?.getEntries() ?? [],
+			leafId: engineSession?.getLeafId() ?? null,
+		}),
 		abort: async () => {},
 		stop: async () => {},
 		restart: async () => {},
@@ -194,6 +199,10 @@ function createStatsEngineClient(model?: Model<Api>) {
 		},
 		setGeneration(nextGeneration: number): void {
 			generation = nextGeneration;
+		},
+		/** Answer `get_entries` from this session, which stands in for the engine's unsaved one. */
+		serveEntriesFrom(manager: SessionManager): void {
+			engineSession = manager;
 		},
 		setNavigateTreeResult(result: { cancelled: boolean; aborted?: boolean }): void {
 			navigateTreeResult = result;
@@ -223,6 +232,7 @@ function createStatsEngineClient(model?: Model<Api>) {
 type StatsEngineProbe = ReturnType<typeof createStatsEngineClient>;
 
 function createRuntime(harness: Harness, probe: StatsEngineProbe): IsolatedInteractiveRuntime {
+	probe.serveEntriesFrom(harness.sessionManager);
 	const localRuntime = new AgentSessionRuntime(harness.session, servicesFor(harness), async () => {
 		throw new Error("unused runtime factory");
 	});
@@ -277,6 +287,22 @@ async function showStats(
 	for (const index of probe.pendingStatsIndexes()) {
 		if (index >= requestsBefore) probe.resolveStats(index, payload);
 	}
+	await vi.waitFor(() => {
+		assert.equal(usageLine(runtime), line);
+	});
+}
+
+/** Answer the stats request a resync made on its own, from index `since` on, and wait for the footer to show it. */
+async function answerResyncStats(
+	probe: StatsEngineProbe,
+	runtime: IsolatedInteractiveRuntime,
+	since: number,
+	payload: SessionStats,
+	line: string,
+) {
+	const resync = probe.pendingStatsIndexes().filter((index) => index >= since);
+	assert.equal(resync.length, 1, "a resync asks the engine for its stats at once (#4703)");
+	probe.resolveStats(resync[0] ?? -1, payload);
 	await vi.waitFor(() => {
 		assert.equal(usageLine(runtime), line);
 	});
@@ -580,9 +606,11 @@ test("an engine restart drops the old engine's stats without a diagnostic (#3328
 		await nextMacrotask();
 		assert.equal(usageLine(runtime), P1_LINE);
 
+		const beforeResync = probe.statsRequestCount;
 		await runtime.initializeFromEngine();
 		assert.equal(usageLine(runtime), mirrorLine);
 		assert.deepEqual(diagnostics, []);
+		await answerResyncStats(probe, runtime, beforeResync, P2, P2_LINE);
 		await showStats(probe, runtime, P2, P2_LINE);
 		assert.equal(usageLine(runtime), P2_LINE);
 	} finally {
@@ -617,6 +645,7 @@ for (const operation of ["newSession", "fork", "importFromJsonl"] as const) {
 				assert.equal(probe.pendingStatsIndexes().length, 1);
 			});
 			const heldRequest = probe.pendingStatsIndexes()[0] ?? -1;
+			const beforeReplacement = probe.statsRequestCount;
 
 			if (operation === "newSession") await runtime.newSession();
 			else if (operation === "fork") await runtime.fork("entry-1");
@@ -629,6 +658,7 @@ for (const operation of ["newSession", "fork", "importFromJsonl"] as const) {
 			await nextMacrotask();
 			assert.equal(usageLine(runtime), replacedLine);
 
+			await answerResyncStats(probe, runtime, beforeReplacement, P2, P2_LINE);
 			await showStats(probe, runtime, P2, P2_LINE);
 			assert.equal(usageLine(runtime), P2_LINE);
 		} finally {
@@ -659,11 +689,13 @@ test("switchSession never shows the previous session's stats, even when the old 
 			assert.equal(probe.pendingStatsIndexes().length, 1);
 		});
 		const heldRequest = probe.pendingStatsIndexes()[0] ?? -1;
+		const beforeSwitch = probe.statsRequestCount;
 
 		await runtime.switchSession(targetId);
 		assert.equal(runtime.session, second.session);
 		assert.doesNotMatch(usageLine(runtime), /\$0\.172|2\.1%\/1\.0M/);
 
+		await answerResyncStats(probe, runtime, beforeSwitch, P2, P2_LINE);
 		await showStats(probe, runtime, P2, P2_LINE);
 		probe.resolveStats(heldRequest, P1);
 		await nextMacrotask();

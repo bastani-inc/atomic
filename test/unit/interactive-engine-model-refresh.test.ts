@@ -77,6 +77,7 @@ test("isolated host treats an engine-published extension model as configured aft
 		}),
 		cancelLoginProvider: async () => {},
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
@@ -148,6 +149,7 @@ test("an aborted isolated refresh does not replace the current model catalog", a
 		requestInternal: async () => ({ models: [], scopedModels: [], customAuthProviders: [] }),
 		refreshModels: async () => pending,
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
@@ -210,6 +212,7 @@ test("isolated host synchronizes authoritative engine fallback state and clears 
 		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
 		setModel: async () => model,
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
@@ -285,6 +288,7 @@ test("isolated explicit cycle clears fallback only for a changed model despite a
 			return { model, thinkingLevel: behavior === "same" ? ("high" as const) : ("off" as const), isScoped: false };
 		},
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const sessionFixture = {
@@ -379,6 +383,7 @@ async function selectDuringEngineResync(
 			return { provider, id };
 		},
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const sessionFixture = {
@@ -500,6 +505,7 @@ test("isolated session synchronization replaces each engine-selected session exa
 			return { cancelled: false };
 		},
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 		stop: async () => {},
 	} as unknown as RpcClient;
 	const local = new AgentSessionRuntime(initial.session, initial.services, createRuntime, initial.diagnostics);
@@ -563,6 +569,7 @@ test("isolated queue pause reaches the engine before abort and resumes remotely"
 			calls.push("abort");
 		},
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	} as unknown as RpcClient;
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = {
@@ -625,6 +632,7 @@ test("isolated runtime applies the RPC compaction reason during resync", async (
 		getState: async () => state,
 		requestInternal: async () => ({ models: [model], scopedModels: [], customAuthProviders: [] }),
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 	});
 	const modelRuntime = await ModelRuntime.create({ modelsPath: null });
 	const session = Object.assign({} as AgentSession, {

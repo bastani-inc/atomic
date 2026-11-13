@@ -369,6 +369,7 @@ describe("logout credential invalidation (#1919)", () => {
 			onGenerationEnded: () => () => {},
 			onInteractiveEngineMessage: () => () => {},
 			getCommands: async () => [],
+			getEntries: async () => ({ entries: [], leafId: null }),
 			getState: async () => ({
 				model,
 				thinkingLevel: "medium",

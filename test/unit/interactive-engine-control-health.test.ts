@@ -56,6 +56,7 @@ async function controlHarness(control: (command: RpcCommandBody) => Promise<unkn
 		request: control,
 		abort,
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 		stop: async () => {
 			stops += 1;
 		},

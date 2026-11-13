@@ -87,6 +87,7 @@ async function createGenerationRuntime() {
 		},
 		requestInternal: async () => ({ models: [], scopedModels: [] }),
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 		prompt,
 		abort,
 		restart: vi.fn(() => restartGate.promise),
@@ -269,6 +270,39 @@ describe("interactive engine resource readiness", () => {
 		} finally {
 			harness.cleanup();
 			replacement.cleanup();
+		}
+	});
+
+	it("answers get_entries before optional resources are ready, so an unsaved session's view can bind (#4703)", async () => {
+		const harness = await createHarness();
+		const waitForResources = vi.fn(() => new Promise<void>(() => {}));
+		const runtime = new AgentSessionRuntime(
+			harness.session,
+			{ cwd: harness.tempDir, agentDir: harness.tempDir } as never,
+			async () => {
+				throw new Error("unused runtime factory");
+			},
+		);
+		const handle = createRpcCommandHandler({
+			runtimeHost: runtime,
+			getSession: () => harness.session,
+			rebindSession: async () => {},
+			output: vi.fn(),
+			waitForResources,
+		});
+
+		try {
+			const response = await handle({ id: "entries", type: "get_entries" });
+			assert.deepEqual(response, {
+				id: "entries",
+				type: "response",
+				command: "get_entries",
+				success: true,
+				data: { entries: [], leafId: null },
+			});
+			assert.equal(waitForResources.mock.calls.length, 0);
+		} finally {
+			harness.cleanup();
 		}
 	});
 

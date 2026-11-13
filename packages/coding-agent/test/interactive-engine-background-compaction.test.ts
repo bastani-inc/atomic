@@ -261,6 +261,7 @@ async function createProbe() {
 		getState: async () => state,
 		requestInternal: async <T>(): Promise<T> => ({ models: [], scopedModels: [] }) as T,
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 		stop: async () => {},
 	};
 	const services = { cwd: first.tempDir, agentDir: first.tempDir, settingsManager: first.settingsManager };

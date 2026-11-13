@@ -148,6 +148,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly reportedReadyCompactions = new WeakMap<AgentSession, string>();
 	private autoRetryEnabled = true;
 	private remoteSessionName: string | undefined;
+	private remoteSessionId: string | undefined;
 	private remoteSessionFile: string | undefined;
 	private readonly health: EngineHealthController;
 	private readonly remoteCommands: RemoteCommandCatalog;
@@ -321,6 +322,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.resourceOverlaps = state.resourceOverlaps ?? [];
 			this.updateResourceExtensions(state.resourceExtensions ?? []);
 			this.remoteSessionName = state.sessionName;
+			this.remoteSessionId = state.sessionId;
 			this.remoteSessionFile = state.sessionLocation;
 			this.streaming = state.isStreaming;
 			this.compacting = state.isCompacting;
@@ -328,6 +330,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			this.queuePause.synchronize(state.queuedMessagesPaused === true);
 			this.replaceModelFallback(state.modelFallbackMessage, state.modelFallbackReason);
 			await this.refreshSessionView();
+			this.sessionStats.refresh();
 			this.engineCallbackActive = false;
 			this.health.clearUnresponsive();
 			this.health.markCooperativeAbortSettled();
@@ -1183,14 +1186,34 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async refreshSessionView(): Promise<void> {
 		const session = super.session;
 		const currentManager = session.sessionManager;
-		const refreshed = await SessionManager.open(
-			currentManager.getSessionStore(),
-			currentManager.getSessionId(),
-			currentManager.getCwd(),
-		);
+		const refreshed = currentManager.isPersisted()
+			? await SessionManager.open(
+					currentManager.getSessionStore(),
+					currentManager.getSessionId(),
+					currentManager.getCwd(),
+				)
+			: await this.openUnpersistedSessionView(currentManager);
 		Object.defineProperty(session, "sessionManager", { configurable: true, value: refreshed });
 		this.patchSessionManager(refreshed);
 		session.agent.state.messages = refreshed.buildSessionContext().messages;
+	}
+
+	/**
+	 * A saved session's entries reach the host through the store it shares with the engine. An unsaved one exists only
+	 * in the engine's memory, so its view is rebuilt from the engine's entries and leaf, under the engine's session id
+	 * (#4703).
+	 */
+	private async openUnpersistedSessionView(current: SessionManager): Promise<SessionManager> {
+		const { entries, leafId } = await this.client.getEntries();
+		const header = current.getHeader();
+		const view = SessionManager.inMemory(
+			current.getCwd(),
+			undefined,
+			header ? [{ ...header, id: this.remoteSessionId ?? header.id }, ...entries] : entries,
+		);
+		if (leafId === null) await view.resetLeaf();
+		else if (leafId !== view.getLeafId()) await view.branch(leafId);
+		return view;
 	}
 
 	private observeEvent(event: RpcEvent): void {
