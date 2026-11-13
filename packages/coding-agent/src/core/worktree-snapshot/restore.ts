@@ -29,6 +29,7 @@ import {
 	type GitRunResult,
 	gitText,
 	nulFields,
+	redactUrlCredentials,
 	runGit,
 	withWorktreeSnapshotGit,
 } from "./git.ts";
@@ -497,40 +498,57 @@ function runFetch(git: GitRunOptions, repository: string, refspecs: readonly str
 	return runGit(fetchArgs(repository, refspecs), { ...git, nonInteractive: true });
 }
 
+interface RemoteFetch {
+	/** The last fetch failure, when a remote could not supply what was still missing. */
+	readonly failure: Error | undefined;
+	/** Whether a recorded remote's fetch of the missing commits succeeded, so that remote has every one of them. */
+	readonly supplied: boolean;
+}
+
 async function fetchCommits(
 	git: GitRunOptions,
 	remotes: readonly string[],
 	commits: readonly string[],
-): Promise<Error | undefined> {
+): Promise<RemoteFetch> {
 	let failure: Error | undefined;
+	let supplied = false;
 	for (const remote of remotes) {
 		const missing = [];
 		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
-		if (missing.length === 0) return undefined;
+		if (missing.length === 0) return { failure: undefined, supplied };
 		try {
 			await runFetch(git, remote, missing);
+			supplied = true;
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			failure = error;
 		}
 	}
-	return failure;
+	return { failure, supplied };
 }
 
+/**
+ * Makes `snapshot.head` available in the store, from the recorded remotes or else its bundle, and resolves whether
+ * it came from a recorded remote.
+ */
 async function ensureHead(
 	git: GitRunOptions,
 	snapshot: Pick<WorktreeSnapshot, "head" | "remotes" | "bundle" | "omitted"> & { readonly id: string | null },
 	blobs: SnapshotBlobStore | undefined,
 	scratch: string,
-): Promise<void> {
+): Promise<boolean> {
 	const { head } = snapshot;
+	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
-		let failure = await fetchCommits(git, snapshot.remotes, [head]);
+		// Only a fetch that succeeded proves a remote has `head`: another process may import it from a bundle meanwhile.
+		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head]);
+		let failure = fromRemotes.failure;
+		fetched = fromRemotes.supplied;
 		if (!(await hasObject(git, `${head}^{commit}`)) && snapshot.bundle) {
 			const data = await loadBlob(blobs, snapshot.bundle.blob, { snapshotId: snapshot.id, role: "bundle" });
 			const prerequisites = bundlePrerequisites(data);
 			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
-			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)) ?? failure;
+			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)).failure ?? failure;
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
@@ -573,7 +591,93 @@ async function ensureHead(
 			);
 		}
 	}
-	await runGit(["update-ref", `refs/atomic/heads/${head}`, head], git);
+	return fetched;
+}
+
+/**
+ * Transports a restored worktree's repository may name as a remote, the same ones a restore fetches over. A URL with
+ * another scheme or a remote helper (`ext::`, `<name>::`) is never configured.
+ */
+const REMOTE_SCHEMES = new Set(["https", "http", "ssh", "git", "file"]);
+
+/**
+ * Whether a recorded remote may be configured in a shared object store: credential-free, never an option, and a URL
+ * of an allowed scheme, an scp-like `host:path`, or a local path.
+ */
+function isConfigurableRemote(remote: string): boolean {
+	if (remote.startsWith("-") || redactUrlCredentials(remote) !== remote) return false;
+	if (/^[A-Za-z][A-Za-z0-9+.-]*::/.test(remote)) return false;
+	const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(remote)?.[1];
+	return scheme === undefined || REMOTE_SCHEMES.has(scheme.toLowerCase());
+}
+
+async function configuredRemoteUrls(git: GitRunOptions): Promise<string[]> {
+	const { stdout } = await runGit(["config", "-z", "--get-regexp", "^remote\\..+\\.url$"], {
+		...git,
+		allowExitCodes: [1],
+	});
+	return nulFields(stdout).map((field) => field.slice(field.indexOf("\n") + 1));
+}
+
+/**
+ * Gives a shared object store the remotes its snapshots record, in their recorded order (the first as `origin`, then
+ * `origin-2`, …), so a capture in one of its worktrees records them too. Resolves whether the store's remotes are the
+ * recorded ones. A store without recorded remotes, or with a remote that is not credential-free or not of a scheme a
+ * restore fetches over, is left without any, as before.
+ */
+async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
+	if (remotes.length === 0 || !remotes.every(isConfigurableRemote)) return false;
+	let configured = await configuredRemoteUrls(git);
+	// A store holding the start of the recorded list was set up by a restore that stopped partway; finish it.
+	if (configured.length < remotes.length && configured.every((remote, index) => remote === remotes[index])) {
+		try {
+			for (let index = configured.length; index < remotes.length; index++) {
+				await runGit(["remote", "add", "--", index === 0 ? "origin" : `origin-${index + 1}`, remotes[index]!], git);
+			}
+			return true;
+		} catch (error) {
+			// Another process configured the store at the same moment; what it wrote is compared below.
+			if (!isWorkspaceGitError(error)) throw error;
+		}
+		configured = await configuredRemoteUrls(git);
+	}
+	return configured.length === remotes.length && configured.every((remote, index) => remote === remotes[index]);
+}
+
+/** Where a restore records commits a recorded remote has, as remote-tracking refs no remote's fetch ever prunes. */
+const PUSHED_REFS = "refs/remotes/atomic/pushed/";
+
+/**
+ * The commits a restore knows a recorded remote has, to record as remote-tracking refs: the snapshot's `head` when the
+ * restore fetched it from one or the snapshot recorded nothing unpushed, else the parents of its bundled commits that
+ * the bundle does not hold, its pushed boundary. Later captures in the store's worktrees then bundle only commits that
+ * are really unpushed, and never count a commit that only a bundle carried as pushed.
+ */
+async function pushedCommits(
+	git: GitRunOptions,
+	snapshot: WorktreeSnapshot | null,
+	head: string,
+	fetched: boolean,
+): Promise<Set<string>> {
+	const pushed = new Set<string>();
+	const historyOmitted = snapshot?.omitted.some(
+		(omission) => omission.reason === "unpushed-history-denied" || omission.reason === "bundle-over-cap",
+	);
+	if (fetched || (snapshot !== null && snapshot.bundle === null && !historyOmitted)) pushed.add(head);
+	else if (snapshot?.bundle) {
+		const bundled = new Set(snapshot.bundle.commits);
+		const parents = await runGit(["rev-list", "--no-walk=unsorted", "--parents", "--stdin"], {
+			...git,
+			input: `${snapshot.bundle.commits.join("\n")}\n`,
+			allowExitCodes: [128],
+		});
+		if (parents.exitCode === 0) {
+			for (const line of parents.stdout.toString("utf8").split("\n")) {
+				for (const parent of line.split(" ").slice(1)) if (!bundled.has(parent)) pushed.add(parent);
+			}
+		}
+	}
+	return pushed;
 }
 
 async function reconstructTree(
@@ -801,12 +905,28 @@ async function restoreValidated(
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await withRepositoryLock(store, async () => {
 			await ensureObjectStore(store, snapshotId, signal);
-			await ensureHead(
+			const fetched = await ensureHead(
 				git,
 				snapshot ?? { id: null, head: target.head, remotes: target.remotes, bundle: null, omitted: [] },
 				options.blobs,
 				scratch,
 			);
+			// What a snapshot of other remotes, such as a fork at the same commit, says is pushed is not this store's.
+			const sameRemotes =
+				snapshot === null ||
+				(snapshot.remotes.length === target.remotes.length &&
+					snapshot.remotes.every((remote, index) => remote === target.remotes[index]));
+			const pushed =
+				(await configureRecordedRemotes(git, target.remotes)) && sameRemotes
+					? await pushedCommits(git, snapshot, target.head, fetched)
+					: new Set<string>();
+			await runGit(["update-ref", "--stdin"], {
+				...git,
+				input: [
+					`update refs/atomic/heads/${target.head} ${target.head}\n`,
+					...[...pushed].map((commit) => `update ${PUSHED_REFS}${commit} ${commit}\n`),
+				].join(""),
+			});
 			if (!(await hasObject(git, `${target.tree}^{tree}`))) {
 				if (!snapshot) {
 					throw new WorkspaceRestoreError("snapshot-not-found", {
