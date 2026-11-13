@@ -1074,7 +1074,7 @@ async function restoreDegradedValidated(
 				basis: closest.basis,
 				missingLinks: snapshot.chain.flatMap((link, index) => (link.patch === null ? [] : [index])),
 				missingPaths: [],
-				missingCommits: unpushedCommits(snapshot),
+				missingCommits: await notInHistory(git, unpushedCommits(snapshot), closest.commit),
 				...cause,
 			};
 		});
@@ -1090,7 +1090,9 @@ async function restoreDegradedValidated(
 			scratch,
 			warn,
 			signal,
-			verify: failure.code === "tree-mismatch" ? "head" : "tree",
+			// Whatever started the degraded restore, this host's checkout filters may change the files it writes (#4744):
+			// check its HEAD and keep the checkout, recording the tree it holds.
+			verify: "head",
 		});
 		if (measured === degraded.tree) return { path, degraded, warnings };
 		// This host's checkout filters changed files: record what the worktree holds, and which files differ.
@@ -1107,6 +1109,20 @@ function unpushedCommits(snapshot: WorktreeSnapshot): string[] {
 	if (snapshot.bundle) return [...snapshot.bundle.commits];
 	const named = snapshot.omitted.flatMap((omission) => ("commits" in omission ? omission.commits : []));
 	return named.length > 0 ? [...new Set(named)] : [snapshot.head];
+}
+
+/** `commits` without those `head`'s history holds: the restored history already has them (#4744). */
+async function notInHistory(git: GitRunOptions, commits: readonly string[], head: string): Promise<string[]> {
+	const missing: string[] = [];
+	for (const commit of commits) {
+		// Exit 1: not an ancestor; 128: not in the store, so not in the restored history either.
+		const { exitCode } = await runGit(["merge-base", "--is-ancestor", commit, head], {
+			...git,
+			allowExitCodes: [1, 128],
+		});
+		if (exitCode !== 0) missing.push(commit);
+	}
+	return missing;
 }
 
 /**

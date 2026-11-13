@@ -349,7 +349,10 @@ export function isRecoverableRestoreFailure(error: unknown): error is Error {
 	return (isWorkspaceError(error) && error.code !== "invalid-setting") || isGitUnavailableError(error);
 }
 
-/** The commits of the checkout's earlier snapshots on the branch, newest first, to restore when its own is out of reach. */
+/**
+ * The commits of every earlier snapshot of the checkout on the branch, newest first and each once, to restore when its
+ * own is out of reach (#4744). The restore stops at the first it holds or fetches, so a nearer one costs no more.
+ */
 function earlierSnapshotHeads(
 	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeSnapshotRecords">,
 	original: string,
@@ -361,10 +364,9 @@ function earlierSnapshotHeads(
 	for (const entry of [...sessionManager.getBranch()].reverse()) {
 		if (entry.type !== "worktree_snapshot" || originalRoot(entry.root, mappings) !== original) continue;
 		const head = records.get(entry.snapshotId)?.head;
-		if (head !== undefined && head !== snapshot.head && !heads.includes(head)) heads.push(head);
-		if (heads.length === 3) break;
+		if (head !== undefined && head !== snapshot.head) heads.push(head);
 	}
-	return heads;
+	return [...new Set(heads)];
 }
 
 /** What a resume tells about a checkout it continued without: why, as a clause, and what to do. */
