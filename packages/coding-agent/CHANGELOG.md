@@ -10,6 +10,7 @@
 
 - Fixed `atomic storage import` leaving earlier runs imported when another process changed a later run during the import. Import now takes the write lock of every journal file it writes to and checks every run again under those locks, so a concurrent change fails the import before anything is written. An import that fails after writing part of its files lists exactly what it imported and what it did not, and running it again finishes it without duplicates ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
 - Fixed `atomic storage export` leaving out a workflow run that `atomic storage consolidate` moved to another shard while the export read it, and reporting it as a run in the old journal format. Export now reads the catalog again and rereads the shard the run moved to, including a shard created during the export, and reports any run it still cannot export with the real reason ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
+- Fixed `/reload` emptying the transcript of a `--no-session` session in interactive mode, and `/session` and the context indicator reading 0 until the next turn. The transcript, `/session` counts, and context usage now stay as they were before the reload, for unsaved and saved sessions alike ([#4703](https://github.com/bastani-inc/atomic/issues/4703) by [@grghub](https://github.com/grghub))
 
 ## [0.9.83] - 2026-11-13
 

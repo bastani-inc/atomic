@@ -39,6 +39,9 @@ lines.on("line", (line) => {
 		case "get_commands":
 			data = { commands: [] };
 			break;
+		case "get_entries":
+			data = { entries: [], leafId: null };
+			break;
 		case "prompt":
 			stalled = true;
 			write({ type: "queue_update", steering: ["queued before stall"], followUp: [] });

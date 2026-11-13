@@ -70,6 +70,7 @@ function createRuntime(
 		getState(): Promise<RpcSessionState>;
 		requestInternal<T>(command: { type: string }): Promise<T>;
 		getCommands(): Promise<readonly RpcSlashCommand[]>;
+		getEntries(): Promise<{ entries: never[]; leafId: null }>;
 	},
 ): IsolatedInteractiveRuntime {
 	return new IsolatedInteractiveRuntime(
@@ -100,6 +101,7 @@ describe("isolated interactive startup shutdown", () => {
 				getState: async () => createState(),
 				requestInternal: async <T>(_command: { type: string }) => undefined as T,
 				getCommands: async () => [],
+				getEntries: async () => ({ entries: [], leafId: null }),
 			});
 
 			const startup = waitForInteractiveEngineBound(runtime);
@@ -134,6 +136,7 @@ describe("isolated interactive startup shutdown", () => {
 				getState: () => state.promise,
 				requestInternal: async <T>(_command: { type: string }) => undefined as T,
 				getCommands: async () => [],
+				getEntries: async () => ({ entries: [], leafId: null }),
 			});
 
 			const startup = waitForInteractiveEngineBound(runtime);
@@ -167,6 +170,7 @@ describe("isolated interactive startup shutdown", () => {
 				requestInternal: async <T>(_command: { type: string }) =>
 					({ models: [], scopedModels: [] }) as RpcModelCatalog as T,
 				getCommands: () => commands.promise,
+				getEntries: async () => ({ entries: [], leafId: null }),
 			});
 
 			await waitForInteractiveEngineBound(runtime);
@@ -202,6 +206,7 @@ describe("isolated interactive startup shutdown", () => {
 				getState: async () => createState(),
 				requestInternal: async <T>(_command: { type: string }) => undefined as T,
 				getCommands: async () => [],
+				getEntries: async () => ({ entries: [], leafId: null }),
 			});
 
 			await runtime.dispose({ fromSignal: true });
@@ -244,6 +249,7 @@ describe("isolated interactive startup shutdown", () => {
 				getState: async () => createState(),
 				requestInternal: async <T>(_command: { type: string }) => undefined as T,
 				getCommands: async () => [],
+				getEntries: async () => ({ entries: [], leafId: null }),
 			});
 			await runtime.dispose(options);
 			return { order, events };

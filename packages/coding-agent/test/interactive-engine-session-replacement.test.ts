@@ -69,6 +69,7 @@ function createUnresponsiveEngineClient() {
 			return undefined as T;
 		},
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 		abort: async () => {
 			abortCalls += 1;
 			await new Promise<void>((resolve) => {
@@ -274,6 +275,7 @@ test("history reopen failure after agent_end reaches the engine diagnostic witho
 			probe.client as never,
 		);
 		vi.spyOn(runtime.session, "sessionFile", "get").mockReturnValue("/session/history.jsonl");
+		vi.spyOn(runtime.session.sessionManager, "isPersisted").mockReturnValue(true);
 		const reopen = vi.spyOn(SessionManager, "open").mockRejectedValueOnce(new Error("history read failed"));
 		const diagnostics: string[] = [];
 		const unsubscribe = runtime.onDiagnostic((diagnostic) => diagnostics.push(diagnostic.message));
@@ -318,6 +320,7 @@ test("isolated label writes return an awaited receipt and propagate errors to th
 		);
 		const session = runtime.session;
 		vi.spyOn(session, "sessionFile", "get").mockReturnValue("/session/history.jsonl");
+		vi.spyOn(session.sessionManager, "isPersisted").mockReturnValue(true);
 		const reopen = vi.spyOn(SessionManager, "open").mockReturnValue(reopened.promise);
 		let settled = false;
 		const receipt = session.sessionManager.appendLabelChange("target", "saved-label");

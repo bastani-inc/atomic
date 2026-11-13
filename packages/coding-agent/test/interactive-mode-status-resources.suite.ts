@@ -94,6 +94,7 @@ async function createInventoryRuntime(resourceExtensions: RpcResourceExtension[]
 			}),
 			requestInternal: async () => ({ models: [], scopedModels: [] }),
 			getCommands: async () => [],
+			getEntries: async () => ({ entries: [], leafId: null }),
 			stop: async () => {},
 		} as never,
 	);

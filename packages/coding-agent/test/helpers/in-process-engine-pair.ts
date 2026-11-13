@@ -1,5 +1,6 @@
 import { AgentSessionRuntime } from "../../src/core/agent-session-runtime.ts";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
+import type { SessionManager } from "../../src/core/session-manager.ts";
 import { IsolatedInteractiveRuntime } from "../../src/modes/interactive-engine/isolated-runtime.ts";
 import type { JsonAgentSessionEvent } from "../../src/modes/json-event.ts";
 import { toJsonEvent } from "../../src/modes/json-event.ts";
@@ -215,11 +216,13 @@ export async function createEngineHostPair(
 		engineExtensions?: ExtensionFactory[];
 		/** Runtime methods the engine's command handler can call beyond the stub's session, services and notices. */
 		engineRuntimeHost?: Partial<Pick<AgentSessionRuntime, "switchSession" | "importFromJsonl">>;
+		/** The host's own view of the session. Default: a private in-memory session, as with `--no-session`. */
+		hostSessionManager?: SessionManager;
 	},
 ): Promise<EngineHostPair> {
 	const lag = { toEngineMs: 0, toHostMs: 0 };
 	const engine = await createHarness({ ...options, extensionFactories: options.engineExtensions });
-	const hostHarness = await createHarness();
+	const hostHarness = await createHarness({ sessionManager: options.hostSessionManager });
 	const client = new InProcessEngineClient({ toEngineMs: () => lag.toEngineMs, toHostMs: () => lag.toHostMs });
 	const handle = createRpcCommandHandler({
 		runtimeHost: {

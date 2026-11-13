@@ -87,6 +87,7 @@ async function createGenerationRuntime() {
 		},
 		requestInternal: async () => ({ models: [], scopedModels: [] }),
 		getCommands: async () => [],
+		getEntries: async () => ({ entries: [], leafId: null }),
 		prompt,
 		abort,
 		restart: vi.fn(() => restartGate.promise),
