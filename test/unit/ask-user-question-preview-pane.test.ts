@@ -17,6 +17,10 @@ import {
 	stripOverlayActiveRowMarker,
 } from "../../packages/coding-agent/src/core/extensions/ui-types.ts";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
+import {
+	type FieldTone,
+	styleFieldTone,
+} from "../../packages/coding-agent/src/core/tools/ask-user-question/state/selectors/field-tone.ts";
 import type {
 	QuestionData,
 	QuestionParams,
@@ -76,7 +80,7 @@ function makePane(question: QuestionData, terminalWidth: number): Harness {
 	initTheme();
 	const markdownTheme = getMarkdownTheme();
 	const selectTheme = {
-		selectedText: (s: string) => theme.fg("accent", theme.bold(s)),
+		field: (tone: FieldTone, s: string) => styleFieldTone(theme, tone, s),
 		description: (s: string) => theme.fg("muted", s),
 		scrollInfo: (s: string) => theme.fg("dim", s),
 	};
@@ -96,7 +100,7 @@ function makePane(question: QuestionData, terminalWidth: number): Harness {
 		pane,
 		render: (selectedIndex, paneWidth) => {
 			optionListView.setProps({ selectedIndex, focused: true, inputBuffer: "", inputCaret: 0 });
-			pane.setProps({ notesVisible: false, selectedIndex, focused: true });
+			pane.setProps({ notesVisible: false, selectedIndex, focused: true, notes: "" });
 			return pane.render(paneWidth);
 		},
 	};

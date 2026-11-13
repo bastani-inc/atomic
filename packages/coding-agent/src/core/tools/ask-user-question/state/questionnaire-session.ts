@@ -191,7 +191,9 @@ export class QuestionnaireSession {
 				writeInputCursor(this.inlineInput, effect.caret);
 				return;
 			case "set_notes_value":
+				// Same caret however the tab was reached; `Input.setValue` would keep the old one.
 				this.notesInput.setValue(effect.value);
+				writeInputCursor(this.notesInput, effect.value.length);
 				return;
 			case "set_notes_focused":
 				this.notesInput.focused = effect.focused;

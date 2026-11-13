@@ -1,5 +1,6 @@
 import { type Component, Container, type Input, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
+import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";
 import type { QuestionData } from "../tool/types.js";
 import type { ChatRowView } from "./components/chat-row-view.ts";
@@ -88,7 +89,14 @@ export class QuestionTabStrategy implements TabContentStrategy {
 
 	midRows(state: DialogState): Component[] {
 		if (!state.notesVisible) return [];
-		return [new Text(this.config.theme.fg("muted", NOTES_HEADER), 1, 0), this.config.notesInput, new Spacer(1)];
+		const { theme, notesInput } = this.config;
+		// Notes mode open means the notes field has focus, so this resolves to `editing`.
+		const tone = fieldTone(state.notesVisible, state.notesDraft);
+		const notesField: Component = {
+			render: (width) => notesInput.render(width).map((line) => styleFieldTone(theme, tone, line)),
+			invalidate: () => notesInput.invalidate(),
+		};
+		return [new Text(theme.fg("muted", NOTES_HEADER), 1, 0), notesField, new Spacer(1)];
 	}
 
 	footerRows(state: DialogState): Component[] {
@@ -131,11 +139,12 @@ export class SubmitTabStrategy implements TabContentStrategy {
 			const label = q.header && q.header.length > 0 ? q.header : `Q${i + 1}`;
 			const answerText = formatAnswerScalar(a, "summary");
 			c.addChild(new Text(this.config.theme.fg("muted", ` ● ${label}`), 1, 0));
-			c.addChild(
-				new Text(`   ${this.config.theme.fg("muted", "→")} ${this.config.theme.fg("text", answerText)}`, 1, 0),
-			);
+			const { theme } = this.config;
+			c.addChild(new Text(`   ${theme.fg("muted", "→")} ${styleFieldTone(theme, "answered", answerText)}`, 1, 0));
 			if (a.notes && a.notes.length > 0) {
-				c.addChild(new Text(this.config.theme.fg("dim", `     notes: ${a.notes}`), 1, 0));
+				c.addChild(
+					new Text(`     ${theme.fg("muted", "notes:")} ${styleFieldTone(theme, "answered", a.notes)}`, 1, 0),
+				);
 			}
 		}
 		return c;

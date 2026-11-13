@@ -226,7 +226,7 @@ const multiConfirmHandler: Handler<"multi_confirm"> = (state, action, ctx) => {
 };
 
 const notesEnterHandler: Handler<"notes_enter"> = (state, _action, _ctx) => {
-	const value = state.answers.get(state.currentTab)?.notes ?? "";
+	const value = state.notesByTab.get(state.currentTab) ?? state.answers.get(state.currentTab)?.notes ?? "";
 	return {
 		state: { ...state, notesVisible: true, notesDraft: value },
 		effects: [

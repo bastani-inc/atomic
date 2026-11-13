@@ -2,6 +2,7 @@ import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works
 import type { Theme } from "../../../../../modes/interactive/theme/theme.js";
 import { OVERLAY_ACTIVE_ROW_MARKER } from "../../../../extensions/ui-types.js";
 import { ROW_INTENT_META } from "../../state/row-intent.ts";
+import { rowTone, styleFieldTone } from "../../state/selectors/field-tone.ts";
 import type { QuestionData } from "../../tool/types.js";
 import type { StatefulView } from "../stateful-view.ts";
 
@@ -67,12 +68,12 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 			const row = this.props.rows[i];
 			if (!opt || !row) continue;
 			const pointer = row.active ? this.theme.fg("accent", ACTIVE_POINTER) : INACTIVE_POINTER;
-			// Checked uses the same `accent` hue as the active-row label so checked rows read
-			// as "selected" rather than "success" — matches the visual rhythm of the rest of
-			// the dialog (active pointer, label, picker rows are all accent).
-			const box = row.checked ? this.theme.fg("accent", CHECKED) : this.theme.fg("muted", UNCHECKED);
+			// A checked row holds part of the answer: `editing` while focused, `answered` otherwise.
+			const tone = rowTone(row.active, row.checked);
+			const box =
+				row.checked && tone ? styleFieldTone(this.theme, tone, CHECKED) : this.theme.fg("muted", UNCHECKED);
 			const label = truncateToWidth(opt.label, contentWidth, "…");
-			const styledLabel = row.active ? this.theme.fg("accent", this.theme.bold(label)) : label;
+			const styledLabel = tone ? styleFieldTone(this.theme, tone, label) : label;
 			const num = String(i + 1).padStart(numberWidth, " ");
 			const line = `${pointer}${num}${NUMBER_SEPARATOR}${box}${BOX_LABEL_GAP}${styledLabel}`;
 			const rendered = truncateToWidth(line, width, "");
@@ -86,7 +87,7 @@ export class MultiSelectView implements StatefulView<MultiSelectViewProps> {
 		}
 		const nextPointer = this.props.nextActive ? this.theme.fg("accent", ACTIVE_POINTER) : INACTIVE_POINTER;
 		const nextLabel = this.props.nextActive
-			? this.theme.fg("accent", this.theme.bold(this.props.nextLabel))
+			? styleFieldTone(this.theme, "editing", this.props.nextLabel)
 			: this.props.nextLabel;
 		const rendered = truncateToWidth(`${nextPointer}${nextLabel}`, width, "");
 		lines.push(`${rendered}${this.props.nextActive ? OVERLAY_ACTIVE_ROW_MARKER : ""}`);

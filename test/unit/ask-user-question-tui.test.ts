@@ -110,7 +110,7 @@ test("ask_user_question custom response draft survives moving to another option"
 test("ask_user_question custom response renders the main chat cursor at the editing caret", () => {
 	const items: WrappingSelectItem[] = [{ kind: "other", label: "Type something." }];
 	const select = new WrappingSelect(items, 1, {
-		selectedText: (s) => s,
+		field: (_tone, s) => s,
 		description: (s) => s,
 		scrollInfo: (s) => s,
 	});
@@ -118,7 +118,7 @@ test("ask_user_question custom response renders the main chat cursor at the edit
 	select.setInputCursor(2);
 
 	const rendered = select.render(40).join("\n");
-	assert.match(rendered, /ab\x1b\[7mc\x1b\[0m/);
+	assert.match(rendered, /ab\x1b\[7mc\x1b\[27m/);
 });
 
 test("ask_user_question custom response editor keeps typing at the moved caret", () => {
@@ -221,27 +221,34 @@ test("ask_user_question chat and custom inline drafts stay isolated when focus m
 	initTheme("dark");
 	const params = makeParams();
 	const session = makeSession(params);
+	// Each inline row keeps its own draft and shows it while unfocused (#4741); neither row
+	// ever shows the other's text.
+	const rows = () => {
+		const lines = stripAnsi(session.component.render(100).join("\n")).split("\n");
+		return {
+			custom: lines.find((line) => /^. 3\. /.test(line)) ?? "",
+			chat: lines.find((line) => /^. 4\. /.test(line)) ?? "",
+		};
+	};
 
 	session.component.handleInput(DOWN);
 	session.component.handleInput(DOWN);
 	for (const ch of "custom draft") session.component.handleInput(ch);
 	session.component.handleInput(DOWN);
-	let rendered = stripAnsi(session.component.render(100).join("\n"));
-	assert.doesNotMatch(rendered, /custom draft/);
+	assert.match(rows().custom, /custom draft/);
+	assert.doesNotMatch(rows().chat, /custom draft/);
 
 	for (const ch of "chat draft") session.component.handleInput(ch);
-	rendered = stripAnsi(session.component.render(100).join("\n"));
-	assert.match(rendered, /chat draft/);
+	assert.match(rows().chat, /chat draft/);
+	assert.doesNotMatch(rows().custom, /chat draft/);
 
 	session.component.handleInput(UP);
-	rendered = stripAnsi(session.component.render(100).join("\n"));
-	assert.match(rendered, /custom draft/);
-	assert.doesNotMatch(rendered, /chat draft/);
+	assert.match(rows().custom, /^❯ 3\. custom draft/);
+	assert.match(rows().chat, /^ {2}4\. chat draft/);
 
 	session.component.handleInput(DOWN);
-	rendered = stripAnsi(session.component.render(100).join("\n"));
-	assert.match(rendered, /chat draft/);
-	assert.doesNotMatch(rendered, /custom draft/);
+	assert.match(rows().chat, /^❯ 4\. chat draft/);
+	assert.match(rows().custom, /^ {2}3\. custom draft/);
 });
 
 test("ask_user_question chat row accepts typed text when preview suppresses custom input", () => {
@@ -281,7 +288,7 @@ test("ask_user_question chat row accepts typed text on multi-select questions", 
 test("ask_user_question chat row renders inline input through WrappingSelect metadata", () => {
 	const items: WrappingSelectItem[] = [{ kind: "chat", label: SENTINEL_LABELS.chat }];
 	const select = new WrappingSelect(items, 1, {
-		selectedText: (s) => s,
+		field: (_tone, s) => s,
 		description: (s) => s,
 		scrollInfo: (s) => s,
 	});
@@ -289,7 +296,7 @@ test("ask_user_question chat row renders inline input through WrappingSelect met
 	select.setInputCursor(4);
 
 	const rendered = select.render(40).join("\n");
-	assert.match(rendered, /chat\x1b\[7m \x1b\[0m/);
+	assert.match(rendered, /chat\x1b\[7m \x1b\[27m/);
 });
 
 test("ask_user_question Type something does not submit empty or whitespace text", () => {
