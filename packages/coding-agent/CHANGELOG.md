@@ -9,6 +9,10 @@
 ### Fixed
 
 - Fixed the footer usage, the context indicator, and `/session` leaving out the tokens and cost of the latest session summary until a later turn or `/reload`. They now update as soon as the summary is saved, and also when a cache warm records its usage ([#4726](https://github.com/bastani-inc/atomic/issues/4726))
+- Fixed `/copy` and RPC `get_last_assistant_text` skipping past a reply that ended normally without text and copying an earlier turn's answer instead, while still skipping empty turns that ended via abort, error, or tool calls (upstream [#12119](https://github.com/earendil-works/pi/issues/12119), [#12121](https://github.com/earendil-works/pi/pull/12121))
+- Fixed provider errors that report only a Node socket error code (`ECONNRESET`, `ECONNABORTED`, `ECONNREFUSED`, `ETIMEDOUT`, `EPIPE`) not triggering automatic retries in sessions, workflows, and subagents, without matching those codes inside longer identifiers (upstream [#12128](https://github.com/earendil-works/pi/issues/12128), [#12136](https://github.com/earendil-works/pi/pull/12136))
+- Fixed `read` storing a note that the current model does not support images in the tool result sent to the model, which replayed as stale text after switching to a vision model; the warning is now recorded in `details.imageUnsupportedByModel` and shown in the TUI both collapsed and expanded while `@bastani/pi-ai` still replaces unsupported images per request (upstream [#12131](https://github.com/earendil-works/pi/issues/12131), [#12139](https://github.com/earendil-works/pi/pull/12139))
+- Fixed `ToolExecutionComponent` crashing with `RangeError: Maximum call stack size exceeded` when rendering a very large self-rendered tool result such as a multi-megabyte edit diff (upstream [#8036](https://github.com/earendil-works/pi/issues/8036), [#12145](https://github.com/earendil-works/pi/pull/12145))
 
 ## [0.9.84] - 2026-11-13
 
