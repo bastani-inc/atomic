@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { Readable } from "node:stream";
 import { spawn } from "child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -190,6 +190,31 @@ describe("issue #6817: Windows find path globs", () => {
 		expect(found.filter((file) => file.endsWith("b.spec.ts"))).toEqual(["lib/b.spec.ts"]);
 	});
 
+	it("does not match a path glob through an ancestor of the search root on Windows (#12066)", async () => {
+		const { text } = await runFind(
+			[join(searchPath, "**/src/**/*.ts")],
+			[
+				fakeFdProcess({
+					lines: [`${searchPath}/lib/b.ts`, `${searchPath}/src/a.ts`, `${searchPath}/pkg/src/d.ts`],
+				}),
+			],
+		);
+
+		assert.deepEqual(foundFiles(text).sort(), ["pkg/src/d.ts", "src/a.ts"]);
+	});
+
+	it("normalizes Windows separators in the search root before matching (#12066)", async () => {
+		const root = join(tempDir, "win\\root");
+		mkdirSync(root, { recursive: true });
+		Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+		mockedSpawn.mockImplementationOnce(() => fakeFdProcess({ lines: [`${root}\\x\\lib\\a.ts`] }).child);
+		const result = await createFindToolDefinition(root).execute("find-windows-root", {
+			paths: ["*/lib/*.ts"],
+		});
+
+		assert.equal(result.details?.fileCount, 1);
+	});
+
 	it("matches dotfiles like fd's glob", async () => {
 		const { text } = await runFind(
 			[join(searchPath, "**/lib/*.ts")],
@@ -336,14 +361,18 @@ describe("issue #6817: Windows find path globs", () => {
 			"--max-results",
 			"201",
 			"--full-path",
+			"--ignore-case",
 			"--",
-			"**/*/lib/*.ts",
+			`${searchPath
+				.split(sep)
+				.join("/")
+				.replace(/[\\*?[\]{}]/g, "\\$&")}/*/lib/*.ts`,
 			searchPath,
 		]);
 		expect(foundFiles(text).sort()).toEqual(["other/b.ts", "x/lib/a.ts"]);
 	});
 
-	it("prefixes relative path patterns with **/ before matching on Windows", async () => {
+	it("matches path patterns relative to the search root on Windows", async () => {
 		const { text } = await runFind(
 			[join(searchPath, "*/lib/*.ts")],
 			[fakeFdProcess({ lines: [`${searchPath}/x/lib/a.ts`, `${searchPath}/x/lib/sub/b.ts`] })],
@@ -367,10 +396,24 @@ describe("issue #6817: Windows find path globs", () => {
 		assert.deepEqual(spawnedArgs(), ["--color=never", "--no-require-git", "--hidden", "--", "", searchPath]);
 	});
 
-	it("does not prefix a leading **/ pattern a second time outside Windows", async () => {
+	it.runIf(sep === "/")("anchors an fd pattern at the filesystem root (#12066)", async () => {
+		Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
+		mockedSpawn.mockImplementationOnce(() => fakeFdProcess({ lines: [] }).child);
+		await createFindToolDefinition("/").execute("find-root", { paths: ["**/lib/*.ts"] });
+
+		assert.equal(spawnedArgs().at(-2), "/**/lib/*.ts");
+	});
+
+	it("anchors a leading **/ pattern at the search root outside Windows (#12066)", async () => {
 		platform = "linux";
 		await runFind([join(searchPath, "**/lib/*.ts")], [fakeFdProcess({ lines: [] })]);
 
-		assert.equal(spawnedArgs().at(-2), "**/lib/*.ts");
+		assert.equal(
+			spawnedArgs().at(-2),
+			`${searchPath
+				.split(sep)
+				.join("/")
+				.replace(/[\\*?[\]{}]/g, "\\$&")}/**/lib/*.ts`,
+		);
 	});
 });

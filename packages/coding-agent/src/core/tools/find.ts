@@ -25,10 +25,15 @@ import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } fr
 const toPosixPath = (value: string): string => value.split(path.sep).join("/");
 const findSchema = Type.Object(
 	{
-		paths: Type.Array(Type.String({ description: "File, directory, or glob path to find." }), {
-			description: "Paths or glob paths to find.",
-			minItems: 1,
-		}),
+		paths: Type.Array(
+			Type.String({
+				description: "File, directory, or glob path to find; relative paths start at the working directory.",
+			}),
+			{
+				description: "Paths or glob paths to find.",
+				minItems: 1,
+			},
+		),
 		hidden: Type.Optional(Type.Boolean({ description: "Include hidden files. Defaults to true." })),
 		gitignore: Type.Optional(Type.Boolean({ description: "Respect gitignore. Defaults to true." })),
 		limit: Type.Optional(
@@ -705,21 +710,23 @@ export function createFindToolDefinition(
 							if (gitignore === false) args.push("--no-ignore");
 							if (!findTargetMentionsNodeModules(target)) args.push("--exclude", "node_modules");
 							const isPathPattern = target.pattern.includes("/");
-							let fdPattern = target.pattern;
-							if (
-								isPathPattern &&
-								!target.pattern.startsWith("/") &&
-								!target.pattern.startsWith("**/") &&
-								target.pattern !== "**"
-							)
-								fdPattern = `**/${target.pattern}`;
 							const windowsPathMatcher =
-								process.platform === "win32" && isPathPattern ? createWindowsPathMatcher(fdPattern) : undefined;
+								process.platform === "win32" && isPathPattern
+									? createWindowsPathMatcher(target.pattern)
+									: undefined;
 							if (windowsPathMatcher) {
 								args.push("--", "", target.searchPath);
 							} else {
 								args.push("--glob", "--max-results", String(remaining + 1));
-								if (isPathPattern) args.push("--full-path");
+								let fdPattern = target.pattern;
+								if (isPathPattern) {
+									const escapedRoot = toPosixPath(target.searchPath)
+										.replace(/\/+$/, "")
+										.replace(/[\\*?[\]{}]/g, "\\$&");
+									fdPattern = `${escapedRoot}/${fdPattern}`;
+									args.push("--full-path");
+									if (target.pattern === target.pattern.toLowerCase()) args.push("--ignore-case");
+								}
 								args.push("--", fdPattern, target.searchPath);
 							}
 							const remainingMs = deadline - Date.now();
@@ -751,7 +758,13 @@ export function createFindToolDefinition(
 									stderr += chunk.toString();
 								});
 								rl.on("line", (rawLine) => {
-									if (windowsPathMatcher && !windowsPathMatcher.match(cleanFdLine(rawLine))) return;
+									if (windowsPathMatcher) {
+										const matchPath = relativizeFindResultPath(
+											cleanFdLine(rawLine).replaceAll("\\", "/"),
+											target.searchPath.replaceAll("\\", "/"),
+										);
+										if (!windowsPathMatcher.match(matchPath)) return;
+									}
 									lines.push(rawLine);
 									if (windowsPathMatcher && lines.length > Math.max(0, remaining)) stopChild?.();
 								});
