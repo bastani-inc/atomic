@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, test } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SessionInfo, SessionListProgress } from "../src/core/session-manager.ts";
-import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
-import { SessionList } from "../src/modes/interactive/components/session-selector-list.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import type { SessionInfo, SessionListProgress } from "../src/core/session-manager.js";
+import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.js";
+import { SessionList } from "../src/modes/interactive/components/session-selector-list.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 beforeAll(() => initTheme("dark"));
 beforeEach(() => setKeybindings(new KeybindingsManager()));

@@ -4,14 +4,14 @@ import type { Api, Model } from "@bastani/pi-ai";
 import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
 import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
 import { afterEach, describe, test, vi } from "vitest";
-import { printHelp } from "../src/cli/args.ts";
-import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.ts";
-import { _getRequiredRequestAuth } from "../src/core/agent-session-models.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.ts";
-import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.ts";
+import { printHelp } from "../src/cli/args.js";
+import type { AgentSessionInternalSurface } from "../src/core/agent-session-methods.js";
+import { _getRequiredRequestAuth } from "../src/core/agent-session-models.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { defaultModelPerProvider } from "../src/core/model-resolver-defaults.js";
+import { ModelRuntime } from "../src/core/model-runtime.js";
+import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../src/core/provider-display-names.js";
+import { getBuiltinApiKeyLoginOptions } from "../src/modes/interactive/interactive-auth-routing.js";
 
 type ProviderCase = {
 	provider: "baseten" | "qwen-token-plan-individual";

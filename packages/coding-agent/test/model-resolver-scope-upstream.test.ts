@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import type { Model } from "@bastani/pi-ai/compat";
 import { describe, expect, test, vi } from "vitest";
-import * as modelResolver from "../src/core/model-resolver.ts";
-import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.ts";
-import type { ModelRuntime } from "../src/core/model-runtime.ts";
+import * as modelResolver from "../src/core/model-resolver.js";
+import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver.js";
+import type { ModelRuntime } from "../src/core/model-runtime.js";
 
 function model(id: string, provider = "openrouter"): Model<"openai-completions"> {
 	return {

@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { Container, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { ModelRegistry } from "../src/core/model-registry.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
-import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
-import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import type { ModelRegistry } from "../src/core/model-registry.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.js";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import { StartupChatContainer } from "../src/modes/interactive/interactive-startup-chat-container.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { createInMemoryModelRegistry, getModelRuntime } from "./model-runtime-test-utils.js";
 
 beforeAll(() => initTheme("dark"));
 

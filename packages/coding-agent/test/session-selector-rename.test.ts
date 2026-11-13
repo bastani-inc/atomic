@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { KeybindingsManager } from "../src/core/keybindings.ts";
-import type { SessionInfo } from "../src/core/session-manager.ts";
-import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.ts";
-import { initTheme } from "../src/modes/interactive/theme/theme.ts";
+import { KeybindingsManager } from "../src/core/keybindings.js";
+import type { SessionInfo } from "../src/core/session-manager.js";
+import { SessionSelectorComponent } from "../src/modes/interactive/components/session-selector.js";
+import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
 async function flushPromises(): Promise<void> {
 	await new Promise<void>((resolve) => {
@@ -140,6 +140,50 @@ describe("session selector rename", () => {
 
 		assert.equal(loads, 2);
 		assert.equal(selector.getSessionList().getSelectedSessionPath(), sessions[2]!.path);
+	});
+
+	it("pins an untouched partial row while renaming as its parent arrives (#4694)", async () => {
+		const parent = makeSession({ id: "parent" });
+		const child = { ...makeSession({ id: "child", name: "Child" }), parentSessionPath: parent.path };
+		let reportProgress!: (loaded: number, total: number, partial?: readonly SessionInfo[]) => void;
+		let finishLoad!: (sessions: SessionInfo[]) => void;
+		let loads = 0;
+		const renameSession = vi.fn(async () => {});
+		const onSelect = vi.fn();
+		const selector = new SessionSelectorComponent(
+			(onProgress) => {
+				if (loads++ > 0) return Promise.resolve([parent, child]);
+				reportProgress = onProgress!;
+				return new Promise<SessionInfo[]>((resolve) => {
+					finishLoad = resolve;
+				});
+			},
+			async () => [],
+			onSelect,
+			() => {},
+			() => {},
+			() => {},
+			{ renameSession, showRenameHint: true, keybindings: new KeybindingsManager() },
+		);
+
+		reportProgress(1, 2, [child]);
+		assert.equal(selector.getSessionList().getSelectedSessionPath(), child.path);
+		selector.handleInput(CTRL_R);
+		assert.match(selector.render(120).join("\n"), /Rename Session/);
+		selector.handleInput("New ");
+		reportProgress(2, 2, [parent, child]);
+		assert.equal(selector.getSessionList().getSelectedSessionPath(), child.path);
+		finishLoad([parent, child]);
+		await flushPromises();
+		assert.equal(selector.getSessionList().getSelectedSessionPath(), child.path);
+
+		selector.handleInput("\r");
+		await flushPromises();
+		assert.deepEqual(renameSession.mock.calls, [[child, "New Child"]]);
+		assert.equal(selector.getSessionList().getSelectedSessionPath(), child.path);
+		selector.handleInput("\r");
+		assert.equal(onSelect.mock.calls[0]?.[0], child);
+		selector.dispose();
 	});
 
 	it("renames progressively rendered sessions before in-flight loads settle (#12106)", async () => {

@@ -377,6 +377,8 @@ export class SessionList implements Component, Focusable {
 		if (kb.matches(keyData, "app.session.rename")) {
 			const selected = this.filteredSessions[this.selectedIndex];
 			if (selected) {
+				this.selectionTouched = true;
+				this.pendingSelectedPath = selected.session.path;
 				this.onRenameSession?.(selected.session);
 			}
 			return true;

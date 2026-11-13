@@ -138,8 +138,15 @@ describe("fetch stream option", () => {
 		assert.ok(google.errorMessage?.includes("upstream rejected request"));
 		assert.ok(vertex.errorMessage?.includes("upstream rejected request"));
 		assert.equal(custom.mock.calls.length, 2);
-		assert.ok(String(custom.mock.calls[0]?.[0]).includes("https://upstream.test/v1"));
-		assert.ok(String(custom.mock.calls[1]?.[0]).includes("https://upstream.test/v1"));
+		const expectedPaths = [
+			"/v1/models/test-model:streamGenerateContent",
+			"/v1/publishers/google/models/test-model:streamGenerateContent",
+		];
+		for (const [index, [input]] of custom.mock.calls.entries()) {
+			const url = new URL(input instanceof Request ? input.url : String(input));
+			assert.equal(url.origin, "https://upstream.test");
+			assert.equal(url.pathname, expectedPaths[index]);
+		}
 		assert.equal(fallback.mock.calls.length, 0);
 		assert.equal(globalThis.fetch, fallback);
 	});

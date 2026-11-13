@@ -5,18 +5,18 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, it, vi } from "vitest";
 
 const backend = vi.hoisted(() => ({ native: true }));
-vi.mock("../../../src/core/tools/search-native.ts", async (importOriginal) => {
-	const original = await importOriginal<typeof import("../../../src/core/tools/search-native.ts")>();
+vi.mock("../../../src/core/tools/search-native.js", async (importOriginal) => {
+	const original = await importOriginal<typeof import("../../../src/core/tools/search-native.js")>();
 	return {
 		...original,
 		loadNativeSearchBinding: () => (backend.native ? original.loadNativeSearchBinding() : null),
 	};
 });
 
-import { createFindToolDefinition } from "../../../src/core/tools/find.ts";
-import { splitPathLikeGlob } from "../../../src/core/tools/glob-path-utils.ts";
-import { createGrepToolDefinition } from "../../../src/core/tools/grep.ts";
-import { loadNativeSearchBinding } from "../../../src/core/tools/search-native.ts";
+import { createFindToolDefinition } from "../../../src/core/tools/find.js";
+import { splitPathLikeGlob } from "../../../src/core/tools/glob-path-utils.js";
+import { createGrepToolDefinition } from "../../../src/core/tools/grep.js";
+import { loadNativeSearchBinding } from "../../../src/core/tools/search-native.js";
 
 function portable(path: string): string {
 	return path.split(sep).join("/");

@@ -18,16 +18,16 @@ vi.mock("child_process", async () => {
 	return { ...actual, spawn: mocks.spawn };
 });
 
-vi.mock("../../../src/core/tools/search-native.ts", () => ({
+vi.mock("../../../src/core/tools/search-native.js", () => ({
 	loadNativeSearchBinding: mocks.loadNativeSearchBinding,
 }));
 
-vi.mock("../../../src/utils/tools-manager.ts", () => ({
+vi.mock("../../../src/utils/tools-manager.js", () => ({
 	ensureTool: mocks.ensureTool,
 }));
 
-import { createFindToolDefinition } from "../../../src/core/tools/find.ts";
-import type { ToolStatus } from "../../../src/utils/tools-manager.ts";
+import { createFindToolDefinition } from "../../../src/core/tools/find.js";
+import type { ToolStatus } from "../../../src/utils/tools-manager.js";
 
 const mockedSpawn = vi.mocked(spawn);
 
