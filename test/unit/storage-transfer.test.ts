@@ -11,6 +11,7 @@ import { resolveSessionStore } from "../../packages/coding-agent/src/core/sessio
 import { SettingsManager } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { consolidateJournalStore } from "../../packages/coding-agent/src/core/storage/journal-adoption.js";
 import { JournalCatalog } from "../../packages/coding-agent/src/core/storage/journal-catalog.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import type { SessionStore } from "../../packages/coding-agent/src/core/storage/session/types.js";
 import { createSessionManager } from "../../packages/coding-agent/src/main-session.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -378,6 +379,32 @@ test("importing again stores the tool outputs of a session an interrupted import
 	assert.equal(rerun.code, 0, rerun.err);
 	assert.match(rerun.out, /1 session .*1 already up to date/);
 	assert.deepEqual(Buffer.from((await targetSessions.getBlob!(sessionId, hash))!).toString(), "tool output for hello");
+});
+
+test("a tool output that cannot be restored after runs were written is reported with what the import wrote (#4720)", async () => {
+	const source = machine("a");
+	const sessionId = await recordSession(source, ["hello"]);
+	await seedRuns(source, [[RUN_A, "completed", 1_000]]);
+	await storage(source, ["export", exports]);
+	const file = join(exports, "sessions", `${sessionId}.jsonl`);
+	const interrupted = join(root, "interrupted", `${sessionId}.jsonl`);
+	mkdirSync(join(root, "interrupted"), { recursive: true });
+	writeFileSync(interrupted, readFileSync(file, "utf8").replace(/,"base64":"[^"]+"/, ""));
+	const target = machine("b");
+	const store = await resolveSessionStore(project, { agentDir: target });
+	await SessionManager.importFromJsonl(interrupted, project, store);
+	await store.close();
+
+	vi.spyOn(SqlSessionStore.prototype, "putBlob").mockRejectedValueOnce(new Error("disk full"));
+	const failed = await storage(target, ["import", exports]);
+	assert.equal(failed.code, 1);
+	assert.match(failed.err, /disk full/);
+	assert.ok(failed.err.includes(`Imported before the failure: workflow run ${RUN_A}.`), failed.err);
+	assert.ok(failed.err.includes(`Not imported: session ${sessionId}.`), failed.err);
+
+	const rerun = await storage(target, ["import", exports]);
+	assert.equal(rerun.code, 0, rerun.err);
+	assert.match(rerun.out, /1 workflow run .*1 already up to date/);
 });
 
 test("session and workflow files whose strings a tool redacted import as what they came from (#4720)", async () => {

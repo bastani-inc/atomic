@@ -220,6 +220,10 @@ export interface SessionImportPlan {
 	readonly sessions: readonly PlannedSession[];
 }
 
+function pendingIds(sessions: readonly PlannedSession[]): string[] {
+	return sessions.map((planned) => planned.session.header.id);
+}
+
 /** The sessions of a plan an import writes. */
 export function pendingSessions(plan: SessionImportPlan): string[] {
 	return plan.sessions.filter((session) => session.action !== "unchanged").map((session) => session.session.header.id);
@@ -305,13 +309,27 @@ export async function applySessionImport(
 	const { store } = plan;
 	const report = { added: [] as string[], updated: [] as string[], unchanged: [] as string[] };
 	const pending = plan.sessions.filter((planned) => planned.action !== "unchanged");
+	/** `error`, naming what this import wrote before it when it wrote anything, and the sessions it did not write. */
+	const failure = (error: Error, notWritten: readonly string[]): Error => {
+		const sessionsWritten = [...report.added, ...report.updated];
+		if (sessionsWritten.length === 0 && workflowsWritten.length === 0) return error;
+		return new StorageImportIncompleteError(error, {
+			written: { sessions: sessionsWritten, workflows: workflowsWritten },
+			notWritten: { sessions: notWritten, workflows: [] },
+		});
+	};
 	for (const planned of plan.sessions) {
 		if (planned.action !== "unchanged") continue;
 		// An import stopped between writing a new session's entries and its tool outputs left the session complete but
 		// its outputs missing: the rerun stores the ones the store lacks.
 		const { header, blobs } = planned.session;
-		for (const blob of blobs)
-			if ((await store.getBlob?.(header.id, blob.hash)) === undefined) await store.putBlob?.(header.id, blob.read());
+		try {
+			for (const blob of blobs)
+				if ((await store.getBlob?.(header.id, blob.hash)) === undefined)
+					await store.putBlob?.(header.id, blob.read());
+		} catch (caught) {
+			throw failure(caught as Error, [header.id, ...pendingIds(pending)]);
+		}
 		report.unchanged.push(header.id);
 	}
 	for (const [index, planned] of pending.entries()) {
@@ -336,15 +354,7 @@ export async function applySessionImport(
 							cause: caught,
 						})
 					: (caught as Error);
-			const sessionsWritten = [...report.added, ...report.updated];
-			if (sessionsWritten.length === 0 && workflowsWritten.length === 0) throw error;
-			throw new StorageImportIncompleteError(error, {
-				written: { sessions: sessionsWritten, workflows: workflowsWritten },
-				notWritten: {
-					sessions: pending.slice(index).map((rest) => rest.session.header.id),
-					workflows: [],
-				},
-			});
+			throw failure(error, pendingIds(pending.slice(index)));
 		}
 		(planned.action === "add" ? report.added : report.updated).push(header.id);
 	}
