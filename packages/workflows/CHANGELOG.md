@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a workflow run's resume, and a pooled child's restore on a worker host, failing when a worktree snapshot could not be restored exactly. The run now always resumes: it restores the recorded commit with the change sets that apply, else the closest commit it can fetch, else continues without the checkout (in the directory it was resumed from when the recorded one is not on this machine), with one notice in the run's notices and on a `checkout:` line of `workflow status`. Its stages are told what is missing, and the outcome is recorded on the run (`worktreeRestoreOutcomes`), so a later resume or fork knows the checkout is partial. Missing Git no longer stops a resume. Only an unreadable run, `invalid-snapshot` and `unsafe-target` still refuse ([#4738](https://github.com/bastani-inc/atomic/issues/4738))
+
 ## [0.9.85] - 2026-11-13
 
 Run forks follow `/tree` moves in stage chats.

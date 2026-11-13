@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed checking a worktree snapshot's remote URL for credentials taking quadratic time, so a crafted record with a very long remote could stall resume for seconds or minutes. The check is now linear, and it also strips credentials that contain `@` completely
+- Fixed workflow runs and worker hosts having no way to reuse a session resume's degraded restore: `restoreBestWorktree(snapshot, options)` restores a snapshot exactly, else as well as this host can, else reports that nothing could be restored. `withWorktreeRestoreNotices(notices, work)` tells every session opened in `work` which checkouts were restored only in part, in a `worktree_restore` system prompt section, and `formatDegradedRestoreNotice` and `formatUnrestoredNotice` take an optional `"workflow run"` owner for their wording ([#4738](https://github.com/bastani-inc/atomic/issues/4738))
 
 ## [0.9.85] - 2026-11-13
 
