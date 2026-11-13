@@ -11,7 +11,7 @@ import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
-import { initTheme } from "../src/modes/interactive/theme/theme.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
 const readTool = createReadTool(process.cwd());
 const _writeTool = createWriteTool(process.cwd());
@@ -427,6 +427,64 @@ describe("Coding Agent Tools", () => {
 				stripVTControlCharacters(visionComponent.render(120).join("\n")).includes("does not support images"),
 				false,
 			);
+		});
+		it("renders no extra result text without an image capability warning (#4729)", () => {
+			initTheme("dark");
+			const definition = createReadToolDefinition(testDir);
+			const result = { content: [{ type: "text" as const, text: "file contents" }], details: undefined };
+			for (const expanded of [false, true]) {
+				const component = definition.renderResult!(result, { expanded, isPartial: false }, theme, {
+					args: { path: "file.txt" },
+					toolCallId: "read-without-warning",
+					invalidate: () => {},
+					lastComponent: undefined,
+					state: undefined,
+					cwd: testDir,
+					executionStarted: true,
+					argsComplete: true,
+					isPartial: false,
+					expanded,
+					showImages: false,
+					isError: false,
+					durationMs: undefined,
+					outputPad: 0,
+					keyText: () => "",
+					keyHint: () => "",
+				});
+				assert.equal(
+					stripVTControlCharacters(component.render(120).join("\n")).trim(),
+					expanded ? "file contents" : "",
+				);
+			}
+		});
+		it("keeps image conversion failures in the result without a stale model warning (#4729)", async () => {
+			const definition = createReadToolDefinition(testDir, {
+				operations: {
+					access: async () => {},
+					readFile: async () => Buffer.from("not a convertible image"),
+					detectImageMimeType: async () => "image/tiff",
+				},
+			});
+			const context = {
+				cwd: testDir,
+				model: { id: "text-only", input: ["text"] },
+			} as ExtensionContext;
+			const result = await definition.execute(
+				"read-unconvertible-image",
+				{ path: "unconvertible.tiff" },
+				undefined,
+				undefined,
+				context,
+			);
+			const expected =
+				"Read image file [image/tiff]\n[Image omitted: could not be converted to a supported inline image format.]";
+			assert.equal(getTextOutput(result), expected);
+			assert.equal(result.structuredContent, expected);
+			assert.equal(
+				result.content.some((content) => content.type === "image"),
+				false,
+			);
+			assert.equal(result.details?.imageUnsupportedByModel, undefined);
 		});
 		it("should treat files with image extension but non-image content as text", async () => {
 			const testFile = join(testDir, "not-an-image.png");

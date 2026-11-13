@@ -268,6 +268,30 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		retryable: true,
 	},
 	{
+		label: "message timeout with multiple spaces (#4729)",
+		failure: new Error("request timed  out"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "message refused connection with multiple spaces (#4729)",
+		failure: new Error("connection  refused"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "delimited transport code with abort wording (#4729)",
+		failure: new Error("read ECONNABORTED: connection aborted"),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "content filter finish reason outranks provider status (#4729)",
+		failure: { status: 503, finish_reason: "content_filter" },
+		kind: "content_filter",
+		retryable: true,
+	},
+	{
 		label: "code etimedout",
 		failure: { code: "ETIMEDOUT", message: "socket timed out" },
 		kind: "network_timeout",
