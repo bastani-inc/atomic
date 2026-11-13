@@ -10,6 +10,10 @@
 
 - Subagents are told that an Intercom `ask` to a peer or the supervisor no longer blocks: its reply arrives later as a message ([#4751](https://github.com/bastani-inc/atomic/issues/4751))
 
+### Fixed
+
+- Fixed a subagent's chat having no autocomplete: it now completes `/tasks`, the subagent's own `/skill:` commands and `@` and Tab paths in the subagent's working directory, including after the subagent finished ([#4755](https://github.com/bastani-inc/atomic/issues/4755))
+
 ## [0.9.81] - 2026-11-13
 
 Parallel subagent calls survive a single child's failure, and the desktop skill learns sandboxes.

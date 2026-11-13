@@ -122,6 +122,7 @@ export {
 export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export {
 	ownerTaskViewSource,
+	type TaskCommandCatalog,
 	type TaskDetailText,
 	type TaskOutputView,
 	type TaskTranscriptFollow,

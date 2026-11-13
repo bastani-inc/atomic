@@ -8,5 +8,11 @@ export function runsWhilePaused(command: PooledStageSessionCommand): boolean {
 	if (command.kind === "abort-bash" || command.kind === "abort-compaction") return true;
 	if (command.kind !== "task") return false;
 	const action = command.action.kind;
-	return action === "cancel" || action === "output" || action === "detail" || action === "transcript";
+	return (
+		action === "cancel" ||
+		action === "output" ||
+		action === "detail" ||
+		action === "transcript" ||
+		action === "commands"
+	);
 }

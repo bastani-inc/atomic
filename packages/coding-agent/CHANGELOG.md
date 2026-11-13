@@ -6,6 +6,7 @@
 
 - Fixed checking a worktree snapshot's remote URL for credentials taking quadratic time, so a crafted record with a very long remote could stall resume for seconds or minutes. The check is now linear, and it also strips credentials that contain `@` completely
 - Fixed a degraded resume restore that was more limited than this machine allowed ([#4744](https://github.com/bastani-inc/atomic/issues/4744)). A partial restore whose files a checkout filter changes now keeps its worktree and names the files that differ, whatever started the partial restore; before, a missing change set or bundle combined with such a filter left the checkout out entirely. The closest-commit search now tries the commit of every earlier snapshot of the checkout, nearest first, before the branch tip, instead of only the three nearest. The notice's list of missing commits leaves out commits the restored history already holds. A checkout whose snapshot record the session lacks now gets its notice after `/resume` and `/import` in the TUI too, not only at startup.
+- Fixed a subagent's chat, opened from `/tasks`, having no autocomplete. Its prompt now offers `/tasks` and the subagent's own `/skill:` commands, and completes `@` file mentions and Tab paths in the subagent's working directory, from the same completion the workflow stage chat uses. A skill command typed there reaches the subagent expanded from its own skills ([#4755](https://github.com/bastani-inc/atomic/issues/4755))
 
 ### Changed
 

@@ -267,7 +267,17 @@ async function host(longCall: LongCall = NEVER_ENDING, options: HostOptions = {}
 		for (const call of calls) longCall.taken(call, session.sessionId);
 		return session;
 	};
-	return { runtime, store, script, runAgent, live, subscriptions: () => subscriptions };
+	/**
+	 * Handles once nothing is still finishing, as {@link settledHandles}, after the catalog refreshes that each session
+	 * starts on the shared model runtime by registering and dropping its providers. Those refreshes read the models file
+	 * and check credentials in the background without a timer, so the handle counts cannot see them; until they settle,
+	 * their promises and buffers would be counted as the agents'.
+	 */
+	const settled = async () => {
+		await modelRuntime.whenRegistrationRefreshesSettled();
+		return settledHandles();
+	};
+	return { runtime, store, script, runAgent, live, settled, subscriptions: () => subscriptions };
 }
 
 /**
@@ -492,12 +502,12 @@ describe("a released agent keeps its history and its long call's delivery, nothi
 			};
 
 			await wave(0);
-			await settledHandles();
+			await h.settled();
 			const before = liveObjects();
 			const firstWave = new Set(operations.keys());
 			await wave(AGENTS_PER_WAVE);
 			await wave(AGENTS_PER_WAVE * 2);
-			await settledHandles();
+			await h.settled();
 			const idle = liveObjects();
 
 			const agents = AGENTS_PER_WAVE * 2;
@@ -558,7 +568,7 @@ describe("a released agent's history leaves process memory (#4502)", () => {
 		let next = 0;
 		let last = "";
 		const sample = async () => {
-			await settledHandles();
+			await h.settled();
 			return { ...liveObjects(), bytes: process.memoryUsage().arrayBuffers, held: h.store.inner.historyBytes() };
 		};
 		const waves = async (count: number, promptBytes: number) => {
