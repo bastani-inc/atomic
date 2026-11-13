@@ -292,11 +292,15 @@ describe("interactive engine resource readiness", () => {
 		});
 
 		try {
-			await expect(handle({ id: "entries", type: "get_entries" })).resolves.toMatchObject({
+			const response = await handle({ id: "entries", type: "get_entries" });
+			assert.deepEqual(response, {
+				id: "entries",
+				type: "response",
+				command: "get_entries",
 				success: true,
 				data: { entries: [], leafId: null },
 			});
-			expect(waitForResources).not.toHaveBeenCalled();
+			assert.equal(waitForResources.mock.calls.length, 0);
 		} finally {
 			harness.cleanup();
 		}
