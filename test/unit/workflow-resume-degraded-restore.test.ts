@@ -31,6 +31,11 @@ import { closeMemoryTestBackends, createMemoryTestBackend } from "../helpers/wor
 import { openSqlSnapshotJournalBackend } from "../helpers/workflow-snapshot-journal.js";
 import { GitSandbox, loseSnapshotBlobs } from "../helpers/worktree-snapshot.js";
 
+// forkRun starts a standalone Intercom broker in the agent directory, whose open log Windows cannot delete.
+vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
+	acquireStandaloneIntercom: async () => async () => {},
+}));
+
 useTemporaryAgentDir();
 
 let sandbox: GitSandbox;
