@@ -36,6 +36,13 @@ function writeExtension(dir: string, name = "entry.ts"): string {
 	return entry;
 }
 
+/** An existing agent directory; the cache is only ever created below one that already exists. */
+function existingAgentDir(prefix: string): string {
+	const dir = path.join(tempDir(prefix), "agent");
+	fs.mkdirSync(dir);
+	return dir;
+}
+
 function cachedEntries(agentDir: string): string[] {
 	const cacheDir = getExtensionTranspileCacheDir(agentDir);
 	if (!fs.existsSync(cacheDir)) return [];
@@ -58,8 +65,8 @@ afterEach(async () => {
 
 describe("extension transpile cache follows the agent directory", () => {
 	it("moves to the next agent directory and leaves a removed one removed (#4728)", async () => {
-		const agentA = path.join(tempDir("atomic-4728-a-"), "agent");
-		const agentB = path.join(tempDir("atomic-4728-b-"), "agent");
+		const agentA = existingAgentDir("atomic-4728-a-");
+		const agentB = existingAgentDir("atomic-4728-b-");
 		const entry = writeExtension(tempDir("atomic-4728-ext-"));
 
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentA);
@@ -80,7 +87,7 @@ describe("extension transpile cache follows the agent directory", () => {
 	});
 
 	it("does not recreate a removed agent directory when loading again under it (#4728)", async () => {
-		const agentDir = path.join(tempDir("atomic-4728-removed-"), "agent");
+		const agentDir = existingAgentDir("atomic-4728-removed-");
 		const entry = writeExtension(tempDir("atomic-4728-ext-"));
 
 		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
@@ -92,6 +99,17 @@ describe("extension transpile cache follows the agent directory", () => {
 
 		assert.equal((factory as unknown as () => string)(), "uncached", "the load must still evaluate the new source");
 		assert.equal(fs.existsSync(agentDir), false, "a removed agent directory must not be recreated");
+	});
+
+	it("never creates a missing agent directory, and still loads without a cache (#4728)", async () => {
+		const agentDir = path.join(tempDir("atomic-4728-missing-"), "agent");
+		const entry = writeExtension(tempDir("atomic-4728-ext-"));
+
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", agentDir);
+		const factory = await extensionLoaderTestHooks.loadTransformedExtensionModule(entry);
+
+		assert.equal((factory as unknown as () => string)(), "cached", "the load must still evaluate the source");
+		assert.equal(fs.existsSync(agentDir), false, "a missing agent directory must not be created");
 	});
 
 	it("does not recreate a removed agent directory whose first cache setup failed (#4728)", async () => {

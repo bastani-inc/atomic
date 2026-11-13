@@ -23,7 +23,6 @@ type SourceSpecifierTransform = ReturnType<typeof createTypeScriptSourceSpecifie
 // Keyed by transpile cache directory; "" is the uncached transform for a load whose agent directory is gone.
 const typeScriptSourceSpecifierTransforms = new Map<string, SourceSpecifierTransform>();
 // Cache directories this process has tried to set up, one per agent directory, and those it has pruned.
-const attemptedTranspileCacheDirs = new Set<string>();
 const prunedTranspileCacheDirs = new Set<string>();
 
 function getCreateJiti(): Promise<typeof createJiti> {
@@ -76,17 +75,7 @@ function mkdirBelowExisting(root: string, dir: string): boolean {
 function resolveTranspileCacheDir(agentDir: string = getAgentDir()): string | undefined {
 	const root = path.resolve(agentDir);
 	const cacheDir = getExtensionTranspileCacheDir(root);
-	if (attemptedTranspileCacheDirs.has(cacheDir)) {
-		if (!mkdirBelowExisting(root, cacheDir)) return undefined;
-	} else {
-		// Recorded before trying, so a failed first setup cannot let a later load recreate a removed agent directory.
-		attemptedTranspileCacheDirs.add(cacheDir);
-		try {
-			fs.mkdirSync(cacheDir, { recursive: true });
-		} catch {
-			return undefined;
-		}
-	}
+	if (!mkdirBelowExisting(root, cacheDir)) return undefined;
 	if (!prunedTranspileCacheDirs.has(cacheDir)) {
 		prunedTranspileCacheDirs.add(cacheDir);
 		pruneStaleTranspileCaches(cacheDir);
