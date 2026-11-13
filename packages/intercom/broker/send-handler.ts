@@ -409,12 +409,12 @@ export function handleBrokerSend(
   // #4639: a supervisor that is a workflow stage whose session was released or replaced is reached through its stage,
   // as a plain send: the stage's next session is not the session the supervisor channel was authorized for.
   // #4751: a reply to an ask whose asker is a workflow stage released between turns reaches the stage like any other
-  // send to it, through its run's queue, which reopens it; the ask's route is kept while the stage is away.
+  // send to it, through its run's queue, which reopens it. The ask's route stays kept while the stage is away, so a
+  // reply whose delivery failed can be sent again; the stage's inbox shows a reply once however often it arrives.
   const awayStageAsker =
     resolution.kind === "not_found" && workflowTarget === undefined && requirePendingReply &&
     message.replyTo !== undefined && pendingQuestions.hasDormantReply(message.replyTo, fromSession.info.id) &&
-    resolveWorkflowStageAlias?.(fromSession, trimmedTo) !== undefined &&
-    pendingQuestions.takeDormantReply(message.replyTo, fromSession.info.id) !== undefined;
+    resolveWorkflowStageAlias?.(fromSession, trimmedTo) !== undefined;
   const stageTarget =
     resolution.kind === "not_found" && workflowTarget === undefined &&
     ((!requirePendingReply && expectedRecipientId === undefined) || awayStageAsker)

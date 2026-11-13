@@ -145,6 +145,27 @@ export class ReleasedAskerReplies {
 		if (ownerSessionId !== undefined) addTo(this.byOwner, ownerSessionId, entry);
 	}
 
+	/**
+	 * #4751: the child is back under its owner's authorization: its kept asks leave this table and take the ordinary
+	 * reply routes of a live asker again, so a later reply reaches the child itself.
+	 */
+	takeChild(childName: string, ownerSessionId: string): ReleasedAskerReplyRoute[] {
+		const taken: ReleasedAskerReplyRoute[] = [];
+		for (const entry of [...(this.byChild.get(normalizeReservationTarget(childName)) ?? [])]) {
+			if (entry.ownerSessionId !== ownerSessionId) continue;
+			taken.push({
+				questionId: entry.questionId,
+				askerSessionId: entry.askerSessionId,
+				childName: entry.childName,
+				replierSessionId: entry.replierSessionId,
+				ownerSessionId,
+				expiresAt: entry.expiresAt,
+			});
+			this.remove(entry);
+		}
+		return taken;
+	}
+
 	dropChild(childName: string, ownerSessionId: string): number {
 		let dropped = 0;
 		for (const entry of [...(this.byChild.get(normalizeReservationTarget(childName)) ?? [])]) {

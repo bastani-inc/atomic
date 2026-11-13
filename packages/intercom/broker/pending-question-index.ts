@@ -24,23 +24,11 @@ export class PendingQuestionIndex {
     if (this.dormant.length > DORMANT_QUESTIONS_MAX) this.dormant = this.dormant.slice(-DORMANT_QUESTIONS_MAX);
   }
 
-  /**
-   * A reply from `replierSessionId` to the kept question `questionId`, whose asker is away: the route is taken, so the
-   * reply goes to the asker as an ordinary message wherever the asker is reached while away (#4751).
-   */
+  /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
   hasDormantReply(questionId: string, replierSessionId: string): boolean {
     return this.dormant.some(
       (question) => question.messageId === questionId && question.targetSessionId === replierSessionId,
     );
-  }
-
-  takeDormantReply(questionId: string, replierSessionId: string): PendingQuestion | undefined {
-    const index = this.dormant.findIndex(
-      (question) => question.messageId === questionId && question.targetSessionId === replierSessionId,
-    );
-    if (index < 0) return undefined;
-    const [question] = this.dormant.splice(index, 1);
-    return question;
   }
 
   /** A session is back under its id: its kept questions route again once both of their peers are connected. */

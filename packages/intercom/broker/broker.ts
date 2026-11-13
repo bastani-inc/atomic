@@ -383,7 +383,8 @@ class IntercomBroker {
   private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
-  private releasedAskerReplies = new ReleasedAskerReplies(undefined, undefined, undefined, () => {
+  // #4751: an ask has no expiry, so a released asker's route lasts until the child or its owner ends or it is back.
+  private releasedAskerReplies = new ReleasedAskerReplies(undefined, Number.POSITIVE_INFINITY, undefined, () => {
     console.error("Intercom broker released-asker reply route capacity reached; dropped routes are counted in broker_status");
   });
   private releasedReplyAcks = new Map<string, PendingReleasedReplyAck>();
@@ -1947,9 +1948,12 @@ class IntercomBroker {
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
           if (registered !== undefined && supervisorId !== undefined) {
-            // #4751: a released subagent back for a reply held for it takes up the route of the ask it answers.
+            // #4751: a released subagent back under its owner takes up the routes of its pending asks, including one
+            // whose reply is held for it, so their replies reach it as a live asker.
             for (const question of this.pendingQuestions.takeParkedAskers(registered, supervisorId))
               this.pendingQuestions.record(id, question.targetSessionId, question.messageId);
+            for (const route of this.releasedAskerReplies.takeChild(registered, supervisorId))
+              this.pendingQuestions.record(id, route.replierSessionId, route.questionId);
             for (const question of this.pendingQuestions.takeParked(registered, supervisorId)) {
               this.pendingQuestions.record(question.senderSessionId, id, question.messageId);
               const asker = this.sessions.get(question.senderSessionId);
@@ -2927,7 +2931,7 @@ class IntercomBroker {
       targetSessionId: pending.route.replierSessionId,
       messageId: pending.questionId,
     });
-    return this.holdForRestoringRecipient({
+    const held = this.holdForRestoringRecipient({
       socket: pending.socket,
       from: replier,
       clientMessage: {
@@ -2942,6 +2946,10 @@ class IntercomBroker {
       messageId: pending.message.id,
       ...(pending.attemptId === undefined ? {} : { attemptId: pending.attemptId }),
     });
+    // The route stays with the owner, so a reply whose held delivery fails (the child does not wake in time) can be
+    // sent again and wake the child again; the child's inbox shows a reply once however often it arrives.
+    if (held) this.releasedAskerReplies.restore(pending.route, pending.ownerSessionId);
+    return held;
   }
 
   /** #4639: a subagent whose session is gone: hold the send for its return or its owner's verdict, or refuse it with why. */
