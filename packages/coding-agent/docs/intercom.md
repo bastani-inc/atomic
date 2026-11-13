@@ -94,6 +94,11 @@ intercom({ action: "list" })
 intercom({ action: "send", to: "research", message: "Check if UserService.validate() handles null" })
 // → Message sent to research
 
+// Send one update to every matching session, or to every subagent you launched
+intercom({ action: "send", to: "subagent-worker-*", message: "Scope changed: skip the migration" })
+intercom({ action: "send", to: "subagents:*", message: "Stop and report what you have" })
+// → Each recipient's outcome is listed: delivered, queued, or not delivered with the reason
+
 // The full session ID printed by list is also a valid target
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
 
