@@ -126,10 +126,10 @@ function readCached(file: string): string | undefined {
 	}
 }
 
+/** Writes only into an existing cache directory, so a removed agent directory is never recreated (#4728). */
 function writeCached(file: string, code: string): void {
 	const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
 	try {
-		fs.mkdirSync(path.dirname(file), { recursive: true });
 		fs.writeFileSync(temporary, code, "utf8");
 		fs.renameSync(temporary, file);
 	} catch {
@@ -137,17 +137,36 @@ function writeCached(file: string, code: string): void {
 	}
 }
 
+type BabelHost = ReturnType<CreateJiti>;
+const babelHosts = new WeakMap<CreateJiti, Map<string, BabelHost>>();
+
+/** One Babel host per jiti implementation and id, so a transform per cache directory stays cheap. */
+function babelHostFor(createJitiImpl: CreateJiti, id: string): BabelHost {
+	let hosts = babelHosts.get(createJitiImpl);
+	if (!hosts) {
+		hosts = new Map();
+		babelHosts.set(createJitiImpl, hosts);
+	}
+	let host = hosts.get(id);
+	if (!host) {
+		host = createJitiImpl(id, { fsCache: false, moduleCache: false });
+		hosts.set(id, host);
+	}
+	return host;
+}
+
 /**
  * A jiti `transform` that runs jiti's own Babel transform plus the specifier
  * rewrite. Use it with jiti's `fsCache: false`: jiti keys its cache on the
  * importer source alone, while a rewrite also depends on which siblings exist.
+ * `cacheDir` must already exist; the transform never creates it.
  */
 export function createTypeScriptSourceSpecifierTransform(
 	createJitiImpl: CreateJiti,
 	id: string,
 	cacheDir: () => string | undefined,
 ): JitiTransform {
-	const babelHost = createJitiImpl(id, { fsCache: false, moduleCache: false });
+	const babelHost = babelHostFor(createJitiImpl, id);
 	return (options: JitiTransformOptions) => {
 		if (!options.filename) return { code: babelHost.transform(options) };
 		const rewrites = planRewrites(options.source, options.filename);
