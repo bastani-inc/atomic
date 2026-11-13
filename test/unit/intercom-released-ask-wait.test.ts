@@ -110,7 +110,7 @@ function startHeavy() {
 }
 
 describe("an ask during session shutdown (#4326)", () => {
-	test("a cancelled ask is rejected at shutdown (#4326)", async () => {
+	test("a cancelled ask's wait yields with the ask pending at shutdown (#4326, #4751)", async () => {
 		const harness = startHeavy();
 		await harness.fire("session_start");
 		const tool = harness.tools.get("intercom");
@@ -127,6 +127,7 @@ describe("an ask during session shutdown (#4326)", () => {
 		call.abort();
 		await harness.fire("session_shutdown");
 		const result = await pending;
-		assert.equal(result.isError, true);
+		assert.equal(result.isError, false);
+		assert.match(JSON.stringify(result.content), /stays pending/);
 	});
 });

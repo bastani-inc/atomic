@@ -6,7 +6,6 @@ import { IntercomClientDisconnectedError } from "../../packages/intercom/recover
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
 import { ReplyWaiterRegistry } from "../../packages/intercom/reply-waiter.js";
-import { ASK_REPLY_TIMEOUT_MS, RETRY_IDENTITY_TTL_MS } from "../../packages/intercom/retry-policy.js";
 import type { Attachment, Message, SessionInfo } from "../../packages/intercom/types.js";
 
 type ToolResult = { content: Array<{ text: string }>; isError: boolean; details?: Record<string, unknown> };
@@ -20,6 +19,7 @@ type Tool = {
 			attachments?: Attachment[];
 			replyTo?: string;
 			retryToken?: string;
+			wait?: { kind: "background" } | { kind: "foreground"; budgetMs?: number };
 		},
 		signal: AbortSignal | undefined,
 		update: undefined,
@@ -116,7 +116,8 @@ function fixture(firstFailure?: Error, secondFailure?: Error, maxEntries?: numbe
 			setJoinedGroups() {},
 			clearJoinedGroups() {},
 			confirmSend: false,
-			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => waiters.begin(from, replyTo, signal),
+			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal, timeoutMs?: number | null) =>
+				waiters.begin(from, replyTo, signal, timeoutMs),
 			replyTracker,
 			retryIdentityMaxEntries: maxEntries,
 		} as never,
@@ -349,46 +350,14 @@ test("a non-recoverable failure never reserves the operation identity", async ()
 	assert.notEqual(sent[0]?.messageId, sent[1]?.messageId);
 });
 
-test("ask retains its question identity across a recoverable disconnect during the reply wait", async () => {
-	let tool: Tool | undefined;
-	const sent: SendOptions[] = [];
-	const deliveredQuestionIds = new Set<string>();
-	const recipientQuestions: string[] = [];
-	const waiters = new ReplyWaiterRegistry();
-	const client = {
-		sessionId: "self-id",
-		groups: ["default"],
-		async send(_target: string, options: SendOptions) {
-			sent.push(options);
-			const messageId = options.messageId ?? "missing";
-			if (!deliveredQuestionIds.has(messageId)) recipientQuestions.push(messageId);
-			deliveredQuestionIds.add(messageId);
-			return { id: messageId, delivered: true };
-		},
+test("a disconnect during an ask's reply wait yields with the ask pending and never sends it again (#4751)", async () => {
+	const { tool, client, sent, waiters } = fixture();
+	client.send = async (_target, options) => {
+		sent.push(options);
+		return { id: options.messageId ?? "missing", delivered: true };
 	};
-	registerIntercomTool(
-		{
-			registerTool(value: Tool) {
-				tool = value;
-			},
-			async appendEntry() {},
-		} as never,
-		{
-			ensureConnected: async () => client,
-			syncPresenceIdentity() {},
-			resolveSessionTarget: async () => peer.id,
-			homeGroup: () => "default",
-			setJoinedGroups() {},
-			clearJoinedGroups() {},
-			confirmSend: false,
-			beginReplyWait: (from: string, replyTo: string, signal?: AbortSignal) => waiters.begin(from, replyTo, signal),
-			replyTracker: new ReplyTracker(),
-		} as never,
-	);
-	assert.ok(tool);
-
-	const firstExecution = tool.execute(
-		"first",
+	const execution = tool.execute(
+		"disconnect-during-wait",
 		{ action: "ask", to: peer.name, message: "same question" },
 		undefined,
 		undefined,
@@ -401,28 +370,13 @@ test("ask retains its question identity across a recoverable disconnect during t
 			cause: new IntercomClientDisconnectedError(),
 		}),
 	);
-	await vi.advanceTimersByTimeAsync(1_000);
-	assert.equal(sent.length, 2);
-	const originalQuestionId = sent[0]?.messageId;
-	assert.ok(originalQuestionId);
-	const routed = routeIncomingReply(waiters.pending(), peer, {
-		id: "peer-reply",
-		timestamp: 2,
-		replyTo: originalQuestionId,
-		content: { text: "reply after reconnect" },
-	});
-	if (!routed) waiters.rejectAll(new Error("test cleanup after correlation failure"));
-	const retry = await firstExecution;
-
-	assert.deepEqual(
-		sent.map(({ messageId }) => messageId),
-		[originalQuestionId, originalQuestionId],
-	);
-	assert.deepEqual(recipientQuestions, [originalQuestionId]);
-	assert.equal(routed, true, "the retried waiter must use the original question correlation");
-	assert.equal(retry.isError, false);
-	assert.match(retry.content[0]?.text ?? "", /reply after reconnect/);
-	assertNoRetryToken(retry);
+	const result = await execution;
+	assert.equal(result.isError, false);
+	assert.match(result.content[0]?.text ?? "", /Ask .* stays pending/);
+	assertNoRetryToken(result);
+	await vi.advanceTimersByTimeAsync(8_000);
+	assert.equal(sent.length, 1, "a delivered ask is never sent a second time");
+	assert.equal(waiters.size(), 0);
 	assert.equal(vi.getTimerCount(), 0);
 });
 
@@ -470,44 +424,41 @@ for (const action of ["send", "ask", "reply"] as const) {
 	});
 }
 
-test("ask recovery retains the original operation deadline instead of granting a fresh reply timeout", async () => {
+test("a pending ask survives longer than the old ten-minute limit and its foreground wait returns the reply (#4751)", async () => {
 	const { tool, client, sent, waiters } = fixture();
 	client.send = async (_target, options) => {
 		sent.push(options);
 		return { id: options.messageId ?? "missing", delivered: true };
 	};
 	const execution = tool.execute(
-		"bounded-ask",
-		{ action: "ask", to: peer.name, message: "one question" },
+		"long-ask",
+		{ action: "ask", to: peer.name, message: "one question", wait: { kind: "foreground", budgetMs: 30 * 60_000 } },
 		undefined,
 		undefined,
 		context,
 	);
-	await vi.advanceTimersByTimeAsync(ASK_REPLY_TIMEOUT_MS - 10_000);
-	assert.equal(sent.length, 1);
-	waiters.rejectAll(new IntercomClientDisconnectedError());
-	await vi.advanceTimersByTimeAsync(1_000);
-	assert.equal(sent.length, 2);
-	assert.equal(sent[0]?.messageId, sent[1]?.messageId);
 	let settled = false;
 	void execution.then(() => {
 		settled = true;
 	});
-	await vi.advanceTimersByTimeAsync(RETRY_IDENTITY_TTL_MS - ASK_REPLY_TIMEOUT_MS + 9_000 - 1);
-	assert.equal(settled, false, "recovery remains pending until the original deadline");
-	await vi.advanceTimersByTimeAsync(1);
+	await vi.advanceTimersByTimeAsync(20 * 60_000);
+	assert.equal(settled, false, "no reply timeout ends the wait before its budget");
+	assert.equal(waiters.size(), 1);
+	const routed = routeIncomingReply(waiters.pending(), peer, {
+		id: "late-reply",
+		timestamp: 2,
+		replyTo: sent[0]?.messageId,
+		content: { text: "answer after twenty minutes" },
+	});
+	assert.equal(routed, true);
 	const result = await execution;
-	assert.equal(result.isError, true);
-	assert.equal(result.details?.terminal, true);
-	assert.equal(result.details?.outcome, "unknown");
-	assert.equal(result.details?.automaticRetries, 1);
-	assertNoRetryToken(result);
-	assert.equal(sent.length, 2, "deadline must not trigger a fresh operation");
-	assert.equal(waiters.size(), 0);
+	assert.equal(result.isError, false);
+	assert.match(result.content[0]?.text ?? "", /answer after twenty minutes/);
+	assert.equal(sent.length, 1);
 	assert.equal(vi.getTimerCount(), 0);
 });
 
-test("cancelling an accepted ask during its first reply wait reports terminal unknown outcome", async () => {
+test("interrupting an accepted ask's wait yields with the ask pending (#4751)", async () => {
 	const { tool, client, sent, waiters } = fixture();
 	client.send = async (_target, options) => {
 		sent.push(options);
@@ -526,10 +477,9 @@ test("cancelling an accepted ask during its first reply wait reports terminal un
 	assert.equal(waiters.size(), 1, "the accepted ask is waiting for its reply");
 	controller.abort();
 	const result = await execution;
-	assert.equal(result.isError, true);
+	assert.equal(result.isError, false);
 	assertNoRetryToken(result);
-	assert.deepEqual(result.details, { error: true, terminal: true, automaticRetries: 0, outcome: "unknown" });
-	assert.match(result.content[0]?.text ?? "", /Delivery may already have occurred/);
+	assert.match(result.content[0]?.text ?? "", /stopped waiting\. Ask .* stays pending/);
 	assert.equal(sent.length, 1);
 	assert.equal(waiters.size(), 0);
 	assert.equal(vi.getTimerCount(), 0);

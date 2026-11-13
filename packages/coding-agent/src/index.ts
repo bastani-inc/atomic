@@ -119,6 +119,7 @@ export {
 	type TaskActivity,
 	watchOwnerTaskStoreBinding,
 } from "./core/tasks/owner-store.js";
+export { automaticWaitBudgetMs } from "./core/tasks/supervisor.js";
 export {
 	ownerTaskViewSource,
 	type TaskDetailText,

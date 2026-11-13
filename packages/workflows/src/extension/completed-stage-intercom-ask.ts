@@ -42,7 +42,7 @@ export type CompletedStageHandleResolver = (
 ) => EnsurePostMortemStageHandleResult | undefined | Promise<EnsurePostMortemStageHandleResult | undefined>;
 
 /**
- * Claims late blocking Intercom asks for completed workflow stages and runs one
+ * Claims late Intercom asks for completed workflow stages and runs one
  * post-mortem turn in the retained conversation. Ordinary late notifications
  * keep using the existing parent-chat route.
  */

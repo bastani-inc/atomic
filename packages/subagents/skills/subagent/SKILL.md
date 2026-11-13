@@ -432,7 +432,7 @@ If a prompt-template extension is installed, additional user prompt templates ca
 - **Delegation is one level deep and not configurable.** A subagent cannot call `subagent`: every launch and run control (`pause`, `resume`, `quit`) from inside a child is refused. Only `list`, `get`, `status`, and `wait` stay available to a child.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `killed` means the child was cancelled for good by owner or batch cancellation (or, in older sessions, the removed kill action); it cannot be resumed and is not the same as `failed`. `paused` and `quit` children stay resumable.
 - **Builtin coordination respects caller restrictions.** Every builtin agent declares `intercom`, but a parent that disables it prevents live coordination. Resolve decisions up front when running without coordination tools.
-- **Intercom asks are blocking.** A session can only maintain one pending outbound ask wait state at a time.
+- **Intercom asks do not block.** An `ask` returns once delivered; a reply that misses its wait arrives later as a message starting `Reply to your ask <id> from <name>`. `contact_supervisor` decisions and interviews still wait for the reply.
 - **Keep conversational authority clear.** Advisory specialists should not silently become second decision-makers.
 
 ## Best Practices

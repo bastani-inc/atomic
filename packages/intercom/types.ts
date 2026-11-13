@@ -299,7 +299,8 @@ export type ClientMessage =
 			/** The registration is refused, before it takes effect, unless the broker's multi-node routing is still this. */
 			expectedRouting: { acrossMachines: boolean };
 	  } & RegisterRequest)
-	| { type: "unregister" }
+	/** `resumable`: the session can be resumed, so its asks stay pending while it is away (#4751). */
+	| { type: "unregister"; resumable?: true }
 	/** #3761: the recipient saved this message; it ignores a copy of it sent again. */
 	| { type: "received"; messageId: string }
 	/** #3983: the recipient is still saving this message; its sender keeps waiting. Sent only to a broker that advertised `extendsSaves`. */

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagents are told that an Intercom `ask` to a peer or the supervisor no longer blocks: its reply arrives later as a message ([#4751](https://github.com/bastani-inc/atomic/issues/4751))
+
 ## [0.9.81] - 2026-11-13
 
 Parallel subagent calls survive a single child's failure, and the desktop skill learns sandboxes.

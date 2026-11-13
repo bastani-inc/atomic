@@ -9,13 +9,15 @@ export class InlineMessageComponent implements Component {
   private theme: Theme;
   private replyCommand?: string;
   private bodyText?: string;
+  private heading?: string;
 
-  constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string) {
+  constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string, heading?: string) {
     this.from = from;
     this.message = message;
     this.theme = theme;
     this.replyCommand = replyCommand;
     this.bodyText = bodyText;
+    this.heading = heading;
   }
 
   invalidate(): void {}
@@ -29,7 +31,7 @@ export class InlineMessageComponent implements Component {
     const bodyWidth = Math.max(1, width - 2);
 
     const senderName = this.from.name || this.from.id;
-    const header = ` 📨 From: ${senderName} (${this.from.cwd}) `;
+    const header = this.heading === undefined ? ` 📨 From: ${senderName} (${this.from.cwd}) ` : ` 📨 ${this.heading} `;
     // An empty ellipsis silently clips full sender IDs; keep header overflow visible.
     const headerText = truncateToWidth(header, bodyWidth, "…");
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));

@@ -1399,7 +1399,8 @@ export class IntercomClient extends EventEmitter {
         throw new Error(`Unknown broker message type: ${brokerMessage.type}`);
     }
   }
-  async disconnect(): Promise<void> {
+  /** `resumable`: this session can be resumed later, so the asks it sent or was sent stay pending (#4751). */
+  async disconnect(options: { readonly resumable?: boolean } = {}): Promise<void> {
     // A connect still in progress (or waiting to retry) is cancelled: it closes any socket it opened and never
     // registers (#3904).
     if (this.connectAttempt !== undefined && this._sessionId === null) {
@@ -1435,7 +1436,7 @@ export class IntercomClient extends EventEmitter {
       socket.once("close", onClose);
       socket.once("error", onError);
       try {
-        writeMessage(socket, { type: "unregister" });
+        writeMessage(socket, { type: "unregister", ...(options.resumable === true ? { resumable: true as const } : {}) });
         socket.end();
       } catch {
         // Disconnect should still finish even if the unregister write fails.

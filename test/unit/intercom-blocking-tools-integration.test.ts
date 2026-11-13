@@ -584,7 +584,7 @@ describe("registered blocking intercom tools", () => {
 		assert.match(result.content[0]?.text ?? "", /Use option B/);
 	});
 
-	test("intercom ask fails on peer disconnect while its ten-minute timeout remains armed", async () => {
+	test("intercom ask fails on peer disconnect during its reply wait (#4751)", async () => {
 		const current = fixture("intercom");
 		const execution = current.tool.execute(
 			"call",
@@ -598,8 +598,7 @@ describe("registered blocking intercom tools", () => {
 
 		const result = await execution;
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /^Failed: Session "sibling" disconnected before replying/);
-		assert.match(result.content[0]?.text ?? "", /Do not repeat this operation automatically/);
+		assert.equal(result.content[0]?.text, 'Failed: Session "sibling" disconnected before replying');
 	});
 
 	test("contact_supervisor blocking waits receive the same peer disconnect release", async () => {

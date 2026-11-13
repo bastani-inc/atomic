@@ -6,6 +6,10 @@
 
 - Fixed checking a worktree snapshot's remote URL for credentials taking quadratic time, so a crafted record with a very long remote could stall resume for seconds or minutes. The check is now linear, and it also strips credentials that contain `@` completely
 
+### Changed
+
+- Intercom `ask` no longer blocks the asking session: it returns at delivery, and a reply that misses its `wait` (the same options as `bash`) arrives later as a message. Extensions can read the automatic wait budget an owner gives a command with `automaticWaitBudgetMs` and `AgentTaskHost.commandWaitBudgetMs` ([#4751](https://github.com/bastani-inc/atomic/issues/4751))
+
 ## [0.9.85] - 2026-11-13
 
 Resumed sessions always open, and `/tree` navigation now sticks.

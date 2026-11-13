@@ -16,7 +16,7 @@ Start with the state you can observe. The existing sections below explain the co
 | Reconnect backoff | The session remains disconnected between attempts. | No extra call is required to keep recovery moving. Retries use 1, 2, 5, 10, then 30 seconds until the session connects or shuts down. See [How it works](#how-it-works). |
 | Exhausted workflow-stage warm-up | The stage ends `failed` and names the run, stage id, and stage name. Queued messages remain queued. | Treat the failure as terminal for that stage and restore broker availability before another delivery attempt. See [How it works](#how-it-works). |
 | Terminal stage delivery failure | The stage fails without spending a model retry or fallback. | Fix the delivery failure rather than changing models. The typed failure applies to every model candidate. See [How it works](#how-it-works). |
-| Destination-side admission failure | A blocking non-parent asker receives a correlated error instead of waiting for the reply timeout. | Act on the returned destination error, then send again when the destination can admit the message. See [Workflow and subagent notifications](#workflow-and-subagent-notifications). |
+| Destination-side admission failure | A non-parent asker receives a correlated failed-ask message (or an error while its call still waits) instead of a reply. | Act on the returned destination error, then send again when the destination can admit the message. See [Workflow and subagent notifications](#workflow-and-subagent-notifications). |
 | Broker restart or concurrent startup | Sessions disappear briefly, or several sessions invoke Intercom at the same time. | Usually no action is needed. Clients reconnect, and the spawn lock prevents duplicate brokers. See [How it works](#how-it-works). |
 | Broker started by an older Atomic | After an update, the first session of the new version replaces the older broker; sessions of both versions disconnect for a moment and reconnect to the new one. If the broker cannot be replaced, the session shows one warning that it uses the broker on this machine only. | Usually nothing. If the warning appears, run `atomic intercom restart` when a brief reconnect is acceptable. See [Upgrading Atomic with sessions running](#upgrading-atomic-with-sessions-running). |
 | Broker accepts connections but stops answering | List, send, or workflow route requests time out. | Allow about a minute for automatic broker replacement, then reconnect backoff. A request timeout can add up to five seconds for a health check. Check the logs below if it repeats. See [How it works](#how-it-works). |
@@ -149,7 +149,7 @@ workflow({
 
 When neither `enabled` nor `delivery` is set, direct `parallel` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from direct runs as user-visible workflow output.
 
-Live workflow stages receive incoming messages according to the sender's `delivery` option: `"steer"` (default) after the current tool calls finish, `"followUp"` after the stage's agent stops, and `"interrupt"` by cancelling its current model call or cancellable tool first. See [Intercom](/intercom) for when to use each. A child's message releases its parent's foreground wait without cancelling the child. Admission failures return an actionable error to a blocking asker instead of waiting ten minutes. Claimed single-child parent handoffs still end that child.
+Live workflow stages receive incoming messages according to the sender's `delivery` option: `"steer"` (default) after the current tool calls finish, `"followUp"` after the stage's agent stops, and `"interrupt"` by cancelling its current model call or cancellable tool first. See [Intercom](/intercom) for when to use each. A child's message releases its parent's foreground wait without cancelling the child. Admission failures come back to the asker as an actionable failed-ask message. Claimed single-child parent handoffs still end that child.
 
 ### Messages to workflow stages that have not started
 
@@ -170,7 +170,7 @@ For live peer coordination, call `intercom({ action: "status" })` in the parent 
 
 ### Delivery Ordering
 
-Parallel communication does not cancel the batch. A blocking ask waits only in its requesting child; the correlated reply continues that same execution. Sends and progress updates remain nonblocking. Claimed single-child parent asks retain their terminal fresh-start handoff.
+Parallel communication does not cancel the batch. An `intercom` ask returns at delivery and its reply arrives as a message in the same child; a `contact_supervisor` decision waits only in its requesting child and the correlated reply continues that same execution. Sends and progress updates remain nonblocking. Claimed single-child parent asks retain their terminal fresh-start handoff.
 
 Queued messages from a child arrive before its completion notice. Delivery retries do not rerun work or change its outcome.
 
@@ -292,7 +292,7 @@ When a whole machine or its broker stops, its sessions still look connected for 
 
 **The database is unavailable.** Messages between sessions on the same machine keep working. A send to a session on another machine fails with `Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.` If the database cannot be opened when the broker starts, the broker logs `Intercom multi-node routing is unavailable: <reason>` and retries after 1 second, doubling up to every 30 seconds. Intercom never falls back to in-memory storage. If sends keep failing after the database is back, run `atomic intercom restart` so that a new broker starts.
 
-**An ask to a session on another machine never gets an answer.** If that session disconnects before it answers, the asker is not told, and waits until the ask times out after 10 minutes.
+**An ask to a session on another machine never gets an answer.** If that session disconnects before it answers, the asker is not told, and the ask stays pending. Cancel it with `intercom({ action: "cancel", askId })` and ask again once the session is back.
 
 ## Keyboard Shortcuts
 

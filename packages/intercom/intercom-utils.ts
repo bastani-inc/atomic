@@ -38,6 +38,8 @@ export interface InboundMessageEntry {
    * reply, and nothing else delivers it again.
    */
   stageQueued?: true;
+  /** #4751: the card's opening line in place of the sender line, such as "Reply to your ask <id> from <name>". */
+  heading?: string;
 }
 
 /** Whether writing this entry may start a turn. */

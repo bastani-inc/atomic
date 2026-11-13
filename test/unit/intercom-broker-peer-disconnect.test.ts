@@ -131,7 +131,7 @@ afterAll(async () => {
 	await fixture.cleanup();
 });
 
-test("broker emits exact idempotent peer_disconnected frames for graceful and abrupt target exits", async () => {
+test("broker emits exact idempotent peer_disconnected frames when a target ends, and keeps asks to a dropped target pending (#4751)", async () => {
 	const gracefulAsker = new WireClient();
 	const secondAsker = new WireClient();
 	const gracefulTarget = new WireClient();
@@ -185,12 +185,8 @@ test("broker emits exact idempotent peer_disconnected frames for graceful and ab
 		await asker.next("delivered");
 		await abruptTarget.next("message");
 	}
+	// #4751: a connection that drops without ending its session may be a restart; its asks stay pending.
 	abruptTarget.socket.destroy();
-	assert.deepEqual(await abruptAsker.next("peer_disconnected"), disconnected("abrupt-question-exact", abruptTargetId));
-	assert.deepEqual(
-		await gracefulAsker.next("peer_disconnected"),
-		disconnected("mixed-target-question", abruptTargetId),
-	);
 	await abruptAsker.next("session_left", (frame) => frame.sessionId === abruptTargetId);
 	await gracefulAsker.next("session_left", (frame) => frame.sessionId === abruptTargetId);
 
@@ -216,7 +212,8 @@ test("broker emits exact idempotent peer_disconnected frames for graceful and ab
 	await scopedTarget.next("session_left", (frame) => frame.sessionId === gracefulDepartedId);
 	abruptDepartedAsker.socket.destroy();
 	await scopedTarget.next("session_left", (frame) => frame.sessionId === abruptDepartedId);
-	scopedTarget.socket.destroy();
+	scopedTarget.send({ type: "unregister" });
+	scopedTarget.socket.end();
 	assert.deepEqual(
 		await survivingAsker.next("peer_disconnected"),
 		disconnected("surviving-question", scopedTargetId, "scoped-target"),
@@ -228,16 +225,13 @@ test("broker emits exact idempotent peer_disconnected frames for graceful and ab
 	const notices = (client: WireClient) => client.received.filter((frame) => frame.type === "peer_disconnected");
 	assert.deepEqual(
 		notices(gracefulAsker).map((frame) => frame.replyTo),
-		["graceful-question-1", "graceful-question-2", "mixed-target-question"],
+		["graceful-question-1", "graceful-question-2"],
 	);
 	assert.deepEqual(
 		notices(secondAsker).map((frame) => frame.replyTo),
 		["second-question-exact"],
 	);
-	assert.deepEqual(
-		notices(abruptAsker).map((frame) => frame.replyTo),
-		["abrupt-question-exact"],
-	);
+	assert.deepEqual(notices(abruptAsker), []);
 	assert.deepEqual(notices(survivingAsker), [disconnected("surviving-question", scopedTargetId, "scoped-target")]);
 	for (const client of [gracefulAsker, secondAsker, abruptAsker, survivingAsker]) client.socket.destroy();
 });
@@ -270,7 +264,7 @@ test("real client stays connected when a pending peer disconnects", async () => 
 	await asker.disconnect();
 });
 
-test("real client rejects the exact waiter when its target disconnects", async () => {
+test("real client rejects the exact waiter when its target session ends", async () => {
 	const asker = new IntercomClient();
 	fixture.onCleanup(() => asker.disconnect());
 	const target = new WireClient();
@@ -291,7 +285,8 @@ test("real client rejects the exact waiter when its target disconnects", async (
 	});
 	await target.next("message");
 
-	target.socket.destroy();
+	target.send({ type: "unregister" });
+	target.socket.end();
 	await assert.rejects(admission.wait.promise, {
 		message: `Session "${targetName}" disconnected before replying`,
 	});

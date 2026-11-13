@@ -1,6 +1,6 @@
 import type { JsonValue } from "@bastani/pi-ai";
 import { formatAttachments, parseStructuredSupervisorReply, validateSupervisorInterviewRequest } from "./intercom-utils.js";
-import { ASK_REPLY_TIMEOUT_MS, intercomRecoveryStoppedText } from "./retry-policy.js";
+import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
 import type { Message } from "./types.js";
 
 /** Subagents → Intercom: turn a released asker's saved reply or deadline into the result its inline call returns. */
@@ -46,23 +46,23 @@ function isReleasedReplyFormatRequest(payload: unknown): payload is ReleasedRepl
 	);
 }
 
-function formatTimeout(toolName: string, from: string, retryCount: number): FormattedReleasedReply {
+function formatTimeout(toolName: string, from: string): FormattedReleasedReply {
+	// #4751: an `ask` has no reply timeout; its wait ended and the ask stays pending.
+	if (toolName === "intercom")
+		return {
+			content: [{ type: "text", text: `No reply from "${from}" yet; stopped waiting. The ask stays pending.` }],
+			details: { pending: true },
+			isError: false,
+		};
 	const reason = `Failed: No reply from "${from}" within ${Math.round(ASK_REPLY_TIMEOUT_MS / 60_000)} minutes`;
-	const intercom = toolName === "intercom";
-	return {
-		content: [{ type: "text", text: intercom ? intercomRecoveryStoppedText(reason, retryCount) : reason }],
-		details: intercom
-			? { error: true, terminal: true, automaticRetries: retryCount, outcome: "unknown" }
-			: { error: true },
-		isError: true,
-	};
+	return { content: [{ type: "text", text: reason }], details: { error: true }, isError: true };
 }
 
 /** The result an `intercom` ask or a `contact_supervisor` request returns inline for the same reply or deadline. */
 export function formatReleasedReply(request: Omit<ReleasedReplyFormatRequest, "result">): ReleasedReplyFormatResult {
 	const { toolName, args, outcome } = request;
 	if (outcome.kind === "timeout")
-		return { ok: true, formatted: formatTimeout(toolName, outcome.from, outcome.retryCount) };
+		return { ok: true, formatted: formatTimeout(toolName, outcome.from) };
 	const reply = outcome.reply;
 	const attachments = reply.attachments?.length ? formatAttachments(reply.attachments) : "";
 	if (toolName === "intercom") {

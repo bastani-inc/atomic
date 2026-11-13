@@ -67,6 +67,20 @@ export type TaskTranscriptSource = Pick<SessionManager, "getSessionId" | "getEnt
 };
 
 export const DEFAULT_AGENT_WAIT_BUDGET_MS = 30000;
+
+/**
+ * The automatic foreground budget an owner gives a wait that names none: a command's (bash's default 10s) or an
+ * agent's. `undefined` waits until the work settles.
+ */
+export function automaticWaitBudgetMs(
+	configuration: C.TaskWaitConfiguration | undefined,
+	command: boolean,
+): number | undefined {
+	if (configuration?.kind === "until-settled") return undefined;
+	return command
+		? (configuration?.commandBudgetMs ?? COMMAND_FOREGROUND_BUDGET_MS)
+		: (configuration?.agentBudgetMs ?? DEFAULT_AGENT_WAIT_BUDGET_MS);
+}
 /**
  * How long a command's process admission waits while the owner's own commands hold process permits for cleanup that
  * is not confirmed, before it fails with a `TaskCleanupAdmissionTimeoutError`. A quarantined command keeps its permit
@@ -1588,11 +1602,7 @@ export class TaskSupervisor {
 	}
 	#agentBudget(owner: OwnerState, budgetMs?: number, command = false): number | undefined {
 		if (budgetMs !== undefined) return budgetMs;
-		const configuration = owner.host.binding.tasks?.wait;
-		if (configuration?.kind === "until-settled") return undefined;
-		return command
-			? (configuration?.commandBudgetMs ?? COMMAND_FOREGROUND_BUDGET_MS)
-			: (configuration?.agentBudgetMs ?? DEFAULT_AGENT_WAIT_BUDGET_MS);
+		return automaticWaitBudgetMs(owner.host.binding.tasks?.wait, command);
 	}
 	#register(lease: native.WaitLease, launches: LaunchMetadata): WaitLease {
 		const wait = new WaitCapability();

@@ -80,6 +80,11 @@ export class ReplyWaiterRegistry {
     if (waiter?.from === previousSessionId) waiter.from = sessionId;
   }
 
+  /** Reject the waiter of exactly this question, if one is waiting. */
+  cancel(replyTo: string, error: Error): void {
+    this.waiters.get(replyTo)?.reject(error);
+  }
+
   get limit(): number {
     return this.maxPending;
   }
@@ -99,18 +104,19 @@ export class ReplyWaiterRegistry {
     return released;
   }
 
-  begin(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission {
+  /** `timeoutMs: null` waits without a deadline: an `ask`'s own wait budget ends it instead (#4751). */
+  begin(from: string, replyTo: string, signal?: AbortSignal, timeoutMs: number | null = this.timeoutMs): ReplyWaitAdmission {
     if (signal?.aborted) return { ok: false, reason: "cancelled" };
     if (this.waiters.size >= this.maxPending) {
       return { ok: false, reason: "busy", limit: this.maxPending };
     }
-    const deadline = Date.now() + this.timeoutMs;
+    const deadline = timeoutMs === null ? Number.MAX_SAFE_INTEGER : Date.now() + timeoutMs;
     let record!: ReplyWaiterRecord;
     const promise = new Promise<Message>((resolve, reject) => {
       let settled = false;
-      const timeout = setTimeout(() => {
-        record.reject(new Error(`No reply from "${from}" within ${Math.round(this.timeoutMs / 60_000)} minutes`));
-      }, this.timeoutMs);
+      const timeout = timeoutMs === null ? undefined : setTimeout(() => {
+        record.reject(new Error(`No reply from "${from}" within ${Math.round(timeoutMs / 60_000)} minutes`));
+      }, timeoutMs);
       const onAbort = () => record.reject(new Error("Cancelled"));
       const cleanup = () => {
         settled = true;

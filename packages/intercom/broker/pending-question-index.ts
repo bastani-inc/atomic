@@ -4,9 +4,43 @@ export interface PendingQuestion {
   messageId: string;
 }
 
+/** Most questions kept for sessions that are away; the oldest is dropped beyond it. */
+export const DORMANT_QUESTIONS_MAX = 10_000;
+
 /** Tracks delivered questions until their reply or either peer's departure. */
 export class PendingQuestionIndex {
   private readonly questions = new Map<string, PendingQuestion[]>();
+  /**
+   * #4751: questions whose asker, or whose recipient, disconnected without ending its session, in the order they
+   * were kept. An ask has no expiry, so its route waits here for that session to register again under the same id.
+   */
+  private dormant: PendingQuestion[] = [];
+
+  /** Keep questions whose peer is away until it is back. */
+  keepDormant(questions: readonly PendingQuestion[]): void {
+    if (questions.length === 0) return;
+    this.dormant.push(...questions);
+    if (this.dormant.length > DORMANT_QUESTIONS_MAX) this.dormant = this.dormant.slice(-DORMANT_QUESTIONS_MAX);
+  }
+
+  /** A session is back under its id: its kept questions route again once both of their peers are connected. */
+  restoreDormant(sessionId: string, isConnected: (sessionId: string) => boolean): PendingQuestion[] {
+    const restored: PendingQuestion[] = [];
+    this.dormant = this.dormant.filter((question) => {
+      if (question.senderSessionId !== sessionId && question.targetSessionId !== sessionId) return true;
+      if (!isConnected(question.senderSessionId) || !isConnected(question.targetSessionId)) return true;
+      restored.push(question);
+      return false;
+    });
+    for (const question of restored) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
+    return restored;
+  }
+
+  /** Kept questions to a recipient whose session ended; their askers are away and learn nothing more of them. */
+  dropDormantForTarget(targetSessionId: string): void {
+    this.dormant = this.dormant.filter((question) => question.targetSessionId !== targetSessionId);
+  }
+
   private readonly parked = new Map<string, { ownerSessionId: string; questions: PendingQuestion[] }>();
 
   parkTarget(targetSessionId: string, childName: string, ownerSessionId: string): void {

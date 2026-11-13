@@ -542,15 +542,16 @@ describe("concurrent blocking intercom requests", () => {
 		assert.equal((await retried).isError, false);
 	});
 
-	test("cancellation rejects the pending ask and releases the reservation", async () => {
+	test("interrupting an ask's wait yields with the ask pending and releases the reservation (#4751)", async () => {
 		const current = fixture();
 		const controller = new AbortController();
 		const execution = current.ask(controller.signal);
 		await settles(() => current.slot.has(), "the ask is waiting before cancellation");
 		controller.abort();
 		const result = await execution;
-		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Cancelled/);
+		// #4751: interrupting the wait yields; the delivered ask stays pending and its reply arrives as a message.
+		assert.equal(result.isError, false);
+		assert.match(result.content[0]?.text ?? "", /stopped waiting\. Ask .* stays pending/);
 		assert.equal(current.slot.has(), false);
 
 		const next = current.ask();
@@ -672,8 +673,9 @@ describe("concurrent blocking intercom requests", () => {
 		await settles(() => current.slot.has(), "a second ask reserves the freed slot");
 
 		const firstResult = await first;
-		assert.equal(firstResult.isError, true);
-		assert.match(firstResult.content[0]?.text ?? "", /Cancelled/);
+		// #4751: the question was delivered, so the interrupted call yields with the ask pending.
+		assert.equal(firstResult.isError, false);
+		assert.match(firstResult.content[0]?.text ?? "", /stopped waiting/);
 		assert.ok(current.slot.has(), "the aborted ask's trailing cleanup must not tear down the second reservation");
 
 		current.replyToPending();

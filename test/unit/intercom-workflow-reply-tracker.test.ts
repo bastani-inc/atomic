@@ -103,15 +103,15 @@ test("parallel children keep every parent-targeted ask independently addressable
 	tracker.recordIncomingMessage(childA, { ...message, id: "a-2" }, 3);
 
 	assert.deepEqual(
-		tracker.listPending(3).map((context) => context.message.id),
+		tracker.listPending().map((context) => context.message.id),
 		["a-1", "b-1", "a-2"],
 	);
-	assert.equal(tracker.resolveReplyTarget({ to: "child-b" }, 3).message.id, "b-1");
-	assert.throws(() => tracker.resolveReplyTarget({ to: "child-a" }, 3), /Multiple pending asks/);
-	assert.equal(tracker.resolveReplyTarget({ replyTo: "a-2" }, 3).message.id, "a-2");
+	assert.equal(tracker.resolveReplyTarget({ to: "child-b" }).message.id, "b-1");
+	assert.throws(() => tracker.resolveReplyTarget({ to: "child-a" }), /Multiple pending asks/);
+	assert.equal(tracker.resolveReplyTarget({ replyTo: "a-2" }).message.id, "a-2");
 	tracker.markReplied("a-2");
 	assert.deepEqual(
-		tracker.listPending(3).map((context) => context.message.id),
+		tracker.listPending().map((context) => context.message.id),
 		["a-1", "b-1"],
 	);
 });
@@ -123,14 +123,14 @@ test("markReplied removes an exact ask from queued turn contexts", () => {
 	tracker.queueTurnContext(first);
 	tracker.queueTurnContext(second);
 	tracker.markReplied("message-2");
-	tracker.beginTurn(2);
+	tracker.beginTurn();
 	tracker.admitTurnMessage("message-2");
 	tracker.admitTurnMessage("message-1");
-	assert.equal(tracker.resolveReplyTarget({}, 2), first);
+	assert.equal(tracker.resolveReplyTarget({}), first);
 	tracker.markReplied("message-1");
 	tracker.endTurn();
-	tracker.beginTurn(2);
-	assert.throws(() => tracker.resolveReplyTarget({}, 2), /No active intercom context/);
+	tracker.beginTurn();
+	assert.throws(() => tracker.resolveReplyTarget({}), /No active intercom context/);
 });
 
 // #3105: inherited workflow context must not grant a child its parent's reply ledger.
@@ -203,7 +203,9 @@ test("public pending and reply isolate a workflow parent and two typed children"
 	parent.receive("parent-question");
 	const children = [endpoint("child-a", childContext()), endpoint("child-b", childContext())];
 	for (const child of children) {
-		assert.deepEqual((await child.call("pending")).content, [{ type: "text", text: "No unresolved inbound asks." }]);
+		assert.deepEqual((await child.call("pending")).content, [
+			{ type: "text", text: "No unresolved inbound or outbound asks." },
+		]);
 		assert.equal((await child.call("reply")).isError, true);
 		assert.equal((await child.call("reply", "parent-question")).isError, true);
 	}
@@ -227,7 +229,9 @@ test("public pending and reply isolate a workflow parent and two typed children"
 		{ owner: "child-b", replyTo: "child-b-question" },
 		{ owner: "replacement", replyTo: "parent-question" },
 	]);
-	assert.deepEqual((await parent.call("pending")).content, [{ type: "text", text: "No unresolved inbound asks." }]);
+	assert.deepEqual((await parent.call("pending")).content, [
+		{ type: "text", text: "No unresolved inbound or outbound asks." },
+	]);
 });
 
 // #3105: a child must neither publish a stage ledger nor retain it at cleanup.

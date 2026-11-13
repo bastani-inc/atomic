@@ -46,7 +46,7 @@ Coordinate with other local Atomic/pi sessions on related codebases. Use `/skill
 
 **Not when:** Unrelated codebases, trivial questions, or when you can proceed independently.
 
-**Principle:** Prefer `send` for notifications; `ask` only when blocked waiting for input.
+**Principle:** Prefer `send` for notifications; `ask` when you need an answer. `ask` never blocks: its reply arrives as a message.
 </intercom>
 ```
 
@@ -135,7 +135,7 @@ When a blocking `intercom.ask` targets a workflow stage that has already complet
 
 Noninteractive subagent children are different: after completion, failure, interruption, or cancellation they cannot reopen to answer an ask. New asks fail immediately with an explicit terminal-child error, even if a retained registration still shows `idle`; asks already admitted fail on termination unless their reply has settled. Launch a fresh child with explicit context for follow-up work. Live interactive idle sessions remain askable, and all `send` transport semantics remain unchanged.
 
-When a blocking ask reaches a sibling workflow stage during an active model/tool turn, the target reserves it synchronously in the open stage generation before any asynchronous foreground-owner detach handshake. Queue insertion waits inside that reservation, and stage finalization drains it before publishing the terminal snapshot. This prevents a structured-output or other terminal tool call from overtaking a mid-turn ask. If destination-side admission genuinely cannot complete, the asker receives an exact-thread actionable error instead of consuming the full 10-minute timeout.
+When a blocking ask reaches a sibling workflow stage during an active model/tool turn, the target reserves it synchronously in the open stage generation before any asynchronous foreground-owner detach handshake. Queue insertion waits inside that reservation, and stage finalization drains it before publishing the terminal snapshot. This prevents a structured-output or other terminal tool call from overtaking a mid-turn ask. If destination-side admission genuinely cannot complete, the asker receives an exact-thread actionable failed-ask message instead of waiting.
 
 For delegated children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child's pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the interrupted, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and each terminal child identity is admitted only once. Other children's entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
 
@@ -161,7 +161,7 @@ intercom({ action: "list" })
 
 ### The Conversation
 
-Here's how a typical exchange looks. The planner delegates with `send` (fire-and-forget). The worker uses `ask` for anything that needs a response — questions, discoveries, completion reports. `ask` sends the message and blocks until the planner replies, so the worker gets the answer as a tool result and continues in the same turn.
+Here's how a typical exchange looks. The planner delegates with `send` (fire-and-forget). The worker uses `ask` for anything that needs a response — questions, discoveries, completion reports. `ask` returns once the question is delivered. A quick reply comes back as the tool result; otherwise the worker keeps going and the reply arrives later as a message starting "Reply to your ask <id> from planner".
 
 **Planner sends a task:**
 ```typescript
@@ -172,7 +172,7 @@ intercom({
 })
 ```
 
-**Worker hits an ambiguity — asks and waits:**
+**Worker hits an ambiguity — asks:**
 ```typescript
 intercom({
   action: "ask",
@@ -180,8 +180,9 @@ intercom({
   message: "Should retry apply to all endpoints or just idempotent ones? Also, max retry count and backoff strategy?"
 })
 
-// → Reply from planner: Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
-// Worker continues implementing with the answer, same turn, full context.
+// → Inline if the planner answers within the wait; otherwise later, as a message:
+//   Reply to your ask <id> from planner
+//   Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
 ```
 
 To coordinate two plain chat sessions without changing startup config, have each call `intercom({ action: "join", group: "NAME" })`. Joining adds a membership without changing the session ID or removing existing memberships. Calls to `list`, `send`, and `ask` can then reach any session sharing at least one membership. Use `intercom({ action: "groups" })` to discover every available name, connected-session count, and membership marker. Call `intercom({ action: "leave", group: "NAME" })` to remove one membership while keeping the others, or bare `leave` to reset to the original home group. `contact_supervisor` keeps its dedicated capability-based cross-group behavior.
@@ -221,7 +222,7 @@ intercom({
 | Pattern | Action | Why |
 |---------|--------|-----|
 | **Task Delegation** | Planner uses `send` | Fire-and-forget. Planner doesn't need to wait for an ack. |
-| **Clarification Request** | Worker uses `ask` | Worker needs the answer to proceed. Blocks until reply. |
+| **Clarification Request** | Worker uses `ask` | Worker needs the answer to proceed. The reply arrives as a message. |
 | **Discovery Escalation** | Worker uses `ask` | Worker needs approval before changing course. |
 | **Completion Report** | Worker uses `ask` | Planner might have follow-up instructions or the next task. |
 
@@ -386,7 +387,7 @@ When multiple live agent stages share a name, `ask` refuses the ambiguous target
 
 **`send`** — Sends through ordinary Intercom. Live workflow-stage sessions receive messages immediately and return `delivered`. Known pending invocation-owned stages queue durably and return the distinct `queued` result with its FIFO position; a main-chat session that explicitly joined the owning invocation group may use that route. Pending `group: "default"` stages remain ineligible, and an ineligible attempt is refused with `Target workflow run is in a different intercom group`. Each exact run/stage key retains at most 50 queued messages; the next send is refused rather than evicting an older one. Delivery occurs before the first model turn under **Messages received before you started**, with sender identity and `Sent:` timestamp separate from the task prompt. Resume/replay, broker restart, and stage-attempt restart preserve exactly-once delivery by logical message ID. Skipped, cancelled, and terminal-before-initialization destinations make pending messages undeliverable and notify the sender. If the sender reconnects with a new broker UUID, notification fallback requires one unique same-group match for the immutable registration-time name; mutable presence names/groups, cross-group matches, and ambiguous duplicates are rejected. The broker trusts that initial name/group as host-orchestration metadata, while the original display/provenance remains unchanged in the durable record. Live sends remain immediate by default; `confirmSend: true` still enables confirmation for non-reply sends.
 
-**`ask`** — Sends a message and waits for a live recipient to reply (10-minute timeout). Invocation control supports a live ask into an owned isolated subgroup, and the exact broker-recorded reply resolves the waiting tool call at the asker without opening reverse or lateral group access. Ask to an uninitialized stage remains refused with `pending_stage_ask_unsupported`; use queued `send` instead, because holding a reply waiter until a stage eventually starts would be unbounded. A recipient disconnect after live delivery fails only that peer's exact wait promptly; the timeout remains the backstop while the recipient stays connected. Up to `maxPendingAsks` blocking asks (default: 6) may run concurrently, including same-target and mixed-target fan-out. Replies resolve by exact sender and message ID, so out-of-order replies cannot cross-settle another call. When capacity is full, new asks receive a structured refusal.
+**`ask`** — Sends a message to a live recipient and returns once it is delivered, with `askId`, `delivered`, and the recipient's `state` (`idle` or `busy`, with `currentAction` when known). `wait` works as in `bash`: omitted waits up to the automatic yield (default 10 seconds), `{ kind: "foreground", budgetMs }` up to a budget, and `{ kind: "background" }` not at all. A reply within the wait comes back inline; otherwise the ask stays pending with no expiry and its reply arrives as a message starting "Reply to your ask <id> from <name>". A refusal, or a recipient session that ends, arrives as a failed-ask message. `pending` lists your pending asks and `cancel` (with `askId`) cancels one; a later reply is shown once, marked late. Asker and recipient restarts keep the ask. Invocation control supports a live ask into an owned isolated subgroup, and the exact broker-recorded reply resolves the waiting tool call at the asker without opening reverse or lateral group access. Ask to an uninitialized stage remains refused with `pending_stage_ask_unsupported`; use queued `send` instead, because holding a reply waiter until a stage eventually starts would be unbounded. Up to `maxPendingAsks` calls (default: 6) may wait for a reply at once; further asks are still delivered and their replies arrive as messages. Replies resolve by exact sender and message ID, so out-of-order replies cannot cross-settle another ask.
 
 **`reply`** without selectors replies to the current intercom-triggered message, or otherwise the single unresolved inbound ask. Explicit `to` selects a pending ask from that exact name/full session ID, even during another sender's turn. If that sender has multiple asks, use `pending` and pass the exact message ID as `replyTo`. Explicit `replyTo` selects only that pending ask or the exact active ordinary message; stale, unknown, or empty IDs fail instead of falling back. When both selectors are supplied, the sender must match the selected thread. A successful reply keeps that sender/thread pair across internal retries.
 

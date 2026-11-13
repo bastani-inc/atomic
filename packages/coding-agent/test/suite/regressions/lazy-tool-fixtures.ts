@@ -151,6 +151,7 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string): 
 			"intercom-utils.ts",
 			"group.ts",
 			"hosted-session-timeout-error.ts",
+			"ask-wait.ts",
 		])
 			writeFileSync(join(tempDir, file), readFileSync(resolve(repoRoot, "packages/intercom", file), "utf-8"));
 		mkdirSync(join(tempDir, "broker"), { recursive: true });

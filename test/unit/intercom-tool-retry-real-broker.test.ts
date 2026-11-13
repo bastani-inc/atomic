@@ -1101,7 +1101,7 @@ test("a public reply reaches a retried cross-group ask after the asker reconnect
 	assert.match(retried.content[0]?.text ?? "", /correlated cross-group answer/);
 });
 
-test("an ask retry reuses its real-broker question after disconnecting during the reply wait", async () => {
+test("a real-broker ask whose asker disconnects during the reply wait yields pending and is never asked twice (#4751)", async () => {
 	const questions: Array<{ from: SessionInfo; message: Message }> = [];
 	const recipient = await createClient("recipient");
 	recipient.on("message", (from: SessionInfo, message: Message) => questions.push({ from, message }));
@@ -1127,27 +1127,15 @@ test("an ask retry reuses its real-broker question after disconnecting during th
 		"the broker accepts the question and the tool enters its reply wait",
 	);
 	(sender as unknown as { socket: net.Socket }).socket.destroy();
-	const originalQuestion = questions[0]?.message;
-	assert.ok(originalQuestion);
-	await waitUntil(() => brokerResults.length === 2, "the reconnected ask receives its retained acknowledgement");
+	const yielded = await firstExecution;
+	assertNoRetryToken(yielded);
+	assert.equal(yielded.isError, false);
+	assert.match(yielded.content[0]?.text ?? "", /stays pending/);
 	assert.equal(questions.length, 1, "the recipient must not receive the accepted question twice");
 	assert.deepEqual(
 		brokerResults.map(({ id, delivered }) => ({ id, delivered })),
-		[
-			{ id: originalQuestion.id, delivered: true },
-			{ id: originalQuestion.id, delivered: true },
-		],
+		[{ id: questions[0]?.message.id, delivered: true }],
 	);
-
-	const reply = await recipient.send("sender", {
-		text: "reply after sender re-registration",
-		replyTo: originalQuestion.id,
-	});
-	assert.equal(reply.delivered, true);
-	const retried = await firstExecution;
-	assertNoRetryToken(retried);
-	assert.equal(retried.isError, false);
-	assert.match(retried.content[0]?.text ?? "", /reply after sender re-registration/);
 
 	const intentionalExecution = tool.execute(
 		"intentional-ask",
@@ -1157,12 +1145,12 @@ test("an ask retry reuses its real-broker question after disconnecting during th
 		context,
 	);
 	await waitUntil(
-		() => questions.length === 2 && brokerResults.length === 3,
-		"a settled ask releases its identity for an intentional repeat",
+		() => questions.length === 2 && brokerResults.length === 2,
+		"a new call is a new ask with its own identity",
 	);
 	const intentionalQuestion = questions[1]?.message;
 	assert.ok(intentionalQuestion);
-	assert.notEqual(intentionalQuestion.id, originalQuestion.id);
+	assert.notEqual(intentionalQuestion.id, questions[0]?.message.id);
 	const intentionalReply = await recipient.send("sender", {
 		text: "reply to intentional repeat",
 		replyTo: intentionalQuestion.id,
@@ -1170,4 +1158,5 @@ test("an ask retry reuses its real-broker question after disconnecting during th
 	assert.equal(intentionalReply.delivered, true);
 	const intentional = await intentionalExecution;
 	assert.equal(intentional.isError, false);
+	assert.match(intentional.content[0]?.text ?? "", /reply to intentional repeat/);
 });

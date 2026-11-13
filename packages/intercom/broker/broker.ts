@@ -1933,6 +1933,8 @@ class IntercomBroker {
           }
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
           flushHeldWrites(socket, held);
+          // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
+          this.pendingQuestions.restoreDormant(id, (sessionId) => this.sessions.has(sessionId));
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
           // for it while it was being restored go out now, once each and in the order they arrived.
           const registered = info.name?.trim();
@@ -1987,7 +1989,8 @@ class IntercomBroker {
       }
 
       case "unregister": {
-        this.disconnectSession(currentId);
+        // #4751: a session that can be resumed is only away; one that cannot has ended.
+        this.disconnectSession(currentId, clientMessage.resumable !== true);
         setId(null);
         this.scheduleShutdownCheck();
         break;
@@ -3052,7 +3055,8 @@ class IntercomBroker {
     this.dispatchHeldSends(this.departedChildren.adoptOrphans(ownerSessionId, owner.registrationReturnAddress));
   }
 
-  private disconnectSession(sessionId: string): void {
+  /** `ended`: the session said goodbye, so it is not coming back; otherwise its connection only dropped. */
+  private disconnectSession(sessionId: string, ended = false): void {
     const departed = this.sessions.get(sessionId);
     if (!departed) return;
     // #4642: the sessions a connection hosts leave with it, and a hosted session leaves its host's index.
@@ -3090,6 +3094,9 @@ class IntercomBroker {
         unanswered,
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
+    } else if (departed.supervisorId === undefined && departed.hostedBy === undefined) {
+      // #4751: an ask has no expiry and survives its asker's restart: the route waits for the asker to come back.
+      this.pendingQuestions.keepDormant(unanswered);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
@@ -3102,7 +3109,11 @@ class IntercomBroker {
     const parked = childName !== undefined && releasedOwner !== undefined && releasedOwner === departed.supervisorId;
     if (parked) {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
+    } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
+      // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
+      this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
     } else {
+      if (ended) this.pendingQuestions.dropDormantForTarget(sessionId);
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
     }
     // #4639: a subagent that left without being released: hold sends to it until it is back or its owner says why. An

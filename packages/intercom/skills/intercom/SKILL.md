@@ -47,14 +47,16 @@ intercom({
 })
 ```
 
-**Worker asks for clarification** (blocks until answer):
+**Worker asks for clarification** (never blocks):
 ```typescript
 intercom({
   action: "ask",
   to: "planner",
   message: "Should I use exponential backoff or fixed intervals?"
 })
-// → Returns the planner's reply as the result
+// → A quick reply comes back as the result. Otherwise the ask stays pending and the
+//   reply arrives later as a message: "Reply to your ask <id> from planner".
+//   Keep working on what you can meanwhile; do not ask again.
 ```
 
 **Worker reports completion**:
@@ -288,9 +290,10 @@ How a swarm works:
 | `leave` | Removes one named membership, or resets to home when omitted | Stop sharing one group or restore startup membership |
 | `groups` | Lists every available group with counts and membership markers | Discover a group instead of guessing its name |
 | `send` | Fire-and-forget to a live session, or durable sticky delivery to `workflow:<rootRunId>/<segment>[/<segment>...]`; globs and `**` broadcasts cover live and future matches | You don't need a response |
-| `ask` | Blocks until a live recipient replies (10 min timeout); refused for an unstarted stage | You need an answer to continue |
+| `ask` | Returns once delivered (or with the reply if it comes within `wait`); the reply otherwise arrives later as a message. Refused for an unstarted stage | You need an answer |
 | `reply` | Responds to the active or pending inbound ask; `to` accepts an exact name/full session ID or unique 8-hex session UUID prefix | You were asked something and need to answer naturally |
-| `pending` | Lists unresolved inbound asks | You need to see who is waiting before replying |
+| `pending` | Lists unresolved inbound asks and your own pending asks | You need to see who is waiting, or what you are still waiting for |
+| `cancel` | Cancels one of your pending asks by `askId`; a later reply is shown once, marked late | You no longer need the answer |
 | `list` | Returns all sessions sharing any membership, with full IDs and live status | Discover targets or choose an idle peer |
 | `status` | Returns connection state and every current membership | Troubleshooting |
 
@@ -395,18 +398,16 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 ### `ask` Limitations
 
 - **Terminal noninteractive children**: Completed, failed, interrupted, or cancelled subagents cannot reply, even if listed as `idle`. New asks fail immediately; an admitted ask fails if the child terminates before replying. Launch a fresh child with explicit context. Live interactive idle sessions and reply-capable workflow post-mortem conversations remain askable; `send` semantics are unchanged.
-- **10-minute timeout**: If no reply comes within 10 minutes, the ask fails
-- **Bounded concurrency**: Up to `maxPendingAsks` asks (default: 6) may wait concurrently; additional calls receive a structured capacity error
+- **Never blocks**: `ask` returns once delivered. `wait` works as in `bash`: omitted waits up to the automatic yield (default 10s), `{ kind: "foreground", budgetMs }` up to a budget, `{ kind: "background" }` not at all. An ask has no expiry; its reply arrives later as a message starting `Reply to your ask <id> from <name>`, and a refusal or an ended recipient as `Your ask <id> to <name> failed`
+- **Bounded waiting**: Up to `maxPendingAsks` calls (default: 6) may wait for a reply at once; further asks are still delivered and their replies arrive as messages
 - **Exact correlation**: Same-target and mixed-target asks may run together; out-of-order replies and peer disconnects settle only the matching sender/message pair
 - **Cannot self-target**: A session cannot ask itself
 - **Supervisor exclusivity**: One blocking `contact_supervisor` decision/interview may coexist with peer asks, but a second supervisor wait is refused with `Already waiting for a supervisor reply`
 
 ```typescript
-// Parallel fan-out is supported within the configured capacity.
-const [design, tests] = await Promise.all([
-  intercom({ action: "ask", to: "architect", message: "Review the design" }),
-  intercom({ action: "ask", to: "qa", message: "Review the tests" }),
-]);
+// Fan out without waiting; each reply arrives as its own message.
+intercom({ action: "ask", to: "architect", message: "Review the design", wait: { kind: "background" } });
+intercom({ action: "ask", to: "qa", message: "Review the tests", wait: { kind: "background" } });
 ```
 
 ### `send` Behavior
@@ -417,18 +418,18 @@ const [design, tests] = await Promise.all([
 
 ## Best Practices
 
-### Use `ask` for blocking workflows
+### Use `ask` when you need an answer
 
 When the worker needs information to proceed:
 
 ```typescript
-// GOOD: Worker blocks until planner responds
-const reply = await intercom({
+// GOOD: Ask, keep working on what does not depend on the answer, and act on the
+// "Reply to your ask <id> from planner" message when it arrives.
+intercom({
   action: "ask",
   to: "planner",
   message: "API rate limit is 100/min. Should I implement client-side throttling or batching?"
 });
-// Continue with the answer...
 ```
 
 ### Use `send` for notifications
@@ -474,13 +475,6 @@ Use `/name` so others can target you easily:
 
 ### Common Errors and Solutions
 
-**"Too many pending asks"**
-```typescript
-// This session reached maxPendingAsks. Wait for an existing ask to settle,
-// or use fire-and-forget send when the answer need not be this tool result.
-intercom({ action: "send", to: "planner", message: "..." });
-```
-
 **"Already waiting for a supervisor reply"**
 ```typescript
 // Supervisor decisions/interviews are exclusive per child. Ordinary peer
@@ -503,11 +497,11 @@ if (!result.delivered) {
 }
 ```
 
-**Ask timeout (after 10 minutes)**
+**An ask that stays pending**
 ```typescript
-// The ask will reject with a timeout error
-// Design your workflow so answers come within 10 minutes
-// For longer tasks, use send + follow-up ask pattern
+// Asks do not expire. Check what you are still waiting for, and cancel what you no longer need.
+intercom({ action: "pending" });
+intercom({ action: "cancel", askId: "4c4d8427" });
 ```
 
 ## Troubleshooting
@@ -598,7 +592,7 @@ intercom({ action: "send", to: "planner", message: "Task-3 complete. All done." 
 ### Long-Running Task with Checkpoints
 
 ```typescript
-// For tasks that might exceed 10 minutes, use send + periodic asks
+// For long tasks, use send for progress and ask at decision points
 
 // 1. Initial send with full context
 intercom({

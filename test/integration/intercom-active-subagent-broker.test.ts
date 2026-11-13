@@ -271,7 +271,7 @@ test("public same-group asks interrupt a busy child and correlate concurrent rep
 				: undefined;
 		assert.deepEqual(details?.message.content.attachments, attachments);
 		const pending = await child.execute({ action: "pending" });
-		assert.equal(getMessageText(pending), "No unresolved inbound asks.");
+		assert.equal(getMessageText(pending), "No unresolved inbound or outbound asks.");
 	} finally {
 		asks.abort();
 		release.resolve();
@@ -523,7 +523,7 @@ for (const scope of ["interactive", "headless", "workflow-stage"] as const) {
 						);
 						assert.equal(
 							getMessageText(await parent.execute({ action: "pending" })),
-							"No unresolved inbound asks.",
+							"No unresolved inbound or outbound asks.",
 						);
 					}
 					assert.equal(parent.signal?.aborted, false);

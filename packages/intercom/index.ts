@@ -41,6 +41,7 @@ import {
 } from "./session-recovery.js";
 import type { SessionInfo } from "./types.js";
 import { answerReleasedReplyFormatRequests } from "./released-reply-format.js";
+import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema } from "./ask-wait.js";
 import { INTERCOM_INBOX_REPLAY_EVENT, type IntercomInboxReplayRequest, unconsumedIntercomInbox } from "./durable-inbox.js";
 import {
 	createForwardedHandlerMap,
@@ -1054,6 +1055,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 Use this to communicate findings, request help, or coordinate work with other sessions.
 Sessions belong to an intercom group and can ONLY message sessions in the same group; cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes remain supported. Workflow-stage targets use \`workflow:<rootRunId>/<segment>[/<segment>...]\`; \`*\` matches one segment and \`**\` any depth. Use \`intercom list\` inside the invocation group to see live, pending, and possible future targets with queued counts. \`workflow:<rootRunId>/**\` reaches live stages now and remains sticky for every future stage until root termination; valid targets outside the known set still queue and settle undeliverable at terminal only if never delivered; a note appears only when the target looks like a typo of a known stage. Use \`ask\` only on live targets.
+${ASK_DESCRIPTION}
 For send/ask/reply, Intercom retries recoverable disconnects internally up to three times with the same operation identity. Each new tool call is a new operation. If recovery ends with an unknown delivery outcome, do not repeat it automatically.
 Usage:
   intercom({ action: "list" })                    → List sessions in your group
@@ -1061,15 +1063,15 @@ Usage:
   intercom({ action: "join", group: "name" })     → Join or create a named group
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (own group only)
-  intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
+${ASK_USAGE}
   intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
-  intercom({ action: "pending" })                                      → List unresolved inbound asks
+  intercom({ action: "pending" })                                      → List unresolved inbound asks and your pending asks
   intercom({ action: "status" })                  → Show connection status and your group
 
 "default" is the shared group; "true" and "auto" are reserved for subagent auto-groups. Joining does not grant cross-group access; contact_supervisor remains the only cross-group path.`,
-		promptSnippet: "Use to coordinate with other local agent sessions in your intercom group. Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.",
+		promptSnippet: `Use to coordinate with other local agent sessions in your intercom group. ${ASK_PROMPT_SNIPPET} Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.`,
 		parameters: Type.Object({
-			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'" }),
+			action: Type.String({ description: "Action: 'list', 'join', 'leave', 'send', 'ask', 'reply', 'pending', 'cancel', or 'status'" }),
 			to: Type.Optional(Type.String({ description: "Live session name, exact full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky pending/future delivery and `workflow:<rootRunId>/**` broadcasts to live and future stages; use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')" })),
 			message: Type.Optional(Type.String({ description: "Message to send (for 'send', 'ask', or 'reply' action)" })),
 			attachments: Type.Optional(Type.Array(Type.Object({
@@ -1078,6 +1080,8 @@ Usage:
 				content: Type.String(),
 				language: Type.Optional(Type.String()),
 			}))),
+			wait: Type.Optional(askWaitSchema),
+			askId: Type.Optional(askIdSchema),
 			replyTo: Type.Optional(Type.String({ description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender" })),
 			group: Type.Optional(Type.String({ description: "Group name for 'join'; read-only group filter for 'list'/'status'. 'send'/'ask' are locked to your own group." })),
 		}),

@@ -5,6 +5,7 @@ import { trackAdmittedAgentTask } from "./execution-scope.js";
 import { defaultTaskHeartbeatMs, type TaskHeartbeatDelivery, TaskHeartbeatMonitor } from "./heartbeat.js";
 import { cancelPausedOwnerTasks } from "./pause.js";
 import {
+	automaticWaitBudgetMs,
 	type FakeExecution,
 	type FakeRunnerContext,
 	type OwnerLease,
@@ -158,6 +159,11 @@ export class AgentTaskHost {
 			this.trackMessageWait(wait);
 			onRegistered?.(wait);
 		});
+	}
+
+	/** The automatic foreground budget this owner gives a command wait that names none (bash's default); `undefined` waits until settled. */
+	get commandWaitBudgetMs(): number | undefined {
+		return automaticWaitBudgetMs(this.binding.tasks?.wait, true);
 	}
 
 	/** Let inbound routing reach SDK admission instead of waiting for this owner to become idle. */
