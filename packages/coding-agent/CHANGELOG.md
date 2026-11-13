@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed snapshots captured in a worktree Atomic restored recording no remotes and bundling the checkout's whole history as unpushed, which made a resume on a third machine fail with `commits-unavailable` even for a fully pushed repository. A restored worktree now has the snapshot's recorded remotes (`origin`, then `origin-2`, …, credential-free as recorded, and only over the transports a restore fetches over) and remote-tracking refs under `refs/remotes/atomic/pushed/` for the commits a recorded remote is known to have, so later captures record the remotes and bundle only commits that are really unpushed. A repository without remotes restores and captures as before ([#4732](https://github.com/bastani-inc/atomic/issues/4732))
+
 ## [0.9.84] - 2026-11-13
 
 Sessions now move between machines alongside workflow runs.
