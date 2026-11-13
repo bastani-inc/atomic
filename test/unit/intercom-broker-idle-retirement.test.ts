@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -143,6 +143,19 @@ test(
 			Date.now() - armedAt <= BROKER_IDLE_SHUTDOWN_WINDOW_MS,
 			"idle broker exceeded the shutdown window after listen armed the check",
 		);
+	},
+	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
+);
+
+test(
+	"a broker that served no session leaves nothing in the agent directory when it idles out (#4727)",
+	async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "intercom-idle-clean-"));
+		const broker = spawnBroker(agentDir);
+		await waitForBrokerPid(agentDir, broker);
+
+		assert.equal(await waitForExit(broker, BROKER_IDLE_SHUTDOWN_WINDOW_MS), 0);
+		assert.deepEqual(readdirSync(join(agentDir, "intercom")), []);
 	},
 	REAL_BROKER_IDLE_RETIREMENT_TIMEOUT_MS,
 );

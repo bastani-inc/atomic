@@ -359,11 +359,24 @@ class IntercomBroker {
   private watchdog: BrokerWatchdog | undefined;
   private boundSocketInode: number | undefined;
   private lastConnectionAt = performance.now();
-  private deliveredMessages = new DeliveredMessageCache(
-	DELIVERED_MESSAGE_TTL_MS,
-	DELIVERED_MESSAGE_MAX_ENTRIES,
-	getBrokerDeliveredMessagesPath(),
-  );
+  private deliveredMessageCache: DeliveredMessageCache | undefined;
+  /**
+   * #4727: the durable delivered-message authority is opened when the first session registers, before that session can
+   * send, so a broker that idles out having served no session leaves no durable state in the agent directory. A broker
+   * that does serve one reads what its predecessors recorded, so a retried send is still deduplicated across restarts.
+   */
+  private openDeliveredMessages(): DeliveredMessageCache {
+    this.deliveredMessageCache ??= new DeliveredMessageCache(
+      DELIVERED_MESSAGE_TTL_MS,
+      DELIVERED_MESSAGE_MAX_ENTRIES,
+      getBrokerDeliveredMessagesPath(),
+    );
+    return this.deliveredMessageCache;
+  }
+
+  private get deliveredMessages(): DeliveredMessageCache {
+    return this.openDeliveredMessages();
+  }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
   private pendingQuestions = new PendingQuestionIndex();
@@ -1850,6 +1863,7 @@ class IntercomBroker {
           supervisorId = claimedSupervisorId;
         }
 
+        this.openDeliveredMessages();
         // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
         const id = this.sessionIdReclaim.grant(
           clientMessage.preferredSessionId,
@@ -2813,7 +2827,11 @@ class IntercomBroker {
                 writeConfirmed: writeMessageWithOutcome,
                 supervisorCache: this.supervisorChannel,
                 pendingQuestions: this.pendingQuestions,
-                deliveredMessages: this.deliveredMessages,
+                // A remote send reaches only a session registered here, which has opened the authority (#4727).
+                deliveredMessages: {
+                  lookupForTarget: (...args) => this.deliveredMessages.lookupForTarget(...args),
+                  lookupQuestionTarget: (...args) => this.deliveredMessages.lookupQuestionTarget(...args),
+                },
                 dispatch: (socket, clientMessage, senderId) => this.dispatchSend(socket, clientMessage, senderId),
                 revokeReleasedReservation: (key, ownerSessionId) => this.revokeReleasedReservation(key, ownerSessionId),
               },
@@ -3219,7 +3237,7 @@ class IntercomBroker {
     this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
-	this.deliveredMessages.close();
+	this.deliveredMessageCache?.close();
     // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
     // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's
     // connection still holds the pipe open, finds the pipe busy and waits up to 30 s for a free instance.
