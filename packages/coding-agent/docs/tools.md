@@ -167,7 +167,7 @@ Use `find` to locate paths by glob and `search` to match file contents with a re
 
 ### Finding paths
 
-`find.paths` is required. It accepts files, directories including filesystem roots, supported local resource selectors, and globs. Relative globs start at the working directory: `src/**/*.ts` searches under `src`, while `**/src/**/*.ts` matches `src` directories at any depth beneath it.
+`find.paths` is required. It accepts files, directories including filesystem roots, supported local resource selectors, and globs. Relative globs start at the working directory: `src/**/*.ts` searches under `src`, while `**/src/**/*.ts` matches `src` directories at any depth beneath it. A glob right after a filesystem root, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\**\*.ts`, searches that root. The glob part of a path matches case-sensitively on every platform, including case-insensitive file systems: `*.ts` does not match `A.TS`, and `**/lib/*.ts` does not match `LIB/a.ts`.
 
 - Hidden files are included by default, and `.gitignore` rules are respected, including nested rules outside a Git checkout.
 - Broad scans prune `.git` and `node_modules` even with `gitignore: false`. To search `node_modules`, name it explicitly in the path or glob.

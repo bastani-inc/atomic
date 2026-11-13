@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `find` and `search` treating a glob directly after a filesystem root, such as `/**/*.ts`, `C:\**\*.ts` or `\\server\share\*.ts`, as relative to the working directory; they now search that root ([#4707](https://github.com/bastani-inc/atomic/issues/4707))
+- Fixed `find` returning different results depending on which search engine ran: its fd fallback matched lowercase globs such as `*.ts` or `**/lib/*.ts` case-insensitively, while the native engine matched case-sensitively. Both now match case-sensitively on every platform ([#4708](https://github.com/bastani-inc/atomic/issues/4708))
+
 ## [0.9.81] - 2026-11-13
 
 Smarter automatic model routing, a quieter footer, and parallel subagent calls that survive a single child's failure.
