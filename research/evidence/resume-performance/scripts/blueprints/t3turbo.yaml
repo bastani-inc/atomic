@@ -1,0 +1,9 @@
+initialize:
+  - name: Install pnpm
+    run: npm install -g pnpm@10.19.0 --prefix "$HOME/.local" --no-audit --no-fund
+maintenance:
+  - name: Install dependencies
+    run: pnpm install
+knowledge:
+  - name: build
+    contents: Run `pnpm build`.

@@ -1,0 +1,8 @@
+maintenance:
+  - name: Fetch crates
+    run: cargo fetch --locked
+  - name: Build
+    run: cargo build --locked --workspace
+knowledge:
+  - name: test
+    contents: Run `cargo test --workspace`.

@@ -1,0 +1,16 @@
+Apparent sizes of what a cache would carry (du --apparent-size), measured after the cold resumes.
+
+Package stores (outside the worktree; integrity-checked by their package manager):
+  npm cache (atomic, npm install)             150 MB   (~/.npm/_cacache)
+  pnpm store (create-t3-turbo)               1092 MB   ($XDG_DATA_HOME/pnpm/store)
+  cargo registry (ripgrep, cargo fetch)        68 MB   ($CARGO_HOME/registry)
+  uv cache (fastapi, uv sync --locked)        582 MB   ($XDG_CACHE_HOME/uv)
+  Atomic's own extension transpile cache      5.9-7.5 MB (~/.atomic/agent/cache/jiti)
+
+Dependency and build directories inside the worktree (not integrity-checked):
+  ripgrep    target                           388 MB,   1,699 files
+  t3turbo    node_modules (12 dirs)           1.2 GB, 118,857 files (pnpm hard links into its store)
+  fastapi    .venv                            487 MB,  56,751 files
+  atomic     node_modules, target, dist, ...  ~920 MB, 39,635 files
+
+uv used an installed CPython 3.11 found on PATH; no Python download was part of any measurement.

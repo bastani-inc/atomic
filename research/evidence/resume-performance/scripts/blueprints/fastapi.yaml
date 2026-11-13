@@ -1,0 +1,6 @@
+maintenance:
+  - name: Install dependencies
+    run: uv sync --locked
+knowledge:
+  - name: test
+    contents: Run `uv run pytest`.

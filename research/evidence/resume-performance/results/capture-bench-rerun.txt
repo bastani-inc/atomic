@@ -1,0 +1,17 @@
+# Second run, load average ~120-140 (16:27 UTC). Use these for ripgrep, create-t3-turbo and fastapi.
+ripgrep tracked=226 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/ripgrep","reps":5,"median_ms":{"full":92,"unchanged":54,"incremental":78}}
+ripgrep after git status:
+{"dir":"/fast/tmp/resume-perf/racy/ripgrep","reps":5,"median_ms":{"full":71,"unchanged":37,"incremental":67}}
+t3turbo tracked=141 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/t3turbo","reps":5,"median_ms":{"full":73,"unchanged":38,"incremental":72}}
+t3turbo after git status:
+{"dir":"/fast/tmp/resume-perf/racy/t3turbo","reps":5,"median_ms":{"full":67,"unchanged":34,"incremental":65}}
+fastapi tracked=3242 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/fastapi","reps":5,"median_ms":{"full":166,"unchanged":131,"incremental":162}}
+fastapi after git status:
+{"dir":"/fast/tmp/resume-perf/racy/fastapi","reps":5,"median_ms":{"full":86,"unchanged":50,"incremental":85}}
+
+# torvalds/linux depth-1 clone, capture-bench.mjs, 3 reps: fresh clone then after git status
+{"dir":"src/linux","reps":3,"median_ms":{"full":1182,"unchanged":1121,"incremental":1203}}
+{"dir":"src/linux","reps":3,"median_ms":{"full":977,"unchanged":918,"incremental":967}}

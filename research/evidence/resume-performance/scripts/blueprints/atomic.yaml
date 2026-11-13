@@ -1,0 +1,8 @@
+maintenance:
+  - name: Install dependencies
+    run: npm install --ignore-scripts --no-audit --no-fund
+  - name: Build
+    run: npm run build
+knowledge:
+  - name: test
+    contents: Run `npm run test:unit`.

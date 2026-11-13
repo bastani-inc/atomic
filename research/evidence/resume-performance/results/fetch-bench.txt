@@ -1,0 +1,16 @@
+ripgrep full fetch_ms=677 checkout_ms=31 total_ms=708 store=7MB
+ripgrep blobless fetch_ms=293 checkout_ms=504 total_ms=797 store=3MB
+ripgrep treeless fetch_ms=291 checkout_ms=611 total_ms=902 store=2MB
+ripgrep shallow fetch_ms=418 checkout_ms=29 total_ms=447 store=1MB
+t3turbo full fetch_ms=552 checkout_ms=20 total_ms=572 store=9MB
+t3turbo blobless fetch_ms=233 checkout_ms=261 total_ms=494 store=2MB
+t3turbo treeless fetch_ms=215 checkout_ms=529 total_ms=744 store=1MB
+t3turbo shallow fetch_ms=240 checkout_ms=18 total_ms=258 store=1MB
+fastapi full fetch_ms=1942 checkout_ms=269 total_ms=2211 store=59MB
+fastapi blobless fetch_ms=715 checkout_ms=2755 total_ms=3470 store=26MB
+fastapi treeless fetch_ms=447 checkout_ms=4017 total_ms=4464 store=21MB
+fastapi shallow fetch_ms=2310 checkout_ms=265 total_ms=2575 store=17MB
+atomic full fetch_ms=8134 checkout_ms=660 total_ms=8794 store=179MB
+atomic blobless fetch_ms=1650 checkout_ms=4452 total_ms=6102 store=48MB
+atomic treeless fetch_ms=511 checkout_ms=4431 total_ms=4942 store=39MB
+atomic shallow fetch_ms=3986 checkout_ms=576 total_ms=4562 store=31MB
