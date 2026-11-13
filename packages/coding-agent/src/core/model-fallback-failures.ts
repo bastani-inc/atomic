@@ -532,6 +532,7 @@ function fallbackSignalFromDirectMessage(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
+	if (normalizeCode(codeFrom(value)) === "econnaborted") return undefined;
 	const message = directMessageFrom(value);
 	if (message === undefined) return undefined;
 	const kind = fallbackKindFromMessage(message, errorName(value));

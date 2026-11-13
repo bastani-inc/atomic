@@ -455,6 +455,35 @@ describe("AgentSession retry", () => {
 		},
 	);
 
+	it("retries structured ECONNABORTED errors whose message contains abort wording (#12128)", async () => {
+		let callCount = 0;
+		await createSessionWithStream(() => {
+			callCount++;
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				if (callCount === 1) {
+					const error = Object.assign(
+						createAssistantMessage("", {
+							stopReason: "error",
+							errorMessage: "An established connection was aborted by the software in your host machine",
+						}),
+						{ code: "ECONNABORTED" },
+					);
+					stream.push({ type: "start", partial: error });
+					stream.push({ type: "error", reason: "error", error });
+					return;
+				}
+				const recovered = createAssistantMessage("Recovered after structured ECONNABORTED");
+				stream.push({ type: "start", partial: recovered });
+				stream.push({ type: "done", reason: "stop", message: recovered });
+			});
+			return stream;
+		});
+
+		await session.prompt("Test");
+		assert.equal(callCount, 2);
+	});
+
 	it("retries degenerate empty completions and bounds them by maxRetries", async () => {
 		let callCount = 0;
 		await createSessionWithStream(() => {

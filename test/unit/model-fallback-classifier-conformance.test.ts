@@ -458,6 +458,55 @@ const CONFORMANCE_FIXTURES: readonly Fixture[] = [
 		retryable: true,
 	},
 	{
+		label: "structured code ECONNABORTED with generic connection aborted wording (#12128)",
+		failure: { code: "ECONNABORTED", message: "connection aborted" },
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "structured code ECONNABORTED with Windows Winsock 10053 wording (#12128)",
+		failure: Object.assign(new Error("An established connection was aborted by the software in your host machine"), {
+			code: "ECONNABORTED",
+		}),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "fetch failed wrapping Windows Winsock 10053 ECONNABORTED cause (#12128)",
+		failure: new TypeError("fetch failed", {
+			cause: Object.assign(new Error("An established connection was aborted by the software in your host machine"), {
+				code: "ECONNABORTED",
+			}),
+		}),
+		kind: "transport_error",
+		retryable: true,
+	},
+	{
+		label: "generic wrapper around Windows Winsock 10053 ECONNABORTED cause (#12128)",
+		failure: new Error("provider call failed", {
+			cause: Object.assign(new Error("An established connection was aborted by the software in your host machine"), {
+				code: "ECONNABORTED",
+			}),
+		}),
+		kind: "network_timeout",
+		retryable: true,
+	},
+	{
+		label: "AbortError name still wins over code ECONNABORTED (#12128)",
+		failure: Object.assign(new Error("The operation was aborted"), {
+			name: "AbortError",
+			code: "ECONNABORTED",
+		}),
+		kind: "cancelled",
+		retryable: false,
+	},
+	{
+		label: "aborted stopReason still wins over code ECONNABORTED (#12128)",
+		failure: { stopReason: "aborted", code: "ECONNABORTED", errorMessage: "connection aborted" },
+		kind: "cancelled",
+		retryable: false,
+	},
+	{
 		label: "Node wording Connection reset by peer (#12128)",
 		failure: new Error("Connection reset by peer"),
 		kind: "provider_unavailable",
