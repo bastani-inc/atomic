@@ -4,6 +4,8 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+## [0.9.85-alpha.1] - 2026-11-13
+
 ### Fixed
 
 - Fixed provider errors that report only a Node socket error code, such as `read ECONNRESET`, `write EPIPE`, `connect ETIMEDOUT`, `connect ECONNREFUSED`, or `ECONNABORTED` (or `"Connection reset by peer"`), not being classified as retryable, without matching those codes inside longer identifiers (upstream [#12128](https://github.com/earendil-works/pi/issues/12128), [#12136](https://github.com/earendil-works/pi/pull/12136))
