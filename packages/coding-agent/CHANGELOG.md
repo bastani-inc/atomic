@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the extension transpile cache staying under the first agent directory a process used: each load now caches under the agent directory in effect for it (`ATOMIC_CODING_AGENT_DIR` at that time, or the SDK session's `agentDir`), stale cache versions are pruned in every agent directory, and an agent directory removed while the process runs is no longer recreated ([#4728](https://github.com/bastani-inc/atomic/issues/4728))
+
 ## [0.9.84] - 2026-11-13
 
 Sessions now move between machines alongside workflow runs.
