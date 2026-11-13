@@ -332,7 +332,7 @@ Web provider configuration caches are session-local. Configuration discovery and
 
 ### Stored session summaries
 
-`session.sessionSummary` returns the current branch's latest `SessionSummaryEntry`, or `undefined` when none is available. Read `summary` for the generated text and `summarizedThroughId` for the last message it describes. `SessionManager.list()` and `SessionManager.listAll()` expose those same fields on each `SessionInfo`. Stored summaries remain readable when `sessionSummary.enabled` is false; that setting controls generation only.
+`session.sessionSummary` returns the current branch's latest `SessionSummaryEntry`, or `undefined` when none is available. Read `summary` for the generated text and `summarizedThroughId` for the last message it describes. `SessionManager.list()` and `SessionManager.listAll()` expose those same fields on each `SessionInfo`. Stored summaries remain readable when `sessionSummary.enabled` is false; that setting controls generation only. Summaries are generated only for saved sessions; a session on `SessionManager.inMemory()` never generates one.
 
 ### Worktree snapshots
 

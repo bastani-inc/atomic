@@ -191,8 +191,11 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "delete_session");
 			}
 
-			case "get_session_summary":
-				return createRpcSuccessResponse(id, command.type, { summary: session.sessionSummary ?? null });
+			case "get_session_summary": {
+				// An unsaved (--no-session) session never appears in /resume, so it has no summary to report (#4726).
+				const summary = session.sessionManager.isPersisted() ? (session.sessionSummary ?? null) : null;
+				return createRpcSuccessResponse(id, command.type, { summary });
+			}
 			case "list_sessions": {
 				const sessions = await SessionManager.list(
 					runtimeHost.services.cwd,

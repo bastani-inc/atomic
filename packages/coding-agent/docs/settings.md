@@ -378,7 +378,7 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `sessionSummary.enabled` | boolean | `true` | Generate a one-line summary of each session for the `/resume` picker once the agent goes idle |
+| `sessionSummary.enabled` | boolean | `true` | Generate a one-line summary of each saved session for the `/resume` picker once the agent goes idle. `--no-session` sessions never generate one |
 
 ### Resume
 

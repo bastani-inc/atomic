@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import type { AgentSessionRuntime } from "../src/core/agent-session-runtime.js";
 import type { WorkflowRunDetail, WorkflowRunSummary } from "../src/core/extensions/workflow-run-control.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { RpcClient } from "../src/modes/rpc/rpc-client.js";
+import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
 import { bunExecutable, cliPath } from "./cli-test-helpers.js";
 import { createHarness } from "./suite/harness.js";
 
@@ -174,3 +176,33 @@ export default function (pi) {
 	},
 	REAL_RPC_SUMMARY_TIMEOUT_MS,
 );
+
+test("RPC get_session_summary reports no summary for an unsaved session (#4726)", async () => {
+	const harness = await createHarness();
+	try {
+		const through = await harness.sessionManager.appendMessage({
+			role: "user",
+			content: "Build a parser",
+			timestamp: 1,
+		});
+		await harness.sessionManager.appendSessionSummary("Parser implemented", through);
+		const handle = createRpcCommandHandler({
+			runtimeHost: { session: harness.session } as unknown as AgentSessionRuntime,
+			getSession: () => harness.session,
+			rebindSession: async () => {},
+			output: () => {},
+		});
+
+		const response = await handle({ id: "summary", type: "get_session_summary" });
+
+		assert.deepEqual(response, {
+			id: "summary",
+			type: "response",
+			command: "get_session_summary",
+			success: true,
+			data: { summary: null },
+		});
+	} finally {
+		await harness.cleanup();
+	}
+});
