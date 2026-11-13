@@ -911,9 +911,15 @@ async function restoreValidated(
 				options.blobs,
 				scratch,
 			);
-			const pushed = (await configureRecordedRemotes(git, target.remotes))
-				? await pushedCommits(git, snapshot, target.head, fetched)
-				: new Set<string>();
+			// What a snapshot of other remotes, such as a fork at the same commit, says is pushed is not this store's.
+			const sameRemotes =
+				snapshot === null ||
+				(snapshot.remotes.length === target.remotes.length &&
+					snapshot.remotes.every((remote, index) => remote === target.remotes[index]));
+			const pushed =
+				(await configureRecordedRemotes(git, target.remotes)) && sameRemotes
+					? await pushedCommits(git, snapshot, target.head, fetched)
+					: new Set<string>();
 			await runGit(["update-ref", "--stdin"], {
 				...git,
 				input: [

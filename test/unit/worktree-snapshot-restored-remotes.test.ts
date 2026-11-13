@@ -165,6 +165,26 @@ describe("captures in a restored worktree know the recorded remotes and what is 
 		},
 	);
 
+	test("a binding of other remotes never takes pushed state from a snapshot of the same commit (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { clone } = await pushedRepository();
+		const recorded = await capture(clone, blobs);
+		assert.equal(recorded.bundle, null, "pushed to its own remote");
+		const fork = sandbox.path("fork.git");
+		await sandbox.git(sandbox.root, "init", "-q", "--bare", fork);
+		const binding = { remotes: [fork], head: recorded.head, tree: recorded.tree, envHash: recorded.envHash };
+		const restored = await restoreWorktree(binding, {
+			blobs,
+			snapshots: [recorded],
+			storeDir: sandbox.path("machine-2"),
+		});
+		sandbox.write(join(restored.path, "src.txt"), "two\n");
+		const next = await sandbox.commitAll(restored.path, "work on machine 2");
+		assert.deepEqual((await capture(restored.path, blobs)).remotes, [fork]);
+		const unpushed = (await sandbox.git(restored.path, "rev-list", "HEAD", "--not", "--remotes")).split("\n");
+		assert.ok(unpushed.includes(next) && unpushed.includes(recorded.head), "the fork has none of these commits");
+	});
+
 	test("a repository without remotes restores and captures as before, carrying its whole history (#4732)", async () => {
 		const blobs = new MemorySnapshotBlobStore();
 		const repo = sandbox.path("local");
