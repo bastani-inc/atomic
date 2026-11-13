@@ -48,6 +48,8 @@ export interface PreviewPaneProps {
 	notesVisible: boolean;
 	selectedIndex: number;
 	focused: boolean;
+	/** Saved notes for the active question; shown on the affordance row while notes mode is closed. */
+	notes: string;
 }
 
 export interface PreviewPaneConfig {
@@ -89,7 +91,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 		this.getTerminalWidth = config.getTerminalWidth;
 		this.optionListView = config.optionListView;
 		this.previewBlock = config.previewBlock;
-		this.props = { notesVisible: false, selectedIndex: 0, focused: false };
+		this.props = { notesVisible: false, selectedIndex: 0, focused: false, notes: "" };
 	}
 
 	setGlobalLeftWidth(getter: (paneWidth: number) => number): void {
@@ -129,6 +131,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 				mode,
 				this.props.focused,
 				this.props.notesVisible,
+				this.props.notes,
 			),
 		];
 	}
@@ -176,6 +179,7 @@ export class PreviewPane implements StatefulView<PreviewPaneProps>, Component {
 			mode,
 			this.props.focused,
 			this.props.notesVisible,
+			this.props.notes,
 		);
 		const pad = " ".repeat(PREVIEW_PADDING_LEFT);
 		return contentLines.map((l) => (l === "" ? "" : `${pad}${l}`));
