@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.9.84-alpha.1] - 2026-11-13
+
+Sessions now move between machines alongside workflow runs.
+
+- **Export and import sessions with your runs.** `atomic storage export <dir>` writes sessions next to workflow runs, `atomic storage import <dir>` restores both, and `--sessions`, `--workflows`, `--limit`, and `--since` pick what moves ([#4720](https://github.com/bastani-inc/atomic/issues/4720), [#4721](https://github.com/bastani-inc/atomic/pull/4721)).
+- **Safer storage transfers.** Import checks everything under the journal's write locks before writing and reports exactly what a partial import wrote, and export no longer drops runs that `atomic storage consolidate` moves while it reads ([#4720](https://github.com/bastani-inc/atomic/issues/4720), [#4721](https://github.com/bastani-inc/atomic/pull/4721)).
+- **`/reload` keeps unsaved sessions intact.** A `--no-session` session keeps its transcript, `/session` counts, and context usage across `/reload` ([#4703](https://github.com/bastani-inc/atomic/issues/4703), [#4723](https://github.com/bastani-inc/atomic/pull/4723)).
+- **Patched dependency advisories.** The bundled `hono` and `@hono/node-server` are updated to clear reported moderate and low advisories ([#4722](https://github.com/bastani-inc/atomic/pull/4722)).
+
 ### Changed
 
 - `atomic storage export <dir>` now also exports sessions, and writes them to `<dir>/sessions/<sessionId>.jsonl` and workflow runs to `<dir>/workflows/<runId>.jsonl`. Session files are format-4 session files, the format `atomic --import` reads, with their tool outputs and snapshot contents carried inline. `--sessions` and `--workflows` limit export and import to one kind, `--limit` also keeps the most recently modified sessions, and `--since <time>` keeps sessions modified since a date. `atomic storage import <dir>` restores both kinds from those subdirectories, checks every file of both kinds before writing, appends the entries a session lacks, and refuses a session that continued differently with its file and line ([#4720](https://github.com/bastani-inc/atomic/issues/4720))
