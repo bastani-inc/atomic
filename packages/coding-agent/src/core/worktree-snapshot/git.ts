@@ -6,6 +6,7 @@ import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
+import { redactUrlCredentials } from "../error-contract.ts";
 import {
 	GitUnavailableError,
 	gitInstallCommand,
@@ -135,12 +136,7 @@ export interface GitRunResult {
 
 function exitStatusReportsClosedInput(): void {}
 
-const CREDENTIALS_IN_URL = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi;
-
-/** Removes the user-info part of URLs, which can hold access tokens. */
-export function redactUrlCredentials(text: string): string {
-	return text.replace(CREDENTIALS_IN_URL, "$1");
-}
+export { redactUrlCredentials };
 
 function gitOperation(args: readonly string[]): string {
 	for (let index = 0; index < args.length; index++) {
