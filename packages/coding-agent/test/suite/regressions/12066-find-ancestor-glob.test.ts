@@ -108,12 +108,13 @@ describe.each([true, false])("find and grep ancestor globs with native=%s (#1206
 		assert.deepEqual(await grep("src/**/*.ts"), ["src/a.ts"]);
 	});
 
-	it("preserves each backend's case behavior with an uppercase root (#12066)", async () => {
+	it("matches case-sensitively in both backends with an uppercase root (#12066, #4708)", async () => {
 		project = join(tempRoot, "Upper");
 		mkdirSync(join(project, "src"), { recursive: true });
 		writeFileSync(join(project, "src", "A.ts"), "needle\n");
 		writeFileSync(join(project, "src", "b.ts"), "needle\n");
-		assert.deepEqual(await find("**/src/[a].ts"), native ? [] : ["src/A.ts"]);
+		assert.deepEqual(await find("**/src/[a].ts"), []);
+		assert.deepEqual(await find("**/src/[A].ts"), ["src/A.ts"]);
 		assert.deepEqual(await find("**/src/[B].ts"), []);
 	});
 });
