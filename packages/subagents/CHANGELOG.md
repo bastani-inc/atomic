@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Intercom `subagents:*` and `subagents:<runId>/*` send targets, which message every running, released or paused subagent this session launched, or those of one run, in one call ([#4752](https://github.com/bastani-inc/atomic/issues/4752))
+
 ### Changed
 
 - Subagents are told that an Intercom `ask` to a peer or the supervisor no longer blocks: its reply arrives later as a message ([#4751](https://github.com/bastani-inc/atomic/issues/4751))

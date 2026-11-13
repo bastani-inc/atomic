@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Added name patterns and a children target to Intercom `send`: `subagent-worker-*`, `subagent-*` or `*` reaches every matching live session visible in your groups except you, and `subagents:*` (or `subagents:<runId>/*` for one run) reaches every running, released or paused subagent this session launched, foreground or background. Each recipient gets its own direct send with the usual refusals, receipts and retries, and the result lists every recipient's outcome. A glob that matches nothing is an error listing the closest names, patterns never reach outside your groups, and `ask` still needs one exact target. Workflow-stage paths are unchanged ([#4752](https://github.com/bastani-inc/atomic/issues/4752))
+
 ### Changed
 
 - `intercom` `ask` no longer blocks the asker. It returns once the question is delivered, with an ask ID and whether the recipient is idle or busy (and what it is running). It waits for the reply like `bash` waits for a command: up to the automatic yield (10 seconds by default), up to `wait: { kind: "foreground", budgetMs }`, or not at all with `wait: { kind: "background" }`. A reply that misses the wait arrives later as a message starting "Reply to your ask <id> from <name>" with the question quoted; it starts a turn when the asker is idle and arrives after the current tool call when it is busy. A refusal, or a recipient session that ends, arrives the same way as a failed-ask message. Asks no longer expire after 10 minutes. `pending` also lists your own pending asks, the new `cancel` action cancels one (a later reply is shown once, marked late), and restarting the asker or the recipient keeps the ask, with its reply delivered once ([#4751](https://github.com/bastani-inc/atomic/issues/4751))
