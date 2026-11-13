@@ -2,7 +2,7 @@ import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError, isRetry
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
-import type { BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
+import type { Attachment, BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -27,6 +27,15 @@ import { isRecoverableIntercomDisconnect } from "./recoverable-disconnect.js";
 import { RetryIdentityReservations, type RetryIdentityAttempt, RetryTokenError } from "./retry-identity.js";
 import { runIntercomOperation, type IntercomAttemptResult } from "./tool-retry.js";
 import { PendingSendTimeoutError } from "./broker/pending-send-registry.js";
+import {
+  closeSessionNames,
+  listIntercomChildren,
+  matchSessionPattern,
+  parseSendPatternTarget,
+  type PatternRecipientOutcome,
+  patternSendResult,
+  type SendPatternTarget,
+} from "./send-pattern-targets.js";
 
 function retryErrorDetails(retryToken: string | undefined): Record<string, unknown> {
 	return retryToken === undefined ? { error: true } : { error: true, retryToken };
@@ -266,6 +275,93 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     : () => childOrchestratorMetadata ?? null;
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
+  const patternError = (text: string): IntercomAttemptResult => ({
+    content: [{ type: "text", text }],
+    isError: true,
+    details: { error: true },
+  });
+  /**
+   * #4752: send one message to every recipient a pattern names. Each recipient gets its own direct send, with that
+   * send's retries, refusals and receipts; the result lists how each one fared.
+   */
+  const sendToPatternTarget = async (
+    target: string,
+    pattern: SendPatternTarget,
+    request: {
+      readonly message: string | undefined;
+      readonly replyTo: string | undefined;
+      readonly toolSessionId: string;
+      readonly attachments: Attachment[] | undefined;
+      readonly signal: AbortSignal | undefined;
+      readonly ctx: { readonly hasUI: boolean; readonly ui: { confirm(title: string, message: string): Promise<boolean> } };
+      readonly sendOne: (recipient: string) => Promise<IntercomAttemptResult>;
+    },
+  ): Promise<IntercomAttemptResult> => {
+    if (!request.message) return patternError("Missing 'to' or 'message' parameter");
+    if (pattern.kind === "invalid") return patternError(pattern.reason);
+    if (request.replyTo) {
+      return patternError(`replyTo answers one ask, so it needs one exact target; "${target}" is a pattern.`);
+    }
+    let recipients: Array<{ readonly target: string; readonly label: string }> = [];
+    let lookupFailure = "";
+    // Connecting and finding the recipients retry recoverable disconnects as a direct send does; nothing is sent yet.
+    const lookup = await runIntercomOperation(async () => {
+      try {
+        const client = await ensureConnected("tool");
+        syncPresenceIdentity(request.toolSessionId);
+        if (pattern.kind === "sessions") {
+          const sessions = await client.listSessions();
+          const matches = matchSessionPattern(sessions, pattern.pattern, client.sessionId);
+          if (matches.length === 0) {
+            const close = closeSessionNames(sessions, pattern.pattern, client.sessionId);
+            return patternError(`No session visible in your groups matches "${pattern.pattern}". ${
+              close.length === 0 ? "No other sessions are visible in your groups." : `Close names: ${close.join(", ")}.`
+            }`);
+          }
+          recipients = matches.map((session) => ({
+            target: session.id,
+            label: session.name ? `${session.name} (${session.id})` : session.id,
+          }));
+        } else {
+          const children = await listIntercomChildren(pi.events, request.toolSessionId, pattern.runId);
+          if (children.length === 0) {
+            return patternError(`This session has no running, released or paused subagents${
+              pattern.runId === undefined ? "" : ` in run ${pattern.runId}`
+            } to send to.`);
+          }
+          recipients = children.map((child) => ({ target: child.childName, label: `${child.childName} (${child.childId})` }));
+        }
+        return { content: [], isError: false, details: {} };
+      } catch (error) {
+        const retryable = isRecoverableIntercomDisconnect(error) || isRetryableIntercomRoutingError(error);
+        lookupFailure = getErrorMessage(error);
+        return {
+          content: [{ type: "text", text: `Failed to send: ${lookupFailure}` }],
+          isError: true,
+          details: { error: true, retryable },
+        };
+      }
+    }, () => {}, request.signal);
+    if (lookup.isError && lookup.details.terminal === true) {
+      return patternError(`Could not find the recipients of "${target}"${lookupFailure ? `: ${lookupFailure}` : ""}. Nothing was sent.`);
+    }
+    if (lookup.isError) return lookup;
+    if (deps.confirmSend && request.ctx.hasUI) {
+      const names = recipients.map((recipient) => `- ${recipient.label}`).join("\n");
+      const attachmentText = request.attachments?.length ? formatAttachments(request.attachments) : "";
+      const confirmed = await request.ctx.ui.confirm("Send Message", `Send to "${target}":\n${names}\n\n${request.message}${attachmentText}`);
+      if (!confirmed) return { content: [{ type: "text", text: "Message cancelled by user" }], isError: false, details: {} };
+    }
+    const outcomes = await Promise.all(recipients.map(async (recipient): Promise<PatternRecipientOutcome> => {
+      const result = await request.sendOne(recipient.target);
+      const messageId = typeof result.details.messageId === "string" ? result.details.messageId : undefined;
+      const base = { target: recipient.target, label: recipient.label, ...(messageId === undefined ? {} : { messageId }) };
+      if (!result.isError) return { ...base, outcome: result.details.queued === true ? "queued" : "delivered" };
+      const reason = typeof result.details.reason === "string" ? result.details.reason : result.content.map(({ text }) => text).join("\n");
+      return { ...base, outcome: result.details.outcome === "unknown" ? "unknown" : "refused", reason };
+    }));
+    return patternSendResult(target, outcomes);
+  };
   pi.registerTool({
     name: "intercom",
     exposure: "model-only",
@@ -279,7 +375,11 @@ Sessions belong to an intercom group and can ONLY message sessions in the same g
 cross-group sends are rejected by the broker. Ungrouped sessions share the "default" group; with multi-node routing on, a project group (project:<owner>/<repo>).
 
 For send, live session names, exact full session IDs, and unique 8-hex session UUID prefixes
-remain supported. Workflow-stage targets use
+remain supported. \`send\` also takes a name glob (\`subagent-worker-*\`, or \`*\` for every session
+visible in your groups except you) and \`subagents:*\` (every running, released or paused subagent this
+session launched) or \`subagents:<runId>/*\` (those of one run). Each recipient gets its own direct send,
+and the result lists every recipient's outcome; a glob that matches no session is an error naming close
+names. Patterns never reach outside your groups. Workflow-stage targets use
 \`workflow:<rootRunId>/<segment>[/<segment>...]\`; a segment may be a stage name, run id, or glob
 (\`*\` matches one segment and may be embedded, while \`**\` matches any depth). Use \`intercom list\`
 inside the invocation group to see live, pending, and possible future targets with queued counts.
@@ -304,6 +404,8 @@ Usage:
   intercom({ action: "leave", group: "name" })    → Leave one named group
   intercom({ action: "leave" })                   → Return to your resolved home group
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
+  intercom({ action: "send", to: "subagent-worker-*", message: "..." }) → Send to every matching session
+  intercom({ action: "send", to: "subagents:*", message: "..." })   → Send to every subagent you launched
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "send", to: "session-name", message: "...", delivery: "interrupt" }) → Cancel the recipient's current work
   intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
@@ -320,7 +422,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
         description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Live session name, exact full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
+        description: "Live session name, exact full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
       })),
       message: Type.Optional(Type.String({
         description: "Message to send (for 'send', 'ask', or 'reply' action)",
@@ -354,7 +456,9 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       const { action, to, message, replyTo, group } = params;
       const deliveryOption = params.delivery === undefined || params.delivery === "steer" ? {} : { delivery: params.delivery };
       const attachments = params.attachments?.map((attachment) => ({ ...attachment }));
-      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0): Promise<IntercomAttemptResult> => {
+      // A pattern send (#4752) runs this once per recipient, as a direct send to `fanOutRecipient`.
+      const executeAttempt = async (retryToken: string | undefined, _signal?: AbortSignal, retries = 0, fanOutRecipient?: string): Promise<IntercomAttemptResult> => {
+      const to = fanOutRecipient ?? params.to;
       if (retryToken !== undefined) {
         if (action !== "send" && action !== "ask" && action !== "reply") {
           const error = new RetryTokenError("mismatch");
@@ -621,7 +725,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 expectsReply: false,
               });
             }
-            if (retryToken === undefined && !replyTo && deps.confirmSend && ctx.hasUI) {
+            if (retryToken === undefined && fanOutRecipient === undefined && !replyTo && deps.confirmSend && ctx.hasUI) {
               const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
               const confirmed = await ctx.ui.confirm(
                 "Send Message",
@@ -1342,6 +1446,30 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           };
       }
       };
+      const sendPattern = (action === "send" || action === "ask") && typeof to === "string" ? parseSendPatternTarget(to) : undefined;
+      if (sendPattern !== undefined && action === "ask") {
+        return {
+          content: [{ type: "text", text: `ask needs one exact target, and "${to}" is a pattern: a reply to a broadcast question would be ambiguous. Use send to reach every match, or ask each recipient by its exact name.` }],
+          isError: true,
+          details: { error: true },
+        };
+      }
+      if (sendPattern !== undefined && typeof to === "string") {
+        return sendToPatternTarget(to, sendPattern, {
+          message,
+          replyTo,
+          toolSessionId,
+          attachments,
+          signal,
+          ctx,
+          sendOne: (recipient) =>
+            runIntercomOperation(
+              (token, attemptSignal, retries) => executeAttempt(token, attemptSignal, retries, recipient),
+              (token) => retryIdentities.discard(token),
+              signal,
+            ),
+        });
+      }
       if (action !== "send" && action !== "ask" && action !== "reply") return executeAttempt(undefined, signal);
       return runIntercomOperation(executeAttempt, (token) => retryIdentities.discard(token), signal);
     },

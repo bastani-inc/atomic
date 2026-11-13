@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Intercom `subagents:*` and `subagents:<runId>/*` send targets, which message every running, released or paused subagent this session launched, or those of one run, in one call ([#4752](https://github.com/bastani-inc/atomic/issues/4752))
+
 ### Fixed
 
 - Fixed a subagent's chat having no autocomplete: it now completes `/tasks`, the subagent's own `/skill:` commands and `@` and Tab paths in the subagent's working directory, including after the subagent finished ([#4755](https://github.com/bastani-inc/atomic/issues/4755))

@@ -133,17 +133,17 @@ Explicit `to` selects that sender's pending ask even if another message triggere
 
 ### Pattern 4: Broadcast to Multiple Workers
 
-Send to multiple sessions in parallel:
+Send one message to every matching session in one call:
 
 ```typescript
-const workers = ["worker-1", "worker-2", "worker-3"];
-const task = "Check for null pointer exceptions in your assigned files";
-
-// Fire-and-forget to all workers
-workers.forEach(w => 
-  intercom({ action: "send", to: w, message: task })
-);
+// Every visible session whose name matches the glob (never yourself, never outside your groups)
+intercom({ action: "send", to: "worker-*", message: "Check for null pointer exceptions in your assigned files" })
+// Every running, released or paused subagent you launched, or those of one run
+intercom({ action: "send", to: "subagents:*", message: "Scope changed: skip the migration" })
+intercom({ action: "send", to: "subagents:<runId>/*", message: "Wrap up and report" })
 ```
+
+The result lists each recipient's outcome (delivered, queued, or not delivered with the reason). A glob that matches no session is an error that lists close names. `ask` takes only one exact target.
 
 ### Pattern 5: Send with Attachments
 

@@ -20,6 +20,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.js";
+import { answerIntercomChildrenRequests } from "../runs/foreground/intercom-children.js";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/foreground/notify.js";
 import { bindReleasedChildWakes } from "../runs/foreground/released-child-wakes.js";
 import { bindSubagentChildCards } from "../runs/foreground/subagent-child-card-state.js";
@@ -529,6 +530,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			request.completion = awaitSubagentChildRestoration(ownerSessionId, entries(), target, timeoutMs);
 		});
 		eventUnsubscribes.push(unsubscribeChildRestoration);
+		// Intercom asks which children a `subagents:` send reaches (#4752).
+		eventUnsubscribes.push(answerIntercomChildrenRequests(pi.events, lifecycle.isCurrent));
 		// Intercom asks which relaunched children have not registered yet before it judges the peers of interrupted deliveries.
 		const unsubscribeRestoredPeers = pi.events.on(SUBAGENT_RESTORED_INTERCOM_PEERS_EVENT, (payload) => {
 			const request = payload as Partial<SubagentRestoredIntercomPeersRequest> | null;
