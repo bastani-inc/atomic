@@ -1,20 +1,20 @@
 /**
- * Workflow runs as versioned JSONL files (#4716): `exportWorkflowRuns` writes each run of a local workflow journal to
- * `<dir>/<runId>.jsonl`, and `importWorkflowRuns` restores such files into one. The journal stays the working store;
- * the files are the form runs take at rest, so a host that persists only files can carry them between machines.
+ * Workflow runs as versioned JSONL files (#4716, #4720): `exportWorkflowRuns` writes each run of a local workflow
+ * journal to `<dir>/<runId>.jsonl`, and the import functions restore such files into one. The journal stays the
+ * working store; the files are the form runs take at rest, so a host that persists only files can carry them between
+ * machines. `atomic storage export` and `import` use `<exportDir>/workflows` as `<dir>`.
  *
  * Line 1 of a file is the run's header: the row of the journal's runs table. Every later line is one row of its
  * events table, in sequence order, with its payload as a JSON value instead of JSON text. Leases, local-worker pool
  * state and worktree snapshot blobs are not exported: they belong to the machine that wrote them.
  */
 
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, open, readdir, readFile, rename, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
-import { StorageError, type StorageFailureCause } from "./errors.js";
+import type { StorageFailureCause } from "./errors.js";
 import {
 	discoverLegacyJournal,
 	ensureRunJournalSchema,
@@ -33,19 +33,30 @@ import {
 } from "./journal-catalog.js";
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { RUN_EVENT_TYPES, RUN_JOURNAL_SCHEMA_VERSION } from "./run-journal.js";
+import {
+	readTransferDirectory,
+	StorageImportIncompleteError,
+	StorageTransferError,
+	type TransferFileLines,
+	transferFile,
+	writeLinesAtomically,
+} from "./transfer-files.js";
 
 /** The `type` of an export file's header line. */
 export const WORKFLOW_RUN_EXPORT_TYPE = "atomic.workflow-run";
 /** The export format version this Atomic writes and reads. */
 export const WORKFLOW_RUN_EXPORT_VERSION = 1;
-/** The file name extension of an exported run; import reads every file with it and ignores the rest. */
-export const WORKFLOW_RUN_EXPORT_EXTENSION = ".jsonl";
 /**
  * A lease renewed this recently belongs to a process that may still be running the run on this machine, so an import
  * does not add events to that run. It matches the window in which the workflows runtime treats a running run's owner
  * as live.
  */
 export const WORKFLOW_RUN_IMPORT_LIVE_LEASE_MS = 120_000;
+/**
+ * How many times an export reads the catalog again after reading the journal files, for runs a consolidation moved
+ * in between; a run still not found where the catalog names it after the last read is reported with its reason.
+ */
+export const WORKFLOW_RUN_EXPORT_PLACEMENT_ATTEMPTS = 5;
 
 /** A JSON value as an export file holds it. */
 export type WorkflowRunExportValue =
@@ -87,40 +98,6 @@ export type WorkflowRunTransferStorage =
 	| { readonly kind: "store"; readonly directory: string }
 	| { readonly kind: "sqlite"; readonly path: string; readonly prefix?: string };
 
-export interface WorkflowRunTransferErrorInit {
-	/** The file or storage location the error is about. */
-	readonly path: string;
-	/** The 1-based line of `path`. */
-	readonly line?: number;
-	readonly runId?: string;
-	readonly reason: string;
-	readonly cause?: StorageFailureCause;
-}
-
-/** An export or import that could not be done; an import that fails this way changed nothing. */
-export class WorkflowRunTransferError extends StorageError {
-	override readonly name = "WorkflowRunTransferError" as const;
-	readonly path: string;
-	readonly line: number | undefined;
-	readonly runId: string | undefined;
-	readonly reason: string;
-
-	constructor(init: WorkflowRunTransferErrorInit) {
-		super(`${init.path}${init.line === undefined ? "" : `:${init.line}`}: ${init.reason}`, { cause: init.cause });
-		this.path = init.path;
-		this.line = init.line;
-		this.runId = init.runId;
-		this.reason = init.reason;
-	}
-}
-
-export function isWorkflowRunTransferError(value: unknown): value is WorkflowRunTransferError {
-	if (value instanceof WorkflowRunTransferError) return true;
-	return (
-		typeof value === "object" && value !== null && (value as { name?: unknown }).name === "WorkflowRunTransferError"
-	);
-}
-
 export interface WorkflowRunExportOptions {
 	/** Only these runs; a run the storage does not hold fails the export before any file is written. */
 	readonly runs?: readonly string[];
@@ -135,7 +112,7 @@ export interface WorkflowRunExportReport {
 	readonly written: readonly string[];
 	/** Runs whose file already held exactly this export, left untouched. */
 	readonly unchanged: readonly string[];
-	/** Journal files that could not be read, and runs the catalog lists that no readable journal holds. */
+	/** Journal files that could not be read, and catalogued runs that could not be exported, with the reason. */
 	readonly skipped: readonly { readonly path: string; readonly runId?: string; readonly reason: string }[];
 }
 
@@ -153,14 +130,12 @@ const TRANSFER_TRANSACTION = { lockWaitMs: 10 * 60_000 } as const;
 const EVENT_TYPES: ReadonlySet<string> = new Set(Object.values(RUN_EVENT_TYPES));
 const HEADER_FIELDS = ["type", "version", "runId", "name", "cwd", "createdAt", "status", "events", "header"] as const;
 const EVENT_FIELDS = ["type", "seq", "epoch", "key", "at", "payload"] as const;
+/** The runs table of the journal format before 0.9.38, which an export cannot read. */
+const LEGACY_RUNS_TABLE = "runs";
+const OLD_FORMAT_REASON = "it is in the journal format of Atomic before 0.9.38; resume it once to convert it";
 
 type JsonObject = { readonly [key: string]: WorkflowRunExportValue };
 type Tables = ReturnType<typeof runJournalTables>;
-
-/** The file an exported run is written to in `directory`. */
-export function workflowRunExportFile(directory: string, runId: string): string {
-	return join(directory, `${encodeURIComponent(runId)}${WORKFLOW_RUN_EXPORT_EXTENSION}`);
-}
 
 function storageLocation(storage: WorkflowRunTransferStorage): string {
 	return storage.kind === "store" ? storage.directory : storage.path;
@@ -170,22 +145,22 @@ function parseStored(text: string, path: string, runId: string, what: string): W
 	try {
 		return JSON.parse(text) as WorkflowRunExportValue;
 	} catch (cause) {
-		throw new WorkflowRunTransferError({
+		throw new StorageTransferError({
 			path,
-			runId,
+			id: runId,
 			reason: `run ${runId} has ${what} that is not valid JSON`,
 			cause: cause as StorageFailureCause,
 		});
 	}
 }
 
-/** A run and its events as the lines of its export file, newline-terminated. */
-function exportText(run: JournalRunTableRow, events: readonly JournalEventTableRow[], path: string): string {
+/** A run and its events as the lines of its export file. */
+function exportLines(run: JournalRunTableRow, events: readonly JournalEventTableRow[], path: string): string[] {
 	const header = parseStored(run.header_json, path, run.run_id, "a header");
 	if (!isObject(header))
-		throw new WorkflowRunTransferError({
+		throw new StorageTransferError({
 			path,
-			runId: run.run_id,
+			id: run.run_id,
 			reason: `run ${run.run_id} has a header that is not an object`,
 		});
 	const lines = [
@@ -212,36 +187,7 @@ function exportText(run: JournalRunTableRow, events: readonly JournalEventTableR
 				payload: parseStored(event.payload, path, run.run_id, `event ${event.seq} with a payload`),
 			} satisfies WorkflowRunExportEvent),
 		);
-	return `${lines.join("\n")}\n`;
-}
-
-/**
- * Writes `content` to `file` through a temporary file in the same directory that is flushed and then renamed over it,
- * so `file` holds either its earlier content or all of `content`. A file that already holds `content` is left alone.
- */
-async function writeAtomically(file: string, content: string): Promise<"written" | "unchanged"> {
-	const existing = await readFile(file, "utf8").catch(() => undefined);
-	if (existing === content) return "unchanged";
-	const temporary = join(resolve(file, ".."), `.${randomUUID()}.tmp`);
-	try {
-		const handle = await open(temporary, "wx");
-		await withCleanup(
-			async () => {
-				await handle.writeFile(content, "utf8");
-				await handle.sync();
-			},
-			() => handle.close(),
-		);
-		await rename(temporary, file);
-	} catch (error) {
-		await rm(temporary, { force: true }).catch(() => undefined);
-		throw new WorkflowRunTransferError({
-			path: file,
-			reason: `cannot write the export file: ${(error as Error).message}`,
-			cause: error as StorageFailureCause,
-		});
-	}
-	return "written";
+	return lines;
 }
 
 async function hasTables(executor: SqliteExecutor, t: Tables): Promise<boolean> {
@@ -252,6 +198,10 @@ async function hasTables(executor: SqliteExecutor, t: Tables): Promise<boolean> 
 		t.events,
 	);
 	return rows.length === 3;
+}
+
+async function hasTable(executor: SqliteExecutor, name: string): Promise<boolean> {
+	return (await executor.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name)) !== undefined;
 }
 
 async function schemaVersion(executor: SqliteExecutor, t: Tables): Promise<SqliteValue | undefined> {
@@ -265,40 +215,59 @@ interface ExportSource {
 	readonly shardId?: number;
 	readonly database: SqliteDatabase;
 	readonly runs: readonly JournalRunTableRow[];
+	readonly byId: ReadonlyMap<string, JournalRunTableRow>;
 }
 
-/** Opens a journal file for an export and begins its read transaction; undefined, with the reason, when it cannot. */
+/** A journal file an export could not read, and whether that is because it holds only the format before 0.9.38. */
+interface UnreadableSource {
+	readonly path: string;
+	readonly reason: string;
+	readonly oldFormat: boolean;
+}
+
+/** Opens a journal file for an export and begins its read transaction; the reason when it cannot. */
 async function openExportSource(
 	path: string,
 	t: Tables,
 	shardId: number | undefined,
-): Promise<ExportSource | { readonly path: string; readonly reason: string }> {
-	if (!existsSync(path)) return { path, reason: "the journal file no longer exists" };
+): Promise<ExportSource | UnreadableSource> {
+	if (!existsSync(path)) return { path, reason: "the journal file no longer exists", oldFormat: false };
 	let database: SqliteDatabase;
 	try {
 		database = await openNodeSqliteDatabase(path, { readOnly: true });
 	} catch (error) {
-		return { path, reason: `the journal file cannot be opened: ${(error as Error).message}` };
+		return { path, reason: `the journal file cannot be opened: ${(error as Error).message}`, oldFormat: false };
 	}
 	try {
 		await database.exec("BEGIN");
 		if (!(await hasTables(database, t))) {
 			await database.exec("COMMIT");
 			await database.close();
-			return { path, reason: "it has no workflow runs in the current journal format" };
+			return { path, reason: "it has no workflow runs in the current journal format", oldFormat: true };
 		}
 		const version = await schemaVersion(database, t);
 		if (version !== RUN_JOURNAL_SCHEMA_VERSION) {
 			await database.exec("COMMIT");
 			await database.close();
-			return { path, reason: `unsupported journal schema version ${String(version)}` };
+			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
 		const runs = await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
-		return { path, database, runs, ...(shardId === undefined ? {} : { shardId }) };
+		return {
+			path,
+			database,
+			runs,
+			byId: new Map(runs.map((run) => [run.run_id, run])),
+			...(shardId === undefined ? {} : { shardId }),
+		};
 	} catch (error) {
 		await database.close().catch(() => undefined);
-		return { path, reason: `the journal file cannot be read: ${(error as Error).message}` };
+		return { path, reason: `the journal file cannot be read: ${(error as Error).message}`, oldFormat: false };
 	}
+}
+
+async function closeExportSource(source: ExportSource): Promise<void> {
+	await source.database.exec("COMMIT").catch(() => undefined);
+	await source.database.close();
 }
 
 /**
@@ -318,16 +287,134 @@ async function adoptLegacyJournal(directory: string): Promise<boolean> {
 	return existsSync(join(directory, JOURNAL_CATALOG_FILE));
 }
 
+/** What the catalog of a journal store says at one moment: its shards, and its runs with the shard each is on. */
+interface CatalogView {
+	readonly shards: readonly JournalShardRecord[];
+	readonly runs: readonly JournalCatalogRun[];
+	readonly owners: ReadonlyMap<string, number>;
+}
+
+async function readCatalog(directory: string): Promise<CatalogView> {
+	const catalog = await JournalCatalog.open(directory);
+	return withCleanup(
+		async () => {
+			const shards = await catalog.shards();
+			const runs = await catalog.runs();
+			return { shards, runs, owners: new Map(runs.map((run) => [run.runId, run.shard])) };
+		},
+		() => catalog.close(),
+	);
+}
+
 function newestFirst(left: JournalRunTableRow, right: JournalRunTableRow): number {
 	const created = Number(right.created_at) - Number(left.created_at);
 	if (created !== 0) return created;
 	return left.run_id < right.run_id ? -1 : left.run_id > right.run_id ? 1 : 0;
 }
 
+/** The journal files of a store an export reads, by shard, kept open in their read transactions until it finishes. */
+class ExportSources {
+	readonly opened = new Map<number, ExportSource>();
+	readonly unreadable = new Map<number, UnreadableSource>();
+
+	private readonly t: Tables;
+
+	constructor(t: Tables) {
+		this.t = t;
+	}
+
+	/** Opens every shard of `view` not opened yet, and opens `fresh` again with a new snapshot. */
+	async open(view: CatalogView, fresh: ReadonlySet<number> = new Set()): Promise<void> {
+		for (const shard of view.shards) {
+			const current = this.opened.get(shard.id);
+			if (current !== undefined && !fresh.has(shard.id)) continue;
+			if (current === undefined && this.unreadable.has(shard.id) && !fresh.has(shard.id)) continue;
+			if (current !== undefined) {
+				this.opened.delete(shard.id);
+				await closeExportSource(current);
+			}
+			this.unreadable.delete(shard.id);
+			const source = await openExportSource(shard.path, this.t, shard.id);
+			if ("database" in source) this.opened.set(shard.id, source);
+			else this.unreadable.set(shard.id, source);
+		}
+	}
+
+	/** The catalogued runs of `view` that the snapshot of the shard the catalog names for them does not hold. */
+	missing(view: CatalogView): JournalCatalogRun[] {
+		return view.runs.filter((run) => {
+			const source = this.opened.get(run.shard);
+			return run.status !== undefined && source !== undefined && !source.byId.has(run.runId);
+		});
+	}
+
+	close(): Promise<void> {
+		return closeEach([...this.opened.values()].map((source) => ({ close: () => closeExportSource(source) })));
+	}
+}
+
+/**
+ * Reads a journal store's catalog and opens its shards, then reads the catalog again for every run the shard it named
+ * did not hold: a consolidation may have moved the run between the two reads, into an existing shard or one it
+ * created. The shard the run moved to is read again, and so on until the placements agree or the attempts run out.
+ */
+async function settleExportSources(directory: string, sources: ExportSources): Promise<CatalogView> {
+	let view = await readCatalog(directory);
+	await sources.open(view);
+	for (let attempt = 1; attempt < WORKFLOW_RUN_EXPORT_PLACEMENT_ATTEMPTS; attempt++) {
+		const missing = sources.missing(view);
+		if (missing.length === 0) return view;
+		const next = await readCatalog(directory);
+		const moved = new Set<number>();
+		for (const run of missing) {
+			const now = next.owners.get(run.runId);
+			if (now !== undefined && now !== run.shard) moved.add(now);
+		}
+		const added = next.shards.some((shard) => !sources.opened.has(shard.id) && !sources.unreadable.has(shard.id));
+		view = next;
+		if (moved.size === 0 && !added) return view;
+		await sources.open(view, moved);
+	}
+	return view;
+}
+
+/** Why a catalogued run that its shard's snapshot does not hold, or whose shard could not be read, is not exported. */
+async function missingRunReason(
+	run: JournalCatalogRun,
+	view: CatalogView,
+	sources: ExportSources,
+): Promise<{ path: string; runId: string; reason: string }> {
+	const unreadable = sources.unreadable.get(run.shard);
+	if (unreadable !== undefined)
+		return {
+			path: unreadable.path,
+			runId: run.runId,
+			reason: unreadable.oldFormat ? OLD_FORMAT_REASON : `its journal file cannot be read: ${unreadable.reason}`,
+		};
+	const source = sources.opened.get(run.shard);
+	if (source === undefined) {
+		const path = view.shards.find((shard) => shard.id === run.shard)?.path ?? `shard ${run.shard}`;
+		return { path, runId: run.runId, reason: `the catalog names shard ${run.shard} for it, which it does not list` };
+	}
+	if (
+		(await hasTable(source.database, LEGACY_RUNS_TABLE)) &&
+		(await source.database.get(`SELECT 1 AS found FROM ${LEGACY_RUNS_TABLE} WHERE run_id = ?`, run.runId))
+	)
+		return { path: source.path, runId: run.runId, reason: OLD_FORMAT_REASON };
+	return {
+		path: source.path,
+		runId: run.runId,
+		reason:
+			"the journal file the catalog names for it does not hold it; it was moved or deleted while the export ran, so export again",
+	};
+}
+
 /**
  * Exports runs of a local workflow journal to `<directory>/<runId>.jsonl`, one file per run. Each journal file is read
  * in one read transaction, and each export file is written whole or not at all. The same journal state gives the same
- * bytes, and a file that already holds them is not rewritten.
+ * bytes, and a file that already holds them is not rewritten. A run the store's catalog lists is taken only from the
+ * shard the catalog names for it, read again when a consolidation moved it while the export ran; one that cannot be
+ * exported is reported with the reason.
  */
 export async function exportWorkflowRuns(
 	storage: WorkflowRunTransferStorage,
@@ -336,71 +423,53 @@ export async function exportWorkflowRuns(
 ): Promise<WorkflowRunExportReport> {
 	const t = runJournalTables(storage.kind === "sqlite" ? storage.prefix : undefined);
 	const skipped: { path: string; runId?: string; reason: string }[] = [];
-	const sources: ExportSource[] = [];
-	let owners: ReadonlyMap<string, number> | undefined;
-	let catalogued: readonly JournalCatalogRun[] = [];
-	const add = (opened: Awaited<ReturnType<typeof openExportSource>>) => {
-		if ("database" in opened) sources.push(opened);
-		else skipped.push(opened);
-	};
+	const sources = new ExportSources(t);
+	let single: ExportSource | undefined;
 	return withCleanup(
 		async () => {
-			if (storage.kind === "sqlite") {
-				if (existsSync(storage.path)) add(await openExportSource(storage.path, t, undefined));
-			} else if (await adoptLegacyJournal(storage.directory)) {
-				const catalog = await JournalCatalog.open(storage.directory);
-				let shards: readonly JournalShardRecord[];
-				await withCleanup(
-					async () => {
-						shards = await catalog.shards();
-						catalogued = await catalog.runs();
-						owners = new Map(catalogued.map((run) => [run.runId, run.shard]));
-					},
-					() => catalog.close(),
-				);
-				for (const shard of shards!) add(await openExportSource(shard.path, t, shard.id));
-			}
 			const listed = new Map<string, { readonly source: ExportSource; readonly run: JournalRunTableRow }>();
-			for (const source of sources)
-				for (const run of source.runs) {
-					const owner = owners?.get(run.run_id);
-					if (owner === undefined ? listed.has(run.run_id) : owner !== source.shardId) continue;
-					listed.set(run.run_id, { source, run });
+			const unexported = new Map<string, { path: string; runId: string; reason: string }>();
+			if (storage.kind === "sqlite") {
+				if (existsSync(storage.path)) {
+					const opened = await openExportSource(storage.path, t, undefined);
+					if ("database" in opened) single = opened;
+					else skipped.push({ path: opened.path, reason: opened.reason });
 				}
-			// A consolidation that moved a run between reading the catalog and opening the journal files leaves it only in
-			// a file the catalog did not name then: that copy is the run. A run whose named file could not be read is not
-			// taken from another file, which may hold an older copy an interrupted consolidation left behind.
-			const readable = new Set(sources.map((source) => source.shardId));
-			for (const source of sources)
-				for (const run of source.runs) {
-					const owner = owners?.get(run.run_id);
-					if (listed.has(run.run_id) || (owner !== undefined && !readable.has(owner))) continue;
-					listed.set(run.run_id, { source, run });
+				for (const run of single?.runs ?? []) listed.set(run.run_id, { source: single!, run });
+			} else if (await adoptLegacyJournal(storage.directory)) {
+				const view = await settleExportSources(storage.directory, sources);
+				const catalogued = new Set<number>(view.runs.map((run) => run.shard));
+				for (const [id, unreadable] of sources.unreadable)
+					if (!catalogued.has(id)) skipped.push({ path: unreadable.path, reason: unreadable.reason });
+				for (const run of view.runs) {
+					const source = sources.opened.get(run.shard);
+					const row = source?.byId.get(run.runId);
+					if (source !== undefined && row !== undefined) listed.set(run.runId, { source, run: row });
+					else if (run.status !== undefined) unexported.set(run.runId, await missingRunReason(run, view, sources));
 				}
-			// A run whose journal file was read but does not hold it in the current tables is in the pre-0.9.38 format;
-			// the runs of a journal file that could not be read are covered by that file's own entry, and a root that is
-			// only reserved (no status yet) has nothing to export.
-			if (options.runs === undefined)
-				for (const entry of catalogued) {
-					const source = sources.find((candidate) => candidate.shardId === entry.shard);
-					if (!listed.has(entry.runId) && source !== undefined && entry.status !== undefined)
-						skipped.push({
-							path: source.path,
-							runId: entry.runId,
-							reason: "it is in the journal format of Atomic before 0.9.38; resume it once to convert it",
-						});
-				}
+				// A run no catalog entry names yet (another process wrote it to a shard) is taken from the first shard
+				// holding it. A catalogued run is never taken from another shard, which may hold an older copy an
+				// interrupted consolidation left behind.
+				for (const source of sources.opened.values())
+					for (const run of source.runs)
+						if (!view.owners.has(run.run_id) && !listed.has(run.run_id)) listed.set(run.run_id, { source, run });
+			}
 			let selected = [...listed.values()];
 			if (options.runs !== undefined) {
-				const missing = options.runs.find((runId) => !listed.has(runId));
-				if (missing !== undefined)
-					throw new WorkflowRunTransferError({
-						path: storageLocation(storage),
-						runId: missing,
-						reason: `run ${missing} is not in this workflow journal`,
+				for (const runId of options.runs) {
+					if (listed.has(runId)) continue;
+					const reason = unexported.get(runId);
+					throw new StorageTransferError({
+						path: reason?.path ?? storageLocation(storage),
+						id: runId,
+						reason:
+							reason === undefined
+								? `run ${runId} is not in this workflow journal`
+								: `run ${runId} cannot be exported: ${reason.reason}`,
 					});
+				}
 				selected = [...new Set(options.runs)].map((runId) => listed.get(runId)!);
-			}
+			} else skipped.push(...unexported.values());
 			if (options.unfinished) selected = selected.filter(({ run }) => !isFinishedJournalStatus(run.status));
 			selected.sort((left, right) => newestFirst(left.run, right.run));
 			if (options.limit !== undefined) selected = selected.slice(0, options.limit);
@@ -412,21 +481,23 @@ export async function exportWorkflowRuns(
 					`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
 					run.run_id,
 				);
-				const file = workflowRunExportFile(directory, run.run_id);
-				const outcome = await writeAtomically(file, exportText(run, events, source.path));
+				const outcome = await writeLinesAtomically(
+					transferFile(directory, run.run_id),
+					exportLines(run, events, source.path),
+				);
 				(outcome === "written" ? written : unchanged).push(run.run_id);
 			}
 			return { written, unchanged, skipped };
 		},
 		async () => {
-			await Promise.allSettled(sources.map((source) => source.database.exec("COMMIT")));
-			await closeEach(sources.map((source) => source.database));
+			await sources.close();
+			if (single !== undefined) await closeExportSource(single);
 		},
 	);
 }
 
 /** A run read from an export file and checked: everything an import writes for it. */
-interface ParsedRun {
+export interface ParsedWorkflowRun {
 	readonly file: string;
 	readonly header: WorkflowRunExportHeader;
 	readonly events: readonly WorkflowRunExportEvent[];
@@ -453,22 +524,14 @@ function fieldsReason(line: JsonObject, fields: readonly string[]): string | und
 	return undefined;
 }
 
-/** Reads and checks one export file, throwing a `WorkflowRunTransferError` that names the file and line. */
-function parseExportFile(file: string, bytes: Buffer): ParsedRun {
+/** Checks one export file, throwing a `StorageTransferError` that names the file and line. */
+function parseExportFile({ file, lines }: TransferFileLines): ParsedWorkflowRun {
 	const fail = (line: number | undefined, reason: string, runId?: string): never => {
-		throw new WorkflowRunTransferError({ path: file, ...(line === undefined ? {} : { line }), runId, reason });
+		throw new StorageTransferError({ path: file, ...(line === undefined ? {} : { line }), id: runId, reason });
 	};
-	let text: string;
-	try {
-		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch {
-		return fail(undefined, "is not valid UTF-8 text");
-	}
-	const lines = text.split("\n");
-	if (lines.at(-1) === "") lines.pop();
 	if (lines.length === 0) return fail(1, "is empty; expected a workflow run header");
 	const parse = (index: number): JsonObject => {
-		const line = lines[index]!;
+		const line = lines[index]!.text;
 		if (line.trim() === "") return fail(index + 1, "is empty");
 		let value: WorkflowRunExportValue;
 		try {
@@ -555,6 +618,29 @@ function parseExportFile(file: string, bytes: Buffer): ParsedRun {
 	return { file, header, events };
 }
 
+/**
+ * Reads and checks every `*.jsonl` export file in `directory`; nothing is written. A directory that does not exist
+ * holds no runs. Throws `StorageTransferError` with the file and line for the first file that is not a valid export.
+ */
+export async function readWorkflowRunExports(directory: string): Promise<ParsedWorkflowRun[]> {
+	const parsed: ParsedWorkflowRun[] = [];
+	const files = new Map<string, string>();
+	for (const lines of await readTransferDirectory(directory)) {
+		const run = parseExportFile(lines);
+		const earlier = files.get(run.header.runId);
+		if (earlier !== undefined)
+			throw new StorageTransferError({
+				path: run.file,
+				line: 1,
+				id: run.header.runId,
+				reason: `run ${run.header.runId} is also in ${earlier}; keep one file per run`,
+			});
+		files.set(run.header.runId, run.file);
+		parsed.push(run);
+	}
+	return parsed;
+}
+
 /** The fields import checks against a stored run: everything but string content, which a tool may redact. */
 function sameEntry(stored: JournalEventTableRow, exported: WorkflowRunExportEvent): boolean {
 	return (
@@ -580,29 +666,49 @@ async function readStoredRun(executor: SqliteExecutor, t: Tables, runId: string)
 		`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
 		runId,
 	);
-	const leases = await executor.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, t.leases);
-	const lease =
-		leases === undefined
-			? undefined
-			: await executor.get<JournalLeaseTableRow & { age_ms: number }>(
-					`SELECT *, MAX(0, ${STORE_NOW} - renewed_at) AS age_ms FROM ${t.leases} WHERE run_id = ?`,
-					runId,
-				);
+	const lease = (await hasTable(executor, t.leases))
+		? await executor.get<JournalLeaseTableRow & { age_ms: number }>(
+				`SELECT *, MAX(0, ${STORE_NOW} - renewed_at) AS age_ms FROM ${t.leases} WHERE run_id = ?`,
+				runId,
+			)
+		: undefined;
 	return { run, events, ...(lease === undefined ? {} : { lease }) };
 }
 
-type ImportAction = "add" | "update" | "unchanged";
+/**
+ * What of a stored run an import depends on: its status, how many events it has and the last of them, and its lease.
+ * A run whose fingerprint differs from the one the import checked was changed by another process in between.
+ */
+function fingerprint(stored: StoredRun | undefined): string {
+	if (stored === undefined) return "absent";
+	const last = stored.events.at(-1);
+	const lease = stored.lease;
+	return JSON.stringify([
+		stored.run.status,
+		Number(stored.run.created_at),
+		stored.events.length,
+		last === undefined ? null : [Number(last.seq), Number(last.epoch), last.key, last.type, Number(last.at)],
+		lease === undefined ? null : [lease.holder_id, Number(lease.epoch), Number(lease.renewed_at)],
+	]);
+}
+
+/** What an import does to one run. */
+export type WorkflowRunImportAction = "add" | "update" | "unchanged";
 
 /**
  * What importing `parsed` does to the run as `stored` holds it: add it, add the file's later events, or nothing when
  * the storage already holds every event of the file. A run whose history differs from the file's, or that a process
  * here may still be running, fails with the file and line.
  */
-function importAction(parsed: ParsedRun, stored: StoredRun | undefined, location: string): ImportAction {
+function importAction(
+	parsed: ParsedWorkflowRun,
+	stored: StoredRun | undefined,
+	location: string,
+): WorkflowRunImportAction {
 	if (stored === undefined) return "add";
 	const { header, events, file } = parsed;
 	const fail = (line: number, reason: string): never => {
-		throw new WorkflowRunTransferError({ path: file, line, runId: header.runId, reason });
+		throw new StorageTransferError({ path: file, line, id: header.runId, reason });
 	};
 	if (Number(stored.run.created_at) !== header.createdAt)
 		fail(1, `run ${header.runId} in ${location} was created at another time; it is a different run with the same ID`);
@@ -628,11 +734,14 @@ function importAction(parsed: ParsedRun, stored: StoredRun | undefined, location
  * events after the stored ones, the latest status, and an unheld lease at an epoch above every epoch the run's events
  * and any earlier holder used, so no holder from another machine is imported and a stale one here is fenced.
  */
-async function applyImport(tx: SqliteExecutor, t: Tables, parsed: ParsedRun, location: string): Promise<ImportAction> {
+async function writeImport(
+	tx: SqliteExecutor,
+	t: Tables,
+	parsed: ParsedWorkflowRun,
+	stored: StoredRun | undefined,
+): Promise<void> {
 	const { header, events } = parsed;
-	const action = importAction(parsed, await readStoredRun(tx, t, header.runId), location);
-	if (action === "unchanged") return action;
-	if (action === "add")
+	if (stored === undefined)
 		await tx.run(
 			`INSERT INTO ${t.runs}(run_id, name, cwd, created_at, status, header_json) VALUES (?, ?, ?, ?, ?, ?)`,
 			header.runId,
@@ -643,16 +752,7 @@ async function applyImport(tx: SqliteExecutor, t: Tables, parsed: ParsedRun, loc
 			JSON.stringify(header.header),
 		);
 	else await tx.run(`UPDATE ${t.runs} SET status = ? WHERE run_id = ?`, header.status, header.runId);
-	const stored =
-		action === "add"
-			? 0
-			: Number(
-					(await tx.get<SqliteRow & { seq: number }>(
-						`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${t.events} WHERE run_id = ?`,
-						header.runId,
-					))!.seq,
-				);
-	for (const event of events.slice(stored))
+	for (const event of events.slice(stored?.events.length ?? 0))
 		await tx.run(
 			`INSERT INTO ${t.events}(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			header.runId,
@@ -671,48 +771,6 @@ async function applyImport(tx: SqliteExecutor, t: Tables, parsed: ParsedRun, loc
 		header.runId,
 		epoch,
 	);
-	return action;
-}
-
-/** Reads and checks every export file in `directory`; nothing is written. */
-async function readExportDirectory(directory: string): Promise<ParsedRun[]> {
-	let names: string[];
-	try {
-		names = await readdir(directory);
-	} catch (error) {
-		throw new WorkflowRunTransferError({
-			path: directory,
-			reason: `cannot read the directory: ${(error as Error).message}`,
-			cause: error as StorageFailureCause,
-		});
-	}
-	const parsed: ParsedRun[] = [];
-	const files = new Map<string, string>();
-	for (const name of names.filter((entry) => entry.endsWith(WORKFLOW_RUN_EXPORT_EXTENSION)).sort()) {
-		const file = join(directory, name);
-		let bytes: Buffer;
-		try {
-			bytes = await readFile(file);
-		} catch (error) {
-			throw new WorkflowRunTransferError({
-				path: file,
-				reason: `cannot read the file: ${(error as Error).message}`,
-				cause: error as StorageFailureCause,
-			});
-		}
-		const run = parseExportFile(file, bytes);
-		const earlier = files.get(run.header.runId);
-		if (earlier !== undefined)
-			throw new WorkflowRunTransferError({
-				path: file,
-				line: 1,
-				runId: run.header.runId,
-				reason: `run ${run.header.runId} is also in ${earlier}; keep one file per run`,
-			});
-		files.set(run.header.runId, file);
-		parsed.push(run);
-	}
-	return parsed;
 }
 
 /** A journal file an import reads its runs from while it decides what to write: read-only, opened once. */
@@ -734,54 +792,75 @@ class ReadOnlyFiles {
 	}
 }
 
-function unreadableShard(parsed: ParsedRun, path: string, error: Error): WorkflowRunTransferError {
-	return new WorkflowRunTransferError({
+function unreadableShard(parsed: ParsedWorkflowRun, path: string, error: Error): StorageTransferError {
+	return new StorageTransferError({
 		path: parsed.file,
 		line: 1,
-		runId: parsed.header.runId,
+		id: parsed.header.runId,
 		reason: `run ${parsed.header.runId} is in the journal file ${path}, which cannot be read: ${error.message}`,
 		cause: error,
 	});
 }
 
-/** The journal file of a store holding `runId`: the one the catalog names, else an adopted journal that holds it. */
+/**
+ * The shard of a store holding `runId`: the one the catalog names, else any shard that holds it although the catalog
+ * does not list it, as an adopted journal another process wrote to or a shard an interrupted import wrote to before
+ * it recorded the run in the catalog.
+ */
 async function storedShard(
 	catalog: JournalCatalog,
 	files: ReadOnlyFiles,
 	t: Tables,
 	runId: string,
-): Promise<JournalShardRecord | undefined> {
+): Promise<{ readonly shard: JournalShardRecord; readonly catalogued: boolean } | undefined> {
 	const found = await catalog.locate(runId);
-	if (found !== undefined) return found.shard;
+	if (found !== undefined) return { shard: found.shard, catalogued: true };
 	for (const shard of await catalog.shards()) {
-		if (shard.kind !== "adopted" || !existsSync(shard.path)) continue;
+		if (!existsSync(shard.path)) continue;
 		try {
 			const database = await files.read(shard.path);
 			if ((await hasTables(database, t)) && (await database.get(`SELECT 1 FROM ${t.runs} WHERE run_id = ?`, runId)))
-				return shard;
+				return { shard, catalogued: false };
 		} catch {}
 	}
 	return undefined;
 }
 
+/** One run of an import plan: what the import does to it, and the storage's copy the decision was made on. */
+interface PlannedRun {
+	readonly run: ParsedWorkflowRun;
+	readonly action: WorkflowRunImportAction;
+	readonly stored: StoredRun | undefined;
+	/** The shard holding the run; for a store only. */
+	readonly shard?: JournalShardRecord;
+	/** Whether the store's catalog lists the run. */
+	readonly catalogued: boolean;
+}
+
+/** What importing a set of export files does to a local workflow journal, decided before anything is written. */
+export interface WorkflowRunImportPlan {
+	readonly storage: WorkflowRunTransferStorage;
+	readonly runs: readonly PlannedRun[];
+}
+
+/** The runs of a plan an import writes. */
+export function pendingWorkflowRuns(plan: WorkflowRunImportPlan): string[] {
+	return plan.runs.filter((run) => run.action !== "unchanged").map((run) => run.run.header.runId);
+}
+
 /**
- * Imports every `<name>.jsonl` export file in `directory` into a local workflow journal. Every file is read and checked,
- * and every run compared with the storage's copy, before anything is written: a malformed file, an unsupported version,
- * a run that continued differently here, or a run a process here may still be running fails the import with the file
- * and line, and nothing changes. A run the storage does not hold is added; one whose earlier events it holds gets the
- * file's later ones; one it holds every event of is left as it is, so importing again changes nothing. String values
- * inside the records are not compared, so a file whose strings a tool redacted imports as the run it was exported from.
+ * Compares every run of `runs` with the storage's copy, writing nothing: a run that continued differently here, or that
+ * a process here may still be running, fails with the file and line.
  */
-export async function importWorkflowRuns(
+export async function planWorkflowRunImport(
 	storage: WorkflowRunTransferStorage,
-	directory: string,
-): Promise<WorkflowRunImportReport> {
-	const runs = await readExportDirectory(directory);
+	runs: readonly ParsedWorkflowRun[],
+): Promise<WorkflowRunImportPlan> {
 	const t = runJournalTables(storage.kind === "sqlite" ? storage.prefix : undefined);
 	const location = storageLocation(storage);
 	const files = new ReadOnlyFiles();
-	const actions: { readonly run: ParsedRun; readonly action: ImportAction; readonly shard?: JournalShardRecord }[] =
-		[];
+	const planned: PlannedRun[] = [];
+	if (runs.length === 0) return { storage, runs: planned };
 	await withCleanup(
 		async () => {
 			const catalogExists = storage.kind === "store" && (await adoptLegacyJournal(storage.directory));
@@ -789,22 +868,24 @@ export async function importWorkflowRuns(
 			await withCleanup(
 				async () => {
 					for (const run of runs) {
-						const shard =
+						const found =
 							catalog === undefined ? undefined : await storedShard(catalog, files, t, run.header.runId);
-						let path = shard?.path;
+						let path = found?.shard.path;
 						if (storage.kind === "sqlite") path = existsSync(storage.path) ? storage.path : undefined;
 						let stored: StoredRun | undefined;
-						if (path !== undefined) {
+						if (path !== undefined && existsSync(path)) {
 							try {
 								stored = await readStoredRun(await files.read(path), t, run.header.runId);
 							} catch (error) {
 								throw unreadableShard(run, path, error as Error);
 							}
 						}
-						actions.push({
+						planned.push({
 							run,
 							action: importAction(run, stored, path ?? location),
-							...(shard === undefined ? {} : { shard }),
+							stored,
+							catalogued: found?.catalogued ?? false,
+							...(found === undefined ? {} : { shard: found.shard }),
 						});
 					}
 				},
@@ -813,70 +894,134 @@ export async function importWorkflowRuns(
 		},
 		() => files.close(),
 	);
+	return { storage, runs: planned };
+}
+
+/** The runs an import writes to one journal file, under that file's write lock. */
+interface ImportGroup {
+	readonly path: string;
+	readonly shard?: JournalShardRecord;
+	readonly runs: PlannedRun[];
+	database?: SqliteDatabase;
+	tx?: SqliteExecutor;
+}
+
+/**
+ * Writes what `plan` decided. Every journal file the import writes to is opened and its write lock taken, in path
+ * order, before anything is written, and every run is compared again under those locks: a run another process changed
+ * since the plan was made (a resume took its lease, events were added, a consolidation moved it) fails the import with
+ * nothing written. The locks are held until the last run is written; each file then commits. Separate journal files
+ * cannot commit together, so when one fails to commit after another did, `StorageImportIncompleteError` names the runs
+ * written and the runs not written, and importing again writes only the rest. A store's catalog records added runs
+ * after their files commit; a run an interrupted import wrote before recording it is found and recorded by the next.
+ */
+export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promise<WorkflowRunImportReport> {
+	const { storage } = plan;
+	const prefix = storage.kind === "sqlite" ? storage.prefix : undefined;
+	const t = runJournalTables(prefix);
 	const report = { added: [] as string[], updated: [] as string[], unchanged: [] as string[] };
-	const record = (runId: string, action: ImportAction) =>
-		(action === "add" ? report.added : action === "update" ? report.updated : report.unchanged).push(runId);
-	const pending = actions.filter(({ action, run }) => {
-		if (action === "unchanged") record(run.header.runId, action);
-		return action !== "unchanged";
+	const pending = plan.runs.filter((run) => {
+		if (run.action === "unchanged") report.unchanged.push(run.run.header.runId);
+		return run.action !== "unchanged";
 	});
-	if (pending.length === 0) return report;
-	if (storage.kind === "sqlite") {
-		const database = await openNodeSqliteDatabase(storage.path);
-		await withCleanup(
-			async () => {
-				for (const { run } of pending)
-					record(
-						run.header.runId,
-						await database.transaction(async (tx) => {
-							await ensureRunJournalSchema(tx, storage.prefix);
-							return applyImport(tx, t, run, location);
-						}, TRANSFER_TRANSACTION),
-					);
-			},
-			() => database.close(),
-		);
-		return report;
-	}
-	const catalog = await JournalCatalog.open(storage.directory);
-	const shards = new Map<string, SqliteDatabase>();
-	await withCleanup(
-		async () => {
-			for (const { run, shard: stored } of pending) {
-				const { runId, name, cwd, status } = run.header;
-				// A new run goes to the shard its ID hashes to, as a consolidated run does: it writes nothing until it is
-				// resumed, so it never makes a shard busy for new roots.
-				const shard = await catalog.shard(
-					await catalog.index((stored ?? (await catalog.homeShard(runId))).id, { runId, name, cwd, status }),
-				);
-				if (shard === undefined)
-					throw new WorkflowRunTransferError({
-						path: run.file,
-						line: 1,
-						runId,
-						reason: `cannot place run ${runId} in ${location}`,
-					});
-				let database = shards.get(shard.path);
-				if (database === undefined) {
-					try {
-						database = await openNodeSqliteDatabase(shard.path);
-					} catch (error) {
-						throw unreadableShard(run, shard.path, error as Error);
-					}
-					shards.set(shard.path, database);
-				}
-				const action = await database.transaction(async (tx) => {
-					await ensureRunJournalSchema(tx);
-					return applyImport(tx, t, run, shard.path);
-				}, TRANSFER_TRANSACTION);
-				if (action !== "unchanged") await catalog.setStatus(runId, status);
-				record(runId, action);
+	const uncatalogued = plan.runs.filter((run) => run.action === "unchanged" && !run.catalogued && run.shard);
+	if (pending.length === 0 && uncatalogued.length === 0) return report;
+	const catalog = storage.kind === "store" ? await JournalCatalog.open(storage.directory) : undefined;
+	const groups = new Map<string, ImportGroup>();
+	const committed: ImportGroup[] = [];
+	const written = () => committed.flatMap((group) => group.runs.map((run) => run.run.header.runId));
+	try {
+		for (const run of pending) {
+			const shard =
+				catalog === undefined ? undefined : (run.shard ?? (await catalog.homeShard(run.run.header.runId)));
+			const path = shard?.path ?? storageLocation(storage);
+			let group = groups.get(path);
+			if (group === undefined) {
+				group = { path, runs: [], ...(shard === undefined ? {} : { shard }) };
+				groups.set(path, group);
 			}
-		},
-		async () => {
-			await closeEach(shards.values());
-			await catalog.close();
-		},
-	);
+			group.runs.push(run);
+		}
+		const ordered = [...groups.values()].sort((left, right) => (left.path < right.path ? -1 : 1));
+		for (const group of ordered) {
+			try {
+				group.database = await openNodeSqliteDatabase(group.path);
+			} catch (error) {
+				throw unreadableShard(group.runs[0]!.run, group.path, error as Error);
+			}
+		}
+		const lockAll = async (index: number): Promise<void> => {
+			if (index === ordered.length) {
+				for (const group of ordered)
+					for (const run of group.runs) {
+						const now = await readStoredRun(group.tx!, t, run.run.header.runId);
+						if (fingerprint(now) !== fingerprint(run.stored))
+							throw new StorageTransferError({
+								path: run.run.file,
+								line: 1,
+								id: run.run.header.runId,
+								reason: `run ${run.run.header.runId} changed in ${group.path} after the import compared it (another process wrote to it, took its lease or moved it); nothing was imported, so import again`,
+							});
+						importAction(run.run, now, group.path);
+					}
+				for (const group of ordered) {
+					await ensureRunJournalSchema(group.tx!, prefix);
+					for (const run of group.runs) await writeImport(group.tx!, t, run.run, run.stored);
+				}
+				return;
+			}
+			const group = ordered[index]!;
+			await group.database!.transaction(async (tx) => {
+				group.tx = tx;
+				await lockAll(index + 1);
+			}, TRANSFER_TRANSACTION);
+			committed.push(group);
+		};
+		await lockAll(0);
+		if (catalog !== undefined) {
+			for (const group of ordered)
+				for (const run of group.runs) {
+					const { runId, name, cwd, status } = run.run.header;
+					if (run.catalogued) await catalog.setStatus(runId, status);
+					else await catalog.index(group.shard!.id, { runId, name, cwd, status });
+				}
+			for (const run of uncatalogued) {
+				const { runId, name, cwd, status } = run.run.header;
+				await catalog.index(run.shard!.id, { runId, name, cwd, status });
+			}
+		}
+	} catch (error) {
+		const done = written();
+		if (done.length === 0) throw error;
+		const doneSet = new Set(done);
+		throw new StorageImportIncompleteError(error as Error, {
+			written: { sessions: [], workflows: done },
+			notWritten: {
+				sessions: [],
+				workflows: pending.map((run) => run.run.header.runId).filter((runId) => !doneSet.has(runId)),
+			},
+		});
+	} finally {
+		await closeEach(
+			[...groups.values()].flatMap((group) => (group.database === undefined ? [] : [group.database])),
+		).catch(() => undefined);
+		await catalog?.close();
+	}
+	for (const run of pending) (run.action === "add" ? report.added : report.updated).push(run.run.header.runId);
 	return report;
+}
+
+/**
+ * Imports every `<name>.jsonl` export file in `directory` into a local workflow journal: `readWorkflowRunExports`,
+ * `planWorkflowRunImport` and `applyWorkflowRunImport` in turn. Every file is read and checked, and every run compared
+ * with the storage's copy, before anything is written. A run the storage does not hold is added; one whose earlier
+ * events it holds gets the file's later ones; one it holds every event of is left as it is, so importing again changes
+ * nothing. String values inside the records are not compared, so a file whose strings a tool redacted imports as the
+ * run it was exported from.
+ */
+export async function importWorkflowRuns(
+	storage: WorkflowRunTransferStorage,
+	directory: string,
+): Promise<WorkflowRunImportReport> {
+	return applyWorkflowRunImport(await planWorkflowRunImport(storage, await readWorkflowRunExports(directory)));
 }

@@ -158,24 +158,76 @@ Each entry of `report.discovered` names the journal that referenced it and, when
 
 A `skipped` result means consolidation did not finish, not that the run stayed in its original file. When another process resumed the destination during a move, the catalog keeps that destination selected. Check the catalog's current location before comparing copies or retrying consolidation.
 
-### Exporting and importing workflow runs
+### Exporting and importing sessions and workflow runs
 
-`atomic storage export <dir>` writes workflow runs to versioned JSONL files, and `atomic storage import <dir>` restores them. The journal stays the working store; the files are only how runs travel between machines, for example through a cache or a persisted directory that holds only text.
+`atomic storage export <dir>` writes sessions and workflow runs to JSONL files, and `atomic storage import <dir>` restores them. Session storage and the journal stay the working stores; the files are only how sessions and runs travel between machines, for example through a cache or a persisted directory that holds only text.
 
 ```sh
-atomic storage export <dir> [--run <id>]... [--unfinished] [--limit <n>]
-atomic storage import <dir>
+atomic storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished] [--limit <n>] [--since <time>]
+atomic storage import <dir> [--sessions] [--workflows]
 ```
 
-Export writes every run by default, one file per run, named `<dir>/<runId>.jsonl`. `--run` selects runs by ID (repeat it for more), `--unfinished` selects runs that are not completed, failed or cancelled, and `--limit <n>` keeps the newest `n` runs by creation time. An unknown `--run` ID fails the export before any file is written. Each journal file is read in one read transaction, and each export file is written to a temporary file in `<dir>` and renamed into place, so a crash never leaves a partial `.jsonl` file. The same run state always produces the same bytes, and a file that already holds them is not rewritten, so unchanged runs produce no diff. Export never deletes files; prune old ones yourself.
+#### Layout
 
-Import reads every `*.jsonl` file in `<dir>` and ignores other files, including temporary files left by an interrupted export. It checks every file, and compares every run with the copy this machine already has, before it writes anything. A malformed file, an unknown version, or a run that continued differently here fails the import with the file and line, and nothing changes. A run this machine does not have is added; a run whose earlier events it has gets the file's later events; a run it already has every event of is left unchanged. Importing the same files again therefore adds nothing, and a newer export of a run supersedes an older one. Each run is written in its own transaction: if another process changes a run on this machine after the checks pass, the import stops at that run with an error, the runs written before it stay imported, and running the import again finishes it.
+```text
+<dir>/
+  sessions/<sessionId>.jsonl   one session per file
+  workflows/<runId>.jsonl      one workflow run per file
+```
 
-After import, runs resolve by ID for status, resume, attach, fork and `history://workflows`. Leases, local-worker pool state and worktree snapshot contents are not exported. An imported run has no owner: a run that was running when it was exported is an interrupted run here, and the resume picker and `/workflow resume` offer it once it has completed at least one step. Import refuses to add events to a run that a process on this machine renewed the lease of in the last two minutes, because that run may still be running here. Stage conversations live in session storage, not in the journal; persist the sessions directory too if you need them. Resume treats a run whose working directory differs from the current one as a run from another project, so restore the checkout at the same path.
+Both commands cover both kinds by default. `--sessions` or `--workflows` limits them to one kind; give both for both. Import reads only `*.jsonl` files in `<dir>/sessions` and `<dir>/workflows`. It ignores every other file, including files at the top level of `<dir>` and temporary files left by an interrupted export. A missing subdirectory holds nothing to import.
 
-Export and import work with the journal store and with a journal file selected through `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH` or a `path` selection. Both respect `ATOMIC_CODING_AGENT_DIR` and the storage selection in effect for the current directory. With a shared libSQL or Turso database, both refuse with a message: every machine joined to it already reads its runs.
+#### Export
 
-#### File format (version 1)
+Export writes every session and every run by default. These options select what it writes:
+
+- `--run <id>` selects workflow runs by ID. Repeat it for more. An unknown ID fails the export before any file is written.
+- `--unfinished` selects workflow runs that are not completed, failed or cancelled.
+- `--limit <n>` keeps the newest `n` workflow runs by creation time, and the `n` most recently modified sessions.
+- `--since <time>` keeps sessions modified at or after `<time>`, a date such as `2026-11-01` or a date and time such as `2026-11-01T09:30:00Z`.
+
+`--run` and `--unfinished` need workflow runs in the export, and `--since` needs sessions, so combining them with only the other kind is an error. Sessions include every project's sessions and workflow stage sessions.
+
+Each file is written to a temporary file in its directory and renamed into place, so a crash never leaves a partial `.jsonl` file. The same state always produces the same bytes. A file that already holds them is not rewritten, so unchanged sessions and runs produce no diff. Export never deletes files; prune old ones yourself.
+
+A workflow run that `atomic storage consolidate` moves while an export reads it is read again from its new shard. A run that still cannot be exported is reported with its reason, for example a run in the journal format of Atomic before 0.9.38, which you convert by resuming it once.
+
+#### Import
+
+Import checks every file of both kinds before it writes anything. It also compares every session and run with the copy this machine already has. A malformed file, an unknown version, or a session or run that continued differently here fails the import with the file and line, and nothing is written.
+
+- A session or run this machine does not have is added.
+- A session whose earlier entries it has gets the file's later entries. A run whose earlier events it has gets the file's later events.
+- A session or run it already has in full is left unchanged.
+
+Importing the same files again therefore adds nothing, and a newer export supersedes an older one. Sessions are matched by their ID, as `atomic --import` matches them. Their entries are compared by `id`, `parentId` and `type`. Runs are compared by the event fields listed under [Workflow run files](#workflow-run-files-version-1).
+
+Import takes the write lock of every journal file it writes runs to, and compares the runs again under those locks before it writes anything. If another process changed a run since the first check, for example a resume took its lease, the import fails and nothing is written. It writes sessions after the runs. Session storage has no lock that an import can hold, so each session write checks that the session is still as the import found it. If an import fails after it wrote part of its files, it exits `1` and lists what it imported and what it did not. Run the same import again to finish; it imports only what is missing.
+
+After import, sessions resolve for `--session`, `/resume` and `history://sessions`. Runs resolve by ID for status, resume, attach, fork and `history://workflows`.
+
+Leases, local-worker pool state and worktree snapshot contents of workflow runs are not exported. An imported run has no owner: a run that was running when it was exported is an interrupted run here. The resume picker and `/workflow resume` offer it once it has completed at least one step. Import refuses to add events to a run that a process on this machine renewed the lease of in the last two minutes, because that run may still be running here. Resume treats a run whose working directory differs from the current one as a run from another project, so restore the checkout at the same path.
+
+#### Which storage they use
+
+Both commands follow `ATOMIC_CODING_AGENT_DIR` and the storage selection in effect for the current directory. Sessions come from the session storage a session started here would use: the default database, a session directory, a SQLite file or an adapter. Workflow runs come from the journal store or a journal file selected through `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH` or a `path` selection.
+
+A kind kept in a shared libSQL or Turso database is refused with a message, because every machine joined to it already reads it. Without `--sessions` or `--workflows`, the commands skip that kind with a note and handle the other one. Sessions kept only in memory are refused the same way.
+
+#### Session files
+
+A session file is a format-4 session, the format JSONL session storage keeps and `atomic --import <file>` reads. Line 1 is the header, and every later line is one entry, in append order:
+
+```json
+{"type":"session","version":4,"id":"…","createdAt":"2026-11-12T09:30:00.000Z","cwd":"/repo"}
+{"type":"message","id":"a1b2c3d4","parentId":null,"timestamp":"2026-11-12T09:30:05.000Z","message":{"role":"user","content":"…"}}
+```
+
+The file holds every entry, not only the current branch. Tool outputs kept as session blobs and worktree snapshot contents are carried inline as base64, each once, as `/export <file>.jsonl` carries them. Import checks each against its SHA-256.
+
+A file whose header has another version is refused with the version it has and the version this Atomic reads.
+
+#### Workflow run files (version 1)
 
 Each line is one JSON object with a string `type`. Line 1 is the run's header:
 
@@ -189,28 +241,40 @@ Each line is one JSON object with a string `type`. Line 1 is the run's header:
 {"type":"CheckpointRecorded","seq":2,"epoch":1,"key":"[\"CheckpointRecorded\",\"tool\",\"build\"]","at":1794540401653,"payload":{"kind":"tool","output":"…"}}
 ```
 
-A tool may change string values inside `payload` and inside the header's `header` object, such as replacing secrets with `***`. Import does not checksum string contents, so a redacted file imports as the run it came from. Keep every line a JSON object, and do not add, remove or reorder lines or fields. Import checks these fields exactly and fails on a mismatch:
+A file of a newer version is refused with the version it has and the version this Atomic reads.
+
+#### What a tool may rewrite
+
+A tool may change string values, such as replacing secrets with `***`. Import does not checksum string contents, so a redacted file imports as the session or run it came from. Keep every line a JSON object, and do not add, remove or reorder lines or fields.
+
+In session files, leave these unchanged:
+
+- Header: `type`, `version`, `id` and `createdAt`. `cwd` decides which project the session belongs to.
+- Entries: `id`, `parentId` and `type`. Import compares them with the copy this machine already has.
+- `base64` values and `blobs` objects. Each is checked against its hash, and a changed one fails the import. A redacted secret inside them is base64-encoded, so a plain text replacement does not match it; leave those secrets in place or do not export the session.
+
+In workflow run files, import checks these fields exactly:
 
 - Header: `type`, `version`, `runId` (also `header.runId`), `createdAt` and `events`. `name` names the workflow that resume runs, and `cwd` and `status` decide where and whether it resumes, so leave them unchanged too.
 - Events: `type` (a known event type), `seq` (1, 2, 3, … without gaps), `epoch`, `key` (unique within the run) and `at`. Import compares these with the copy this machine already has to tell an older export, a newer export and a run that continued differently apart. A `StatusChanged` event must keep a string `payload.status`.
 
-A file of a newer version is refused with the version it has and the version this Atomic reads.
+Strings inside `payload` and the header's `header` object may change.
 
-#### Persisting workflow runs between machines
+#### Persisting sessions and workflow runs between machines
 
 On a CI runner that restores a directory at the start of a job and saves it at the end:
 
 ```sh
-# Start of the job, after restoring $RUNS_DIR
-mkdir -p "$RUNS_DIR" && atomic storage import "$RUNS_DIR"
+# Start of the job, after restoring $STATE_DIR
+mkdir -p "$STATE_DIR" && atomic storage import "$STATE_DIR"
 
 # ... run Atomic ...
 
-# End of the job, before saving $RUNS_DIR
-atomic storage export "$RUNS_DIR"
+# End of the job, before saving $STATE_DIR
+atomic storage export "$STATE_DIR"
 ```
 
-To carry only runs that can still be resumed, export with `--unfinished`. An interrupted run imported this way resumes with `/workflow resume <runId>` in the next job.
+To carry only runs that can still be resumed, export with `--unfinished`. An interrupted run imported this way resumes with `/workflow resume <runId>` in the next job. A session imported this way continues with `atomic --session <id>`. Add `--since` or `--limit` to keep the saved directory small.
 
 ### When to select a journal
 

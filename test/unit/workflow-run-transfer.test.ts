@@ -33,6 +33,8 @@ const SECRET = "ghp_supersecrettoken";
 let root: string;
 let project: string;
 let exports: string;
+/** Where an export writes workflow runs. */
+let runs: string;
 const closing: (() => Promise<void>)[] = [];
 
 beforeEach(() => {
@@ -40,6 +42,7 @@ beforeEach(() => {
 	root = makeTempDirectory("workflow-run-transfer-");
 	project = join(root, "project");
 	exports = join(root, "drive", "runs");
+	runs = join(exports, "workflows");
 	mkdirSync(project, { recursive: true });
 });
 afterEach(async () => {
@@ -149,12 +152,17 @@ test("atomic storage export and import parse their options (#4716)", () => {
 		{
 			kind: "export",
 			directory: "out",
+			kinds: { sessions: true, workflows: true, explicit: false },
 			unfinished: true,
 			runs: ["a", "b"],
 			limit: 3,
 		},
 	);
-	assert.deepEqual(parseStorageCommand(["import", "in"]), { kind: "import", directory: "in" });
+	assert.deepEqual(parseStorageCommand(["import", "in"]), {
+		kind: "import",
+		directory: "in",
+		kinds: { sessions: true, workflows: true, explicit: false },
+	});
 	for (const args of [["export"], ["export", "out", "--limit", "0"], ["export", "out", "--limit", "x"], ["import"]])
 		assert.throws(() => parseStorageCommand(args));
 });
@@ -167,8 +175,8 @@ test("an exported run imports into a fresh agent directory losslessly and re-exp
 	]);
 	const exported = await storage(source, ["export", exports]);
 	assert.equal(exported.code, 0, exported.err.join("\n"));
-	assert.deepEqual(Object.keys(files(exports)), [`${RUN_A}.jsonl`, `${RUN_B}.jsonl`].sort());
-	const lines = files(exports)
+	assert.deepEqual(Object.keys(files(runs)), [`${RUN_A}.jsonl`, `${RUN_B}.jsonl`].sort());
+	const lines = files(runs)
 		[`${RUN_B}.jsonl`]!.trimEnd()
 		.split("\n")
 		.map((line) => JSON.parse(line));
@@ -195,16 +203,16 @@ test("an exported run imports into a fresh agent directory losslessly and re-exp
 			["StatusChanged", 4],
 		],
 	);
-	const before = files(exports);
+	const before = files(runs);
 	assert.equal(
-		(await storage(source, ["export", exports])).out[0],
-		`Exported 2 workflow runs to ${exports} (0 written, 2 unchanged).`,
+		(await storage(source, ["export", exports, "--workflows"])).out[0],
+		`Exported 2 workflow runs to ${runs} (0 written, 2 unchanged).`,
 	);
 
 	const target = machine("b");
 	const imported = await storage(target, ["import", exports]);
 	assert.equal(imported.code, 0, imported.err.join("\n"));
-	assert.match(imported.out[0]!, /Imported 2 workflow runs .* \(2 added, 0 updated, 0 already up to date\)/);
+	assert.match(imported.out.join("\n"), /Imported 2 workflow runs .* \(2 added, 0 updated, 0 already up to date\)/);
 	const sourceJournal = await openStore(source);
 	const targetJournal = await openStore(target);
 	for (const runId of [RUN_A, RUN_B]) {
@@ -213,7 +221,7 @@ test("an exported run imports into a fresh agent directory losslessly and re-exp
 	}
 	const again = join(root, "re-export");
 	assert.equal((await storage(target, ["export", again])).code, 0);
-	assert.deepEqual(files(again), before, "the imported runs export to the same bytes");
+	assert.deepEqual(files(join(again, "workflows")), before, "the imported runs export to the same bytes");
 });
 
 test("importing again adds nothing, and a newer export of a run adds its later events (#4716)", async () => {
@@ -221,8 +229,8 @@ test("importing again adds nothing, and a newer export of a run adds its later e
 	await seed(source, [{ id: RUN_A, status: "running", createdAt: 1_000 }]);
 	await storage(source, ["export", exports]);
 	const target = machine("b");
-	assert.match((await storage(target, ["import", exports])).out[0]!, /1 added/);
-	assert.match((await storage(target, ["import", exports])).out[0]!, /1 already up to date/);
+	assert.match((await storage(target, ["import", exports])).out.join("\n"), /1 added/);
+	assert.match((await storage(target, ["import", exports])).out.join("\n"), /1 already up to date/);
 	const targetJournal = await openStore(target);
 	const firstImport = await entries(targetJournal, RUN_A);
 
@@ -230,12 +238,12 @@ test("importing again adds nothing, and a newer export of a run adds its later e
 	await record(sourceJournal, { id: RUN_A, status: "completed", createdAt: 1_000, checkpoints: 4 }, 2);
 	await storage(source, ["export", exports]);
 	const updated = await storage(target, ["import", exports]);
-	assert.match(updated.out[0]!, /0 added, 1 updated, 0 already up to date/);
+	assert.match(updated.out.join("\n"), /0 added, 1 updated, 0 already up to date/);
 	const after = await entries(targetJournal, RUN_A);
 	assert.deepEqual(after, await entries(sourceJournal, RUN_A));
 	assert.deepEqual(after.slice(0, firstImport.length), firstImport);
 	assert.equal((await targetJournal.getRun(RUN_A))?.status, "completed");
-	assert.match((await storage(target, ["import", exports])).out[0]!, /1 already up to date/);
+	assert.match((await storage(target, ["import", exports])).out.join("\n"), /1 already up to date/);
 	assert.equal((await entries(targetJournal, RUN_A)).length, after.length, "no duplicate events");
 });
 
@@ -243,7 +251,7 @@ test("files whose string values a tool redacted import as the run they came from
 	const source = machine("a");
 	await seed(source, [{ id: RUN_A, status: "paused", createdAt: 1_000 }]);
 	await storage(source, ["export", exports]);
-	const file = join(exports, `${RUN_A}.jsonl`);
+	const file = join(runs, `${RUN_A}.jsonl`);
 	// What gh-aw's redaction does: replace each secret substring, line by line, keeping every line a JSON object.
 	const redacted = readFileSync(file, "utf8")
 		.split("\n")
@@ -262,10 +270,10 @@ test("files whose string values a tool redacted import as the run they came from
 	assert.deepEqual((await targetJournal.getRun(RUN_A))?.inputs, { token: "***", unicode: "ünïcödé ✓" });
 
 	// The source machine still holds the unredacted run: the redacted file is the same run, so it is up to date.
-	assert.match((await storage(source, ["import", exports])).out[0]!, /1 already up to date/);
+	assert.match((await storage(source, ["import", exports])).out.join("\n"), /1 already up to date/);
 	const again = join(root, "again");
 	await storage(target, ["export", again]);
-	assert.equal(readFileSync(join(again, `${RUN_A}.jsonl`), "utf8"), redacted);
+	assert.equal(readFileSync(join(again, "workflows", `${RUN_A}.jsonl`), "utf8"), redacted);
 });
 
 test("a malformed, unknown-version or inconsistent file fails the import with its file and line, and nothing is imported (#4716)", async () => {
@@ -275,8 +283,8 @@ test("a malformed, unknown-version or inconsistent file fails the import with it
 		{ id: RUN_B, status: "completed", createdAt: 2_000 },
 	]);
 	await storage(source, ["export", exports]);
-	const good = readFileSync(join(exports, `${RUN_A}.jsonl`), "utf8");
-	const broken = join(exports, `${RUN_B}.jsonl`);
+	const good = readFileSync(join(runs, `${RUN_A}.jsonl`), "utf8");
+	const broken = join(runs, `${RUN_B}.jsonl`);
 	const original = readFileSync(broken, "utf8");
 	const lines = original.trimEnd().split("\n");
 	const edit = (line: number, change: (value: Record<string, unknown>) => void) => {
@@ -332,7 +340,7 @@ test("export selects runs with --run, --unfinished and --limit, newest first (#4
 		const directory = join(root, name);
 		const result = await storage(source, ["export", directory, ...args]);
 		assert.equal(result.code, 0, result.err.join("\n"));
-		return Object.keys(files(directory)).map((file) => file.replace(".jsonl", ""));
+		return Object.keys(files(join(directory, "workflows"))).map((file) => file.replace(".jsonl", ""));
 	};
 	assert.deepEqual(await select("one", ["--run", RUN_A]), [RUN_A]);
 	assert.deepEqual((await select("two", ["--run", RUN_A, "--run", RUN_C])).sort(), [RUN_A, RUN_C].sort());
@@ -351,29 +359,25 @@ test("export replaces each file whole through a temporary file and leaves no par
 		{ id: RUN_A, status: "completed", createdAt: 1_000 },
 		{ id: RUN_B, status: "completed", createdAt: 2_000 },
 	]);
-	mkdirSync(exports, { recursive: true });
-	writeFileSync(join(exports, `${RUN_A}.jsonl`), "previous export\n");
+	mkdirSync(runs, { recursive: true });
+	writeFileSync(join(runs, `${RUN_A}.jsonl`), "previous export\n");
 	// RUN_B's file cannot be replaced: a non-empty directory holds its name. The newer run is written first.
-	mkdirSync(join(exports, `${RUN_B}.jsonl`, "blocker"), { recursive: true });
+	mkdirSync(join(runs, `${RUN_B}.jsonl`, "blocker"), { recursive: true });
 	const failed = await storage(source, ["export", exports]);
 	assert.equal(failed.code, 1);
 	assert.match(failed.err.join("\n"), /cannot write the export file/);
-	assert.equal(readFileSync(join(exports, `${RUN_A}.jsonl`), "utf8"), "previous export\n");
-	assert.deepEqual(
-		readdirSync(exports).sort(),
-		[`${RUN_A}.jsonl`, `${RUN_B}.jsonl`].sort(),
-		"no temporary file is left",
-	);
+	assert.equal(readFileSync(join(runs, `${RUN_A}.jsonl`), "utf8"), "previous export\n");
+	assert.deepEqual(readdirSync(runs).sort(), [`${RUN_A}.jsonl`, `${RUN_B}.jsonl`].sort(), "no temporary file is left");
 
 	// A temporary file a crashed export left behind is not an export: import ignores it.
-	removeTempDirectory(join(exports, `${RUN_B}.jsonl`));
-	writeFileSync(join(exports, ".interrupted.tmp"), '{"type":"atomic.workflow-run","ver');
+	removeTempDirectory(join(runs, `${RUN_B}.jsonl`));
+	writeFileSync(join(runs, ".interrupted.tmp"), '{"type":"atomic.workflow-run","ver');
 	assert.equal((await storage(source, ["export", exports])).code, 0);
-	for (const content of Object.values(files(exports)).slice(1))
+	for (const content of Object.values(files(runs)).slice(1))
 		for (const line of content.trimEnd().split("\n")) assert.equal(typeof JSON.parse(line).type, "string");
 	const imported = await storage(machine("b"), ["import", exports]);
 	assert.equal(imported.code, 0, imported.err.join("\n"));
-	assert.match(imported.out[0]!, /2 added/);
+	assert.match(imported.out.join("\n"), /2 added/);
 });
 
 test("export and import refuse a shared database selection with a clear message (#4716)", async () => {
@@ -381,8 +385,9 @@ test("export and import refuse a shared database selection with a clear message 
 		"ATOMIC_WORKFLOWS_JOURNAL",
 		JSON.stringify({ adapter: "@bastani/atomic-storage-libsql", options: { url: "libsql://team.example" } }),
 	);
+	mkdirSync(exports, { recursive: true });
 	for (const command of ["export", "import"]) {
-		const result = await storage(machine("a"), [command, exports]);
+		const result = await storage(machine("a"), [command, exports, "--workflows"]);
 		assert.equal(result.code, 1);
 		assert.match(result.err.join("\n"), new RegExp(`storage ${command} works with a local workflow journal`));
 		assert.match(result.err.join("\n"), /shared database already holds the runs of every machine/);
@@ -395,7 +400,7 @@ test("the default journal of Atomic before the journal store is exported and com
 	await record(legacy, { id: RUN_A, status: "completed", createdAt: 1_000 });
 	await legacy.close();
 	assert.equal((await storage(source, ["export", exports])).code, 0);
-	assert.deepEqual(Object.keys(files(exports)), [`${RUN_A}.jsonl`]);
+	assert.deepEqual(Object.keys(files(runs)), [`${RUN_A}.jsonl`]);
 
 	// A machine whose earlier default journal holds a different run with the same ID refuses the file.
 	const target = machine("b");
@@ -417,7 +422,7 @@ test("export and import use a configured SQLite journal file (#4716)", async () 
 	assert.equal((await storage(source, ["export", exports])).code, 0);
 	const targetPath = join(root, "b", "custom.sqlite");
 	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", targetPath);
-	assert.match((await storage(machine("b"), ["import", exports])).out[0]!, /1 added/);
+	assert.match((await storage(machine("b"), ["import", exports])).out.join("\n"), /1 added/);
 	const restored = await openSqlRunJournal(targetPath);
 	closing.push(() => restored.close());
 	assert.equal((await restored.getRun(RUN_A))?.status, "completed");
@@ -466,7 +471,7 @@ test("an interrupted run exported from one machine resumes to completion on anot
 		await sleep(10);
 	}
 	assert.equal((await storage(machineA, ["export", exports, "--unfinished"])).code, 0);
-	const exported = readFileSync(join(exports, `${runId}.jsonl`), "utf8");
+	const exported = readFileSync(join(runs, `${runId}.jsonl`), "utf8");
 	assert.equal(JSON.parse(exported.split("\n")[0]!).status, "running");
 	assert.ok(!exported.includes("holder"), "no lease is exported");
 
