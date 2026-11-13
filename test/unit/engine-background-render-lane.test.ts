@@ -7,8 +7,8 @@
  * These tests count renders and frames; none of them measure time.
  */
 import assert from "node:assert/strict";
-import type { Component, Terminal } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, test, vi } from "vitest";
+import { type Component, resetCapabilitiesCache, setCapabilities, type Terminal } from "@earendil-works/pi-tui";
+import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.ts";
 import { setCallbackActivityReporter } from "../../packages/coding-agent/src/core/callback-activity.ts";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/ui-types.ts";
@@ -39,7 +39,15 @@ beforeAll(() => {
 	initTheme("dark");
 });
 
+// On a Kitty-capable terminal a screen repaints once more when the PNG transcoder finishes loading, at a
+// time no test controls. Under load that repaint lands inside a count (#4711: "10 !== 5"), so these tests,
+// which count the renders they request, run without image support.
+beforeEach(() => {
+	setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+});
+
 afterEach(() => {
+	resetCapabilitiesCache();
 	setCallbackActivityReporter(undefined);
 	vi.restoreAllMocks();
 });

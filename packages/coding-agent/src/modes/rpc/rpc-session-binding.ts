@@ -1,5 +1,6 @@
 import { setCapabilityOverrides } from "@earendil-works/pi-tui";
 import type { AgentSession } from "../../core/agent-session.js";
+import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type { ProjectTrustContext } from "../../core/extensions/index.js";
 import { FooterDataProvider } from "../../core/footer-data-provider.ts";
@@ -128,7 +129,8 @@ export class RpcSessionBinding {
 		const session = this.session;
 		setCapabilityOverrides(session.settingsManager.getTerminalCapabilityOverrides());
 		this.renderService?.bindSession(session);
-		this.footerDataProvider = new FooterDataProvider(session.sessionManager.getCwd());
+		const footerDataProvider = new FooterDataProvider(session.sessionManager.getCwd());
+		this.footerDataProvider = footerDataProvider;
 		// Seed the provider count from the current catalog snapshot, mirroring
 		// updateProviderCountFromSnapshot() in interactive startup, so the
 		// embedded footer shows the (provider) model prefix in multi-provider
@@ -137,7 +139,7 @@ export class RpcSessionBinding {
 			session.scopedModels.length > 0
 				? session.scopedModels.map((scoped) => scoped.model)
 				: session.modelRuntime.getAvailableSnapshot();
-		this.footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
+		footerDataProvider.setAvailableProviderCount(new Set(models.map((model) => model.provider)).size);
 
 		try {
 			await session.bindExtensions({
@@ -152,7 +154,7 @@ export class RpcSessionBinding {
 					customUi: this.customUi,
 					sessionPicker: this.sessionPicker,
 					inputForm: this.inputForm,
-					footerDataProvider: this.footerDataProvider,
+					footerDataProvider,
 					capabilities: this.extensionUICapabilities,
 				}),
 				mode: this.customUi ? "tui" : "rpc",
@@ -194,13 +196,23 @@ export class RpcSessionBinding {
 					});
 				},
 			});
-			this.footerDataProvider.startGitWatcher();
+			footerDataProvider.startGitWatcher();
 		} catch (error) {
 			// Leave no partially-initialized footer state behind if extension
-			// binding fails; dispose the provider and rethrow.
-			this.footerDataProvider.dispose();
-			this.footerDataProvider = undefined;
+			// binding fails. A concurrent rebind may already own the binding's
+			// footer, so only clear the one this bind created.
+			footerDataProvider.dispose();
+			if (this.footerDataProvider === footerDataProvider) this.footerDataProvider = undefined;
+			// RPC admits commands while the startup bind is still starting extensions, so a
+			// replacement (or shutdown) can close this session mid-start (#4711). Its successor,
+			// if any, is bound by its own rebind; nothing is left to bind here.
+			if (isSessionClosed(error) && (session as unknown as AgentSessionInternalSurface)._disposed) return;
 			throw error;
+		}
+		// A replacement bound its own session while this bind was pending; its state is not ours.
+		if (session !== this.session) {
+			footerDataProvider.dispose();
+			return;
 		}
 
 		if (this.customUi) this.unsubscribeTasks = bindEngineTaskWidget(session, session.extensionRunner.getUIContext());
@@ -259,4 +271,8 @@ export class RpcSessionBinding {
 		this.unsubscribeBackpressure = undefined;
 		this.footerDataProvider = undefined;
 	}
+}
+
+function isSessionClosed(error: unknown): boolean {
+	return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "SessionClosed";
 }
