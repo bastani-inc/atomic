@@ -121,6 +121,7 @@ export {
 } from "./core/tasks/owner-store.js";
 export {
 	ownerTaskViewSource,
+	type TaskCommandCatalog,
 	type TaskDetailText,
 	type TaskOutputView,
 	type TaskTranscriptFollow,

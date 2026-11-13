@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { CompactionReason } from "../agent-session.js";
 import { sessionEntryToContextMessages } from "../session-manager-history.ts";
+import { expandSkillCommand, type SkillCatalogCommand } from "../skill-catalog.ts";
 import { taskOutputText } from "./command-output.js";
 import type { OperationId, TaskId, TaskRecord } from "./contracts.js";
 import { TaskMessageError, TaskMessageTimeoutError } from "./message-error.js";
@@ -42,6 +43,14 @@ export interface TaskTranscriptFollow {
 	readonly session?: TaskTranscriptSource;
 	/** The transcript has no live tail; a view reads it again when the task changes. */
 	readonly historyOnly: boolean;
+}
+
+/** What a chat of an agent task completes, as plain data: its session's cwd and the skill commands it offers. */
+export interface TaskCommandCatalog {
+	/** The working directory `@` and path completions resolve against. */
+	readonly cwd: string;
+	/** The session's `/skill:` commands; empty when its settings do not offer skills as commands. */
+	readonly skillCommands: readonly Pick<SkillCatalogCommand, "name" | "description" | "sourceInfo">[];
 }
 
 /** The prompt and latest reply of an agent task, for its detail page. */
@@ -86,6 +95,8 @@ export interface TaskViewSource {
 	 * messaged.
 	 */
 	sendTaskMessage?(id: TaskId, text: string): Promise<void>;
+	/** What a chat of an agent task completes: its session's cwd and skill commands. Absent where unknown. */
+	taskCommands?(id: TaskId): TaskCommandCatalog | undefined | Promise<TaskCommandCatalog | undefined>;
 }
 
 const NO_STATUSES: ReadonlyMap<string, string> = new Map();
@@ -108,6 +119,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 	if (existing !== undefined) return existing;
 	const launched = (tasks: readonly TaskRecord[]) => tasks.filter((task) => task.parentTaskId === launcher);
 	const sendTaskMessage = root.sendTaskMessage;
+	const taskCommands = root.taskCommands;
 	const view: TaskViewSource = {
 		get tasks() {
 			return launched(root.tasks);
@@ -134,6 +146,7 @@ export function launchedTaskViewSource(source: TaskViewSource, launcher: TaskId)
 		...(sendTaskMessage === undefined
 			? {}
 			: { sendTaskMessage: (id: TaskId, text: string) => sendTaskMessage.call(root, id, text) }),
+		...(taskCommands === undefined ? {} : { taskCommands: (id: TaskId) => taskCommands.call(root, id) }),
 	};
 	views.set(launcher, view);
 	launchedViewRoots.set(view, root);
@@ -271,6 +284,22 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const task = lease(id);
 			return task.ok ? taskExtensionStatuses(task.value) : NO_STATUSES;
 		},
+		taskCommands(id) {
+			const task = lease(id);
+			const bound = task.ok ? taskTranscriptSource(task.value) : undefined;
+			const commands = bound?.ok ? bound.value.session.commands?.() : undefined;
+			if (commands === undefined) return undefined;
+			return {
+				cwd: commands.cwd,
+				skillCommands: commands.skillCommandsEnabled
+					? commands.skills.commands.map(({ name, description, sourceInfo }) => ({
+							name,
+							description,
+							sourceInfo,
+						}))
+					: [],
+			};
+		},
 		watchExtensionStatuses(id, listener) {
 			const task = lease(id);
 			return task.ok ? watchTaskExtensionStatuses(task.value, listener) : () => {};
@@ -283,9 +312,12 @@ export function ownerTaskViewSource(store: OwnerTaskStore): TaskViewSource {
 			const target = session?.completionSource?.intercomTarget;
 			if (session?.sendMessage === undefined || target === undefined)
 				throw new TaskMessageError("messages-unsupported", { taskId: id });
+			// The message reaches the task as Intercom text, which its session does not expand, so a skill command is
+			// expanded here from the task's own skills, as its session would expand it. A selector naming none is sent as typed.
+			const skills = session.commands?.().skills;
 			let delivery: TaskMessageDelivery;
 			try {
-				delivery = await session.sendMessage(text);
+				delivery = await session.sendMessage(skills === undefined ? text : expandSkillCommand(skills, text));
 			} catch (cause) {
 				throw new TaskMessageError("delivery-unconfirmed", { taskId: id, target }, { cause });
 			}

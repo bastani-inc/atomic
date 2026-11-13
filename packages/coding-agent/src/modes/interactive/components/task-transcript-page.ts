@@ -9,6 +9,7 @@ import {
 	type TaskViewResult,
 	type TaskViewSource,
 } from "../../../core/tasks/task-view-source.js";
+import { createSessionSkillAutocompleteProvider, getSkillCatalogCommands } from "../skill-command-autocomplete.ts";
 import { theme } from "../theme/theme.js";
 import type { ChatSessionHost } from "./chat-session-host.ts";
 import type { ChatSessionHostOpts, ChatSessionHostStyle } from "./chat-session-host-types.ts";
@@ -153,6 +154,13 @@ export class TaskAgentTranscriptPage implements TaskTranscriptPage {
 			onNearTop: () => this.loadEarlier(),
 			// A subagent's `/tasks` lists the tasks it launched, as a stage chat's lists the stage's own.
 			getTaskSource: () => launchedTaskViewSource(source, taskId),
+			// The completion a stage chat offers, from the subagent's own cwd and skills.
+			autocompleteProvider: createSessionSkillAutocompleteProvider(async () => {
+				const commands = await source.taskCommands?.(taskId);
+				return commands === undefined
+					? undefined
+					: { cwd: commands.cwd, skillCommands: getSkillCatalogCommands(commands.skillCommands) };
+			}),
 			commands: {
 				send: (text) => this.send(text),
 				handleSlashCommand: (text) => this.chat.openTasks(text.split(/\s+/)[1]),

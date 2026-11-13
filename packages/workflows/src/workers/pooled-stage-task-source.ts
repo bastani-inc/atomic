@@ -1,6 +1,7 @@
 import {
 	rehydrateTaskMessageError,
 	type TaskActivity,
+	type TaskCommandCatalog,
 	type TaskDetailText,
 	type TaskId,
 	TaskMessageError,
@@ -115,6 +116,11 @@ export class PooledStageTaskSource implements TaskViewSource {
 		return this.records.some((task) => task.ref.taskId === id && task.kind === "agent")
 			? { historyOnly: true }
 			: undefined;
+	}
+	/** A subagent's cwd and skills are on the worker, where its session runs. */
+	async taskCommands(id: TaskId): Promise<TaskCommandCatalog | undefined> {
+		const reply = await this.request(id, { kind: "commands" });
+		return reply.ok && reply.value.kind === "commands" ? reply.value.catalog : undefined;
 	}
 	extensionStatuses(id: TaskId): ReadonlyMap<string, string> {
 		return this.statuses.get(id) ?? NO_STATUSES;
