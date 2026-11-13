@@ -67,15 +67,14 @@ function cleanFdLine(rawLine: string): string {
 /**
  * fd before 10.5.1 never matches `--full-path` globs on Windows, and workarounds for that break on fd 10.5.1, so on
  * Windows fd lists every entry and minimatch matches path patterns. The options keep fd's glob behavior: `*` matches
- * dotfiles, `+(a|b)` is literal, and an all-lowercase pattern matches case-insensitively (smart case). A trailing
- * `/**` becomes `/**\/*` because minimatch's `src/**` also matches `src` itself and fd's does not.
+ * dotfiles and `+(a|b)` is literal. Matching is case-sensitive, like the native engine. A trailing `/**` becomes
+ * `/**\/*` because minimatch's `src/**` also matches `src` itself and fd's does not.
  */
 function createWindowsPathMatcher(pattern: string): Minimatch {
 	return new Minimatch(pattern.replace(/\/\*\*$/, "/**/*"), {
 		platform: "win32",
 		dot: true,
 		noext: true,
-		nocase: pattern === pattern.toLowerCase(),
 	});
 }
 function normalizeLimit(limit: number | undefined): number {
@@ -717,7 +716,9 @@ export function createFindToolDefinition(
 							if (windowsPathMatcher) {
 								args.push("--", "", target.searchPath);
 							} else {
-								args.push("--glob", "--max-results", String(remaining + 1));
+								// Case-sensitive like the native engine; fd's default smart case would make lowercase globs
+								// match uppercase names.
+								args.push("--glob", "--case-sensitive", "--max-results", String(remaining + 1));
 								let fdPattern = target.pattern;
 								if (isPathPattern) {
 									const escapedRoot = toPosixPath(target.searchPath)
@@ -725,7 +726,6 @@ export function createFindToolDefinition(
 										.replace(/[\\*?[\]{}]/g, "\\$&");
 									fdPattern = `${escapedRoot}/${fdPattern}`;
 									args.push("--full-path");
-									if (target.pattern === target.pattern.toLowerCase()) args.push("--ignore-case");
 								}
 								args.push("--", fdPattern, target.searchPath);
 							}

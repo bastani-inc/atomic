@@ -224,17 +224,17 @@ describe("issue #6817: Windows find path globs", () => {
 		expect(foundFiles(text).sort()).toEqual([".hidden/lib/a.ts", "lib/.b.ts"]);
 	});
 
-	it("matches an all-lowercase pattern case-insensitively and a mixed-case pattern exactly", async () => {
+	it("matches path patterns case-sensitively like the native engine (#4708)", async () => {
 		const lower = await runFind(
 			[join(searchPath, "**/lib/*.ts")],
-			[fakeFdProcess({ lines: [`${searchPath}/LIB/A.TS`, `${searchPath}/lib/b.ts`] })],
+			[fakeFdProcess({ lines: [`${searchPath}\\LIB\\A.ts`, `${searchPath}/lib/b.ts`, `${searchPath}\\lib\\C.TS`] })],
 		);
 		const mixed = await runFind(
 			[join(searchPath, "**/Lib/*.ts")],
 			[fakeFdProcess({ lines: [`${searchPath}/Lib/a.ts`, `${searchPath}/lib/b.ts`, `${searchPath}/LIB/c.ts`] })],
 		);
 
-		expect(foundFiles(lower.text).sort()).toEqual(["LIB/A.TS", "lib/b.ts"]);
+		expect(foundFiles(lower.text)).toEqual(["lib/b.ts"]);
 		expect(foundFiles(mixed.text)).toEqual(["Lib/a.ts"]);
 	});
 
@@ -335,6 +335,7 @@ describe("issue #6817: Windows find path globs", () => {
 			"--exclude",
 			"node_modules",
 			"--glob",
+			"--case-sensitive",
 			"--max-results",
 			"201",
 			"--",
@@ -358,10 +359,10 @@ describe("issue #6817: Windows find path globs", () => {
 			"--exclude",
 			"node_modules",
 			"--glob",
+			"--case-sensitive",
 			"--max-results",
 			"201",
 			"--full-path",
-			"--ignore-case",
 			"--",
 			`${searchPath
 				.split(sep)
