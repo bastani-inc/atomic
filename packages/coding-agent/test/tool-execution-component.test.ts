@@ -203,6 +203,43 @@ describe("ToolExecutionComponent parity", () => {
 		expect(component.render(120)).toEqual([]);
 	});
 
+	test("renders a very large self-rendered tool result without overflowing the call stack (#8036)", () => {
+		const lineCount = 200_000;
+		const toolDefinition: ToolDefinition = {
+			...createBaseToolDefinition("edit"),
+			renderShell: "self",
+			renderCall: () => new Text("edit large.html", 0, 0),
+			renderResult: () => ({
+				render: () => new Array<string>(lineCount).fill("diff line"),
+				invalidate() {},
+			}),
+		};
+
+		const component = new ToolExecutionComponent(
+			"edit",
+			"tool-large-self-render",
+			{ path: "large.html" },
+			{},
+			toolDefinition,
+			createFakeTui(),
+			process.cwd(),
+		);
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "ok" }],
+				details: {},
+				isError: false,
+			},
+			false,
+		);
+
+		const rendered = component.render(120);
+		assert.equal(rendered.length, lineCount + 2);
+		assert.equal(rendered[0], "");
+		assert.equal(stripAnsi(rendered[1] ?? "").trimEnd(), "edit large.html");
+		assert.equal(rendered.at(-1), "diff line");
+	});
+
 	test("uses built-in rendering for built-in overrides without custom renderers", () => {
 		const overrideDefinition: ToolDefinition = { ...createBaseToolDefinition("edit") };
 		const component = new ToolExecutionComponent(
