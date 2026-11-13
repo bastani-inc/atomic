@@ -147,6 +147,11 @@ export interface WorkflowRunStatusSummary extends RunExecutionObservation {
 	readonly error?: string;
 	/** True when a raw-running root has a completed frontier, no control node, and an exhausted duration budget. */
 	readonly strandedRoot?: true;
+	/**
+	 * One notice per checkout the run's latest resume restored with less than its snapshot, or continued without
+	 * (#4738). Absent after a resume that restored every checkout exactly.
+	 */
+	readonly worktreeRestore?: readonly string[];
 }
 
 /** Live control lookup used so a task-checkpoint tail is not reported as stranded. */
@@ -351,6 +356,9 @@ export function summarizeRunSnapshot(
 		exitReason: run.exitReason,
 		error: run.error ?? (strandedRoot ? IMPOSSIBLE_ROOT_LIVENESS_MESSAGE : undefined),
 		...(strandedRoot ? { strandedRoot: true as const } : {}),
+		...(run.worktreeRestoreOutcomes !== undefined && run.worktreeRestoreOutcomes.length > 0
+			? { worktreeRestore: run.worktreeRestoreOutcomes.map((outcome) => outcome.message) }
+			: {}),
 	};
 }
 

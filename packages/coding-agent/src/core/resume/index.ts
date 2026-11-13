@@ -127,7 +127,13 @@ export {
 	resumeNotFoundError,
 	withResumeLookupDeadline,
 } from "./not-found.ts";
-export { currentWorktreeRootMappings, mapPathForCwd, withWorktreeRootMappings } from "./path-mapping.ts";
+export {
+	currentWorktreeRestoreNotices,
+	currentWorktreeRootMappings,
+	mapPathForCwd,
+	withWorktreeRestoreNotices,
+	withWorktreeRootMappings,
+} from "./path-mapping.ts";
 export {
 	checkResumeStoragePreconditions,
 	type ResumePreflightIo,

@@ -1,4 +1,5 @@
 import type { WorkspaceBinding, WorktreeSnapshot } from "@bastani/atomic";
+import type { WorkflowWorktreeRestoreOutcome } from "../shared/worktree-restore-outcome.js";
 import type { WorkerHostGit } from "./worker-host-types.js";
 
 /**
@@ -22,12 +23,26 @@ export interface WorkspaceHookOptions {
 }
 
 /**
+ * A worktree a restore made of a binding's tree with less than its recorded snapshot (#4738): `partial` says what it
+ * holds and what is missing. The work runs there, and its stages are told.
+ */
+export interface RestoredWorkspace {
+	readonly path: string;
+	readonly partial?: WorkflowWorktreeRestoreOutcome;
+}
+
+/**
  * Makes a binding's tree available on this host: resolves the path of a verified worktree whose current tree is
  * `binding.tree`, or the tree of `options.snapshot` when the work carries one, or rejects with a typed error. A worker
  * host without one of its own restores the carried snapshot, or else from the worktree snapshots recorded in its
- * shared journal (#4416, #4492). A host that stops aborts `signal` and no longer waits for it.
+ * shared journal (#4416, #4492); when it cannot restore that exactly, it restores the best state it can reach and
+ * resolves a {@link RestoredWorkspace} that says so (#4738). A host that stops aborts `signal` and no longer waits for
+ * it.
  */
-export type WorkspaceRestore = (binding: WorkspaceBinding, options: WorkspaceHookOptions) => Promise<string>;
+export type WorkspaceRestore = (
+	binding: WorkspaceBinding,
+	options: WorkspaceHookOptions,
+) => Promise<string | RestoredWorkspace>;
 
 /**
  * Where a worker host already has a binding's tree: the path of a local worktree whose current tree equals

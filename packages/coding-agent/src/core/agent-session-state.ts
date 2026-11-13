@@ -195,6 +195,15 @@ export function _normalizePromptGuidelines(this: AgentSession, guidelines: strin
 	return Array.from(unique);
 }
 
+/** What a session in partly restored or unrestored checkouts is told about them (#4738). */
+function worktreeRestoreSection(notices: readonly string[]): string {
+	return [
+		"This work resumed on a machine that could not restore every checkout exactly as it was recorded:",
+		...notices.map((notice) => `- ${notice}`),
+		"Work with the files that are here. When something listed as not restored matters to the task, say so in your answer rather than recreating it from memory.",
+	].join("\n");
+}
+
 export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): void {
 	const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 	const toolSnippets: Record<string, string> = {};
@@ -234,7 +243,12 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): v
 		excludedTools: this._excludedToolNames ? Array.from(this._excludedToolNames) : undefined,
 		toolSnippets,
 		toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
-		...(subagentSessionMemory === undefined ? {} : { sections: { session_memory: `- ${subagentSessionMemory}` } }),
+		sections: {
+			...(subagentSessionMemory === undefined ? {} : { session_memory: `- ${subagentSessionMemory}` }),
+			...(this._worktreeRestoreNotices.length === 0
+				? {}
+				: { worktree_restore: worktreeRestoreSection(this._worktreeRestoreNotices) }),
+		},
 	});
 	if (this._systemPromptTransform) {
 		this._baseSystemPromptOptions.forceSystemPrompt = this._systemPromptTransform(

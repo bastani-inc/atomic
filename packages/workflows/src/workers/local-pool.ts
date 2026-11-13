@@ -1379,6 +1379,7 @@ export class LocalWorkerPool {
 				config: options.config,
 				snapshots: options.snapshots,
 				worktreeRootMappings: options.worktreeRootMappings,
+				worktreeRestoreOutcomes: options.worktreeRestoreOutcomes,
 				executionMode: options.executionMode,
 				workspace: options.workspace,
 				// A child of a shared pool, bound to a workspace of its own or to its root's, runs only where that tree is

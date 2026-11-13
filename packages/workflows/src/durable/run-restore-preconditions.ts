@@ -1,39 +1,18 @@
-import {
-	type ResumePreconditionError,
-	type RunWorktreeTarget,
-	runRestorePreconditionError,
-	type WorktreeRootMapping,
-	type WorktreeSnapshotSettingsInput,
-	worktreeNeedsRestore,
-} from "@bastani/atomic";
-import type { RunJournal } from "./journal/types.js";
-import {
-	listWorkflowSnapshotBoundaries,
-	mapWorkflowWorktreePath,
-	workflowSnapshotFrontier,
-} from "./worktree-snapshots.js";
-
-/** Marks a run's options once its resume checked the restore preconditions, so `run()` does not check them again. */
+/**
+ * Marks a run's options once its resume checked that this node may take the run, so `run()` does not check again.
+ * Restoring the run's checkouts has no preconditions (#4738): a checkout that cannot be restored is restored as well as
+ * this node can, or the run continues without it.
+ */
 export const restorePreconditionsChecked = Symbol("restore-preconditions-checked");
 
 /**
- * The typed failure of resuming run `runId` on this node when restoring the checkouts its latest snapshots recorded,
- * and that are gone or changed here, could not complete: Git is unavailable. A blueprint is never a precondition.
- * Read-only, so it can run before anything is claimed or restored.
+ * The directory a resume of a run was started from (#4738): where the run continues when the checkout its working
+ * directory is in cannot be restored and is not on this node. `run()` called directly uses its own `cwd`.
  */
-export async function runRestorePreconditionFailure(
-	journal: RunJournal,
-	runId: string,
-	mappings: readonly WorktreeRootMapping[],
-	settings: WorktreeSnapshotSettingsInput | undefined,
-	signal?: AbortSignal,
-): Promise<ResumePreconditionError | undefined> {
-	const restoring: RunWorktreeTarget[] = [];
-	for (const boundary of workflowSnapshotFrontier(await listWorkflowSnapshotBoundaries(journal, runId))) {
-		const here = mapWorkflowWorktreePath(boundary.root, mappings);
-		if (await worktreeNeedsRestore(boundary.snapshot, here, { settings, signal })) {
-			restoring.push({ root: boundary.root, remotes: boundary.snapshot.remotes });
-		}
-	}
-	return await runRestorePreconditionError(runId, restoring);
-}
+export const resumeLaunchCwd = Symbol("resume-launch-cwd");
+
+/**
+ * The working directory a run recorded, when its resume continues it elsewhere because the checkout that directory is
+ * in could not be restored (#4738): the run keeps it as its own, so a later resume restores that checkout again.
+ */
+export const recordedInvocationCwd = Symbol("recorded-invocation-cwd");

@@ -38,7 +38,7 @@ import type {
 	WorkflowWorkerHostOptions,
 	WorkflowWorkerHostStats,
 } from "./worker-host-types.js";
-import type { WorkspaceRestore } from "./workspace-binding.js";
+import type { RestoredWorkspace, WorkspaceRestore } from "./workspace-binding.js";
 
 export type {
 	SharedJournalSelection,
@@ -520,14 +520,27 @@ export function hostRestorePort(
 		storeDir: join(agentDir, "worktree-snapshots"),
 		git,
 	});
-	return (binding, hook) =>
-		restoreRunWorktree(hook.snapshot?.remotes, () => restore(binding, hook), {
-			signal: hook.signal,
-			agentDir,
-			onNotices: (notices) => {
-				for (const notice of notices) console.warn(`atomic-workflows: ${notice.message}`);
+	return async (binding, hook) => {
+		let result: string | RestoredWorkspace | undefined;
+		const path = await restoreRunWorktree(
+			hook.snapshot?.remotes,
+			async () => {
+				result = await restore(binding, hook);
+				return typeof result === "string" ? result : result.path;
 			},
-		});
+			{
+				signal: hook.signal,
+				agentDir,
+				onNotices: (notices) => {
+					for (const notice of notices) console.warn(`atomic-workflows: ${notice.message}`);
+				},
+			},
+		);
+		if (typeof result !== "object" || result.partial === undefined) return path;
+		// A worktree with less than the binding's tree: the child runs there, and its stages are told (#4738).
+		console.warn(`atomic-workflows: ${result.partial.message}`);
+		return { path, partial: result.partial };
+	};
 }
 
 /**

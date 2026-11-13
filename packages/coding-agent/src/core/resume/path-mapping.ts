@@ -35,6 +35,28 @@ export function withWorktreeRootMappings<T>(
 	);
 }
 
+/** The notices of checkouts the current work's sessions and runs hold only part of, or continued without (#4738). */
+const scopedRestoreNotices = new AsyncLocalStorage<readonly string[]>();
+
+/**
+ * The notices of the checkouts that the sessions and runs work started here runs in hold less of than their recorded
+ * snapshots, or continued without (#4738), outermost first. A session opened here tells its model about them.
+ */
+export function currentWorktreeRestoreNotices(): readonly string[] {
+	return scopedRestoreNotices.getStore() ?? [];
+}
+
+/**
+ * Runs `work` with `notices`, one per checkout restored with less than its snapshot or not at all, after the outer ones;
+ * a notice an outer run already gives is not repeated.
+ */
+export function withWorktreeRestoreNotices<T>(notices: readonly string[], work: () => T): T {
+	const outer = currentWorktreeRestoreNotices();
+	const added = notices.filter((notice) => !outer.includes(notice));
+	if (added.length === 0) return work();
+	return scopedRestoreNotices.run([...outer, ...added], work);
+}
+
 /**
  * `path` as it resolves for work in `cwd` under the restores of the current session or run: a path under a checkout it
  * recorded elsewhere (on another node, or a checkout it no longer uses here) moves to the same place in the worktree

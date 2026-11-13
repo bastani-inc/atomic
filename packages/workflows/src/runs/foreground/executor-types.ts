@@ -1,5 +1,9 @@
 import type { AgentSessionEvent } from "@bastani/atomic";
-import type { restorePreconditionsChecked } from "../../durable/run-restore-preconditions.js";
+import type {
+	recordedInvocationCwd,
+	restorePreconditionsChecked,
+	resumeLaunchCwd,
+} from "../../durable/run-restore-preconditions.js";
 import type { ToolAdmissionBoundary } from "../../engine/run-tool-admission-boundary.js";
 import type { ToolControlRegistry } from "../../engine/run-tool-control-registry.js";
 import type * as AuthoringContract from "../../shared/authoring-contract.js";
@@ -68,6 +72,8 @@ export interface RunOpts
 	effectiveResources?: import("../../workers/public-options.js").WorkflowExecutionResources;
 	[hostWorkerBindings]?: true;
 	[restorePreconditionsChecked]?: true;
+	[resumeLaunchCwd]?: string;
+	[recordedInvocationCwd]?: string;
 	/**
 	 * Send this root run tree's console output to the workflow log instead of stderr (#4175). Its owner sets it when a
 	 * terminal UI shows that stderr in the chat; child runs inherit their root's decision.
@@ -149,6 +155,11 @@ export interface RunOpts
 	durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
 	/** Internal durable mapping of original roots to restored worktrees. */
 	worktreeRootMappings?: readonly import("@bastani/atomic").WorktreeRootMapping[];
+	/**
+	 * Internal: the checkouts this run's resume, or the worker host of a pooled child, restored with less than their
+	 * snapshots or continued without (#4738). Its stages are told; a root records them.
+	 */
+	worktreeRestoreOutcomes?: readonly import("../../shared/store-types.js").WorkflowWorktreeRestoreOutcome[];
 	/** Internal physical backend used to reconstruct full nested topology through stacked scopes. */
 	durableRootBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
 	/**

@@ -1,6 +1,7 @@
 import { isBoundWorkspace, type WorktreeSnapshot } from "@bastani/atomic";
 import type { PoolClaimCandidate, PoolWork } from "../durable/journal/sql-pool-queue.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
+import type { WorkflowWorktreeRestoreOutcome } from "../shared/worktree-restore-outcome.js";
 import { bindingIdentity, type WorkspaceBinding } from "./workspace-binding.js";
 
 /** The ready work a worker host claims, and where it runs it: a warm worktree, or one restore resolves (#4310). */
@@ -53,12 +54,32 @@ export function childPlacement(
 
 /**
  * The execution a placed child runs with (#4310, #4416): in the warm or restored `worktree`, and a child bound to a
- * #3109 workspace bound to that worktree on this host, not to the path its root's host bound.
+ * #3109 workspace bound to that worktree on this host, not to the path its root's host bound. `partial` is the outcome
+ * of a restore that gave the worktree less than the binding's tree (#4738).
  */
-export function placedExecution(execution: WorkflowSerializableObject, worktree: string): WorkflowSerializableObject {
+export function placedExecution(
+	execution: WorkflowSerializableObject,
+	worktree: string,
+	partial?: WorkflowWorktreeRestoreOutcome,
+): WorkflowSerializableObject {
 	const workspace = execution.workspace;
-	if (!isBoundWorkspace(workspace)) return { ...execution, cwd: worktree };
-	return { ...execution, cwd: worktree, workspace: { ...(workspace as WorkflowSerializableObject), worktree } };
+	// A worktree restored with less than the binding's tree adds its outcome, which the child's stages are told (#4738).
+	const outcomes =
+		partial === undefined
+			? {}
+			: {
+					worktreeRestoreOutcomes: [
+						...((execution.worktreeRestoreOutcomes as readonly WorkflowSerializableObject[] | undefined) ?? []),
+						partial as unknown as WorkflowSerializableObject,
+					],
+				};
+	if (!isBoundWorkspace(workspace)) return { ...execution, cwd: worktree, ...outcomes };
+	return {
+		...execution,
+		cwd: worktree,
+		workspace: { ...(workspace as WorkflowSerializableObject), worktree },
+		...outcomes,
+	};
 }
 
 /**

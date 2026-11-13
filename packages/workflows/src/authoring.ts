@@ -726,7 +726,12 @@ export type {
 export declare function startWorkflowWorkerHost(
 	options: import("./workers/worker-host-types.js").WorkflowWorkerHostOptions,
 ): Promise<import("./workers/worker-host-types.js").WorkflowWorkerHost>;
-export type { WorkspaceHookOptions, WorkspacePreference, WorkspaceRestore } from "./workers/workspace-binding.js";
+export type {
+	RestoredWorkspace,
+	WorkspaceHookOptions,
+	WorkspacePreference,
+	WorkspaceRestore,
+} from "./workers/workspace-binding.js";
 
 /** Which Intercom messages and prompt answers a fork carries: those before the fork point (default) or all. */
 export type ForkCarryMessages = "before" | "all";

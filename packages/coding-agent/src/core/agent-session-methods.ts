@@ -713,6 +713,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_toolRegistry: Map<string, AgentTool>;
 	_toolExecutionScheduler: ToolExecutionScheduler;
 	_outerWorktreeRootMappings: readonly WorktreeRootMapping[];
+	_worktreeRestoreNotices: readonly string[];
 	_toolDefinitions: Map<string, ToolDefinitionEntry>;
 	_toolPromptSnippets: Map<string, string>;
 	_toolPromptGuidelines: Map<string, string[]>;
