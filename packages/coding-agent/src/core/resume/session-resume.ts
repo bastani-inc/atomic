@@ -774,7 +774,9 @@ async function restorePlanned(
 		missing: new Set<string>(),
 		missingNotices: [] as ResumeNotice[],
 	};
+	let restored = false;
 	const restore = async (targets: readonly RestoreTarget[], pending: WorktreeRootMapping | undefined) => {
+		restored = true;
 		const git = plan.git;
 		for (const target of targets) {
 			if (git === undefined) {
@@ -821,6 +823,14 @@ async function restorePlanned(
 					`${absentOrChanged(target)}, and restoring it failed: ${describeFailure(error)}`,
 				),
 			);
+		}
+	}
+	// With nothing to restore, no restore listed the checkouts whose snapshot record is missing (#4744).
+	if (!restored) {
+		for (const missing of missingSnapshotRecords(sessionManager)) {
+			const notice: ResumeNotice = { type: "warning", message: formatMissingRecordNotice(missing) };
+			outcome.failed.push(notice);
+			outcome.missingNotices.push(notice);
 		}
 	}
 	return outcome;
