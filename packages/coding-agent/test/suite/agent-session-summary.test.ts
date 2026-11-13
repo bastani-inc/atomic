@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, getApiProvider } from "@bastani/pi-ai/compat";
 import type { AgentEvent } from "@earendil-works/pi-agent-core";
@@ -8,7 +10,7 @@ import { DefaultResourceLoader } from "../../src/core/resource-loader.js";
 import type { SessionSummaryEntry } from "../../src/core/session-manager.js";
 import { SessionManager } from "../../src/core/session-manager.js";
 import { RpcSessionBinding } from "../../src/modes/rpc/rpc-session-binding.js";
-import { createHarness, type Harness } from "./harness.js";
+import { createHarness as createSuiteHarness, type Harness, type HarnessOptions } from "./harness.js";
 
 /**
  * `_maybeGenerateSessionSummary` runs fire-and-forget after `agent_end`. These tests drive real
@@ -32,6 +34,20 @@ async function waitForSummary(harness: Harness, count = 1): Promise<SessionSumma
 		await new Promise((resolve) => setTimeout(resolve, 5));
 	}
 	throw new Error("timed out waiting for a session_summary entry");
+}
+
+/** Summaries are generated only for saved sessions, so each harness here saves to its own directory. */
+async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
+	if (options.sessionManager) return createSuiteHarness(options);
+	const dir = mkdtempSync(join(tmpdir(), "atomic-summary-suite-"));
+	const harness = await createSuiteHarness({ ...options, sessionManager: await SessionManager.create(dir, dir) });
+	return {
+		...harness,
+		cleanup: async () => {
+			await harness.cleanup();
+			rmSync(dir, { recursive: true, force: true });
+		},
+	};
 }
 
 async function settle(): Promise<void> {
@@ -454,6 +470,42 @@ describe("session summary generation", () => {
 
 		expect(summaryEntries(harness)).toHaveLength(0);
 		expect(harness.getPendingResponseCount()).toBe(0);
+	});
+
+	it("generates nothing for an unsaved session (#4726)", async () => {
+		const harness = await createSuiteHarness();
+		harnesses.push(harness);
+		assert.equal(harness.sessionManager.isPersisted(), false);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("Unwanted summary"),
+		]);
+
+		await runTwoTurns(harness);
+		await settle();
+
+		expect(summaryEntries(harness)).toHaveLength(0);
+		expect(harness.getPendingResponseCount()).toBe(1);
+	});
+
+	it("announces the saved summary so session stats can include its usage (#4726)", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		await harness.session.bindExtensions({ mode: "tui" });
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			fauxAssistantMessage("second turn"),
+			fauxAssistantMessage("Summary with usage"),
+		]);
+
+		await runTwoTurns(harness);
+		const summary = await waitForSummary(harness);
+
+		const announced = harness.eventsOfType("entry_appended").map((event) => event.entry);
+		expect(announced).toContainEqual(summary);
+		expect(summary.usage?.input ?? 0).toBeGreaterThan(0);
 	});
 
 	it("does not persist a summary once the conversation has outrun it", async () => {

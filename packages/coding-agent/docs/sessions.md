@@ -160,7 +160,7 @@ Each row shows a short generated description of what the session was about in it
 
 A summary describes the conversation up to a specific message and remains visible as newer messages arrive. A later branch summary retires it. "No summary available." means no summary has been generated for the current branch, generation failed, or it is still in flight. The session name and first message are never displaced by a summary, and the column only appears once at least one listed session has a summary. Summaries are also searchable along with the rest of the session text.
 
-Generation is best-effort and never blocks a turn or quitting. Opening or resuming a session in interactive or RPC mode also schedules generation if its summary is missing or stale. Atomic skips very short sessions, workflow stage sessions, and `--print` and JSON modes. It cancels generation when you send the next message, switch sessions, or quit; failures are silent. Set `sessionSummary.enabled` to `false` to disable it.
+Generation is best-effort and never blocks a turn or quitting. Opening or resuming a session in interactive or RPC mode also schedules generation if its summary is missing or stale. Atomic generates summaries only for saved sessions, so `--no-session` sessions never send a summary request. It also skips very short sessions, workflow stage sessions, and `--print` and JSON modes. The summary request's tokens and cost count toward the footer usage and `/session` as soon as the summary is saved. It cancels generation when you send the next message, switch sessions, or quit; failures are silent. Set `sessionSummary.enabled` to `false` to disable it.
 
 You can search, navigate, or cancel while the picker loads sessions. Closing it cancels the scan.
 
