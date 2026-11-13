@@ -268,23 +268,22 @@ function writeLine(file: number, text: string): void {
 // =========================================================================
 
 /**
- * Get text content of last assistant message.
+ * Get text content of the last assistant reply.
  * Useful for /copy command.
- * @returns Text content, or undefined if no assistant message exists
+ * @returns Text content, or undefined if no assistant message exists or the last reply has no text
  */
 
 export function getLastAssistantText(this: AgentSession): string | undefined {
 	for (const message of this.messages.slice().reverse()) {
 		if (message.role !== "assistant") continue;
 		const assistant = message as AssistantMessage;
-		// Skip aborted messages with no content
-		if (assistant.stopReason === "aborted" && assistant.content.length === 0) continue;
 		let text = "";
 		for (const content of assistant.content) {
 			if (content.type === "text") text += content.text;
 		}
 		const trimmed = text.trim();
 		if (trimmed) return trimmed;
+		if (assistant.stopReason === "stop") return undefined;
 	}
 	return undefined;
 }

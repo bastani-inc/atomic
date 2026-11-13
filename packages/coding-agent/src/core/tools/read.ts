@@ -1,5 +1,5 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
-import type { Api, ImageContent, Model, ModelImageResizeOptions, TextContent } from "@bastani/pi-ai/compat";
+import type { ImageContent, ModelImageResizeOptions, TextContent } from "@bastani/pi-ai/compat";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
@@ -94,6 +94,7 @@ export interface ReadToolDetails {
 	resolvedPath?: string;
 	truncation?: TruncationResult;
 	oversizedRead?: OversizedReadDetails;
+	imageUnsupportedByModel?: string;
 	meta?: {
 		source?: string;
 		sourcePath?: string;
@@ -156,11 +157,6 @@ function toReadOutput(content: (TextContent | ImageContent)[]): ReadToolOutput {
 	const text = content.find((block) => block.type === "text")?.text ?? "";
 	const image = content.find((block) => block.type === "image");
 	return image ? { type: "image", data: image.data, mimeType: image.mimeType, note: text } : text;
-}
-function getNonVisionImageNote(model: Model<Api> | undefined): string | undefined {
-	return !model || model.input.includes("image")
-		? undefined
-		: "[Current model does not support images. The image will be omitted from this request.]";
 }
 function toPosixPath(filePath: string): string {
 	return filePath.split(sep).join("/");
@@ -281,10 +277,14 @@ function formatReadResult(
 	_cwd: string,
 	isError: boolean,
 ): string {
+	const unsupportedBy = result.details?.imageUnsupportedByModel;
+	const imageWarning = unsupportedBy
+		? `\n${theme.fg("warning", `[${unsupportedBy} does not support images; it saw a placeholder instead]`)}`
+		: "";
 	const oversizedRead = result.details?.oversizedRead;
 	const oversizedReadBlocked = oversizedRead?.blocked === true;
 	if (!options.expanded && !isError && !oversizedReadBlocked) {
-		return "";
+		return imageWarning;
 	}
 	const rawPath = str(args?.path);
 	const output = oversizedRead ? buildOversizedReadMessage(oversizedRead) : getTextOutput(result, showImages);
@@ -309,7 +309,7 @@ function formatReadResult(
 			text += `\n${theme.fg("warning", `[Truncated: ${truncation.outputLines} lines shown (${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit)]`)}`;
 		}
 	}
-	return text;
+	return text + imageWarning;
 }
 function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean {
 	const archive = parseArchiveSelector(pathValue);
@@ -711,26 +711,28 @@ export function createReadToolDefinition(
 								return;
 							}
 							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;
-							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
 							if (mimeType) {
-								// Read image as binary.
 								const buffer = await ops.readFile(absolutePath);
 								const processed = await processImage(buffer, mimeType, {
 									autoResizeImages,
 									resizeOptions: ctx?.model?.inputLimits?.images?.resize ?? fallbackResizeOptions,
 								});
 								if (!processed.ok) {
-									let textNote = `Read image file [${mimeType}]\n${processed.message}`;
-									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
+									const textNote = `Read image file [${mimeType}]\n${processed.message}`;
 									content = [{ type: "text", text: textNote }];
 								} else {
 									let textNote = `Read image file [${processed.mimeType}]`;
 									if (processed.hints.length > 0) textNote += `\n${processed.hints.join("\n")}`;
-									if (nonVisionImageNote) textNote += `\n${nonVisionImageNote}`;
 									content = [
 										{ type: "text", text: textNote },
 										{ type: "image", data: processed.data, mimeType: processed.mimeType },
 									];
+									if (ctx?.model && !ctx.model.input.includes("image")) {
+										details = {
+											...readSourceMeta(absolutePath),
+											imageUnsupportedByModel: ctx.model.id,
+										};
+									}
 								}
 							} else {
 								const offsetStartLine = effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;

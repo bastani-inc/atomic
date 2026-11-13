@@ -1,11 +1,17 @@
+import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import type { TUI } from "@earendil-works/pi-tui";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ExtensionContext } from "../src/core/extensions/types.js";
 import { createBashTool } from "../src/core/tools/bash.ts";
 import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createEditTool, createFindTool, createLsTool, createReadTool, createWriteTool } from "../src/index.ts";
+import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
+import { initTheme, theme } from "../src/modes/interactive/theme/theme.js";
 
 const readTool = createReadTool(process.cwd());
 const _writeTool = createWriteTool(process.cwd());
@@ -340,6 +346,145 @@ describe("Coding Agent Tools", () => {
 				mimeType: "image/png",
 				note: getTextOutput(result),
 			});
+		});
+		it("should keep a text-only model's image warning out of what the model gets (#12131)", async () => {
+			const png1x1Base64 =
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
+			const testFile = join(testDir, "text-model.png");
+			writeFileSync(testFile, Buffer.from(png1x1Base64, "base64"));
+			const textOnlyCtx = {
+				cwd: testDir,
+				model: { id: "text-only", input: ["text"] },
+			} as unknown as ExtensionContext;
+
+			const result = await createReadToolDefinition(testDir).execute(
+				"test-call-img-text-model",
+				{ path: testFile },
+				undefined,
+				undefined,
+				textOnlyCtx,
+			);
+
+			assert.equal(getTextOutput(result), "Read image file [image/png]");
+			const imageBlock = result.content.find(
+				(c): c is { type: "image"; mimeType: string; data: string } => c.type === "image",
+			);
+			assert.ok(imageBlock);
+			assert.equal(result.details?.imageUnsupportedByModel, "text-only");
+			assert.equal(result.details?.meta?.source, testFile);
+			assert.deepEqual(result.structuredContent, {
+				type: "image",
+				data: imageBlock.data,
+				mimeType: "image/png",
+				note: "Read image file [image/png]",
+			});
+
+			initTheme("dark");
+			const component = new ToolExecutionComponent(
+				"read",
+				"test-call-img-text-model",
+				{ path: testFile },
+				{},
+				createReadToolDefinition(testDir),
+				{ requestRender() {} } as TUI,
+				testDir,
+			);
+			component.updateResult({ ...result, isError: false });
+			const warning = "[text-only does not support images; it saw a placeholder instead]";
+			assert.ok(stripVTControlCharacters(component.render(120).join("\n")).includes(warning));
+			component.setExpanded(true);
+			assert.ok(stripVTControlCharacters(component.render(120).join("\n")).includes(warning));
+
+			const visionCtx = {
+				cwd: testDir,
+				model: { id: "vision-ok", input: ["text", "image"] },
+			} as unknown as ExtensionContext;
+			const visionResult = await createReadToolDefinition(testDir).execute(
+				"test-call-img-vision-model",
+				{ path: testFile },
+				undefined,
+				undefined,
+				visionCtx,
+			);
+			assert.equal(visionResult.details?.imageUnsupportedByModel, undefined);
+			assert.equal(visionResult.details?.meta?.source, testFile);
+			const visionComponent = new ToolExecutionComponent(
+				"read",
+				"test-call-img-vision-model",
+				{ path: testFile },
+				{},
+				createReadToolDefinition(testDir),
+				{ requestRender() {} } as TUI,
+				testDir,
+			);
+			visionComponent.updateResult({ ...visionResult, isError: false });
+			assert.equal(
+				stripVTControlCharacters(visionComponent.render(120).join("\n")).includes("does not support images"),
+				false,
+			);
+			visionComponent.setExpanded(true);
+			assert.equal(
+				stripVTControlCharacters(visionComponent.render(120).join("\n")).includes("does not support images"),
+				false,
+			);
+		});
+		it("renders no extra result text without an image capability warning (#4729)", () => {
+			initTheme("dark");
+			const definition = createReadToolDefinition(testDir);
+			const result = { content: [{ type: "text" as const, text: "file contents" }], details: undefined };
+			for (const expanded of [false, true]) {
+				const component = definition.renderResult!(result, { expanded, isPartial: false }, theme, {
+					args: { path: "file.txt" },
+					toolCallId: "read-without-warning",
+					invalidate: () => {},
+					lastComponent: undefined,
+					state: undefined,
+					cwd: testDir,
+					executionStarted: true,
+					argsComplete: true,
+					isPartial: false,
+					expanded,
+					showImages: false,
+					isError: false,
+					durationMs: undefined,
+					outputPad: 0,
+					keyText: () => "",
+					keyHint: () => "",
+				});
+				assert.equal(
+					stripVTControlCharacters(component.render(120).join("\n")).trim(),
+					expanded ? "file contents" : "",
+				);
+			}
+		});
+		it("keeps image conversion failures in the result without a stale model warning (#4729)", async () => {
+			const definition = createReadToolDefinition(testDir, {
+				operations: {
+					access: async () => {},
+					readFile: async () => Buffer.from("not a convertible image"),
+					detectImageMimeType: async () => "image/tiff",
+				},
+			});
+			const context = {
+				cwd: testDir,
+				model: { id: "text-only", input: ["text"] },
+			} as ExtensionContext;
+			const result = await definition.execute(
+				"read-unconvertible-image",
+				{ path: "unconvertible.tiff" },
+				undefined,
+				undefined,
+				context,
+			);
+			const expected =
+				"Read image file [image/tiff]\n[Image omitted: could not be converted to a supported inline image format.]";
+			assert.equal(getTextOutput(result), expected);
+			assert.equal(result.structuredContent, expected);
+			assert.equal(
+				result.content.some((content) => content.type === "image"),
+				false,
+			);
+			assert.equal(result.details?.imageUnsupportedByModel, undefined);
 		});
 		it("should treat files with image extension but non-image content as text", async () => {
 			const testFile = join(testDir, "not-an-image.png");
