@@ -498,24 +498,33 @@ function runFetch(git: GitRunOptions, repository: string, refspecs: readonly str
 	return runGit(fetchArgs(repository, refspecs), { ...git, nonInteractive: true });
 }
 
+interface RemoteFetch {
+	/** The last fetch failure, when a remote could not supply what was still missing. */
+	readonly failure: Error | undefined;
+	/** Whether a recorded remote's fetch of the missing commits succeeded, so that remote has every one of them. */
+	readonly supplied: boolean;
+}
+
 async function fetchCommits(
 	git: GitRunOptions,
 	remotes: readonly string[],
 	commits: readonly string[],
-): Promise<Error | undefined> {
+): Promise<RemoteFetch> {
 	let failure: Error | undefined;
+	let supplied = false;
 	for (const remote of remotes) {
 		const missing = [];
 		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
-		if (missing.length === 0) return undefined;
+		if (missing.length === 0) return { failure: undefined, supplied };
 		try {
 			await runFetch(git, remote, missing);
+			supplied = true;
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			failure = error;
 		}
 	}
-	return failure;
+	return { failure, supplied };
 }
 
 /**
@@ -531,13 +540,15 @@ async function ensureHead(
 	const { head } = snapshot;
 	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
-		let failure = await fetchCommits(git, snapshot.remotes, [head]);
-		fetched = await hasObject(git, `${head}^{commit}`);
-		if (!fetched && snapshot.bundle) {
+		// Only a fetch that succeeded proves a remote has `head`: another process may import it from a bundle meanwhile.
+		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head]);
+		let failure = fromRemotes.failure;
+		fetched = fromRemotes.supplied;
+		if (!(await hasObject(git, `${head}^{commit}`)) && snapshot.bundle) {
 			const data = await loadBlob(blobs, snapshot.bundle.blob, { snapshotId: snapshot.id, role: "bundle" });
 			const prerequisites = bundlePrerequisites(data);
 			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
-			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)) ?? failure;
+			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)).failure ?? failure;
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
@@ -617,10 +628,11 @@ async function configuredRemoteUrls(git: GitRunOptions): Promise<string[]> {
 async function configureRecordedRemotes(git: GitRunOptions, remotes: readonly string[]): Promise<boolean> {
 	if (remotes.length === 0 || !remotes.every(isConfigurableRemote)) return false;
 	let configured = await configuredRemoteUrls(git);
-	if (configured.length === 0) {
+	// A store holding the start of the recorded list was set up by a restore that stopped partway; finish it.
+	if (configured.length < remotes.length && configured.every((remote, index) => remote === remotes[index])) {
 		try {
-			for (const [index, remote] of remotes.entries()) {
-				await runGit(["remote", "add", "--", index === 0 ? "origin" : `origin-${index + 1}`, remote], git);
+			for (let index = configured.length; index < remotes.length; index++) {
+				await runGit(["remote", "add", "--", index === 0 ? "origin" : `origin-${index + 1}`, remotes[index]!], git);
 			}
 			return true;
 		} catch (error) {

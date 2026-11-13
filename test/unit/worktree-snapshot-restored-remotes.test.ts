@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import {
@@ -113,6 +113,57 @@ describe("captures in a restored worktree know the recorded remotes and what is 
 		);
 		await assertNoBlobHolds(blobs, "restored-worktree-secret");
 	});
+
+	test("a restore completes the remotes an interrupted earlier restore only partly configured (#4732)", async () => {
+		const blobs = new MemorySnapshotBlobStore();
+		const { remote, clone } = await pushedRepository();
+		const mirror = sandbox.path("mirror.git");
+		await sandbox.git(sandbox.root, "clone", "-q", "--bare", remote, mirror);
+		await sandbox.git(clone, "remote", "add", "mirror", mirror);
+		const first = await capture(clone, blobs);
+		assert.deepEqual(first.remotes, [remote, mirror]);
+
+		const earlier = await restoreOn("machine-2", first, blobs);
+		await sandbox.git(earlier.path, "remote", "remove", "origin-2");
+		const markers = await sandbox.git(earlier.path, "for-each-ref", "--format=%(refname)", "refs/remotes/atomic");
+		for (const ref of markers.split("\n").filter(Boolean)) await sandbox.git(earlier.path, "update-ref", "-d", ref);
+		const second = await restoreOn("machine-2", first, blobs);
+		assert.equal(await sandbox.git(second.path, "remote", "get-url", "origin-2"), mirror);
+		sandbox.write(join(second.path, "src.txt"), "two\n");
+		const unpushed = await sandbox.commitAll(second.path, "work on machine 2");
+		const recorded = await capture(second.path, blobs);
+		assert.deepEqual(recorded.remotes, [remote, mirror]);
+		assert.deepEqual(recorded.bundle?.commits, [unpushed]);
+	});
+
+	test.skipIf(process.platform === "win32")(
+		"a commit that appears in the store while a remote's fetch fails is not taken as pushed (#4732)",
+		async () => {
+			const blobs = new MemorySnapshotBlobStore();
+			const { remote, clone } = await pushedRepository();
+			const local = await sandbox.commitAll(clone, "unpushed on machine 1");
+			const bundle = sandbox.path("concurrent.bundle");
+			await sandbox.git(clone, "bundle", "create", "-q", bundle, "HEAD", "--not", "--remotes");
+			const first = await capture(clone, blobs);
+			assert.deepEqual(first.bundle?.commits, [local]);
+			// Another restore imports the commit from its bundle while this restore's fetch from the remote fails.
+			const wrapper = sandbox.path("git-wrapper");
+			writeFileSync(
+				wrapper,
+				`#!/bin/sh\ncase " $* " in *" fetch "*" ${remote} "*) git fetch -q --no-tags "${remote}" main && git fetch -q --no-tags "${bundle}" HEAD; exit 1;; esac\nexec git "$@"\n`,
+			);
+			chmodSync(wrapper, 0o755);
+			const second = await restoreWorktree(first, {
+				blobs,
+				storeDir: sandbox.path("machine-2"),
+				git: { ...sandbox.executable, path: wrapper },
+			});
+			assert.equal(await sandbox.git(second.path, "rev-parse", "HEAD"), local);
+			sandbox.write(join(second.path, "src.txt"), "two\n");
+			const next = await sandbox.commitAll(second.path, "work on machine 2");
+			assert.deepEqual((await capture(second.path, blobs)).bundle?.commits, [next, local]);
+		},
+	);
 
 	test("a repository without remotes restores and captures as before, carrying its whole history (#4732)", async () => {
 		const blobs = new MemorySnapshotBlobStore();
