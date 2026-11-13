@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { createJiti } from "jiti";
-import { getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
+import { getAgentDir, getExtensionTranspileCacheDir, isBunBinary, isBundledBuild } from "../../config.js";
 import { resolutionBaseUrl } from "../../utils/module-require.ts";
 import { canonicalizePath, pathsEqual, resolvePath } from "../../utils/paths.ts";
 import { moduleDirFromMetaUrl } from "../../utils/split-launcher.ts";
@@ -18,9 +18,12 @@ export { getVirtualModules } from "./loader-host-modules.js";
 
 const require = createRequire(import.meta.url);
 let _aliases: Record<string, string> | null = null;
-let _transpileCacheDir: string | null = null;
 let createJitiPromise: Promise<typeof createJiti> | undefined;
-let typeScriptSourceSpecifierTransform: ReturnType<typeof createTypeScriptSourceSpecifierTransform> | undefined;
+type SourceSpecifierTransform = ReturnType<typeof createTypeScriptSourceSpecifierTransform>;
+// Keyed by transpile cache directory; "" is the uncached transform for a load whose agent directory is gone.
+const typeScriptSourceSpecifierTransforms = new Map<string, SourceSpecifierTransform>();
+// Cache directories this process has tried to set up, one per agent directory, and those it has pruned.
+const prunedTranspileCacheDirs = new Set<string>();
 
 function getCreateJiti(): Promise<typeof createJiti> {
 	createJitiPromise ??= (
@@ -31,26 +34,53 @@ function getCreateJiti(): Promise<typeof createJiti> {
 
 function getTypeScriptSourceSpecifierTransform(
 	createJitiImpl: typeof createJiti,
-): ReturnType<typeof createTypeScriptSourceSpecifierTransform> {
-	typeScriptSourceSpecifierTransform ??= createTypeScriptSourceSpecifierTransform(
-		createJitiImpl,
-		resolutionBaseUrl(import.meta.url),
-		getTranspileCacheDir,
-	);
-	return typeScriptSourceSpecifierTransform;
+	cacheDir: string | undefined,
+): SourceSpecifierTransform {
+	const key = cacheDir ?? "";
+	let transform = typeScriptSourceSpecifierTransforms.get(key);
+	if (!transform) {
+		transform = createTypeScriptSourceSpecifierTransform(
+			createJitiImpl,
+			resolutionBaseUrl(import.meta.url),
+			() => cacheDir,
+		);
+		typeScriptSourceSpecifierTransforms.set(key, transform);
+	}
+	return transform;
+}
+
+/** Creates `dir` one level at a time below `root`, never `root` itself, so a removed agent directory stays removed. */
+function mkdirBelowExisting(root: string, dir: string): boolean {
+	let current = root;
+	for (const segment of path.relative(root, dir).split(path.sep)) {
+		current = path.join(current, segment);
+		try {
+			fs.mkdirSync(current);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+		}
+	}
+	return true;
 }
 
 /**
- * Persistent on-disk cache for transpiled extension modules. Entries are keyed
- * by source content and resolved TypeScript siblings, so they self-invalidate
- * when either changes; stale sibling version dirs are pruned in the background.
+ * Persistent on-disk cache for transpiled extension modules, under the agent
+ * directory of this load: the session's `agentDir`, else the one in effect now.
+ * Entries are keyed by source content and resolved TypeScript siblings, so they
+ * self-invalidate when either changes; stale sibling version dirs are pruned in
+ * the background once per cache directory. The first use of an agent directory
+ * creates it as before. After that, a missing agent directory was removed: the
+ * load runs uncached and the directory is not recreated (#4728).
  */
-function getTranspileCacheDir(): string {
-	if (_transpileCacheDir) return _transpileCacheDir;
-	_transpileCacheDir = getExtensionTranspileCacheDir();
-	fs.mkdirSync(_transpileCacheDir, { recursive: true });
-	pruneStaleTranspileCaches(_transpileCacheDir);
-	return _transpileCacheDir;
+function resolveTranspileCacheDir(agentDir: string = getAgentDir()): string | undefined {
+	const root = path.resolve(agentDir);
+	const cacheDir = getExtensionTranspileCacheDir(root);
+	if (!mkdirBelowExisting(root, cacheDir)) return undefined;
+	if (!prunedTranspileCacheDirs.has(cacheDir)) {
+		prunedTranspileCacheDirs.add(cacheDir);
+		pruneStaleTranspileCaches(cacheDir);
+	}
+	return cacheDir;
 }
 
 function pruneStaleTranspileCaches(currentDir: string): void {
@@ -85,13 +115,9 @@ const GRAPH_MANIFEST_DIR_NAME = "graph-manifests";
 
 const graphManifestFileExtensions = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx", ".json"]);
 
-function graphManifestDir(): string {
-	return path.join(getTranspileCacheDir(), GRAPH_MANIFEST_DIR_NAME);
-}
-
-function graphManifestPath(extensionPath: string): string {
+function graphManifestPath(extensionPath: string, cacheDir: string): string {
 	const key = crypto.createHash("sha256").update(extensionPath).digest("hex").slice(0, 32);
-	return path.join(graphManifestDir(), `${key}.json`);
+	return path.join(cacheDir, GRAPH_MANIFEST_DIR_NAME, `${key}.json`);
 }
 
 function sha256Hex(content: string | NodeJS.ArrayBufferView): string {
@@ -105,18 +131,33 @@ function sha256Hex(content: string | NodeJS.ArrayBufferView): string {
 // recorder; unrelated reads that interleave only over-record, which at worst
 // forces a redundant re-evaluation later — never a stale one.
 const fsExports = require("node:fs") as typeof fs;
-const activeGraphRecorders = new Set<Map<string, string>>();
+
+/** Files read by one evaluation; reads of its own transpile cache are not part of the graph. */
+interface GraphRecorder {
+	files: Map<string, string>;
+	cachePrefix: string | undefined;
+}
+
+const activeGraphRecorders = new Set<GraphRecorder>();
 let observedReadFileSync: typeof fs.readFileSync | null = null;
+
+function createGraphRecorder(cacheDir: string | undefined): GraphRecorder {
+	return {
+		files: new Map(),
+		cachePrefix: cacheDir === undefined ? undefined : (path.normalize(cacheDir) + path.sep).toLowerCase(),
+	};
+}
 
 function recordObservedRead(target: Parameters<typeof fs.readFileSync>[0], content: string | Buffer): void {
 	if (typeof target !== "string" || !path.isAbsolute(target)) return;
 	if (!graphManifestFileExtensions.has(path.extname(target).toLowerCase())) return;
 	const normalizedTarget = path.normalize(target);
-	const cachePrefix = path.normalize(getTranspileCacheDir()) + path.sep;
-	if (normalizedTarget.toLowerCase().startsWith(cachePrefix.toLowerCase())) return;
-	const hash = sha256Hex(content);
+	const comparableTarget = normalizedTarget.toLowerCase();
+	let hash: string | undefined;
 	for (const recorder of activeGraphRecorders) {
-		recorder.set(normalizedTarget, hash);
+		if (recorder.cachePrefix && comparableTarget.startsWith(recorder.cachePrefix)) continue;
+		hash ??= sha256Hex(content);
+		recorder.files.set(normalizedTarget, hash);
 	}
 }
 
@@ -138,11 +179,12 @@ function uninstallReadFileSyncObserver(): void {
 	observedReadFileSync = null;
 }
 
-function writeGraphManifest(manifest: ExtensionGraphManifest): void {
-	const manifestFile = graphManifestPath(manifest.extensionPath);
+function writeGraphManifest(manifest: ExtensionGraphManifest, cacheDir: string | undefined): void {
+	if (cacheDir === undefined) return;
+	const manifestFile = graphManifestPath(manifest.extensionPath, cacheDir);
 	let tempFile: string | undefined;
 	try {
-		fs.mkdirSync(path.dirname(manifestFile), { recursive: true });
+		if (!mkdirBelowExisting(cacheDir, path.dirname(manifestFile))) throw new Error("transpile cache is gone");
 		tempFile = `${manifestFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
 		fs.writeFileSync(tempFile, JSON.stringify(manifest));
 		fs.renameSync(tempFile, manifestFile);
@@ -172,10 +214,19 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 	return Object.values(value).every((entry) => typeof entry === "string");
 }
 
-export function readExtensionGraphManifest(extensionPath: string): ExtensionGraphManifest | undefined {
+/** Reads the graph manifest recorded under `agentDir`, which defaults to the agent directory in effect now. */
+export function readExtensionGraphManifest(
+	extensionPath: string,
+	agentDir: string = getAgentDir(),
+): ExtensionGraphManifest | undefined {
+	return readGraphManifestIn(extensionPath, getExtensionTranspileCacheDir(path.resolve(agentDir)));
+}
+
+function readGraphManifestIn(extensionPath: string, cacheDir: string | undefined): ExtensionGraphManifest | undefined {
+	if (cacheDir === undefined) return undefined;
 	try {
 		const parsed = JSON.parse(
-			fs.readFileSync(graphManifestPath(extensionPath), "utf-8"),
+			fs.readFileSync(graphManifestPath(extensionPath, cacheDir), "utf-8"),
 		) as Partial<ExtensionGraphManifest>;
 		if (parsed.version !== GRAPH_MANIFEST_VERSION) return undefined;
 		if (parsed.extensionPath !== extensionPath) return undefined;
@@ -188,24 +239,25 @@ export function readExtensionGraphManifest(extensionPath: string): ExtensionGrap
 
 async function recordExtensionGraph<T>(
 	extensionPath: string,
+	cacheDir: string | undefined,
 	load: () => Promise<T>,
 ): Promise<{ result: T; manifest: ExtensionGraphManifest }> {
-	const files = new Map<string, string>();
-	activeGraphRecorders.add(files);
+	const recorder = createGraphRecorder(cacheDir);
+	activeGraphRecorders.add(recorder);
 	installReadFileSyncObserver();
 	let result: T;
 	try {
 		result = await load();
 	} finally {
-		activeGraphRecorders.delete(files);
+		activeGraphRecorders.delete(recorder);
 		uninstallReadFileSyncObserver();
 	}
 	const manifest: ExtensionGraphManifest = {
 		version: GRAPH_MANIFEST_VERSION,
 		extensionPath,
-		files: Object.fromEntries([...files.entries()].sort(([a], [b]) => a.localeCompare(b))),
+		files: Object.fromEntries([...recorder.files.entries()].sort(([a], [b]) => a.localeCompare(b))),
 	};
-	writeGraphManifest(manifest);
+	writeGraphManifest(manifest, cacheDir);
 	return { result, manifest };
 }
 
@@ -216,9 +268,17 @@ async function recordExtensionGraph<T>(
  * when the persisted manifest still equals the paired one and every file in it
  * rehashes to its recorded digest; any doubt (missing or corrupt manifest,
  * missing file, hash mismatch, changed graph shape) falls back to a fresh
- * transformed re-evaluation, which re-records the manifest.
+ * transformed re-evaluation, which re-records the manifest. A factory is only
+ * reused under the transpile cache directory (and so the agent directory) it
+ * was evaluated with.
  */
-const retainedTransformedLoads = new Map<string, { factory: ExtensionFactory; manifest: ExtensionGraphManifest }>();
+interface RetainedTransformedLoad {
+	factory: ExtensionFactory;
+	manifest: ExtensionGraphManifest;
+	cacheDir: string;
+}
+
+const retainedTransformedLoads = new Map<string, RetainedTransformedLoad>();
 
 function manifestFilesEqual(a: Record<string, string>, b: Record<string, string>): boolean {
 	const aEntries = Object.entries(a);
@@ -226,8 +286,8 @@ function manifestFilesEqual(a: Record<string, string>, b: Record<string, string>
 	return aEntries.every(([filePath, hash]) => b[filePath] === hash);
 }
 
-function graphUnchangedSince(manifest: ExtensionGraphManifest): boolean {
-	const stored = readExtensionGraphManifest(manifest.extensionPath);
+function graphUnchangedSince(manifest: ExtensionGraphManifest, cacheDir: string): boolean {
+	const stored = readGraphManifestIn(manifest.extensionPath, cacheDir);
 	if (!stored || !manifestFilesEqual(stored.files, manifest.files)) return false;
 	const entries = Object.entries(manifest.files);
 	if (entries.length === 0) return false;
@@ -249,15 +309,19 @@ function graphUnchangedSince(manifest: ExtensionGraphManifest): boolean {
  * persisted manifest — editing a deferred dependency then invalidates reuse
  * like any other graph file.
  */
-function withDeferredGraphRecording(extensionPath: string, factory: ExtensionFactory): ExtensionFactory {
+function withDeferredGraphRecording(
+	extensionPath: string,
+	cacheDir: string,
+	factory: ExtensionFactory,
+): ExtensionFactory {
 	return (pi) => {
-		const files = new Map<string, string>();
-		activeGraphRecorders.add(files);
+		const recorder = createGraphRecorder(cacheDir);
+		activeGraphRecorders.add(recorder);
 		installReadFileSyncObserver();
 		const finish = () => {
-			activeGraphRecorders.delete(files);
+			activeGraphRecorders.delete(recorder);
 			uninstallReadFileSyncObserver();
-			if (files.size > 0) mergeDeferredGraphReads(extensionPath, files);
+			if (recorder.files.size > 0) mergeDeferredGraphReads(extensionPath, cacheDir, recorder.files);
 		};
 		try {
 			const result = factory(pi);
@@ -277,9 +341,9 @@ function withDeferredGraphRecording(extensionPath: string, factory: ExtensionFac
 	};
 }
 
-function mergeDeferredGraphReads(extensionPath: string, files: Map<string, string>): void {
+function mergeDeferredGraphReads(extensionPath: string, cacheDir: string, files: Map<string, string>): void {
 	const retained = retainedTransformedLoads.get(extensionPath);
-	if (!retained) return;
+	if (!retained || retained.cacheDir !== cacheDir) return;
 	let changed = false;
 	for (const [filePath, hash] of files) {
 		if (retained.manifest.files[filePath] !== hash) {
@@ -287,10 +351,11 @@ function mergeDeferredGraphReads(extensionPath: string, files: Map<string, strin
 			changed = true;
 		}
 	}
-	if (changed) writeGraphManifest(retained.manifest);
+	if (changed) writeGraphManifest(retained.manifest, retained.cacheDir);
 }
 
 let extensionCacheCwd: string | undefined;
+let extensionCacheAgentDir: string | undefined;
 let extensionCacheGeneration = 0;
 const extensionCache = new Map<string, ExtensionFactory>();
 
@@ -331,28 +396,42 @@ async function loadNativeBuiltinExtensionModule(
 
 export interface ExtensionCacheToken {
 	cwd: string;
+	agentDir: string;
 	generation: number;
 }
 
 export function clearExtensionCache(): void {
 	extensionCache.clear();
 	extensionCacheCwd = undefined;
+	extensionCacheAgentDir = undefined;
 	extensionCacheGeneration++;
 }
 
-export function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
+/**
+ * Scope the in-memory extension cache to `cwd` and the agent directory of the
+ * load (the session's `agentDir`, else the one in effect now). Changing either
+ * starts a new generation, so a module evaluated under another agent directory
+ * is never served from memory (#4728).
+ */
+export function useExtensionCacheCwd(cwd: string, agentDir: string = getAgentDir()): ExtensionCacheToken {
 	const resolvedCwd = resolvePath(cwd);
-	if (extensionCacheCwd !== undefined && !pathsEqual(extensionCacheCwd, resolvedCwd)) {
+	const resolvedAgentDir = resolvePath(agentDir);
+	if (
+		(extensionCacheCwd !== undefined && !pathsEqual(extensionCacheCwd, resolvedCwd)) ||
+		(extensionCacheAgentDir !== undefined && !pathsEqual(extensionCacheAgentDir, resolvedAgentDir))
+	) {
 		clearExtensionCache();
 	}
 	extensionCacheCwd = resolvedCwd;
-	return { cwd: resolvedCwd, generation: extensionCacheGeneration };
+	extensionCacheAgentDir = resolvedAgentDir;
+	return { cwd: resolvedCwd, agentDir: resolvedAgentDir, generation: extensionCacheGeneration };
 }
 
 function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cacheToken is ExtensionCacheToken {
 	return (
 		cacheToken !== undefined &&
 		extensionCacheCwd === cacheToken.cwd &&
+		extensionCacheAgentDir === cacheToken.agentDir &&
 		extensionCacheGeneration === cacheToken.generation
 	);
 }
@@ -534,13 +613,14 @@ export const extensionLoaderTestHooks = {
 	loadVirtualModules,
 	getAliases,
 	findPackageRoot,
-	getTranspileCacheDir,
-	graphManifestPath,
+	getTranspileCacheDir: (agentDir?: string): string | undefined => resolveTranspileCacheDir(agentDir),
+	graphManifestPath: (extensionPath: string, agentDir: string = getAgentDir()): string =>
+		graphManifestPath(extensionPath, getExtensionTranspileCacheDir(path.resolve(agentDir))),
 	readExtensionGraphManifest,
-	loadExtensionModuleTransformed: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
-		importExtensionModule(extensionPath, cacheToken, true),
-	loadTransformedExtensionModule: (extensionPath: string, cacheToken?: ExtensionCacheToken) =>
-		loadTransformedExtensionModule(extensionPath, cacheToken),
+	loadExtensionModuleTransformed: (extensionPath: string, cacheToken?: ExtensionCacheToken, agentDir?: string) =>
+		importExtensionModule(extensionPath, cacheToken, true, resolveTranspileCacheDir(agentDir)),
+	loadTransformedExtensionModule: (extensionPath: string, cacheToken?: ExtensionCacheToken, agentDir?: string) =>
+		loadTransformedExtensionModule(extensionPath, cacheToken, resolveTranspileCacheDir(agentDir)),
 	loadNativeBuiltinExtensionModule,
 	hasNativeBuiltinFactory: (extensionPath: string): boolean => nativeBuiltinFactories.has(extensionPath),
 };
@@ -557,6 +637,7 @@ async function importExtensionModule(
 	extensionPath: string,
 	cacheToken: ExtensionCacheToken | undefined,
 	forceTransformedImports: boolean,
+	cacheDir: string | undefined,
 ): Promise<ExtensionFactory | undefined> {
 	const isWindows = process.platform === "win32";
 	const isSingleFileBuild = isBunBinary || isBundledBuild;
@@ -564,7 +645,7 @@ async function importExtensionModule(
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
-		transform: getTypeScriptSourceSpecifierTransform(createJitiImpl),
+		transform: getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir),
 		...(forceTransformedImports ? { tryNative: false } : {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
@@ -576,11 +657,14 @@ async function importExtensionModule(
 	const specifier = extensionImportSpecifier(canonicalizePath(extensionPath), cacheToken);
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
-	// recorded into a content-hash manifest.
+	// recorded into a content-hash manifest. Without a transpile cache there is
+	// nowhere to persist the manifest, so the evaluation is not retained.
 	let module: unknown;
 	let recordedManifest: ExtensionGraphManifest | undefined;
-	if (forceTransformedImports) {
-		const recorded = await recordExtensionGraph(extensionPath, () => jiti.import(specifier, { default: true }));
+	if (forceTransformedImports && cacheDir !== undefined) {
+		const recorded = await recordExtensionGraph(extensionPath, cacheDir, () =>
+			jiti.import(specifier, { default: true }),
+		);
 		module = recorded.result;
 		recordedManifest = recorded.manifest;
 	} else {
@@ -591,9 +675,9 @@ async function importExtensionModule(
 	}
 	let factory = module as ExtensionFactory;
 	if (typeof factory !== "function") return undefined;
-	if (recordedManifest) {
-		factory = withDeferredGraphRecording(extensionPath, factory);
-		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest });
+	if (recordedManifest && cacheDir !== undefined) {
+		factory = withDeferredGraphRecording(extensionPath, cacheDir, factory);
+		retainedTransformedLoads.set(extensionPath, { factory, manifest: recordedManifest, cacheDir });
 	}
 	if (isCurrentCacheToken(cacheToken)) {
 		extensionCache.set(extensionPath, factory);
@@ -616,20 +700,32 @@ async function importExtensionModule(
 async function loadTransformedExtensionModule(
 	extensionPath: string,
 	cacheToken: ExtensionCacheToken | undefined,
+	cacheDir: string | undefined,
 ): Promise<ExtensionFactory | undefined> {
 	const retained = retainedTransformedLoads.get(extensionPath);
-	if (retained && graphUnchangedSince(retained.manifest)) {
+	if (
+		retained &&
+		cacheDir !== undefined &&
+		retained.cacheDir === cacheDir &&
+		graphUnchangedSince(retained.manifest, cacheDir)
+	) {
 		if (isCurrentCacheToken(cacheToken)) {
 			extensionCache.set(extensionPath, retained.factory);
 		}
 		return retained.factory;
 	}
-	return importExtensionModule(extensionPath, cacheToken, true);
+	return importExtensionModule(extensionPath, cacheToken, true, cacheDir);
 }
 
+/**
+ * Load an extension module. Its transpile cache lives under `agentDir` (the
+ * session's agent directory), else the cache token's, else the agent directory
+ * in effect now; the load runs uncached when that directory no longer exists.
+ */
 export async function loadExtensionModule(
 	extensionPath: string,
 	cacheToken?: ExtensionCacheToken,
+	agentDir?: string,
 ): Promise<ExtensionFactory | undefined> {
 	const isSingleFileBuild = isBunBinary || isBundledBuild;
 	if (isSingleFileBuild && isNativeBuiltinExtensionPath(extensionPath)) {
@@ -659,8 +755,9 @@ export async function loadExtensionModule(
 	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
 	// narrower trigger, not a larger timeout.
 	const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
+	const cacheDir = resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (forceTransformedImports) {
-		return loadTransformedExtensionModule(extensionPath, cacheToken);
+		return loadTransformedExtensionModule(extensionPath, cacheToken, cacheDir);
 	}
-	return importExtensionModule(extensionPath, cacheToken, false);
+	return importExtensionModule(extensionPath, cacheToken, false, cacheDir);
 }

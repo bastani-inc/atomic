@@ -157,12 +157,13 @@ async function loadExtension(
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	cacheToken?: ExtensionCacheToken,
+	agentDir?: string,
 ): Promise<{ extension: Extension | null; error: string | null }> {
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
 	try {
 		const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`, "extensions");
-		const factory = await loadExtensionModule(resolvedPath, cacheToken);
+		const factory = await loadExtensionModule(resolvedPath, cacheToken, agentDir);
 		endTimingSpan(moduleSpan);
 		if (!factory) {
 			return {
@@ -273,10 +274,11 @@ async function loadExtensionsInternal(
 	runtime?: ExtensionRuntime,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	useCache = false,
+	agentDir?: string,
 ): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
-	const cacheToken = useCache ? useExtensionCacheCwd(cwd) : undefined;
+	const cacheToken = useCache ? useExtensionCacheCwd(cwd, agentDir) : undefined;
 	const resolvedCwd = cacheToken?.cwd ?? resolvePath(cwd);
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const resolvedRuntime = runtime ?? createExtensionRuntime();
@@ -301,6 +303,7 @@ async function loadExtensionsInternal(
 			workflowResourceProvider,
 			resourceLoaderInheritanceSnapshotProvider,
 			cacheToken,
+			agentDir,
 		);
 		endTimingSpan(extensionSpan);
 		processedExtensionCount += 1;
@@ -322,6 +325,10 @@ async function loadExtensionsInternal(
 	};
 }
 
+/**
+ * Load extensions from paths. `agentDir` is the agent directory whose transpile
+ * cache the loads use; it defaults to the agent directory in effect now.
+ */
 export async function loadExtensions(
 	paths: string[],
 	cwd: string,
@@ -329,6 +336,7 @@ export async function loadExtensions(
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	runtime?: ExtensionRuntime,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+	agentDir?: string,
 ): Promise<LoadExtensionsResult> {
 	return loadExtensionsInternal(
 		paths,
@@ -337,6 +345,8 @@ export async function loadExtensions(
 		workflowResourceProvider,
 		runtime,
 		resourceLoaderInheritanceSnapshotProvider,
+		false,
+		agentDir,
 	);
 }
 
@@ -347,6 +357,7 @@ export async function loadExtensionsCached(
 	workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
 	runtime?: ExtensionRuntime,
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+	agentDir?: string,
 ): Promise<LoadExtensionsResult> {
 	return loadExtensionsInternal(
 		paths,
@@ -356,5 +367,6 @@ export async function loadExtensionsCached(
 		runtime,
 		resourceLoaderInheritanceSnapshotProvider,
 		true,
+		agentDir,
 	);
 }

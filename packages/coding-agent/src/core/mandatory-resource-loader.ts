@@ -18,7 +18,11 @@ function hasTrustedIntercom(extension: Extension): boolean {
 	return registration !== undefined && isTrustedMandatoryRuntimeTool(registration);
 }
 
-async function restoreMandatoryExtensions(target: LoadExtensionsResult, cwd: string): Promise<LoadExtensionsResult> {
+async function restoreMandatoryExtensions(
+	target: LoadExtensionsResult,
+	cwd: string,
+	agentDir: string | undefined,
+): Promise<LoadExtensionsResult> {
 	if (target.extensions.some(hasTrustedIntercom)) return target;
 
 	const loaded = await loadExtensions(
@@ -27,6 +31,8 @@ async function restoreMandatoryExtensions(target: LoadExtensionsResult, cwd: str
 		getExtensionRuntimeEventBus(target.runtime),
 		undefined,
 		target.runtime,
+		undefined,
+		agentDir,
 	);
 	for (const extension of loaded.extensions) markTrustedMandatoryRuntimeExtension(extension);
 	const restored: LoadExtensionsResult = {
@@ -44,12 +50,19 @@ async function restoreMandatoryExtensions(target: LoadExtensionsResult, cwd: str
 class MandatoryResourceLoader implements ResourceLoader {
 	private delegate: ResourceLoader;
 	private readonly cwd: string;
+	private readonly agentDir: string | undefined;
 	private extensionsResult: LoadExtensionsResult;
 	private toolOnly = false;
 
-	constructor(delegate: ResourceLoader, cwd: string, extensionsResult: LoadExtensionsResult) {
+	constructor(
+		delegate: ResourceLoader,
+		cwd: string,
+		extensionsResult: LoadExtensionsResult,
+		agentDir: string | undefined,
+	) {
 		this.delegate = delegate;
 		this.cwd = cwd;
+		this.agentDir = agentDir;
 		this.extensionsResult = extensionsResult;
 	}
 
@@ -93,12 +106,12 @@ class MandatoryResourceLoader implements ResourceLoader {
 		const discovery =
 			delegate === this.delegate
 				? this.extensionsResult
-				: await restoreMandatoryExtensions(delegate.getExtensions(), this.cwd);
+				: await restoreMandatoryExtensions(delegate.getExtensions(), this.cwd, this.agentDir);
 		const extensions =
 			sessionLifecycleScopes.get(discovery.runtime) === scope
 				? discovery
 				: await instantiateExtensions(discovery, this.cwd);
-		const candidate = new MandatoryResourceLoader(delegate, this.cwd, extensions);
+		const candidate = new MandatoryResourceLoader(delegate, this.cwd, extensions, this.agentDir);
 		if (this.toolOnly) candidate.limitToTool();
 		return candidate;
 	}
@@ -145,7 +158,7 @@ class MandatoryResourceLoader implements ResourceLoader {
 
 	async reload(options?: ResourceLoaderReloadOptions): Promise<void> {
 		await this.delegate.reload(options);
-		this.extensionsResult = await restoreMandatoryExtensions(this.delegate.getExtensions(), this.cwd);
+		this.extensionsResult = await restoreMandatoryExtensions(this.delegate.getExtensions(), this.cwd, this.agentDir);
 		if (this.toolOnly) this.removeLocalInteractionSurfaces();
 	}
 
@@ -161,8 +174,17 @@ class MandatoryResourceLoader implements ResourceLoader {
 			throw new Error("Resource loader does not support transactional reload");
 		}
 		const delegateTransaction = await this.delegate.prepareReload(settingsManager, options);
-		const extensionsResult = await restoreMandatoryExtensions(delegateTransaction.loader.getExtensions(), this.cwd);
-		const candidate = new MandatoryResourceLoader(delegateTransaction.loader, this.cwd, extensionsResult);
+		const extensionsResult = await restoreMandatoryExtensions(
+			delegateTransaction.loader.getExtensions(),
+			this.cwd,
+			this.agentDir,
+		);
+		const candidate = new MandatoryResourceLoader(
+			delegateTransaction.loader,
+			this.cwd,
+			extensionsResult,
+			this.agentDir,
+		);
 		if (this.toolOnly) candidate.limitToTool();
 		const prepareCommit = delegateTransaction.prepareCommit
 			? () => {
@@ -195,11 +217,18 @@ class MandatoryResourceLoader implements ResourceLoader {
 	}
 }
 
-/** Preserve caller-owned resources while restoring Atomic's mandatory bundled extension. */
-export async function withMandatoryResourceLoader(loader: ResourceLoader, cwd: string): Promise<ResourceLoader> {
+/**
+ * Preserve caller-owned resources while restoring Atomic's mandatory bundled extension. `agentDir` is the session's
+ * agent directory, whose transpile cache the restored extension uses; it defaults to the one in effect at load time.
+ */
+export async function withMandatoryResourceLoader(
+	loader: ResourceLoader,
+	cwd: string,
+	agentDir?: string,
+): Promise<ResourceLoader> {
 	if (loader instanceof MandatoryResourceLoader) return loader;
-	const extensionsResult = await restoreMandatoryExtensions(loader.getExtensions(), cwd);
-	return new MandatoryResourceLoader(loader, cwd, extensionsResult);
+	const extensionsResult = await restoreMandatoryExtensions(loader.getExtensions(), cwd, agentDir);
+	return new MandatoryResourceLoader(loader, cwd, extensionsResult, agentDir);
 }
 
 /** Keep a non-model interactive host from shadowing the engine's command and shortcut proxies. */
