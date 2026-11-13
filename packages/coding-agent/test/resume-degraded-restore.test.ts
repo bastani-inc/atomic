@@ -448,3 +448,93 @@ describe("a resume whose snapshot cannot be fully restored still opens the sessi
 		assert.equal(describeWorktreeRestoreStatus(prepared.sessionManager, again.to), notices[0]!.message);
 	});
 });
+
+describe("a degraded resume keeps the best state it reaches and reports it accurately (#4744)", () => {
+	test.skipIf(process.platform === "win32")(
+		"a partial restore whose files a checkout filter changes keeps its checkout, whatever started it (#4744)",
+		async () => {
+			const { clone } = await sandbox.remoteWithClone("repo", {
+				".gitattributes": "*.txt filter=mangle\n",
+				"note.txt": "alpha\n",
+			});
+			const head = await sandbox.git(clone, "rev-parse", "HEAD");
+			sandbox.write(join(clone, "README.md"), "edited\n");
+			const { manager, snapshot } = await recordSession(clone);
+			assert.equal(snapshot.chain.length, 1);
+			await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [
+				snapshot.chain[0]!.patch!,
+			]);
+			writeFileSync(
+				sandbox.globalConfig,
+				`${readFileSync(sandbox.globalConfig, "utf8")}[filter "mangle"]\n\tsmudge = sed s/alpha/omega/\n`,
+			);
+			renameSync(clone, sandbox.path("machine-a-gone"));
+
+			const prepared = ready(await prepareSessionResume(manager, options()));
+
+			const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1);
+			assert.ok(restored, JSON.stringify(prepared.notices));
+			assert.equal(prepared.sessionManager.getCwd(), restored.to);
+			assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), head);
+			assert.equal(readFileSync(join(restored.to, "note.txt"), "utf8"), "omega\n");
+			assert.equal(restored.degraded?.stage, "partial-changes");
+			assert.equal(restored.degraded?.cause, "blob-missing");
+			assert.notEqual(restored.degraded?.tree, snapshot.tree, "the record holds the tree that was written");
+			assert.ok(restored.degraded?.missingPaths.includes("note.txt"), JSON.stringify(restored.degraded));
+			assert.equal(prepared.notices.length, 1, JSON.stringify(prepared.notices));
+		},
+	);
+
+	test("every earlier snapshot's commit is tried, nearest first, before the branch tip (#4744)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		sandbox.write(join(clone, "pushed.txt"), "pushed\n");
+		const recorded = await sandbox.commitAll(clone, "pushed work");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		const { manager } = await recordSession(clone);
+		const blobs = manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore;
+		const bundles: string[] = [];
+		for (const step of [1, 2, 3, 4, 5]) {
+			sandbox.write(join(clone, "local.txt"), `unpushed ${step}\n`);
+			await sandbox.commitAll(clone, `unpushed ${step}`);
+			const captured = await captureWorktreeSnapshot(clone, { settings, blobs });
+			if (captured.status !== "captured") throw new Error(captured.status);
+			await manager.appendWorktreeSnapshot(clone, captured.snapshot.id, captured.snapshot);
+			bundles.push(captured.snapshot.bundle!.blob);
+		}
+		await loseSnapshotBlobs(blobs, bundles);
+		await sandbox.git(clone, "checkout", "-q", "--detach", recorded);
+		await sandbox.git(clone, "commit", "-q", "--allow-empty", "-m", "the branch moved on");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		renameSync(clone, sandbox.path("machine-a-gone"));
+
+		const prepared = ready(await prepareSessionResume(manager, options()));
+
+		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.degraded?.basis, "earlier-snapshot", JSON.stringify(restored.degraded));
+		assert.equal(await sandbox.git(restored.to, "rev-parse", "HEAD"), recorded);
+	});
+
+	test("the missing-commit list leaves out commits the restored history holds (#4744)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+		sandbox.write(join(clone, "first.txt"), "first\n");
+		const first = await sandbox.commitAll(clone, "first unpushed");
+		sandbox.write(join(clone, "second.txt"), "second\n");
+		const second = await sandbox.commitAll(clone, "second unpushed");
+		const { manager, snapshot } = await recordSession(clone);
+		assert.deepEqual([...snapshot.bundle!.commits].sort(), [first, second].sort());
+		await loseSnapshotBlobs(manager.getSessionStore().snapshotBlobs as SqlSnapshotBlobStore, [snapshot.bundle!.blob]);
+		await sandbox.git(clone, "push", "-q", "origin", `${first}:refs/heads/main`);
+		renameSync(clone, sandbox.path("machine-a-gone"));
+
+		const prepared = ready(await prepareSessionResume(manager, options()));
+
+		const restored = prepared.sessionManager.getWorktreeRootMappings().at(-1)!;
+		assert.equal(restored.degraded?.head, first);
+		assert.deepEqual(restored.degraded?.missingCommits, [second]);
+		assert.equal(prepared.notices.length, 1, JSON.stringify(prepared.notices));
+		assert.ok(
+			prepared.notices[0]!.message.includes(`Not restored: 1 commit (${second.slice(0, 12)})`),
+			prepared.notices[0]!.message,
+		);
+	});
+});
