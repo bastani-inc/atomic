@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Intercom `subagents:*` and `subagents:<runId>/*` send targets, which message every running, released or paused subagent this session launched, or those of one run, in one call ([#4752](https://github.com/bastani-inc/atomic/issues/4752))
+
 ## [0.9.81] - 2026-11-13
 
 Parallel subagent calls survive a single child's failure, and the desktop skill learns sandboxes.

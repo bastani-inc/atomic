@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- Added name patterns and a children target to Intercom `send`: `subagent-worker-*`, `subagent-*` or `*` reaches every matching live session visible in your groups except you, and `subagents:*` (or `subagents:<runId>/*` for one run) reaches every running, released or paused subagent this session launched, foreground or background. Each recipient gets its own direct send with the usual refusals, receipts and retries, and the result lists every recipient's outcome. A glob that matches nothing is an error listing the closest names, patterns never reach outside your groups, and `ask` still needs one exact target. Workflow-stage paths are unchanged ([#4752](https://github.com/bastani-inc/atomic/issues/4752))
+
 ## [0.9.85] - 2026-11-13
 
 Disposed sessions leave the agent directory alone.
