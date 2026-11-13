@@ -40,6 +40,22 @@ test(
 	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
 );
 
+// The Windows launcher's `cmd.exe` holds `broker.log` open while its broker runs, and it hides the broker's process,
+// so there the agent directory cannot be removed until the broker exits, and the gated fixture cannot run.
+const directSpawnTest = process.platform === "win32" ? test.skip : test;
+
+directSpawnTest.each([false, true])(
+	"built Node dispose leaves nothing writing into the agent directory of a broker still starting, startsAfterRemoval=%s (#4727)",
+	(startsAfterRemoval) => {
+		expectSilentVerifiedFixture(
+			"sdk-host-intercom-dispose-broker-spawn.mjs",
+			startsAfterRemoval ? ["--starts-after-removal"] : [],
+			{ allowSqliteWarning: true },
+		);
+	},
+	BUILT_NODE_HOST_PROCESS_TIMEOUT_MS + 5_000,
+);
+
 // #3105: missing optional providers/extractors must not become empty successful tool results.
 test(
 	"built Node unavailable web dependencies return explicit errors and exit naturally",
