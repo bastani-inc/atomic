@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added `idleExitMs`, `onEvent` and an optional `journal` (default: the journal this machine selects) to `startWorkflowWorkerHost`, with `host.closed` and `host.stats().degraded`, and `readWorkflowWorkerFleet()`, which lists a shared journal's worker hosts and root queues. A host whose polls of the journal fail keeps its running children and polls again after 1 s, doubling up to 30 s. `workflows.workers` in settings gives roots the workflow tool starts shared placement ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Added fleet autoscaling for shared placement: the `WorkerHostProvisioner` interface (`list`, `scaleTo`, `drain`), `startWorkflowFleetController()`, and `workers.provisioner` for SDK roots. The controller adds hosts when the shared roots' queues stay deep, drains and removes only hosts that held no child for `idleDrainMs`, keeps the fleet between `minHosts` and `maxHosts` and within each root's session limit and budget, and replaces a host that does not register within `bootTimeoutMs`, backing off after repeated failures. One controller per journal is active at a time through a fenced lease, and another takes over when it stops. Provisioner failures are recorded and retried and never fail or block a run. Worker hosts report `ATOMIC_WORKER_PROVIDER_ID` (or `providerId`) and drain when a controller asks ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 ### Fixed
 

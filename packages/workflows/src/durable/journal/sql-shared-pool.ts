@@ -6,6 +6,7 @@ import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { guardedPoolWrite } from "./pool-guarded-write.js";
 import type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
+import { fleetDrainsSchema } from "./sql-fleet.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
@@ -122,6 +123,7 @@ export class SqlSharedPool {
 	private readonly stageLeases: string;
 	private readonly workspaces: string;
 	private readonly backoffs: string;
+	private readonly drains: string;
 	private readonly work: string;
 	private constructor(
 		private readonly storage: SqlPoolStorage,
@@ -135,6 +137,7 @@ export class SqlSharedPool {
 		this.stageLeases = `${runs}_stage_leases`;
 		this.workspaces = `${runs}_stage_workspaces`;
 		this.backoffs = `${runs}_pool_restore_backoffs`;
+		this.drains = `${runs}_fleet_drains`;
 		this.work = `${runs}_work`;
 	}
 
@@ -144,8 +147,8 @@ export class SqlSharedPool {
 		if (!storage) throw new Error("Shared worker placement requires a SQL run journal");
 		const pool = new SqlSharedPool(storage, queue);
 		const runs = storage.tables.runs;
-		await storage.transaction((tx) =>
-			tx.exec(`
+		await storage.transaction(async (tx) => {
+			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.shared}(
 					root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,
 					epoch INTEGER NOT NULL, budget_blocked INTEGER NOT NULL DEFAULT 0
@@ -183,8 +186,12 @@ export class SqlSharedPool {
 					host TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,
 					recorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)
 				);
-			`),
-		);
+				${fleetDrainsSchema(runs)};
+			`);
+			// The provider id a host started by a fleet controller reports (#4768), added to registries that predate it.
+			if (!(await tx.all(`PRAGMA table_info(${pool.hosts})`)).some((column) => column.name === "provider_id"))
+				await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN provider_id TEXT`);
+		});
 		return pool;
 	}
 
@@ -262,9 +269,10 @@ export class SqlSharedPool {
 		await this.plainWrite(
 			[
 				{
-					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots) VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?)
+					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, provider_id) VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?, ?)
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
-				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots`,
+				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
+				provider_id = excluded.provider_id`,
 					params: [
 						host.host,
 						JSON.stringify(host.labels),
@@ -273,11 +281,20 @@ export class SqlSharedPool {
 						host.workers,
 						host.maxWorkers,
 						JSON.stringify(host.roots),
+						host.providerId ?? null,
 					],
 				},
 			],
 			true,
 		);
+	}
+
+	/** Whether a fleet controller asked `host` to drain (#4768). */
+	async drainRequested(host: string): Promise<boolean> {
+		const row = await this.storage.read((executor) =>
+			executor.get(`SELECT 1 AS asked FROM ${this.drains} WHERE host = ?`, host),
+		);
+		return row !== undefined;
 	}
 
 	/** Removes a stopped worker host from the registry, with the restore backoffs it recorded. */
@@ -835,6 +852,7 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 				workers: number;
 				max_workers: number;
 				roots: string;
+				provider_id?: string | null;
 				ago: number;
 			}
 		>(`SELECT *, ${STORE_NOW} - heartbeat_at AS ago FROM ${storage.tables.runs}_pool_hosts ORDER BY host`),
@@ -847,6 +865,7 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 		workers: Number(row.workers),
 		maxWorkers: Number(row.max_workers),
 		roots: JSON.parse(row.roots) as string[],
+		...(row.provider_id === undefined || row.provider_id === null ? {} : { providerId: row.provider_id }),
 		heartbeatAgoMs: Number(row.ago),
 	}));
 }

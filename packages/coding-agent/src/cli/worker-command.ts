@@ -1,6 +1,7 @@
 /**
- * `atomic worker start|status` (#4768): one command joins this machine to a shared workflow database as a worker host,
- * over the workflows package's `startWorkflowWorkerHost`, and drains on SIGTERM or SIGINT.
+ * `atomic worker start|status|controller` (#4768): one command joins this machine to a shared workflow database as a
+ * worker host, over the workflows package's `startWorkflowWorkerHost`, and drains on SIGTERM or SIGINT; another runs a
+ * fleet controller that adds and removes hosts through a provisioner module.
  */
 
 import { readFileSync, statSync } from "node:fs";
@@ -24,6 +25,9 @@ const HELP = `Usage:
   ${APP_NAME} worker start [--db <url>] [--token-file <path>] [--prefix <prefix>] [--slots <n>]
                       [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
   ${APP_NAME} worker status [--db <url>] [--token-file <path>] [--prefix <prefix>] [--json]
+  ${APP_NAME} worker controller --provisioner <module> [--db <url>] [--token-file <path>] [--prefix <prefix>]
+                      [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--scale-up-queue-depth <n>]
+                      [--scale-up-delay <ms>] [--idle-drain <ms>] [--boot-timeout <ms>] [--json]
 
 Commands:
   start    Run this machine as a worker host of a shared workflow database: it runs the pooled children of
@@ -32,6 +36,11 @@ Commands:
            signal stops at once, handing running children back to other hosts, and exits 2. Exits 1 when
            setup is incomplete (every missing piece is listed) or the host fails.
   status   List the worker hosts registered in the database and the queue of each root they serve.
+  controller
+           Add worker hosts through a provisioner as the database's shared queues grow, and drain and remove
+           hosts that sat idle. Several controllers may run; one is active at a time and another takes over
+           when it stops. A provisioner failure is reported and retried, and never affects a run. SIGTERM or
+           SIGINT stops it (exit 0).
 
 Options:
   --db <url>            The shared libSQL / Turso database (libsql://, https://, wss:// or file:), for this
@@ -45,7 +54,20 @@ Options:
   --host-id <id>        This host's id. Default: the id this machine keeps in its agent directory
   --no-restore          Take only work whose repository tree is already here; never restore one
   --idle-exit <ms>      Drain and exit 0 after no child ran for this many milliseconds
-  --json                One JSON object per line`;
+  --json                One JSON object per line
+
+Controller options:
+  --provisioner <module>         A JavaScript module whose default export is a worker host provisioner, or a
+                                 function that returns one
+  --min-hosts <n>                Hosts kept however idle. Default 0
+  --max-hosts <n>                Hosts never exceeded. Default 10
+  --workers-per-host <n>         The --slots the hosts start with. Default 4
+  --scale-up-queue-depth <n>     Ready children tolerated before hosts are added. Default: --workers-per-host
+  --scale-up-delay <ms>          How long the queue stays that deep first. Default 20000
+  --idle-drain <ms>              How long a host holds no child before it is drained and removed. Default 300000
+  --boot-timeout <ms>            How long a new host may take to register. Default 600000
+
+A host a provisioner starts reports the provider's id for it from ATOMIC_WORKER_PROVIDER_ID.`;
 
 const HELP_HINT = `Use "${APP_NAME} worker --help" for usage.`;
 
@@ -80,14 +102,61 @@ export type WorkerCommand =
 			readonly idleExitMs?: number;
 			readonly json: boolean;
 	  }
-	| { readonly kind: "status"; readonly database?: WorkerDatabase; readonly json: boolean };
+	| { readonly kind: "status"; readonly database?: WorkerDatabase; readonly json: boolean }
+	| {
+			readonly kind: "controller";
+			readonly database?: WorkerDatabase;
+			/** The provisioner module's absolute path. */
+			readonly provisioner: string;
+			readonly policy: WorkerFleetPolicy;
+			readonly json: boolean;
+	  };
 
-const VALUE_OPTIONS = new Set(["--db", "--token-file", "--prefix", "--slots", "--label", "--host-id", "--idle-exit"]);
+/** The policy knobs `atomic worker controller` takes, as the workflows package's `WorkerFleetPolicyOptions`. */
+export interface WorkerFleetPolicy {
+	readonly minHosts?: number;
+	readonly maxHosts?: number;
+	readonly workersPerHost?: number;
+	readonly scaleUpQueueDepth?: number;
+	readonly scaleUpDelayMs?: number;
+	readonly idleDrainMs?: number;
+	readonly bootTimeoutMs?: number;
+}
+
+/** Each controller option, its policy field, and whether 0 is allowed. */
+const POLICY_OPTIONS: Readonly<Record<string, { readonly field: keyof WorkerFleetPolicy; readonly zero: boolean }>> = {
+	"--min-hosts": { field: "minHosts", zero: true },
+	"--max-hosts": { field: "maxHosts", zero: true },
+	"--workers-per-host": { field: "workersPerHost", zero: false },
+	"--scale-up-queue-depth": { field: "scaleUpQueueDepth", zero: true },
+	"--scale-up-delay": { field: "scaleUpDelayMs", zero: true },
+	"--idle-drain": { field: "idleDrainMs", zero: true },
+	"--boot-timeout": { field: "bootTimeoutMs", zero: false },
+};
+
+const VALUE_OPTIONS = new Set([
+	"--db",
+	"--token-file",
+	"--prefix",
+	"--slots",
+	"--label",
+	"--host-id",
+	"--idle-exit",
+	"--provisioner",
+	...Object.keys(POLICY_OPTIONS),
+]);
 const START_ONLY = new Set(["--slots", "--label", "--host-id", "--idle-exit", "--no-restore"]);
+const CONTROLLER_ONLY = new Set(["--provisioner", ...Object.keys(POLICY_OPTIONS)]);
 
 function positiveInteger(field: string, value: string): number {
 	const parsed = /^[1-9][0-9]*$/.test(value) ? Number(value) : Number.NaN;
 	if (!Number.isSafeInteger(parsed)) throw new WorkerCommandError(field, "Pass a positive integer.");
+	return parsed;
+}
+
+function nonNegativeInteger(field: string, value: string): number {
+	const parsed = /^(0|[1-9][0-9]*)$/.test(value) ? Number(value) : Number.NaN;
+	if (!Number.isSafeInteger(parsed)) throw new WorkerCommandError(field, "Pass an integer of at least 0.");
 	return parsed;
 }
 
@@ -122,8 +191,8 @@ export function parseWorkerCommand(
 	const [command, ...rest] = args;
 	if (command === undefined || command === "help" || args.includes("--help") || args.includes("-h"))
 		return { kind: "help" };
-	if (command !== "start" && command !== "status")
-		throw new WorkerCommandError("<command>", `Use start or status. ${HELP_HINT}`);
+	if (command !== "start" && command !== "status" && command !== "controller")
+		throw new WorkerCommandError("<command>", `Use start, status or controller. ${HELP_HINT}`);
 	const values = new Map<string, string>();
 	const labels: Record<string, string> = {};
 	let json = false;
@@ -131,8 +200,8 @@ export function parseWorkerCommand(
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index]!;
 		const option = arg.split("=")[0]!;
-		if (command === "status" && START_ONLY.has(option))
-			throw new WorkerCommandError(option, `"${APP_NAME} worker status" does not take it. ${HELP_HINT}`);
+		if ((command !== "start" && START_ONLY.has(option)) || (command !== "controller" && CONTROLLER_ONLY.has(option)))
+			throw new WorkerCommandError(option, `"${APP_NAME} worker ${command}" does not take it. ${HELP_HINT}`);
 		if (arg === "--json") json = true;
 		else if (arg === "--no-restore") restore = false;
 		else if (VALUE_OPTIONS.has(arg)) {
@@ -150,6 +219,24 @@ export function parseWorkerCommand(
 	}
 	const selected = database(values, options.cwd);
 	if (command === "status") return { kind: "status", ...(selected === undefined ? {} : { database: selected }), json };
+	if (command === "controller") {
+		const provisioner = values.get("--provisioner");
+		if (provisioner === undefined)
+			throw new WorkerCommandError("--provisioner", "Pass the provisioner module the controller drives.");
+		const policy: Record<string, number> = {};
+		for (const [option, { field, zero }] of Object.entries(POLICY_OPTIONS)) {
+			const value = values.get(option);
+			if (value !== undefined)
+				policy[field] = zero ? nonNegativeInteger(option, value) : positiveInteger(option, value);
+		}
+		return {
+			kind: "controller",
+			...(selected === undefined ? {} : { database: selected }),
+			provisioner: resolve(options.cwd, provisioner),
+			policy,
+			json,
+		};
+	}
 	const hostId = values.get("--host-id");
 	if (hostId !== undefined && (hostId === "" || hostId.includes("/")))
 		throw new WorkerCommandError("--host-id", "Pass a non-empty id without '/'.");
@@ -215,7 +302,8 @@ export type WorkerHostEvent =
 			readonly error: WorkerHostFailure;
 	  }
 	| { readonly kind: "recovered"; readonly failures: number }
-	| { readonly kind: "idle-exit"; readonly idleMs: number };
+	| { readonly kind: "idle-exit"; readonly idleMs: number }
+	| { readonly kind: "drain-requested" };
 
 export interface WorkerHostHandle {
 	readonly hostId: string;
@@ -258,7 +346,42 @@ export interface WorkerFleet {
 	readonly roots: readonly FleetRoot[];
 }
 
+/** A worker host provisioner, as the workflows package's `WorkerHostProvisioner`; the module supplies it. */
+export interface WorkerProvisioner {
+	readonly kind: string;
+	list(signal: AbortSignal): Promise<readonly object[]>;
+	scaleTo(target: number, signal: AbortSignal): Promise<void>;
+	drain(id: string, signal: AbortSignal): Promise<void>;
+}
+
+export type WorkerFleetEvent =
+	| { readonly kind: "active"; readonly epoch: number }
+	| { readonly kind: "standby"; readonly holder: string }
+	| { readonly kind: "scale-up"; readonly target: number; readonly desired: number; readonly live: number }
+	| { readonly kind: "drain-requested"; readonly id: string; readonly host: string }
+	| { readonly kind: "removed"; readonly id: string; readonly reason: string }
+	| {
+			readonly kind: "degraded";
+			readonly failures: number;
+			readonly retryInMs: number;
+			readonly error: WorkerHostFailure;
+	  }
+	| { readonly kind: "recovered"; readonly failures: number };
+
+export interface WorkerFleetControllerHandle {
+	readonly holder: string;
+	stop(): Promise<void>;
+}
+
 export interface WorkerHostModule {
+	startWorkflowFleetController(
+		options: WorkerFleetPolicy & {
+			readonly journal?: WorkerJournalSelection;
+			readonly agentDir: string;
+			readonly provisioner: WorkerProvisioner;
+			readonly onEvent: (event: WorkerFleetEvent) => void;
+		},
+	): Promise<WorkerFleetControllerHandle>;
 	startWorkflowWorkerHost(options: WorkerHostOptions): Promise<WorkerHostHandle>;
 	readWorkflowWorkerFleet(options: {
 		readonly journal?: WorkerJournalSelection;
@@ -290,8 +413,30 @@ export interface WorkerCommandOptions {
 	readonly error?: (line: string) => void;
 	/** Defaults to the bundled workflows package's worker host module. */
 	readonly loadModule?: () => Promise<WorkerHostModule>;
-	/** Where `start` listens for SIGTERM and SIGINT. Default: this process. */
+	/** Where `start` and `controller` listen for SIGTERM and SIGINT. Default: this process. */
 	readonly signals?: Pick<NodeJS.Process, "on" | "off">;
+	/** Loads a controller's provisioner module. Default: an `import()` of its path. */
+	readonly loadProvisioner?: (path: string) => Promise<WorkerProvisioner>;
+}
+
+/**
+ * The provisioner a module supplies: its default export, either a provisioner or a function that returns one. The
+ * module runs with this process's environment, where the provider's own credential chain is.
+ */
+async function importProvisioner(path: string): Promise<WorkerProvisioner> {
+	const exported = ((await import(pathToFileURL(path).href)) as { default?: unknown }).default;
+	const provisioner = typeof exported === "function" ? await (exported as () => unknown)() : exported;
+	const candidate = provisioner as Partial<WorkerProvisioner> | undefined;
+	if (
+		typeof candidate?.kind !== "string" ||
+		typeof candidate.list !== "function" ||
+		typeof candidate.scaleTo !== "function" ||
+		typeof candidate.drain !== "function"
+	)
+		throw new Error(
+			`${path} does not export a provisioner: its default export must have a kind and list, scaleTo and drain methods, or be a function that returns one.`,
+		);
+	return candidate as WorkerProvisioner;
 }
 
 /** One output line: `event key=value …`, or a JSON object with `event` for `--json`. */
@@ -370,6 +515,8 @@ async function start(
 						return log(line("recovered", { failures: event.failures }));
 					case "idle-exit":
 						return log(line("idle-exit", { idle_ms: event.idleMs }));
+					case "drain-requested":
+						return log(line("drain-requested"));
 				}
 			},
 		});
@@ -424,6 +571,72 @@ async function start(
 	return forced ? 2 : 0;
 }
 
+function fleetEventFields(event: WorkerFleetEvent): Readonly<Record<string, string | number>> {
+	switch (event.kind) {
+		case "active":
+			return { epoch: event.epoch };
+		case "standby":
+			return { holder: event.holder };
+		case "scale-up":
+			return { target: event.target, desired: event.desired, live: event.live };
+		case "drain-requested":
+			return { id: event.id, host: event.host };
+		case "removed":
+			return { id: event.id, reason: event.reason };
+		case "degraded":
+			return {
+				failures: event.failures,
+				retry_in_ms: event.retryInMs,
+				error: `${event.error.name}: ${event.error.message}`,
+			};
+		case "recovered":
+			return { failures: event.failures };
+	}
+}
+
+async function controller(
+	command: Extract<WorkerCommand, { kind: "controller" }>,
+	options: WorkerCommandOptions,
+	module: WorkerHostModule,
+	log: (line: string) => void,
+	error: (line: string) => void,
+): Promise<number> {
+	const line = formatter(command.json);
+	const warning = tokenFileWarning(command.database);
+	if (warning !== undefined) error(command.json ? line("warning", { message: warning }) : `Warning: ${warning}`);
+	let handle: WorkerFleetControllerHandle;
+	try {
+		const provisioner = await (options.loadProvisioner ?? importProvisioner)(command.provisioner);
+		handle = await module.startWorkflowFleetController({
+			...(command.database === undefined ? {} : { journal: workerJournalSelection(command.database) }),
+			agentDir: options.agentDir,
+			provisioner,
+			...command.policy,
+			onEvent: (event) => log(line(event.kind, fleetEventFields(event))),
+		});
+	} catch (caught) {
+		for (const text of setupLines(caught as Error))
+			error(command.json ? line("setup-failed", { message: text }) : text);
+		return 1;
+	}
+	log(line("controller", { holder: handle.holder, journal: databaseLabel(command.database) }));
+	const signals = options.signals ?? process;
+	const stopped = Promise.withResolvers<NodeJS.Signals>();
+	const onSignal = (signal: NodeJS.Signals) => stopped.resolve(signal);
+	signals.on("SIGTERM", onSignal);
+	signals.on("SIGINT", onSignal);
+	try {
+		const signal = await stopped.promise;
+		log(line("stopping", { signal }));
+		await handle.stop();
+	} finally {
+		signals.off("SIGTERM", onSignal);
+		signals.off("SIGINT", onSignal);
+	}
+	log(line("stopped", { holder: handle.holder }));
+	return 0;
+}
+
 function formatAgo(ms: number): string {
 	return ms < 1_000 ? `${Math.max(0, Math.round(ms))} ms` : `${(ms / 1_000).toFixed(1)} s`;
 }
@@ -470,6 +683,7 @@ export async function runWorkerCommand(args: readonly string[], options: WorkerC
 		return 1;
 	}
 	if (command.kind === "start") return start(command, options, module, log, error);
+	if (command.kind === "controller") return controller(command, options, module, log, error);
 	try {
 		const fleet = await module.readWorkflowWorkerFleet({
 			...(command.database === undefined ? {} : { journal: workerJournalSelection(command.database) }),
