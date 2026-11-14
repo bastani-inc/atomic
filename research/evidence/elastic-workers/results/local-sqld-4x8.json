@@ -1,0 +1,60 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 8,
+  "children": 64,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 217,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 218,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 221,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 4,
+      "slots": 8,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 908,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 40207,
+      "activeMs": 36977,
+      "checkpointsPerSec": 34.6,
+      "latencyMs": {
+        "p50": 643.7,
+        "p90": 857.27,
+        "p99": 1013.78,
+        "max": 1524.52
+      },
+      "perHost": {
+        "root": 4,
+        "h1": 16,
+        "h3": 16,
+        "h2": 14,
+        "h0": 14
+      }
+    }
+  ]
+}
