@@ -1,4 +1,4 @@
-import { type SqliteDatabase, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteDatabase, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import { OUTBOX_BACKUP_POLL_INTERVAL_MS } from "./multinode-state-store.js";
 import type {
 	WakeUpBus,
@@ -55,8 +55,6 @@ interface DatabaseSubscription {
 	open: boolean;
 }
 
-const DATABASE_NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)";
-
 const scheduleTimeout: WakeUpPollScheduler = (callback, delayMs) => {
 	const timer = setTimeout(callback, delayMs);
 	timer.unref?.();
@@ -64,13 +62,14 @@ const scheduleTimeout: WakeUpPollScheduler = (callback, delayMs) => {
 };
 
 async function createSchema(database: SqliteDatabase, table: string): Promise<void> {
+	const { types } = dialectOf(database);
 	await database.exec(
 		`CREATE TABLE IF NOT EXISTS ${table} (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id ${types.serialKey},
 			broker_id TEXT NOT NULL,
 			reason TEXT NOT NULL CHECK (reason IN ('outbox', 'outcome')),
-			version INTEGER NOT NULL,
-			created_at INTEGER NOT NULL
+			version ${types.int} NOT NULL,
+			created_at ${types.int} NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_broker ON ${table} (broker_id, id);
 		CREATE INDEX IF NOT EXISTS ${table}_created ON ${table} (created_at);`,
@@ -116,15 +115,16 @@ class DatabaseWakeUpBus implements WakeUpBus {
 		if (hint.brokerId.length === 0) return { status: "invalid", reason: "empty-broker-id" };
 		const database = await this.connection(false);
 		if (database === undefined) return { status: "unavailable" };
+		const { nowMs } = dialectOf(database);
 		try {
 			await database.run(
-				`INSERT INTO ${this.table} (broker_id, reason, version, created_at) VALUES (?, ?, ?, ${DATABASE_NOW_MS})`,
+				`INSERT INTO ${this.table} (broker_id, reason, version, created_at) VALUES (?, ?, ?, ${nowMs})`,
 				hint.brokerId,
 				hint.reason,
 				hint.version,
 			);
 			await database.run(
-				`DELETE FROM ${this.table} WHERE created_at < ${DATABASE_NOW_MS} - ?`,
+				`DELETE FROM ${this.table} WHERE created_at < ${nowMs} - ?`,
 				WAKE_UP_HINT_RETENTION_MS,
 			);
 		} catch {

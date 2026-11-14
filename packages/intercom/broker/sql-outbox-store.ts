@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+	dialectOf,
 	type SqliteExecutor,
 	type SqliteRow,
 	type SqliteValue,
@@ -17,8 +18,8 @@ import type {
 	OutboxStore,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { addMissingColumns } from "./sql-add-column.js";
 
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const UNDELIVERED = "state IN ('queued', 'claimed')";
 
 interface OutboxRecord extends SqliteRow {
@@ -68,40 +69,33 @@ const isSettled = (record: OutboxRecord): boolean => record.state === "delivered
 export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<OutboxStore> {
 	const { database } = options;
 	const table = `${validateStoragePrefix(options.prefix)}intercom_outbox`;
+	const { types, nowMs, greatest } = dialectOf(database);
+	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
 	await database.exec(`
 		CREATE TABLE IF NOT EXISTS ${table}(
-			sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+			sequence ${types.serialKey},
 			message_id TEXT NOT NULL UNIQUE,
 			target_identity TEXT NOT NULL,
 			origin_broker_id TEXT NOT NULL,
 			digest TEXT NOT NULL,
 			frame_json TEXT NOT NULL,
 			state TEXT NOT NULL CHECK (state IN ('queued', 'claimed', 'delivered', 'failed')),
-			claim_attempts INTEGER NOT NULL DEFAULT 0,
+			claim_attempts ${types.int} NOT NULL DEFAULT 0,
 			claimant_id TEXT,
 			claim_token TEXT,
-			claim_renewed_at INTEGER,
+			claim_renewed_at ${types.int},
 			failure_reason TEXT,
-			settled_at INTEGER
+			settled_at ${types.int}
 		);
 		CREATE INDEX IF NOT EXISTS ${table}_target ON ${table}(target_identity, state, sequence);
 	`);
 	// #3983: added later; a table from an older broker gets the column, and an older broker ignores it.
-	const known = await database.all<{ name: string }>(`PRAGMA table_info(${table})`);
-	if (!known.some((column) => column.name === "saving_at")) {
-		try {
-			await database.exec(`ALTER TABLE ${table} ADD COLUMN saving_at INTEGER`);
-		} catch (error) {
-			// Another broker added it between the check and the change.
-			if (!/duplicate column/i.test(error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : ""))
-				throw error;
-		}
-	}
+	await addMissingColumns(database, table, { saving_at: types.int });
 
 	const columns = `sequence, message_id, target_identity, origin_broker_id, digest, frame_json, state,
 		claim_attempts, claimant_id, claim_token, failure_reason,
-		CASE WHEN claim_renewed_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - claim_renewed_at) END AS claim_age,
-		CASE WHEN saving_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - saving_at) END AS saving_age`;
+		CASE WHEN claim_renewed_at IS NULL THEN NULL ELSE ${ageSince("claim_renewed_at")} END AS claim_age,
+		CASE WHEN saving_at IS NULL THEN NULL ELSE ${ageSince("saving_at")} END AS saving_age`;
 	const select = (executor: SqliteExecutor, messageId: string) =>
 		executor.get<OutboxRecord>(`SELECT ${columns} FROM ${table} WHERE message_id = ?`, messageId);
 	const undelivered = (executor: SqliteExecutor, targetIdentity: string) =>
@@ -137,7 +131,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		reason: string | null,
 	): Promise<OutboxRow> => {
 		await executor.run(
-			`UPDATE ${table} SET state = ?, failure_reason = ?, settled_at = ${STORE_NOW},
+			`UPDATE ${table} SET state = ?, failure_reason = ?, settled_at = ${nowMs},
 				claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL, saving_at = NULL
 			WHERE message_id = ?`,
 			state,
@@ -192,7 +186,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 					const token = randomUUID();
 					await executor.run(
 						`UPDATE ${table} SET state = 'claimed', claim_attempts = claim_attempts + 1, claimant_id = ?,
-							claim_token = ?, claim_renewed_at = ${STORE_NOW}, saving_at = NULL
+							claim_token = ?, claim_renewed_at = ${nowMs}, saving_at = NULL
 						WHERE message_id = ?`,
 						request.claimantId,
 						token,
@@ -211,7 +205,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		renewClaim(claim) {
 			return withClaim(claim, async (executor) => {
 				await executor.run(
-					`UPDATE ${table} SET claim_renewed_at = ${STORE_NOW} WHERE message_id = ?`,
+					`UPDATE ${table} SET claim_renewed_at = ${nowMs} WHERE message_id = ?`,
 					claim.messageId,
 				);
 				return { status: "renewed" } as const;
@@ -220,7 +214,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 
 		reportSaving(claim) {
 			return withClaim(claim, async (executor) => {
-				await executor.run(`UPDATE ${table} SET saving_at = ${STORE_NOW} WHERE message_id = ?`, claim.messageId);
+				await executor.run(`UPDATE ${table} SET saving_at = ${nowMs} WHERE message_id = ?`, claim.messageId);
 				return { status: "renewed" } as const;
 			});
 		},
@@ -265,7 +259,7 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 		async prune(settledOlderThanMs) {
 			const result = await database.run(
 				`DELETE FROM ${table}
-				WHERE state IN ('delivered', 'failed') AND MAX(0, ${STORE_NOW} - settled_at) > ?`,
+				WHERE state IN ('delivered', 'failed') AND ${ageSince("settled_at")} > ?`,
 				settledOlderThanMs,
 			);
 			return result.changes;

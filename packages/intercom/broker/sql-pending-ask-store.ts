@@ -1,4 +1,4 @@
-import { type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
 	InvalidStateInput,
@@ -16,6 +16,7 @@ import type {
 	ReplyRoute,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
+import { addMissingColumns } from "./sql-add-column.js";
 
 type AskRow = SqliteRow & { sender_session_id: string; target_session_id: string; message_id: string };
 
@@ -50,10 +51,11 @@ export async function openSqlPendingAskStore({
 	prefix,
 }: IntercomBrokerStateOptions): Promise<PendingAskStore> {
 	const table = `${validateStoragePrefix(prefix)}intercom_pending_asks`;
+	const { types } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
-				"order" INTEGER PRIMARY KEY AUTOINCREMENT,
+				"order" ${types.serialKey},
 				sender_session_id TEXT NOT NULL,
 				target_session_id TEXT NOT NULL,
 				message_id TEXT NOT NULL,
@@ -63,17 +65,7 @@ export async function openSqlPendingAskStore({
 		`),
 	);
 	// #4386: added later; a table from an older broker gets the columns, and an older broker ignores them.
-	const known = await database.all<{ name: string }>(`PRAGMA table_info(${table})`);
-	for (const column of ["park_owner", "park_key"]) {
-		if (known.some((existing) => existing.name === column)) continue;
-		try {
-			await database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
-		} catch (error) {
-			// Another broker added it between the check and the change.
-			if (!/duplicate column/i.test(error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : ""))
-				throw error;
-		}
-	}
+	await addMissingColumns(database, table, { park_owner: types.text, park_key: types.text });
 	const parkedBy = (ownerSessionId: string, reservationKey: string | undefined) =>
 		reservationKey === undefined
 			? { where: "park_owner = ?", params: [ownerSessionId] }

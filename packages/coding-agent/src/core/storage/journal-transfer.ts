@@ -14,6 +14,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
+import { dialectOf } from "./dialect.js";
 import type { StorageFailureCause } from "./errors.js";
 import {
 	discoverLegacyJournal,
@@ -965,7 +966,7 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 						importAction(run.run, now, group.path);
 					}
 				for (const group of ordered) {
-					await ensureRunJournalSchema(group.tx!, prefix);
+					await ensureRunJournalSchema(group.tx!, prefix, dialectOf(group.database!));
 					for (const run of group.runs) await writeImport(group.tx!, t, run.run, run.stored);
 				}
 				return;
