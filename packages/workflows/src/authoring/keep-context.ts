@@ -14,7 +14,7 @@ export const KEEP_CONTEXT_CLOSE_TAG = "</keepContext>";
  *
  * Every line of the span, tag lines included, becomes a protected line, and protected lines are
  * removed from the planner's deletion ranges after it responds, so the span survives regardless
- * of the compression ratio. Because the tag lines are protected too, the span is re-detected on
+ * of the compression ratio while protection fits its budget. Because the tag lines are protected too, the span is re-detected on
  * each subsequent boundary and stays protected for the life of the session.
  *
  * Tags must sit on their own line, and a span is scoped to one message. User and assistant
@@ -31,6 +31,10 @@ export const KEEP_CONTEXT_CLOSE_TAG = "</keepContext>";
  * Do not wrap bulk context. Protected lines count against the keep target rather than raising
  * it, so a large protected span makes the surrounding transcript compress harder; tag the
  * constraint, not the material it applies to, and pass that through files and `reads`.
+ *
+ * Protection has a budget (`compaction.keepContextShare` of the keep target). Past it, compaction
+ * releases whole spans — older duplicates first, then the oldest — so restating a constraint
+ * adds no protection, and old or over-budget spans can be compacted like other lines.
  *
  * Nesting is flattened rather than rejected: an already-wrapped string is returned unchanged.
  *

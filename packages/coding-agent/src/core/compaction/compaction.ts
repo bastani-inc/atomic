@@ -17,6 +17,8 @@ export interface CompactionSettings {
 	preserve_recent: number;
 	/** Focus query for relevance-based pruning; auto-detected when omitted in settings/options. */
 	query?: string;
+	/** Share of the keep target `<keepContext>` spans may fill before older spans are released; 0.5 when omitted. */
+	keepContextShare?: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {

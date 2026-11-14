@@ -30,6 +30,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		},
 		rung: "planned" as const,
 		keptTail: true,
+		releasedRanges: [],
 	}),
 	estimateContextTokens: () => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null }),
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),

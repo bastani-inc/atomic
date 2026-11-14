@@ -4,12 +4,18 @@ import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import type { LineRange, NumberedRegion, VerbatimCompactionParameters } from "./compaction-types.js";
 import { validateDeletedRanges } from "./deleted-ranges.js";
 import { isProviderPolicyRefusal } from "./planner-outcome.js";
-import { buildStructuredCompactionInput, mapMessageRanges } from "./structured-compaction-input.js";
+import {
+	buildStructuredCompactionInput,
+	mapMessageRanges,
+	type StructuredCompactionInput,
+} from "./structured-compaction-input.js";
+import { isKeepContextMarkerLine } from "./transcript-serialization.js";
 
 const responseSchema = Type.Object({
 	messages: Type.Array(
 		Type.Object({
 			compacted_line_ranges: Type.Array(Type.Object({ start: Type.Number(), end: Type.Number() })),
+			kept_line_ranges: Type.Optional(Type.Array(Type.Object({ start: Type.Number(), end: Type.Number() }))),
 		}),
 	),
 });
@@ -17,6 +23,11 @@ const responseSchema = Type.Object({
 export interface MorphRangeDiagnostics {
 	droppedRangeCount: number;
 	acceptedRangeCount: number;
+	/**
+	 * Lines Morph force-kept that Atomic does not protect, plus lines Atomic protects that Morph did
+	 * not report as kept. Present only when Morph reported kept ranges that disagree.
+	 */
+	protectedMismatchLineCount?: number;
 	failureCategory?: "provider_error" | "policy_refusal";
 	failureMessage?: string;
 }
@@ -58,6 +69,55 @@ async function morphHttpErrorMessage(response: Response, apiKey: string): Promis
 	return `Morph compaction HTTP ${response.status}${excerpt ? `: ${excerpt}` : ""}`;
 }
 
+/** Region line number before each message's first line. */
+function messageOffsets(input: StructuredCompactionInput): number[] {
+	let offset = 0;
+	return input.messages.map((message) => {
+		const start = offset;
+		offset += message.lines.length;
+		return start;
+	});
+}
+
+/**
+ * A message's text as Morph receives it. Morph force-keeps `<keepContext>` spans itself, so a tag
+ * line Atomic does not protect (a released span's, or one in a tool result) is sent blank: the
+ * span's text arrives as ordinary content, and line numbers still map back one to one.
+ */
+function morphMessageContent(
+	lines: readonly string[],
+	offset: number,
+	protectedLines: ReadonlySet<number> | undefined,
+): string {
+	return lines
+		.map((line, index) => (isKeepContextMarkerLine(line) && !protectedLines?.has(offset + index + 1) ? "" : line))
+		.join("\n");
+}
+
+/** Lines on which Morph's reported `kept_line_ranges` and Atomic's protected lines disagree; 0 when Morph reported none. */
+function protectedMismatchLineCount(
+	body: Static<typeof responseSchema>,
+	input: StructuredCompactionInput,
+	offsets: readonly number[],
+	region: NumberedRegion,
+): number {
+	if (!body.messages.some((message) => message.kept_line_ranges !== undefined)) return 0;
+	const morphKept = new Set<number>();
+	body.messages.forEach((message, index) => {
+		const length = input.messages[index].lines.length;
+		for (const range of message.kept_line_ranges ?? []) {
+			if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)) continue;
+			for (let line = Math.max(1, range.start); line <= Math.min(length, range.end); line++)
+				morphKept.add(offsets[index] + line);
+		}
+	});
+	const atomicProtected = region.protectedLineNumbers ?? new Set<number>();
+	let mismatch = 0;
+	for (const line of morphKept) if (!atomicProtected.has(line)) mismatch++;
+	for (const line of atomicProtected) if (!morphKept.has(line)) mismatch++;
+	return mismatch;
+}
+
 export async function planMorphRanges(
 	region: NumberedRegion,
 	parameters: VerbatimCompactionParameters,
@@ -71,11 +131,15 @@ export async function planMorphRanges(
 	if (options.signal?.aborted) throw new Error("Compaction cancelled");
 	if (!options.apiKey) throw new Error("Morph compaction requires /login morph or MORPH_API_KEY");
 	const input = buildStructuredCompactionInput(region, parameters);
+	const offsets = messageOffsets(input);
 	const response = await (options.fetchFn ?? fetch)("https://api.morphllm.com/v1/compact", {
 		method: "POST",
 		headers: { Authorization: `Bearer ${options.apiKey}`, "Content-Type": "application/json" },
 		body: JSON.stringify({
-			messages: input.messages.map((message) => ({ role: message.role, content: message.lines.join("\n") })),
+			messages: input.messages.map((message, index) => ({
+				role: message.role,
+				content: morphMessageContent(message.lines, offsets[index], region.protectedLineNumbers),
+			})),
 			query: input.query,
 			compression_ratio: input.compression_ratio,
 			preserve_recent: 0,
@@ -112,7 +176,12 @@ export async function planMorphRanges(
 			return [{ id: input.messages[index].id, ...range }];
 		}),
 	);
-	options.onDiagnostics?.({ droppedRangeCount, acceptedRangeCount: records.length });
+	const mismatch = protectedMismatchLineCount(body, input, offsets, region);
+	options.onDiagnostics?.({
+		droppedRangeCount,
+		acceptedRangeCount: records.length,
+		...(mismatch > 0 ? { protectedMismatchLineCount: mismatch } : {}),
+	});
 	const ranges = validateDeletedRanges(mapMessageRanges(records, input), region);
 	if (!ranges.length) throw new Error("Morph compaction produced no usable ranges");
 	return [...ranges];
