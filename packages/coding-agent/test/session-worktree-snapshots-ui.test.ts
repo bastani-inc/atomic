@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { recordResumeTimings } from "../src/core/resume/timings.ts";
+import { recordResumeTimings } from "../src/core/resume/timings.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openSessionInWorktree } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";

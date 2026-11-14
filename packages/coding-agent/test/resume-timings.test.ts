@@ -12,8 +12,8 @@ import {
 	recordResumeTimings,
 	timeCheckoutRestore,
 	timeRestorePhase,
-} from "../src/core/resume/timings.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/resume/timings.js";
+import { SessionManager } from "../src/core/session-manager.js";
 
 const PHASE_SLEEP_MS = 15;
 
@@ -215,6 +215,14 @@ describe("resume timings entry (#4748)", () => {
 			{ version: 2, restores: [], blueprint: [] },
 			{ version: 1, restores: [] },
 			{ version: 1, blueprint: [] },
+			{ ...sample, restores: [{}] },
+			{ ...sample, restores: [{ ...sample.restores[0], phases: null }] },
+			{ ...sample, restores: [{ ...sample.restores[0], phases: { fetch: "slow" } }] },
+			{ ...sample, restores: [{ ...sample.restores[0], ms: "1" }] },
+			{ ...sample, blueprint: [{ section: "maintenance", ms: 1 }] },
+			{ ...sample, blueprint: [{ ...sample.blueprint[0], ms: null }] },
+			{ ...sample, firstPromptReadyMs: "1" },
+			{ ...sample, firstPromptReadyMs: undefined },
 			undefined,
 		]) {
 			await recordResumeTimings(session, sample);
@@ -245,7 +253,7 @@ describe("ATOMIC_TIMING output (#4748)", () => {
 			errors.push(line);
 		});
 		try {
-			const timing = await import("../src/core/timings.ts");
+			const timing = await import("../src/core/timings.js");
 			timing.resetTimings("main");
 			timing.recordTiming("load", 12, "main");
 			timing.recordTimingLines([], "extensions");

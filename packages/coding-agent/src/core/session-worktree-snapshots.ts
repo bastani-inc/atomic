@@ -949,15 +949,23 @@ export function describeWorktreeSnapshot(root: string, snapshot: WorktreeSnapsho
 	];
 }
 
-/** How long the latest turn's capture of the checkout at `root` took, as a line; undefined when none recorded it. */
+/**
+ * How long the latest turn's capture of the checkout now at `root` took, as a line, also when that capture was of the
+ * checkout before a restore moved it to `root`; undefined when no capture recorded it.
+ */
 export function describeLastCapture(
-	sessionManager: Pick<SessionManager, "getBranch">,
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
 	root: string,
 ): string | undefined {
 	const branch = sessionManager.getBranch();
+	const mappings = sessionManager.getWorktreeRootMappings();
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
-		if (entry.type === "worktree_snapshot" && entry.root === root && typeof entry.captureMs === "number") {
+		if (
+			entry.type === "worktree_snapshot" &&
+			typeof entry.captureMs === "number" &&
+			mapRestoredPath(entry.root, mappings) === resolve(root)
+		) {
 			return `last capture took ${(entry.captureMs / 1000).toFixed(1)} s`;
 		}
 	}

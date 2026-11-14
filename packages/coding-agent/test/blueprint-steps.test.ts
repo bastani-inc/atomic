@@ -31,7 +31,7 @@ import {
 	type StepContext,
 } from "../src/core/resume/blueprint/steps.ts";
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
-import { ResumeTimingsRecorder } from "../src/core/resume/timings.ts";
+import { ResumeTimingsRecorder } from "../src/core/resume/timings.js";
 import type { ShellConfig } from "../src/utils/shell.ts";
 import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";

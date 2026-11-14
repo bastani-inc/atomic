@@ -5,17 +5,17 @@ import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
-import { latestResumeTimings, RESUME_TIMINGS_TYPE } from "../src/core/resume/timings.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { describeLastCapture, SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import type { SessionStore } from "../src/core/storage/session/types.ts";
-import type { SqlSnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.ts";
-import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
-import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
-import { type PreparedSessionResume, type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.ts";
-import { forThisHost } from "./helpers/blueprint-fixtures.ts";
+import { latestResumeTimings, RESUME_TIMINGS_TYPE } from "../src/core/resume/timings.js";
+import { SessionManager } from "../src/core/session-manager.js";
+import { describeLastCapture, SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import type { SessionStore } from "../src/core/storage/session/types.js";
+import type { SqlSnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.js";
+import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
+import { type PreparedSessionResume, type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.js";
+import { forThisHost } from "./helpers/blueprint-fixtures.js";
 
 useTemporaryAgentDir();
 
@@ -220,5 +220,16 @@ describe("capture timings (#4748)", () => {
 		assert.equal(typeof ms, "number");
 		assert.ok(ms! <= wallMs, `capture ${ms} ms within the turn's ${wallMs} ms`);
 		assert.equal(describeLastCapture(manager, clone), `last capture took ${(ms! / 1000).toFixed(1)} s`);
+
+		// On another machine the capture is still the checkout's last, under the worktree it was restored into.
+		renameSync(clone, sandbox.path("node-a-gone"));
+		const prepared = ready(await prepareSessionResume(manager, options()));
+		const [restored] = prepared.sessionManager.getWorktreeRootMappings();
+		assert.ok(restored);
+		assert.equal(
+			describeLastCapture(prepared.sessionManager, restored.to),
+			`last capture took ${(ms! / 1000).toFixed(1)} s`,
+		);
+		assert.equal(describeLastCapture(prepared.sessionManager, sandbox.path("elsewhere")), undefined);
 	});
 });

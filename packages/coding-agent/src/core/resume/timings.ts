@@ -38,7 +38,10 @@ export interface ResumeTimings {
 	readonly startedAt: string;
 	readonly restores: readonly CheckoutRestoreTimings[];
 	readonly blueprint: readonly BlueprintStepTiming[];
-	/** From `startedAt` until the session was ready for its first prompt. */
+	/**
+	 * From `startedAt` until the resume handed the session over with its checkouts restored and its blueprints built.
+	 * Starting the session's runtime (extensions, model) comes after and is not included.
+	 */
 	readonly firstPromptReadyMs: number | null;
 	/** From `startedAt` until the blueprint build's last step finished; null when the resume ran no step. */
 	readonly blueprintReadyMs: number | null;
@@ -174,10 +177,33 @@ export async function recordResumeTimings(
 	}
 }
 
-/** Whether `value` is timings this version writes: entries of another version are not read. */
+type Unchecked<T> = { readonly [K in keyof T]?: unknown } | null | undefined;
+
+function isRestoreTimings(value: Unchecked<CheckoutRestoreTimings>): boolean {
+	return (
+		typeof value?.root === "string" &&
+		typeof value.ms === "number" &&
+		typeof value.phases === "object" &&
+		value.phases !== null &&
+		Object.values(value.phases).every((ms) => typeof ms === "number")
+	);
+}
+
+function isStepTiming(value: Unchecked<BlueprintStepTiming>): boolean {
+	return typeof value?.name === "string" && typeof value.ms === "number";
+}
+
+/** Whether `value` is timings this version writes, whole: an entry of another version or shape is not read. */
 function isResumeTimings(value: unknown): value is ResumeTimings {
-	const timings = value as Partial<Record<keyof ResumeTimings, unknown>> | null | undefined;
-	return timings?.version === 1 && Array.isArray(timings.restores) && Array.isArray(timings.blueprint);
+	const timings = value as Unchecked<ResumeTimings>;
+	return (
+		timings?.version === 1 &&
+		Array.isArray(timings.restores) &&
+		timings.restores.every(isRestoreTimings) &&
+		Array.isArray(timings.blueprint) &&
+		timings.blueprint.every(isStepTiming) &&
+		(timings.firstPromptReadyMs === null || typeof timings.firstPromptReadyMs === "number")
+	);
 }
 
 /** The timings of the latest resume recorded on the session's active branch, if any. */

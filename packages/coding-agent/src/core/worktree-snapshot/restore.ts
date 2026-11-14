@@ -527,6 +527,7 @@ async function fetchCommits(
 		try {
 			await runFetch(git, remote, missing);
 			supplied = true;
+			noteRestoreFetch("full");
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			failure = error;
@@ -549,7 +550,6 @@ async function ensureHead(
 	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
 		// Only a fetch that succeeded proves a remote has `head`: another process may import it from a bundle meanwhile.
-		noteRestoreFetch("full");
 		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head]);
 		let failure = fromRemotes.failure;
 		fetched = fromRemotes.supplied;
@@ -558,11 +558,11 @@ async function ensureHead(
 			const prerequisites = bundlePrerequisites(data);
 			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
 			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)).failure ?? failure;
-			noteRestoreFetch("bundle");
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
 				await runFetch(git, file, ["HEAD"]);
+				noteRestoreFetch("bundle");
 			} catch (error) {
 				if (!isWorkspaceGitError(error)) throw error;
 				failure = error;
@@ -1253,6 +1253,7 @@ async function closestCommit(
 	for (const remote of snapshot.remotes) {
 		try {
 			await runFetch(git, remote, [`+${source}:${ref}`]);
+			noteRestoreFetch("full");
 		} catch (error) {
 			if (!isWorkspaceGitError(error)) throw error;
 			continue;
