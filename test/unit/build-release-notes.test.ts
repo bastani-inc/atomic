@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "vitest";
-import { bunExecutable, spawnSyncCollect } from "../helpers/runtime.js";
+import { createGitEnvironment } from "../../packages/coding-agent/src/utils/git-env.js";
+import { buildReleaseNotes, type ChangelogSource } from "../../scripts/build-release-notes.js";
+import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
 
 interface NotesResult {
 	readonly exitCode: number;
@@ -201,5 +204,168 @@ describe("scripts/build-release-notes.ts", () => {
 		} finally {
 			rmSync(join(packagesDir, ".."), { recursive: true, force: true });
 		}
+	});
+});
+
+const repoRoot = join(moduleDir(import.meta.url), "..", "..");
+// `packages/coding-agent/CHANGELOG.md` at a tag is larger than execFileSync's 1 MiB default.
+const GIT_OUTPUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+function git(args: readonly string[]): string {
+	return execFileSync("git", args, {
+		cwd: repoRoot,
+		encoding: "utf-8",
+		env: createGitEnvironment(),
+		stdio: ["ignore", "pipe", "pipe"],
+		maxBuffer: GIT_OUTPUT_MAX_BUFFER_BYTES,
+	});
+}
+
+/** Every package changelog exactly as it was published at `tag`. */
+function changelogSourcesAtTag(tag: string): ChangelogSource[] {
+	const paths = git(["ls-tree", "--name-only", `${tag}:packages`])
+		.split("\n")
+		.filter(Boolean);
+	const sources: ChangelogSource[] = [];
+	for (const name of paths) {
+		const listing = git(["ls-tree", "--name-only", tag, `packages/${name}/CHANGELOG.md`]).trim();
+		if (listing === "") continue;
+		sources.push({ name, content: git(["show", `${tag}:packages/${name}/CHANGELOG.md`]) });
+	}
+	return sources;
+}
+
+/** The summary that leads the notes: everything before the collapsed full changelog. */
+function summaryOf(notes: string): string {
+	const index = notes.indexOf("<details>");
+	return index < 0 ? notes : notes.slice(0, index);
+}
+
+function bulletsOf(markdown: string): string[] {
+	return markdown.split("\n").filter((line) => line.startsWith("- "));
+}
+
+function issueLink(kind: "issues" | "pull", number: number): string {
+	return `[#${number}](https://github.com/bastani-inc/atomic/${kind}/${number})`;
+}
+
+describe("release-note deduplication (#4799)", () => {
+	test("rebuilds the 0.9.86 summary with each change listed once (#4799)", () => {
+		const notes = buildReleaseNotes(changelogSourcesAtTag("0.9.86"), "0.9.86");
+		const summaryBullets = bulletsOf(summaryOf(notes));
+
+		// Published with 11 bullets: non-blocking asks x3, degraded restores x2,
+		// subagent-chat autocomplete x2 (plus the stage-chat `@` bullet citing the
+		// same issue and PR), send-to-many x2, and credential stripping.
+		assert.equal(summaryBullets.length, 5, summaryBullets.join("\n"));
+		for (const [label, link] of [
+			["non-blocking asks", issueLink("issues", 4751)],
+			["degraded restores", issueLink("issues", 4738)],
+			["subagent-chat autocomplete", issueLink("issues", 4755)],
+			["send to many", issueLink("issues", 4752)],
+			["credential stripping", issueLink("pull", 4749)],
+		] as const) {
+			const citing = summaryBullets.filter((bullet) => bullet.includes(link));
+			assert.equal(citing.length, 1, `${label} must appear once in the summary:\n${citing.join("\n")}`);
+		}
+		// The most complete copy wins: intercom's bullet is the only one that cites #4760.
+		const asks = summaryBullets.find((bullet) => bullet.includes(issueLink("issues", 4751)));
+		assert.ok(asks?.startsWith("- **Non-blocking asks.**"), asks);
+		assert.ok(asks?.includes(issueLink("issues", 4760)));
+		// Not deduplicated across the summary and the full changelog.
+		assert.match(notes.slice(notes.indexOf("<details>")), /\[#4751\]/);
+	});
+
+	test("leaves the single-summary 0.9.87 notes unchanged (#4799)", () => {
+		const notes = buildReleaseNotes(changelogSourcesAtTag("0.9.87"), "0.9.87");
+		assert.equal(bulletsOf(summaryOf(notes)).length, 1);
+		assert.equal(bulletsOf(notes).length, 2);
+	});
+
+	test("merges a bullet whose links are a subset of another's into the most complete one (#4799)", () => {
+		const broad = `- **Broad.** Short ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2), [#3](https://github.com/o/r/issues/3)).`;
+		const narrow = `- **Narrow but wordier than the broad bullet is.** Long text ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2)).`;
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\nTheme.\n\n${narrow}\n\n### Fixed\n\n- fix\n` },
+				{ name: "intercom", content: `## [1.0.0]\n\nOther theme.\n\n${broad}\n` },
+			],
+			"1.0.0",
+		);
+		// The broad bullet replaces the narrow one in place, and the package summary
+		// left without bullets is dropped rather than shown as an orphaned theme line.
+		assert.equal(
+			notes,
+			`Theme.\n\n${broad}\n\n<details>\n<summary>Full changelog</summary>\n\n### Fixed\n\n- fix\n\n</details>\n`,
+		);
+	});
+
+	test("keeps the longer bullet when two cite the same links, inside a ### section (#4799)", () => {
+		const short = "- Fixed a thing ([#7](https://github.com/o/r/issues/7), [#8](https://github.com/o/r/pull/8))";
+		const long =
+			"- Fixed a thing, with more detail ([#7](https://github.com/o/r/issues/7), [#8](https://github.com/o/r/pull/8))";
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\n### Fixed\n\n${short}\n- other fix\n` },
+				{ name: "subagents", content: `## [1.0.0]\n\n### Fixed\n\n${long}\n` },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, `### Fixed\n\n${long}\n- other fix\n`);
+	});
+
+	test("does not merge distinct bullets that share only some links or a single link (#4799)", () => {
+		const partialA = "- A ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2))";
+		const partialB = "- B ([#1](https://github.com/o/r/issues/1), [#3](https://github.com/o/r/pull/3))";
+		const singleA = "- Workflow stage chats complete `@` paths ([#9](https://github.com/o/r/issues/9))";
+		const singleB = "- Subagent chats complete `/tasks` ([#9](https://github.com/o/r/issues/9))";
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\n### Fixed\n\n${partialA}\n${singleA}\n` },
+				{ name: "workflows", content: `## [1.0.0]\n\n### Fixed\n\n${partialB}\n${singleB}\n` },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, `### Fixed\n\n${partialA}\n${singleA}\n${partialB}\n${singleB}\n`);
+	});
+
+	test("joins changes that a later, broader bullet connects (#4799)", () => {
+		const oneTwo = "- One-two ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2))";
+		const oneThree = "- One-three ([#1](https://github.com/o/r/issues/1), [#3](https://github.com/o/r/pull/3))";
+		const all =
+			"- All three ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2), [#3](https://github.com/o/r/pull/3))";
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\n### Changed\n\n${oneTwo}\n` },
+				{ name: "intercom", content: `## [1.0.0]\n\n### Changed\n\n${oneThree}\n` },
+				{ name: "subagents", content: `## [1.0.0]\n\n### Changed\n\n${all}\n` },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, `### Changed\n\n${all}\n`);
+	});
+
+	test("keeps a package summary's breaking-change note when its bullets repeat earlier ones (#4799)", () => {
+		const bullet = "- **Same.** Text ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2)).";
+		const warning = "**Breaking change:** rename `foo` to `bar`.";
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\nTheme.\n\n${bullet}\n` },
+				{ name: "workflows", content: `## [1.0.0]\n\nOther theme.\n\n${bullet}\n\n${warning}\n` },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, `Theme.\n\n${bullet}\n\n${warning}\n`);
+	});
+
+	test("drops a verbatim repeat of a bullet with no links (#4799)", () => {
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: "## [1.0.0]\n\n### Added\n\n- same entry\n" },
+				{ name: "workflows", content: "## [1.0.0]\n\n### Added\n\n- same  entry\n- distinct entry\n" },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, "### Added\n\n- same entry\n- distinct entry\n");
 	});
 });
