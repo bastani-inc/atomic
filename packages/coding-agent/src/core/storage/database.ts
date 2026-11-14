@@ -48,9 +48,11 @@ export interface SqliteTransactionOptions {
 	readonly concurrency?: TransactionConcurrency;
 }
 
-declare const fencedPathBrand: unique symbol;
-/** An audited fenced write path. Only `fencedPath(name)` in `fenced-paths.ts` makes one; a plain string is not one. */
-export type FencedPathId = string & { readonly [fencedPathBrand]: true };
+/**
+ * An audited fenced write path. Only `fencedPath(name)` in `fenced-paths.ts` makes one; a plain string is not one. The
+ * brand is a string key, not a unique symbol, so the published declarations and the sources stay one type.
+ */
+export type FencedPathId = string & { readonly __atomicFencedPath: true };
 
 /**
  * `serial`: the body runs as if it were the only writer of `domain`, or of the whole database when `domain` is absent:
