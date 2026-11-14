@@ -146,7 +146,9 @@ The [adapter's README](https://www.npmjs.com/package/@bastani/atomic-storage-pos
 
 - **`credential-in-url`**: the URL holds a password. Remove it and pass `--password-file` or `--token-file`.
 - **`unsupported-url`** from `atomic team join`: team join is for libSQL. Use `atomic storage join`.
-- **`adapter-not-installed`**: run `atomic install npm:@bastani/atomic-storage-postgres` as the user that runs Atomic.
+- **`unsupported-option`**: `--password-file` or `--auth` was passed with a libSQL URL. libSQL takes `--token-file`.
+- **`unsupported-auth`**: `--auth` takes `azure`, `aws`, or `gcp`.
+- **`adapter-not-installed`** ("The storage adapter is not installed"): run `atomic install npm:@bastani/atomic-storage-postgres` as the user that runs Atomic.
 - **`StorageUnavailableError`** at startup: the server refused the password (`28P01`), the database does not exist (`3D000`), the role lacks a privilege it needs (`42501`), or the server is older than PostgreSQL 14. The error names which. Nothing ran.
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
 - **`too many connections`** (`53300`): the fleet opened more connections than `max_connections`. Lower `maxConnections`, raise the server's limit, or put a [pooler](#connection-poolers) in front.
