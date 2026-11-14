@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.86] - 2026-11-14
+
+Workflow runs always resume, and stage chats complete file mentions.
+
+- **Resume never strands a run.** A run whose worktree snapshot cannot be restored exactly resumes from the closest state it can reach, tells its stages what is missing, and records the outcome for later resumes and forks ([#4738](https://github.com/bastani-inc/atomic/issues/4738), [#4750](https://github.com/bastani-inc/atomic/pull/4750)).
+- **`@` mentions in stage chats.** Typing `@` completes paths in the stage's working directory, and subagents launched by a stage get the same completion ([#4755](https://github.com/bastani-inc/atomic/issues/4755), [#4757](https://github.com/bastani-inc/atomic/pull/4757)).
+
+### Fixed
+
+- Fixed workflow stage chats offering no `@` file-mention suggestions. Typing `@` now completes paths in the stage's working directory, as in the main chat. A subagent launched by a stage on a local worker gets the same completion in its chat, from its own working directory and skills ([#4755](https://github.com/bastani-inc/atomic/issues/4755))
+- Fixed a workflow run's resume, and a pooled child's restore on a worker host, failing when a worktree snapshot could not be restored exactly. The run now always resumes: it restores the recorded commit with the change sets that apply, else the closest commit it can fetch, else continues without the checkout (in the directory it was resumed from when the recorded one is not on this machine), with one notice in the run's notices and on a `checkout:` line of `workflow status`. Its stages are told what is missing, and the outcome is recorded on the run (`worktreeRestoreOutcomes`), so a later resume or fork knows the checkout is partial. Missing Git no longer stops a resume. Only an unreadable run, `invalid-snapshot` and `unsafe-target` still refuse ([#4738](https://github.com/bastani-inc/atomic/issues/4738))
+
 ## [0.9.86-alpha.1] - 2026-11-14
 
 Workflow runs always resume, and stage chats complete file mentions.
