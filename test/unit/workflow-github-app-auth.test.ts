@@ -184,7 +184,7 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 		"GitHub Enterprise Server: minted from its API, passed as GH_ENTERPRISE_TOKEN with GH_HOST (#4768)",
 		async () => {
 			const { github, cloud } = await fixture("/api/v3");
-			await appProvisioner(github, { host: "ghe.acme.test", apiUrl: `${github.url}/` }).list(never());
+			await appProvisioner(github, { host: "ghe.acme.test", apiUrl: `${github.url}//` }).list(never());
 			assert.equal(github.requests[0]!.path, "/api/v3/app/installations/4242/access_tokens");
 			assert.deepEqual(cloud.ghEnv(), [{ GH_ENTERPRISE_TOKEN: "ghs_fake1", GH_HOST: "ghe.acme.test" }]);
 		},

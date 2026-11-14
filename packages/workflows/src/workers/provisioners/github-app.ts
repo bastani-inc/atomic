@@ -94,6 +94,8 @@ export function resolveGitHubApp(options: GitHubAppAuthOptions): GitHubAppSettin
 		!/^(?:https:\/\/[^/]|http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/]|$))/.test(apiUrl)
 	)
 		throw invalid("apiUrl must be an https URL, or http on localhost.");
+	let base = apiUrl;
+	while (base.endsWith("/")) base = base.slice(0, -1);
 	return {
 		appId: String(appId),
 		installationId: installation,
@@ -101,7 +103,7 @@ export function resolveGitHubApp(options: GitHubAppAuthOptions): GitHubAppSettin
 		owner,
 		repository: name,
 		host,
-		apiUrl: apiUrl.replace(/\/+$/, ""),
+		apiUrl: base,
 	};
 }
 
