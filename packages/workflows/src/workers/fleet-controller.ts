@@ -263,8 +263,7 @@ export class FleetController implements WorkflowFleetController {
 			const snapshot = await store.snapshot();
 			// A drain lasts as long as its instance (#4803): once the provider no longer lists it, a new one may reuse its id.
 			for (const drain of snapshot.drains)
-				if (drain.providerId !== undefined && !listed.some((provided) => provided.id === drain.providerId))
-					await store.clearDrain(fence, drain.host);
+				if (!listed.some((provided) => provided.id === drain.providerId)) await store.clearDrain(fence, drain.host);
 			const hosts = joinHosts(listed, snapshot);
 			const now = Date.now();
 			const plan = planFleet(

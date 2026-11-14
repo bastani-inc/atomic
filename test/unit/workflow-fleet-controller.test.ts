@@ -594,25 +594,41 @@ test("joinHosts matches provider hosts to registered hosts by provider id or hos
 });
 
 test("joinHosts takes the live host of an instance whose worker restarted under a new host id, with the children of both (#4803)", () => {
-	const [joined] = joinHosts([{ id: "pod-1", state: "running", since: 1 }], {
-		roots: [],
-		hosts: [
-			{ host: "h1", providerId: "pod-1", live: false, leased: 1 },
-			{ host: "h2", providerId: "pod-1", live: true, leased: 2 },
-			{ host: "h3", providerId: "pod-3", live: true, leased: 4 },
+	const [joined, unregistered] = joinHosts(
+		[
+			{ id: "pod-1", state: "running", since: 1 },
+			{ id: "pod-5", hostId: "h5", state: "running", since: 5 },
 		],
-		drains: [{ host: "h1", providerId: "pod-1" }],
-		leased: new Map([
-			["h1", 1],
-			["h2", 2],
-			["h3", 4],
-		]),
-	});
+		{
+			roots: [],
+			hosts: [
+				{ host: "h1", providerId: "pod-1", live: false, leased: 1 },
+				{ host: "h2", providerId: "pod-1", live: true, leased: 2 },
+				{ host: "h3", providerId: "pod-3", live: true, leased: 4 },
+			],
+			drains: [{ host: "h1", providerId: "pod-1" }],
+			leased: new Map([
+				["h1", 1],
+				["h2", 2],
+				["h3", 4],
+				["h5", 1],
+			]),
+		},
+	);
 	assert.deepEqual(joined, {
 		view: { id: "pod-1", state: "running", since: 1, registered: true, leased: 3, draining: true },
 		hostId: "h2",
 		drainHosts: ["h1"],
 	});
+	assert.deepEqual(
+		unregistered,
+		{
+			view: { id: "pod-5", state: "running", since: 5, registered: false, leased: 1, draining: false },
+			hostId: "h5",
+			drainHosts: [],
+		},
+		"a host the provider names holds its children while it is not registered",
+	);
 });
 
 test.skipIf(process.platform === "win32")(
@@ -626,7 +642,10 @@ test.skipIf(process.platform === "win32")(
 		const provisioner: WorkerHostProvisioner = {
 			kind: "fake",
 			async list() {
-				return [{ id: "vm-kept", state: "pending", since: Date.now() }];
+				return [
+					{ id: "vm-kept", state: "pending", since: Date.now() },
+					{ id: "vm-new", state: "pending", since: Date.now() },
+				];
 			},
 			async scaleTo() {},
 			// The listed instance drained already: its removal starts, and never ends within the test.
