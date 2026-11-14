@@ -289,11 +289,7 @@ async function writeCapturedTree(
 	).split("\n");
 	const userIndexPath = isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
 	const index = captureIndexPath(storeDir, gitDir, root);
-	// A store inside the checkout would capture its own files: capture there as without a private index.
-	const fromRoot = relative(root, canonicalizeWorktreePath(index));
-	if (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot)) {
-		return writeWorkingTree(checkout, settings, policy, scratch, { signal });
-	}
+	if (!usableOutside(root, index)) return writeWorkingTree(checkout, settings, policy, scratch, { signal });
 	return inTurn(index, async () => {
 		const working = `${index}.${process.pid}.tmp`;
 		try {
@@ -327,6 +323,21 @@ async function writeCapturedTree(
 			return writeWorkingTree(checkout, settings, policy, scratch, { signal });
 		}
 	});
+}
+
+/**
+ * Whether a private index at `index` may be used for the checkout at `root`: its path resolves, and it is outside the
+ * checkout, which would otherwise capture the index's own files.
+ */
+function usableOutside(root: string, index: string): boolean {
+	let real: string;
+	try {
+		real = canonicalizeWorktreePath(index);
+	} catch {
+		return false;
+	}
+	const fromRoot = relative(root, real);
+	return fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot);
 }
 
 /** Copies `from` to `to` with `from`'s modification time; false when `from` does not exist. */

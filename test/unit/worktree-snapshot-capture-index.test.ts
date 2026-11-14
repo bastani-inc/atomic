@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import {
+	chmodSync,
 	existsSync,
+	mkdirSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
@@ -269,6 +271,21 @@ describe("where the private index may not go (#4748)", () => {
 		const paths = (await sandbox.git(clone, "ls-tree", "-r", "--name-only", second)).split("\n");
 		assert.deepEqual(paths, ["a.txt"]);
 		assert.equal(existsSync(join(clone, "agent-home")), false);
+	});
+
+	test("a store whose capture-index directory cannot be searched still captures, without a private index (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+		sandbox.write(join(clone, "a.txt"), "changed\n");
+		const directory = join(defaultWorktreeSnapshotStoreDir(), "capture-index");
+		mkdirSync(directory, { recursive: true });
+		chmodSync(directory, 0);
+		try {
+			const tree = await treeOf(clone);
+
+			assert.equal(await treeFile(clone, tree, "a.txt"), "changed");
+		} finally {
+			chmodSync(directory, 0o755);
+		}
 	});
 
 	test("a cancelled capture leaves no working copy of the private index behind (#4748)", async () => {
