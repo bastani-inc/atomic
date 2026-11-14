@@ -1103,8 +1103,10 @@ export class SqlPoolQueue {
 		mutation = JSON.parse(request).mutation as PoolMutation;
 		if (this.remote && mutation.kind !== "session-append")
 			return this.commitRemote(lease, token, operationId, mutation, identity);
-		// Opened before the write: on a journal without batches the write is a transaction, which opening may not nest in.
-		const sessions = mutation.kind === "checkpoint" ? undefined : await this.poolSessions();
+		// Opened before a batched write, whose plan reads outside any transaction; a journal without batches plans inside
+		// the write's own transaction, and opens it there.
+		const sessions =
+			mutation.kind === "checkpoint" || this.storage.batch === undefined ? undefined : await this.poolSessions();
 		const checkpoints = this.checkpoints.begin(lease.runId);
 		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint } | undefined;
 		const receipt = await guardedPoolWrite<PoolCommitReceipt>(this.storage, async (read, optimistic) => {
@@ -1163,7 +1165,7 @@ export class SqlPoolQueue {
 			};
 			const receiptParts =
 				mutation.kind === "session-append"
-					? await this.appendSession(read, row, mutation, write, sessions!)
+					? await this.appendSession(read, row, mutation, write, sessions ?? (await this.poolSessions(read)))
 					: await this.recordCheckpoint(
 							read,
 							lease,
@@ -1172,7 +1174,7 @@ export class SqlPoolQueue {
 							now,
 							checkpoints,
 							write,
-							sessions,
+							mutation.kind === "checkpoint" ? undefined : (sessions ?? (await this.poolSessions(read))),
 							state.recorded,
 						);
 			write.writes.push({
@@ -1519,9 +1521,10 @@ export class SqlPoolQueue {
 	}
 	/**
 	 * The pool's session store, opened once with its tables, over a database whose calls go to the executor `within`
-	 * holds: a planned commit runs it against its recording executor.
+	 * holds: a planned commit runs it against its recording executor. `tx`, a write transaction the caller holds, opens it
+	 * there instead of in a transaction of its own.
 	 */
-	private poolSessions(): Promise<PoolSessions> {
+	private poolSessions(tx?: SqliteExecutor): Promise<PoolSessions> {
 		this.sessions ??= (async () => {
 			const within = new AsyncLocalStorage<SqliteExecutor>();
 			const executor = () => {
@@ -1539,14 +1542,15 @@ export class SqlPoolQueue {
 				transaction: (body) => body(executor()),
 				close: async () => {},
 			};
-			const store = await this.transaction((tx) =>
-				within.run(tx, () =>
+			const open = (executor: SqliteExecutor) =>
+				within.run(executor, () =>
 					new StorageProvider().openSessionStore(
 						{ kind: "database", database, prefix },
 						{ agentDir: "", domain: "sessions" },
 					),
-				),
-			);
+				);
+			// In the caller's transaction when it holds one, or in a transaction of its own.
+			const store = await (tx === undefined ? this.transaction(open) : open(tx));
 			return { store, within };
 		})().catch((error: Error) => {
 			this.sessions = undefined;

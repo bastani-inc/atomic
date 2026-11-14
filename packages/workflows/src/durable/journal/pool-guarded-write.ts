@@ -13,6 +13,11 @@ const FENCE_MESSAGE = "atomic-pool-fence";
 const FENCE_RETRY_BASE_MS = 5;
 /** The longest wait between two plans of one write. */
 const FENCE_RETRY_MAX_MS = 1000;
+/**
+ * How many times one write is planned again after a request whose outcome is unknown, such as one the server left
+ * unanswered. A server that keeps failing so is unreachable, and the failure goes to the caller, which waits it out.
+ */
+const UNKNOWN_OUTCOME_REPLANS = 2;
 
 export function poolFenceTable(runs: string): string {
 	return `${runs}_pool_fence`;
@@ -71,7 +76,8 @@ function isFenceAbort(error: unknown): boolean {
  * request, `plan` reads outside the lock, and its fences, writes and reads go as one batch: a fence that no longer
  * holds aborts it, and the write is planned again from a new read after a short random wait, for up to the journal's
  * lock wait (a fence that keeps breaking means other writers keep changing what it decides on). A request the server
- * left unanswered or lost is planned again the same way, so a stuck server slows the write down rather than hanging it. Without batches, as for a node:sqlite journal, `plan` reads inside one write transaction and its writes
+ * left unanswered or lost is planned again the same way, a few times, so a stuck server fails the write rather than
+ * hanging it. Without batches, as for a node:sqlite journal, `plan` reads inside one write transaction and its writes
  * and reads follow in it, as every pool write did before; its fences need no check there.
  */
 export async function guardedPoolWrite<T>(
@@ -91,6 +97,7 @@ export async function guardedPoolWrite<T>(
 		});
 	const fence = poolFenceTable(storage.tables.runs);
 	const deadline = Date.now() + (JOURNAL_TRANSACTION.lockWaitMs ?? 0);
+	let unknownOutcomes = 0;
 	for (let attempt = 0; ; attempt++) {
 		const planned = await storage.read((read) => plan(read, attempt === 0));
 		if ("done" in planned) return planned.done;
@@ -107,7 +114,12 @@ export async function guardedPoolWrite<T>(
 		} catch (error) {
 			// A request the server never answered, or one whose connection broke, may or may not have committed: the next
 			// plan reads which, and every planned write is fenced so that repeating one that committed changes nothing.
-			if (!(isFenceAbort(error) || error instanceof StorageTransientError) || Date.now() >= deadline) throw error;
+			// Other failures, a server refusing connections included, go to the caller.
+			const unknown =
+				error instanceof StorageTransientError &&
+				error.outcome === "unknown" &&
+				++unknownOutcomes <= UNKNOWN_OUTCOME_REPLANS;
+			if (!(isFenceAbort(error) || unknown) || Date.now() >= deadline) throw error;
 		}
 		const bound = Math.min(FENCE_RETRY_MAX_MS, FENCE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
 		await new Promise((resolve) => setTimeout(resolve, Math.random() * bound));

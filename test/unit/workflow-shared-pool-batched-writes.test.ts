@@ -8,6 +8,7 @@ import {
 	type SqliteDriverExecutor,
 	type SqliteDriverResult,
 	type SqliteStatement,
+	StorageTransientError,
 } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -347,6 +348,26 @@ test("a commit planned without a read is refused when another writer recorded a 
 			f.pool.commit(f.lease, attempt, "op-2", { kind: "checkpoint", checkpoint: tool(2) }),
 			/Pool tool topology scope mismatch/,
 		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a write the server keeps leaving unanswered fails after a bounded number of plans, for the caller's outage handling (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		let sent = 0;
+		f.hooks.beforeBatch = () => {
+			sent++;
+			throw Object.assign(new Error("the request timed out"), { name: "TimeoutError" });
+		};
+		await assert.rejects(
+			f.pool.renew(f.lease, attempt, 60_000),
+			(error: Error) => error instanceof StorageTransientError && error.outcome === "unknown",
+		);
+		assert.equal(sent, 3);
 	} finally {
 		await f.close();
 	}
