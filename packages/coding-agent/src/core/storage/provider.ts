@@ -61,9 +61,19 @@ export interface StorageOpenContext {
 	/** `intercom`: the shared Intercom broker state that multi-node brokers open on the top-level selection. */
 	readonly domain: "sessions" | "journal" | "intercom";
 	readonly signal?: AbortSignal;
+	/**
+	 * Reads the selection's `secrets[name]` reference again, on every call: a file rotated in place yields its new
+	 * contents. The provider passes it to adapter hooks; it is how an adapter reads its `liveSecrets`.
+	 */
+	readonly secret?: (name: string) => Promise<string>;
 }
 export interface StorageAdapterModule {
 	readonly atomicStorageAdapter: 1;
+	/**
+	 * Secrets the adapter reads itself through `context.secret(name)`, every time it needs them (for example once per
+	 * new connection), instead of once in `options`. The provider leaves these names out of `options`.
+	 */
+	readonly liveSecrets?: readonly string[];
 	openDatabase?(options: AdapterOptions, context: StorageOpenContext): Promise<SqliteDatabase>;
 	openSessionStore?(
 		options: AdapterOptions,
