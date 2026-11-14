@@ -110,11 +110,18 @@ describe("/workflow resume catalog cache", () => {
 		removeTempDirectory(dir);
 	});
 
-	test("an unchanged reopen returns the same catalog without reading any events", async () => {
+	test("an unchanged reopen returns the same catalog without reading any events or run versions", async () => {
 		const first = await reader.prepareWorkflowCatalog();
 		events.events = 0;
+		const runVersions = reader.journal.runVersions.bind(reader.journal);
+		let versionReads = 0;
+		reader.journal.runVersions = () => {
+			versionReads++;
+			return runVersions();
+		};
 		assert.deepEqual(await reader.prepareWorkflowCatalog(), first);
 		assert.equal(events.events, 0);
+		assert.equal(versionReads, 0, "an unchanged token skips the per-run version read");
 		assert.deepEqual(statuses(first.resumable), {
 			[testRunId("paused-run")]: "paused",
 			[testRunId("failed-run")]: "failed",
