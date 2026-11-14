@@ -137,7 +137,8 @@ function serializeTranscriptChunks(
 		appendText(chunks, `${chunks.length > 0 ? "\n\n" : ""}${header}`);
 		section.forEach((chunk, index) => {
 			if (chunk.type === "text")
-				appendText(chunks, escapeBodyHeaders(chunk.text, index > 0 && section[index - 1].type !== "text"));
+				// Adjacent text blocks are already merged, so a text chunk past the first follows an image.
+				appendText(chunks, escapeBodyHeaders(chunk.text, index > 0));
 			else chunks.push(chunk);
 		});
 	};
@@ -244,12 +245,12 @@ type MessageSpan = NonNullable<NumberedRegion["messageSpans"]>[number];
 type MessageRole = MessageSpan["role"];
 
 /**
- * Where a message starts in a region, one-based, and whose message it is. An undefined role is
- * text of the prior compaction summary ahead of its first role header.
+ * Where a message starts in a region, one-based, and whose message it is. Text before a region's
+ * first boundary is the prior compaction summary ahead of its first role header.
  */
 export interface MessageBoundary {
 	line: number;
-	role: MessageRole | undefined;
+	role: MessageRole;
 }
 
 function headerRole(name: string): MessageRole {
@@ -261,9 +262,9 @@ function headerRole(name: string): MessageRole {
  *
  * With `messageSpans`, every message starts where the serializer placed it and has the role of the
  * message itself, so no text inside a message can start another one or change its role. The prior
- * summary is the one flat-text span: its sections are read from its role header lines, which only
- * the serializer writes because it escapes header-like lines inside message bodies. Without
- * `messageSpans` the whole region is read that way.
+ * summary, always the first span, is the one flat-text span: its sections are read from its role
+ * header lines, which only the serializer writes because it escapes header-like lines inside
+ * message bodies. Without `messageSpans` the whole region is read that way.
  */
 export function messageBoundaries(lines: readonly string[], messageSpans?: readonly MessageSpan[]): MessageBoundary[] {
 	const headers = (start: number, end: number): MessageBoundary[] => {
@@ -276,9 +277,7 @@ export function messageBoundaries(lines: readonly string[], messageSpans?: reado
 	};
 	if (messageSpans === undefined) return headers(1, lines.length);
 	return messageSpans.flatMap((span): MessageBoundary[] => {
-		if (!span.previousSummary) return [{ line: span.start, role: span.role }];
-		const inner = headers(span.start, span.end);
-		return inner[0]?.line === span.start ? inner : [{ line: span.start, role: undefined }, ...inner];
+		return span.previousSummary ? headers(span.start, span.end) : [{ line: span.start, role: span.role }];
 	});
 }
 
@@ -344,7 +343,7 @@ export function keepContextSpans(lines: readonly string[], messageSpans?: readon
 		if (boundaries[nextBoundary]?.line === index + 1) {
 			closeThrough(index - 1);
 			role = boundaries[nextBoundary++].role;
-			headerLine = role === undefined ? undefined : index + 1;
+			headerLine = index + 1;
 		}
 		if (!roleMayProtect(role)) continue;
 		const marker = keepContextMarker(line);
@@ -388,9 +387,7 @@ export function createNumberedRegion(
 ): NumberedRegion {
 	const lines = text.split("\n");
 	const headerLineNumbers = new Set<number>();
-	for (const boundary of messageBoundaries(lines, messageSpans)) {
-		if (boundary.role !== undefined) headerLineNumbers.add(boundary.line);
-	}
+	for (const boundary of messageBoundaries(lines, messageSpans)) headerLineNumbers.add(boundary.line);
 	const priorMarkerNs = new Map<number, number>();
 	for (let index = 0; index < lines.length; index++) {
 		const markerMatch = FILTERED_MARKER_RE.exec(lines[index]);
