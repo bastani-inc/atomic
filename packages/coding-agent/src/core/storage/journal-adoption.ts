@@ -49,7 +49,8 @@ export function runJournalTables(prefix = ""): Readonly<Record<keyof typeof RUN_
 
 /**
  * `CREATE TABLE IF NOT EXISTS` statements for a SQL run journal's runs, events and leases tables, in `dialect`. The
- * events table carries the dialect's row order column, which the journal's change token reads.
+ * events table carries the dialect's row order column, which the journal's change token reads, and its keys compare
+ * by their UTF-8 bytes, as the journal's key range reads expect.
  */
 export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect = sqliteDialect): string {
 	const t = runJournalTables(prefix);
@@ -61,7 +62,7 @@ export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect 
 		);
 		CREATE TABLE IF NOT EXISTS ${t.events}(
 			run_id TEXT NOT NULL,
-			seq ${int} NOT NULL, epoch ${int} NOT NULL, key TEXT,
+			seq ${int} NOT NULL, epoch ${int} NOT NULL, key TEXT${dialect.byteOrderCollation},
 			type TEXT NOT NULL, payload TEXT NOT NULL, at ${int} NOT NULL${dialect.rowOrderColumn},
 			PRIMARY KEY(run_id, seq), UNIQUE(run_id, key)
 		);
