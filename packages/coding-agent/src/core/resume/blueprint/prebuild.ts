@@ -95,6 +95,12 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 	if (capture.status === "unavailable") throw capture.reason;
 	if (capture.status === "disabled") throw new Error("snapshots are disabled");
 	const snapshot: WorktreeSnapshot = capture.snapshot;
+	// Unpushed commits that touch denied paths, such as `.env`, never reach the shared store or its cache.
+	if (snapshot.omitted.some((omission) => omission.reason === "unpushed-history-denied")) {
+		throw new Error(
+			`${root} has unpushed commits that touch files that can hold credentials; push or drop them before a prebuild`,
+		);
+	}
 	const state = { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree };
 	// The checkout has the commit, and the credentials to fetch it; the store takes it from there.
 	await storeCheckoutHead(storeDir, remotes, root, snapshot.head, signal);

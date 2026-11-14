@@ -285,6 +285,20 @@ describe("atomic blueprint prebuild (#4748)", () => {
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
 
+	test(
+		"an unpushed commit that adds a credential file is never imported into the shared store (#4748)",
+		async () => {
+			const { clone } = await checkout();
+			sandbox.write(join(clone, ".env"), "SECRET=1\n");
+			await sandbox.git(clone, "add", "-f", ".env");
+			await sandbox.git(clone, "commit", "-q", "-m", "add a secret");
+			await assert.rejects(prebuild(clone), /unpushed commits that touch files that can hold credentials/);
+			assert.equal(existsSync(join(storeDir(), "repositories")), false);
+			assert.equal(existsSync(join(storeDir(), "pool")), false);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
 	test("prebuild refuses a checkout without a remote or with uncommitted tracked changes (#4748)", async () => {
 		const { clone } = await checkout();
 		sandbox.write(join(clone, "README.md"), "uncommitted\n");
@@ -566,7 +580,11 @@ describe("repository identity across remote spellings (#4748)", () => {
 			assert.equal(normalizeRemoteUrl(spelling), "https://github.com/acme/widgets", JSON.stringify(spelling));
 		}
 		assert.equal(normalizeRemoteUrl("git@[::1]:acme/widgets.git"), "https://[::1]/acme/widgets");
-		assert.equal(normalizeRemoteUrl("ssh://git@host.example:443/a/b"), "https://host.example/a/b");
+		assert.equal(normalizeRemoteUrl("ssh://git@host.example:443/a/b"), "https://host.example:443/a/b");
+		assert.notEqual(
+			repositoryIdOf(["ssh://git@host.example:443/team/repo"]),
+			repositoryIdOf(["ssh://git@host.example:22/team/repo"]),
+		);
 		assert.equal(normalizeRemoteUrl("git://host.example:22/a/b"), "https://host.example:22/a/b");
 		for (const kept of [
 			"./ab:cd",
