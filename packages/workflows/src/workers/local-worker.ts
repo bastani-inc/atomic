@@ -36,6 +36,7 @@ import { StageUiBroker } from "../shared/stage-ui-broker.js";
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { WorkAttemptFencedError } from "../shared/worker-pool-errors.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import { admittedSessionAdapter } from "./admission-binding.js";
 import { AttemptFence, endedAttemptRefusal } from "./attempt-fence.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
@@ -61,7 +62,11 @@ import { collectWorkerUsage } from "./usage-accounting.js";
 import { AttemptPlace, attemptWaitsReleased } from "./waiting-workers.js";
 import { WorkerControl, workerControlHandlers } from "./worker-control.js";
 import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
+import { workerRefusal } from "./worker-refusal.js";
 import { type PendingWorkerRequest, receiveWorkerReply, type WorkerReplyState } from "./worker-replies.js";
+
+/** How long an idle worker waits before it asks for work again after the journal was unreachable (#4768). */
+const IDLE_OUTAGE_RETRY_MS = 1_000;
 
 /** Stamps each published stage with its handle's queued message count, for the root's graph. */
 function withQueuedCounts(runs: readonly RunSnapshot[], stageControls: StageControlRegistry): readonly RunSnapshot[] {
@@ -316,10 +321,10 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	/** Set once the worker ends between children to give its memory back; the pool starts a fresh one (#4197). */
 	let recycled = false;
 	process.on("disconnect", () => process.exit(replies.rootLeaseLost || recycled || replies.retired ? 0 : 1));
-	const request = (message: Request, deliver?: WorkerDeliver): Promise<WorkerReply["value"]> =>
+	const request = (message: Request, deliver?: WorkerDeliver, outageTolerant = false): Promise<WorkerReply["value"]> =>
 		new Promise((resolve, reject) => {
 			const id = ++sequence;
-			pending.set(id, { resolve, reject, deliver });
+			pending.set(id, { resolve, reject, deliver, ...(outageTolerant ? { outageTolerant } : {}) });
 			process.send?.({ ...message, id }, (error) => {
 				if (error) reject(error);
 			});
@@ -474,13 +479,22 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		await request({ kind: "ready" });
 		for (;;) {
 			if (controlFailure) throw controlFailure;
-			await observeControl();
-			if (control.state !== "running") {
-				await delay(25);
+			let work: PoolWork | undefined;
+			try {
+				await observeControl();
+				if (control.state !== "running") {
+					await delay(25);
+					continue;
+				}
+				await reader.catchUpWorkflow(start.root);
+				work = (await request({ kind: "claim" })) as PoolWork | undefined;
+			} catch (error) {
+				// An idle worker waits out an outage of the journal instead of exiting (#4768). A claim the outage hid the
+				// answer of leaves its child leased here until the lease expires, then the child replays elsewhere.
+				if (infrastructureFaultOf(error) !== "storage_unavailable") throw error;
+				await delay(IDLE_OUTAGE_RETRY_MS);
 				continue;
 			}
-			await reader.catchUpWorkflow(start.root);
-			const work = (await request({ kind: "claim" })) as PoolWork | undefined;
 			replies.attemptFenced = false;
 			if (!work) {
 				if (replies.retired) break;
@@ -605,11 +619,20 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			};
 			// One request every `heartbeatMs` renews the attempt's lease, reports its usage and reads pool control; pushed
 			// control reaches the attempt between heartbeats.
+			// A heartbeat the journal's outage refused keeps the attempt while its lease lasts; the next one that gets through
+			// renews it (#4768). Past the lease, another worker may hold the child, so the attempt ends as fenced.
+			let renewedAt = performance.now();
 			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, async () => {
 				try {
-					offerControl((await request({ kind: "heartbeat", reports: usageReports() })) as PoolControl);
+					offerControl(
+						(await request({ kind: "heartbeat", reports: usageReports() }, undefined, true)) as PoolControl,
+					);
+					renewedAt = performance.now();
 				} catch (error) {
-					failPulse(error as Error);
+					if (infrastructureFaultOf(error) !== "storage_unavailable") return failPulse(error as Error);
+					if (start.leaseMs !== undefined && performance.now() - renewedAt < start.leaseMs) return;
+					replies.attemptFenced = true;
+					failPulse(workerRefusal(error as Error, { workId: work.id, generation: work.generation }).error);
 				}
 			});
 			const activity = setInterval(() => {

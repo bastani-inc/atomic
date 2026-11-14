@@ -305,7 +305,12 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
 			const onB = outcome.children.filter((child) => child.firstHost === "B");
 			assert.ok(onB.length > 0, JSON.stringify(outcome));
-			for (const child of onB) assert.equal(child.finalHost, "B", "the outage did not take the child off node B");
+			for (const child of onB)
+				assert.equal(
+					child.finalHost,
+					"B",
+					`the outage did not take the child off node B:\n${node.stdout.join("\n")}`,
+				);
 			const degraded = node.stdout.filter((line) => line.startsWith("degraded "));
 			const waits = degraded.map((line) => Number(/retry_in_ms=(\d+)/.exec(line)![1]));
 			assert.ok(waits[1]! > waits[0]! / 2 && waits[1]! >= 1_000, `the waits back off: ${degraded.join("\n")}`);

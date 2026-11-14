@@ -2154,6 +2154,7 @@ export class PoolCoordinator {
 						? { journalPath: options.journalPath }
 						: { shared: { host: options.shared.host, routes: this.satellite === undefined } }),
 					heartbeatMs: options.heartbeatMs,
+					leaseMs: options.leaseMs,
 					root,
 					definitions: this.sources,
 					admission: options.admission,
