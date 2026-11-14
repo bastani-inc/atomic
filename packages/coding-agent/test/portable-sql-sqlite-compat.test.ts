@@ -180,7 +180,12 @@ test("an upgraded database gets the same session and snapshot index schema (#479
 		CREATE TABLE snapshot_session_refs (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
 		INSERT INTO snapshot_blobs (hash, bytes, data) VALUES ('legacy', 1, X'61');
 	`);
+	await SqlSessionStore.open(database);
+	// An open that creates a missing table sees the upgraded age column by its zero default, and leaves its index to
+	// collection.
+	await database.exec("DROP TABLE snapshot_index_sources");
 	const store = await SqlSessionStore.open(database);
+	assert.equal(await database.get("SELECT name FROM sqlite_schema WHERE name = 'snapshot_blobs_age'"), undefined);
 	await store.snapshotBlobs.collectGarbage({ graceSeconds: 0 });
 	assertGolden("upgradedSchema", await schemaOf(database));
 	const stamped = await database.get<SqliteRow & { created_at: number }>(
