@@ -273,23 +273,21 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 				blueprintDigest: null,
 				releasedAt: null,
 			};
-			let unlease: () => Promise<void>;
 			try {
-				unlease = await withSlotLock(file, false, async () => {
-					const lease = await leaseSlot(file);
+				await withSlotLock(file, false, async () => {
+					const unlease = await leaseSlot(file);
 					try {
 						await writeRecord(file, record);
 					} catch (error) {
-						await lease().catch(() => {});
+						await unlease().catch(() => {});
 						throw error;
 					}
-					return lease;
+					heldSlots.set(file, { owner, references: 1, record, unlease });
 				});
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code === "ELOCKED") continue;
 				throw error;
 			}
-			heldSlots.set(file, { owner, references: 1, record, unlease });
 			return newLease(record, storeDir, owner);
 		}
 	} finally {
@@ -338,13 +336,15 @@ export async function holdRestoredWorktree(
 	const slot = slotOf(storeDir, root);
 	if (slot === undefined) return undefined;
 	const file = recordFile(storeDir, slot.repository, slot.slot);
-	const shared = heldSlots.get(file);
-	if (shared !== undefined) {
-		if (!sameOwner(shared.owner, owner)) return undefined;
-		shared.references++;
-		return newLease(shared.record, storeDir, owner);
-	}
-	const taken = await withSlotLock(file, true, async () => {
+	// Every change to the slot, this process's share of it included, happens under its record lock, so concurrent
+	// holds, releases and evictions in this process or others see each other.
+	return withSlotLock(file, true, async () => {
+		const shared = heldSlots.get(file);
+		if (shared !== undefined) {
+			if (!sameOwner(shared.owner, owner)) return undefined;
+			shared.references++;
+			return newLease(shared.record, storeDir, owner);
+		}
 		const record = await readRecord(file, storeDir, slot.repository, slot.slot).catch(() => undefined);
 		if (record === undefined || !sameOwner(record.holder, owner)) return undefined;
 		const held: PoolSlotRecord = { ...record, releasedAt: null };
@@ -355,28 +355,20 @@ export async function holdRestoredWorktree(
 			await unlease().catch(() => {});
 			throw error;
 		}
-		return { record: held, unlease };
+		heldSlots.set(file, { owner, references: 1, record: held, unlease });
+		return newLease(held, storeDir, owner);
 	});
-	if (taken === undefined) return undefined;
-	const again = heldSlots.get(file);
-	if (again !== undefined) {
-		// Another hold in this process took the slot meanwhile: share its lease.
-		await taken.unlease().catch(() => {});
-		again.references++;
-		return newLease(again.record, storeDir, owner);
-	}
-	heldSlots.set(file, { owner, references: 1, record: taken.record, unlease: taken.unlease });
-	return newLease(taken.record, storeDir, owner);
 }
 
 /** Records the state a degraded restore published into a held slot, which differs from the admitted one. */
 export async function recordPooledWorktreeState(lease: WorktreeLease, state: PoolLastState): Promise<void> {
 	const file = recordFile(lease.storeDir, lease.repository, lease.slot);
-	const held = heldSlots.get(file);
-	if (held === undefined || released.has(lease)) return;
-	held.record = { ...held.record, lastState: state };
-	const record = held.record;
-	await withSlotLock(file, true, () => writeRecord(file, record));
+	await withSlotLock(file, true, async () => {
+		const held = heldSlots.get(file);
+		if (held === undefined || released.has(lease)) return;
+		held.record = { ...held.record, lastState: state };
+		await writeRecord(file, held.record);
+	});
 }
 
 /**
@@ -394,33 +386,54 @@ export async function releaseRestoredWorktree(lease: WorktreeLease, last?: PoolL
 	if (last !== undefined && last.snapshotId !== held.record.lastState.snapshotId) {
 		held.record = { ...held.record, lastState: last };
 	}
-	if (--held.references > 0) return;
-	heldSlots.delete(file);
+	let counted = false;
 	try {
 		await withSlotLock(file, true, async () => {
-			const idle = (await otherLeases(file)) === 0;
-			await writeRecord(file, { ...held.record, releasedAt: idle ? new Date().toISOString() : null });
+			counted = true;
+			if (--held.references > 0) return;
+			heldSlots.delete(file);
+			try {
+				const idle = (await otherLeases(file)) === 0;
+				await writeRecord(file, { ...held.record, releasedAt: idle ? new Date().toISOString() : null });
+			} finally {
+				// Inside the record lock, so a new hold in this process never meets this lease still taken.
+				await held.unlease().catch(() => {});
+			}
 		});
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-release-failed", { file, ...failureDebugFields(error) });
+		// The record lock was never taken: end this process's share all the same; the slot then only looks changed.
+		if (!counted && --held.references <= 0) {
+			heldSlots.delete(file);
+			await held.unlease().catch(() => {});
+		}
 	}
-	await held.unlease().catch(() => {});
 }
 
 /**
- * Gives up the slot of `lease` whose worktree was never published or has been removed: deletes its record and its
- * lease, so the slot is free again, whatever other holds of it this process has.
+ * Gives up the slot of `lease` whose worktree was never published or has been removed: deletes its record and ends this
+ * process's lease, so the slot is free again, whatever other holds of it this process has. Never throws: a record left
+ * behind belongs to a slot without a directory, which eviction removes.
  */
 export async function discardPooledWorktree(lease: WorktreeLease): Promise<void> {
 	released.add(lease);
 	const file = recordFile(lease.storeDir, lease.repository, lease.slot);
-	const held = heldSlots.get(file);
-	if (held === undefined) return;
-	heldSlots.delete(file);
+	const end = async () => {
+		const held = heldSlots.get(file);
+		heldSlots.delete(file);
+		await held?.unlease().catch(() => {});
+	};
 	try {
-		await withSlotLock(file, true, () => rm(file, { force: true }));
-	} finally {
-		await held.unlease().catch(() => {});
+		await withSlotLock(file, true, async () => {
+			try {
+				if (heldSlots.has(file)) await rm(file, { force: true });
+			} finally {
+				await end();
+			}
+		});
+	} catch (error) {
+		reportDebug("storage", "worktree-pool-discard-failed", { file, ...failureDebugFields(error) });
+		await end();
 	}
 }
 
@@ -478,6 +491,7 @@ async function evictSlot(storeDir: string, record: PoolSlotRecord, options: Evic
 	if (heldSlots.has(file)) return false;
 	try {
 		return await withSlotLock(file, false, async () => {
+			if (heldSlots.has(file)) return false;
 			const current = await readRecord(file, storeDir, record.repository, record.slot);
 			if (current === undefined || (await otherLeases(file)) > 0) return false;
 			if (await exists(current.path)) {

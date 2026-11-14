@@ -245,6 +245,29 @@ setInterval(() => {}, 1000);
 		CHILD_PROCESS_TIMEOUT_MS,
 	);
 
+	test("two concurrent holds in one process both share the slot, which stays held until both release it (#4748)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const manager = await sessionOf(clone, snapshot);
+		const root = await restoredRoot(manager);
+		await releaseSessionWorktrees(manager);
+		const owner = { kind: "session" as const, id: manager.getSessionId() };
+
+		const [first, second] = await Promise.all([
+			holdRestoredWorktree(storeDir(), root, owner),
+			holdRestoredWorktree(storeDir(), root, owner),
+		]);
+
+		assert.ok(first && second);
+		await releaseRestoredWorktree(first);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), root), { owner, held: true });
+		assert.deepEqual(
+			await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 0, settings }),
+			[],
+		);
+		await releaseRestoredWorktree(second);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), root), { owner, held: false });
+	});
+
 	test("only the owner holds a slot again, and a second hold in one process shares the lease (#4748)", async () => {
 		const { snapshot, clone } = await recordedSnapshot();
 		const manager = await sessionOf(clone, snapshot);
