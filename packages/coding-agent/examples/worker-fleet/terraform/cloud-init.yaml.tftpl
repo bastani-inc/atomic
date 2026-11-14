@@ -25,7 +25,7 @@ runcmd:
   - |
     mkdir -p /etc/atomic && echo "ATOMIC_WORKER_PROVIDER_ID=$(${provider_id_command})" > /etc/atomic/worker.env
   - |
-    umask 077 && ${token_command} > /etc/atomic/token && chown atomic:atomic /etc/atomic/token
+    (umask 077 && ${token_command} > /etc/atomic/token && chown atomic:atomic /etc/atomic/token)
   - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]
   - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-libsql"]
   - [systemctl, enable, --now, atomic-worker]
