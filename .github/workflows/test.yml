@@ -309,6 +309,130 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Every store's conformance suite on the server backends (test/integration/storage-conformance-matrix.test.ts),
+  # plus the integration files that need a libSQL server. The integration shards run the same matrix on SQLite
+  # files only. Linux only: service containers need a Linux runner. See docs/ci.md ("Storage backend matrix").
+  storage-conformance:
+    name: storage-conformance (linux-x64)
+    runs-on: namespace-profile-atomic-ci-linux-amd64-8x16;overrides.cache-tag=bastani-inc.atomic.ci.storage-conformance.linux-amd64
+    # Setup as in an integration shard (about 5 min) plus the shared-pool scale cases, whose own budgets are 10 min
+    # each; see docs/ci.md ("Per-job time limits").
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16@sha256:63e83b5a3dc36a917dccb76fe1bd2ac51f1ec9c1deb47ff20d4f04233bf6eae9
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+      sqld:
+        # libsql-server 0.24.33 can stop taking writes under contention unless it checkpoints on a timer
+        # (tursodatabase/libsql#2286, #4790).
+        image: ghcr.io/tursodatabase/libsql-server:v0.24.33@sha256:f8ca0134cdded747793888e48591aece07647d9d598d3ac229aabfa93159ca88
+        env:
+          SQLD_CHECKPOINT_INTERVAL_S: "60"
+        ports:
+          - 8080:8080
+    env:
+      ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED: "1"
+      ATOMIC_TEST_LIBSQL_URL: http://127.0.0.1:8080
+      ATOMIC_TEST_POSTGRES_URL: postgresql://postgres@127.0.0.1:5432/postgres
+      ATOMIC_TEST_POSTGRES_PASSWORD: postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          fetch-depth: 1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Week for the native bindings cache key
+        id: week
+        shell: bash
+        run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore native bindings built from these sources
+        id: natives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/natives/native/*.node
+          key: atomic-natives-linux-x64-${{ steps.week.outputs.week }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'packages/natives/package.json', 'packages/natives/scripts/**') }}
+      - id: rust
+        if: steps.natives.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        continue-on-error: true
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Retry Rust toolchain install
+        if: steps.rust.outcome == 'failure'
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        timeout-minutes: 4
+        with:
+          toolchain: stable
+      - name: Configure Namespace dependency and Rust build cache
+        uses: namespacelabs/nscloud-cache-action@1124a6f3ce44e5cf84cc22111530961f4d2a15f9 # v1
+        with:
+          spacectl-version: 0.12.3
+          cache: ${{ steps.natives.outputs.cache-hit == 'true' && 'npm' || 'npm,rust' }}
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Alias @earendil-works/pi-ai onto the workspace package
+        run: node scripts/alias-pi-ai.mjs
+      - name: Restore model data
+        id: model-data
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/ai/src/providers/data
+          key: atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-none
+          restore-keys: |
+            atomic-model-data-v1-${{ hashFiles('packages/ai/src/models.generated.ts', 'packages/ai/scripts/model-data.ts', 'packages/ai/scripts/generate-models.ts') }}-
+          enableCrossOsArchive: true
+      - name: Hydrate model data unless the restored snapshot is valid
+        shell: bash
+        run: |
+          if [ -n "${{ steps.model-data.outputs.cache-matched-key }}" ] && npm run check:model-data --workspace=@bastani/pi-ai >/dev/null 2>&1; then
+            echo "Using the restored model data snapshot ${{ steps.model-data.outputs.cache-matched-key }}"
+          else
+            echo "No valid model data snapshot; hydrating from the upstream catalogs"
+            npm run hydrate:model-data
+          fi
+      - name: Build @bastani/pi-ai
+        run: npm run build:offline --workspace=@bastani/pi-ai
+      - name: Build native bindings for the root suites
+        if: steps.natives.outputs.cache-hit != 'true'
+        run: npm run build --workspace=@bastani/atomic-natives
+      - name: Build @bastani/atomic package
+        working-directory: packages/coding-agent
+        run: npm run build
+      - name: Wait for the libSQL server
+        shell: bash
+        timeout-minutes: 1
+        run: until curl -fsS "$ATOMIC_TEST_LIBSQL_URL/health"; do sleep 1; done
+      # The file filters select the matrix and every integration file that needs a libSQL server, including the
+      # shared-pool scale cases (#4790).
+      - name: Storage conformance and libSQL server tests
+        run: >-
+          bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
+          -- npm run test:integration -- storage-conformance-matrix sqld shared-pool-scale
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-diagnostics-storage-conformance-linux-x64
+          path: .ci-diagnostics/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   agent-suite:
     name: agent-suite (${{ matrix.binary_platform }}, ${{ matrix.shard }}/3)
     strategy:
@@ -826,7 +950,7 @@ jobs:
 
   test:
     name: test (all platforms)
-    needs: [unit-tests, integration-tests, agent-suite, release-archive, static-checks]
+    needs: [unit-tests, integration-tests, storage-conformance, agent-suite, release-archive, static-checks]
     if: always()
     runs-on: namespace-profile-atomic-ci-linux-amd64-4x16;overrides.cache-tag=bastani-inc.atomic.ci.result-gate.linux-amd64
     timeout-minutes: 1
