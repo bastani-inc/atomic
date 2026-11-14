@@ -494,15 +494,42 @@ const FETCH_TRANSPORTS = [
 	...["https", "http", "ssh", "git", "file"].flatMap((protocol) => ["-c", `protocol.${protocol}.allow=always`]),
 ];
 
-/** `git fetch` of `refspecs` from `repository`; the `--` keeps a recorded value from ever being read as an option. */
-function fetchArgs(repository: string, refspecs: readonly string[]): string[] {
-	return [...FETCH_TRANSPORTS, "fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", repository, ...refspecs];
+/**
+ * `git fetch` of `refspecs` from `repository`, with `options` such as `--depth=1`; the `--` keeps a recorded value from
+ * ever being read as an option.
+ */
+function fetchArgs(repository: string, refspecs: readonly string[], options: readonly string[]): string[] {
+	return [
+		...FETCH_TRANSPORTS,
+		"fetch",
+		"-q",
+		"--no-tags",
+		"--no-write-fetch-head",
+		...options,
+		"--",
+		repository,
+		...refspecs,
+	];
 }
 
 /** Runs {@link fetchArgs} through the runner without a way to prompt, so an unreachable or unknown host fails at once. */
-function runFetch(git: GitRunOptions, repository: string, refspecs: readonly string[]): Promise<GitRunResult> {
-	return runGit(fetchArgs(repository, refspecs), { ...git, nonInteractive: true });
+function runFetch(
+	git: GitRunOptions,
+	repository: string,
+	refspecs: readonly string[],
+	options: readonly string[] = [],
+): Promise<GitRunResult> {
+	return runGit(fetchArgs(repository, refspecs, options), { ...git, nonInteractive: true });
 }
+
+/** The options of a fetch that brings whole history: `--unshallow` once a depth-1 fetch left the store shallow. */
+async function historyFetchOptions(git: GitRunOptions): Promise<string[]> {
+	return (await gitText(["rev-parse", "--is-shallow-repository"], git)) === "true" ? ["--unshallow"] : [];
+}
+
+/** Fetch failures that do not depend on the depth: the remote cannot be reached, or does not have the commits. */
+const FULL_FETCH_FAILS_TOO =
+	/could not read from remote repository|unable to access|could not resolve|does not appear to be a git repository|^ssh:|not our ref|couldn't find remote ref|unadvertised object/i;
 
 interface RemoteFetch {
 	/** The last fetch failure, when a remote could not supply what was still missing. */
@@ -511,10 +538,16 @@ interface RemoteFetch {
 	readonly supplied: boolean;
 }
 
+/**
+ * Fetches the `commits` the store lacks from the first of `remotes` that has them, with their history; with
+ * `depthFirst`, each remote is first asked for the commits alone (`--depth=1`, #4748), and asked again for their
+ * history only when that fails for a reason other than an unreachable remote or missing commits.
+ */
 async function fetchCommits(
 	git: GitRunOptions,
 	remotes: readonly string[],
 	commits: readonly string[],
+	depthFirst = false,
 ): Promise<RemoteFetch> {
 	let failure: Error | undefined;
 	let supplied = false;
@@ -522,8 +555,24 @@ async function fetchCommits(
 		const missing = [];
 		for (const commit of commits) if (!(await hasObject(git, `${commit}^{commit}`))) missing.push(commit);
 		if (missing.length === 0) return { failure: undefined, supplied };
+		if (depthFirst) {
+			try {
+				await runFetch(git, remote, missing, ["--depth=1"]);
+				supplied = true;
+				noteRestoreFetch("shallow");
+				continue;
+			} catch (error) {
+				if (!isWorkspaceGitError(error)) throw error;
+				// A remote or Git that refuses a depth-1 fetch gets today's full fetch; one that is unreachable or lacks the
+				// commits would fail it the same way, so it is not asked twice.
+				if (FULL_FETCH_FAILS_TOO.test(error.detail)) {
+					failure = error;
+					continue;
+				}
+			}
+		}
 		try {
-			await runFetch(git, remote, missing);
+			await runFetch(git, remote, missing, await historyFetchOptions(git));
 			supplied = true;
 			noteRestoreFetch("full");
 		} catch (error) {
@@ -535,8 +584,59 @@ async function fetchCommits(
 }
 
 /**
+ * Fetches the whole history of a store a depth-1 fetch left shallow, with `commits`, from the first of `remotes` that
+ * supplies it, so an ancestry check across the boundary is answered (#4748). Resolves whether one did; Git refuses at
+ * once, without contacting a remote, for a store that holds its whole history.
+ */
+async function unshallowStore(
+	git: GitRunOptions,
+	remotes: readonly string[],
+	commits: readonly string[],
+): Promise<boolean> {
+	for (const remote of remotes) {
+		try {
+			await runFetch(git, remote, commits, ["--unshallow"]);
+			return true;
+		} catch (error) {
+			if (!isWorkspaceGitError(error)) throw error;
+		}
+	}
+	return false;
+}
+
+/** The shared object store a restored worktree's Git directory names: Atomic's own, never a user's repository. */
+const SHARED_STORE = /[\\/]repositories[\\/][0-9a-f]{24}\.git$/;
+
+/**
+ * Fetches the whole history of the shared object store behind the restored worktree at `root` from its recorded
+ * remotes, when a depth-1 restore left that store shallow, so ancestry across the boundary is answered (#4748).
+ * Resolves whether it did; a checkout that is not a restored worktree, or a failed fetch, is left as it is.
+ */
+export async function unshallowRestoredWorktree(
+	root: string,
+	commits: readonly string[],
+	signal?: AbortSignal,
+): Promise<boolean> {
+	const common = await runGit(["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+		cwd: root,
+		signal,
+		allowExitCodes: [128],
+	});
+	const store = common.stdout.toString("utf8").trim();
+	if (common.exitCode !== 0 || !SHARED_STORE.test(store)) return false;
+	const git: GitRunOptions = { cwd: dirname(store), signal, env: { GIT_DIR: store } };
+	// Sibling worktrees of one store are compared at once: one fetches its history, the others find it complete.
+	return withRepositoryLock(store, async () =>
+		(await historyFetchOptions(git)).length === 0
+			? true
+			: unshallowStore(git, await configuredRemoteUrls(git), commits),
+	);
+}
+
+/**
  * Makes `snapshot.head` available in the store, from the recorded remotes or else its bundle, and resolves whether
- * it came from a recorded remote.
+ * it came from a recorded remote. A remote's fetch of `head` alone is tried first, at depth 1 (#4748); a bundle's
+ * prerequisites are fetched with their history, as its import needs.
  */
 async function ensureHead(
 	git: GitRunOptions,
@@ -548,7 +648,7 @@ async function ensureHead(
 	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
 		// Only a fetch that succeeded proves a remote has `head`: another process may import it from a bundle meanwhile.
-		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head]);
+		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head], true);
 		let failure = fromRemotes.failure;
 		fetched = fromRemotes.supplied;
 		if (!(await hasObject(git, `${head}^{commit}`)) && snapshot.bundle) {
@@ -1063,6 +1163,8 @@ async function restoreDegradedValidated(
 			}
 			const closest = await timeRestorePhase("fetch", () => closestCommit(git, snapshot, candidates, options.blobs));
 			if (closest === undefined) throw failure;
+			// Which unpushed commits the closest commit's history lacks is an ancestry question a shallow store cannot answer.
+			await unshallowStore(git, snapshot.remotes, [closest.commit]);
 			await runGit(["update-ref", "--stdin"], {
 				...git,
 				input: [
