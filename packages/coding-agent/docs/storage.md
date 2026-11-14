@@ -93,6 +93,19 @@ atomic storage status
 
 Nothing is written when the token is empty or the connection fails. If saving settings fails, the new token file is removed and the previous token remains untouched. Previous token files are kept after a successful join too, so already-running sessions can continue using them; remove them only after those sessions stop and no settings reference them. When the adapter is not installed, the command prints the `atomic install` command to run first. An absolute `file:` URL, such as `file:///home/me/shared.sqlite`, needs no `--token-file`; relative file URLs are refused so another working directory cannot select a different database. The `libsql://`, `https://`, and `wss://` schemes are accepted. A URL that contains the token itself, as a user name, a password, or an `authToken` parameter, is refused: pass the token with `--token-file` so it stays out of settings and output.
 
+To join a PostgreSQL database, install `@bastani/atomic-storage-postgres` and pass a `postgres://` or `postgresql://` URL with exactly one credential source:
+
+```bash
+atomic install npm:@bastani/atomic-storage-postgres
+atomic storage join postgres://atomic@db.example.com:5432/atomic?sslmode=verify-full --password-file ~/pg-password
+```
+
+- `--password-file <path>` reads the password and copies it to a new `storage-token.<id>` file (mode 600), as for a libSQL token.
+- `--token-file <path>` references a file that another process keeps fresh, such as a Vault agent or a workload-identity sidecar. It is not copied: settings hold its absolute path, and it is read again for every new connection.
+- `--auth azure|aws|gcp` uses the platform's identity (Microsoft Entra ID, AWS IAM, Google Cloud IAM) instead of a password.
+
+The user name stays in the URL; a password in the URL, or a `password` parameter, is refused. Passing none or more than one of the three flags is refused, and so is `--password-file` or `--auth` with a libSQL URL. The join checks the connection with `SELECT 1` and writes `storage` as `{ "adapter": "@bastani/atomic-storage-postgres", "options": { "url": "…" }, "secrets": { "password": { "file": "…" } } }` (or `"options": { "url": "…", "auth": "azure-entra" }`): a file reference, never the password. `atomic worker start|status|controller --db postgres://…` take the same three flags; `atomic team join` accepts libSQL URLs only.
+
 After storage is saved, a problem reading project settings only affects the final override report: the command warns you and still exits successfully. Fix the reported settings error, then run `atomic storage status` to inspect the effective selection.
 
 The running Intercom broker keeps the selection it started with. `atomic intercom restart` replaces it: connected sessions reconnect within a few seconds and start a broker that reads the new selection. See [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
@@ -103,7 +116,7 @@ The running Intercom broker keeps the selection it started with. `atomic interco
 
 - the selected storage and where the selection comes from: an environment variable, project settings, global settings (`storage`, `sessions.storage`, or `workflows.journal`), or the default. Selections that are set but outranked are listed as `overrides`. See [Selecting storage per process](#selecting-storage-per-process) for the order;
 - whether the adapter loads, and from which installed package;
-- whether the database answers a `SELECT 1`. Local SQLite files, including adapter `file:` URLs, are checked through a read-only SQLite connection instead of an adapter hook that could create the file. Missing files are reported without creating them; no journal mode or table is changed. Relative adapter `file:` URLs are not probed: use an absolute URL to identify the file unambiguously;
+- whether the database answers a `SELECT 1`. A PostgreSQL selection is shown as `PostgreSQL postgres://host:port/database via @bastani/atomic-storage-postgres`, without its user name or parameters, and its check adds the server version. Local SQLite files, including adapter `file:` URLs, are checked through a read-only SQLite connection instead of an adapter hook that could create the file. Missing files are reported without creating them; no journal mode or table is changed. Relative adapter `file:` URLs are not probed: use an absolute URL to identify the file unambiguously;
 - for Intercom, whether a broker started now would route across machines, and how many brokers are live in the shared database;
 - whether an Intercom broker is running, how many sessions it serves, whether it uses the current selection, and its multi-node routing state.
 
@@ -212,7 +225,17 @@ Leases, local-worker pool state and worktree snapshot contents of workflow runs 
 
 Both commands follow `ATOMIC_CODING_AGENT_DIR` and the storage selection in effect for the current directory. Sessions come from the session storage a session started here would use: the default database, a session directory, a SQLite file or an adapter. Workflow runs come from the journal store or a journal file selected through `workflows.journal.path`, `ATOMIC_WORKFLOW_JOURNAL_PATH` or a `path` selection.
 
-A kind kept in a shared libSQL or Turso database is refused with a message, because every machine joined to it already reads it. Without `--sessions` or `--workflows`, the commands skip that kind with a note and handle the other one. Sessions kept only in memory are refused the same way.
+A kind kept in a shared libSQL, Turso or PostgreSQL database is refused with a message, because every machine joined to it already reads it. Without `--sessions` or `--workflows`, the commands skip that kind with a note and handle the other one. Sessions kept only in memory are refused the same way.
+
+`--storage <json>` or `--storage-file <path>` names the storage to export from or import into instead, in the form of the `storage` setting: a `{ "path": "…" }` SQLite file, or an adapter with its options, secrets and prefix. A shared database named this way is used, not refused. To move runs and sessions from one store to another, for example from libSQL to PostgreSQL:
+
+```bash
+atomic storage export ~/moved --storage-file old-storage.json   # the old selection, e.g. copied from settings
+atomic storage join postgres://atomic@db.example.com/atomic --password-file ~/pg-password
+atomic storage import ~/moved
+```
+
+Stop or drain the runs on the old store first: an imported run that was running is interrupted, and resumes on the new store.
 
 #### Session files
 
