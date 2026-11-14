@@ -44,12 +44,7 @@ useTemporaryAgentDir();
  * Rows that fail on a backend because of an open bug, by suite and test name, with the issue. They run as `it.fails`,
  * so the row turns red once the bug is fixed and the fix removes its entry.
  */
-const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map([
-	[
-		"SqlSessionStore on libSQL server (sqld) > computes summaries from messages and the latest metadata without rewriting text",
-		"#4805",
-	],
-]);
+const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map();
 
 /**
  * A describe/it runner for `backend`: skipped rows when the backend is (or, for a store's suite, when the backend does
