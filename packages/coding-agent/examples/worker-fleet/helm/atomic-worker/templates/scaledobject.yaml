@@ -1,4 +1,7 @@
-# KEDA scales the worker Deployment to the fleet's desiredHosts, from and to zero.
+{{- if not .Values.controllerRbac }}
+# KEDA scales the worker Deployment to the fleet's desiredHosts, from and to zero. It reads the in-cluster metrics
+# Service, which serves counts only, with no credential: limit who reaches it with a NetworkPolicy. A scaler that reads a
+# cloud service instead would take a TriggerAuthentication with podIdentity (azure-workload, aws or gcp), never a key.
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -22,3 +25,4 @@ spec:
         valueLocation: desiredHosts
         targetValue: "1"
         activationTargetValue: "0"
+{{- end }}
