@@ -1178,20 +1178,29 @@ export class SqlPoolQueue {
 				],
 				writes: [],
 			};
-			const receiptParts =
-				mutation.kind === "session-append"
-					? await this.appendSession(read, row, mutation, write, sessions ?? (await this.poolSessions(read)))
-					: await this.recordCheckpoint(
-							read,
-							lease,
-							row,
-							mutation,
-							now,
-							checkpoints,
-							write,
-							mutation.kind === "checkpoint" ? undefined : (sessions ?? (await this.poolSessions(read))),
-							state.recorded,
-						);
+			// A journal without batches opens the session store in this write's transaction, for this write only.
+			const own =
+				sessions === undefined && mutation.kind !== "checkpoint" ? await this.poolSessions(read) : undefined;
+			let receiptParts: ReceiptSql;
+			try {
+				const store = sessions ?? own;
+				receiptParts =
+					mutation.kind === "session-append"
+						? await this.appendSession(read, row, mutation, write, store!)
+						: await this.recordCheckpoint(
+								read,
+								lease,
+								row,
+								mutation,
+								now,
+								checkpoints,
+								write,
+								store,
+								state.recorded,
+							);
+			} finally {
+				await own?.store.close();
+			}
 			write.writes.push({
 				sql: `INSERT INTO ${this.operations} SELECT ?, ?, ?, ?, ${receiptParts.sql}`,
 				params: [token.id, token.generation, operationId, identity, ...receiptParts.params],
