@@ -2460,9 +2460,15 @@ export class PoolCoordinator {
 					if (message.kind === "control") return leased(() => queue.control(lease));
 					if (message.kind === "fenced") {
 						const fenced = slot.work;
-						slot.work = undefined;
-						slot.worktree = undefined;
-						this.places.end(slot);
+						// The slot keeps the attempt until its release below is recorded: a store that refuses it leaves the
+						// attempt held, renewed and the worker's, which sends its end again, instead of a row no worker holds and a
+						// handoff never recorded (#4768).
+						const end = () => {
+							if (slot.work !== fenced) return;
+							slot.work = undefined;
+							slot.worktree = undefined;
+							this.places.end(slot);
+						};
 						// Its current owner keeps superseded work. Work still leased to this attempt was refused by the root,
 						// or its run failed on a fault of the pool: it is released for replay and counts as a failed attempt,
 						// so refusals and faults stay bounded.
@@ -2486,6 +2492,7 @@ export class PoolCoordinator {
 								);
 							}
 						}
+						end();
 						return;
 					}
 					if (message.kind === "controlled") {
@@ -3005,7 +3012,14 @@ export class PoolCoordinator {
 				}
 				const child = work.worker === null ? undefined : this.incarnations.get(work.worker);
 				if (child && work.worker !== null && this.isLive(work.worker, child)) {
-					await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
+					// A live worker keeps only an attempt it knows it holds. One whose claim committed while its answer was lost,
+					// or whose placement could not be put back, holds the row without knowing it: extended for as long as the
+					// worker lived, its child would never run. It goes back to the queue instead, and the worker, busy or idle, is
+					// left alone. No worker ever ran that generation, so it goes back as a handoff, which counts as none of the
+					// child's attempts (#4768).
+					if (this.slotHolds(work.worker, work))
+						await queue.extend(lease, work, leaseMs).catch(ignoreStaleWorkLease);
+					else await queue.releaseExited(lease, work, { delayMs: 0 });
 					continue;
 				}
 				// A worker that outlives SIGKILL is retired without waiting for its exit: its child replays on a replacement
@@ -3129,6 +3143,16 @@ export class PoolCoordinator {
 	 * Whether a worker still runs its attempt: it is running and connected, and it either waits for this coordinator's
 	 * answer or was heard within its work lease, not counting this process's own stalls.
 	 */
+	/** Whether `worker`'s slot holds `work`'s attempt: running it, or placing the claim that took it. */
+	private slotHolds(worker: string, work: PoolWork): boolean {
+		for (const slot of this.slots) {
+			if (slot.worker !== worker) continue;
+			const held = slot.work ?? slot.claimed;
+			return held !== undefined && held.id === work.id && held.generation === work.generation;
+		}
+		return false;
+	}
+
 	private isLive(worker: string, child: ChildProcess): boolean {
 		this.observeResponsiveness();
 		const heard = this.lastHeard.get(worker);

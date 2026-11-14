@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { StorageUnavailableError } from "@bastani/atomic/storage";
+import { StorageTransientError, StorageUnavailableError } from "@bastani/atomic/storage";
 import { test, vi } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
@@ -54,6 +54,8 @@ async function runOneChild(
 		readonly leaseMs?: number;
 		readonly outageHandoffMs?: number;
 		readonly admission?: AdmissionConfiguration;
+		/** How many children of `exportName` the root runs at once; the outcome is the first that failed, if any. */
+		readonly children?: number;
 	} = {},
 ) {
 	const directory = makeTempDirectory("pool-attempt-counting-");
@@ -68,8 +70,10 @@ async function runOneChild(
 		outputs: {},
 		async run(ctx) {
 			try {
-				const result = await ctx.workflow(child, { inputs: { directory } });
-				outcome = { status: result.status };
+				const results = await Promise.all(
+					Array.from({ length: options.children ?? 1 }, () => ctx.workflow(child, { inputs: { directory } })),
+				);
+				outcome = { status: results.find((result) => result.status !== "completed")?.status ?? "completed" };
 			} catch (error) {
 				const chain: string[] = [];
 				for (
@@ -268,6 +272,9 @@ const busy = () =>
 		{ adapter: "libsql", location: "http://127.0.0.1:1" },
 		Object.assign(new Error("SQLITE_BUSY: database is locked"), { code: "SQLITE_BUSY" }),
 	);
+
+/** A work lease short enough that a lease nobody renews expires within the test. */
+const SHORT_LEASE_MS = 2_000;
 
 /** How soon a real worker hands its child on when the store keeps refusing it, instead of two minutes. */
 const SHORT_HANDOFF_MS = 400;
@@ -530,6 +537,93 @@ test.skipIf(process.platform === "win32")(
 			`the fenced attempt's session wrote its last entries as it closed: ${JSON.stringify(afterFence)}`,
 		);
 		assert.deepEqual(result.permits, [], "every ended attempt gave its stage's session permit back");
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a child whose claim committed but whose answer was lost is recovered after its lease expires, though its worker lives on (#4768)",
+	async () => {
+		let lost = false;
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"checkpointChild",
+			() => {
+				// The first claim takes the child, but the worker never learns it: the answer is lost as a connection that
+				// broke after the request reached the server. The worker lives on and keeps asking for work.
+				const claim = SqlPoolQueue.prototype.claim;
+				vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["claim"]>
+				) {
+					const work = await claim.apply(this, args);
+					if (work !== undefined && !lost) {
+						lost = true;
+						throw new StorageTransientError(
+							{ adapter: "libsql", location: "http://127.0.0.1:1" },
+							{ code: "connection-lost", outcome: "unknown", attempts: 1 },
+						);
+					}
+					return work;
+				});
+			},
+			undefined,
+			{ workers: 1, leaseMs: SHORT_LEASE_MS },
+		);
+		assert.ok(lost);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		// The lost claim's generation went back as a handoff: no worker ever ran it, so it spent none of the attempts.
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation, item.handoffs]),
+			[["completed", 2, [1]]],
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"workers whose handoffs the store refuses to record wait the outage out: the pool survives, each handoff is recorded, and every child completes uncounted (#4768)",
+	async () => {
+		/** Workers, and children, going through the outage at once: more than the pool's worker replacements allow. */
+		const WORKERS = 4;
+		const refusedReleases = new Map<string, number>();
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"checkpointChild",
+			() => {
+				const commit = SqlPoolQueue.prototype.commit;
+				vi.spyOn(SqlPoolQueue.prototype, "commit").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["commit"]>
+				) {
+					// Each child's first attempt's commits never get through: the attempt hands the child on.
+					if (args[1].generation === 1) throw busy();
+					return commit.apply(this, args);
+				});
+				// The outage outlasts the handoff: recording it is refused twice for each child before the store takes it.
+				const releaseExited = SqlPoolQueue.prototype.releaseExited;
+				vi.spyOn(SqlPoolQueue.prototype, "releaseExited").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["releaseExited"]>
+				) {
+					const refused = refusedReleases.get(args[1].id) ?? 0;
+					if (args[2] !== undefined && refused < 2) {
+						refusedReleases.set(args[1].id, refused + 1);
+						throw busy();
+					}
+					return releaseExited.apply(this, args);
+				});
+			},
+			undefined,
+			{ workers: WORKERS, children: WORKERS, outageHandoffMs: SHORT_HANDOFF_MS },
+		);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result.outcome));
+		assert.equal(result.root, "completed");
+		assert.equal(refusedReleases.size, WORKERS);
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation, item.handoffs]),
+			Array.from({ length: WORKERS }, () => ["completed", 2, [1]]),
+		);
 	},
 	BUDGET.timeoutMs,
 );

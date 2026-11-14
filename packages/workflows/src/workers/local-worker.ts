@@ -830,13 +830,25 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				writable = false;
 				writableAttempt = undefined;
 				const ended = fence.request();
-				await request({
+				const message = {
 					...ended,
 					...(ended.fault === undefined && attemptFault !== undefined
 						? { fault: serializeError(attemptFault) }
 						: {}),
 					...(handoff ? { handoff: true as const } : {}),
-				});
+				};
+				// The pool records the attempt's end in the store. A store that refuses it, unreachable or busy, is waited
+				// out as an idle worker waits out an outage: the worker lives on and sends the end again, instead of exiting
+				// as if it had crashed (#4768).
+				for (;;) {
+					try {
+						await request(message);
+						break;
+					} catch (error) {
+						if (infrastructureFaultOf(error) !== "storage_unavailable" || replies.rootLeaseLost) throw error;
+						await delay(IDLE_OUTAGE_RETRY_MS);
+					}
+				}
 			}
 			attemptAdmission.release();
 			// The attempt's prompt reservations end with it: a replay asks its pending prompts again (#3996), and the
