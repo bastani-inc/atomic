@@ -1,4 +1,6 @@
 import type { SessionEntry } from "@bastani/atomic";
+import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
+import { INTERCOM_INBOX_ENTRY } from "./durable-inbox.js";
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import type { Message, SessionInfo } from "./types.js";
 
@@ -94,10 +96,7 @@ export class OutboundAsks {
 	answeredBy(from: SessionInfo, message: Message): OutboundAskRecord | undefined {
 		if (message.replyTo === undefined || message.expectsReply === true) return undefined;
 		const record = this.find(message.replyTo);
-		if (record === undefined) return undefined;
-		const { recipientId, to } = record.ask;
-		const named = from.name !== undefined && from.name.toLowerCase() === to.trim().toLowerCase();
-		return from.id === recipientId || named ? record : undefined;
+		return record !== undefined && answeredByRecipient(record.ask, from) ? record : undefined;
 	}
 
 	/** Asks still waiting for their reply, oldest first. */
@@ -124,9 +123,9 @@ export class OutboundAsks {
 	private records(): Map<string, OutboundAskRecord> {
 		const asks = new Map<string, OutboundAsk>();
 		const states = new Map<string, Exclude<OutboundAskState, "pending">>();
-		let entries: Iterable<SessionEntry> = [];
+		let entries: SessionEntry[] = [];
 		try {
-			entries = this.options.entries();
+			entries = [...this.options.entries()];
 		} catch {
 			entries = [];
 		}
@@ -144,9 +143,36 @@ export class OutboundAsks {
 		}
 		for (const [askId, ask] of this.opened) if (!asks.has(askId)) asks.set(askId, ask);
 		for (const [askId, state] of this.settled) if (!states.has(askId)) states.set(askId, state);
+		// A saved reply or failed-ask message settles its ask even when the settle record was never written (a crash
+		// between the two): the ask's state always agrees with the messages saved for it.
+		for (const { from, message } of savedArrivals(entries)) {
+			if (message.replyTo === undefined || message.expectsReply === true || states.has(message.replyTo)) continue;
+			const ask = asks.get(message.replyTo);
+			if (ask === undefined || !answeredByRecipient(ask, from)) continue;
+			states.set(ask.askId, message.replyError === undefined ? "answered" : "failed");
+		}
 		const records = new Map<string, OutboundAskRecord>();
 		for (const [askId, ask] of asks) records.set(askId, { ask, state: states.get(askId) ?? "pending" });
 		return records;
+	}
+}
+
+/** Whether `from` is the ask's recipient: the session the broker authorized, or the name it was asked under. */
+function answeredByRecipient(ask: OutboundAsk, from: SessionInfo): boolean {
+	const named = from.name !== undefined && from.name.toLowerCase() === ask.to.trim().toLowerCase();
+	return from.id === ask.recipientId || named;
+}
+
+/** Messages this session saved as they arrived, or showed as cards. */
+function* savedArrivals(entries: readonly SessionEntry[]): Generator<{ from: SessionInfo; message: Message }> {
+	for (const entry of entries) {
+		const data =
+			entry.type === "custom" && entry.customType === INTERCOM_INBOX_ENTRY
+				? (entry.data as { from?: unknown; message?: unknown } | undefined)
+				: entry.type === "custom_message" && entry.customType === "intercom_message"
+					? (entry.details as { from?: unknown; message?: unknown } | undefined)
+					: undefined;
+		if (isSessionInfo(data?.from) && isMessage(data.message)) yield { from: data.from, message: data.message };
 	}
 }
 

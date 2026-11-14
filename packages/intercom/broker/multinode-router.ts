@@ -1,3 +1,4 @@
+import { OFFLINE_SESSION_TARGET } from "./held-reply-targets.js";
 import { createHash, randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { normalizeGroup } from "../group.js";
@@ -88,8 +89,7 @@ export { readSharedStorageSetting } from "./shared-storage-setting.js";
  * recipient. Shorter than the 20 s hold, so a lost `outcome` hint for a held send is noticed before it times out.
  */
 export const MULTI_NODE_OUTCOME_POLL_INTERVAL_MS = 5_000;
-/** The `queued` frame's target for a send waiting in the shared outbox for an offline session (decision 1). */
-export const OFFLINE_SESSION_TARGET = "offline session";
+export { OFFLINE_SESSION_TARGET };
 /** A send for another node while the shared database cannot be reached (spec §8, "Database unavailable"). */
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
@@ -516,8 +516,11 @@ export class MultiNodeRouter {
 		}
 	}
 
-	/** A session left (cleanly or not): it stays known, so sends to it are queued until it returns anywhere. */
-	sessionLeft(session: BrokerConnectedSession, released?: ReleasedTarget): void {
+	/**
+	 * A session left (cleanly or not): it stays known, so sends to it are queued until it returns anywhere. `ended`: it
+	 * ended for good; otherwise a top-level session is only away, and its asks, sent and received, stay open (#4751).
+	 */
+	sessionLeft(session: BrokerConnectedSession, released?: ReleasedTarget, ended = true): void {
 		const entry = this.presence.get(session);
 		if (this.closed || entry === undefined) return;
 		this.presence.delete(session);
@@ -544,9 +547,15 @@ export class MultiNodeRouter {
 			for (const inflight of claims) await this.state.outbox.releaseClaim(inflight.claim);
 			// #4386: asks to a released subagent are parked before its presence ends; registering again on any node takes
 			// that presence over first, so its rebinding always finds them.
-			await this.state.pendingAsks
-				.pruneSender(sessionId)
-				.then(() => settleAsksToDeparted(this.state, sessionId, released))
+			// #4751: a top-level session that is only away keeps its asks: a reply to it is queued in the outbox like any
+			// send to an offline session, and its own recipient may still answer once it is back.
+			const away = session.supervisorId === undefined && !ended;
+			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
+				.then(() =>
+					away
+						? this.state.pendingAsks.takeParked(sessionId).then(() => undefined)
+						: settleAsksToDeparted(this.state, sessionId, released),
+				)
 				.catch((error: Error) => this.report(error));
 			if (entry.lease !== undefined) {
 				await this.state.leases.release(entry.lease);

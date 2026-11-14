@@ -85,3 +85,45 @@ test("a fork does not inherit the asks its parent was sent, while a resumed sess
 	);
 	assert.deepEqual(answered.listPending(), []);
 });
+
+test("a saved failed-ask message settles its ask even when the failed record was never written (#4751)", () => {
+	const askEntry = custom(OUTBOUND_ASK_ENTRY, {
+		askId: "ask-1",
+		sessionId: "asker-session",
+		to: "peer",
+		recipientId: "peer-id",
+		question: "?",
+		askedAt: 1,
+	});
+	// A crash after the recipient-closed message was saved, before the ask was recorded failed.
+	const saved = custom("intercom_inbox", {
+		from: peer,
+		receivedAt: 2,
+		message: {
+			id: "ask-1:recipient-ended",
+			timestamp: 2,
+			replyTo: "ask-1",
+			replyError: "ended",
+			content: { text: "ended" },
+		},
+	});
+	const asks = new OutboundAsks({
+		entries: () => [askEntry, saved],
+		append: async () => {},
+		sessionId: () => "asker-session",
+	});
+	assert.deepEqual(asks.pending(), []);
+	assert.equal(asks.find("ask-1")?.state, "failed");
+	// Another session's message naming the ask settles nothing.
+	const spoofed = custom("intercom_inbox", {
+		from: { ...peer, id: "stranger", name: "stranger" },
+		receivedAt: 2,
+		message: { id: "spoof", timestamp: 2, replyTo: "ask-1", content: { text: "not yours" } },
+	});
+	const unsettled = new OutboundAsks({
+		entries: () => [askEntry, spoofed],
+		append: async () => {},
+		sessionId: () => "asker-session",
+	});
+	assert.equal(unsettled.find("ask-1")?.state, "pending");
+});

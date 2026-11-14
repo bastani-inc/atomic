@@ -793,6 +793,8 @@ test("a workflow stage released after asking gets the reply once it reopens (#47
 							?.cards(/safe once you are back/).length,
 					"the reopened author receives the reply",
 				);
+				const pending = await peers.get("author")?.at(-1)?.call({ action: "pending" });
+				assert.match(pending?.content[0]?.text ?? "", /No unresolved/, "the answered ask is no longer pending");
 			}
 		},
 	});
@@ -843,4 +845,77 @@ test("a workflow stage released after asking gets the reply once it reopens (#47
 	const cards = (peers.get("author") ?? []).flatMap((peer) => peer.cards(/safe once you are back/));
 	assert.equal(cards.length, 1, "the reply is shown exactly once");
 	assert.ok(cards[0]?.content?.startsWith(`Reply to your ask ${askId} from subagent-chat-`), cards[0]?.content);
+});
+
+test("a reply sent while its top-level asker is closed is held and delivered once when the asker resumes (#4751)", async () => {
+	const first = await started({ name: "asker-closed-at-reply" });
+	const recipient = await started({ name: "recipient-replies-while-closed" });
+	const asked = await first.call({
+		action: "ask",
+		to: "recipient-replies-while-closed",
+		message: "answer me later?",
+		wait: { kind: "background" },
+	});
+	const askId = String(asked.details.askId);
+	await questionArrives(recipient, "answer me later\\?");
+	await first.shutdown();
+
+	const replied = await recipient.call({ action: "reply", message: "answered while you were away", replyTo: askId });
+	assert.equal(replied.isError, false, replied.content[0]?.text);
+	assert.match(replied.content[0]?.text ?? "", /^Reply delivered \(held for asker-closed-at-reply/);
+
+	const resumed = session({ name: "asker-closed-at-reply", sessionId: first.sessionId, entries: first.entries });
+	await resumed.start("resume");
+	cleanups.push(() => resumed.shutdown());
+	assert.equal((await resumed.call({ action: "status" })).isError, false);
+	await until(
+		() => resumed.cards(/answered while you were away/).length > 0,
+		"the resumed asker receives the held reply",
+	);
+	assert.ok(resumed.cards(/answered while you were away/)[0]?.content?.startsWith(`Reply to your ask ${askId} from`));
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, SHORT_BUDGET_MS));
+	assert.equal(
+		first.entries.filter(
+			(entry) => entry.type === "custom_message" && /answered while you were away/.test(String(entry.content)),
+		).length,
+		1,
+	);
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});
+
+test("an ask to a child that finishes while its top-level asker is closed fails once when the asker resumes (#4751)", async () => {
+	const first = await started({ name: "asker-of-finishing-child" });
+	// A subagent child that finishes keeps its registration but can no longer answer.
+	const child = new IntercomClient(randomUUID(), { acknowledgesReceipt: true });
+	child.on("message", (_from: object, message: { id: string }) => child.acknowledgeReceived(message.id));
+	await child.connect({
+		name: "child-that-finishes",
+		model: "m",
+		cwd: repoRoot,
+		pid: process.pid,
+		startedAt: Date.now(),
+		lastActivity: Date.now(),
+	});
+	cleanups.push(() => child.disconnect().catch(() => undefined));
+	const asked = await first.call({
+		action: "ask",
+		to: "child-that-finishes",
+		message: "still working?",
+		wait: { kind: "background" },
+	});
+	assert.equal(asked.isError, false, asked.content[0]?.text);
+	const askId = String(asked.details.askId);
+	await first.shutdown();
+	await child.updatePresenceAcked({ replyCapability: "terminal" });
+
+	const resumed = session({ name: "asker-of-finishing-child", sessionId: first.sessionId, entries: first.entries });
+	await resumed.start("resume");
+	cleanups.push(() => resumed.shutdown());
+	assert.equal((await resumed.call({ action: "status" })).isError, false);
+	const [card] = await until(() => {
+		const cards = resumed.cards(/^Your ask .* failed/);
+		return cards.length > 0 ? cards : undefined;
+	}, "the resumed asker learns its recipient can no longer answer");
+	assert.ok(card?.content?.startsWith(`Your ask ${askId} to child-that-finishes failed`));
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
 });

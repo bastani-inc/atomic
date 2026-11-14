@@ -11,6 +11,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
 import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
 import { OutboundAsks } from "./outbound-asks.js";
+import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
 import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
 import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
@@ -1427,8 +1428,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 timestamp: Date.now(),
               });
               activeReplyTracker().markReplied(route.messageId);
+              // #4751: a reply to an asker that is closed is held for it and delivered once it is back.
+              const heldForAsker = result.target === HELD_FOR_AWAY_ASKER_TARGET || result.target === OFFLINE_SESSION_TARGET;
               return {
-                content: [{ type: "text", text: `Reply queued for ${displayTarget}` }],
+                content: [{
+                  type: "text",
+                  text: heldForAsker ? `Reply delivered (held for ${displayTarget} until it is back)` : `Reply queued for ${displayTarget}`,
+                }],
                 isError: false,
                 details: {
                   messageId: result.id,

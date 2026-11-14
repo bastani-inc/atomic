@@ -19,6 +19,7 @@ import { buildMessageSendSignature } from "./send-signature.js";
 import { SupervisorChannelCache } from "./supervisor-channel.js";
 import { isVerticalBypass, sameGroup } from "./group-isolation.js";
 import { sessionGroups, sessionsShareGroup } from "./group-membership.js";
+import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
 
@@ -444,6 +445,33 @@ export function handleBrokerSend(
       routeReleasedAskerReply,
       resolveWorkflowStageAlias,
     );
+    return;
+  }
+  // #4751: a reply to an ask whose asker is closed (a top-level session that may resume) is held for it, once, and
+  // delivered when it registers again; the replier learns that it is held. With multi-node routing, the shared outbox
+  // queues it for the offline asker instead.
+  const awayAsker =
+    routeRemote === undefined && resolution.kind === "not_found" && workflowTarget === undefined &&
+    requirePendingReply && message.replyTo !== undefined
+      ? pendingQuestions.dormantReply(message.replyTo, fromSession.info.id)
+      : undefined;
+  // An asker already back under another Intercom id (its own session reconnected) is reached as before, by name.
+  const askerBackElsewhere =
+    awayAsker?.senderReturnAddress !== undefined &&
+    [...sessions.values()].some((session) => session.registrationReturnAddress === awayAsker.senderReturnAddress);
+  if (
+    awayAsker !== undefined &&
+    !askerBackElsewhere &&
+    (expectedRecipientId === undefined || expectedRecipientId === awayAsker.senderSessionId)
+  ) {
+    pendingQuestions.holdForAwayAsker(awayAsker.senderSessionId, fromSession.info, message);
+    write(socket, {
+      type: "queued",
+      messageId: message.id,
+      ...(attemptId ? { attemptId } : {}),
+      target: HELD_FOR_AWAY_ASKER_TARGET,
+      position: 1,
+    });
     return;
   }
   if (

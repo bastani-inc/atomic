@@ -11,6 +11,8 @@ export function failTerminalQuestions(
   pending: PendingQuestionIndex,
   write: (socket: net.Socket, message: BrokerMessage) => void,
 ): void {
+  // #4751: an away asker's ask to it fails too, with a message held until the asker is back.
+  pending.failDormantForTarget(target.info, TERMINAL_CHILD_ASK_REFUSAL, "terminal");
   for (const question of pending.takeForTarget(target.info.id)) {
     const sender = sessions.get(question.senderSessionId);
     if (!sender) continue;
