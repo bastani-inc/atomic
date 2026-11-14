@@ -331,6 +331,7 @@ test.skipIf(process.platform === "win32")(
 						maxWorkers: 2,
 						workers: 0,
 						busy: 0,
+						draining: false,
 						roots: [],
 					},
 				);
