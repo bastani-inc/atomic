@@ -192,17 +192,17 @@ A command provisioner runs three commands of yours, each an executable and its a
 
 `up` and `down` may each be several commands run in order, as `[["first", "…"], ["second", "…"]]`. So may `list`: its commands report their hosts together, and a host two of them report counts once. Changes run one at a time. `timeoutMs` (default 120000) bounds each command; a command still running then, or when the controller gives up on the call, is stopped together with every process it started.
 
-Credentials come only from each tool's own login or environment; nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout` or `malformed` (output the list format does not match).
+Credentials come from each tool's own login or environment, or, for `gh`, from short-lived tokens Atomic mints from a GitHub App ([GitHub App auth](#github-app-auth)). Nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout`, `malformed` (output the list format does not match) or `unavailable` (GitHub could not be reached when minting a token, or answered with a server error or a rate limit).
 
 Atomic ships presets in its package's `examples/worker-fleet/presets` directory. Copy one, replace the names in it (resource group, scale set, group, zone, namespace, repository) with yours, and pass it to `--provisioner`:
 
-| Preset | Drives | Host id | Least privilege for the controller |
-| --- | --- | --- | --- |
-| `azure-vmss.json` | `az vmss scale`, `list-instances`, `delete-instances` | Instance id | A custom role on that one scale set: `Microsoft.Compute/virtualMachineScaleSets/{read,write,delete/action}` and `…/virtualMachines/{read,delete}` |
-| `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource |
-| `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` |
-| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` |
-| `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | A fine-grained token for that one repository with **Actions: read and write**, as `GH_TOKEN` |
+| Preset | Drives | Host id | Least privilege for the controller | Controller credential |
+| --- | --- | --- | --- | --- |
+| `azure-vmss.json` | `az vmss scale`, `list-instances`, `delete-instances` | Instance id | A custom role on that one scale set: `Microsoft.Compute/virtualMachineScaleSets/{read,write,delete/action}` and `…/virtualMachines/{read,delete}` | A managed identity: `az login --identity --client-id <id>` on an Azure VM, or Workload Identity in AKS. No service principal secret |
+| `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource | A role through the default credential chain: an instance profile, EKS Pod Identity or IRSA. No access keys |
+| `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` | A service account attached to the VM, or Workload Identity Federation for GKE. No JSON keys |
+| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` | The pod's in-cluster ServiceAccount, which `kubectl` uses on its own. The Helm chart creates it with `controllerRbac: true` |
+| `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | **Actions: read and write** on that one repository | A GitHub App's installation tokens, minted for each hour ([GitHub App auth](#github-app-auth)). Inside Actions, the workflow's own `GITHUB_TOKEN`. Fallback: a fine-grained token |
 
 How each preset removes a host:
 
@@ -212,14 +212,76 @@ How each preset removes a host:
 
 Give each host its provider id: the instance id from the cloud's metadata service, the pod name from the downward API, or `${{ github.run_id }}` in Actions. The recipes below do this.
 
+### GitHub App auth
+
+The `github-actions.json` preset authenticates `gh` as a GitHub App, as actions-runner-controller and `actions/create-github-app-token` do. The controller signs a JWT with the app's private key, exchanges it for an installation token limited to **Actions: write** on the one repository, and passes the token to each `gh` command in that command's environment only. Each token lasts an hour; the controller mints a new one 5 minutes before it expires, so no long-lived token exists anywhere.
+
+1. Create a GitHub App in your organization with the repository permission **Actions: Read and write** and nothing else, and install it on the repository that holds `atomic-workers.yml`.
+2. Generate a private key for the app, and store it on the controller's machine in a file only the controller's user can read: `chmod 600 app.pem`. In Kubernetes, mount it from a Secret, the Secrets Store CSI driver or the External Secrets Operator, and copy it into memory at mode 600 as the Helm chart does for the database token.
+3. Give the controller the app's settings, in the preset or in environment variables:
+
+```json
+"auth": {
+  "githubApp": {
+    "appId": "Iv23liExample",
+    "installationId": 12345678,
+    "privateKeyFile": "/run/secrets/github-app.pem",
+    "repository": "acme/flows"
+  }
+}
+```
+
+| Setting | Environment variable | Meaning |
+| --- | --- | --- |
+| `appId` | `ATOMIC_GITHUB_APP_ID` | The app's client ID or app ID |
+| `installationId` | `ATOMIC_GITHUB_APP_INSTALLATION_ID` | The installation's id, from the URL of its settings page |
+| `privateKeyFile` | `ATOMIC_GITHUB_APP_PRIVATE_KEY_FILE` | The private key file. The controller refuses a key that other users can read |
+| `repository` | `ATOMIC_GITHUB_APP_REPOSITORY` | `owner/name`: the only repository the tokens can act on |
+| `host` | `ATOMIC_GITHUB_HOST` | Default `github.com`. For GitHub Enterprise Server, its host name |
+| `apiUrl` | `ATOMIC_GITHUB_API_URL` | Default `https://api.github.com`, `https://api.<host>` for GHE.com, or `https://<host>/api/v3` for GitHub Enterprise Server. It must use HTTPS; plain HTTP is accepted only for `localhost` |
+
+A setting in the file takes precedence over its variable. The shipped preset sets only `repository`, so the rest can come from the environment. For GitHub Enterprise Server, the controller passes the token as `GH_ENTERPRISE_TOKEN` with `GH_HOST`, as `gh` expects.
+
+The private key and the tokens are never printed, logged or written to the database. If GitHub refuses the app (`auth`), or cannot be reached or answers with an error (`unavailable`), or the request runs past `timeoutMs` (`timeout`), the controller reports `degraded`, keeps its hosts, and tries again with its usual backoff. Runs are never affected.
+
+To use a fine-grained personal access token instead, remove `auth` from the preset and give the controller the token as `GH_TOKEN`, or sign in once with `gh auth login`. Give the token access to that one repository with **Actions: Read and write**, and an expiry.
+
+A controller that runs inside GitHub Actions needs neither: remove `auth`, and pass the workflow's own token. `workflow_dispatch` events made with `GITHUB_TOKEN` do start workflow runs.
+
+```yaml
+permissions:
+  actions: write
+steps:
+  - run: atomic worker controller --provisioner github-actions.json --db "$ATOMIC_DB" --token-file "$RUNNER_TEMP/atomic-db-token"
+    env:
+      GH_TOKEN: ${{ github.token }}
+```
+
+### Credentials for each platform
+
+Every recipe uses the platform's own short-lived identity, and no recipe stores a cloud key:
+
+| Credential | How the recipes get it | Pattern it follows |
+| --- | --- | --- |
+| `gh` for the GitHub Actions preset | GitHub App installation tokens, minted for each hour and narrowed to **Actions: write** on one repository | actions-runner-controller, philips-labs/terraform-aws-github-runner, `actions/create-github-app-token` |
+| `az` for the Azure preset, and the VMs' database token | Managed identities: the VMs' system-assigned identity reads the token from Key Vault, and the controller runs as a user-assigned identity, attached to its VM or federated with a workload | Azure managed identities and workload identity federation |
+| `aws` for the AWS preset, and the instances' database token | IAM roles through the default credential chain: an instance profile reads the token from Secrets Manager, and the controller's role suits an instance profile, EKS Pod Identity or IRSA | AWS IAM roles for EC2, EKS Pod Identity |
+| `gcloud` for the Google Cloud preset, and the VMs' database token | Service accounts: one attached to the VMs reads the token from Secret Manager, and the controller's runs on its VM or through Workload Identity Federation for GKE | Google Cloud attached service accounts, Workload Identity Federation |
+| `kubectl` for the Kubernetes preset | The controller pod's ServiceAccount, with a Role limited to the worker Deployment | Kubernetes in-cluster config and RBAC |
+| KEDA reading the scaling signal | Nothing: the metrics Service is in-cluster and serves counts only. Limit who reaches it with a NetworkPolicy. Scalers that read a cloud service take a `TriggerAuthentication` with `podIdentity` | KEDA authentication providers |
+| Cloud access from GitHub Actions | GitHub's OIDC token (`id-token: write`) with `azure/login`, `aws-actions/configure-aws-credentials` or `google-github-actions/auth` | GitHub Actions OpenID Connect |
+| The shared database token (`--token-file`) | Read from a secret manager at boot (Key Vault, Secrets Manager, Secret Manager), or mounted in Kubernetes from a Secret synced by the External Secrets Operator or the Secrets Store CSI driver, and copied to a mode 600 file. Never baked into an image | Secrets Store CSI driver, External Secrets Operator |
+
+The database token itself is long-lived. For PostgreSQL, the cloud IAM tokens of the PostgreSQL adapter ([#4804](https://github.com/bastani-inc/atomic/issues/4804)) replace it with short-lived tokens once that adapter ships.
+
 ### Recipes
 
 The package's `examples/worker-fleet` directory has a starting point for each platform:
 
 - `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it.
-- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. An init container copies the token from its Secret into memory, readable only by the container's user.
-- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0, and the least-privilege role for the controller's preset.
-- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
+- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. The pods run as their own ServiceAccount, which you can annotate for workload identity (`serviceAccount.annotations`, `podLabels`). An init container copies the token from its Secret, or from your secret manager through the Secrets Store CSI driver (`tokenSecretProviderClass`), into memory, readable only by the container's user. `controllerRbac: true` replaces KEDA with a ServiceAccount and Role for a controller that uses the `kubernetes.json` preset. Install the release in its own namespace, because a Role cannot limit `patch` on pods to one Deployment's pods.
+- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0. The VMs read the database token from the cloud's secret manager with their own identity. Each module also creates the controller's identity (a managed identity, an IAM role, a service account) with the least-privilege role for its preset.
+- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Each job signs in to your cloud with GitHub's OIDC token and reads the database token from its secret manager. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
 - `presets/`: the command provisioner presets above.
 
 Spot and preemptible machines are safe: a host told to stop gets SIGTERM and drains, and a child cut off before it finishes is replayed on another host from its last checkpoint.
@@ -315,6 +377,7 @@ docker run -d --name atomic-worker -e ATOMIC_DB=libsql://pool.example.turso.io \
 - The token is the trust boundary. Anyone with a token for the database can read and write every table in it, including the work queue. Give a token only to machines you trust to run your workflows.
 - `atomic worker start` reads the token from a file only when it opens the database. It never prints or logs the token, and never puts it on a child process's command line. The workers it starts receive a reference to the token file, not the token.
 - Keep the token file at mode 600. The command warns when other users can read it.
+- Keep a GitHub App private key at mode 600 too. The controller refuses one that other users can read, and never prints it, the tokens it mints, or their JWT.
 
 ## Troubleshooting
 

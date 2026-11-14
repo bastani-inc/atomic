@@ -193,11 +193,16 @@ const SERIAL: TransactionConcurrency = Object.freeze({ kind: "serial" });
 function transactionConcurrency(options: SqliteTransactionOptions | undefined): TransactionConcurrency {
 	const concurrency = options?.concurrency;
 	if (concurrency === undefined) return SERIAL;
+	if (typeof concurrency !== "object" || concurrency === null) throw concurrencyConfigError();
 	if (concurrency.kind === "serial" && (concurrency.domain === undefined || typeof concurrency.domain === "string"))
 		return concurrency;
 	if (concurrency.kind === "fenced" && typeof concurrency.audit === "string" && concurrency.audit !== "")
 		return concurrency;
-	throw new StorageConfigError(
+	throw concurrencyConfigError();
+}
+
+function concurrencyConfigError(): StorageConfigError {
+	return new StorageConfigError(
 		"sdk",
 		"concurrency",
 		"kind-required",

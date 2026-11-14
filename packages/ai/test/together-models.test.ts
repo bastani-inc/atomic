@@ -23,14 +23,14 @@ describe("Together models", () => {
 		expect(model.reasoning).toBe(true);
 		expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null });
 		expect(model.input).toEqual(["text", "image"]);
-		expect(model.contextWindow).toBe(1048576);
-		expect(model.maxTokens).toBe(131072);
-		expect(model.cost).toEqual({
-			input: 3,
-			output: 15,
-			cacheRead: 0.3,
-			cacheWrite: 0,
-		});
+		// Limits and prices come from the live models.dev catalog at build time, so assert their shape, not values.
+		expect(model.contextWindow).toBeGreaterThan(0);
+		expect(model.maxTokens).toBeGreaterThan(0);
+		expect(model.maxTokens).toBeLessThanOrEqual(model.contextWindow);
+		expect(model.cost.input).toBeGreaterThan(0);
+		expect(model.cost.output).toBeGreaterThan(0);
+		expect(model.cost.cacheRead).toBeGreaterThanOrEqual(0);
+		expect(model.cost.cacheWrite).toBeGreaterThanOrEqual(0);
 		expect(model.compat).toEqual({
 			supportsStore: false,
 			supportsDeveloperRole: false,

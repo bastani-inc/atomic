@@ -41,6 +41,7 @@
     "@j178/prek": "0.5.10",
     "@libsql/client": "0.18.0",
     "@types/bun": "1.4.4",
+    "@types/pg": "8.23.1",
     "@types/tar-stream": "3.1.5",
     "@xterm/headless": "6.0.0",
     "acorn": "8.19.0",
@@ -63,7 +64,8 @@
     "hono": "4.13.16",
     "ip-address": "10.7.4",
     "@napi-rs/cli": {
-      "semver": "7.8.5"
+      "semver": "7.8.5",
+      "@octokit/types": "18.0.0"
     },
     "@hono/node-server": "2.1.8"
   }

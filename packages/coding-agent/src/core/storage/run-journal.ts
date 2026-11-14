@@ -127,9 +127,10 @@ export interface RunJournal {
 	close(): Promise<void>;
 	/**
 	 * Optional change tracking, used only when `changeToken`, `runVersions` and `snapshotTail` are all present. The
-	 * token moves whenever any connection, in this process or another, commits a change to the journal's store.
+	 * token moves whenever any connection, in this process or another, commits a change to the journal's store. It is
+	 * undefined when the journal cannot tell that nothing changed, and every run's version is then compared.
 	 */
-	changeToken?(): Promise<string>;
+	changeToken?(): Promise<string | undefined>;
 	/** Every listed run with its latest event; a run with no events has version `{ seq: 0, at: 0 }`. */
 	runVersions?(): Promise<ReadonlyMap<string, RunVersion>>;
 	/** Undefined for a run with no snapshot event. */
