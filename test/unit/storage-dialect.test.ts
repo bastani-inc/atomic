@@ -16,6 +16,13 @@ import {
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
+/**
+ * Postgres reads JSON text as `jsonb`, with each NUL and surrogate escape as U+FFFD when `jsonb` rejects the document,
+ * so a document with a `\u0000` or a lone surrogate never fails a query or trigger that reads it.
+ */
+const jsonb = (column: string) =>
+	String.raw`(CASE WHEN strpos(${column}, '\u') = 0 OR pg_input_is_valid(${column}, 'jsonb') THEN ${column} ELSE regexp_replace(${column}, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb`;
+
 /** Each construct of spec §3.1, rendered by both dialects. SQLite's column is the SQL the stores ran before #4793. */
 const renderings: readonly (readonly [string, (dialect: StorageDialect) => string, string, string])[] = [
 	["int", (d) => d.types.int, "INTEGER", "BIGINT"],
@@ -48,25 +55,25 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"jsonText",
 		(d) => d.jsonText("descriptor", "scope"),
 		"json_extract(descriptor, '$.scope')",
-		"((descriptor)::jsonb ->> 'scope')",
+		`(${jsonb("descriptor")} ->> 'scope')`,
 	],
 	[
 		"jsonText path",
 		(d) => d.jsonText("r.entry_json", "restore", "to"),
 		"json_extract(r.entry_json, '$.restore.to')",
-		"((r.entry_json)::jsonb #>> '{restore,to}')",
+		`(${jsonb("r.entry_json")} #>> '{restore,to}')`,
 	],
 	[
 		"jsonHasType",
 		(d) => d.jsonHasType("text", "payload", "kind"),
 		"json_type(payload, '$.kind') = 'text'",
-		"jsonb_typeof((payload)::jsonb -> 'kind') = 'string'",
+		`jsonb_typeof(${jsonb("payload")} -> 'kind') = 'string'`,
 	],
 	[
 		"jsonHasType path",
 		(d) => d.jsonHasType("object", "payload", "a", "b"),
 		"json_type(payload, '$.a.b') = 'object'",
-		"jsonb_typeof((payload)::jsonb #> '{a,b}') = 'object'",
+		`jsonb_typeof(${jsonb("payload")} #> '{a,b}') = 'object'`,
 	],
 	["jsonValid", (d) => d.jsonValid("body"), "json_valid(body)", "((body) IS JSON)"],
 	[
@@ -137,32 +144,37 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"jsonType",
 		(d) => d.jsonType("p", "a", "b"),
 		"json_type(p, '$.a.b')",
-		"(CASE jsonb_typeof(((p)::jsonb #> '{a,b}')) WHEN 'string' THEN 'text' WHEN 'boolean' THEN (((p)::jsonb #> '{a,b}'))::text WHEN 'number' THEN CASE WHEN (((p)::jsonb #> '{a,b}'))::text ~ '^-?[0-9]+$' THEN 'integer' ELSE 'real' END ELSE jsonb_typeof(((p)::jsonb #> '{a,b}')) END)",
+		`(CASE jsonb_typeof((${jsonb("p")} #> '{a,b}')) WHEN 'string' THEN 'text' WHEN 'boolean' THEN ((${jsonb("p")} #> '{a,b}'))::text WHEN 'number' THEN CASE WHEN ((${jsonb("p")} #> '{a,b}'))::text ~ '^-?[0-9]+$' THEN 'integer' ELSE 'real' END ELSE jsonb_typeof((${jsonb("p")} #> '{a,b}')) END)`,
 	],
 	[
 		"jsonEach",
 		(d) => d.jsonEach({ column: "r.p" }, "s", "a", "b"),
 		"json_each(r.p, '$.a.b') AS s",
-		`jsonb_path_query((r.p)::jsonb, '$."a"."b"[*]') AS s(value)`,
+		`jsonb_path_query(${jsonb("r.p")}, '$."a"."b"[*]') AS s(value)`,
 	],
 	[
 		"jsonEach element",
 		(d) => d.jsonEach({ column: "r.p", element: "s" }, "l", "chain"),
 		"json_each(r.p, s.fullkey || '.chain') AS l",
-		`jsonb_path_query((s.value)::jsonb, '$."chain"[*]') AS l(value)`,
+		`jsonb_path_query(s.value, '$."chain"[*]') AS l(value)`,
 	],
-	["jsonAt", (d) => d.jsonAt({ column: "r.p" }, "a", "b"), "json_extract(r.p, '$.a.b')", "((r.p)::jsonb #>> '{a,b}')"],
+	[
+		"jsonAt",
+		(d) => d.jsonAt({ column: "r.p" }, "a", "b"),
+		"json_extract(r.p, '$.a.b')",
+		`(${jsonb("r.p")} #>> '{a,b}')`,
+	],
 	[
 		"jsonAt element",
 		(d) => d.jsonAt({ column: "r.p", element: "l" }, "patch"),
 		"json_extract(r.p, l.fullkey || '.patch')",
-		"((l.value)::jsonb ->> 'patch')",
+		"(l.value ->> 'patch')",
 	],
 	[
 		"jsonAtIsText",
 		(d) => d.jsonAtIsText({ column: "r.p", element: "l" }, "patch"),
 		"typeof(json_extract(r.p, l.fullkey || '.patch')) = 'text'",
-		"jsonb_typeof((l.value)::jsonb -> 'patch') = 'string'",
+		"jsonb_typeof(l.value -> 'patch') = 'string'",
 	],
 	["contains", (d) => d.contains("p", "'x'"), "instr(p, 'x') > 0", "strpos(p, 'x') > 0"],
 	["isDistinct", (d) => d.isDistinct("a", "'b'"), "a IS NOT 'b'", "a IS DISTINCT FROM 'b'"],

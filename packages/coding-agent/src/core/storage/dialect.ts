@@ -250,17 +250,35 @@ const POSTGRES_LOCKS: Readonly<Record<StorageLockKind, string>> = {
 	"update-skip-locked": " FOR UPDATE SKIP LOCKED",
 };
 
-function postgresJson(column: string, path: readonly string[], text: boolean): string {
+/**
+ * A `\u0000` or UTF-16 surrogate escape in JSON text, after an even number of backslashes, so not the text `\u…` after
+ * an escaped `\`.
+ */
+const POSTGRES_UNREPRESENTABLE_ESCAPE = String.raw`'(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})'`;
+
+/**
+ * The JSON text in `column` as `jsonb`. SQLite reads any well-formed JSON, but Postgres's `jsonb` (and its `json`
+ * operators) reject a whole document with a `\u0000` escape or a lone surrogate escape anywhere in it, even outside
+ * the value read. Such a document reads with each NUL and surrogate escape as U+FFFD, so a write whose JSON carries
+ * one never fails on a query or trigger that reads it, and every other value reads as on SQLite. A document without
+ * an escape, or that `jsonb` accepts, reads unchanged.
+ */
+function postgresJsonb(column: string): string {
+	return String.raw`(CASE WHEN strpos(${column}, '\u') = 0 OR pg_input_is_valid(${column}, 'jsonb') THEN ${column} ELSE regexp_replace(${column}, ${POSTGRES_UNREPRESENTABLE_ESCAPE}, '\1\\ufffd', 'g') END)::jsonb`;
+}
+
+/** The value at `path` in the `jsonb` expression `document`: as text with `text`, else as `jsonb`. */
+function postgresJson(document: string, path: readonly string[], text: boolean): string {
 	const keys = jsonPath(path);
 	const operator = text ? ">>" : ">";
 	return keys.length === 1
-		? `((${column})::jsonb -${operator} '${keys[0]}')`
-		: `((${column})::jsonb #${operator} '{${keys.join(",")}}')`;
+		? `(${document} -${operator} '${keys[0]}')`
+		: `(${document} #${operator} '{${keys.join(",")}}')`;
 }
 
-/** The JSON text `source` names: its column, or the `value` of the element `jsonEach` yields. */
+/** The `jsonb` document `source` names: its column's JSON text, or the `value` of the element `jsonEach` yields. */
 const postgresDocument = (source: StorageJsonSource) =>
-	source.element === undefined ? source.column : `${source.element}.value`;
+	source.element === undefined ? postgresJsonb(source.column) : `${source.element}.value`;
 
 /** Postgres truncates longer identifiers, so two long trigger function names could become one. Names are ASCII. */
 const POSTGRES_IDENTIFIER_BYTES = 63;
@@ -281,8 +299,9 @@ function postgresSqliteJsonType(value: string): string {
 }
 
 /**
- * PostgreSQL (14 and later; `jsonValid` needs 16). Tables a store orders by `rowOrder()` carry an explicit identity
- * column, `row_order` (not `seq`, which several tables already use for their own sequence numbers).
+ * PostgreSQL (14 and later; `jsonValid` and every JSON read need 16, for `IS JSON` and `pg_input_is_valid`). Tables
+ * a store orders by `rowOrder()` carry an explicit identity column, `row_order` (not `seq`, which several tables
+ * already use for their own sequence numbers).
  */
 export const postgresDialect: StorageDialect = Object.freeze({
 	name: "postgres",
@@ -300,9 +319,9 @@ export const postgresDialect: StorageDialect = Object.freeze({
 	nowSeconds: "(floor(extract(epoch from clock_timestamp())))::bigint",
 	changeMarkers: Object.freeze({ columns: "pg_current_snapshot()::text AS snapshot", from: "" }),
 	versionedMigrations: true,
-	jsonText: (column: string, ...path: readonly string[]) => postgresJson(column, path, true),
+	jsonText: (column: string, ...path: readonly string[]) => postgresJson(postgresJsonb(column), path, true),
 	jsonHasType: (type: StorageJsonType, column: string, ...path: readonly string[]) =>
-		`jsonb_typeof${postgresJson(column, path, false)} = '${POSTGRES_JSON_TYPES[type]}'`,
+		`jsonb_typeof${postgresJson(postgresJsonb(column), path, false)} = '${POSTGRES_JSON_TYPES[type]}'`,
 	jsonValid: (column: string) => `((${column}) IS JSON)`,
 	jsonValues: (parameter: "?") => `jsonb_array_elements_text((${parameter})::jsonb) AS json_values(value)`,
 	greatest: (a: string, b: string) => `GREATEST(${a}, ${b})`,
@@ -326,9 +345,10 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		sql: `SELECT relname AS name FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace AND relname IN (${namedPlaceholders(names)}) UNION ALL SELECT tgname AS name FROM pg_catalog.pg_trigger JOIN pg_catalog.pg_class ON pg_class.oid = tgrelid WHERE relnamespace = current_schema()::regnamespace AND NOT tgisinternal AND tgname IN (${namedPlaceholders(names)})`,
 		params: [...names, ...names],
 	}),
-	jsonType: (column: string, ...path: readonly string[]) => postgresSqliteJsonType(postgresJson(column, path, false)),
+	jsonType: (column: string, ...path: readonly string[]) =>
+		postgresSqliteJsonType(postgresJson(postgresJsonb(column), path, false)),
 	jsonEach: (source: StorageJsonSource, alias: string, ...path: readonly string[]) =>
-		`jsonb_path_query((${postgresDocument(source)})::jsonb, '$.${jsonPath(path)
+		`jsonb_path_query(${postgresDocument(source)}, '$.${jsonPath(path)
 			.map((key) => `"${key}"`)
 			.join(".")}[*]') AS ${alias}(value)`,
 	jsonAt: (source: StorageJsonSource, ...path: readonly string[]) =>
