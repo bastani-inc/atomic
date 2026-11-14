@@ -317,6 +317,42 @@ test.runIf(process.platform !== "win32")(
 	},
 );
 
+test("text typed while the interrupt is still stopping the response keeps a heartbeat from sending it (#4795)", async () => {
+	const harness = await sessionHarness();
+	const { session } = harness;
+	const started = Promise.withResolvers<void>();
+	harness.setResponses([
+		async (_context, options) => {
+			started.resolve();
+			await new Promise<void>((resolve) => {
+				if (options?.signal?.aborted) resolve();
+				else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+			});
+			return fauxAssistantMessage("partial answer");
+		},
+	]);
+	const active = session.prompt("Start the long job.");
+	await started.promise;
+	session.pauseQueuedMessages();
+	const stopping = session.abort();
+	const heartbeat = session.sendCustomMessage(
+		{ customType: "probe-heartbeat", content: `${HEARTBEAT} probe`, display: true, details: {} },
+		{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true, wakeIdleSession: true },
+	);
+	await session.steer("typed while it stopped");
+	await stopping;
+	await active;
+	await heartbeat;
+	const before = turnStarts(harness);
+	const seen = answerHeartbeats(harness, 1);
+	await vi.advanceTimersByTimeAsync(1000);
+
+	assert.equal(turnStarts(harness), before, "no turn sends the typed text");
+	assert.equal(seen.length, 0);
+	assert.equal(session.queuedMessagesPaused, true);
+	assert.deepEqual(session.getSteeringMessages(), ["typed while it stopped"]);
+});
+
 test.runIf(process.platform !== "win32")(
 	"a heartbeat turn does not wake the chat again before the next heartbeat is due (#4795)",
 	async () => {

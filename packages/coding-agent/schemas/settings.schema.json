@@ -1160,6 +1160,11 @@
           ],
           "description": "Default cadence, in milliseconds, of the periodic heartbeat sent to a chat for each of its running background shells and subagents. 0 disables; otherwise at least 60000. A tool call's heartbeatMs overrides it.",
           "default": 900000
+        },
+        "heartbeatWakesIdleSession": {
+          "type": "boolean",
+          "description": "Whether a task or workflow heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
+          "default": true
         }
       }
     },

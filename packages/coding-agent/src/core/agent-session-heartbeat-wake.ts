@@ -13,11 +13,13 @@ function holdsTypedInput(session: AgentSession): boolean {
  * chat sits idle in that pause resumes it, as that message would, so the heartbeat starts a turn at once. Input the
  * pause held goes with it into the same turn; the interrupted response is not replayed. A chat holding text the user
  * typed stays paused, so that text is never sent without them. Workflow-stage and subagent chats own their pauses.
+ * Returns the resume to wait for before admitting the heartbeat, or nothing when there is none, so every other
+ * delivery is admitted exactly when it was before.
  */
-export async function wakeIdleSessionForHeartbeat(
+export function wakeIdleSessionForHeartbeat(
 	session: AgentSession,
 	options: SendMessageOptions | undefined,
-): Promise<void> {
+): Promise<void> | undefined {
 	if (options?.wakeIdleSession !== true || options.triggerTurn !== true || !session._queuedMessagesPaused) return;
 	if (
 		session._workflowStageAdmission ||
@@ -30,9 +32,14 @@ export async function wakeIdleSessionForHeartbeat(
 	const interrupted = session._queuedMessagesPauseAbortBoundary !== undefined;
 	if (!interrupted && (session.isStreaming || session._isPreparingRun || session._activePromptCount > 0)) return;
 	if (holdsTypedInput(session)) return;
-	try {
-		await session.resumeQueuedMessages();
-	} catch {
-		// The abort failed and the pause stays; the heartbeat waits in it, as it would without the wake.
-	}
+	// Resuming first waits for the interrupt to settle; text typed meanwhile still keeps the chat paused.
+	return session
+		.resumeQueuedMessages(() => {
+			if (holdsTypedInput(session)) throw new Error("Typed input keeps the chat paused");
+		})
+		.then(
+			() => undefined,
+			// Typed input, or a failed abort, keeps the pause; the heartbeat waits in it, as it would without the wake.
+			() => undefined,
+		);
 }

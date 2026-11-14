@@ -108,7 +108,10 @@ test.runIf(process.platform !== "win32")(
 	"a long background shell heartbeats into the owning chat once per unread notice, then resumes after it is read",
 	async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
-		const harness = await sessionHarness({ settings: { tasks: { heartbeatMs: MINUTE } } });
+		// The heartbeat must not start a turn of its own (#4795), so the first card stays unread.
+		const harness = await sessionHarness({
+			settings: { tasks: { heartbeatMs: MINUTE, heartbeatWakesIdleSession: false } },
+		});
 		const { session } = harness;
 		// Hold model turns so the first card stays unread.
 		session.pauseQueuedMessages();

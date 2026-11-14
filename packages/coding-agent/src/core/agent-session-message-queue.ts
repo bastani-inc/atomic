@@ -152,9 +152,11 @@ export async function sendCustomMessage<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessage(message, options);
 	assertSessionOpen(this);
-	return deliveredMessageTurn(this, async () => {
-		await wakeIdleSessionForHeartbeat(this, options);
-		return admittedCustomMessage.call(this, message, options);
+	return deliveredMessageTurn(this, () => {
+		const waking = wakeIdleSessionForHeartbeat(this, options);
+		return waking
+			? waking.then(() => admittedCustomMessage.call(this, message, options))
+			: admittedCustomMessage.call(this, message, options);
 	});
 }
 
@@ -211,9 +213,11 @@ export async function sendCustomMessages<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessages(messages, options);
 	assertSessionOpen(this);
-	return deliveredMessageTurn(this, async () => {
-		await wakeIdleSessionForHeartbeat(this, options);
-		return admittedCustomMessages.call(this, messages, options);
+	return deliveredMessageTurn(this, () => {
+		const waking = wakeIdleSessionForHeartbeat(this, options);
+		return waking
+			? waking.then(() => admittedCustomMessages.call(this, messages, options))
+			: admittedCustomMessages.call(this, messages, options);
 	});
 }
 
