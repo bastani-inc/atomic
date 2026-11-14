@@ -9,6 +9,7 @@
 ### Changed
 
 - A resume restore that needs a commit this machine lacks now fetches only that commit (`--depth=1`) instead of the repository's whole history, which roughly halves a cold restore of a long-lived repository; it fetches the full history when a remote refuses a shallow fetch or the restore needs older commits. Restored worktrees therefore start with a shallow history (`git fetch --unshallow origin` brings the rest). A session's other checkouts are now restored concurrently, up to four at a time, instead of one after another ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+- Per-turn worktree snapshots are cheaper in fresh clones such as CI checkouts: each checkout's captures keep a private Git index between turns under `~/.atomic/agent/worktree-snapshots/capture-index/`, so unchanged files are no longer read again on every turn, and staged ignored files are found with one listing. A capture that cannot use that index captures as before, and snapshots record the same content ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
 
 ## [0.9.87] - 2026-11-14
 

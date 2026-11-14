@@ -302,7 +302,7 @@ describe.skipIf(process.platform === "win32")("multi-node resume, reduced to pro
 				["ResumeCatalogTimeoutError", "catalog-timeout"],
 			);
 			assert.ok(partition.connections() >= 1);
-			assert.equal(existsSync(join(root, "node-b", "agent", "worktree-snapshots")), false);
+			assert.equal(existsSync(join(root, "node-b", "agent", "worktree-snapshots", "worktrees")), false);
 
 			const shimDir = join(root, "node-b", "shim");
 			mkdirSync(shimDir, { recursive: true });
