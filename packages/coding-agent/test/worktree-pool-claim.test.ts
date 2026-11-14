@@ -348,7 +348,8 @@ await withWorktreeSnapshotGit({ path: ${JSON.stringify(git)}, env }, () =>
 		"a resume that claims the slot an install filled is at least 1.5 s faster than a fresh one (#4748)",
 		async () => {
 			const { a, b, clone } = await twoSnapshots();
-			const installed = join("node_modules", ".installed");
+			// A POSIX path: the step runs in bash on every platform, where a backslash would escape the dot.
+			const installed = "node_modules/.installed";
 			const blueprints = {
 				blueprints: "build" as const,
 				blueprint: {
