@@ -6,6 +6,12 @@
 
 - Added resume and capture timings ([#4748](https://github.com/bastani-inc/atomic/issues/4748)). `/session snapshot` now shows how long each checkout's last capture took and a **Last resume** block: each restored checkout with its restore phases (fetch, reconstruct, materialize, LFS, verify, publish), each blueprint step with its duration, and when the session was ready. `ATOMIC_TIMING=1` prints the same lines for `atomic --session`. Blueprint step logs record when each step started and finished and how long it ran. The session keeps the numbers in a `resume_timings` entry, readable from exports and through `latestResumeTimings()` and `formatResumeTimings()` in the SDK. A failure to record them never stops a resume.
 
+## [0.9.87] - 2026-11-14
+
+Asks from released subagents no longer vanish when their recipient comes and goes.
+
+- **Reliable failed-ask notices for released subagents.** When a released subagent's ask goes to a session that leaves, returns and then ends, the subagent now gets one "Your ask <id> to <name> failed" message instead of losing the ask silently, also after a broker restart, and `pending` stops listing it ([#4765](https://github.com/bastani-inc/atomic/issues/4765), [#4767](https://github.com/bastani-inc/atomic/pull/4767)).
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
