@@ -459,12 +459,17 @@ export function handleBrokerSend(
   const askerBackElsewhere =
     awayAsker?.senderReturnAddress !== undefined &&
     [...sessions.values()].some((session) => session.registrationReturnAddress === awayAsker.senderReturnAddress);
+  const heldAgain =
+    routeRemote === undefined && resolution.kind === "not_found" && requirePendingReply &&
+    pendingQuestions.isHeldForAwayAsker(message.id, fromSession.info.id);
   if (
-    awayAsker !== undefined &&
-    !askerBackElsewhere &&
-    (expectedRecipientId === undefined || expectedRecipientId === awayAsker.senderSessionId)
+    heldAgain ||
+    (awayAsker?.senderReturnAddress !== undefined &&
+      !askerBackElsewhere &&
+      (expectedRecipientId === undefined || expectedRecipientId === awayAsker.senderSessionId))
   ) {
-    pendingQuestions.holdForAwayAsker(awayAsker.senderSessionId, fromSession.info, message);
+    if (!heldAgain && awayAsker?.senderReturnAddress !== undefined)
+      pendingQuestions.holdForAwayAsker({ ...awayAsker, senderReturnAddress: awayAsker.senderReturnAddress }, fromSession.info, message);
     write(socket, {
       type: "queued",
       messageId: message.id,

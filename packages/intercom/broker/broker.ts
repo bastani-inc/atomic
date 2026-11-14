@@ -237,6 +237,8 @@ interface PendingReleasedReplyAck {
   readonly handoffId: string;
   /** Who the reply is from: the replier, or the recipient that ended, for a failed ask the broker made (#4751). */
   readonly from: SessionInfo;
+  /** A failed ask the broker made: no replier waits for its outcome, so the broker keeps it until it is delivered. */
+  readonly synthetic?: true;
   /** The reply itself, delivered to the child as an ordinary send when no call of the child waits for it (#4751). */
   readonly message: Message;
   readonly timer: ReturnType<typeof setTimeout>;
@@ -1950,12 +1952,16 @@ class IntercomBroker {
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
           flushHeldWrites(socket, held);
           // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
-          this.pendingQuestions.restoreDormant(id, (sessionId) => this.sessions.has(sessionId));
+          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId) =>
+            this.sessions.has(sessionId),
+          );
           // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
-          for (const held of this.pendingQuestions.heldForAsker(id)) {
+          const returnAddress = rejoined?.registrationReturnAddress;
+          for (const held of this.pendingQuestions.heldForAsker(returnAddress)) {
             writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
-            if (clientMessage.acknowledgesReceipt !== true) this.pendingQuestions.releaseHeld(held.message.id);
+            if (clientMessage.acknowledgesReceipt !== true)
+              this.pendingQuestions.releaseHeld(held.message.id, returnAddress);
           }
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held
           // for it while it was being restored go out now, once each and in the order they arrived.
@@ -2206,6 +2212,9 @@ class IntercomBroker {
         for (const child of validation.children) {
           this.reserveReleasedChild(currentId, owner.registrationGroup, child);
           this.releasedAskerReplies.attach(child.childName, currentId);
+          // #4751: a failed ask kept for the child wakes it again, so it is delivered.
+          if (child.wake && this.pendingQuestions.hasHeldForReleasedChild(child.childName, currentId))
+            this.wakeRestoringRecipientOwner({ ownerSessionId: currentId, childName: child.childName });
           this.dispatchHeldSends(this.departedChildren.supersede(currentId, child.childName));
         }
         writeMessageIfOpen(socket, { type: "released_children_ack", requestId: clientMessage.requestId });
@@ -2598,7 +2607,9 @@ class IntercomBroker {
 		case "received": {
 			if (typeof clientMessage.messageId !== "string") throw new Error("Invalid received message");
 			const recipient = this.sessions.get(currentId);
-			this.pendingQuestions.releaseHeld(clientMessage.messageId);
+			// #4751: only the asker a message is held for, proven by its return address, releases it.
+			if (recipient !== undefined)
+				this.pendingQuestions.releaseHeld(clientMessage.messageId, recipient.registrationReturnAddress);
 			if (recipient?.acknowledgesReceipt === true) {
 				this.multiNode?.received(recipient, clientMessage.messageId);
 				this.receipts.settle(clientMessage.messageId, deliveryTargetIdentity(recipient), recipient);
@@ -2710,6 +2721,7 @@ class IntercomBroker {
     message: Message & { readonly replyTo: string },
     socket: net.Socket,
     attemptId?: string,
+    synthetic = false,
   ): void {
     const owner = this.sessions.get(route.ownerSessionId);
     const timer = setTimeout(() => this.settleReleasedReply(message.id, "uncertain"), RECIPIENT_RECEIPT_TIMEOUT_MS);
@@ -2718,6 +2730,7 @@ class IntercomBroker {
     const pending: PendingReleasedReplyAck = {
       handoffId,
       from,
+      ...(synthetic ? { synthetic: true as const } : {}),
       message,
       timer,
       socket,
@@ -2751,13 +2764,15 @@ class IntercomBroker {
         route,
         target,
         {
-          id: `${idPrefix}:${route.questionId}`,
+          id: `${idPrefix}:${randomUUID()}`,
           timestamp: Date.now(),
           replyTo: route.questionId,
           replyError: reason,
           content: { text: reason },
         },
         socket,
+        undefined,
+        true,
       );
     }
   }
@@ -2769,6 +2784,16 @@ class IntercomBroker {
     this.releasedReplyAcks.delete(messageId);
     const attempt = pending.attemptId === undefined ? {} : { attemptId: pending.attemptId };
     if (outcome === "deliver" && this.deliverReplyToReleasedChild(pending)) return;
+    if (pending.synthetic === true && outcome !== "accepted") {
+      // #4751: the owner did not save the failed ask; it is kept for the child, which gets it when its owner reserves
+      // or wakes it again and it registers.
+      this.pendingQuestions.holdForReleasedChild(pending.childName, pending.ownerSessionId, {
+        askerSessionId: pending.route.askerSessionId,
+        from: pending.from,
+        message: pending.message,
+      });
+      return;
+    }
     if (outcome === "accepted") {
       this.deliveredMessages.settleQuestion(pending.questionId);
       writeMessageIfOpen(pending.socket, { type: "delivered", messageId, ...attempt });
@@ -3236,7 +3261,8 @@ class IntercomBroker {
         const reason = `Session "${departed.info.name ?? sessionId}" ended before replying`;
         this.pendingQuestions.failDormantForTarget(departed.info, reason, "recipient-ended");
         this.failReleasedAsksTo(departed.info, departed.socket, reason, "recipient-ended");
-        if (departed.supervisorId === undefined) this.pendingQuestions.dropAway(sessionId);
+        if (departed.supervisorId === undefined)
+          this.pendingQuestions.dropAway(departed.registrationReturnAddress);
       }
       this.failParkedQuestions(this.pendingQuestions.takeForTarget(sessionId), departed.info.name);
     }

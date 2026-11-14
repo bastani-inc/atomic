@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -56,6 +57,8 @@ export class AwayAsks {
 			CREATE TABLE IF NOT EXISTS held_messages (
 				message_id TEXT PRIMARY KEY,
 				asker_session_id TEXT NOT NULL,
+				asker_return_address TEXT NOT NULL,
+				replier_session_id TEXT NOT NULL,
 				from_json TEXT NOT NULL,
 				message_json TEXT NOT NULL,
 				held_at INTEGER NOT NULL
@@ -114,22 +117,31 @@ export class AwayAsks {
 	}
 
 	/** A session is back under its id: its kept questions whose peers are both connected leave this table. */
-	restore(sessionId: string, isConnected: (sessionId: string) => boolean): PendingQuestion[] {
+	restore(
+		sessionId: string,
+		returnAddress: string | undefined,
+		isConnected: (sessionId: string) => boolean,
+	): PendingQuestion[] {
+		// An asker's routes come back only to the session that proves it is the asker (see `held`), under whatever id it
+		// registered with now; a recipient's come back to the id it is asked under.
+		const proven = returnAddress ?? "";
 		const rows = this.statement(
-			"SELECT message_id, sender_session_id, target_session_id FROM away_questions WHERE sender_session_id = ? OR target_session_id = ? ORDER BY kept_at",
-		).all(sessionId, sessionId);
+			"SELECT message_id, sender_session_id, target_session_id, sender_return_address FROM away_questions WHERE (sender_return_address <> '' AND sender_return_address = ?) OR (sender_return_address = '' AND sender_session_id = ?) OR target_session_id = ? ORDER BY kept_at",
+		).all(proven, sessionId, sessionId);
 		const remove = this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
 		);
 		const restored: PendingQuestion[] = [];
 		for (const row of rows) {
-			const question = {
+			const kept = {
 				messageId: String(row.message_id),
 				senderSessionId: String(row.sender_session_id),
 				targetSessionId: String(row.target_session_id),
 			};
+			const askerBack = proven !== "" && row.sender_return_address === proven;
+			const question = askerBack ? { ...kept, senderSessionId: sessionId } : kept;
 			if (!isConnected(question.senderSessionId) || !isConnected(question.targetSessionId)) continue;
-			remove.run(question.messageId, question.senderSessionId, question.targetSessionId);
+			remove.run(kept.messageId, kept.senderSessionId, kept.targetSessionId);
 			restored.push(question);
 		}
 		return restored;
@@ -141,7 +153,7 @@ export class AwayAsks {
 	 */
 	failForTarget(target: SessionInfo, reason: string, idPrefix: string): PendingQuestion[] {
 		const rows = this.statement(
-			"SELECT message_id, sender_session_id FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
+			"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
 		).all(target.id);
 		const failed: PendingQuestion[] = [];
 		for (const row of rows) {
@@ -150,9 +162,13 @@ export class AwayAsks {
 				senderSessionId: String(row.sender_session_id),
 				targetSessionId: target.id,
 			};
+			const returnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
+			// A recipient's own asks to an away session keep no asker identity: only an away asker learns of the end.
+			if (returnAddress === "") continue;
 			failed.push(question);
-			this.hold(question.senderSessionId, target, {
-				id: `${idPrefix}:${question.messageId}`,
+			this.hold({ ...question, senderReturnAddress: returnAddress }, target, {
+				// Unguessable, so no other session can name it.
+				id: `${idPrefix}:${randomUUID()}`,
 				timestamp: this.now(),
 				replyTo: question.messageId,
 				replyError: reason,
@@ -163,31 +179,65 @@ export class AwayAsks {
 		return failed;
 	}
 
-	/** The session ended for good: nothing waits for it any more, as asker or recipient. */
-	drop(sessionId: string): void {
-		this.statement("DELETE FROM away_questions WHERE sender_session_id = ?").run(sessionId);
-		this.statement("DELETE FROM held_messages WHERE asker_session_id = ?").run(sessionId);
+	/** The asker that proves itself by its return address ended for good: nothing waits for it any more. */
+	drop(returnAddress: string | undefined): void {
+		if (returnAddress === undefined || returnAddress === "") return;
+		this.statement("DELETE FROM away_questions WHERE sender_return_address = ?").run(returnAddress);
+		this.statement("DELETE FROM held_messages WHERE asker_return_address = ?").run(returnAddress);
 	}
 
-	/** Hold a message for an away asker; a message already held under its id is held once. */
-	hold(askerSessionId: string, from: SessionInfo, message: Message): void {
+	/**
+	 * Hold a message for the away asker of `question`, and close the question: it has its answer (or its failure), so
+	 * nothing later fails it again. A message already held under its id is held once.
+	 */
+	hold(
+		question: PendingQuestion & { readonly senderReturnAddress: string },
+		from: SessionInfo,
+		message: Message,
+	): void {
 		this.statement(
-			"INSERT OR IGNORE INTO held_messages (message_id, asker_session_id, from_json, message_json, held_at) VALUES (?, ?, ?, ?, ?)",
-		).run(message.id, askerSessionId, JSON.stringify(from), JSON.stringify(message), this.now());
+			"INSERT OR IGNORE INTO held_messages (message_id, asker_session_id, asker_return_address, replier_session_id, from_json, message_json, held_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		).run(
+			message.id,
+			question.senderSessionId,
+			question.senderReturnAddress,
+			from.id,
+			JSON.stringify(from),
+			JSON.stringify(message),
+			this.now(),
+		);
+		this.statement(
+			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		).run(question.messageId, question.senderSessionId, question.targetSessionId);
 		this.purge();
 	}
 
-	/** The messages held for this asker, in the order they were held. */
-	held(askerSessionId: string): HeldAwayMessage[] {
+	/** Whether `messageId` from `replierSessionId` is already held for its asker: a retried reply is answered held again. */
+	isHeld(messageId: string, replierSessionId: string): boolean {
+		return (
+			this.statement("SELECT 1 FROM held_messages WHERE message_id = ? AND replier_session_id = ?").get(
+				messageId,
+				replierSessionId,
+			) !== undefined
+		);
+	}
+
+	/**
+	 * The messages held for this asker, in the order they were held: only to the session that proves it is the asker by
+	 * the return address it registered with when it asked, the credential it reclaims its id with.
+	 */
+	held(askerReturnAddress: string | undefined): HeldAwayMessage[] {
+		if (askerReturnAddress === undefined || askerReturnAddress === "") return [];
 		const rows = this.statement(
-			"SELECT from_json, message_json FROM held_messages WHERE asker_session_id = ? ORDER BY held_at, rowid",
-		).all(askerSessionId);
+			"SELECT asker_session_id, from_json, message_json FROM held_messages WHERE asker_return_address = ? ORDER BY held_at, rowid",
+		).all(askerReturnAddress);
 		const held: HeldAwayMessage[] = [];
 		for (const row of rows) {
 			try {
 				const from: unknown = JSON.parse(String(row.from_json));
 				const message: unknown = JSON.parse(String(row.message_json));
-				if (isSessionInfo(from) && isMessage(message)) held.push({ askerSessionId, from, message });
+				if (isSessionInfo(from) && isMessage(message))
+					held.push({ askerSessionId: String(row.asker_session_id), from, message });
 			} catch {
 				// A row that cannot be read is skipped; it ages out with the retention.
 			}
@@ -195,9 +245,13 @@ export class AwayAsks {
 		return held;
 	}
 
-	/** The asker saved a held message: it is not delivered again. */
-	release(messageId: string): void {
-		this.statement("DELETE FROM held_messages WHERE message_id = ?").run(messageId);
+	/** The verified asker saved a held message: it is not delivered again. */
+	release(messageId: string, askerReturnAddress: string | undefined): void {
+		if (askerReturnAddress === undefined || askerReturnAddress === "") return;
+		this.statement("DELETE FROM held_messages WHERE message_id = ? AND asker_return_address = ?").run(
+			messageId,
+			askerReturnAddress,
+		);
 	}
 
 	close(): void {

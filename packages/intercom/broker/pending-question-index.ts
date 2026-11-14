@@ -45,8 +45,12 @@ export class PendingQuestionIndex {
   }
 
   /** A session is back under its id: its kept questions route again once both of their peers are connected. */
-  restoreDormant(sessionId: string, isConnected: (sessionId: string) => boolean): PendingQuestion[] {
-    const restored = this.awayAsks().restore(sessionId, isConnected);
+  restoreDormant(
+    sessionId: string,
+    returnAddress: string | undefined,
+    isConnected: (sessionId: string) => boolean,
+  ): PendingQuestion[] {
+    const restored = this.awayAsks().restore(sessionId, returnAddress, isConnected);
     for (const question of restored) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
     return restored;
   }
@@ -60,23 +64,32 @@ export class PendingQuestionIndex {
   }
 
   /** The session ended for good: nothing waits for it any more. */
-  dropAway(sessionId: string): void {
-    this.awayAsks().drop(sessionId);
+  dropAway(returnAddress: string | undefined): void {
+    this.awayAsks().drop(returnAddress);
   }
 
-  /** Hold a reply for an away asker, delivered once when it registers again (#4751). */
-  holdForAwayAsker(askerSessionId: string, from: SessionInfo, message: Message): void {
-    this.awayAsks().hold(askerSessionId, from, message);
+  /** Hold a reply for the away asker of `question`, delivered once when it registers again (#4751). */
+  holdForAwayAsker(
+    question: PendingQuestion & { readonly senderReturnAddress: string },
+    from: SessionInfo,
+    message: Message,
+  ): void {
+    this.awayAsks().hold(question, from, message);
   }
 
-  /** What is held for this asker, in the order it was held. */
-  heldForAsker(askerSessionId: string): HeldAwayMessage[] {
-    return this.awayAsks().held(askerSessionId);
+  /** Whether this reply is already held for its asker. */
+  isHeldForAwayAsker(messageId: string, replierSessionId: string): boolean {
+    return this.awayAsks().isHeld(messageId, replierSessionId);
   }
 
-  /** The asker saved a held message. */
-  releaseHeld(messageId: string): void {
-    this.away?.release(messageId);
+  /** What is held for the asker that proves itself by its return address, in the order it was held. */
+  heldForAsker(askerReturnAddress: string | undefined): HeldAwayMessage[] {
+    return this.awayAsks().held(askerReturnAddress);
+  }
+
+  /** The verified asker saved a held message. */
+  releaseHeld(messageId: string, askerReturnAddress: string | undefined): void {
+    this.away?.release(messageId, askerReturnAddress);
   }
 
   private readonly parked = new Map<string, { ownerSessionId: string; questions: PendingQuestion[] }>();
@@ -95,6 +108,10 @@ export class PendingQuestionIndex {
     const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
     const list = this.heldForChildren.get(key) ?? [];
     if (!list.some((existing) => existing.message.id === held.message.id)) this.heldForChildren.set(key, [...list, held]);
+  }
+
+  hasHeldForReleasedChild(childName: string, ownerSessionId: string): boolean {
+    return (this.heldForChildren.get(JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]))?.length ?? 0) > 0;
   }
 
   takeHeldForReleasedChild(childName: string, ownerSessionId: string): HeldAwayMessage[] {
