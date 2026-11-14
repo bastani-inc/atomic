@@ -144,8 +144,9 @@ function fakeModule(behavior: { readonly setup?: Error; readonly drain?: Error }
 			};
 		},
 		async readWorkflowWorkerFleet() {
-			return { hosts: [], roots: [] };
+			return { fleet: { store: { state: "ok" as const } } };
 		},
+		workflowWorkerFleetLines: () => [],
 	};
 	return { module, given, calls, emit: (event: WorkerHostEvent) => emit(event) };
 }
@@ -321,59 +322,29 @@ test("worker status refuses every start-only option, and labels may hold '=' or 
 	});
 });
 
-const FLEET: WorkerFleet = {
-	hosts: [
-		{
-			host: "n1",
-			labels: { zone: "east", rack: "2" },
-			workers: 2,
-			maxWorkers: 4,
-			roots: ["r1"],
-			heartbeatAgoMs: 1_500,
-		},
-		{ host: "n2", labels: {}, workers: 0, maxWorkers: 1, roots: [], heartbeatAgoMs: 999.4 },
-		{ host: "n3", labels: {}, workers: 0, maxWorkers: 1, roots: [], heartbeatAgoMs: -3 },
-	],
-	roots: [
-		{
-			root: "r1",
-			ready: 3,
-			leased: 2,
-			completed: 10,
-			failed: 1,
-			hosts: [
-				{ host: "n1", leased: 2 },
-				{ host: "n2", leased: 0 },
-			],
-		},
-		{ root: "r2", ready: 1, leased: 0, completed: 0, failed: 0, hosts: [{ host: "n2", leased: 0 }] },
-	],
+const FLEET = {
+	hosts: [{ host: "n1", state: "idle" }],
+	roots: [{ root: "r1", ready: 3 }],
+	fleet: { store: { state: "ok" as const }, queue: { roots: 1, ready: 3, leased: 0 } },
 };
 
-test("worker status lists each host and root's queue, as text or JSON, from the database it names (#4768)", async () => {
+test("worker status prints the fleet as the workflows package's lines, or as JSON, from the database it names (#4768)", async () => {
 	const asked: unknown[] = [];
-	const module = (fleet: object | Error) => async (): Promise<WorkerHostModule> => ({
+	const module = (fleet: WorkerFleet | Error) => async (): Promise<WorkerHostModule> => ({
 		startWorkflowWorkerHost: () => assert.fail("status starts no host"),
 		async readWorkflowWorkerFleet(options) {
 			asked.push(options);
 			if (fleet instanceof Error) throw fleet;
-			return fleet as WorkerFleet;
+			return fleet;
 		},
+		workflowWorkerFleetLines: (fleet) => [`lines of ${JSON.stringify(fleet)}`],
 	});
 	const text = await run(
 		["status", "--db", "libsql://pool.example.turso.io", "--token-file", tokenFile],
 		module(FLEET),
 	);
 	assert.equal(text.code, 0);
-	assert.deepEqual(text.out, [
-		"Hosts: 3",
-		"  n1  workers 2/4  roots 1  reported 1.5 s ago  labels zone=east,rack=2",
-		"  n2  workers 0/1  roots 0  reported 999 ms ago",
-		"  n3  workers 0/1  roots 0  reported 0 ms ago",
-		"Roots: 2",
-		"  r1  ready 3  running 2  completed 10  failed 1  on n1(2)",
-		"  r2  ready 1  running 0  completed 0  failed 0",
-	]);
+	assert.deepEqual(text.out, [`lines of ${JSON.stringify(FLEET)}`]);
 	assert.deepEqual(asked[0], {
 		journal: {
 			adapter: LIBSQL_ADAPTER_PACKAGE,
@@ -385,6 +356,14 @@ test("worker status lists each host and root's queue, as text or JSON, from the 
 	const json = await run(["status", "--json"], module(FLEET));
 	assert.deepEqual(JSON.parse(json.out.join("\n")), FLEET);
 	assert.deepEqual(asked[1], { agentDir: join(root, "agent") }, "without --db, the journal this machine selects");
+	const unknown = { fleet: { store: { state: "unknown" as const, message: "refused" } } };
+	assert.deepEqual(await run(["status"], module(unknown)), {
+		code: 1,
+		out: [`lines of ${JSON.stringify(unknown)}`],
+		err: [],
+	});
+	const degraded = { fleet: { store: { state: "degraded" as const, message: "stalled" } } };
+	assert.equal((await run(["status", "--json"], module(degraded))).code, 0, "a store that answers reads reads");
 	const setup = Object.assign(new Error("incomplete"), {
 		name: "SharedPoolSetupError",
 		problems: [{ subject: "a shared journal", code: "shared-journal-required", hint: "Pass --db." }],
@@ -522,7 +501,7 @@ test(
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [libsqlPackage] }));
 		err.length = 0;
 		assert.equal(await runWorkerCommand(["status", "--db", db], options), 0, err.join("\n"));
-		assert.deepEqual(out, ["Hosts: 0", "Roots: 0"]);
+		assert.deepEqual(out, ["fleet: 0 roots · 0 ready · 0 leased", "Hosts: 0", "Roots: 0"]);
 	},
 	REAL_PACKAGE_TIMEOUT_MS,
 );

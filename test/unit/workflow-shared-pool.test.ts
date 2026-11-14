@@ -641,6 +641,7 @@ test("host reports and stats say what each host is and holds; activity and roots
 				maxWorkers: 5,
 				roots: ["root"],
 				heartbeatAgoMs: 0,
+				state: "live",
 			},
 		);
 		assert.ok(host!.heartbeatAgoMs >= 0);

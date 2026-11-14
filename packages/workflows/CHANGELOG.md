@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - Added `idleExitMs`, `onEvent` and an optional `journal` (default: the journal this machine selects) to `startWorkflowWorkerHost`, with `host.closed` and `host.stats().degraded`, and `readWorkflowWorkerFleet()`, which lists a shared journal's worker hosts and root queues. A host whose polls of the journal fail keeps its running children and polls again after 1 s, doubling up to 30 s. `workflows.workers` in settings gives roots the workflow tool starts shared placement ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Added fleet status to `/workflow status`, its JSON and `host.stats()`: each registered worker host's state (`busy`, `idle`, `draining`, `degraded`, `stale`, or `live` for a host of an older version), slots, busy workers, last heartbeat and poll failures, the queue across every running or paused shared root, and the shared store's state. A status read never waits more than 5 seconds on a store that stops answering; it shows the store as unknown with a hint, and shows it degraded while the libSQL adapter reports unanswered writes, naming the sqld bug [tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286) and its `--checkpoint-interval-s` workaround. `readWorkflowWorkerFleet()` returns the same, and `workflowWorkerFleetLines()` formats it ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 ### Fixed
 

@@ -95,8 +95,8 @@ type StatusDetailResult =
 			detail: RunDetail;
 			/** A root whose pool runs on a shared journal (#4310): its queue depth, hosts and leases. */
 			sharedPool?: SharedPoolStats;
-			/** Why a shared root's pool stats could not be read. */
-			sharedPoolUnavailable?: { readonly name: string; readonly message: string };
+			/** Why a shared root's pool stats could not be read, and how to recover a store that stopped taking writes. */
+			sharedPoolUnavailable?: { readonly name: string; readonly message: string; readonly hint?: string };
 	  }
 	| {
 			action: "statusDetail";

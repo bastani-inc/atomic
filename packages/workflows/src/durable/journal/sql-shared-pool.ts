@@ -4,7 +4,16 @@ import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
-import type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
+import type {
+	SharedPoolFleet,
+	SharedPoolFleetStatus,
+	SharedPoolHost,
+	SharedPoolHostReport,
+	SharedPoolHostState,
+	SharedPoolStats,
+	WorkerHostGitSource,
+} from "./shared-pool-types.js";
+import { sharedStoreHealth, watchSharedStoreWarnings, withoutUrlCredentials } from "./shared-store-health.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
@@ -14,6 +23,16 @@ export type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSou
 export type { PooledStageInputKind } from "./stage-input-kinds.js";
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
+
+/** A registered worker host counts as live this long after its last report. */
+export const WORKER_HOST_TTL_MS = 15_000;
+
+/** Columns of the host registry that hosts of older versions created it without (#4768). */
+const HOST_STATUS_COLUMNS = {
+	slots_busy: "INTEGER",
+	draining: "INTEGER NOT NULL DEFAULT 0",
+	degraded: "TEXT",
+} as const;
 
 /** A stage input that answers a prompt the stage raised; its payload is the answer. */
 export const STAGE_INPUT_PROMPT_ANSWER = "prompt-answer" as const satisfies PooledStageInputKind;
@@ -143,8 +162,9 @@ export class SqlSharedPool {
 		if (!storage) throw new Error("Shared worker placement requires a SQL run journal");
 		const pool = new SqlSharedPool(storage, queue);
 		const runs = storage.tables.runs;
-		await storage.transaction((tx) =>
-			tx.exec(`
+		watchSharedStoreWarnings();
+		await storage.transaction(async (tx) => {
+			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${pool.shared}(
 					root TEXT PRIMARY KEY REFERENCES ${runs}_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,
 					epoch INTEGER NOT NULL, budget_blocked INTEGER NOT NULL DEFAULT 0
@@ -152,7 +172,7 @@ export class SqlSharedPool {
 				CREATE TABLE IF NOT EXISTS ${pool.hosts}(
 					host TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,
 					workers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,
-					roots TEXT NOT NULL DEFAULT '[]'
+					roots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT
 				);
 				CREATE TABLE IF NOT EXISTS ${pool.activity}(
 					work TEXT PRIMARY KEY REFERENCES ${pool.work}(id) ON DELETE CASCADE, token TEXT NOT NULL,
@@ -182,8 +202,16 @@ export class SqlSharedPool {
 					host TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,
 					recorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)
 				);
-			`),
-		);
+			`);
+			// A registry an older version created lacks the status columns; its hosts go on writing without them.
+			const present = new Set(
+				(await tx.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_info(?)", pool.hosts)).map(
+					(column) => column.name,
+				),
+			);
+			for (const [column, type] of Object.entries(HOST_STATUS_COLUMNS))
+				if (!present.has(column)) await tx.exec(`ALTER TABLE ${pool.hosts} ADD COLUMN ${column} ${type}`);
+		});
 		return pool;
 	}
 
@@ -247,13 +275,15 @@ export class SqlSharedPool {
 	}
 
 	/** Records a worker host's current state; a host that stops reporting ages out of {@link capableHostLive}. */
-	async reportHost(host: Omit<SharedPoolHost, "heartbeatAgoMs">): Promise<void> {
+	async reportHost(host: SharedPoolHostReport): Promise<void> {
 		validateText("key", host.host);
 		await this.storage.transaction((tx) =>
 			tx.run(
-				`INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots) VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?)
+				`INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded)
+				VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?, ?, ?, ?)
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
-				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots`,
+				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
+				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded`,
 				host.host,
 				JSON.stringify(host.labels),
 				host.git,
@@ -261,6 +291,9 @@ export class SqlSharedPool {
 				host.workers,
 				host.maxWorkers,
 				JSON.stringify(host.roots),
+				host.busy ?? null,
+				host.draining === true ? 1 : 0,
+				host.degraded === undefined ? null : JSON.stringify(host.degraded),
 			),
 		);
 	}
@@ -755,7 +788,24 @@ function sameAttempt(held: StageLeaseRow, attempt: AttemptLease): boolean {
 	return Number(held.generation) === attempt.generation;
 }
 
-/** Every registered worker host of the pools in `storage`'s journal. */
+/** How a host that reported `row` reads in fleet status. */
+function hostState(row: {
+	readonly heartbeatAgoMs: number;
+	readonly degraded?: object;
+	readonly draining?: boolean;
+	readonly busy?: number;
+}): SharedPoolHostState {
+	if (row.heartbeatAgoMs > WORKER_HOST_TTL_MS) return "stale";
+	if (row.degraded !== undefined) return "degraded";
+	if (row.draining === true) return "draining";
+	if (row.busy === undefined) return "live";
+	return row.busy > 0 ? "busy" : "idle";
+}
+
+/**
+ * Every registered worker host of the pools in `storage`'s journal. A registry an older version created has no status
+ * columns until a host of this version opens it, and hosts of older versions leave them empty.
+ */
 async function registeredHosts(storage: SqlPoolStorage): Promise<readonly SharedPoolHost[]> {
 	const rows = await storage.read((executor) =>
 		executor.all<
@@ -768,24 +818,69 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 				max_workers: number;
 				roots: string;
 				ago: number;
+				slots_busy?: number | null;
+				draining?: number;
+				degraded?: string | null;
 			}
 		>(`SELECT *, ${STORE_NOW} - heartbeat_at AS ago FROM ${storage.tables.runs}_pool_hosts ORDER BY host`),
 	);
-	return rows.map((row) => ({
-		host: row.host,
-		labels: JSON.parse(row.labels) as Record<string, string>,
-		git: row.git,
-		restore: Number(row.restore) === 1,
-		workers: Number(row.workers),
-		maxWorkers: Number(row.max_workers),
-		roots: JSON.parse(row.roots) as string[],
-		heartbeatAgoMs: Number(row.ago),
-	}));
+	return rows.map((row) => {
+		const degraded =
+			row.degraded === undefined || row.degraded === null
+				? undefined
+				: (JSON.parse(row.degraded) as NonNullable<SharedPoolHost["degraded"]>);
+		const reported = {
+			heartbeatAgoMs: Number(row.ago),
+			...(row.slots_busy === undefined || row.slots_busy === null ? {} : { busy: Number(row.slots_busy) }),
+			...(Number(row.draining ?? 0) === 1 ? { draining: true } : {}),
+			...(degraded === undefined
+				? {}
+				: {
+						degraded: {
+							failures: Number(degraded.failures),
+							error: { name: degraded.error.name, message: withoutUrlCredentials(degraded.error.message) },
+						},
+					}),
+		};
+		return {
+			host: row.host,
+			labels: JSON.parse(row.labels) as Record<string, string>,
+			git: row.git,
+			restore: Number(row.restore) === 1,
+			workers: Number(row.workers),
+			maxWorkers: Number(row.max_workers),
+			roots: JSON.parse(row.roots) as string[],
+			...reported,
+			state: hostState(reported),
+		};
+	});
+}
+
+/** The shared store as this process sees it, and the queue of every running or paused shared root (#4768). */
+async function fleetStatus(storage: SqlPoolStorage): Promise<SharedPoolFleetStatus> {
+	const runs = storage.tables.runs;
+	const rows = await storage.read((executor) =>
+		executor.all<SqliteRow & { roots: number; ready: number; leased: number }>(
+			`SELECT COUNT(DISTINCT s.root) AS roots,
+			COALESCE(SUM(w.state = 'ready'), 0) AS ready, COALESCE(SUM(w.state = 'leased'), 0) AS leased
+			FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root LEFT JOIN ${runs}_work w ON w.root = s.root
+			WHERE r.status IN ('running', 'paused')`,
+		),
+	);
+	const [row] = rows;
+	return {
+		store: sharedStoreHealth(),
+		queue: { roots: Number(row?.roots ?? 0), ready: Number(row?.ready ?? 0), leased: Number(row?.leased ?? 0) },
+	};
 }
 
 /** Queue depth, per-host workers and lease ages of `root`'s shared pool in `storage`'s journal. */
-async function poolStats(storage: SqlPoolStorage, root: string): Promise<SharedPoolStats> {
-	const [counts, leases, pending, hosts] = await Promise.all([
+async function poolStats(
+	storage: SqlPoolStorage,
+	root: string,
+	fleet?: SharedPoolFleetStatus,
+): Promise<SharedPoolStats> {
+	const [counts, leases, pending, hosts, fleetNow] = await Promise.all([
 		storage.read((executor) =>
 			executor.all<SqliteRow & { state: string; count: number }>(
 				`SELECT state, COUNT(*) AS count FROM ${storage.tables.runs}_work WHERE root = ? GROUP BY state`,
@@ -816,6 +911,7 @@ async function poolStats(storage: SqlPoolStorage, root: string): Promise<SharedP
 			),
 		),
 		registeredHosts(storage),
+		fleet ?? fleetStatus(storage),
 	]);
 	const count = (state: string) => Number(counts.find((row) => row.state === state)?.count ?? 0);
 	const leaseList = leases.map((row) => ({
@@ -839,6 +935,7 @@ async function poolStats(storage: SqlPoolStorage, root: string): Promise<SharedP
 			leased: leaseList.filter((entry) => entry.host === host.host).length,
 		})),
 		leases: leaseList,
+		fleet: fleetNow,
 	};
 }
 
@@ -849,6 +946,7 @@ async function poolStats(storage: SqlPoolStorage, root: string): Promise<SharedP
 export async function readSharedPoolStats(journal: RunJournal, root: string): Promise<SharedPoolStats | undefined> {
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return undefined;
+	watchSharedStoreWarnings();
 	const shared = await storage.read((executor) =>
 		executor.get(
 			"SELECT 1 AS held FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -865,19 +963,23 @@ export async function readSharedPoolStats(journal: RunJournal, root: string): Pr
 export async function readSharedPoolFleet(journal: RunJournal): Promise<SharedPoolFleet | undefined> {
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return undefined;
+	watchSharedStoreWarnings();
 	const runs = storage.tables.runs;
 	const shared = await storage.read((executor) =>
 		executor.get("SELECT 1 AS held FROM sqlite_master WHERE type = 'table' AND name = ?", `${runs}_pool_shared`),
 	);
-	if (shared === undefined) return { hosts: [], roots: [] };
+	if (shared === undefined)
+		return { hosts: [], roots: [], fleet: { store: sharedStoreHealth(), queue: { roots: 0, ready: 0, leased: 0 } } };
 	const active = await storage.read((executor) =>
 		executor.all<SqliteRow & { root: string }>(
 			`SELECT s.root FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
 			WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
 		),
 	);
+	const fleet = await fleetStatus(storage);
 	return {
 		hosts: await registeredHosts(storage),
-		roots: await Promise.all(active.map((row) => poolStats(storage, row.root))),
+		roots: await Promise.all(active.map((row) => poolStats(storage, row.root, fleet))),
+		fleet,
 	};
 }
