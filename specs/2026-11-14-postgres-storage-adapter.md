@@ -139,11 +139,11 @@ table shows the largest gap. Every run kept the invariants: one event per key, `
 
 **Loopback** (`results/hotpath-{sqlite,pg-serial,pg}.json`):
 
-| Backend | Hosts × 4 | cps | p50 ms | p99 ms | max ms | largest gap ms | errors (retried or refused) |
+| Backend | Hosts × 4 | cps | p50 ms | p99 ms | max ms | largest gap ms | errors recorded (see point 4) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | sqld | 8 | 87.2 | 286 | 516 | 532 | 151 | — |
 | sqld | 16 | 87.2 | 532 | 873 | 956 | 83 | — |
-| sqld | 32 | 72.9 | 986 | 1 946 | 3 723 | 483 | 30 `StorageUnavailableError`, 18 stale work |
+| sqld | 32 | 72.9 | 986 | 1 946 | 3 723 | 483 | 30 storage unavailable, 18 `stale: work` |
 | pg-serial | 8 | 434.9 | 60 | 69 | 109 | 34 | — |
 | pg-serial | 16 | 387.6 | 119 | 185 | 187 | 79 | — |
 | pg-serial | 32 | 286.8 | 229 | 357 | 411 | 162 | — |
@@ -153,17 +153,17 @@ table shows the largest gap. Every run kept the invariants: one event per key, `
 
 **2 ms RTT** (`--latency-ms 1`, a TCP hop holding each chunk 1 ms each way; `results/hotpath-*-rtt2ms.json`):
 
-| Backend | Hosts × 4 | cps | p50 ms | p99 ms | max ms | largest gap ms | errors |
+| Backend | Hosts × 4 | cps | p50 ms | p99 ms | max ms | largest gap ms | errors recorded (see point 4) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| sqld | 8 | 30.7 | 794 | 1 386 | 1 609 | 190 | 5 stale work |
-| sqld | 16 | 30.0 | 1 524 | 2 644 | 4 289 | 490 | 14 unavailable, 15 stale |
-| sqld | 32 | 23.9 | 3 065 | 5 927 | 12 390 | 1 452 | 89 unavailable, 98 stale; 259 commits over 5 s |
+| sqld | 8 | 30.7 | 794 | 1 386 | 1 609 | 190 | 5 `stale: work` |
+| sqld | 16 | 30.0 | 1 524 | 2 644 | 4 289 | 490 | 14 storage unavailable, 15 `stale: work` |
+| sqld | 32 | 23.9 | 3 065 | 5 927 | 12 390 | 1 452 | 89 storage unavailable, 98 `stale: work`; 259 commits over 5 s |
 | pg-serial | 8 | 41.7 | 654 | 984 | 1 246 | 227 | — |
-| pg-serial | 16 | 37.3 | 1 280 | 2 102 | 2 619 | 469 | 2 stale |
-| pg-serial | 32 | 28.7 | 2 428 | 4 397 | 4 850 | 817 | 89 stale |
+| pg-serial | 16 | 37.3 | 1 280 | 2 102 | 2 619 | 469 | 2 `stale: work` |
+| pg-serial | 32 | 28.7 | 2 428 | 4 397 | 4 850 | 817 | 89 `stale: work` |
 | **pg** | 8 | **331.2** | **58** | **384** | 671 | 11 | — |
 | **pg** | 16 | **314.1** | **88** | **1 052** | 2 073 | 17 | — |
-| **pg** | 32 | **292.9** | **159** | **2 416** | 5 634 | 21 | 1 stale (one commit over 5 s) |
+| **pg** | 32 | **292.9** | **159** | **2 416** | 5 634 | 21 | 1 `stale: work`; one commit over 5 s |
 
 What the numbers say:
 
@@ -176,9 +176,17 @@ What the numbers say:
 3. **The `pg` tail at 2 ms** (p99 2.4 s at 32 hosts) comes from that one hot row: a commit's lock is held for one
    statement plus `COMMIT`, i.e. two RTTs plus the fsync, and 128 writers queue on it. S0's one-request shape
    (§5.4, slice P5) folds the fence and the CTE into one pipelined round trip, which halves that hold.
-4. **sqld's errors are not benign.** At 16 and 32 hosts with RTT, commits outran the 30 s work lease (stale work,
-   attempts fenced) and requests failed outright. The lease is 30 s; a p99 near 6 s means the heartbeat itself queues
-   for the lock.
+4. **sqld also failed requests outright.** The recorded errors, per kind, at 2 ms RTT (`errors` in
+   `results/hotpath-*-rtt2ms.json`): sqld 8 hosts 5 `stale: work`; 16 hosts 15 `stale: work` and 14 storage
+   unavailable; 32 hosts 98 `stale: work` and 89 storage unavailable. `pg-serial` had 2 and 89 `stale: work` at 16 and
+   32 hosts, `pg` 1 at 32. On loopback only sqld at 32 hosts had any (18 and 30). No run recorded
+   `stale: expired`, so **no commit is shown to have outrun its 30 s lease**. `stale: work` is the attempt fence
+   (work row missing, not `leased`, or another generation or worker): in this harness nothing but `complete` moves a
+   leased row, and no host can claim a leased row, so the only source is a heartbeat already in flight when its child
+   completed. Its count tracks how long writes queue, not lost work. The storage
+   unavailable counts include each retried attempt as well as calls that failed after their retries, so they count
+   failed requests, not failed children. What the errors do show is that sqld rejected requests under this load and
+   Postgres never did; every run still completed every child.
 
 ### 3.3 The full Atomic path on sqld (baseline)
 
@@ -329,7 +337,11 @@ export interface SqliteDatabase { /* existing */ readonly dialect?: StorageDiale
 // @bastani/atomic-storage-postgres
 export interface PostgresDatabaseOptions {
 	readonly url: string; // postgres:// or postgresql://, no password, no `password=` parameter
-	readonly password?: string; // resolved from secrets { file | env }; re-read per new connection
+	/**
+	 * A fixed value (SDK callers only), or a credential reader called for every new connection. A selection's
+	 * `secrets.password` reaches the adapter as a reader, never as a value (see "Live secrets" below).
+	 */
+	readonly password?: string | (() => Promise<string>);
 	readonly auth?: "password" | "azure-entra" | "aws-iam" | "gcp-iam"; // default "password"
 	readonly maxConnections?: number; // default 8 per process
 	readonly listenUrl?: string; // direct (non-pooled) endpoint for LISTEN; absent → polling only
@@ -339,6 +351,14 @@ export function openPostgresDatabase(options: PostgresDatabaseOptions): Promise<
 ```
 
 - **Guarantee:** returns a facade on a reachable server ≥ 14 whose credentials stayed out of the descriptor.
+- **Live secrets (provider change, P1).** Today `resolveAdapterOptions` reads every `secrets` reference once and
+  passes the value in `options`, so a rotated `--token-file` would never be read again. `StorageAdapterModule` gains
+  `liveSecrets?: readonly string[]`. For those names the provider does not resolve the reference: `options` omits
+  them, and `context.secret(name): Promise<string>` re-reads the `{ file }` or `{ env }` reference on every call
+  (same trimming rule as today; `StorageConfigError` / `StorageUnavailableError` as today when it is missing). The
+  Postgres adapter declares `liveSecrets: ["password"]` and passes `() => context.secret("password")` to `pg` as its
+  `password` function, which `pg` calls for each new connection. IAM auth modes (§5.2) plug into the same reader
+  shape. Adapters that do not declare `liveSecrets`, libSQL included, are unchanged.
 - **Named failures:** `StorageConfigError` (`credential-in-url`, `unsupported-url`, `auth-unavailable`),
   `StorageUnavailableError` (`28P01` refused credentials, `3D000` missing database, `42501` no privilege, server
   < 14), `StorageTransientError` (`connection-refused`, `connection-lost`, new `lock-conflict` for
@@ -410,7 +430,7 @@ Auth, credentials never in the journal or settings:
 
 | `auth` | How the password is obtained, per new connection | Where it comes from |
 | --- | --- | --- |
-| `password` | `secrets.password` `{ file }` / `{ env }`, re-read | `--password-file` (copied, mode 600) or `--token-file` (referenced in place) |
+| `password` | `secrets.password` `{ file }` / `{ env }`, read through `context.secret("password")` for every new connection (live secret) | `--password-file` (copied, mode 600) or `--token-file` (referenced in place) |
 | `azure-entra` | Managed identity token from IMDS (`169.254.169.254/metadata/identity/oauth2/token?resource=https://ossrdbms-aad.database.windows.net`), else `az account get-access-token --resource-type oss-rdbms` | VM/VMSS managed identity, AKS workload identity, developer `az login` |
 | `aws-iam` | `aws rds generate-db-auth-token --hostname … --port … --username …` (SigV4, 15-minute token) | instance profile, IRSA, `AWS_*` |
 | `gcp-iam` | Metadata server access token (`metadata.google.internal/…/service-accounts/default/token`), else `gcloud auth print-access-token` | Cloud SQL / AlloyDB IAM database users |
@@ -602,13 +622,13 @@ Each slice is about 100–500 changed lines, independently mergeable, defaults u
 | ID | Title | Depends on | Parallel group | Objective | Files | Tests |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0 | Backend conformance matrix and CI Postgres service | — | A | Fixture that opens node-sqlite, sqld and Postgres facades; run the existing `SqliteDatabase`, session and journal suites on SQLite and sqld; add the `postgres:16` service container and `ATOMIC_TEST_POSTGRES_URL` (Postgres rows `todo` until P2) | `test/helpers/storage-backends.ts`, `test/integration/storage-conformance-matrix.test.ts`, `.github/workflows/test.yml`, `docs/ci.md` | The matrix itself; CI fails when the URL is missing in CI |
-| P1 | `StorageDialect`, `TransactionConcurrency`, migrations | — | A | `dialect.ts`, facade `dialect` and `concurrency` options, `fencedPath()`, `applyStorageMigrations`; SQLite behavior byte-identical | `core/storage/{dialect,database,sqlite-facade,migrations,fenced-paths,index}.ts` | Dialect table test; facade conformance unchanged; type test that `FencedPathId` cannot be built from a string |
-| P2 | `@bastani/atomic-storage-postgres` adapter | P1 | B | Pool, `$n` numbering, BIGINT parsing, SQLSTATE → typed errors, `serial` advisory lock, password from secrets, URL refusals; publish wiring like `storage-libsql` | `packages/storage-postgres/*`, `scripts` publish lists, `publish.yml` package list | `registerSqliteDatabaseConformance` on Postgres; error-map unit tests; pgbouncer transaction-mode run |
+| P1 | `StorageDialect`, `TransactionConcurrency`, migrations, live secrets | — | A | `dialect.ts`, facade `dialect` and `concurrency` options, `fencedPath()`, `applyStorageMigrations`; `liveSecrets` on `StorageAdapterModule` with `context.secret(name)` re-reading the reference per call; SQLite behavior byte-identical | `core/storage/{dialect,database,sqlite-facade,migrations,fenced-paths,provider,index}.ts` | Dialect table test; facade conformance unchanged; type test that `FencedPathId` cannot be built from a string; a live secret's file rewritten between two `context.secret` calls returns the new value, and `options` never holds it |
+| P2 | `@bastani/atomic-storage-postgres` adapter | P1 | B | Pool, `$n` numbering, BIGINT parsing, SQLSTATE → typed errors, `serial` advisory lock, `liveSecrets: ["password"]` wired to `pg`'s per-connection `password` function, URL refusals; publish wiring like `storage-libsql` | `packages/storage-postgres/*`, `scripts` publish lists, `publish.yml` package list | `registerSqliteDatabaseConformance` on Postgres; error-map unit tests; pgbouncer transaction-mode run; password file rotated (and the old password revoked) mid-test: the next new connection succeeds |
 | P3 | Portable SQL: sessions, snapshot blobs, workspace leases | P1 (P2 to run Postgres rows) | C | Rewrite §3.1 constructs to portable SQL + dialect calls; Postgres migration step 1 for both domains | `session/sql-session-store.ts`, `legacy-session-store.ts`, `worktree-snapshot/blob-store.ts`, `workspace/lease.ts` | Session conformance and blob tests on all three backends |
 | P4 | Portable SQL: run journal and Intercom routing | P1 | C | Same for the journal (append batch as a per-dialect plan, `last_seq`) and the 9 Intercom files | `sql-run-journal.ts`, `legacy-journal-tables.ts`, `journal-adoption.ts` (schema), `intercom/broker/sql-*.ts`, `database-wake-up-bus.ts` | Journal conformance × 3; new Intercom routing conformance × 3 |
 | P5 | Portable pool and fenced hot paths | P1, P4 (S0 #4791 if merged) | C | Pool, shared pool, fleet, admission portable; `fenced` claim/heartbeat/commit/complete per §5.4; portable `CHECK` fence for S0 plans | `sql-pool-queue.ts`, `sql-shared-pool.ts`, `sql-pool-usage.ts`, `pool-stage-usage.ts`, `sql-fleet.ts`, `resource-admission.ts`, `pool-session-store.ts`, `fenced-paths.ts` | Pool conformance × 3; 32-writer property test; deadlock-order test; `run-hotpath.mjs` and `run-local.mjs` on Postgres recorded in the PR |
 | P6 | CLI: join, worker `--db`, status, export/import selections | P2 | B | Scheme → adapter map; `--password-file`, `--token-file`, `--auth`; Postgres status checks; `--storage`/`--storage-file` on export/import | `core/storage/{team,selection,storage-status}.ts`, `cli/{storage,worker,team}-command.ts`, `journal-transfer.ts` | Parse and refusal tables; `storage join` against the CI Postgres; export from sqld → import into Postgres → resume |
-| P7 | Cloud IAM auth and `LISTEN/NOTIFY` wake-ups | P2, P5 | D | `azure-entra`, `aws-iam`, `gcp-iam` token providers over `execFile`/metadata with cache and redaction; `listenUrl`; pool-ready and Intercom `LISTEN` buses with poll fallback | `packages/storage-postgres/{auth,listen}.js`, `intercom/broker/postgres-wake-up-bus.ts`, `workers/worker-host.ts` | Fake metadata servers and fake CLIs on `PATH`; token never in errors; LISTEN dropped → poll delivers |
+| P7 | Cloud IAM auth and `LISTEN/NOTIFY` wake-ups | P2, P5 | D | `azure-entra`, `aws-iam`, `gcp-iam` token providers over `execFile`/metadata with cache and redaction; `listenUrl`; pool-ready and Intercom `LISTEN` buses with poll fallback | `packages/storage-postgres/{auth,listen}.js`, `intercom/broker/postgres-wake-up-bus.ts`, `workers/worker-host.ts` | Fake metadata servers and fake CLIs on `PATH`; token never in errors; a token that expires is replaced on the next connection through the same credential reader; LISTEN dropped → poll delivers |
 | P8 | Docs: Postgres as the preferred cloud store | P6 (P7 for auth sections) | D | `storage.md` (Postgres section, decision table §6.1, sizing, roles, pooler notes), worker-hosts guide (Postgres join first), `atomic storage join` help, team setup; cloud recipes: Terraform examples provision managed Postgres beside the scaling group and the Helm chart takes a Postgres URL secret, in whichever recipe set is on `main` when this slice lands; changelogs | `packages/coding-agent/docs/{storage.md,guides/worker-hosts.md,guides/team-setup.md,reference/cli.md}`, `cli/storage-command.ts` help, recipe files, `packages/*/CHANGELOG.md` | Docs build; custom-driver example check; help snapshot |
 
 Parallel groups: **A** (P0, P1) start together. **B** (P2 → P6) stacks after P1. **C** (P3, P4 in parallel after

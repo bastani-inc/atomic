@@ -17,6 +17,7 @@ and synchronous commit on). Absolute numbers are noisy; the ratios are the findi
 | `hotpath.mjs` | The shared pool's hot path (claim, heartbeat, commit, complete, host reports, root lease renewal) as `SqlPoolQueue` runs it, on three backends: `sqlite` (Atomic's libSQL adapter against sqld, interactive transactions as on `main`), `pg-serial` (the same statements rewritten for Postgres, `BEGIN IMMEDIATE` kept as a database-wide `pg_advisory_xact_lock`), and `pg` (the designed port: root lease `FOR SHARE`, work row `FOR UPDATE`, `FOR UPDATE SKIP LOCKED` claim, late `UPDATE … RETURNING` sequence) |
 | `hotpath-host.mjs` | One worker host process: `HP_SLOTS` workers claim, commit `HP_STEPS` checkpoints with a 7.5 s heartbeat, and complete |
 | `run-hotpath.mjs` | The #4768 harness shape for the hot path: one root (this process), N host processes, `--latency-ms` TCP hop, stall detection with a write probe |
+| `trial-outcome.mjs`, `trial-outcome.test.mjs` | How a trial decides readiness (host exits watched from spawn, a deadline within `--run-timeout-ms`) and success (every host exits 0 and writes its result file, else `status: "failed"` with `failure`). `node --test research/evidence/postgres-adapter/trial-outcome.test.mjs` |
 
 ## Commands
 
@@ -49,4 +50,5 @@ docker rm -f pg4793-bench && rm -rf /fast/tmp/pg-proto
 | `results/atomic-sqld-{8,16}x4.json`, `atomic-sqld-32x4-run{1,2}.json` | The full Atomic path on sqld (`main`, S0 not merged): 25.7 / 20.4 / 12.2 cps, p99 1.4 / 3.4 / 8.1 s; 2 children failed at 16 and at 32 hosts with `StorageUnavailableError`, and the first 32-host run's root died with `SQLITE_BUSY`. The 32-host runs push the load to 70–78 themselves |
 
 No run stalled (no fleet-wide gap of 5 s between commits). Every hot-path run kept one event per checkpoint key and a
-dense sequence.
+dense sequence. The recorded results predate the stricter trial outcome; every one of them completed all its children
+(`progress` shows only `completed`), so none would change status under it.

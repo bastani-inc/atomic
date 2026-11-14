@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { hotPath, openPostgres, openSqlite } from "./hotpath.mjs";
+import { trialOutcome, waitForReady, watchExits } from "./trial-outcome.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(
@@ -51,6 +52,8 @@ function proxy(targetHost, targetPort, oneWayMs) {
 	return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(server)));
 }
 const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
+/** Hosts must be ready within this; it counts against RUN_TIMEOUT_MS. */
+const READY_TIMEOUT_MS = Math.min(Number(args["ready-timeout-ms"] ?? 120_000), RUN_TIMEOUT_MS);
 
 async function freePort() {
 	const server = createServer();
@@ -93,6 +96,7 @@ async function trial(hosts) {
 	const children = hosts * slots * perSlot;
 	const prefix = `h${hosts}_${backend.replace("-", "_")}_${Date.now() % 100000}_`;
 	const processes = [];
+	const trialStart = Date.now();
 	let sqldProcess;
 	let url = pgUrl;
 	let front;
@@ -121,13 +125,21 @@ async function trial(hosts) {
 					stdio: ["ignore", "ignore", "inherit"],
 				}),
 			);
-		for (let index = 0; index < hosts; index++) while (!existsSync(join(work, `ready-${index}`))) await sleep(50);
+		// Exits are watched from spawn: a host that dies during startup fails the trial instead of hanging it.
+		const { exits, states } = watchExits(processes);
+		const readyFiles = processes.map((_, index) => join(work, `ready-${index}`));
+		const resultFiles = processes.map((_, index) => join(work, `result-${index}.json`));
+		const notReady = await waitForReady(readyFiles, states, trialStart + READY_TIMEOUT_MS);
+		if (notReady !== undefined) {
+			await db.close().catch(() => {});
+			return { backend, hosts, slots, oneWayLatencyMs: latencyMs, children, steps, status: "failed", failure: notReady };
+		}
 		const began = Date.now();
 		let lastProgress = began;
 		let lastSeen = "";
 		let status = "completed";
 		const renew = setInterval(() => void pool.renewRoot(lease).catch(() => {}), 5_000);
-		const exited = Promise.all(processes.map((p) => new Promise((resolve) => p.on("exit", resolve))));
+		const exited = Promise.all(exits);
 		for (;;) {
 			const finished = await Promise.race([exited.then(() => true), sleep(5_000).then(() => false)]);
 			if (finished) break;
@@ -139,8 +151,8 @@ async function trial(hosts) {
 				lastProgress = Date.now();
 			}
 			process.stderr.write(`[${backend} ${hosts}×${slots}] +${Math.round((Date.now() - began) / 1000)}s ${seen}\n`);
-			if (Date.now() - lastProgress > STALL_MS || Date.now() - began > RUN_TIMEOUT_MS) {
-				status = Date.now() - began > RUN_TIMEOUT_MS ? "timed-out" : "stalled";
+			if (Date.now() - lastProgress > STALL_MS || Date.now() - trialStart > RUN_TIMEOUT_MS) {
+				status = Date.now() - trialStart > RUN_TIMEOUT_MS ? "timed-out" : "stalled";
 				break;
 			}
 		}
@@ -153,15 +165,13 @@ async function trial(hosts) {
 			await probeDb.close().catch(() => {});
 			for (const p of processes) if (p.exitCode === null) p.kill("SIGKILL");
 		}
-		const hostResults = [];
-		for (let index = 0; index < hosts; index++) {
-			const file = join(work, `result-${index}.json`);
-			if (existsSync(file)) hostResults.push(JSON.parse(readFileSync(file, "utf8")));
-		}
+		// A completed run needs every host to exit 0 with its result file; otherwise the trial failed, with why.
+		const outcome = trialOutcome(status, states, resultFiles);
+		const hostResults = resultFiles.filter((file) => existsSync(file)).map((file) => JSON.parse(readFileSync(file, "utf8")));
 		const invariants = await pool.invariants(lease).catch((e) => String(e));
 		const progress = await pool.progress(lease).catch((e) => String(e));
 		await db.close();
-		return { backend, hosts, slots, oneWayLatencyMs: latencyMs, children, steps, status, writeProbe, progress, invariants, ...summarize(hostResults, wallMs) };
+		return { backend, hosts, slots, oneWayLatencyMs: latencyMs, children, steps, status: outcome.status, ...(outcome.failure === undefined ? {} : { failure: outcome.failure }), writeProbe, progress, invariants, ...summarize(hostResults, wallMs) };
 	} finally {
 		for (const p of processes) if (p.exitCode === null) p.kill("SIGKILL");
 		if (sqldProcess) {
