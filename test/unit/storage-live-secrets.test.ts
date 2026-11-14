@@ -7,9 +7,10 @@ import {
 	resolveAdapterOptions,
 	type SqliteDatabase,
 	type StorageAdapterModule,
-	type StorageConfigError,
+	StorageConfigError,
 	type StorageOpenContext,
 	StorageProvider,
+	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import { makeTempDirectory, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -82,4 +83,91 @@ test("adapters without liveSecrets keep every secret in options (#4793)", async 
 	assert.equal(await context.secret?.("token"), "value");
 	const adapter: StorageAdapterModule = { atomicStorageAdapter: 1, liveSecrets: ["token"] };
 	assert.deepEqual(adapter.liveSecrets, ["token"]);
+});
+
+test("context.secret re-reads environment references and names missing ones (#4793)", async () => {
+	const home = makeTempDirectory("storage-live-secret-env-");
+	const name = "ATOMIC_TEST_LIVE_SECRET_4793";
+	const selection = {
+		kind: "adapter",
+		module: "probe-module",
+		secrets: { env: { env: name }, file: { file: "absent" } },
+	} as const;
+	const context = adapterOpenContext(selection, { agentDir: join(home, "agent"), domain: "sessions" });
+	try {
+		process.env[name] = "first";
+		assert.equal(await context.secret?.("env"), "first");
+		process.env[name] = "second";
+		assert.equal(await context.secret?.("env"), "second");
+		delete process.env[name];
+		await assert.rejects(
+			context.secret?.("env") ?? Promise.resolve(),
+			(error: StorageConfigError) =>
+				error instanceof StorageConfigError &&
+				error.source === "sdk" &&
+				error.field === "secrets.env" &&
+				error.reason === "secret-env-missing",
+		);
+		await assert.rejects(
+			context.secret?.("file") ?? Promise.resolve(),
+			(error: StorageUnavailableError) =>
+				error instanceof StorageUnavailableError && error.adapter === "probe-module" && error.location === "absent",
+		);
+		await assert.rejects(
+			context.secret?.("toString") ?? Promise.resolve(),
+			(error: StorageConfigError) =>
+				error.source === "sdk" && error.field === "secrets.toString" && error.reason === "secret-missing",
+		);
+	} finally {
+		delete process.env[name];
+		removeTempDirectory(home);
+	}
+});
+
+test("store hooks of an adapter receive the live-secret context and the prefix (#4793)", async () => {
+	const home = makeTempDirectory("storage-live-secret-hooks-");
+	const agentDir = join(home, "agent");
+	const seen: { hook: string; options: unknown; prefix?: string; secret: string }[] = [];
+	Reflect.set(globalThis, PROBE, {
+		async record(hook: string, options: unknown, context: StorageOpenContext, storage: { prefix?: string }) {
+			seen.push({ hook, options, prefix: storage.prefix, secret: (await context.secret?.("password")) ?? "" });
+			return { close: async () => {} };
+		},
+	});
+	await writeFileEnsuringDir(
+		join(agentDir, "adapter.ts"),
+		[
+			`const probe = (globalThis as Record<symbol, any>)[Symbol.for("atomic-test/storage-live-secrets-4793")];`,
+			"export default {",
+			"\tatomicStorageAdapter: 1 as const,",
+			'\tliveSecrets: ["password"],',
+			'\topenSessionStore: (options: unknown, context: unknown, storage: unknown) => probe.record("sessions", options, context, storage),',
+			'\topenRunJournal: (options: unknown, context: unknown, storage: unknown) => probe.record("journal", options, context, storage),',
+			"};",
+			"",
+		].join("\n"),
+	);
+	const selection = {
+		kind: "adapter",
+		module: "./adapter.ts",
+		options: { url: "postgres://example" },
+		secrets: { password: inMemorySecret("pw") },
+		prefix: "team_",
+	} as const;
+	const unused = () => {
+		throw new Error("the adapter's own hooks open these stores");
+	};
+	const provider = new StorageProvider({ memory: unused, sql: unused });
+	try {
+		const sessions = await provider.openSessionStore(selection, { agentDir, domain: "sessions" });
+		const journal = await provider.openRunJournal(selection, { agentDir, domain: "journal" });
+		await Promise.all([sessions.close(), journal.close()]);
+		assert.deepEqual(seen, [
+			{ hook: "sessions", options: { url: "postgres://example" }, prefix: "team_", secret: "pw" },
+			{ hook: "journal", options: { url: "postgres://example" }, prefix: "team_", secret: "pw" },
+		]);
+	} finally {
+		Reflect.deleteProperty(globalThis, PROBE);
+		removeTempDirectory(home);
+	}
 });

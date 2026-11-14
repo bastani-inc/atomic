@@ -62,11 +62,13 @@ test("transactions tell the driver their concurrency and lock wait, serial by de
 	const database = createSqliteDatabase(driver);
 	await database.transaction(async () => {});
 	await database.transaction(async () => {}, { lockWaitMs: 1234 });
+	await database.transaction(async () => {}, { concurrency: { kind: "serial" } });
 	await database.transaction(async () => {}, { concurrency: { kind: "serial", domain: "team_sessions" } });
 	await database.transaction(async () => {}, { concurrency: { kind: "fenced", audit: AUDITED } });
 	assert.deepEqual(begun, [
 		{ concurrency: { kind: "serial" } },
 		{ concurrency: { kind: "serial" }, lockWaitMs: 1234 },
+		{ concurrency: { kind: "serial" } },
 		{ concurrency: { kind: "serial", domain: "team_sessions" } },
 		{ concurrency: { kind: "fenced", audit: "test-path" } },
 	]);
@@ -78,6 +80,7 @@ test("a malformed concurrency is refused before the transaction begins (#4793)",
 	const database = createSqliteDatabase(driver);
 	const malformed = [
 		{ kind: "parallel" },
+		{ kind: "parallel", audit: "test-path" },
 		{ kind: "serial", domain: 7 },
 		{ kind: "fenced" },
 		{ kind: "fenced", audit: "" },
@@ -87,7 +90,12 @@ test("a malformed concurrency is refused before the transaction begins (#4793)",
 		await assert.rejects(
 			database.transaction(async () => {}, { concurrency } as unknown as SqliteTransactionOptions),
 			(error: StorageConfigError) =>
-				error instanceof StorageConfigError && error.field === "concurrency" && error.reason === "kind-required",
+				error instanceof StorageConfigError &&
+				error.source === "sdk" &&
+				error.field === "concurrency" &&
+				error.reason === "kind-required" &&
+				error.hint ===
+					'Pass { kind: "serial" }, { kind: "serial", domain }, or { kind: "fenced", audit: fencedPath(name) }, or omit it',
 		);
 	}
 	assert.deepEqual(begun, []);
