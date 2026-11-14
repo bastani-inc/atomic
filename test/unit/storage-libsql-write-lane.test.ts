@@ -90,6 +90,10 @@ test("write batches a server leaves unanswered three times in a row warn once pe
 	const warnings: (Error & { code?: string })[] = [];
 	const onWarning = (warning: Error) => warnings.push(warning);
 	process.on("warning", onWarning);
+	// The same reports as a process event, which a process that silences warnings still hears.
+	const health: { stalled: boolean; message: string }[] = [];
+	const onHealth = (report: { stalled: boolean; message: string }) => health.push(report);
+	process.on("atomic-libsql-write-health" as "warning", onHealth as never);
 	const stall = async () => {
 		hang = true;
 		for (let attempt = 0; attempt < 4; attempt++)
@@ -106,7 +110,12 @@ test("write batches a server leaves unanswered three times in a row warn once pe
 		await new Promise((resolve) => setImmediate(resolve));
 	} finally {
 		process.off("warning", onWarning);
+		process.off("atomic-libsql-write-health" as "warning", onHealth as never);
 	}
+	assert.deepEqual(
+		health.map((report) => report.stalled),
+		[true, false, true],
+	);
 	const codes = warnings.map((warning) => warning.code).filter((code) => code?.startsWith("ATOMIC_LIBSQL_WRITES_"));
 	assert.deepEqual(codes, [
 		"ATOMIC_LIBSQL_WRITES_STALLED",

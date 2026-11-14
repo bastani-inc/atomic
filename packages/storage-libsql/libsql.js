@@ -193,15 +193,15 @@ async function collectAndFinalize() {
  * workers would fill it. Batches that set `priority` do not count, so a lease renewal never waits behind them.
  */
 const MAX_IN_FLIGHT_WRITES = 4;
-/** The first wait before a batch that found the write lock busy is sent again; each later wait may be twice as long. */
-const BUSY_RETRY_BASE_MS = 20;
-/** The longest wait between two sends of a busy batch. */
-const BUSY_RETRY_MAX_MS = 1000;
 
-/** Write batches in a row, over the whole process, that a server left unanswered, after which its writes count as stalled. */
+/** Write batches in a row a server left unanswered, after which its writes count as stalled. */
 const STALLED_WRITES_WARNING_AFTER = 3;
-let unansweredWrites = 0;
-let stalledWritesReported = false;
+/**
+ * Each server's unanswered write batches in a row, and whether its stall was reported, by its location: one stalled
+ * server is told apart from another that answers.
+ * @type {Map<string, { unanswered: number; reported: boolean }>}
+ */
+const writeHealth = new Map();
 
 /**
  * Counts a write batch's outcome toward the process's warning that a server stopped taking writes, once per stall: the
@@ -211,22 +211,41 @@ let stalledWritesReported = false;
  * @param {string} location
  */
 function noteWriteOutcome(error, location) {
+	const health = writeHealth.get(location) ?? { unanswered: 0, reported: false };
 	if (!isTimeout(error)) {
 		// A write answered after a reported stall: the server takes writes again, and a later stall warns again.
-		if (stalledWritesReported)
-			process.emitWarning(
-				`The libSQL server at ${location} is taking writes again after ${unansweredWrites} unanswered write requests.`,
-				{ code: "ATOMIC_LIBSQL_WRITES_RECOVERED" },
+		if (health.reported)
+			reportWriteHealth(
+				false,
+				`The libSQL server at ${location} is taking writes again after ${health.unanswered} unanswered write requests.`,
+				"ATOMIC_LIBSQL_WRITES_RECOVERED",
 			);
-		stalledWritesReported = false;
-		unansweredWrites = 0;
+		writeHealth.delete(location);
 		return;
 	}
-	if (++unansweredWrites < STALLED_WRITES_WARNING_AFTER || stalledWritesReported) return;
-	stalledWritesReported = true;
-	process.emitWarning(
-		`The libSQL server at ${location} left ${unansweredWrites} write requests in a row unanswered for ${REQUEST_TIMEOUT_MS / 1000} seconds each. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts (https://github.com/tursodatabase/libsql/issues/2286); start sqld with --checkpoint-interval-s 60 (SQLD_CHECKPOINT_INTERVAL_S=60) to avoid it, and restart it now if writes stay stuck. Atomic keeps retrying its writes meanwhile.`,
-		{ code: "ATOMIC_LIBSQL_WRITES_STALLED" },
+	health.unanswered++;
+	writeHealth.set(location, health);
+	if (health.unanswered < STALLED_WRITES_WARNING_AFTER || health.reported) return;
+	health.reported = true;
+	reportWriteHealth(
+		true,
+		`The libSQL server at ${location} left ${health.unanswered} write requests in a row unanswered for ${REQUEST_TIMEOUT_MS / 1000} seconds each. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts (https://github.com/tursodatabase/libsql/issues/2286); start sqld with --checkpoint-interval-s 60 (SQLD_CHECKPOINT_INTERVAL_S=60) to avoid it, and restart it now if writes stay stuck. Atomic keeps retrying its writes meanwhile.`,
+		"ATOMIC_LIBSQL_WRITES_STALLED",
+	);
+}
+
+/**
+ * Reports a server's write health as a process warning, and as the process event `atomic-libsql-write-health`, which a
+ * process that silences warnings (as Atomic's CLI does) still hears: `{ stalled, message }`.
+ * @param {boolean} stalled
+ * @param {string} message
+ * @param {string} code
+ */
+function reportWriteHealth(stalled, message, code) {
+	process.emitWarning(message, { code });
+	/** @type {(event: string, payload: { stalled: boolean; message: string }) => boolean} */ (process.emit)(
+		"atomic-libsql-write-health",
+		{ stalled, message },
 	);
 }
 
@@ -285,28 +304,6 @@ function isLockBusy(error) {
 		current = cause;
 	}
 	return false;
-}
-
-/**
- * Sends `operation` again while it finds the write lock busy, until `lockWaitMs` has passed, waiting a random time up
- * to a bound that doubles from `BUSY_RETRY_BASE_MS` to `BUSY_RETRY_MAX_MS` ("full jitter"), so writers that failed
- * together do not come back together and none returns at once to a lock that was just busy.
- * @template T
- * @param {() => Promise<T>} operation
- * @param {number | undefined} lockWaitMs
- * @returns {Promise<T>}
- */
-async function retryWhileBusy(operation, lockWaitMs) {
-	const deadline = Date.now() + (lockWaitMs ?? 0);
-	for (let attempt = 0; ; attempt++) {
-		try {
-			return await operation();
-		} catch (error) {
-			if (!isLockBusy(error) || Date.now() >= deadline) throw error;
-			const bound = Math.min(BUSY_RETRY_MAX_MS, BUSY_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
-			await new Promise((resolve) => setTimeout(resolve, Math.min(Math.random() * bound, Math.max(0, deadline - Date.now()))));
-		}
-	}
 }
 
 /** How far `transientFailure` follows `cause`: a driver error wraps the network error that fetch wraps. */
@@ -444,14 +441,15 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		descriptor: { adapter: "libsql", location: url },
 		redact,
 		transientFailure,
+		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
+		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
 		// timeout wrote nothing and runs again. Several statements in one `exec` do not: the ones before the failed
 		// statement were committed.
 		...statements(connection, watch, waitForLock),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
-		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing. A server's
-		// batch counts against this process's writes in flight, unless it has priority, and is sent again while the
-		// server finds the lock busy, for up to the caller's `lockWaitMs`.
+		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
+		// server's batch counts against this process's writes in flight, unless it has priority.
 		batch: (batched, options) => {
 			const send = async () => {
 				const results = await (await connection()).batch(
@@ -463,7 +461,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			if (local) return waitForLock(send);
 			const sent = () =>
 				watch(() =>
-					retryWhileBusy(send, options?.lockWaitMs).then(
+					send().then(
 						(results) => {
 							noteWriteOutcome(undefined, redacted);
 							return results;

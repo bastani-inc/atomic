@@ -372,3 +372,24 @@ test("a write the server keeps leaving unanswered fails after a bounded number o
 		await f.close();
 	}
 });
+
+test("a claim whose answer was lost hands out the row it took instead of taking a second one (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const other = poolWorkFixture("other");
+		await f.pool.enqueue(f.lease, other.work, other.boundary);
+		f.hooks.afterCommit = () => {
+			f.hooks.afterCommit = undefined;
+			throw Object.assign(new Error("the request timed out"), { name: "TimeoutError" });
+		};
+		const claimed = await f.pool.claim(f.lease, "host/w1", [work, other.work], 60_000);
+		assert.ok(claimed);
+		const states = (await f.pool.inspect("root")).map((item) => [item.id === claimed.id, item.state, item.worker]);
+		assert.deepEqual(states.sort(), [
+			[false, "ready", null],
+			[true, "leased", "host/w1"],
+		]);
+	} finally {
+		await f.close();
+	}
+});

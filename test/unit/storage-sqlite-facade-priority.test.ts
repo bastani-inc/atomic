@@ -45,3 +45,52 @@ test("a priority batch runs before calls queued ahead of it, one call at a time,
 	assert.deepEqual(ran, ["first", "renewal", "second", "third", "fourth"]);
 	await database.close();
 });
+
+test("a batch that finds the write lock busy waits for its next send outside the call queue, so a renewal goes through meanwhile (#4768)", async () => {
+	const ran: string[] = [];
+	let busyLeft = 3;
+	const database = createSqliteDatabase({
+		descriptor: { adapter: "busy", location: "memory" },
+		execute: () => EMPTY,
+		executeMultiple() {},
+		beginTransaction: () => assert.fail("no transaction"),
+		async batch(statements: readonly SqliteStatement[]) {
+			const name = statements.map((statement) => statement.sql).join("+");
+			if (name === "write" && busyLeft-- > 0)
+				throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+			ran.push(name);
+			return statements.map(() => EMPTY);
+		},
+		lockBusy: (failure) => (failure as { cause?: { code?: string } }).cause?.code === "SQLITE_BUSY",
+		close() {},
+	});
+	const write = database.batch!([{ sql: "write", params: [] }], { lockWaitMs: 60_000 });
+	// Queued after the write's first send failed, and before its next send.
+	await new Promise((resolve) => setImmediate(resolve));
+	await database.batch!([{ sql: "renewal", params: [] }], { priority: true });
+	await write;
+	assert.deepEqual(ran, ["renewal", "write"]);
+	await database.close();
+});
+
+test("a busy batch fails once its lockWaitMs has passed, and at once without one (#4768)", async () => {
+	let sends = 0;
+	const database = createSqliteDatabase({
+		descriptor: { adapter: "busy", location: "memory" },
+		execute: () => EMPTY,
+		executeMultiple() {},
+		beginTransaction: () => assert.fail("no transaction"),
+		batch() {
+			sends++;
+			throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+		},
+		lockBusy: (failure) => (failure as { cause?: { code?: string } }).cause?.code === "SQLITE_BUSY",
+		close() {},
+	});
+	await assert.rejects(database.batch!([{ sql: "write", params: [] }]));
+	assert.equal(sends, 1);
+	sends = 0;
+	await assert.rejects(database.batch!([{ sql: "write", params: [] }], { lockWaitMs: 200 }));
+	assert.ok(sends > 1, `sent ${sends} times`);
+	await database.close();
+});

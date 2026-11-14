@@ -55,7 +55,12 @@ export type PoolWritePlan<T> = { readonly done: T } | PoolWrite<T>;
  * plan may skip reads whose checks its fences repeat, so a write expected to succeed costs one request, and leaves the
  * typed refusal to the plan that follows a broken fence. Every other plan reads and checks everything itself.
  */
-export type PoolWritePlanner<T> = (read: SqliteExecutor, optimistic: boolean) => Promise<PoolWritePlan<T>>;
+export type PoolWritePlanner<T> = (
+	read: SqliteExecutor,
+	optimistic: boolean,
+	/** The previous send's outcome is unknown: it may have committed, and the plan finds out first what it did. */
+	afterUnknown: boolean,
+) => Promise<PoolWritePlan<T>>;
 
 /**
  * Whether `error` is a batch a fence aborted: the trigger's message, read along the cause chain, where every SQLite
@@ -88,7 +93,7 @@ export async function guardedPoolWrite<T>(
 	const batch = storage.batch;
 	if (batch === undefined)
 		return storage.transaction(async (tx) => {
-			const planned = await plan(tx, false);
+			const planned = await plan(tx, false, false);
 			if ("done" in planned) return planned.done;
 			for (const write of planned.writes) await tx.run(write.sql, ...write.params);
 			const rows: SqliteRow[][] = [];
@@ -98,8 +103,10 @@ export async function guardedPoolWrite<T>(
 	const fence = poolFenceTable(storage.tables.runs);
 	const deadline = Date.now() + (JOURNAL_TRANSACTION.lockWaitMs ?? 0);
 	let unknownOutcomes = 0;
+	let afterUnknown = false;
 	for (let attempt = 0; ; attempt++) {
-		const planned = await storage.read((read) => plan(read, attempt === 0));
+		const replay = afterUnknown;
+		const planned = await storage.read((read) => plan(read, attempt === 0, replay));
 		if ("done" in planned) return planned.done;
 		const fences = (planned.fences ?? []).map(
 			(statement): SqliteStatement => ({
@@ -120,6 +127,7 @@ export async function guardedPoolWrite<T>(
 				error.outcome === "unknown" &&
 				++unknownOutcomes <= UNKNOWN_OUTCOME_REPLANS;
 			if (!(isFenceAbort(error) || unknown) || Date.now() >= deadline) throw error;
+			afterUnknown = unknown;
 		}
 		const bound = Math.min(FENCE_RETRY_MAX_MS, FENCE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
 		await new Promise((resolve) => setTimeout(resolve, Math.random() * bound));

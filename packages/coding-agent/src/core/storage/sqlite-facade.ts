@@ -79,6 +79,12 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	/** Removes credentials from diagnostic text: the descriptor location and driver failure messages and stacks. */
 	redact?(text: string): string;
 	/**
+	 * Optional. Recognizes a failed `batch` that found the database's write lock busy and wrote nothing: the facade sends
+	 * it again, after a randomized wait outside its call queue, for up to the caller's `lockWaitMs`. It receives the
+	 * failure the facade reports, whose `cause` chain holds the driver's own.
+	 */
+	lockBusy?(failure: StorageFailureCause): boolean;
+	/**
 	 * Optional. Recognizes a failure a driver call threw as one that passes, from the failure's own fields, before the
 	 * facade redacts it. The call then fails with `StorageTransientError`, and a call that wrote nothing runs again.
 	 */
@@ -94,6 +100,10 @@ export const STORAGE_TRANSIENT_RETRY_ATTEMPTS = 5;
 const STORAGE_TRANSIENT_RETRY_BASE_DELAY_MS = 250;
 /** Each wait varies by up to this fraction either way, so processes that failed together do not retry together. */
 const STORAGE_TRANSIENT_RETRY_JITTER = 0.2;
+/** The first bound on the wait before a batch that found the write lock busy is sent again; each later one doubles. */
+const BUSY_RETRY_BASE_MS = 20;
+/** The largest bound on that wait. */
+const BUSY_RETRY_MAX_MS = 1000;
 
 /** How long the facade waits after the failed run `attempt` (1-based) before it runs the call again. */
 function transientRetryDelayMs(attempt: number): number {
@@ -265,6 +275,41 @@ class DriverDatabase implements SqliteDatabase {
 		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 		const bound = statements.map((statement) => ({ sql: statement.sql, params: snapshotParams(statement.params) }));
 		const passed = options === undefined ? undefined : { ...options };
+		const send = () => this.sendBatch(batch, bound, passed);
+		const lockWaitMs = passed?.lockWaitMs ?? 0;
+		const busy = this.driver.lockBusy?.bind(this.driver);
+		if (lockWaitMs <= 0 || busy === undefined) return send();
+		return this.whileBusy(send, busy, Date.now() + lockWaitMs);
+	}
+
+	/**
+	 * Sends a batch again while it finds the write lock busy, until `deadline`. Each wait is random up to a bound that
+	 * doubles from `BUSY_RETRY_BASE_MS` to `BUSY_RETRY_MAX_MS` ("full jitter"), so writers that failed together do not
+	 * come back together. The waits happen outside the call queue, so calls queued meanwhile, a priority batch such as
+	 * a lease renewal included, run during them.
+	 */
+	private async whileBusy<T>(
+		send: () => Promise<T>,
+		busy: (failure: StorageFailureCause) => boolean,
+		deadline: number,
+	): Promise<T> {
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await send();
+			} catch (failure) {
+				if (!busy(failure as StorageFailureCause) || Date.now() >= deadline || this.closePromise) throw failure;
+			}
+			const bound = Math.min(BUSY_RETRY_MAX_MS, BUSY_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
+			await new Promise((resolve) => setTimeout(resolve, Math.min(Math.random() * bound, deadline - Date.now())));
+			if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
+		}
+	}
+
+	private sendBatch(
+		batch: NonNullable<SqliteDriver["batch"]>,
+		bound: readonly SqliteStatement[],
+		passed: SqliteBatchOptions | undefined,
+	): Promise<SqliteRow[][]> {
 		return this.queue.push(
 			() =>
 				this.retrying(async (attempt) => {

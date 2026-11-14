@@ -930,7 +930,22 @@ export class SqlPoolQueue {
 					: { clause: "AND id = ? AND generation = ?", args: [placement.id, placement.generation] };
 		// The ready row is chosen and taken in one statement, so workers racing for the oldest one never conflict: each
 		// takes whichever ready row is oldest when its batch runs.
-		return guardedPoolWrite(this.storage, async (read, optimistic) => {
+		return guardedPoolWrite(this.storage, async (read, optimistic, afterUnknown) => {
+			// A claim whose answer was lost may have taken a row: a leased row of this worker that this queue does not know
+			// of is that claim's, and is handed out instead of a second one.
+			if (afterUnknown) {
+				const held = await read.all<WorkRow>(
+					`SELECT * FROM ${this.work} WHERE root = ? AND state = 'leased' AND worker = ? AND epoch = ? ORDER BY generation DESC`,
+					lease.runId,
+					worker,
+					lease.epoch,
+				);
+				const lost = held.find((row) => Number(this.attempts.get(row.id)?.generation) !== Number(row.generation));
+				if (lost !== undefined) {
+					this.attempts.set(lost.id, lost);
+					return { done: fromRow(lost) };
+				}
+			}
 			// An optimistic claim reads nothing: its fences check the root's lease, status and control, and a claim one
 			// refuses reads them to say whether the root takes no claims now.
 			if (!optimistic || compatibleDefinitions.length === 0) {
