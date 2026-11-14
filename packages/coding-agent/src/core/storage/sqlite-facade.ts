@@ -6,7 +6,9 @@ import type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	TransactionConcurrency,
 } from "./database.js";
+import { type StorageDialect, sqliteDialect } from "./dialect.js";
 import {
 	StorageConfigError,
 	StorageError,
@@ -58,12 +60,31 @@ export interface SqliteDriverTransientFailure {
 	readonly outcome: StorageTransientOutcome;
 }
 
+/** How the facade asks a driver to begin a transaction. */
+export interface SqliteDriverTransactionOptions {
+	/** Always present when the facade calls; `{ kind: "serial" }` unless the transaction asked for another. */
+	readonly concurrency: TransactionConcurrency;
+	/** The transaction's `SqliteTransactionOptions.lockWaitMs`, when it set one. */
+	readonly lockWaitMs?: number;
+}
+
 /** The driver calls `createSqliteDatabase` turns into a `SqliteDatabase`. */
 export interface SqliteDriver extends SqliteDriverExecutor {
 	/** Diagnostic identity. Its `location` passes through `redact` before the facade exposes it. */
 	readonly descriptor: StorageDescriptor;
-	/** Begins a write transaction that holds the database's write lock, like `BEGIN IMMEDIATE`. */
-	beginTransaction(): Awaitable<SqliteDriverTransaction>;
+	/** The SQL dialect the driver speaks; SQLite when absent. The facade exposes it as `SqliteDatabase.dialect`. */
+	readonly dialect?: StorageDialect;
+	/**
+	 * Optional. The driver runs `fenced` transactions on connections of their own, concurrently with other calls: the
+	 * facade then starts them without waiting for queued calls. Otherwise every transaction waits its turn.
+	 */
+	readonly concurrentTransactions?: boolean;
+	/**
+	 * Begins a write transaction. With `options.concurrency` `{ kind: "serial" }` (the default) it holds the write lock of the whole database
+	 * or of `concurrency.domain`, like `BEGIN IMMEDIATE`; with `fenced` it may take no lock, and the body locks its rows.
+	 * A SQLite driver runs both as `BEGIN IMMEDIATE` and may ignore the argument.
+	 */
+	beginTransaction(options?: SqliteDriverTransactionOptions): Awaitable<SqliteDriverTransaction>;
 	/**
 	 * Optional. Runs the statements in order in one write transaction, in one request: all commit or none do. Provide it
 	 * only when the driver sends the whole batch at once; the facade then offers `SqliteDatabase.batch`.
@@ -166,6 +187,24 @@ function retriesTransientFailures(options: SqliteTransactionOptions | undefined)
 	return retry === true;
 }
 
+const SERIAL: TransactionConcurrency = Object.freeze({ kind: "serial" });
+
+/** Rejects a `concurrency` that is not one of the two kinds, before the transaction is queued. */
+function transactionConcurrency(options: SqliteTransactionOptions | undefined): TransactionConcurrency {
+	const concurrency = options?.concurrency;
+	if (concurrency === undefined) return SERIAL;
+	if (concurrency.kind === "serial" && (concurrency.domain === undefined || typeof concurrency.domain === "string"))
+		return concurrency;
+	if (concurrency.kind === "fenced" && typeof concurrency.audit === "string" && concurrency.audit !== "")
+		return concurrency;
+	throw new StorageConfigError(
+		"sdk",
+		"concurrency",
+		"kind-required",
+		'Pass { kind: "serial" }, { kind: "serial", domain }, or { kind: "fenced", audit: fencedPath(name) }, or omit it',
+	);
+}
+
 /** Serializes operations in call order; a failed operation does not stop the ones queued after it. */
 class CallQueue {
 	private tail: Promise<void> = Promise.resolve();
@@ -186,7 +225,10 @@ class CallQueue {
 
 class DriverDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
+	readonly dialect: StorageDialect;
 	private readonly driver: SqliteDriver;
+	/** Fenced transactions a concurrent driver runs outside the queue; closing waits for them. */
+	private readonly concurrent = new Set<Promise<unknown>>();
 	private readonly redact: (text: string) => string;
 	private readonly queue = new CallQueue();
 	private closePromise?: Promise<void>;
@@ -200,6 +242,7 @@ class DriverDatabase implements SqliteDatabase {
 		this.driver = driver;
 		this.redact = redact;
 		this.descriptor = { adapter: driver.descriptor.adapter, location: redact(driver.descriptor.location) };
+		this.dialect = driver.dialect ?? sqliteDialect;
 		this.executor = this.createExecutor(
 			driver,
 			(operation) => {
@@ -351,19 +394,33 @@ class DriverDatabase implements SqliteDatabase {
 	): Promise<T> {
 		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 		let replay: boolean;
+		let concurrency: TransactionConcurrency;
 		try {
 			replay = retriesTransientFailures(options);
+			concurrency = transactionConcurrency(options);
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		return this.queue.push(() => this.retrying((attempt) => this.runTransaction(callback, attempt), replay));
+		const begin: SqliteDriverTransactionOptions =
+			options?.lockWaitMs === undefined ? { concurrency } : { concurrency, lockWaitMs: options.lockWaitMs };
+		const run = () => this.retrying((attempt) => this.runTransaction(callback, attempt, begin), replay);
+		if (concurrency.kind === "serial" || this.driver.concurrentTransactions !== true) return this.queue.push(run);
+		const result = run();
+		const settled = result.then(
+			() => {},
+			() => {},
+		);
+		this.concurrent.add(settled);
+		void settled.then(() => this.concurrent.delete(settled));
+		return result;
 	}
 
 	private async runTransaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		attempt: Attempt,
+		begin: SqliteDriverTransactionOptions,
 	): Promise<T> {
-		const connection = await this.call(() => this.driver.beginTransaction(), attempt);
+		const connection = await this.call(() => this.driver.beginTransaction(begin), attempt);
 		const handleQueue = new CallQueue();
 		let active = true;
 		let result: T;
@@ -402,7 +459,9 @@ class DriverDatabase implements SqliteDatabase {
 	}
 
 	close(): Promise<void> {
-		this.closePromise ??= this.queue.drained().then(() => this.call(() => this.driver.close()));
+		this.closePromise ??= Promise.all([this.queue.drained(), ...this.concurrent]).then(() =>
+			this.call(() => this.driver.close()),
+		);
 		this.wakeRetry?.();
 		return this.closePromise;
 	}

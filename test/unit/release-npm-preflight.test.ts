@@ -53,6 +53,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 			"@bastani/atomic-natives",
 			"@bastani/pi-ai",
 			"@bastani/atomic-storage-libsql",
+			"@bastani/atomic-storage-postgres",
 			"@bastani/atomic",
 		]);
 	});
@@ -205,7 +206,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 				allowNew: false,
 			}),
 			(error: Error) => {
-				assert.match(error.message, /2 of 12 publish-payload packages are not registered on npm/u);
+				assert.match(error.message, /2 of 13 publish-payload packages are not registered on npm/u);
 				assert.match(error.message, /^ {2}- @bastani\/atomic-natives-win32-arm64-msvc$/mu);
 				assert.match(error.message, /^ {2}- @bastani\/atomic$/mu);
 				assert.match(error.message, /Re-run with --allow-new/u);
@@ -254,12 +255,13 @@ describe("scripts/release-npm-preflight.ts", () => {
 		assert.match(describeUnregisteredPackages(["@bastani/atomic"], 10), /1 of 10 publish-payload packages is not/u);
 	});
 
-	test("the libSQL adapter is published only once its npm name exists, so an unregistered name cannot break a release (#3857)", async () => {
+	test("the storage adapters are published only once their npm names exist, so an unregistered name cannot break a release (#3857, #4793)", async () => {
+		const adapters = ["@bastani/atomic-storage-libsql", "@bastani/atomic-storage-postgres"];
 		const publisher = parseReleasePublisher(publishWorkflow);
-		assert.deepEqual(publisher.deferredUntilRegistered, ["@bastani/atomic-storage-libsql"]);
+		assert.deepEqual(publisher.deferredUntilRegistered, adapters);
 
 		const registered = new Set(publisher.packages);
-		registered.delete("@bastani/atomic-storage-libsql");
+		for (const name of adapters) registered.delete(name);
 		const result = await verifyReleasePackagesRegistered({
 			packages: publisher.packages,
 			isRegistered: probeFrom(registered).isRegistered,
@@ -267,7 +269,7 @@ describe("scripts/release-npm-preflight.ts", () => {
 			deferredUntilRegistered: publisher.deferredUntilRegistered,
 		});
 		assert.deepEqual(result.unregistered, []);
-		assert.deepEqual(result.deferred, ["@bastani/atomic-storage-libsql"]);
+		assert.deepEqual(result.deferred, adapters);
 	});
 
 	test("a deferred name that is registered publishes like any other package (#3857)", async () => {

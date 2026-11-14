@@ -1,3 +1,5 @@
+import type { StorageDialect } from "./dialect.js";
+
 export type SqliteValue = null | number | bigint | string | Uint8Array;
 export type SqliteRow = Readonly<Record<string, SqliteValue>>;
 
@@ -39,10 +41,32 @@ export interface SqliteTransactionOptions {
 	 * Other databases ignore it.
 	 */
 	readonly retryTransientFailures?: boolean;
+	/**
+	 * How the transaction excludes other writers; `{ kind: "serial" }` when absent. SQLite runs every kind as
+	 * `BEGIN IMMEDIATE`; only a driver that runs transactions concurrently (Postgres) tells them apart.
+	 */
+	readonly concurrency?: TransactionConcurrency;
 }
+
+declare const fencedPathBrand: unique symbol;
+/** An audited fenced write path. Only `fencedPath(name)` in `fenced-paths.ts` makes one; a plain string is not one. */
+export type FencedPathId = string & { readonly [fencedPathBrand]: true };
+
+/**
+ * `serial`: the body runs as if it were the only writer of `domain`, or of the whole database when `domain` is absent:
+ * `BEGIN IMMEDIATE` on SQLite, `BEGIN` plus that domain's transaction advisory lock on Postgres. Several prefixes may
+ * share one database, so `domain` names the scope in full: a store passes one of its prefixed table names.
+ * `fenced`: the body runs under READ COMMITTED and takes the row locks it relies on itself
+ * (`StorageDialect.lockClause`); `audit` names the reviewed path. Identical to `serial` on SQLite.
+ */
+export type TransactionConcurrency =
+	| { readonly kind: "serial"; readonly domain?: string }
+	| { readonly kind: "fenced"; readonly audit: FencedPathId };
 
 export interface SqliteDatabase extends SqliteExecutor {
 	readonly descriptor: StorageDescriptor;
+	/** The SQL dialect the database speaks; absent means SQLite. Read it through `dialectOf(database)`. */
+	readonly dialect?: StorageDialect;
 	transaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		options?: SqliteTransactionOptions,
