@@ -233,3 +233,19 @@ export const remoteStageChild = workflow({
 		return { host: where, reply: String(reply) };
 	},
 });
+
+/**
+ * A pooled child of the scale scenario (#4768): `steps` checkpoints, each one shared-pool write from whichever host
+ * runs it.
+ */
+export const scaleChild = workflow({
+	name: "shared-pool-scale-child",
+	description: "A pooled child that commits checkpoints on whichever host runs it (#4768)",
+	inputs: { index: Type.Number(), steps: Type.Number() },
+	outputs: { host: Type.String() },
+	async run(ctx) {
+		for (let step = 0; step < ctx.inputs.steps; step++)
+			await ctx.tool(`step-${step}`, { index: ctx.inputs.index, step }, async () => step);
+		return { host: host() };
+	},
+});

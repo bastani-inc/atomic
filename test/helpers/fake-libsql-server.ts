@@ -312,8 +312,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		if (timedOut !== undefined) rollBack(stream);
 		const results = body.requests.map((each) => {
 			if (timedOut !== undefined && each.type === "batch") {
+				// As sqld answers a batch whose first step failed: the steps conditioned on it never ran.
 				const steps = each.batch.steps.map(() => null);
-				const result = { step_results: steps, step_errors: each.batch.steps.map(() => timedOut) };
+				const result = {
+					step_results: steps,
+					step_errors: each.batch.steps.map((_step, index) => (index === 0 ? timedOut : null)),
+				};
 				return { type: "ok", response: { type: "batch", result } };
 			}
 			if (timedOut !== undefined && (each.type === "execute" || each.type === "sequence"))

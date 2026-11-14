@@ -1,4 +1,4 @@
-import type { SqliteExecutor } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteStatement } from "@bastani/atomic/storage";
 import { fold_usage } from "../../../builtin/verification-usage.js";
 import type { DurableCheckpoint } from "../types.js";
 
@@ -80,6 +80,23 @@ export function poolCheckpointUsage(checkpoint: DurableCheckpoint): { key: strin
 	return { key: poolStageUsageKey(checkpoint.topology.run.runId, checkpoint.topology.stageId), usage };
 }
 
+/** The statement that records `usage` under `key` for one attempt, keeping the larger of each field. */
+export function poolUsageUpsert(
+	runs: string,
+	work: string,
+	generation: number,
+	key: string,
+	usage: PoolUsage,
+): SqliteStatement {
+	const table = poolUsageTable(runs);
+	const columns = POOL_USAGE_FIELDS.map((field) => field.toLowerCase());
+	return {
+		sql: `INSERT INTO ${table}(work, generation, key, ${columns.join(", ")}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(work, generation, key) DO UPDATE SET ${columns.map((column) => `${column} = MAX(${table}.${column}, excluded.${column})`).join(", ")}`,
+		params: [work, generation, key, ...POOL_USAGE_FIELDS.map((field) => usage[field])],
+	};
+}
+
 export async function upsertPoolUsage(
 	tx: SqliteExecutor,
 	runs: string,
@@ -88,14 +105,6 @@ export async function upsertPoolUsage(
 	key: string,
 	usage: PoolUsage,
 ): Promise<void> {
-	const table = poolUsageTable(runs);
-	const columns = POOL_USAGE_FIELDS.map((field) => field.toLowerCase());
-	await tx.run(
-		`INSERT INTO ${table}(work, generation, key, ${columns.join(", ")}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(work, generation, key) DO UPDATE SET ${columns.map((column) => `${column} = MAX(${table}.${column}, excluded.${column})`).join(", ")}`,
-		work,
-		generation,
-		key,
-		...POOL_USAGE_FIELDS.map((field) => usage[field]),
-	);
+	const { sql, params } = poolUsageUpsert(runs, work, generation, key, usage);
+	await tx.run(sql, ...params);
 }

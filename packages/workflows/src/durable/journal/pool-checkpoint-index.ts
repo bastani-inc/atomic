@@ -1,4 +1,4 @@
-import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, SqliteValue } from "@bastani/atomic/storage";
 import { durableStageGroupKey } from "../stage-topology-validation.js";
 import type { DurableCheckpoint, DurableStageCheckpoint } from "../types.js";
 import { type JournalEntry, RUN_EVENT_TYPES } from "./types.js";
@@ -99,14 +99,39 @@ export interface PoolCheckpointSource {
 /** One transaction's read of a root's checkpoints; {@link commit} it only once that transaction has committed. */
 export class PoolCheckpointRead implements PoolCheckpointSource {
 	private pending?: () => void;
+	private prefetched?: PoolCheckpointPrefetch;
 	constructor(
 		private readonly index: PoolCheckpointIndex,
 		private readonly root: string,
 	) {}
 	read(tx: SqliteExecutor, events: string): Promise<PoolCheckpointView> {
-		return this.index.read(tx, events, this.root, (apply) => {
-			this.pending = apply;
-		});
+		const prefetched = this.prefetched;
+		this.prefetched = undefined;
+		return this.index.read(
+			tx,
+			events,
+			this.root,
+			(apply) => {
+				this.pending = apply;
+			},
+			prefetched,
+		);
+	}
+	/**
+	 * Columns another query of the caller can select, so that the next {@link read} needs no request of its own: the
+	 * root's latest event, the event at the index's watermark, and the checkpoints recorded since. Pass the row that
+	 * query returned to {@link prefetch}.
+	 */
+	prefetchColumns(events: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
+		return this.index.prefetchColumns(events, this.root);
+	}
+	prefetch(row: SqliteRow): void {
+		this.prefetched = {
+			from: Number(row.cp_from),
+			head: row.cp_head as string | null,
+			mark: row.cp_mark as string | null,
+			added: row.cp_added as string | null,
+		};
 	}
 	/** Reads the root's checkpoints through a journal's own `read`, outside any transaction (see {@link PoolCheckpointIndex.readEntries}). */
 	readEntries(stream: (fromSeq: number) => AsyncIterable<JournalEntry>): Promise<PoolCheckpointView> {
@@ -121,6 +146,16 @@ export class PoolCheckpointRead implements PoolCheckpointSource {
 	}
 }
 
+/** What {@link PoolCheckpointIndex.prefetchColumns} selected, as one row's columns. */
+interface PoolCheckpointPrefetch {
+	/** The watermark the columns were selected from. */
+	readonly from: number;
+	readonly head: string | null;
+	readonly mark: string | null;
+	/** `[seq, key, payload]` of each checkpoint after `from`, in order, as a JSON array. */
+	readonly added: string | null;
+}
+
 /**
  * Per-root index of `CheckpointRecorded` events, so validating a pool mutation reads only the events recorded since
  * the previous validation instead of the root's whole history. Other connections may append checkpoints at any
@@ -130,9 +165,51 @@ export class PoolCheckpointRead implements PoolCheckpointSource {
  */
 export class PoolCheckpointIndex {
 	private readonly roots = new Map<string, RootCheckpoints>();
+	/** Checkpoints this process committed for each root past the index's watermark, until a read folds them in. */
+	private readonly own = new Map<string, IndexedEntry[]>();
+
+	/** Notes a checkpoint this process committed as the root's event `seq` under `key`. */
+	recordOwn(root: string, seq: number, key: string, checkpoint: DurableCheckpoint): void {
+		if (checkpoint.kind === "ui") return;
+		const base = this.roots.get(root);
+		if (base === undefined || seq <= base.seq) return;
+		const entries = this.own.get(root) ?? [];
+		entries.push({ seq, order: Buffer.from(key, "utf8"), checkpoint });
+		this.own.set(root, entries);
+	}
+
+	/**
+	 * The root's checkpoints as this process knows them without a read: the index's up to its watermark (`from`), plus
+	 * those it committed itself since (`own`, by sequence). Undefined while the index holds none of the root's. What
+	 * others recorded past `from` is missing: a writer that validates against this view fences on there being none in
+	 * the scope it validates.
+	 */
+	known(
+		root: string,
+	): { readonly source: PoolCheckpointSource; readonly from: number; readonly own: readonly number[] } | undefined {
+		const base = this.roots.get(root);
+		if (base === undefined || base.seq === 0) return undefined;
+		const own = (this.own.get(root) ?? []).filter((entry) => entry.seq > base.seq);
+		const delta = new Partitions();
+		for (const entry of own) delta.add(entry);
+		const view = new PoolCheckpointView(base, base.seq, delta);
+		return { source: { read: async () => view }, from: base.seq, own: own.map((entry) => entry.seq) };
+	}
 
 	begin(root: string): PoolCheckpointRead {
 		return new PoolCheckpointRead(this, root);
+	}
+
+	/** See {@link PoolCheckpointRead.prefetchColumns}. */
+	prefetchColumns(events: string, root: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
+		const from = this.roots.get(root)?.seq ?? 0;
+		return {
+			sql: `? AS cp_from,
+			(SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
+			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
+			(SELECT json_group_array(json_array(seq, key, payload)) FROM (SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? ORDER BY seq)) AS cp_added`,
+			params: [from, root, root, from, root, from, RUN_EVENT_TYPES.checkpointRecorded],
+		};
 	}
 
 	async read(
@@ -140,31 +217,46 @@ export class PoolCheckpointIndex {
 		events: string,
 		root: string,
 		onCommit: (apply: () => void) => void,
+		prefetched?: PoolCheckpointPrefetch,
 	): Promise<PoolCheckpointView> {
 		const current = this.roots.get(root);
 		let base = current;
-		const head = await tx.get<SqliteRow & { seq: number; key: string | null; at: number }>(
-			`SELECT seq, key, at FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1`,
-			root,
-		);
+		// Columns another query selected count only while the watermark they were selected from is still the index's.
+		const usable = prefetched !== undefined && prefetched.from === (base?.seq ?? 0) ? prefetched : undefined;
+		// The root's latest event and the one at the index's watermark, in one read: a remote database answers each
+		// read as a request of its own.
+		const marks =
+			usable ??
+			(await tx.get<SqliteRow & { head: string | null; mark: string | null }>(
+				`SELECT (SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS head,
+			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS mark`,
+				root,
+				root,
+				base?.seq ?? 0,
+			));
+		const head =
+			marks?.head == null ? undefined : (JSON.parse(marks.head) as { seq: number; key: string | null; at: number });
 		if (base && base.seq > 0) {
-			const mark =
-				head?.seq === base.seq
-					? head
-					: await tx.get(`SELECT key, at FROM ${events} WHERE run_id = ? AND seq = ?`, root, base.seq);
+			const mark = marks?.mark == null ? undefined : (JSON.parse(marks.mark) as { key: string | null; at: number });
 			if (!mark || mark.key !== base.key || Number(mark.at) !== base.at) base = undefined;
 		}
 		const from = base?.seq ?? 0;
 		const to = head ? Number(head.seq) : 0;
 		const added: IndexedEntry[] = [];
 		if (to > from) {
-			const rows = await tx.all<SqliteRow & { seq: number; key: string | null; payload: string }>(
-				`SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ? ORDER BY seq`,
-				root,
-				from,
-				to,
-				RUN_EVENT_TYPES.checkpointRecorded,
-			);
+			// The prefetched checkpoints serve when they start at this read's watermark, which a reset to 0 moves.
+			const rows =
+				usable !== undefined && usable.from === from
+					? (JSON.parse(usable.added ?? "[]") as [number, string | null, string][])
+							.filter(([seq]) => seq <= to)
+							.map(([seq, key, payload]) => ({ seq, key, payload }))
+					: await tx.all<SqliteRow & { seq: number; key: string | null; payload: string }>(
+							`SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ? ORDER BY seq`,
+							root,
+							from,
+							to,
+							RUN_EVENT_TYPES.checkpointRecorded,
+						);
 			for (const row of rows) {
 				const checkpoint = JSON.parse(String(row.payload)) as DurableCheckpoint;
 				if (checkpoint.kind === "ui") continue;
@@ -255,6 +347,9 @@ export class PoolCheckpointIndex {
 			if (latest !== base || to <= base.seq) return;
 			for (const entry of added) if (entry.seq > base.seq) base.partitions.add(entry);
 			base.seq = to;
+			const own = this.own.get(root)?.filter((entry) => entry.seq > to);
+			if (own?.length) this.own.set(root, own);
+			else this.own.delete(root);
 			base.key = head?.key ?? null;
 			base.at = Number(head?.at ?? 0);
 		});

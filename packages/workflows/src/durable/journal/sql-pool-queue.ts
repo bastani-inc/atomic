@@ -1,6 +1,18 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import type { WorktreeSnapshot } from "@bastani/atomic";
-import { assertStorageSchemaVersion, type SqliteExecutor, type SqliteRow, StorageError } from "@bastani/atomic/storage";
+import {
+	assertStorageSchemaVersion,
+	renderStorageIdentifiers,
+	type SessionStore,
+	type SqliteDatabase,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteStatement,
+	type SqliteValue,
+	StorageError,
+	StorageProvider,
+} from "@bastani/atomic/storage";
 import { assertWorkflowSerializableObject } from "../../shared/serializable.js";
 import type { WorkflowSerializableObject } from "../../shared/types.js";
 import {
@@ -21,16 +33,18 @@ import {
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
+import { guardedPoolWrite, poolFenceSchema } from "./pool-guarded-write.js";
 import {
 	applyPoolSession,
 	type PoolCheckpointMutation,
 	type PoolMutation,
 	type PoolSessionAppend,
+	type PoolSessionMutation,
 	poolTransactionSessionStore,
 	validatePoolMutation,
 } from "./pool-mutations.js";
 import { isRecordedCheckpointValue, isSameCheckpointValue, type PoolRemoteJournal } from "./pool-remote-journal.js";
-import { poolCheckpointUsage, poolUsageSchema, upsertPoolUsage } from "./pool-stage-usage.js";
+import { poolCheckpointUsage, poolUsageSchema, poolUsageUpsert, upsertPoolUsage } from "./pool-stage-usage.js";
 import {
 	isStaleLeaseError,
 	JournalError,
@@ -166,6 +180,29 @@ type OutboxRow = SqliteRow & {
 	payload: string;
 	last_seq: number | null;
 };
+/** A commit's fences and writes, as its plan gathers them. */
+interface CommitWrite {
+	readonly fences: SqliteStatement[];
+	readonly writes: SqliteStatement[];
+}
+/** The receipt a commit stores, as the SQL that builds it in the commit's own request, and its parameters. */
+interface ReceiptSql {
+	readonly sql: string;
+	readonly params: readonly SqliteValue[];
+}
+/** The pool's session store, and what holds the executor its calls go to. */
+interface PoolSessions {
+	readonly store: SessionStore;
+	readonly within: AsyncLocalStorage<SqliteExecutor>;
+}
+/** What a heartbeat records under the attempt's lease; its `batched` form, when present, joins the heartbeat's batch. */
+export type PoolHeartbeatRecord<T> = ((tx: SqliteExecutor) => Promise<T>) & {
+	readonly batched?: {
+		readonly writes: readonly SqliteStatement[];
+		readonly reads: readonly SqliteStatement[];
+		readonly result: (rows: readonly SqliteRow[][]) => T;
+	};
+};
 export interface PoolCommitReceipt {
 	/** Journal sequence of the recorded checkpoint; absent for a session append, which journals none. */
 	readonly seq?: number;
@@ -223,6 +260,9 @@ export class SqlPoolQueue {
 	/** Commits in flight by work, generation and operation, so a duplicate joins the first instead of racing it. */
 	private readonly committing = new Map<string, Promise<PoolCommitReceipt>>();
 	private draining: Promise<number> | undefined;
+	private sessions: Promise<PoolSessions> | undefined;
+	/** The work row of each attempt as this queue last claimed, extended or read it: an optimistic commit plans from it. */
+	private readonly attempts = new Map<string, WorkRow>();
 	/** Whether the outbox may hold an event, so a claim reads it only after a commit staged one. */
 	private outboxPending = false;
 	private constructor(
@@ -287,6 +327,7 @@ export class SqlPoolQueue {
 				state TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0
 			)`);
 			await tx.exec(poolUsageSchema(journal.runs));
+			await tx.exec(poolFenceSchema(journal.runs));
 			// Keyed by the run, not the pool row: a root records its binding's snapshot before it queues anything.
 			await tx.exec(`CREATE TABLE IF NOT EXISTS ${pool.rootSnapshots}(
 				root TEXT PRIMARY KEY REFERENCES ${journal.runs}(run_id) ON DELETE CASCADE,
@@ -347,7 +388,14 @@ export class SqlPoolQueue {
 		lease: Lease,
 		timeout?: number,
 	): Promise<{ now: number; status: string }> {
-		const row = await this.leaseRow(tx, lease);
+		return this.authorityOf(await this.leaseRow(tx, lease), lease, timeout);
+	}
+	/** {@link authority} of a lease row read already. */
+	private authorityOf(
+		row: Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>,
+		lease: Lease,
+		timeout?: number,
+	): { now: number; status: string } {
 		if (row?.timeout === null && timeout === undefined) throw new PoolNotInitializedError({ root: lease.runId });
 		if (
 			!row ||
@@ -357,6 +405,97 @@ export class SqlPoolQueue {
 		)
 			throw new StaleLeaseError(lease.runId, lease.epoch, Number(row?.epoch ?? 0));
 		return row;
+	}
+	/**
+	 * In one read: the root's lease row as {@link authority} checks it, the attempt's work row, the root's pool control,
+	 * and the attempt's stored result for `operationId`, if any. A commit reads them all before it plans its write.
+	 */
+	private async attemptState(
+		read: SqliteExecutor,
+		lease: Lease,
+		token: WorkLease,
+		operationId: string,
+		/** A checkpoint's event key: the root's latest sequence, and the event the key recorded, are read too. */
+		key?: string,
+		/** The root's checkpoints that validation reads, selected in the same read. */
+		checkpoints?: PoolCheckpointRead,
+	) {
+		const prefetch = checkpoints?.prefetchColumns(this.journal.events);
+		const row = await read.get<
+			NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & {
+				control: string | null;
+				work_row: string | null;
+				previous: string | null;
+				head: number | null;
+				existing: string | null;
+			}
+		>(
+			`SELECT l.*, r.status, p.timeout, ${STORE_NOW} AS now,
+			(SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control,
+			(SELECT json_object('id', id, 'root', root, 'boundary', boundary, 'descriptor', descriptor, 'fingerprint', fingerprint,
+				'state', state, 'generation', generation, 'worker', worker, 'epoch', epoch, 'expires_at', expires_at,
+				'renewed_at', renewed_at, 'ready_at', ready_at) FROM ${this.work} WHERE id = ? AND root = l.run_id) AS work_row,
+			(SELECT json_object('request', request, 'receipt', receipt) FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?) AS previous,
+			(SELECT COALESCE(MAX(seq), 0) FROM ${this.journal.events} WHERE run_id = l.run_id) AS head,
+			(SELECT json_object('seq', seq, 'at', at, 'payload', payload) FROM ${this.journal.events} WHERE run_id = l.run_id AND key = ?) AS existing
+			${prefetch === undefined ? "" : `, ${prefetch.sql}`}
+			FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
+			token.id,
+			token.id,
+			token.generation,
+			operationId,
+			key ?? null,
+			...(prefetch?.params ?? []),
+			lease.runId,
+		);
+		const { now, status } = this.authorityOf(row, lease);
+		if (prefetch !== undefined) checkpoints!.prefetch(row!);
+		return {
+			now,
+			status,
+			control: row!.control,
+			work: row!.work_row === null ? undefined : (JSON.parse(row!.work_row) as WorkRow),
+			previous:
+				row!.previous === null ? undefined : (JSON.parse(row!.previous) as { request: string; receipt: string }),
+			recorded: {
+				head: Number(row!.head ?? 0),
+				existing:
+					row!.existing === null
+						? undefined
+						: (JSON.parse(row!.existing) as { seq: number; at: number; payload: string }),
+			},
+		};
+	}
+	/** A fence: `lease` still holds the root, renewed within its pool's window, by the database clock. */
+	rootFence(lease: Lease): SqliteStatement {
+		return {
+			sql: `SELECT 1 FROM ${this.journal.leases} l JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ? AND l.epoch = ? AND l.holder_id = ? AND ${STORE_NOW} - l.renewed_at <= p.timeout`,
+			params: [lease.runId, lease.epoch, lease.holderId],
+		};
+	}
+	/**
+	 * A fence: `token`'s attempt still holds its work in `lease`'s incarnation of the root, unexpired when `unexpired`,
+	 * as {@link current} and the expiry checks of each write decided.
+	 */
+	attemptFence(lease: Lease, token: WorkLease, unexpired: boolean): SqliteStatement {
+		return {
+			sql: `SELECT 1 FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND epoch = ? AND epoch = ? AND generation = ? AND worker IS ?${unexpired ? ` AND expires_at >= ${STORE_NOW}` : ""}`,
+			params: [token.id, lease.runId, token.epoch, lease.epoch, token.generation, token.worker],
+		};
+	}
+	/** A fence: the root's status still admits its attempts' writes, as {@link admitsAttemptWrites} decided. */
+	private admitsFence(lease: Lease): SqliteStatement {
+		return {
+			sql: `SELECT 1 FROM ${this.journal.runs} r WHERE r.run_id = ? AND (r.status = 'running' OR (r.status = 'paused' AND EXISTS (SELECT 1 FROM ${this.roots}_control c WHERE c.root = r.run_id AND c.state = 'paused')))`,
+			params: [lease.runId],
+		};
+	}
+	/** A fence: the attempt has no result for `operationId` yet. */
+	private operationFence(token: WorkLease, operationId: string): SqliteStatement {
+		return {
+			sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?)`,
+			params: [token.id, token.generation, operationId],
+		};
 	}
 	/**
 	 * Where the root's lease stands for the pool. `current`: `lease` holds it and its last renewal is inside the pool's
@@ -789,34 +928,57 @@ export class SqlPoolQueue {
 				: placement.kind === "unbound"
 					? { clause: `AND ${WORKSPACE_BINDING} IS NULL`, args: [] }
 					: { clause: "AND id = ? AND generation = ?", args: [placement.id, placement.generation] };
-		return this.transaction(async (tx) => {
-			const { now, status } = await this.authority(tx, lease);
-			const control = await tx.get(`SELECT state FROM ${this.roots}_control WHERE root = ?`, lease.runId);
-			if (control && control.state !== "running") return undefined;
-			if (status !== "running" || compatibleDefinitions.length === 0) return undefined;
-			// Only work this root incarnation enqueued: the root cannot accept an attempt of a child it has not
-			// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
-			const row = await tx.get<WorkRow>(
-				`SELECT * FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ? AND (${compatible}) ${placed.clause} ORDER BY ready_at, rowid LIMIT 1`,
-				lease.runId,
-				lease.epoch,
-				now,
-				...compatibleDefinitions,
-				...placed.args,
-			);
-			if (!row) return undefined;
-			const generation = journalCounter(lease.runId, "epoch", Number(row.generation) + 1, "overflow");
-			await tx.run(
-				`UPDATE ${this.work} SET state = 'leased', generation = ?, worker = ?, epoch = ?, expires_at = ?, renewed_at = ? WHERE id = ? AND state = 'ready' AND generation = ?`,
-				generation,
-				worker,
-				lease.epoch,
-				expiry(now, durationMs),
-				now,
-				row.id,
-				row.generation,
-			);
-			return fromRow((await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ?`, row.id))!);
+		// The ready row is chosen and taken in one statement, so workers racing for the oldest one never conflict: each
+		// takes whichever ready row is oldest when its batch runs.
+		return guardedPoolWrite(this.storage, async (read, optimistic) => {
+			// An optimistic claim reads nothing: its fences check the root's lease, status and control, and a claim one
+			// refuses reads them to say whether the root takes no claims now.
+			if (!optimistic || compatibleDefinitions.length === 0) {
+				const row = await read.get<
+					NonNullable<Awaited<ReturnType<SqlPoolQueue["leaseRow"]>>> & { control: string | null }
+				>(
+					`SELECT l.*, r.status, p.timeout, ${STORE_NOW} AS now, (SELECT state FROM ${this.roots}_control WHERE root = l.run_id) AS control
+				FROM ${this.journal.leases} l JOIN ${this.journal.runs} r ON r.run_id = l.run_id LEFT JOIN ${this.roots} p ON p.root = l.run_id WHERE l.run_id = ?`,
+					lease.runId,
+				);
+				const { status } = this.authorityOf(row, lease);
+				if (row!.control !== null && row!.control !== "running") return { done: undefined };
+				if (status !== "running" || compatibleDefinitions.length === 0) return { done: undefined };
+			}
+			return {
+				fences: [
+					this.rootFence(lease),
+					{
+						sql: `SELECT 1 FROM ${this.journal.runs} WHERE run_id = ? AND status = 'running' AND NOT EXISTS (SELECT 1 FROM ${this.roots}_control WHERE root = ? AND state != 'running')`,
+						params: [lease.runId, lease.runId],
+					},
+				],
+				writes: [],
+				// Only work this root incarnation enqueued: the root cannot accept an attempt of a child it has not
+				// re-enqueued since resuming, so an earlier incarnation's released work waits for its enqueue (#3979).
+				reads: [
+					{
+						sql: `UPDATE ${this.work} SET state = 'leased', generation = generation + 1, worker = ?, epoch = ?, expires_at = ${STORE_NOW} + ?, renewed_at = ${STORE_NOW}
+						WHERE id = (SELECT id FROM ${this.work} WHERE root = ? AND state = 'ready' AND epoch = ? AND ready_at <= ${STORE_NOW} AND (${compatible}) ${placed.clause} ORDER BY ready_at, rowid LIMIT 1)
+						RETURNING *`,
+						params: [
+							worker,
+							lease.epoch,
+							durationMs,
+							lease.runId,
+							lease.epoch,
+							...compatibleDefinitions,
+							...placed.args,
+						],
+					},
+				],
+				result: ([taken]) => {
+					const row = taken![0] as WorkRow | undefined;
+					if (row === undefined) return undefined;
+					this.attempts.set(row.id, row);
+					return fromRow(row);
+				},
+			};
 		});
 	}
 	/**
@@ -900,6 +1062,10 @@ export class SqlPoolQueue {
 	}
 	private async current(tx: SqliteExecutor, lease: Lease, token: WorkLease, allowCompleted = false): Promise<WorkRow> {
 		const row = await tx.get<WorkRow>(`SELECT * FROM ${this.work} WHERE id = ? AND root = ?`, token.id, lease.runId);
+		return this.currentOf(row, lease, token, allowCompleted);
+	}
+	/** {@link current} of a work row read already. */
+	private currentOf(row: WorkRow | undefined, lease: Lease, token: WorkLease, allowCompleted = false): WorkRow {
 		if (row === undefined) throw staleWork(lease, token, "missing");
 		if (row.state !== "leased" && !(allowCompleted && row.state === "completed"))
 			throw staleWork(lease, token, "not-leased");
@@ -914,15 +1080,13 @@ export class SqlPoolQueue {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		await this.remote?.fresh(lease);
-		return this.transaction(async (tx) => {
-			const { now } = await this.authority(tx, lease);
-			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
-			if (row.expires_at < now) throw staleWork(lease, token, "expired");
-			const expiresAt = Math.max(Number(row.expires_at), expiry(now, durationMs));
-			await tx.run(`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`, expiresAt, now, row.id);
-			return { ...fromRow(row), expiresAt, renewedAt: now };
-		});
+		return guardedPoolWrite(
+			this.storage,
+			(read, optimistic) => this.extension(read, optimistic, lease, token, durationMs, true),
+			{
+				priority: true,
+			},
+		);
 	}
 	async commit(
 		lease: Lease,
@@ -939,40 +1103,167 @@ export class SqlPoolQueue {
 		mutation = JSON.parse(request).mutation as PoolMutation;
 		if (this.remote && mutation.kind !== "session-append")
 			return this.commitRemote(lease, token, operationId, mutation, identity);
+		// Opened before the write: on a journal without batches the write is a transaction, which opening may not nest in.
+		const sessions = mutation.kind === "checkpoint" ? undefined : await this.poolSessions();
 		const checkpoints = this.checkpoints.begin(lease.runId);
-		const receipt = await this.transaction(async (tx) => {
-			const { now, status } = await this.authority(tx, lease);
-			const row = await this.current(tx, lease, token);
-			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
-			const previous = await tx.get<SqliteRow & { request: string; receipt: string }>(
-				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
-				token.id,
-				token.generation,
+		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint } | undefined;
+		const receipt = await guardedPoolWrite<PoolCommitReceipt>(this.storage, async (read, optimistic) => {
+			recorded = undefined;
+			const fromCache = optimistic
+				? await this.optimisticCheckpoint(lease, token, operationId, mutation)
+				: undefined;
+			if (fromCache !== undefined) {
+				const { write, receiptParts } = fromCache;
+				const checkpoint = (mutation as PoolCheckpointMutation).checkpoint;
+				write.writes.push({
+					sql: `INSERT INTO ${this.operations} SELECT ?, ?, ?, ?, ${receiptParts.sql}`,
+					params: [token.id, token.generation, operationId, identity, ...receiptParts.params],
+				});
+				return {
+					...write,
+					reads: [
+						{
+							sql: `SELECT receipt FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
+							params: [token.id, token.generation, operationId],
+						},
+					],
+					result: ([stored]) => {
+						const value = JSON.parse(String(stored![0]!.receipt)) as PoolCommitReceipt;
+						recorded = { seq: value.seq!, key: checkpointKey(checkpoint), checkpoint };
+						return value;
+					},
+				};
+			}
+			const state = await this.attemptState(
+				read,
+				lease,
+				token,
 				operationId,
+				mutation.kind === "session-append" ? undefined : checkpointKey(mutation.checkpoint),
+				mutation.kind === "session-append" ? undefined : checkpoints,
 			);
+			const { now, status, previous } = state;
+			const row = this.currentOf(state.work, lease, token);
+			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
 			if (previous) {
 				if (previous.request !== identity) throw new Error("Pool operation identity conflict");
-				return JSON.parse(previous.receipt) as PoolCommitReceipt;
+				return { done: JSON.parse(previous.receipt) as PoolCommitReceipt };
 			}
 			if (row.expires_at < now) throw staleWork(lease, token, "expired");
-			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw staleWork(lease, token, "root-not-running");
-			const receipt =
+			if (status !== "running" && !(status === "paused" && state.control === "paused"))
+				throw staleWork(lease, token, "root-not-running");
+			const write: CommitWrite = {
+				fences: [
+					this.rootFence(lease),
+					this.attemptFence(lease, token, true),
+					this.admitsFence(lease),
+					this.operationFence(token, operationId),
+				],
+				writes: [],
+			};
+			const receiptParts =
 				mutation.kind === "session-append"
-					? await this.appendSession(tx, row, mutation, now)
-					: await this.recordCheckpoint(tx, lease, token, row, mutation, now, checkpoints);
-			await tx.run(
-				`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
-				token.id,
-				token.generation,
-				operationId,
-				identity,
-				JSON.stringify(receipt),
-			);
-			return receipt;
+					? await this.appendSession(read, row, mutation, write, sessions!)
+					: await this.recordCheckpoint(
+							read,
+							lease,
+							row,
+							mutation,
+							now,
+							checkpoints,
+							write,
+							sessions,
+							state.recorded,
+						);
+			write.writes.push({
+				sql: `INSERT INTO ${this.operations} SELECT ?, ?, ?, ?, ${receiptParts.sql}`,
+				params: [token.id, token.generation, operationId, identity, ...receiptParts.params],
+			});
+			return {
+				...write,
+				reads: [
+					{
+						sql: `SELECT receipt FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
+						params: [token.id, token.generation, operationId],
+					},
+				],
+				result: ([stored]) => {
+					const value = JSON.parse(String(stored![0]!.receipt)) as PoolCommitReceipt;
+					if (mutation.kind !== "session-append" && state.recorded.existing === undefined)
+						recorded = {
+							seq: value.seq!,
+							key: checkpointKey(mutation.checkpoint),
+							checkpoint: mutation.checkpoint,
+						};
+					return value;
+				},
+			};
 		});
-		// Only now has the transaction committed what validation read; a rolled-back read never reaches the index.
+		// Only now has the write committed what validation read; a write that never committed never reaches the index.
 		checkpoints.commit();
+		if (recorded !== undefined)
+			this.checkpoints.recordOwn(lease.runId, recorded.seq, recorded.key, recorded.checkpoint);
 		return receipt;
+	}
+	/**
+	 * A checkpoint commit planned without a read, for a batched write's first try: from the attempt's work row as this
+	 * queue last wrote or read it, and the root's checkpoints as this process knows them. Its fences repeat every check
+	 * the read would have made, and one more refuses it if anyone else recorded a checkpoint in the work's scope that the
+	 * view lacks. Undefined when that is not enough to decide, so the commit plans from a read instead: no cached row or
+	 * view, a session to write, or a check that fails here and might not with what the read would see.
+	 */
+	private async optimisticCheckpoint(
+		lease: Lease,
+		token: WorkLease,
+		operationId: string,
+		mutation: PoolMutation,
+	): Promise<{ readonly write: CommitWrite; readonly receiptParts: ReceiptSql } | undefined> {
+		if (mutation.kind !== "checkpoint") return undefined;
+		const checkpoint = mutation.checkpoint;
+		if (checkpoint.kind === "stage" && checkpoint.sessionId) return undefined;
+		const row = this.attempts.get(token.id);
+		if (
+			row === undefined ||
+			row.state !== "leased" ||
+			Number(row.generation) !== token.generation ||
+			row.worker !== token.worker ||
+			Number(row.epoch) !== token.epoch ||
+			Number(row.epoch) !== lease.epoch
+		)
+			return undefined;
+		const known = this.checkpoints.known(lease.runId);
+		if (known === undefined) return undefined;
+		const write: CommitWrite = {
+			fences: [
+				this.rootFence(lease),
+				this.attemptFence(lease, token, true),
+				this.admitsFence(lease),
+				this.operationFence(token, operationId),
+			],
+			writes: [],
+		};
+		const unread: SqliteExecutor = {
+			get: () => Promise.reject(new Error("An optimistic pool commit reads nothing")),
+			all: () => Promise.reject(new Error("An optimistic pool commit reads nothing")),
+			run: () => Promise.reject(new Error("An optimistic pool commit reads nothing")),
+			exec: () => Promise.reject(new Error("An optimistic pool commit reads nothing")),
+		};
+		try {
+			const receiptParts = await this.recordCheckpoint(
+				unread,
+				lease,
+				row,
+				mutation,
+				Date.now(),
+				known.source,
+				write,
+				undefined,
+				{ head: known.from, own: known.own },
+			);
+			return { write, receiptParts };
+		} catch {
+			return undefined;
+		}
 	}
 	/**
 	 * A checkpoint commit when the durable journal is in another database. The journal and the pool's tables cannot
@@ -1172,68 +1463,166 @@ export class SqlPoolQueue {
 		}
 		return rows.length;
 	}
+	/**
+	 * The session the attempt `row` appends to, planned into `write`: its statements, and a fence on the session's
+	 * sequence. Returns the receipt the operation stores, as the SQL that builds it and its parameters.
+	 */
 	private async appendSession(
-		tx: SqliteExecutor,
+		read: SqliteExecutor,
 		row: WorkRow,
 		mutation: PoolSessionAppend,
-		now: number,
-	): Promise<PoolCommitReceipt> {
-		return { at: now, lastSeq: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation) };
+		write: CommitWrite,
+		sessions: PoolSessions,
+	): Promise<ReceiptSql> {
+		const lastSeq = await this.planSession(read, row.id, mutation, write, sessions);
+		return { sql: `json_object('at', ${STORE_NOW}, 'lastSeq', ?)`, params: [lastSeq] };
 	}
+	/**
+	 * Plans a pool session mutation into `write` as statements, from what `read` sees: the pool's session store runs
+	 * against an executor that reads through `read` and records each write. A fence keeps the session where the plan saw
+	 * it (absent for a session the mutation creates, at the sequence the mutation expects otherwise); the attempt's work
+	 * lease, fenced too, keeps every other writer of the session out. Returns the session's last sequence after it.
+	 */
+	private async planSession(
+		read: SqliteExecutor,
+		work: string,
+		mutation: PoolSessionMutation | PoolSessionAppend,
+		write: CommitWrite,
+		store: PoolSessions,
+	): Promise<number> {
+		const prefix = `${this.journal.runs}_pool_`;
+		const sessions = renderStorageIdentifiers("sessions", { sessions: "sessions" }, prefix).sessions;
+		const recorder: SqliteExecutor = {
+			get: (sql, ...params) => read.get(sql, ...params),
+			all: (sql, ...params) => read.all(sql, ...params),
+			run: async (sql, ...params) => {
+				write.writes.push({ sql, params });
+				return { changes: 1 };
+			},
+			exec: async (sql) => {
+				write.writes.push({ sql, params: [] });
+			},
+		};
+		const lastSeq = await store.within.run(recorder, () =>
+			applyPoolSession(recorder, prefix, work, mutation, store.store),
+		);
+		const sessionId = mutation.kind === "session-append" ? mutation.sessionId : mutation.checkpoint.sessionId!;
+		write.fences.push(
+			mutation.kind === "session-create"
+				? { sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${sessions} WHERE id = ?)`, params: [sessionId] }
+				: {
+						sql: `SELECT 1 FROM ${sessions} WHERE id = ? AND last_seq = ?`,
+						params: [sessionId, mutation.expectSeq],
+					},
+		);
+		return lastSeq;
+	}
+	/**
+	 * The pool's session store, opened once with its tables, over a database whose calls go to the executor `within`
+	 * holds: a planned commit runs it against its recording executor.
+	 */
+	private poolSessions(): Promise<PoolSessions> {
+		this.sessions ??= (async () => {
+			const within = new AsyncLocalStorage<SqliteExecutor>();
+			const executor = () => {
+				const current = within.getStore();
+				if (current === undefined) throw new Error("Pool session store used outside a pool write");
+				return current;
+			};
+			const prefix = `${this.journal.runs}_pool_`;
+			const database: SqliteDatabase = {
+				descriptor: { adapter: "pool-transaction", location: prefix },
+				exec: (sql) => executor().exec(sql),
+				run: (sql, ...params) => executor().run(sql, ...params),
+				get: (sql, ...params) => executor().get(sql, ...params),
+				all: (sql, ...params) => executor().all(sql, ...params),
+				transaction: (body) => body(executor()),
+				close: async () => {},
+			};
+			const store = await this.transaction((tx) =>
+				within.run(tx, () =>
+					new StorageProvider().openSessionStore(
+						{ kind: "database", database, prefix },
+						{ agentDir: "", domain: "sessions" },
+					),
+				),
+			);
+			return { store, within };
+		})().catch((error: Error) => {
+			this.sessions = undefined;
+			throw error;
+		});
+		return this.sessions;
+	}
+	/**
+	 * A checkpoint commit planned into `write`, from what `read` sees: validation against the root's recorded
+	 * checkpoints, the session it carries, its event, and its usage. The event's sequence is taken in SQL, so commits of
+	 * the root's other children never conflict with it; a fence refuses the write if a checkpoint of this work's scope
+	 * was recorded after the read that validation saw. Returns the receipt the operation stores, as SQL.
+	 */
 	private async recordCheckpoint(
-		tx: SqliteExecutor,
+		read: SqliteExecutor,
 		lease: Lease,
-		token: WorkLease,
 		row: WorkRow,
 		mutation: PoolCheckpointMutation,
 		now: number,
-		checkpoints: PoolCheckpointRead,
-	): Promise<PoolCommitReceipt> {
+		checkpoints: PoolCheckpointSource,
+		write: CommitWrite,
+		sessions: PoolSessions | undefined,
+		/**
+		 * The root's latest sequence, and the event this checkpoint's key recorded, as the commit's read saw them; `own`,
+		 * the root's events past `head` that the validated view holds already.
+		 */
+		{
+			head,
+			existing,
+			own = [],
+		}: {
+			readonly head: number;
+			readonly existing?: { seq: number; at: number; payload: string };
+			readonly own?: readonly number[];
+		},
+	): Promise<ReceiptSql> {
 		const checkpoint = mutation.checkpoint;
-		await validatePoolMutation(tx, this.journal, lease.runId, fromRow(row), mutation, checkpoints);
+		const events = this.journal.events;
+		const key = checkpointKey(checkpoint);
+		const work = fromRow(row);
+		await validatePoolMutation(read, this.journal, lease.runId, work, mutation, checkpoints);
 		if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 			throw new Error("Pool checkpoint timestamp is in the future");
 		assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
-		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 		const payload = serializeJson(checkpoint);
-		const existing = await tx.get<SqliteRow & { seq: number; at: number; payload: string }>(
-			`SELECT seq, at, payload FROM ${this.journal.events} WHERE run_id = ? AND key = ?`,
-			lease.runId,
-			key,
-		);
 		if (existing && !isRecordedCheckpoint(existing.payload, payload))
 			throw new Error("Pool checkpoint identity conflict");
 		if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
 		const lastSeq =
-			mutation.kind === "checkpoint"
-				? undefined
-				: await applyPoolSession(tx, `${this.journal.runs}_pool_`, row.id, mutation);
-		const latest = await tx.get<SqliteRow & { seq: number }>(
-			`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.journal.events} WHERE run_id = ?`,
-			lease.runId,
+			mutation.kind === "checkpoint" ? undefined : await this.planSession(read, row.id, mutation, write, sessions!);
+		if (existing)
+			return { sql: "?", params: [JSON.stringify({ seq: Number(existing.seq), at: Number(existing.at) })] };
+		journalCounter(lease.runId, "seq", head + 1, "overflow");
+		write.fences.push(
+			{
+				sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${events} WHERE run_id = ? AND key = ?)`,
+				params: [lease.runId, key],
+			},
+			{
+				sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? AND instr(json_extract(key, '$[2]'), ?) = 1 AND seq NOT IN (SELECT value FROM json_each(?)))`,
+				params: [lease.runId, head, RUN_EVENT_TYPES.checkpointRecorded, `${work.scope}:`, JSON.stringify(own)],
+			},
 		);
-		const receipt = existing
-			? { seq: Number(existing.seq), at: Number(existing.at) }
-			: {
-					seq: journalCounter(lease.runId, "seq", Number(latest!.seq) + 1, "overflow"),
-					at: now,
-					...(lastSeq === undefined ? {} : { lastSeq }),
-				};
-		if (!existing)
-			await tx.run(
-				`INSERT INTO ${this.journal.events} VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				lease.runId,
-				receipt.seq,
-				lease.epoch,
-				key,
-				RUN_EVENT_TYPES.checkpointRecorded,
-				payload,
-				now,
-			);
+		write.writes.push({
+			sql: `INSERT INTO ${events} SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ${STORE_NOW} FROM ${events} WHERE run_id = ?`,
+			params: [lease.runId, lease.epoch, key, RUN_EVENT_TYPES.checkpointRecorded, payload, lease.runId],
+		});
 		const billed = poolCheckpointUsage(checkpoint);
-		if (billed && !existing)
-			await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
-		return receipt;
+		if (billed)
+			write.writes.push(
+				poolUsageUpsert(this.journal.runs, row.id, Number(row.generation), billed.key, billed.usage),
+			);
+		return {
+			sql: `(SELECT json_object('seq', seq, 'at', at${lastSeq === undefined ? "" : ", 'lastSeq', ?"}) FROM ${events} WHERE run_id = ? AND key = ?)`,
+			params: [...(lastSeq === undefined ? [] : [lastSeq]), lease.runId, key],
+		};
 	}
 	async complete(lease: Lease, token: WorkLease, result: WorkflowSerializableObject): Promise<void> {
 		lease = snapshotLease(lease);
@@ -1241,24 +1630,62 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(result, "Pool result");
 		const payload = serializeJson(result);
 		await this.remote?.fresh(lease);
-		await this.transaction(async (tx) => {
-			const { now, status } = await this.authority(tx, lease);
-			const row = await this.current(tx, lease, token, true);
+		const writes = [
+			{ sql: `INSERT INTO ${this.work}_results VALUES (?, ?)`, params: [token.id, payload] },
+			{ sql: `UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, params: [token.id] },
+		];
+		await guardedPoolWrite(this.storage, async (read, optimistic) => {
+			// Planned without a read from the attempt's row as this queue last saw it: the fences repeat every check, and
+			// a completion that one refuses is planned again from a read, which names why.
+			const cached = this.attempts.get(token.id);
+			if (
+				optimistic &&
+				this.remote === undefined &&
+				cached?.state === "leased" &&
+				Number(cached.generation) === token.generation &&
+				cached.worker === token.worker &&
+				Number(cached.epoch) === token.epoch &&
+				Number(cached.epoch) === lease.epoch &&
+				JSON.parse(payload).runId === fromRow(cached).childRunId
+			)
+				return {
+					fences: [this.rootFence(lease), this.attemptFence(lease, token, true), this.admitsFence(lease)],
+					writes,
+					result: () => undefined,
+				};
+			const { now, status } = await this.authority(read, lease);
+			const row = await this.current(read, lease, token, true);
 			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
 			if (row.state === "completed") {
-				const previous = await tx.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, token.id);
+				const previous = await read.get(`SELECT result FROM ${this.work}_results WHERE work = ?`, token.id);
 				if (previous?.result !== payload) throw new Error("Pool result identity conflict");
-				return;
+				return { done: undefined };
 			}
 			if (row.expires_at < now) throw staleWork(lease, token, "expired");
-			if (!(await this.admitsAttemptWrites(tx, lease, status))) throw staleWork(lease, token, "root-not-running");
+			if (!(await this.admitsAttemptWrites(read, lease, status))) throw staleWork(lease, token, "root-not-running");
 			if (JSON.parse(payload).runId !== fromRow(row).childRunId) throw new Error("Pool result identity mismatch");
 			// A child's result is its journal checkpoint: it completes only once every event it was told is committed is.
-			if (this.remote && (await tx.get(`SELECT 1 AS held FROM ${this.outbox} WHERE work = ? LIMIT 1`, token.id)))
+			if (this.remote && (await read.get(`SELECT 1 AS held FROM ${this.outbox} WHERE work = ? LIMIT 1`, token.id)))
 				throw new Error("Pool work has journal events not yet recorded");
-			await tx.run(`INSERT INTO ${this.work}_results VALUES (?, ?)`, token.id, payload);
-			await tx.run(`UPDATE ${this.work} SET state = 'completed' WHERE id = ?`, token.id);
+			return {
+				fences: [
+					this.rootFence(lease),
+					this.attemptFence(lease, token, true),
+					this.admitsFence(lease),
+					...(this.remote
+						? [
+								{
+									sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.outbox} WHERE work = ?)`,
+									params: [token.id],
+								},
+							]
+						: []),
+				],
+				writes,
+				result: () => undefined,
+			};
 		});
+		this.attempts.delete(token.id);
 	}
 	async result(root: string, id: string): Promise<WorkflowSerializableObject | undefined> {
 		return this.storage.read(async (executor) => {
@@ -1312,28 +1739,104 @@ export class SqlPoolQueue {
 		lease = snapshotLease(lease);
 		token = { ...token };
 		await this.remote?.fresh(lease);
-		return this.transaction((tx) => this.extendIn(tx, lease, token, durationMs));
+		return guardedPoolWrite(
+			this.storage,
+			(read, optimistic) => this.extension(read, optimistic, lease, token, durationMs, false),
+			{ priority: true },
+		);
 	}
 	/**
-	 * A worker's heartbeat as one transaction: extends its attempt's lease as {@link extend} does, runs `record` (the
+	 * A worker's heartbeat as one write: extends its attempt's lease as {@link extend} does, runs `record` (the
 	 * attempt's usage report) under that lease, and reads pool control, so a heartbeat costs one write however much it
-	 * carries.
+	 * carries. A `record` with a batched form (`SqlPoolUsage.recording`) makes it one request, on the journal's priority
+	 * lane, so the heartbeat never waits behind the host's other writes.
 	 */
 	async heartbeat<T>(
 		lease: Lease,
 		token: WorkLease,
 		durationMs: number,
-		record: (tx: SqliteExecutor) => Promise<T>,
+		record: PoolHeartbeatRecord<T>,
 	): Promise<{ readonly work: PoolWork; readonly recorded: T; readonly control: PoolControl }> {
 		positive(durationMs);
 		lease = snapshotLease(lease);
 		token = { ...token };
 		await this.remote?.fresh(lease);
-		return this.transaction(async (tx) => {
-			const work = await this.extendIn(tx, lease, token, durationMs);
-			const recorded = await record(tx);
-			return { work, recorded, control: await this.controlIn(tx, lease) };
-		});
+		const batched = record.batched;
+		if (batched === undefined)
+			return this.transaction(async (tx) => {
+				const work = await this.extendIn(tx, lease, token, durationMs);
+				const recorded = await record(tx);
+				return { work, recorded, control: await this.controlIn(tx, lease) };
+			});
+		return guardedPoolWrite(
+			this.storage,
+			async (read, optimistic) => {
+				const extension = await this.extension(read, optimistic, lease, token, durationMs, false);
+				const reads = [...extension.reads, ...batched.reads];
+				return {
+					fences: extension.fences,
+					writes: [...extension.writes, ...batched.writes],
+					reads: [
+						...reads,
+						{
+							sql: `SELECT state, revision FROM ${this.roots}_control WHERE root = ?`,
+							params: [lease.runId],
+						},
+					],
+					result: (rows) => {
+						const control = rows.at(-1)![0];
+						return {
+							work: extension.result(rows.slice(0, extension.reads.length)),
+							recorded: batched.result(rows.slice(extension.reads.length, reads.length)),
+							control: control
+								? { state: control.state as PoolControl["state"], revision: Number(control.revision) }
+								: { state: "running", revision: 0 },
+						};
+					},
+				};
+			},
+			{ priority: true },
+		);
+	}
+	/**
+	 * Extending `token`'s lease by `durationMs` from now, never shortening it, as one planned write. An optimistic plan
+	 * reads nothing: its fences hold the root's lease and the attempt, and a plan after a broken fence names the refusal.
+	 * `unexpired` also refuses an attempt whose lease lapsed, as {@link renew} does; {@link extend} takes one over.
+	 */
+	private async extension(
+		read: SqliteExecutor,
+		optimistic: boolean,
+		lease: Lease,
+		token: WorkLease,
+		durationMs: number,
+		unexpired: boolean,
+	): Promise<{
+		readonly fences: readonly SqliteStatement[];
+		readonly writes: readonly SqliteStatement[];
+		readonly reads: readonly SqliteStatement[];
+		readonly result: (rows: readonly SqliteRow[][]) => PoolWork;
+	}> {
+		if (!optimistic) {
+			const { now } = await this.authority(read, lease);
+			const row = await this.current(read, lease, token);
+			if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
+			if (unexpired && row.expires_at < now) throw staleWork(lease, token, "expired");
+		}
+		return {
+			fences: [this.rootFence(lease), this.attemptFence(lease, token, unexpired)],
+			writes: [
+				{
+					sql: `UPDATE ${this.work} SET expires_at = MAX(expires_at, ${STORE_NOW} + ?), renewed_at = ${STORE_NOW} WHERE id = ?`,
+					params: [durationMs, token.id],
+				},
+			],
+			reads: [{ sql: `SELECT * FROM ${this.work} WHERE id = ?`, params: [token.id] }],
+			result: ([rows]) => {
+				const row = rows![0] as WorkRow;
+				this.attempts.set(row.id, row);
+				return fromRow(row);
+			},
+		};
 	}
 	private async extendIn(tx: SqliteExecutor, lease: Lease, token: WorkLease, durationMs: number): Promise<PoolWork> {
 		const { now } = await this.authority(tx, lease);
@@ -1366,6 +1869,7 @@ export class SqlPoolQueue {
 	): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };
+		this.attempts.delete(token.id);
 		return this.transaction(async (tx) => {
 			await this.authority(tx, lease);
 			const row = await tx.get<WorkRow>(
@@ -1450,6 +1954,11 @@ export class SqlPoolQueue {
 			),
 		);
 	}
+}
+
+/** The journal key a checkpoint's event is recorded under. */
+function checkpointKey(checkpoint: DurableCheckpoint): string {
+	return JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 }
 
 /**

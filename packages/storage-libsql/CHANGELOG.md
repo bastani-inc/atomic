@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed many processes writing to one sqld or Turso database stalling each other ([#4768](https://github.com/bastani-inc/atomic/issues/4768)). A write batch that finds the server's write lock busy is now sent again after a short random wait that grows up to a second, for as long as the caller's `lockWaitMs` allows. Each process sends at most four write batches to a server at once; a batch with `priority` skips that limit. A request the server leaves unanswered for 30 seconds is abandoned, as a transient failure whose outcome is unknown, instead of waiting for the network's own timeout
+
 ## [0.9.75] - 2026-11-10
 
 ### Fixed

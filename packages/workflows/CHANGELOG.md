@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed shared placement on a database server such as sqld or Turso capping out and stalling as hosts were added. Every pool write (a checkpoint, a heartbeat, a claim, a completion, a stage input, a host's report) now goes as one request instead of an interactive transaction of 6–17 requests that held the server's write lock across each round trip. At 8 hosts × 4 workers, p99 checkpoint latency drops from 24 s to 2.6 s. Writes that find the lock busy wait a short random time before trying again. Each process sends at most four writes at once, with lease renewals and host reports first. A request the server leaves unanswered is abandoned after 30 seconds and the write planned again, never applied twice ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ## [0.9.86] - 2026-11-14
 
 Workflow runs always resume, and stage chats complete file mentions.

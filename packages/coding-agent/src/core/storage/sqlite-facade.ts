@@ -1,4 +1,5 @@
 import type {
+	SqliteBatchOptions,
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
@@ -66,9 +67,13 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	beginTransaction(): Awaitable<SqliteDriverTransaction>;
 	/**
 	 * Optional. Runs the statements in order in one write transaction, in one request: all commit or none do. Provide it
-	 * only when the driver sends the whole batch at once; the facade then offers `SqliteDatabase.batch`.
+	 * only when the driver sends the whole batch at once; the facade then offers `SqliteDatabase.batch`. `options` are the
+	 * caller's, as `SqliteDatabase.batch` took them.
 	 */
-	batch?(statements: readonly SqliteStatement[]): Awaitable<readonly SqliteDriverResult[]>;
+	batch?(
+		statements: readonly SqliteStatement[],
+		options?: SqliteBatchOptions,
+	): Awaitable<readonly SqliteDriverResult[]>;
 	/** Releases the connection. Called once, after accepted work drains. */
 	close(): Awaitable<void>;
 	/** Removes credentials from diagnostic text: the descriptor location and driver failure messages and stacks. */
@@ -184,17 +189,57 @@ class CallQueue {
 	}
 }
 
+/**
+ * Runs operations one at a time, in call order within each lane: an operation of the priority lane runs before every
+ * waiting operation of the normal lane. A failed operation does not stop the ones queued after it.
+ */
+class LaneQueue {
+	private readonly normal: (() => Promise<void>)[] = [];
+	private readonly priority: (() => Promise<void>)[] = [];
+	private running = false;
+	private idle: (() => void)[] = [];
+
+	push<T>(operation: () => Promise<T>, priority = false): Promise<T> {
+		return new Promise<T>((resolve, reject) => {
+			(priority ? this.priority : this.normal).push(() => Promise.resolve().then(operation).then(resolve, reject));
+			this.next();
+		});
+	}
+
+	drained(): Promise<void> {
+		if (!this.running && this.normal.length === 0 && this.priority.length === 0) return Promise.resolve();
+		return new Promise((resolve) => this.idle.push(resolve));
+	}
+
+	private next(): void {
+		if (this.running) return;
+		const operation = this.priority.shift() ?? this.normal.shift();
+		if (operation === undefined) {
+			const idle = this.idle;
+			this.idle = [];
+			for (const resolve of idle) resolve();
+			return;
+		}
+		this.running = true;
+		// Started on a later microtask, as a promise chain starts it, never inside the call that queued it.
+		void operation().finally(() => {
+			this.running = false;
+			this.next();
+		});
+	}
+}
+
 class DriverDatabase implements SqliteDatabase {
 	readonly descriptor: StorageDescriptor;
 	private readonly driver: SqliteDriver;
 	private readonly redact: (text: string) => string;
-	private readonly queue = new CallQueue();
+	private readonly queue = new LaneQueue();
 	private closePromise?: Promise<void>;
 	/** Ends the wait before a call runs again, when closing begins during it. */
 	private wakeRetry?: () => void;
 	private retryReported = false;
 	private readonly executor: SqliteExecutor;
-	readonly batch?: (statements: readonly SqliteStatement[]) => Promise<SqliteRow[][]>;
+	readonly batch?: (statements: readonly SqliteStatement[], options?: SqliteBatchOptions) => Promise<SqliteRow[][]>;
 
 	constructor(driver: SqliteDriver, redact: (text: string) => string) {
 		this.driver = driver;
@@ -209,26 +254,30 @@ class DriverDatabase implements SqliteDatabase {
 			true,
 		);
 		const batch = driver.batch?.bind(driver);
-		if (batch) this.batch = (statements) => this.runBatch(batch, statements);
+		if (batch) this.batch = (statements, options) => this.runBatch(batch, statements, options);
 	}
 
 	private runBatch(
 		batch: NonNullable<SqliteDriver["batch"]>,
 		statements: readonly SqliteStatement[],
+		options: SqliteBatchOptions | undefined,
 	): Promise<SqliteRow[][]> {
 		if (this.closePromise) return Promise.reject(new StoreClosedError(this.descriptor));
 		const bound = statements.map((statement) => ({ sql: statement.sql, params: snapshotParams(statement.params) }));
-		return this.queue.push(() =>
-			this.retrying(async (attempt) => {
-				for (const statement of bound) {
-					const invalidIndex = statement.params.findIndex(
-						(value) => typeof value === "string" && value.includes("\0"),
-					);
-					if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
-				}
-				const results = await this.call(() => batch(bound), attempt, true);
-				return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
-			}, true),
+		const passed = options === undefined ? undefined : { ...options };
+		return this.queue.push(
+			() =>
+				this.retrying(async (attempt) => {
+					for (const statement of bound) {
+						const invalidIndex = statement.params.findIndex(
+							(value) => typeof value === "string" && value.includes("\0"),
+						);
+						if (invalidIndex !== -1) throw new StorageInvalidTextError(invalidIndex);
+					}
+					const results = await this.call(() => batch(bound, passed), attempt, true);
+					return results.map((result) => result.rows.map((row) => normalizeRow(row, result.columns)));
+				}, true),
+			passed?.priority === true,
 		);
 	}
 

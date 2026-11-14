@@ -2,6 +2,7 @@ export type { SnapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export type { SnapshotBlob, SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 export type {
+	SqliteBatchOptions,
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,

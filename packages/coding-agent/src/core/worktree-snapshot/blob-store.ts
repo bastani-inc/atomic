@@ -734,6 +734,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	async refreshBlobs(hashes: readonly string[]): Promise<boolean> {
 		const unique = [...new Set(hashes)];
 		if (unique.length === 0) return true;
+		// One request where the database takes batches: a server holds its write lock for that request only (#4768).
+		if (this.database.batch) {
+			const [refreshed] = await this.database.batch([
+				{
+					sql: `UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN (SELECT value FROM json_each(?)) RETURNING hash`,
+					params: [JSON.stringify(unique)],
+				},
+			]);
+			return refreshed!.length === unique.length;
+		}
 		const { changes } = await this.database.transaction((transaction) =>
 			transaction.run(
 				`UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN (SELECT value FROM json_each(?))`,

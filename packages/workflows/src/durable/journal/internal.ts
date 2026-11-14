@@ -1,4 +1,4 @@
-import type { SqliteExecutor, SqliteTransactionOptions } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, SqliteStatement, SqliteTransactionOptions } from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
 	type JournalEntry,
@@ -76,8 +76,20 @@ export function runJournalAppendMany(journal: RunJournal): RunJournalAppendMany 
 
 export type JournalAppendGuard = (tx: SqliteExecutor, runId: string) => Promise<void>;
 
+/** How a pool write goes to its database in one request: see {@link SqlPoolStorage.batch}. */
+export interface SqlPoolBatchOptions {
+	/** Goes ahead of the journal's other queued calls and of the process's limit on writes in flight: lease renewals. */
+	readonly priority?: boolean;
+}
+
 export interface SqlPoolStorage {
 	transaction<T>(body: (tx: SqliteExecutor) => Promise<T>): Promise<T>;
+	/**
+	 * Present when the journal's database sends a batch of statements as one request (a libSQL database): runs them in
+	 * order in one write transaction, which holds the write lock for that one request only, and waits for a busy lock as
+	 * the journal's transactions do. Resolves with each statement's rows.
+	 */
+	readonly batch?: (statements: readonly SqliteStatement[], options?: SqlPoolBatchOptions) => Promise<SqliteRow[][]>;
 	/**
 	 * A read that never takes the shared write lock. On a node:sqlite journal file it is one read transaction on a
 	 * read-only connection to that file: all of its statements see the same last commit, it reads while another
@@ -102,18 +114,27 @@ export function sqlPoolStorage(journal: RunJournal): SqlPoolStorage | undefined 
 }
 
 /**
- * Calls `observe` as each pool transaction on `journal` begins, for the transactions of the pool tables (queue, usage,
+ * Calls `observe` as each pool transaction or batch on `journal` begins, for the transactions of the pool tables (queue, usage,
  * admission) opened on it from now on: a pool coordinator counts its journal writes this way.
  */
 export function observeSqlPoolTransactions(journal: RunJournal, observe: () => void): void {
 	const storage = poolStorage.get(journal);
 	if (storage === undefined) return;
+	const batch = storage.batch;
 	poolStorage.set(journal, {
 		...storage,
 		transaction: (body) => {
 			observe();
 			return storage.transaction(body);
 		},
+		...(batch === undefined
+			? {}
+			: {
+					batch: (statements, options) => {
+						observe();
+						return batch(statements, options);
+					},
+				}),
 	});
 }
 

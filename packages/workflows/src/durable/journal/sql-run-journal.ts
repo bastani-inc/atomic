@@ -158,8 +158,17 @@ export class SqlRunJournal implements RunJournal {
 		this.legacy = legacy;
 		this.readerFile = readerFile;
 		this.snapshotBlobs = snapshotBlobs;
+		const batch = database.batch?.bind(database);
 		registerSqlPoolStorage(this, {
 			transaction: (body) => this.operation(() => this.database.transaction(body, JOURNAL_TRANSACTION)),
+			...(batch === undefined
+				? {}
+				: {
+						batch: (statements, options) =>
+							this.operation(() =>
+								batch(statements, { lockWaitMs: JOURNAL_TRANSACTION.lockWaitMs, ...options }),
+							),
+					}),
 			read: (body) => this.operation(() => this.readSnapshot(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
