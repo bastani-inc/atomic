@@ -1,0 +1,66 @@
+{
+  "sqld": "v0.24.33",
+  "sqldArgs": "--max-concurrent-requests 16",
+  "results": [
+    {
+      "clients": 8,
+      "mode": "interactive",
+      "statements": 8,
+      "seconds": 20,
+      "commitsPerSec": 20,
+      "latencyMs": {
+        "p50": 386,
+        "p99": 703,
+        "max": 835
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 32,
+      "mode": "interactive",
+      "statements": 8,
+      "seconds": 20,
+      "commitsPerSec": 18,
+      "latencyMs": {
+        "p50": 1957,
+        "p99": 2582,
+        "max": 2651
+      },
+      "errors": {
+        "SERVER_ERROR": 26
+      },
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 8,
+      "mode": "batch",
+      "statements": 8,
+      "seconds": 20,
+      "commitsPerSec": 40.2,
+      "latencyMs": {
+        "p50": 204,
+        "p99": 343,
+        "max": 410
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 32,
+      "mode": "batch",
+      "statements": 8,
+      "seconds": 20,
+      "commitsPerSec": 57,
+      "latencyMs": {
+        "p50": 583,
+        "p99": 913,
+        "max": 1102
+      },
+      "errors": {
+        "SERVER_ERROR": 13
+      },
+      "writeProbe": "ok"
+    }
+  ]
+}

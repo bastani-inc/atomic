@@ -1,0 +1,4 @@
+{"hosts":1,"slots":4,"proxyOneWayMs":0,"hostsReadyMs":905,"status":"completed","children":64,"completed":64,"failed":0,"checkpoints":1280,"wallMs":56073,"activeMs":52529,"checkpointsPerSec":24.4,"latencyMs":{"p50":188.94,"p90":212.11,"p99":239.39,"max":337.36}}
+{"hosts":2,"slots":4,"proxyOneWayMs":0,"hostsReadyMs":804,"status":"completed","children":64,"completed":64,"failed":0,"checkpoints":1280,"wallMs":38805,"activeMs":35183,"checkpointsPerSec":36.4,"latencyMs":{"p50":216.99,"p90":268.67,"p99":325.48,"max":376.64}}
+{"hosts":4,"slots":4,"proxyOneWayMs":0,"hostsReadyMs":907,"status":"completed","children":64,"completed":64,"failed":0,"checkpoints":1280,"wallMs":38047,"activeMs":34474,"checkpointsPerSec":37.1,"latencyMs":{"p50":356.78,"p90":496.28,"p99":654.55,"max":752.54}}
+{"hosts":8,"slots":4,"proxyOneWayMs":0,"status":"wedged","note":"113 journal events in the first 14 s, then no write committed for 25 min; see wedge-8hosts-run1/"}
