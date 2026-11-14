@@ -32,6 +32,8 @@ Patches and bundles are stored once, by content hash, in the same storage as the
 
 A capture that finds `HEAD`, the recomputed tree, and the set of left-out files all unchanged records a reference to the previous snapshot instead of a new one. A newly left-out file, such as a new `.env.local`, records a new snapshot that lists it in `omitted`, so a restore warns about it.
 
+Each checkout's captures share a private Git index under `~/.atomic/agent/worktree-snapshots/capture-index/`, so after the first capture, unchanged files are not read again; this matters most in fresh clones such as CI checkouts. It never changes what a snapshot records. Deleting the directory is safe: the next capture rebuilds it from your index, and a capture that cannot use it, for example because it is damaged, captures without it.
+
 Snapshot commands use the Git Atomic resolves, including a portable copy it provisions when Git is not installed. If Git cannot be provided, or a directory is not inside a Git repository, nothing is recorded for it and behavior is exactly as without snapshots. In-memory sessions record nothing. A persisted store that cannot hold blobs (JSONL session directories, storage adapters without a database) records nothing and reports `blob-store-unsupported` once.
 
 When a file or directory a capture has to read cannot be read, for example because of a permission error or a symbolic link that loops, that checkout's capture records nothing and reports `unreadable-path` naming the path. The turn or stage carries on. Make the path readable, or list it in `.atomic/snapshot-ignore`, to snapshot that checkout again.
