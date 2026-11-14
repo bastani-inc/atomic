@@ -1,0 +1,24 @@
+# KEDA scales the worker Deployment to the fleet's desiredHosts, from and to zero.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: "{{ .Release.Name }}"
+spec:
+  scaleTargetRef:
+    name: "{{ .Release.Name }}"
+  minReplicaCount: 0
+  maxReplicaCount: {{ .Values.maxHosts }}
+  pollingInterval: 15
+  cooldownPeriod: {{ .Values.scaleDownStabilizationSeconds }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ .Values.scaleDownStabilizationSeconds }}
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: "http://{{ .Release.Name }}-metrics.{{ .Release.Namespace }}.svc:9464/scaling"
+        valueLocation: desiredHosts
+        targetValue: "1"
+        activationTargetValue: "0"
