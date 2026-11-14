@@ -506,7 +506,13 @@ export async function openPostgresDatabase(options) {
 				async rollback() {
 					// The server rolled back the transaction of a connection that broke.
 					if (lost.has(client)) return;
-					await watched(client, () => client.query("ROLLBACK"), clientTimeoutMs);
+					try {
+						await watched(client, () => client.query("ROLLBACK"), clientTimeoutMs);
+					} catch (error) {
+						// The transaction may still be open, so the connection is closed rather than reused.
+						lost.add(client);
+						throw error;
+					}
 				},
 				close() {
 					if (released) return;
