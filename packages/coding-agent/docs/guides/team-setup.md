@@ -139,7 +139,7 @@ jobs:
       - id: keys
         run: atomic blueprint cache-key --format github-output >> "$GITHUB_OUTPUT"
       - run: npm ci                 # fills the stores the blueprint declares
-      - run: atomic --list-models   # fills Atomic's extension transpile cache
+      - run: atomic --list-models   # transpiles your installed extensions into Atomic's cache
       - uses: actions/cache/save@v4
         with:
           key: ${{ steps.keys.outputs.stores-key }}

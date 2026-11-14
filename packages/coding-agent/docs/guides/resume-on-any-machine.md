@@ -124,7 +124,7 @@ The first turn of a resumed session carries each applicable blueprint's `mainten
 
 ### Caches for runners
 
-On an ephemeral runner, such as a GitHub-hosted one, every resume starts with an empty home directory: dependencies download again, the repository is fetched in full, and Atomic transpiles its extensions again. The `cache:` section of the repository blueprint lists what is worth keeping, and `atomic blueprint cache-key` prints a key, a restore prefix and the paths of each entry for a cache action such as `actions/cache`. Atomic never uploads or downloads caches itself.
+On an ephemeral runner, such as a GitHub-hosted one, every resume starts with an empty home directory: dependencies download again, the repository is fetched in full, and Atomic transpiles your extensions again. The `cache:` section of the repository blueprint lists what is worth keeping, and `atomic blueprint cache-key` prints a key, a restore prefix and the paths of each entry for a cache action such as `actions/cache`. Atomic never uploads or downloads caches itself.
 
 ```yaml
 cache:
