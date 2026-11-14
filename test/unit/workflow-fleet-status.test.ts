@@ -13,8 +13,11 @@ import type {
 	SharedPoolStats,
 } from "../../packages/workflows/src/durable/journal/shared-pool-types.js";
 import {
+	classifySharedStoreHealth,
 	SHARED_STORE_HINT,
 	STATUS_READ_TIMEOUT_MS,
+	STORE_PROBE_ATTEMPTS,
+	STORE_PROBE_TIMEOUT_MS,
 	withoutUrlCredentials,
 } from "../../packages/workflows/src/durable/journal/shared-store-health.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -658,3 +661,80 @@ test("a draining host that still reports itself does not count as able to restor
 		await f.close();
 	}
 });
+
+test("the shared store reads degraded when a write probe times out, or keeps failing while hosts are registered (#4768)", async () => {
+	let started = performance.now();
+	const hung = await classifySharedStoreHealth(() => new Promise(() => {}), { hostsRegistered: false });
+	const tookMs = performance.now() - started;
+	assert.ok(
+		tookMs >= STORE_PROBE_TIMEOUT_MS - 50 && tookMs < STORE_PROBE_TIMEOUT_MS + STALLED_READ_SLACK_MS,
+		`${tookMs}`,
+	);
+	assert.deepEqual(hung, {
+		state: "degraded",
+		message: `The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`,
+		hint: SHARED_STORE_HINT,
+	});
+	let calls = 0;
+	const refusing = async () => {
+		calls += 1;
+		throw new Error(`write refused at libsql://db.example/x?authToken=s3cret (${calls})`);
+	};
+	started = performance.now();
+	assert.deepEqual(await classifySharedStoreHealth(refusing, { hostsRegistered: true }), {
+		state: "degraded",
+		message: `The shared store refused ${STORE_PROBE_ATTEMPTS} writes in a row: write refused at libsql://db.example/x (${STORE_PROBE_ATTEMPTS})`,
+		hint: SHARED_STORE_HINT,
+	});
+	assert.equal(calls, STORE_PROBE_ATTEMPTS);
+	calls = 0;
+	assert.deepEqual(await classifySharedStoreHealth(refusing, { hostsRegistered: false }), {
+		state: "unknown",
+		message: `The shared store refused ${STORE_PROBE_ATTEMPTS} writes in a row: write refused at libsql://db.example/x (${STORE_PROBE_ATTEMPTS})`,
+		hint: SHARED_STORE_HINT,
+	});
+	calls = 0;
+	const flaky = async () => {
+		calls += 1;
+		if (calls < STORE_PROBE_ATTEMPTS) throw new Error("busy");
+	};
+	assert.deepEqual(await classifySharedStoreHealth(flaky, { hostsRegistered: true }), { state: "ok" });
+	assert.equal(calls, STORE_PROBE_ATTEMPTS);
+});
+
+test(
+	"fleet status reads a store that answers reads but commits no write as degraded, with the sqld hint (#4768)",
+	async () => {
+		const server = await startFakeLibsqlServer({ streamTtlMs: 60_000 });
+		const f = await sharedRoot(server.url, 1);
+		let release: () => void = () => {};
+		try {
+			await f.shared.reportHost(host("h-busy", { busy: 1 }));
+			// Every write transaction waits, unanswered, as a wedged sqld leaves them.
+			server.onOpenTransaction(() => new Promise<void>((resolve) => (release = resolve)));
+			const started = performance.now();
+			const stats = (await readSharedPoolStats(f.journal, "root")) as SharedPoolStats;
+			assert.ok(performance.now() - started < STATUS_READ_TIMEOUT_MS, "the probe ends before the status budget");
+			assert.deepEqual(stats.fleet, {
+				store: {
+					state: "degraded",
+					message: `The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`,
+					hint: SHARED_STORE_HINT,
+				},
+				queue: { roots: 1, ready: 1, leased: 0 },
+			});
+			assert.deepEqual(hostStates(stats.hosts), [["h-busy", "busy", 1, undefined, 4, 0]], "reads still answer");
+			assert.equal(
+				sharedPoolStatusLines({ sharedPool: stats })[1],
+				`shared store degraded: The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`,
+			);
+			server.onOpenTransaction(undefined);
+			release();
+		} finally {
+			release();
+			await f.close();
+			await server.close();
+		}
+	},
+	STALLED_STORE_TIMEOUT_MS,
+);

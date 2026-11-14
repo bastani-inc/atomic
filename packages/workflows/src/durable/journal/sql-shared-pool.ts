@@ -13,7 +13,7 @@ import type {
 	SharedPoolStats,
 	WorkerHostGitSource,
 } from "./shared-pool-types.js";
-import { sharedStoreHealth, withoutUrlCredentials } from "./shared-store-health.js";
+import { classifySharedStoreHealth, sharedStoreHealth, withoutUrlCredentials } from "./shared-store-health.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
@@ -856,20 +856,29 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 	});
 }
 
-/** The shared store as this process sees it, and the queue of every running or paused shared root (#4768). */
+/**
+ * The shared store's health, from a write probe that changes nothing, and the queue of every running or paused shared
+ * root (#4768).
+ */
 async function fleetStatus(storage: SqlPoolStorage): Promise<SharedPoolFleetStatus> {
 	const runs = storage.tables.runs;
 	// An aggregate without GROUP BY gives one row, also when no root matches.
 	const row = (await storage.read((executor) =>
-		executor.get<SqliteRow & { roots: number; ready: number; leased: number }>(
+		executor.get<SqliteRow & { roots: number; ready: number; leased: number; hosts: number }>(
 			`SELECT COUNT(DISTINCT s.root) AS roots,
-			COALESCE(SUM(w.state = 'ready'), 0) AS ready, COALESCE(SUM(w.state = 'leased'), 0) AS leased
+			COALESCE(SUM(w.state = 'ready'), 0) AS ready, COALESCE(SUM(w.state = 'leased'), 0) AS leased,
+			(SELECT COUNT(*) FROM ${runs}_pool_hosts) AS hosts
 			FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root LEFT JOIN ${runs}_work w ON w.root = s.root
 			WHERE r.status IN ('running', 'paused')`,
 		),
 	))!;
+	// The probe takes the write lock and commits nothing: a store that wedged leaves it unanswered.
+	const store = await classifySharedStoreHealth(
+		() => storage.transaction((tx) => tx.run(`UPDATE ${runs}_pool_hosts SET host = host WHERE 0`)),
+		{ hostsRegistered: Number(row.hosts) > 0 },
+	);
 	return {
-		store: sharedStoreHealth(),
+		store,
 		queue: { roots: Number(row.roots), ready: Number(row.ready), leased: Number(row.leased) },
 	};
 }

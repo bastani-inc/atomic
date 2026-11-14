@@ -55,6 +55,52 @@ export function unknownSharedStore(error: unknown): SharedStoreHealth & {
 	return { state: "unknown", message: withoutUrlCredentials((error as Error).message), hint: SHARED_STORE_HINT };
 }
 
+/** How long a status read waits for its write probe to commit before it reports the store degraded (#4768). */
+export const STORE_PROBE_TIMEOUT_MS = 2_000;
+/** How many write probes in a row a status read tries before it reports a store that refuses them. */
+export const STORE_PROBE_ATTEMPTS = 3;
+
+/**
+ * The shared store's health from a bounded write `probe` (#4768), the one detector of a store that stopped committing
+ * writes. A probe that does not settle within {@link STORE_PROBE_TIMEOUT_MS} reads `degraded`, as a wedged sqld leaves
+ * writes unanswered. {@link STORE_PROBE_ATTEMPTS} failed probes in a row read `degraded` while hosts are registered,
+ * whose work the store holds up, and `unknown` otherwise. A probe that commits leaves the libSQL adapter's own report.
+ * Every degraded or unknown store carries {@link SHARED_STORE_HINT}.
+ */
+export async function classifySharedStoreHealth(
+	probe: () => Promise<unknown>,
+	options: { readonly hostsRegistered: boolean },
+): Promise<SharedStoreHealth> {
+	let failure: Error | undefined;
+	for (let attempt = 0; attempt < STORE_PROBE_ATTEMPTS; attempt += 1) {
+		let timer: NodeJS.Timeout | undefined;
+		const timedOut = new Promise<"timed-out">((resolve) => {
+			timer = setTimeout(() => resolve("timed-out"), STORE_PROBE_TIMEOUT_MS);
+		});
+		const write = probe();
+		// A probe that commits after it timed out is dropped.
+		write.catch(() => {});
+		try {
+			if ((await Promise.race([write, timedOut])) === "timed-out")
+				return {
+					state: "degraded",
+					message: `The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`,
+					hint: SHARED_STORE_HINT,
+				};
+			return sharedStoreHealth();
+		} catch (error) {
+			failure = error as Error;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	return {
+		state: options.hostsRegistered ? "degraded" : "unknown",
+		message: `The shared store refused ${STORE_PROBE_ATTEMPTS} writes in a row: ${withoutUrlCredentials(failure!.message)}`,
+		hint: SHARED_STORE_HINT,
+	};
+}
+
 /**
  * `read`, or a {@link SharedStoreStatusTimeoutError} once it took {@link STATUS_READ_TIMEOUT_MS}: a status read never
  * waits on a store that stopped answering. A read that finishes later is dropped.
