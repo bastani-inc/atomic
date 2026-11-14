@@ -183,7 +183,7 @@ describe("the reference index on SQLite", () => {
 				"hash=d-p2 run_id=r3",
 			]);
 			assert.deepEqual(index.snapshot_run_state, ["retained=0 run_id=r1 seq=5", "retained=0 run_id=r3 seq=1"]);
-			assert.equal(index.snapshot_session_links.length, 6);
+			assert.equal(index.snapshot_session_links.length, 7);
 			assert.ok(index.snapshot_session_refs.some((row) => row.includes("restore_to=/elsewhere")));
 		} finally {
 			await database.close();
