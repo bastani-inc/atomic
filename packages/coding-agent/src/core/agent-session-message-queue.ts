@@ -213,12 +213,7 @@ export async function sendCustomMessages<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessages(messages, options);
 	assertSessionOpen(this);
-	return deliveredMessageTurn(this, () => {
-		const waking = wakeIdleSessionForHeartbeat(this, options);
-		return waking
-			? waking.then(() => admittedCustomMessages.call(this, messages, options))
-			: admittedCustomMessages.call(this, messages, options);
-	});
+	return deliveredMessageTurn(this, () => admittedCustomMessages.call(this, messages, options));
 }
 
 async function admittedCustomMessages<T>(

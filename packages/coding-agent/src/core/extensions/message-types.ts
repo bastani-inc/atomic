@@ -48,7 +48,10 @@ export interface SendMessageOptions {
 	wakeIdleSession?: boolean;
 }
 
-export type SendMessagesOptions = Omit<SendMessageOptions, "deliverAs" | "interruptAbortMessage"> & {
+export type SendMessagesOptions = Omit<
+	SendMessageOptions,
+	"deliverAs" | "interruptAbortMessage" | "wakeIdleSession"
+> & {
 	deliverAs?: "steer" | "followUp" | "nextTurn";
 };
 
