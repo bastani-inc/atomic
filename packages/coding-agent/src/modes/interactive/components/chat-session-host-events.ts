@@ -83,6 +83,7 @@ function boundaryMessageFromResult(
 		// Preserve the borrowed-planner identity; the event-only path is otherwise
 		// the one place it is lost.
 		...(result.plannerModel === undefined ? {} : { plannerModel: result.plannerModel }),
+		...(result.releasedRanges === undefined ? {} : { releasedRanges: result.releasedRanges }),
 		...(result.backupPath === undefined ? {} : { backupPath: result.backupPath }),
 	} satisfies VerbatimCompactionDetails;
 	return createVerbatimCompactionMessage(

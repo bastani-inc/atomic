@@ -27,6 +27,7 @@ const compactionMocks = vi.hoisted(() => ({
 		},
 		rung: "planned" as const,
 		keptTail: true,
+		releasedRanges: [],
 	})),
 }));
 

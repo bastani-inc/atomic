@@ -431,6 +431,8 @@ Tag:
 
 Do not tag bulk context. Protected lines count against the keep target rather than raising it, so a large protected span makes the surrounding transcript compress harder. Tag the constraint, not the material it applies to — pass that through files and `reads`.
 
+Protection has a budget. Restating a constraint does not add protection: only the latest copy stays protected once spans exceed `compaction.keepContextShare` of the keep target, and past that the oldest spans are released first. See [Compaction](/compaction#keepcontext-tags) for the release order.
+
 Every builtin does this for its own invariants: the steering propagation contract, the literal objective contract, scope discipline, worktree discipline, per-run acceptance criteria, and the research/review role constraints are all protected. See [Compaction](/compaction#keepcontext-tags) for the retention mechanism.
 
 For automatic model selection, a chat model reads the whole `model: "auto"` stage prompt; stating `taskNeeds` in the stage options saves that read. See [automatic stage model selection](/workflows/authoring#automatic-stage-model-selection).
