@@ -51,8 +51,11 @@ const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map([
 	],
 ]);
 
-/** A describe/it runner for `backend`: skipped rows when the backend is, known failures as `it.fails`. */
-function runnerFor(backend: StorageBackend) {
+/**
+ * A describe/it runner for `backend`: skipped rows when the backend is (or, for a store's suite, when the backend does
+ * not run the stores yet), known failures as `it.fails`.
+ */
+function runnerFor(backend: StorageBackend, skipReason = backend.skipReason) {
 	let suite = "";
 	return {
 		describe(name: string, body: () => void) {
@@ -68,7 +71,7 @@ function runnerFor(backend: StorageBackend) {
 		},
 		it(name: string, body: () => Promise<void>) {
 			const issue = KNOWN_FAILURES.get(`${suite} > ${name}`);
-			if (backend.skipReason !== undefined) it.skip(name, body);
+			if (skipReason !== undefined) it.skip(name, body);
 			else if (issue !== undefined) it.fails(`${name} (known failure, ${issue})`, body);
 			else it(name, body);
 		},
@@ -90,11 +93,14 @@ function scopeFixture<Store>(
 }
 
 for (const backend of storageBackends) {
-	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
-	const run = backend.skipReason === undefined ? test : test.skip;
-	const runner = runnerFor(backend);
+	const facadeName =
+		backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
+	registerSqliteDatabaseConformance(runnerFor(backend), `database facade on ${facadeName}`, databaseSubject(backend));
 
-	registerSqliteDatabaseConformance(runner, `database facade on ${name}`, databaseSubject(backend));
+	const storesSkipReason = backend.skipReason ?? backend.storesSkipReason;
+	const name = storesSkipReason === undefined ? backend.name : `${backend.name} (skipped: ${storesSkipReason})`;
+	const run = storesSkipReason === undefined ? test : test.skip;
+	const runner = runnerFor(backend, storesSkipReason);
 
 	registerSessionStoreConformance(runner, `SqlSessionStore on ${name}`, async (body) => {
 		const scope = await backend.openScope();

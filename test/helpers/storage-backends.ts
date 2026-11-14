@@ -2,10 +2,12 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createClient, type Transaction } from "@libsql/client";
+import pg from "pg";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import type { WithSqliteDatabaseSubject } from "../../packages/coding-agent/src/core/storage/testing.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { makeTempDirectory, removeTempDirectory } from "./runtime.js";
 
 /**
@@ -32,6 +34,11 @@ export interface StorageBackend {
 	readonly name: string;
 	/** Why this backend's rows do not run here, or undefined when they do. */
 	readonly skipReason: string | undefined;
+	/**
+	 * Why the stores' suites (sessions, the run journal, Intercom routing) do not run on this backend yet, while the
+	 * database facade's suite does; undefined when they run.
+	 */
+	readonly storesSkipReason?: string;
 	openScope(): Promise<StorageBackendScope>;
 	/** Runs `operation` while every rollback this backend's driver sends fails with `cause`. */
 	withRollbackFailure(cause: Error, operation: () => Promise<void>): Promise<void>;
@@ -103,12 +110,12 @@ export const sqliteFileBackend: StorageBackend = {
  * Tables the facade suite (`registerSqliteDatabaseConformance`) creates under fixed names. A scope on the shared server
  * drops them too, so its runs start from nothing; no other suite on the server uses them.
  */
-const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items"];
+const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items", "integers", "reals", "texts", "blobs"];
 
 /** Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. */
 async function dropLibsqlScope(database: SqliteDatabase, prefix: string): Promise<void> {
 	const rows = await database.all(
-		"SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (?, ?, ?, ?))",
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${FACADE_SUITE_TABLES.map(() => "?").join(", ")}))`,
 		prefix,
 		prefix,
 		...FACADE_SUITE_TABLES,
@@ -190,10 +197,58 @@ function libsqlServerBackend(): StorageBackend {
 }
 
 function postgresBackend(): StorageBackend {
-	serverUrl("ATOMIC_TEST_POSTGRES_URL");
-	const skipReason = "the Postgres storage adapter lands in P2 of #4793; until then its rows are todo";
-	const skipped = () => Promise.reject(new Error(skipReason));
-	return { name: "Postgres", skipReason, openScope: skipped, withRollbackFailure: skipped };
+	const server = serverUrl("ATOMIC_TEST_POSTGRES_URL");
+	const password = process.env.ATOMIC_TEST_POSTGRES_PASSWORD;
+	const open = (url: string) => openPostgresDatabase({ url, ...(password === undefined ? {} : { password }) });
+	return {
+		name: "Postgres",
+		skipReason: "skipReason" in server ? server.skipReason : undefined,
+		storesSkipReason: "the stores' SQL becomes portable in P3–P5 of #4793",
+		async openScope() {
+			if (!("url" in server)) throw new Error("the Postgres backend is skipped here");
+			// A database of its own per scope, so the facade suite's fixed table names never collide.
+			const admin = await open(server.url);
+			const name = `atomic_matrix_${randomBytes(8).toString("hex")}`;
+			try {
+				await admin.exec(`CREATE DATABASE ${name}`);
+			} catch (error) {
+				await admin.close();
+				throw error;
+			}
+			const url = new URL(server.url);
+			url.pathname = `/${name}`;
+			const pool = connections(() => open(url.href));
+			return {
+				prefix: scopePrefix(),
+				connect: pool.connect,
+				async close() {
+					try {
+						await pool.closeAll();
+					} finally {
+						try {
+							await admin.exec(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+						} finally {
+							await admin.close();
+						}
+					}
+				},
+			};
+		},
+		async withRollbackFailure(cause, operation) {
+			// The adapter's pg is this one, so patching the client prototype reaches the adapter's connections.
+			const query = pg.Client.prototype.query;
+			const patched = function (this: pg.Client, ...args: Parameters<pg.Client["query"]>) {
+				if (args[0] === "ROLLBACK") return Promise.reject(cause);
+				return Reflect.apply(query, this, args);
+			};
+			pg.Client.prototype.query = patched as pg.Client["query"];
+			try {
+				await operation();
+			} finally {
+				pg.Client.prototype.query = query;
+			}
+		},
+	};
 }
 
 export const storageBackends: readonly StorageBackend[] = [sqliteFileBackend, libsqlServerBackend(), postgresBackend()];
