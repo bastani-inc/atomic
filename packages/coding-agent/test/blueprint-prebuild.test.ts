@@ -47,6 +47,7 @@ import {
 	readSeedManifest,
 	seedDirectory,
 	seedManifestPath,
+	withSeedLock,
 	writeSeedManifest,
 } from "../src/core/worktree-snapshot/seeds.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
@@ -265,6 +266,48 @@ describe("atomic blueprint prebuild (#4748)", () => {
 		},
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
+	test(
+		"every prebuild runs initialize in its new worktree, even when the ledger saw the blueprint succeed (#4748)",
+		async () => {
+			const { clone, remote } = await checkout(
+				`initialize: mkdir -p node_modules && echo init > node_modules/.init\nmaintenance: test -f node_modules/.init\n`,
+			);
+			assert.equal((await prebuild(clone)).status, "built");
+			const second = await prebuild(clone);
+			assert.equal(second.status, "built");
+			assert.equal(second.path, slot([remote], 1));
+			assert.equal(readFileSync(join(slot([remote], 1), "node_modules", ".init"), "utf8"), "init\n");
+			assert.deepEqual(
+				second.timings.blueprint.map((step) => step.section),
+				["initialize", "maintenance"],
+			);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"parking moves a declared path with the declared paths inside it, and never through a symbolic link (#4748)",
+		async () => {
+			const outside = sandbox.path("outside");
+			sandbox.write(join(outside, "build", "keep.txt"), "outside\n");
+			const link =
+				process.platform === "win32" ? "" : `ln -s ${JSON.stringify(outside.replace(/\\/g, "/"))} linked && `;
+			const { clone, remote } = await checkout(
+				`maintenance: ${link}mkdir -p build/sub && echo out > build/sub/out.txt\ncache:\n  - path: build/sub\n    kind: build\n  - path: build\n    kind: build\n  - path: linked/build\n    kind: build\n`,
+			);
+			sandbox.write(join(clone, ".gitignore"), "build/\nlinked\n");
+			await sandbox.commitAll(clone, "ignore the link");
+
+			const outcome = await prebuild(clone, true);
+
+			assert.deepEqual(outcome.parked, ["build"]);
+			const seeds = seedDirectory(storeDir(), repositoryIdOf([remote]));
+			assert.equal(readFileSync(join(seeds, "build", "sub", "out.txt"), "utf8"), "out\n");
+			assert.equal(readFileSync(join(outside, "build", "keep.txt"), "utf8"), "outside\n");
+			assert.equal(existsSync(join(seeds, "linked")), false);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
 });
 
 describe("seed adoption on resume (#4748)", () => {
@@ -348,6 +391,7 @@ describe("seed adoption on resume (#4748)", () => {
 				tree: snapshot.tree,
 				envHash: snapshot.envHash,
 				paths: ["build", ".atomic", "locked/inner", "absent"],
+				worktree: slot([remote], 0),
 				parkedAt: new Date().toISOString(),
 			});
 			const posix = process.platform !== "win32";
@@ -387,6 +431,7 @@ describe("seed adoption on resume (#4748)", () => {
 			tree: "2".repeat(40),
 			envHash: snapshot.envHash,
 			paths: ["build"],
+			worktree: slot([remote], 0),
 			parkedAt: new Date().toISOString(),
 		});
 
@@ -401,6 +446,35 @@ describe("seed adoption on resume (#4748)", () => {
 		assert.equal(existsSync(slot([remote], 0)), false);
 		assert.notEqual(await readSeedManifest(storeDir(), id), undefined);
 	});
+	test(
+		"a seed built at another worktree path, or one a prebuild is replacing, is not adopted (#4748)",
+		async () => {
+			const { clone, remote } = await checkout();
+			await restoredCache(clone);
+			const id = repositoryIdOf([remote]);
+			const snapshot = await capture(clone);
+			const manifest = JSON.parse(readFileSync(seedManifestPath(storeDir(), id), "utf8"));
+			assert.equal(manifest.worktree, slot([remote], 0));
+
+			const busy = await withSeedLock(storeDir(), id, true, () =>
+				adoptPrebuiltSeed(snapshot, { storeDir: storeDir() }),
+			);
+			assert.deepEqual(busy, { adopted: false, reason: "busy" });
+
+			writeFileSync(seedManifestPath(storeDir(), id), JSON.stringify({ ...manifest, worktree: slot([remote], 5) }));
+			assert.deepEqual(await adoptPrebuiltSeed(snapshot, { storeDir: storeDir() }), {
+				adopted: false,
+				reason: "path-taken",
+			});
+			assert.equal(existsSync(slot([remote], 0)), false);
+			assert.deepEqual(
+				readdirSync(join(storeDir(), "pool", id)).filter((name) => name.endsWith(".json")),
+				[],
+			);
+			assert.equal(readFileSync(join(seedDirectory(storeDir(), id), "build", "out.txt"), "utf8"), "built\n");
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
 });
 
 describe("repository identity across remote spellings (#4748)", () => {

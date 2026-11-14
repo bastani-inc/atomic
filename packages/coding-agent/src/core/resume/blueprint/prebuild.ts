@@ -20,7 +20,14 @@ import {
 } from "../../worktree-snapshot/pool.ts";
 import { repositoryIdOf } from "../../worktree-snapshot/repository-identity.ts";
 import { removeRestoredWorktree, restoreWorktreeAt, storeCheckoutHead } from "../../worktree-snapshot/restore.ts";
-import { seedDirectory, seedManifestPath, seedPathSegments, writeSeedManifest } from "../../worktree-snapshot/seeds.ts";
+import {
+	insideThroughDirectories,
+	seedDirectory,
+	seedManifestPath,
+	seedPathSegments,
+	withSeedLock,
+	writeSeedManifest,
+} from "../../worktree-snapshot/seeds.ts";
 import type { WorktreeSnapshot, WorktreeSnapshotSettings } from "../../worktree-snapshot/types.ts";
 import { type ResumeTimings, ResumeTimingsRecorder, timeCheckoutRestore } from "../timings.ts";
 import { type BlueprintBuildOutcome, runBlueprintBuild } from "./build.ts";
@@ -106,7 +113,7 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 				() => "fresh",
 			);
 			build = await runBlueprintBuild(
-				[blueprintRepository({ root: lease.path, remotes })],
+				[{ ...blueprintRepository({ root: lease.path, remotes }), initialize: true }],
 				{ agentDir: options.agentDir, storeDir, trusted: () => true, setupCommand: options.setupCommand },
 				signal,
 			);
@@ -122,22 +129,26 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 			return { ...outcome, status: build.status, path: undefined, timings: recorder.finish() };
 		}
 		let parkMs: number | null = null;
-		if (options.park) {
-			const started = performance.now();
-			const keys = await blueprintCacheKeys(root, {
-				agentDir: options.agentDir,
-				storeDir,
-				...(options.home === undefined ? {} : { home: options.home }),
-			});
-			outcome.warnings.push(...keys.warnings);
-			const seeds = seedDirectory(storeDir, repositoryIdOf(remotes));
-			const declared = (keys.entries.find((entry) => entry.name === "build")?.paths ?? [])
-				.map((path) => relative(seeds, path).split(sep).join("/"))
-				.filter((path) => seedPathSegments(path) !== undefined);
-			outcome.parked.push(...(await parkBuildOutput(storeDir, lease.path, declared, snapshot)));
-			parkMs = Math.floor(performance.now() - started);
+		try {
+			if (options.park) {
+				const started = performance.now();
+				const keys = await blueprintCacheKeys(root, {
+					agentDir: options.agentDir,
+					storeDir,
+					...(options.home === undefined ? {} : { home: options.home }),
+				});
+				outcome.warnings.push(...keys.warnings);
+				const seeds = seedDirectory(storeDir, repositoryIdOf(remotes));
+				const declared = (keys.entries.find((entry) => entry.name === "build")?.paths ?? [])
+					.map((path) => relative(seeds, path).split(sep).join("/"))
+					.filter((path) => seedPathSegments(path) !== undefined);
+				outcome.parked.push(...(await parkBuildOutput(storeDir, lease.path, declared, snapshot)));
+				parkMs = Math.floor(performance.now() - started);
+			}
+		} finally {
+			// Built, whether its output was parked or put back: the worktree is idle for a resume to claim.
+			await releaseRestoredWorktree(lease, state);
 		}
-		await releaseRestoredWorktree(lease, state);
 		await evictIdleWorktrees(storeDir, lease.repository, {
 			maxIdle: options.maxIdlePerRepository,
 			settings: options.settings,
@@ -149,8 +160,10 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 
 /**
  * Moves each of `declared`, root-relative, from the worktree at `worktree` into a new seed directory of the
- * repository, which then replaces the earlier one, and writes its manifest. Resolves to the paths moved; with none,
- * the earlier seed goes and no manifest is written.
+ * repository, which then replaces the earlier one under the seed lock, and writes its manifest. A path inside another
+ * declared one moves with it; a path that is a symbolic link or lies below one is left alone. Resolves to the paths
+ * moved; with none, the earlier seed goes and no manifest is written. A move that fails puts the moved paths back and
+ * rejects, keeping the earlier seed.
  */
 async function parkBuildOutput(
 	storeDir: string,
@@ -161,31 +174,46 @@ async function parkBuildOutput(
 	const repository = repositoryIdOf(snapshot.remotes);
 	const target = seedDirectory(storeDir, repository);
 	const staging = join(dirname(target), `.parking-${randomUUID()}`);
+	const outermost = declared.filter(
+		(path, index) => declared.indexOf(path) === index && !declared.some((other) => path.startsWith(`${other}/`)),
+	);
 	const parked: string[] = [];
 	await mkdir(staging, { recursive: true });
 	try {
-		for (const path of declared) {
-			const segments = seedPathSegments(path)!;
-			const from = join(worktree, ...segments);
-			const entry = await lstat(from).catch(() => undefined);
-			if (entry === undefined || entry.isSymbolicLink()) continue;
-			const to = join(staging, ...segments);
-			await mkdir(dirname(to), { recursive: true });
-			await rename(from, to);
-			parked.push(path);
+		try {
+			for (const path of outermost) {
+				const segments = seedPathSegments(path)!;
+				const from = join(worktree, ...segments);
+				const entry = await lstat(from).catch(() => undefined);
+				if (entry === undefined || entry.isSymbolicLink()) continue;
+				if (!(await insideThroughDirectories(worktree, segments))) continue;
+				const to = join(staging, ...segments);
+				await mkdir(dirname(to), { recursive: true });
+				await rename(from, to);
+				parked.push(path);
+			}
+		} catch (error) {
+			for (const path of [...parked].reverse()) {
+				const segments = seedPathSegments(path)!;
+				await rename(join(staging, ...segments), join(worktree, ...segments)).catch(() => {});
+			}
+			throw error;
 		}
-		await rm(seedManifestPath(storeDir, repository), { force: true });
-		await rm(target, { recursive: true, force: true });
-		if (parked.length === 0) return parked;
-		await rename(staging, target);
-		await writeSeedManifest(storeDir, {
-			version: 1,
-			repository,
-			head: snapshot.head,
-			tree: snapshot.tree,
-			envHash: snapshot.envHash,
-			paths: parked,
-			parkedAt: new Date().toISOString(),
+		await withSeedLock(storeDir, repository, true, async () => {
+			await rm(seedManifestPath(storeDir, repository), { force: true });
+			await rm(target, { recursive: true, force: true });
+			if (parked.length === 0) return;
+			await rename(staging, target);
+			await writeSeedManifest(storeDir, {
+				version: 1,
+				repository,
+				head: snapshot.head,
+				tree: snapshot.tree,
+				envHash: snapshot.envHash,
+				paths: parked,
+				worktree,
+				parkedAt: new Date().toISOString(),
+			});
 		});
 		return parked;
 	} finally {

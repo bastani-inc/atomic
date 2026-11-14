@@ -40,6 +40,8 @@ export interface BlueprintRepository {
 	readonly root: string;
 	/** What makes two restores the same repository on this machine: its sorted remotes, else its root. */
 	readonly identity: string;
+	/** Run `initialize` whatever the ledger says, as for a worktree a prebuild builds from nothing (#4748). */
+	readonly initialize?: boolean;
 }
 
 export interface BlueprintBuildConfig {
@@ -390,7 +392,8 @@ async function buildBlueprint(
 }
 
 async function buildRepository(run: BuildRun, repository: BlueprintRepository, seen: Set<string>): Promise<void> {
-	const forceRebuild = run.ledger.roots[rootKey(repository.root)]?.state === "running";
+	const forceRebuild =
+		repository.initialize === true || run.ledger.roots[rootKey(repository.root)]?.state === "running";
 	const root = await loadBlueprint(getProjectBlueprintPath(repository.root), "repository", run.platform);
 	if (root.source === undefined) return;
 	seen.add(workspaceKey(repository.identity, "."));

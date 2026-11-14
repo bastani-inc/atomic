@@ -1,6 +1,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { timeRestorePhase } from "../resume/timings.ts";
 import { admitPooledWorktree, discardPooledWorktree, type PoolOwner, releaseRestoredWorktree } from "./pool.ts";
@@ -24,6 +25,8 @@ export interface SeedManifest {
 	readonly envHash: string;
 	/** Root-relative, `/`-separated directories parked under the seed directory. */
 	readonly paths: readonly string[];
+	/** The worktree the output was built in: path-sensitive output is valid there only. */
+	readonly worktree: string;
 	readonly parkedAt: string;
 }
 
@@ -61,6 +64,7 @@ function isManifest(value: unknown, repository: RepositoryId): value is SeedMani
 		typeof manifest.envHash === "string" &&
 		Array.isArray(manifest.paths) &&
 		manifest.paths.every((path) => typeof path === "string" && seedPathSegments(path) !== undefined) &&
+		typeof manifest.worktree === "string" &&
 		typeof manifest.parkedAt === "string"
 	);
 }
@@ -84,7 +88,43 @@ export async function writeSeedManifest(storeDir: string, manifest: SeedManifest
 }
 
 /** Why no seed was adopted. */
-export type NoSeedReason = "missing" | "restore-failed";
+/**
+ * `missing`: no seed of the repository. `busy`: a prebuild is replacing it. `path-taken`: the worktree path it was
+ * built at is in use. `restore-failed`: its commit could not be restored.
+ */
+export type NoSeedReason = "missing" | "busy" | "path-taken" | "restore-failed";
+
+/** The seed lock's constants: a stopped process loses it after 30 seconds. */
+const SEED_LOCK_STALE_MS = 30_000;
+const SEED_LOCK_UPDATE_MS = 10_000;
+
+/**
+ * Runs `action` holding the seed lock of `repository`, which serializes parking a seed and adopting it, so an adoption
+ * never moves the output of another generation than its manifest names. With `wait`, a held lock is waited for, for
+ * up to about two minutes; without, it rejects with `ELOCKED`.
+ */
+export async function withSeedLock<T>(
+	storeDir: string,
+	repository: RepositoryId,
+	wait: boolean,
+	action: () => Promise<T>,
+): Promise<T> {
+	const file = seedManifestPath(storeDir, repository);
+	await mkdir(dirname(file), { recursive: true });
+	const unlock = await lockfile.lock(file, {
+		realpath: false,
+		stale: SEED_LOCK_STALE_MS,
+		update: SEED_LOCK_UPDATE_MS,
+		retries: wait ? { retries: 120, minTimeout: 100, maxTimeout: 1_000 } : 0,
+		onCompromised: (error) =>
+			reportDebug("storage", "worktree-seed-lock-lost", { file, ...failureDebugFields(error) }),
+	});
+	try {
+		return await action();
+	} finally {
+		await unlock().catch(() => {});
+	}
+}
 
 export type SeedAdoption =
 	| {
@@ -115,6 +155,23 @@ export async function adoptPrebuiltSeed(
 ): Promise<SeedAdoption> {
 	const storeDir = resolve(options.storeDir);
 	const repository = repositoryIdOf(snapshot.remotes);
+	if ((await readSeedManifest(storeDir, repository)) === undefined) return { adopted: false, reason: "missing" };
+	try {
+		return await withSeedLock(storeDir, repository, false, () =>
+			adoptLocked(snapshot, storeDir, repository, options),
+		);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ELOCKED") throw error;
+		return { adopted: false, reason: "busy" };
+	}
+}
+
+async function adoptLocked(
+	snapshot: Pick<WorktreeSnapshot, "remotes">,
+	storeDir: string,
+	repository: RepositoryId,
+	options: AdoptPrebuiltSeedOptions,
+): Promise<SeedAdoption> {
 	const manifest = await readSeedManifest(storeDir, repository);
 	if (manifest === undefined) return { adopted: false, reason: "missing" };
 	const state = { snapshotId: null, head: manifest.head, tree: manifest.tree };
@@ -124,6 +181,10 @@ export async function adoptPrebuiltSeed(
 			{ storeDir, remotes: snapshot.remotes, lastState: state, envHash: manifest.envHash },
 			SEED_OWNER,
 		);
+		if (lease.path !== resolve(manifest.worktree)) {
+			await discardPooledWorktree(lease);
+			return { adopted: false, reason: "path-taken" };
+		}
 		const binding = {
 			remotes: [...snapshot.remotes],
 			head: manifest.head,
@@ -157,7 +218,7 @@ async function entryAt(path: string): Promise<Stats | undefined> {
 }
 
 /** Whether every existing parent of `segments` under `root` is a real directory, so a move stays inside `root`. */
-async function insideThroughDirectories(root: string, segments: readonly string[]): Promise<boolean> {
+export async function insideThroughDirectories(root: string, segments: readonly string[]): Promise<boolean> {
 	for (let depth = 1; depth < segments.length; depth++) {
 		const entry = await entryAt(join(root, ...segments.slice(0, depth)));
 		if (entry === undefined) return true;
