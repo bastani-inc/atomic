@@ -449,7 +449,7 @@ describe("what a restore leaves behind", () => {
 		assert.equal(await sandbox.git(restored.path, "diff-files", "--name-only"), "edited.txt");
 	});
 
-	test("a failed restore clears the registration of a worktree deleted by hand, so the next restore succeeds", async () => {
+	test("a restore into the path of a worktree deleted by hand replaces its stale registration (#4748)", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		sandbox.write(join(clone, "x.txt"), "x\n");
 		const blobs = new MemorySnapshotBlobStore();
@@ -458,16 +458,13 @@ describe("what a restore leaves behind", () => {
 		const into = sandbox.path("restored");
 		await restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir });
 		rmSync(into, { recursive: true, force: true });
-		await assert.rejects(restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir }), (error: unknown) => {
-			assert.ok(isWorkspaceGitError(error));
-			assert.equal(error.operation, "worktree");
-			assert.equal(error.exitCode, 128);
-			assert.equal((error as { cleanupCause?: unknown }).cleanupCause, undefined);
-			return true;
-		});
-		assert.equal(existsSync(into), false);
+		// As a CI cache restores a Git store whose saving job built a worktree at this path.
 		assert.equal(await restoreWorktreeSnapshot(snapshot, { blobs, into, storeDir }), into);
 		assert.equal(readFileSync(join(into, "x.txt"), "utf8"), "x\n");
+		const registered = (await sandbox.git(into, "worktree", "list", "--porcelain"))
+			.split("\n")
+			.filter((line) => line.startsWith("worktree ") && line.endsWith(basename(into)));
+		assert.equal(registered.length, 1);
 	});
 
 	test("a default worktree is named from the snapshot id, or a binding's tree, and a random suffix", async () => {

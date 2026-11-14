@@ -9,7 +9,7 @@ export const RESUME_TIMINGS_TYPE = "resume_timings";
 /** A part of restoring one checkout, in the order a restore runs them. */
 export type RestorePhase = "fetch" | "reconstruct" | "materialize" | "lfs" | "verify" | "publish" | "seed";
 /** How a checkout came to be where the session continues. */
-export type CheckoutRestoreMode = "fresh" | "claimed" | "in-place" | "degraded";
+export type CheckoutRestoreMode = "fresh" | "claimed" | "seeded" | "in-place" | "degraded";
 /** How the commit a restore checks out reached the object store: it was there, or was fetched, or came from the bundle. */
 export type RestoreFetchMode = "none" | "shallow" | "full" | "bundle";
 /** How a blueprint step ended. */
