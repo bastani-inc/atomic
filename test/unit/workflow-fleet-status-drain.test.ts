@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { test, vi } from "vitest";
+import { afterEach, test, vi } from "vitest";
 import type { SharedPoolHost } from "../../packages/workflows/src/durable/journal/shared-pool-types.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { workspaceAffinityKey } from "../../packages/workflows/src/workers/workspace-binding.js";
+import { removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { sleep } from "../helpers/runtime.js";
 import {
 	binding,
@@ -27,10 +28,18 @@ vi.mock("../../packages/workflows/src/runs/foreground/sdk-intercom.js", () => ({
 /** How often a worker host reports itself while nothing about it changes. */
 const HOST_REPORT_MS = 5_000;
 
+/** The fixture directory of the running test, removed after it whatever happened, so no run leaves one behind. */
+let directory: string | undefined;
+afterEach(async () => {
+	if (directory !== undefined && existsSync(directory)) await removeLibsqlDirectory(directory);
+	directory = undefined;
+});
+
 test.skipIf(process.platform === "win32")(
 	"a draining worker host reports itself draining while its child runs, then leaves the registry for good (#4768)",
 	async () => {
 		const f = await fixture("fleet-status-drain", { workspace: binding });
+		directory = f.directory;
 		const warm = join(f.directory, "warm");
 		mkdirSync(warm);
 		const release = join(f.directory, "release");
@@ -105,11 +114,19 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(await registered(), undefined, "and no report registers it again");
 		} finally {
 			writeFileSync(release, "");
-			await host?.stop();
-			await f.pool.close();
-			await execution.catch(() => {});
-			await f.close();
+			// Each step runs whatever the one before it threw, so the fixture's directory is always removed.
+			try {
+				await host?.stop();
+			} finally {
+				try {
+					await f.pool.close();
+					await execution.catch(() => {});
+				} finally {
+					await f.close();
+				}
+			}
 		}
+		assert.equal(existsSync(f.directory), false, "the test leaves no directory behind");
 	},
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
