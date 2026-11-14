@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.86-alpha.1] - 2026-11-14
+
+Subagents are easier to reach and to talk to.
+
+- **Message all your subagents at once.** The Intercom `subagents:*` and `subagents:<runId>/*` targets reach every running, released or paused subagent this session launched ([#4752](https://github.com/bastani-inc/atomic/issues/4752), [#4756](https://github.com/bastani-inc/atomic/pull/4756)).
+- **Asks no longer block.** Subagents know an Intercom `ask` returns at delivery and its reply arrives later as a message ([#4751](https://github.com/bastani-inc/atomic/issues/4751), [#4758](https://github.com/bastani-inc/atomic/pull/4758)).
+- **Autocomplete in subagent chats.** A subagent's chat completes `/tasks`, its own `/skill:` commands and `@` and Tab paths, even after it finished ([#4755](https://github.com/bastani-inc/atomic/issues/4755), [#4757](https://github.com/bastani-inc/atomic/pull/4757)).
+
 ### Added
 
 - Added Intercom `subagents:*` and `subagents:<runId>/*` send targets, which message every running, released or paused subagent this session launched, or those of one run, in one call ([#4752](https://github.com/bastani-inc/atomic/issues/4752))

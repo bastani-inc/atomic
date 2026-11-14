@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.86-alpha.1] - 2026-11-14
+
+Intercom asks stop blocking, and one send can reach many sessions.
+
+- **Non-blocking asks.** `ask` returns at delivery with the recipient's state, waits like `bash` does, and delivers a late reply, refusal or ended recipient as a message. Asks no longer expire, survive restarts on either side, and can be listed and cancelled ([#4751](https://github.com/bastani-inc/atomic/issues/4751), [#4760](https://github.com/bastani-inc/atomic/issues/4760), [#4758](https://github.com/bastani-inc/atomic/pull/4758)).
+- **Send to many at once.** Name patterns such as `subagent-*` and the `subagents:*` target reach every matching session in your groups in one call, with a per-recipient result ([#4752](https://github.com/bastani-inc/atomic/issues/4752), [#4756](https://github.com/bastani-inc/atomic/pull/4756)).
+
 ### Added
 
 - Added name patterns and a children target to Intercom `send`: `subagent-worker-*`, `subagent-*` or `*` reaches every matching live session visible in your groups except you, and `subagents:*` (or `subagents:<runId>/*` for one run) reaches every running, released or paused subagent this session launched, foreground or background. Each recipient gets its own direct send with the usual refusals, receipts and retries, and the result lists every recipient's outcome. A glob that matches nothing is an error listing the closest names, patterns never reach outside your groups, and `ask` still needs one exact target. Workflow-stage paths are unchanged ([#4752](https://github.com/bastani-inc/atomic/issues/4752))
