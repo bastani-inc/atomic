@@ -21,17 +21,6 @@ test("a batch the server finds busy is sent again until it commits, within its l
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
 });
 
-test("a batch that finds the lock busy without a lockWaitMs fails at once, writing nothing (#4768)", async () => {
-	const fake = await server();
-	const database = await open(fake.url);
-	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	const before = fake.pipelines.length;
-	fake.fail({ kind: "result-error", code: "SQLITE_BUSY" });
-	await assert.rejects(database.batch!(insert(1)));
-	assert.equal(fake.pipelines.length - before, 1);
-	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
-});
-
 /**
  * Counts the batch requests on their way to the server, each held long enough that batches sent together overlap.
  * Installed before the databases open: the client takes `fetch` when it is created.
@@ -163,9 +152,10 @@ test("only the third unanswered write in a row warns of a stall, any answer star
 		await unanswered(2);
 		await database.batch!(insert(101));
 		await unanswered(2);
+		// A busy answer is an answer too: the batch is sent again and goes through.
 		for (let attempt = 0; attempt < 3; attempt++) {
 			fake.fail({ kind: "result-error", code: "SQLITE_BUSY" });
-			await assert.rejects(database.batch!(insert(attempt)));
+			await database.batch!(insert(attempt));
 		}
 		// A busy answer is an answer: the count starts again.
 		await unanswered(2);

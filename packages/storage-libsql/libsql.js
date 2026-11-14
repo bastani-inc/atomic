@@ -508,7 +508,12 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 						},
 					),
 				);
-			return options?.priority === true ? sent() : limitedWrite(sent);
+			// A server that answers busy ran nothing of the batch: it is sent again as main's other calls are, waiting
+			// outside this process's writes in flight; a caller's `lockWaitMs` waits longer on top of that.
+			return whileServerBusy(
+				() => (options?.priority === true ? sent() : limitedWrite(sent)),
+				() => true,
+			);
 		},
 		async beginTransaction() {
 			const begin = async () => (await connection()).transaction("write");
