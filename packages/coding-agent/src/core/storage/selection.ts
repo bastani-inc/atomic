@@ -244,14 +244,29 @@ export function isFileUrl(url: string): boolean {
 	return url.startsWith("file:");
 }
 
-/** Check a team database URL: a supported scheme, an absolute `file:` URL, and no credential in it. */
-export function checkTeamUrl(url: string | undefined, source: TeamInputSource): string {
+/**
+ * Check a team database URL: a supported scheme, an absolute `file:` URL, and no credential in it. `postgres` only
+ * changes the unsupported-URL hint, for the commands that also take a `postgres://` URL through
+ * {@link checkSharedDatabaseArguments}.
+ */
+export function checkTeamUrl(
+	url: string | undefined,
+	source: TeamInputSource,
+	options: { readonly postgres?: boolean } = {},
+): string {
 	const field = FIELDS[source].url;
 	if (url === undefined || url.length === 0) {
 		throw invalid("missing-url", source, field, "Pass the team database URL, for example libsql://<db>.turso.io.");
 	}
 	if (!/^(libsql|https?|wss?):\/\/[^/]/.test(url) && !isFileUrl(url)) {
-		throw invalid("unsupported-url", source, field, "Use a libsql://, https://, wss://, or absolute file: URL.");
+		throw invalid(
+			"unsupported-url",
+			source,
+			field,
+			options.postgres === true
+				? "Use a postgres://, postgresql://, libsql://, https://, wss://, or absolute file: URL."
+				: "Use a libsql://, https://, wss://, or absolute file: URL.",
+		);
 	}
 	if (isFileUrl(url) && !url.startsWith("file:/")) {
 		throw invalid(
@@ -270,6 +285,114 @@ export function checkTeamUrl(url: string | undefined, source: TeamInputSource): 
 		);
 	}
 	return url;
+}
+
+/** The first-party PostgreSQL adapter package that `atomic storage join postgres://…` and `--db postgres://…` select. */
+export const POSTGRES_ADAPTER_PACKAGE = "@bastani/atomic-storage-postgres";
+
+/** The platform credential a Postgres selection's `auth` option names, instead of a password. */
+export type PostgresAuth = "azure-entra" | "aws-iam" | "gcp-iam";
+
+/** What `--auth` takes, and the `auth` option each value selects; the option values themselves are accepted too. */
+export const POSTGRES_AUTH_FLAGS: Readonly<Record<string, PostgresAuth>> = {
+	azure: "azure-entra",
+	aws: "aws-iam",
+	gcp: "gcp-iam",
+};
+
+/** Whether a database URL names a PostgreSQL server. */
+export function isPostgresUrl(url: string): boolean {
+	return /^postgres(?:ql)?:\/\//.test(url);
+}
+
+/** The flags that pass a Postgres credential, as refusals name them. */
+const POSTGRES_CREDENTIAL_FLAGS = ["--password-file", "--token-file", "--auth"] as const;
+
+/**
+ * Check a `postgres://` or `postgresql://` URL: it names a host and holds no password, in its userinfo or as a
+ * `password` parameter. A user name is part of the address and stays.
+ */
+function checkPostgresUrl(url: string, source: TeamInputSource): string {
+	const field = FIELDS[source].url;
+	const parsed = URL.canParse(url) ? new URL(url) : undefined;
+	if (parsed === undefined || parsed.hostname === "") {
+		throw invalid(
+			"unsupported-url",
+			source,
+			field,
+			"Use a postgres://user@host[:port]/database URL, for example postgres://atomic@db.example.com:5432/atomic.",
+		);
+	}
+	if (parsed.password !== "" || parsed.searchParams.has("password")) {
+		throw invalid(
+			"credential-in-url",
+			source,
+			field,
+			"The URL carries a password. Remove it and pass it with --password-file or --token-file instead (or use --auth), so it never reaches settings or output.",
+		);
+	}
+	return url;
+}
+
+/** The shared database a command line names: its URL and where its credential comes from. */
+export interface SharedDatabaseArguments {
+	readonly url: string;
+	/** libSQL: the token file. Postgres: a password file another process keeps fresh, referenced in place. */
+	readonly tokenFile?: string;
+	/** Postgres only: a password file. */
+	readonly passwordFile?: string;
+	/** Postgres only: the platform credential, as the `--auth` value. */
+	readonly auth?: string;
+}
+
+/** {@link SharedDatabaseArguments} after the checks, with `auth` resolved to the adapter's option value. */
+export interface CheckedSharedDatabase {
+	readonly url: string;
+	readonly tokenFile?: string;
+	readonly passwordFile?: string;
+	readonly auth?: PostgresAuth;
+}
+
+/**
+ * Check the database URL and credential flags of `atomic storage join` and `--db`. A `postgres://` or
+ * `postgresql://` URL takes exactly one of `--password-file`, `--token-file` and `--auth`; any other URL is a libSQL
+ * one, checked by {@link checkTeamUrl}, and takes only `--token-file`, which the caller requires or not.
+ */
+export function checkSharedDatabaseArguments(input: SharedDatabaseArguments): CheckedSharedDatabase {
+	const { url, tokenFile, passwordFile, auth } = input;
+	if (isPostgresUrl(url)) {
+		checkPostgresUrl(url, "cli");
+		const sources = [passwordFile, tokenFile, auth].filter((value) => value !== undefined);
+		if (sources.length > 1) throw conflictingTeamToken("cli", POSTGRES_CREDENTIAL_FLAGS);
+		if (sources.length === 0)
+			throw invalid(
+				"missing-token",
+				"cli",
+				"--password-file",
+				"Pass the database password with --password-file or --token-file, or a platform credential with --auth azure|aws|gcp.",
+			);
+		if (passwordFile !== undefined) return { url, passwordFile };
+		if (tokenFile !== undefined) return { url, tokenFile };
+		const mode = Object.hasOwn(POSTGRES_AUTH_FLAGS, auth!)
+			? POSTGRES_AUTH_FLAGS[auth!]
+			: Object.values(POSTGRES_AUTH_FLAGS).find((value) => value === auth);
+		if (mode === undefined)
+			throw invalid("unsupported-auth", "cli", "--auth", "Use --auth azure, --auth aws or --auth gcp.");
+		return { url, auth: mode };
+	}
+	for (const [flag, value] of [
+		["--password-file", passwordFile],
+		["--auth", auth],
+	] as const)
+		if (value !== undefined)
+			throw invalid(
+				"unsupported-option",
+				"cli",
+				flag,
+				`Only postgres:// and postgresql:// URLs take ${flag}; pass a libSQL database token with --token-file.`,
+			);
+	checkTeamUrl(url, "cli", { postgres: true });
+	return tokenFile === undefined ? { url } : { url, tokenFile };
 }
 
 /** Check a table prefix with the same rules as every storage prefix. */
@@ -292,9 +415,16 @@ export function checkTeamPrefix(prefix: string | undefined, source: TeamInputSou
 	return prefix;
 }
 
-/** Read a token file and remove surrounding whitespace; an unreadable or empty file is an invalid input. */
-export function readTeamTokenFile(path: string, source: TeamInputSource): string {
-	const field = FIELDS[source].tokenFile;
+/**
+ * Read a token file and remove surrounding whitespace, or with `as-connections-read` only one final line ending, as
+ * a file a selection references is read for every connection; an unreadable or empty file is an invalid input.
+ */
+export function readTeamTokenFile(
+	path: string,
+	source: TeamInputSource,
+	field: string = FIELDS[source].tokenFile,
+	read: "trimmed" | "as-connections-read" = "trimmed",
+): string {
 	let text: string;
 	try {
 		text = readFileSync(path, "utf8");
@@ -304,13 +434,23 @@ export function readTeamTokenFile(path: string, source: TeamInputSource): string
 			cause: error as Error,
 		});
 	}
-	const token = text.trim();
+	// A file referenced in place is read again by every new connection, which drops only one final line ending.
+	const token =
+		read === "trimmed"
+			? text.trim()
+			: text.endsWith("\r\n")
+				? text.slice(0, -2)
+				: text.endsWith("\n")
+					? text.slice(0, -1)
+					: text;
 	if (token.length === 0) {
 		throw invalid(
 			"empty-token",
 			source,
 			field,
-			`The token file ${path} is empty: write the token into it, for example with turso db tokens create <db>.`,
+			field === "--password-file"
+				? `The password file ${path} is empty: write the database password into it.`
+				: `The token file ${path} is empty: write the token into it, for example with turso db tokens create <db>.`,
 			{ path },
 		);
 	}

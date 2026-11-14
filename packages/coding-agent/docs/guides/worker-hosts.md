@@ -5,32 +5,25 @@ description: "Turn any Linux or macOS machine into a worker host for shared work
 
 # Running workers on many machines
 
-{/* PostgreSQL parts depend on #4793 (adapter P2, Postgres-ready stores P3–P5, `--db postgres://` and `--password-file`/`--auth` in P6, cloud identities in P7). */}
+{/* Worker pools on PostgreSQL wait for #4793 P5, and workflow runs on PostgreSQL do not open yet. When they work, make this guide PostgreSQL-first: the recipes with managed PostgreSQL are on branch wip/postgres-fleet-recipes-p5-4793. */}
 
-A workflow root with shared placement keeps its work queue in a shared database: PostgreSQL, the recommended store for fleets, or libSQL / Turso for a few machines (see [Which store to choose](/storage#which-store-to-choose)). Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
+A workflow root with shared placement keeps its work queue in a shared libSQL or Turso database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
+
+Worker hosts need libSQL or Turso in this release. `atomic worker` accepts a `postgres://` URL, but the worker pool does not run on [PostgreSQL](/storage#postgresql) yet; support is coming in a later release. If you host the database yourself, run sqld with `--checkpoint-interval-s 60`, as [Scale the fleet automatically](#scale-the-fleet-automatically) explains.
 
 ## Join a machine
 
 ```bash
 # once per machine
 npm install -g @bastani/atomic
-atomic install npm:@bastani/atomic-storage-postgres
-# join and serve; Ctrl+C or SIGTERM drains
-atomic worker start --db 'postgresql://atomic@db.example.com:5432/atomic' --token-file /etc/atomic/token
-```
-
-`/etc/atomic/token` holds the database password, readable only by the user that runs the host; it is read again for each new connection, so you can rotate it in place. On a cloud VM or pod, `--auth azure`, `--auth aws` or `--auth gcp` signs in with the machine's identity instead, and needs no file; see [Cloud identities](/storage#cloud-identities). Set up the database itself as [PostgreSQL](/storage#postgresql) describes, and size its connections for the fleet.
-
-For a libSQL or Turso database, install `@bastani/atomic-storage-libsql` and pass its token:
-
-```bash
 atomic install npm:@bastani/atomic-storage-libsql
+# join and serve; Ctrl+C or SIGTERM drains
 atomic worker start --db libsql://pool.example.turso.io --token-file /etc/atomic/token
 ```
 
 The command prints `ready host=… slots=… journal=…` and then one line per event, such as `claimed child=…` when it takes a child and `released child=…` when the child finished. It serves every running root on that database that uses shared placement, and keeps serving roots that start later or resume on another machine.
 
-- `--db` and its credential apply to this process only and write nothing to settings. With PostgreSQL, pass `--token-file` (the password file, used in place), `--password-file`, or `--auth`; with libSQL, `--token-file`. On a machine joined with `atomic storage join` or `atomic team join`, `atomic worker start` with no options uses that database.
+- `--db` and `--token-file` apply to this process only and write nothing to settings. On a machine joined with `atomic team join`, `atomic worker start` with no options uses the team database.
 - `--slots <n>` is the most children the machine runs at once. The default is half its CPUs, from 1 to 16, which leaves room for the tools the children run.
 - `--label zone=east` adds a label that `atomic worker status` shows. Repeat it for more labels.
 - `--prefix <prefix>` selects the tables of one team when several share a database.
@@ -84,7 +77,7 @@ Every worker host is the same portable process, `atomic worker start`, wherever 
 
 Both use the same policy and the same defaults, so they want the same number of hosts. Ready-made [recipes](#recipes) cover a container image, a Helm chart with KEDA, Terraform for each cloud's scaling group, and a GitHub Actions workflow.
 
-With PostgreSQL, size the server's connections for the most hosts the fleet may run, or put a [connection pooler](/storage#connection-poolers) in front. If you host the shared database yourself with sqld, start sqld with `--checkpoint-interval-s 60` before you let the fleet grow, as [Turso and libSQL](/storage#turso-and-libsql) explains: many hosts writing at once can otherwise stop sqld taking writes.
+If you host the shared database yourself with sqld, start sqld with `--checkpoint-interval-s 60` before you let the fleet grow, as [Turso and libSQL](/storage#turso-and-libsql) explains: many hosts writing at once can otherwise stop sqld taking writes.
 
 ### The scaling signal
 
@@ -93,7 +86,7 @@ The policy wants `ceil(demand / workersPerHost)` hosts, kept between `minHosts` 
 `atomic worker status --json` prints it as `scaling`, and `atomic worker metrics` serves it over HTTP:
 
 ```bash
-atomic worker metrics --listen 0.0.0.0:9464 --db 'postgresql://atomic@db.example.com:5432/atomic' \
+atomic worker metrics --listen 0.0.0.0:9464 --db libsql://pool.example.turso.io \
   --token-file /etc/atomic/token --workers-per-host 8 --max-hosts 20
 ```
 
@@ -142,7 +135,7 @@ When KEDA scales in, Kubernetes sends SIGTERM to pods it picks, which may be bus
 A fleet controller adds worker hosts when the queues grow, and drains and removes only hosts that sat idle, so it never removes a busy host. Run it on any machine that opens the database:
 
 ```bash
-atomic worker controller --provisioner ./fleet.json --db 'postgresql://atomic@db.example.com:5432/atomic' \
+atomic worker controller --provisioner ./fleet.json --db libsql://pool.example.turso.io \
   --token-file /etc/atomic/token --max-hosts 20 --workers-per-host 8
 ```
 
@@ -203,17 +196,17 @@ A command provisioner runs three commands of yours, each an executable and its a
 
 `up` and `down` may each be several commands run in order, as `[["first", "…"], ["second", "…"]]`. So may `list`: its commands report their hosts together, and a host two of them report counts once. Changes run one at a time. `timeoutMs` (default 120000) bounds each command; a command still running then, or when the controller gives up on the call, is stopped together with every process it started.
 
-Credentials come only from each tool's own login or environment; nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout` or `malformed` (output the list format does not match).
+Credentials come from each tool's own login or environment, or, for `gh`, from short-lived tokens Atomic mints from a GitHub App ([GitHub App auth](#github-app-auth)). Nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout`, `malformed` (output the list format does not match) or `unavailable` (GitHub could not be reached when minting a token, or answered with a server error or a rate limit).
 
 Atomic ships presets in its package's `examples/worker-fleet/presets` directory. Copy one, replace the names in it (resource group, scale set, group, zone, namespace, repository) with yours, and pass it to `--provisioner`:
 
-| Preset | Drives | Host id | Least privilege for the controller |
-| --- | --- | --- | --- |
-| `azure-vmss.json` | `az vmss scale`, `list-instances`, `delete-instances` | Instance id | A custom role on that one scale set: `Microsoft.Compute/virtualMachineScaleSets/{read,write,delete/action}` and `…/virtualMachines/{read,delete}` |
-| `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource |
-| `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` |
-| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` |
-| `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | A fine-grained token for that one repository with **Actions: read and write**, as `GH_TOKEN` |
+| Preset | Drives | Host id | Least privilege for the controller | Controller credential |
+| --- | --- | --- | --- | --- |
+| `azure-vmss.json` | `az vmss scale`, `list-instances`, `delete-instances` | Instance id | A custom role on that one scale set: `Microsoft.Compute/virtualMachineScaleSets/{read,write,delete/action}` and `…/virtualMachines/{read,delete}` | A managed identity: `az login --identity --client-id <id>` on an Azure VM, or Workload Identity in AKS. No service principal secret |
+| `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource | A role through the default credential chain: an instance profile, EKS Pod Identity or IRSA. No access keys |
+| `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` | A service account attached to the VM, or Workload Identity Federation for GKE. No JSON keys |
+| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` | The pod's in-cluster ServiceAccount, which `kubectl` uses on its own. The Helm chart creates it with `controllerRbac: true` |
+| `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | **Actions: read and write** on that one repository | A GitHub App's installation tokens, minted for each hour ([GitHub App auth](#github-app-auth)). Inside Actions, the workflow's own `GITHUB_TOKEN`. Fallback: a fine-grained token |
 
 How each preset removes a host:
 
@@ -223,14 +216,76 @@ How each preset removes a host:
 
 Give each host its provider id: the instance id from the cloud's metadata service, the pod name from the downward API, or `${{ github.run_id }}` in Actions. The recipes below do this.
 
+### GitHub App auth
+
+The `github-actions.json` preset authenticates `gh` as a GitHub App, as actions-runner-controller and `actions/create-github-app-token` do. The controller signs a JWT with the app's private key, exchanges it for an installation token limited to **Actions: write** on the one repository, and passes the token to each `gh` command in that command's environment only. Each token lasts an hour; the controller mints a new one 5 minutes before it expires, so no long-lived token exists anywhere.
+
+1. Create a GitHub App in your organization with the repository permission **Actions: Read and write** and nothing else, and install it on the repository that holds `atomic-workers.yml`.
+2. Generate a private key for the app, and store it on the controller's machine in a file only the controller's user can read: `chmod 600 app.pem`. In Kubernetes, mount it from a Secret, the Secrets Store CSI driver or the External Secrets Operator, and copy it into memory at mode 600 as the Helm chart does for the database token.
+3. Give the controller the app's settings, in the preset or in environment variables:
+
+```json
+"auth": {
+  "githubApp": {
+    "appId": "Iv23liExample",
+    "installationId": 12345678,
+    "privateKeyFile": "/run/secrets/github-app.pem",
+    "repository": "acme/flows"
+  }
+}
+```
+
+| Setting | Environment variable | Meaning |
+| --- | --- | --- |
+| `appId` | `ATOMIC_GITHUB_APP_ID` | The app's client ID or app ID |
+| `installationId` | `ATOMIC_GITHUB_APP_INSTALLATION_ID` | The installation's id, from the URL of its settings page |
+| `privateKeyFile` | `ATOMIC_GITHUB_APP_PRIVATE_KEY_FILE` | The private key file. The controller refuses a key that other users can read |
+| `repository` | `ATOMIC_GITHUB_APP_REPOSITORY` | `owner/name`: the only repository the tokens can act on |
+| `host` | `ATOMIC_GITHUB_HOST` | Default `github.com`. For GitHub Enterprise Server, its host name |
+| `apiUrl` | `ATOMIC_GITHUB_API_URL` | Default `https://api.github.com`, `https://api.<host>` for GHE.com, or `https://<host>/api/v3` for GitHub Enterprise Server. It must use HTTPS; plain HTTP is accepted only for `localhost` |
+
+A setting in the file takes precedence over its variable. The shipped preset sets only `repository`, so the rest can come from the environment. For GitHub Enterprise Server, the controller passes the token as `GH_ENTERPRISE_TOKEN` with `GH_HOST`, as `gh` expects.
+
+The private key and the tokens are never printed, logged or written to the database. If GitHub refuses the app (`auth`), or cannot be reached or answers with an error (`unavailable`), or the request runs past `timeoutMs` (`timeout`), the controller reports `degraded`, keeps its hosts, and tries again with its usual backoff. Runs are never affected.
+
+To use a fine-grained personal access token instead, remove `auth` from the preset and give the controller the token as `GH_TOKEN`, or sign in once with `gh auth login`. Give the token access to that one repository with **Actions: Read and write**, and an expiry.
+
+A controller that runs inside GitHub Actions needs neither: remove `auth`, and pass the workflow's own token. `workflow_dispatch` events made with `GITHUB_TOKEN` do start workflow runs.
+
+```yaml
+permissions:
+  actions: write
+steps:
+  - run: atomic worker controller --provisioner github-actions.json --db "$ATOMIC_DB" --token-file "$RUNNER_TEMP/atomic-db-token"
+    env:
+      GH_TOKEN: ${{ github.token }}
+```
+
+### Credentials for each platform
+
+Every recipe uses the platform's own short-lived identity, and no recipe stores a cloud key:
+
+| Credential | How the recipes get it | Pattern it follows |
+| --- | --- | --- |
+| `gh` for the GitHub Actions preset | GitHub App installation tokens, minted for each hour and narrowed to **Actions: write** on one repository | actions-runner-controller, philips-labs/terraform-aws-github-runner, `actions/create-github-app-token` |
+| `az` for the Azure preset, and the VMs' database token | Managed identities: the VMs' system-assigned identity reads the token from Key Vault, and the controller runs as a user-assigned identity, attached to its VM or federated with a workload | Azure managed identities and workload identity federation |
+| `aws` for the AWS preset, and the instances' database token | IAM roles through the default credential chain: an instance profile reads the token from Secrets Manager, and the controller's role suits an instance profile, EKS Pod Identity or IRSA | AWS IAM roles for EC2, EKS Pod Identity |
+| `gcloud` for the Google Cloud preset, and the VMs' database token | Service accounts: one attached to the VMs reads the token from Secret Manager, and the controller's runs on its VM or through Workload Identity Federation for GKE | Google Cloud attached service accounts, Workload Identity Federation |
+| `kubectl` for the Kubernetes preset | The controller pod's ServiceAccount, with a Role limited to the worker Deployment | Kubernetes in-cluster config and RBAC |
+| KEDA reading the scaling signal | Nothing: the metrics Service is in-cluster and serves counts only. Limit who reaches it with a NetworkPolicy. Scalers that read a cloud service take a `TriggerAuthentication` with `podIdentity` | KEDA authentication providers |
+| Cloud access from GitHub Actions | GitHub's OIDC token (`id-token: write`) with `azure/login`, `aws-actions/configure-aws-credentials` or `google-github-actions/auth` | GitHub Actions OpenID Connect |
+| The shared database token (`--token-file`) | Read from a secret manager at boot (Key Vault, Secrets Manager, Secret Manager), or mounted in Kubernetes from a Secret synced by the External Secrets Operator or the Secrets Store CSI driver, and copied to a mode 600 file. Never baked into an image | Secrets Store CSI driver, External Secrets Operator |
+
+The database token itself is long-lived.
+
 ### Recipes
 
 The package's `examples/worker-fleet` directory has a starting point for each platform:
 
-- `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it. The `STORAGE_ADAPTER` build argument picks the adapter: `atomic-storage-postgres` (the default) or `atomic-storage-libsql`.
-- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. An init container copies the password or token from its Secret into memory, readable only by the container's user. The database URL comes from the `database` value, or from a Secret with a `url` key that `databaseSecret` names, for example one that your Terraform or External Secrets writes.
-- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0, and the least-privilege role for the controller's preset. Each also creates a managed PostgreSQL database beside the group and points the workers at it: Azure Database for PostgreSQL Flexible Server on a delegated subnet, Amazon RDS for PostgreSQL in the group's VPC, or Cloud SQL for PostgreSQL on a private IP. The password goes to the cloud's secret store, which only the workers' identity may read, and the workers verify the server's certificate. Set `postgres = false` to keep a libSQL / Turso URL in `database` instead. Terraform keeps the generated password in its state, so keep the state private.
-- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
+- `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it.
+- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. The pods run as their own ServiceAccount, which you can annotate for workload identity (`serviceAccount.annotations`, `podLabels`). An init container copies the token from its Secret, or from your secret manager through the Secrets Store CSI driver (`tokenSecretProviderClass`), into memory, readable only by the container's user. `controllerRbac: true` replaces KEDA with a ServiceAccount and Role for a controller that uses the `kubernetes.json` preset. Install the release in its own namespace, because a Role cannot limit `patch` on pods to one Deployment's pods.
+- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0. The VMs read the database token from the cloud's secret manager with their own identity. Each module also creates the controller's identity (a managed identity, an IAM role, a service account) with the least-privilege role for its preset.
+- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Each job signs in to your cloud with GitHub's OIDC token and reads the database token from its secret manager. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
 - `presets/`: the command provisioner presets above.
 
 Spot and preemptible machines are safe: a host told to stop gets SIGTERM and drains, and a child cut off before it finishes is replayed on another host from its last checkpoint.
@@ -257,7 +312,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-`/etc/atomic/worker.env` holds `ATOMIC_DB=postgresql://atomic@db.example.com:5432/atomic`. `/etc/atomic/token` holds the database password (or, for a libSQL URL, its token), owned by the `atomic` user with mode 600. Run `atomic install npm:@bastani/atomic-storage-postgres` (or `@bastani/atomic-storage-libsql`) as the `atomic` user, because each user has their own agent directory. Exit code `1` is a setup error, which `Restart=on-failure` retries; read it with `journalctl -u atomic-worker`.
+`/etc/atomic/worker.env` holds `ATOMIC_DB=libsql://pool.example.turso.io`. `/etc/atomic/token` holds the database token, owned by the `atomic` user with mode 600. Run `atomic install npm:@bastani/atomic-storage-libsql` as the `atomic` user, because each user has their own agent directory. Exit code `1` is a setup error, which `Restart=on-failure` retries; read it with `journalctl -u atomic-worker`.
 
 ## Provision with cloud-init
 
@@ -271,11 +326,11 @@ users:
 write_files:
   - path: /etc/atomic/worker.env
     content: |
-      ATOMIC_DB=postgresql://atomic@db.example.com:5432/atomic
+      ATOMIC_DB=libsql://pool.example.turso.io
   - path: /etc/atomic/token
     permissions: "0600"
     content: |
-      <database password>
+      <database token>
   - path: /etc/systemd/system/atomic-worker.service
     content: |
       [Unit]
@@ -294,11 +349,11 @@ write_files:
 runcmd:
   - [sh, -c, "chown atomic:atomic /etc/atomic/token"]
   - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]
-  - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-postgres"]
+  - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-libsql"]
   - [systemctl, enable, --now, atomic-worker]
 ```
 
-Put the password in the user data only when the user data itself is private to the VM. Otherwise fetch it from your secret store in `runcmd` before the last line, as the Terraform [recipes](#recipes) do, or use `--auth` with the VM's identity. For a database whose certificate Node.js does not trust, such as Amazon RDS or Cloud SQL, also write its CA bundle and name it in the URL with `sslrootcert`; see [TLS](/storage#tls).
+Put the token in the user data only when the user data itself is private to the VM. Otherwise fetch it from your secret store in `runcmd` before the last line.
 
 ## Run it in a container
 
@@ -309,28 +364,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g @bastani/atomic@${ATOMIC_VERSION}
 USER node
-RUN atomic install npm:@bastani/atomic-storage-postgres
+RUN atomic install npm:@bastani/atomic-storage-libsql
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["sh", "-c", "exec atomic worker start --db \"$ATOMIC_DB\" --token-file /run/secrets/atomic-db-token \"$@\"", "--"]
 ```
 
 ```bash
-docker run -d --name atomic-worker -e ATOMIC_DB=postgresql://atomic@db.example.com:5432/atomic \
+docker run -d --name atomic-worker -e ATOMIC_DB=libsql://pool.example.turso.io \
   -v "$PWD/token:/run/secrets/atomic-db-token:ro" --stop-timeout 900 atomic-worker --slots 4
 ```
 
-`exec` makes `atomic` the process that receives the container's SIGTERM, so stopping the container drains it. Mount the password or token as a secret file, never as an environment variable or build argument. Options after the image name, such as `--slots 4`, are passed to `atomic worker start`. Process containment needs Linux, so run the container on a Linux host.
+`exec` makes `atomic` the process that receives the container's SIGTERM, so stopping the container drains it. Mount the token as a secret file, never as an environment variable or build argument. Options after the image name, such as `--slots 4`, are passed to `atomic worker start`. Process containment needs Linux, so run the container on a Linux host.
 
 ## Security
 
-- The database credential is the trust boundary. Anyone with the password, token or cloud identity for the database can read and write every table in it, including the work queue. Give it only to machines you trust to run your workflows, and keep the database on a private network.
-- `atomic worker start` reads the password or token from its file only when it opens a connection. It never prints or logs it, and never puts it on a child process's command line. The workers it starts receive a reference to the token file, not the token.
-- Keep the password or token file at mode 600. The command warns when other users can read it.
+- The token is the trust boundary. Anyone with a token for the database can read and write every table in it, including the work queue. Give a token only to machines you trust to run your workflows.
+- `atomic worker start` reads the token from a file only when it opens the database. It never prints or logs the token, and never puts it on a child process's command line. The workers it starts receive a reference to the token file, not the token.
+- Keep the token file at mode 600. The command warns when other users can read it.
+- Keep a GitHub App private key at mode 600 too. The controller refuses one that other users can read, and never prints it, the tokens it mints, or their JWT.
 
 ## Troubleshooting
 
-- **`Worker host setup is incomplete`** lists every missing piece at once, with a fix for each: the adapter not installed (`atomic install npm:@bastani/atomic-storage-postgres`, or `@bastani/atomic-storage-libsql` for a libSQL URL), a token file that cannot be read, a journal that other machines cannot open (pass `--db`), or a machine where Atomic cannot contain its workers' processes (Windows, or no native process identity). The command exits `1`.
+- **`Worker host setup is incomplete`** lists every missing piece at once, with a fix for each: the adapter not installed (`atomic install npm:@bastani/atomic-storage-libsql`), a token file that cannot be read, a journal that other machines cannot open (pass `--db`), or a machine where Atomic cannot contain its workers' processes (Windows, or no native process identity). The command exits `1`.
 - **`degraded failures=… retry_in_ms=…`** means the host could not reach the database. It keeps running its children and tries again after 1 second, then twice as long after each further failure, up to 30 seconds, and prints `recovered` once it gets through. Its workers keep their children while each child's lease (`localWorkers.leaseMs`, 30 seconds by default) lasts. A child whose lease expires during a longer outage, or that writes a checkpoint while the database is unreachable, is replayed by another host from its last checkpoint.
 - **`shared store unknown` or `shared store degraded`**, or hosts that all turn `stale` at once, mean the database stopped answering or stopped committing writes. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)): start sqld with `--checkpoint-interval-s 60` (`SQLD_CHECKPOINT_INTERVAL_S=60`) to avoid it, and restart it if writes stay stuck. Hosts keep their running children meanwhile.
 - **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and `/workflow status <run>` on the root's machine.
-- **PostgreSQL connection errors**, such as refused passwords, certificate errors or `too many connections`, are covered in [Troubleshooting PostgreSQL](/storage#troubleshooting-postgresql).

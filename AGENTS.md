@@ -11,8 +11,9 @@ This repo is the private `atomic-monorepo` npm workspace. It currently houses:
 - `@bastani/web-access` in `packages/web-access` — builtin web search, URL fetching, GitHub repository, PDF, and video extraction tools.
 - `@bastani/intercom` in `packages/intercom` — builtin coordination channel for parent/child and cross-session agent communication.
 - `@bastani/atomic-storage-libsql` in `packages/storage-libsql` — the libSQL / Turso storage adapter. It is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`; `publish.yml` publishes it with the other npm packages, and it is never a dependency of `@bastani/atomic`, in its shrinkwrap, or in `dist/builtin`.
+- `@bastani/atomic-storage-postgres` in `packages/storage-postgres` — the PostgreSQL storage adapter, packaged and published exactly like the libSQL adapter (`atomic install npm:@bastani/atomic-storage-postgres`); it is never a dependency of `@bastani/atomic`, in its shrinkwrap, or in `dist/builtin`.
 
-Companion packages under `packages/*` ship as **raw TypeScript** (no compile step). They are bundled into `@bastani/atomic` at build time rather than published independently, except `@bastani/atomic-storage-libsql`, which is published on its own as JSDoc-checked plain ESM JavaScript with a declaration file so plain Node SDK imports work. It also has no compile step. The coding-agent package follows upstream pi's compiled-package layout.
+Companion packages under `packages/*` ship as **raw TypeScript** (no compile step). They are bundled into `@bastani/atomic` at build time rather than published independently, except the storage adapters (`@bastani/atomic-storage-libsql`, `@bastani/atomic-storage-postgres`), which are published on their own as JSDoc-checked plain ESM JavaScript with a declaration file so plain Node SDK imports work. They also have no compile step. The coding-agent package follows upstream pi's compiled-package layout.
 
 ## Tech Stack
 
@@ -289,12 +290,14 @@ Use these sections under `## [Unreleased]`:
 - A release section opens with a human-readable summary: the prose between the
   `## [x.y.z]` heading and its first `###` section. Write it when preparing the
   release (the `publish-release` workflow does this), never under `## [Unreleased]`.
-  Use one theme-title sentence, then short bullets grouped by theme, each with a bold
-  lead, the benefit to the user, and links to the core PRs or issues at the end, plus
-  a `**Breaking change:**` line when `### Breaking Changes` is non-empty. The GitHub
-  Release page shows the summary first with the merged `###` sections folded under
-  "Full changelog", and the startup What's New banner shows the same summary with a
-  pointer to `/changelog`. A section without a summary keeps the flat merged output
+  Write one summary per release, in `packages/coding-agent/CHANGELOG.md` only, covering
+  every package; never repeat a change across packages' summaries, and keep it brief.
+  Use one theme-title sentence, then one short bullet per change grouped by theme, each
+  with a bold lead, the benefit to the user, and links to the core PRs or issues at the
+  end, plus a `**Breaking change:**` line when `### Breaking Changes` is non-empty. The
+  GitHub Release page shows the summary first with the merged `###` sections folded
+  under "Full changelog", and the startup What's New banner shows the coding-agent
+  summary with a pointer to `/changelog`. A section without a summary keeps the flat merged output
   and the full banner.
 - Do not open a section with a preamble that names the prereleases it covers and
   redirects the reader, e.g. "Cumulative release of the `0.9.19-alpha.1` through

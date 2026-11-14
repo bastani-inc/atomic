@@ -1,4 +1,4 @@
-import { type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
 	InvalidStateInput,
@@ -19,6 +19,7 @@ import type {
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 import { isReleasedReservationKey } from "./released-children.js";
+import { addMissingColumns } from "./sql-add-column.js";
 
 type ReservationRow = SqliteRow & {
 	reservation_key: string;
@@ -39,8 +40,6 @@ type ReservationRow = SqliteRow & {
 };
 
 type Counter = "order" | "token";
-
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ status: "invalid", reason });
 
@@ -101,46 +100,43 @@ export async function openSqlRestoringReservationStore({
 	const table = `${validPrefix}intercom_restoring_reservations`;
 	const counters = `${validPrefix}intercom_restoring_reservation_counters`;
 	const wakeClaims = `${validPrefix}intercom_restoring_wake_claims`;
+	const { types, nowMs, greatest } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
 				reservation_key TEXT PRIMARY KEY,
-				"order" INTEGER NOT NULL,
+				"order" ${types.int} NOT NULL,
 				owner_session_id TEXT NOT NULL,
 				owner_broker_id TEXT NOT NULL,
 				child_name TEXT NOT NULL,
 				child_target TEXT NOT NULL,
 				targets_json TEXT NOT NULL,
 				"group" TEXT NOT NULL,
-				dormant INTEGER NOT NULL,
-				fencing_token INTEGER NOT NULL,
+				dormant ${types.int} NOT NULL,
+				fencing_token ${types.int} NOT NULL,
 				gone TEXT,
-				renewed_at INTEGER NOT NULL,
+				renewed_at ${types.int} NOT NULL,
 				end_json TEXT,
-				ended_at INTEGER
+				ended_at ${types.int}
 			);
 			CREATE INDEX IF NOT EXISTS ${table}_active ON ${table}(end_json, "order");
-			CREATE TABLE IF NOT EXISTS ${counters}(name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+			CREATE TABLE IF NOT EXISTS ${counters}(name TEXT PRIMARY KEY, value ${types.int} NOT NULL);
 			INSERT INTO ${counters}(name, value) VALUES ('order', 0), ('token', 0) ON CONFLICT(name) DO NOTHING;
 			CREATE TABLE IF NOT EXISTS ${wakeClaims}(
 				reservation_key TEXT NOT NULL,
-				fencing_token INTEGER NOT NULL,
+				fencing_token ${types.int} NOT NULL,
 				message_id TEXT NOT NULL,
 				PRIMARY KEY(reservation_key, fencing_token, message_id)
 			);
 		`),
 	);
 	// #4326: added later; a table from an older broker gets the columns, and an older broker ignores them.
-	const known = await database.all<{ name: string }>(`PRAGMA table_info(${table})`);
-	for (const column of ["wake", "wake_requested", "wake_generation"]) {
-		if (known.some((existing) => existing.name === column)) continue;
-		try {
-			await database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
-		} catch (error) {
-			if (!/duplicate column/i.test(error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : ""))
-				throw error;
-		}
-	}
+	const wakeColumn = `${types.int} NOT NULL DEFAULT 0`;
+	await addMissingColumns(database, table, {
+		wake: wakeColumn,
+		wake_requested: wakeColumn,
+		wake_generation: wakeColumn,
+	});
 	await database.exec(
 		`CREATE INDEX IF NOT EXISTS ${table}_child ON ${table}(child_target) WHERE end_json IS NULL`,
 	);
@@ -150,7 +146,7 @@ export async function openSqlRestoringReservationStore({
 	const columns = `reservation_key, owner_session_id, owner_broker_id, child_name AS child_name_json, child_target,
 		targets_json, "group" AS reservation_group, dormant, wake, wake_generation, fencing_token, "order" AS reservation_order,
 		gone AS gone_json, end_json,
-		MAX(0, ${STORE_NOW} - renewed_at) AS age_ms`;
+		${greatest("0", `${nowMs} - renewed_at`)} AS age_ms`;
 	const readRow = (executor: SqliteExecutor, reservationKey: string) =>
 		executor.get<ReservationRow>(`SELECT ${columns} FROM ${table} WHERE reservation_key = ?`, reservationKey);
 	const activeRows = (executor: SqliteExecutor) =>
@@ -172,7 +168,7 @@ export async function openSqlRestoringReservationStore({
 	};
 	const end = (executor: SqliteExecutor, reservationKey: string, outcome: RestoringReservationEnd) =>
 		executor.run(
-			`UPDATE ${table} SET end_json = ?, ended_at = ${STORE_NOW} WHERE reservation_key = ?`,
+			`UPDATE ${table} SET end_json = ?, ended_at = ${nowMs} WHERE reservation_key = ?`,
 			JSON.stringify(outcome),
 			reservationKey,
 		);
@@ -224,8 +220,8 @@ export async function openSqlRestoringReservationStore({
 							: await next(tx, "token");
 					await tx.run(
 						`UPDATE ${table} SET owner_session_id = ?, owner_broker_id = ?, "group" = ?, dormant = ?, wake = ?,
-						 wake_generation = ?, wake_requested = CASE WHEN ? THEN 0 ELSE wake_requested END,
-						 fencing_token = ?, targets_json = ?, renewed_at = ${STORE_NOW} WHERE reservation_key = ?`,
+						 wake_generation = ?, wake_requested = CASE WHEN ? = 1 THEN 0 ELSE wake_requested END,
+						 fencing_token = ?, targets_json = ?, renewed_at = ${nowMs} WHERE reservation_key = ?`,
 						request.ownerSessionId,
 						request.ownerBrokerId,
 						request.group,
@@ -255,10 +251,18 @@ export async function openSqlRestoringReservationStore({
 						superseded.push(previous.reservation_key);
 					}
 					await tx.run(
-						`INSERT OR REPLACE INTO ${table}(reservation_key, "order", owner_session_id, owner_broker_id,
+						// An ended row under the same key is replaced whole: the columns this insert leaves out start from their defaults.
+						`INSERT INTO ${table}(reservation_key, "order", owner_session_id, owner_broker_id,
 						 child_name, child_target, targets_json, "group", dormant, wake, fencing_token, gone, renewed_at,
-						 end_json, ended_at)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ${STORE_NOW}, NULL, NULL)`,
+						 end_json, ended_at, wake_requested, wake_generation)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ${nowMs}, NULL, NULL, 0, 0)
+						 ON CONFLICT(reservation_key) DO UPDATE SET "order" = excluded."order",
+						 owner_session_id = excluded.owner_session_id, owner_broker_id = excluded.owner_broker_id,
+						 child_name = excluded.child_name, child_target = excluded.child_target,
+						 targets_json = excluded.targets_json, "group" = excluded."group", dormant = excluded.dormant,
+						 wake = excluded.wake, fencing_token = excluded.fencing_token, gone = excluded.gone,
+						 renewed_at = excluded.renewed_at, end_json = excluded.end_json, ended_at = excluded.ended_at,
+						 wake_requested = excluded.wake_requested, wake_generation = excluded.wake_generation`,
 						request.reservationKey,
 						order,
 						request.ownerSessionId,
@@ -300,10 +304,11 @@ export async function openSqlRestoringReservationStore({
 			return database.transaction(async (tx) => {
 				if (claim !== undefined) {
 					const { changes } = await tx.run(
-						`INSERT OR IGNORE INTO ${wakeClaims}(reservation_key, fencing_token, message_id)
+						`INSERT INTO ${wakeClaims}(reservation_key, fencing_token, message_id)
 						 SELECT reservation_key, fencing_token, ? FROM ${table}
 						 WHERE reservation_key = ? AND fencing_token = ? AND wake_generation = ?
-						 AND end_json IS NULL AND gone IS NULL AND wake = 1`,
+						 AND end_json IS NULL AND gone IS NULL AND wake = 1
+						 ON CONFLICT DO NOTHING`,
 						claim.messageId,
 						reservationKey,
 						claim.fencingToken,
@@ -347,7 +352,7 @@ export async function openSqlRestoringReservationStore({
 				const stale = await owned(tx, lease);
 				if (stale !== undefined) return stale;
 				await tx.run(
-					`UPDATE ${table} SET renewed_at = ${STORE_NOW} WHERE reservation_key = ?`,
+					`UPDATE ${table} SET renewed_at = ${nowMs} WHERE reservation_key = ?`,
 					lease.reservationKey,
 				);
 				return { status: "renewed" };
@@ -417,7 +422,7 @@ export async function openSqlRestoringReservationStore({
 		async prune(olderThanMs): Promise<number> {
 			return database.transaction(async (tx) => {
 				const { changes } = await tx.run(
-					`DELETE FROM ${table} WHERE ${STORE_NOW} - COALESCE(ended_at, renewed_at) > ?`,
+					`DELETE FROM ${table} WHERE ${nowMs} - COALESCE(ended_at, renewed_at) > ?`,
 					olderThanMs,
 				);
 				await tx.run(`DELETE FROM ${wakeClaims} WHERE reservation_key NOT IN (SELECT reservation_key FROM ${table})`);

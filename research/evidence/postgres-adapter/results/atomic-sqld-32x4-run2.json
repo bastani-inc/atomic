@@ -1,0 +1,95 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 4,
+  "children": 256,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "killedHostAtMs": null,
+      "trace": null,
+      "sqldQueryCount": 263896,
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 4642,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 4663,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 4677,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 32,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 2072,
+      "status": "completed",
+      "children": 256,
+      "completed": 254,
+      "failed": 2,
+      "failureSamples": [
+        "StorageUnavailableError: Storage unavailable: libsql at http://127.0.0.1:46849",
+        "StorageUnavailableError: Storage unavailable: libsql at http://127.0.0.1:46849"
+      ],
+      "checkpoints": 5080,
+      "wallMs": 456343,
+      "activeMs": 418031,
+      "checkpointsPerSec": 12.2,
+      "latencyMs": {
+        "p50": 3787.75,
+        "p90": 5870.04,
+        "p99": 8073.15,
+        "max": 10229.56
+      },
+      "stageMs": null,
+      "perHost": {
+        "h10": 7,
+        "h6": 8,
+        "h19": 9,
+        "h21": 7,
+        "h17": 10,
+        "root": 10,
+        "h2": 9,
+        "h31": 8,
+        "h25": 10,
+        "h28": 9,
+        "h23": 9,
+        "h0": 8,
+        "h18": 8,
+        "h26": 6,
+        "h30": 9,
+        "h27": 6,
+        "h12": 7,
+        "h3": 5,
+        "h15": 9,
+        "h13": 7,
+        "h8": 11,
+        "h9": 7,
+        "h4": 7,
+        "h24": 7,
+        "h29": 8,
+        "h14": 8,
+        "h5": 8,
+        "h22": 6,
+        "h16": 8,
+        "h11": 7,
+        "h1": 6,
+        "h20": 6,
+        "h7": 4
+      }
+    }
+  ]
+}

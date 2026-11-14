@@ -1,0 +1,1086 @@
+{
+  "stores": {
+    "sessions (adapter)": {
+      "packages/coding-agent/src/core/storage/session/sql-session-store.ts": {
+        "rowid": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "other json_*() / json()": {
+          "all": 7,
+          "codeOnly": 7
+        },
+        "ON CONFLICT upsert": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "PRAGMA": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "STRICT / WITHOUT ROWID tables": {
+          "all": 6,
+          "codeOnly": 6
+        },
+        "IFNULL / IIF / instr / group_concat": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 37,
+          "codeOnly": 36
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 11,
+          "codeOnly": 11
+        },
+        "BLOB columns": {
+          "all": 2,
+          "codeOnly": 1
+        }
+      },
+      "packages/coding-agent/src/core/storage/session/legacy-session-store.ts": {
+        "INSERT OR IGNORE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 4,
+          "codeOnly": 3
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      }
+    },
+    "snapshot blobs and workspace leases (adapter)": {
+      "packages/coding-agent/src/core/worktree-snapshot/blob-store.ts": {
+        "rowid": {
+          "all": 29,
+          "codeOnly": 23
+        },
+        "json_extract / ->>": {
+          "all": 17,
+          "codeOnly": 17
+        },
+        "json_each": {
+          "all": 7,
+          "codeOnly": 7
+        },
+        "other json_*() / json()": {
+          "all": 15,
+          "codeOnly": 15
+        },
+        "INSERT OR IGNORE": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "INSERT OR REPLACE / REPLACE INTO": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "ON CONFLICT upsert": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "PRAGMA": {
+          "all": 4,
+          "codeOnly": 4
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "STRICT / WITHOUT ROWID tables": {
+          "all": 9,
+          "codeOnly": 9
+        },
+        "RETURNING": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 13,
+          "codeOnly": 13
+        },
+        "IFNULL / IIF / instr / group_concat": {
+          "all": 4,
+          "codeOnly": 4
+        },
+        "? placeholders (statements)": {
+          "all": 39,
+          "codeOnly": 30
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 19,
+          "codeOnly": 19
+        },
+        "BLOB columns": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "LIKE / GLOB": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/coding-agent/src/core/workspace/lease.ts": {
+        "INSERT OR REPLACE / REPLACE INTO": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 2,
+          "codeOnly": 0
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "SQLITE_BUSY / busy handling": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      }
+    },
+    "run journal (adapter)": {
+      "packages/workflows/src/durable/journal/sql-run-journal.ts": {
+        "rowid": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "json_extract / ->>": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "ON CONFLICT upsert": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "SAVEPOINT / RELEASE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "changes() / last_insert_rowid()": {
+          "all": 3,
+          "codeOnly": 2
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 40,
+          "codeOnly": 36
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 2,
+          "codeOnly": 2
+        }
+      },
+      "packages/workflows/src/durable/journal/legacy-journal-tables.ts": {
+        "INSERT OR IGNORE": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "? placeholders (statements)": {
+          "all": 14,
+          "codeOnly": 13
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/coding-agent/src/core/storage/journal-adoption.ts": {
+        "ON CONFLICT upsert": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 48,
+          "codeOnly": 42
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 8,
+          "codeOnly": 8
+        },
+        "LIKE / GLOB": {
+          "all": 4,
+          "codeOnly": 4
+        }
+      }
+    },
+    "worker pool, shared pool and fleet (adapter)": {
+      "packages/workflows/src/durable/journal/sql-pool-queue.ts": {
+        "rowid": {
+          "all": 11,
+          "codeOnly": 11
+        },
+        "json_extract / ->>": {
+          "all": 8,
+          "codeOnly": 8
+        },
+        "json_each": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "INSERT OR IGNORE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "ON CONFLICT upsert": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "boolean as integer (comparison in arithmetic)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 70,
+          "codeOnly": 66
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 13,
+          "codeOnly": 13
+        }
+      },
+      "packages/workflows/src/durable/journal/sql-shared-pool.ts": {
+        "rowid": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "json_extract / ->>": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "json_each": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "ON CONFLICT upsert": {
+          "all": 6,
+          "codeOnly": 6
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "IFNULL / IIF / instr / group_concat": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 41,
+          "codeOnly": 35
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 24,
+          "codeOnly": 24
+        }
+      },
+      "packages/workflows/src/durable/journal/sql-pool-usage.ts": {
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 7,
+          "codeOnly": 7
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/workflows/src/durable/journal/pool-stage-usage.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/workflows/src/durable/journal/pool-mutations.ts": {
+        "? placeholders (statements)": {
+          "all": 7,
+          "codeOnly": 7
+        }
+      },
+      "packages/workflows/src/durable/journal/pool-checkpoint-index.ts": {
+        "? placeholders (statements)": {
+          "all": 7,
+          "codeOnly": 3
+        }
+      },
+      "packages/workflows/src/durable/journal/pool-remote-journal.ts": {
+        "ON CONFLICT upsert": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 5,
+          "codeOnly": 3
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/workflows/src/durable/journal/sql-fleet.ts": {
+        "rowid": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 14,
+          "codeOnly": 14
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 10,
+          "codeOnly": 10
+        }
+      },
+      "packages/workflows/src/workers/pool-session-store.ts": {
+        "sqlite_master / sqlite_schema": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "? placeholders (statements)": {
+          "all": 3,
+          "codeOnly": 2
+        }
+      },
+      "packages/workflows/src/workers/resource-admission.ts": {
+        "json_extract / ->>": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "INSERT OR IGNORE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INSERT OR REPLACE / REPLACE INTO": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "PRAGMA": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "unixepoch / julianday clock": {
+          "all": 4,
+          "codeOnly": 4
+        },
+        "? placeholders (statements)": {
+          "all": 53,
+          "codeOnly": 47
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 9,
+          "codeOnly": 9
+        }
+      }
+    },
+    "Intercom multi-node routing (adapter)": {
+      "packages/intercom/broker/database-wake-up-bus.ts": {
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 5,
+          "codeOnly": 3
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 4,
+          "codeOnly": 4
+        }
+      },
+      "packages/intercom/broker/sql-held-send-store.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 4,
+          "codeOnly": 4
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 3,
+          "codeOnly": 3
+        }
+      },
+      "packages/intercom/broker/sql-known-session-store.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "? placeholders (statements)": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 3,
+          "codeOnly": 3
+        }
+      },
+      "packages/intercom/broker/sql-lease-store.ts": {
+        "sqlite_master / sqlite_schema": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 11,
+          "codeOnly": 11
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 5,
+          "codeOnly": 5
+        }
+      },
+      "packages/intercom/broker/sql-outbox-store.ts": {
+        "BEGIN IMMEDIATE / EXCLUSIVE": {
+          "all": 1,
+          "codeOnly": 0
+        },
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "? placeholders (statements)": {
+          "all": 10,
+          "codeOnly": 10
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 6,
+          "codeOnly": 6
+        }
+      },
+      "packages/intercom/broker/sql-pending-ask-store.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 10,
+          "codeOnly": 10
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/intercom/broker/sql-released-ask-store.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "AUTOINCREMENT": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 4,
+          "codeOnly": 4
+        }
+      },
+      "packages/intercom/broker/sql-restoring-reservation-store.ts": {
+        "INSERT OR IGNORE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INSERT OR REPLACE / REPLACE INTO": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "RETURNING": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 15,
+          "codeOnly": 15
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 9,
+          "codeOnly": 9
+        }
+      },
+      "packages/intercom/broker/sql-sent-message-authority.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 2,
+          "codeOnly": 2
+        }
+      }
+    },
+    "local-file only (never on an adapter)": {
+      "packages/coding-agent/src/core/storage/journal-catalog.ts": {
+        "ON CONFLICT upsert": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 19,
+          "codeOnly": 15
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 8,
+          "codeOnly": 8
+        }
+      },
+      "packages/coding-agent/src/core/storage/journal-transfer.ts": {
+        "ON CONFLICT upsert": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "sqlite_master / sqlite_schema": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "unixepoch / julianday clock": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "scalar MAX(a, b) / MIN(a, b)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 24,
+          "codeOnly": 18
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      },
+      "packages/coding-agent/src/core/storage/node-sqlite.ts": {
+        "BEGIN IMMEDIATE / EXCLUSIVE": {
+          "all": 7,
+          "codeOnly": 1
+        },
+        "PRAGMA": {
+          "all": 10,
+          "codeOnly": 10
+        },
+        "SAVEPOINT / RELEASE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "unixepoch / julianday clock": {
+          "all": 3,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 23,
+          "codeOnly": 7
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "SQLITE_BUSY / busy handling": {
+          "all": 13,
+          "codeOnly": 9
+        }
+      },
+      "packages/coding-agent/src/core/storage/write-ahead-log.ts": {
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 2,
+          "codeOnly": 0
+        },
+        "SQLITE_BUSY / busy handling": {
+          "all": 14,
+          "codeOnly": 7
+        }
+      },
+      "packages/intercom/broker/away-asks.ts": {
+        "rowid": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "INSERT OR IGNORE": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "INSERT OR REPLACE / REPLACE INTO": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "? placeholders (statements)": {
+          "all": 9,
+          "codeOnly": 2
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 2,
+          "codeOnly": 2
+        }
+      },
+      "packages/intercom/broker/delivered-message-cache.ts": {
+        "BEGIN IMMEDIATE / EXCLUSIVE": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "PRAGMA": {
+          "all": 6,
+          "codeOnly": 6
+        },
+        "STRICT / WITHOUT ROWID tables": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 4,
+          "codeOnly": 4
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "BLOB columns": {
+          "all": 5,
+          "codeOnly": 5
+        },
+        "SQLITE_BUSY / busy handling": {
+          "all": 1,
+          "codeOnly": 1
+        }
+      }
+    },
+    "facade, drivers, status and conformance": {
+      "packages/coding-agent/src/core/storage/sqlite-facade.ts": {
+        "BEGIN IMMEDIATE / EXCLUSIVE": {
+          "all": 1,
+          "codeOnly": 0
+        },
+        "? placeholders (statements)": {
+          "all": 8,
+          "codeOnly": 0
+        }
+      },
+      "packages/coding-agent/src/core/storage/storage-status.ts": {
+        "sqlite_master / sqlite_schema": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 16,
+          "codeOnly": 7
+        }
+      },
+      "packages/coding-agent/src/core/storage/testing.ts": {
+        "INTEGER PRIMARY KEY (rowid alias)": {
+          "all": 3,
+          "codeOnly": 3
+        },
+        "PRAGMA": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "RETURNING": {
+          "all": 1,
+          "codeOnly": 1
+        },
+        "? placeholders (statements)": {
+          "all": 2,
+          "codeOnly": 2
+        },
+        "INTEGER columns (int64 in SQLite)": {
+          "all": 5,
+          "codeOnly": 5
+        }
+      },
+      "packages/storage-libsql/libsql.js": {
+        "BEGIN IMMEDIATE / EXCLUSIVE": {
+          "all": 1,
+          "codeOnly": 0
+        },
+        "PRAGMA": {
+          "all": 7,
+          "codeOnly": 3
+        },
+        "? placeholders (statements)": {
+          "all": 8,
+          "codeOnly": 1
+        },
+        "SQLITE_BUSY / busy handling": {
+          "all": 3,
+          "codeOnly": 1
+        }
+      }
+    }
+  },
+  "totals": {
+    "rowid": {
+      "all": 53,
+      "codeOnly": 47,
+      "files": 7,
+      "adapterFiles": 6
+    },
+    "json_extract / ->>": {
+      "all": 32,
+      "codeOnly": 32,
+      "files": 5,
+      "adapterFiles": 5
+    },
+    "json_each": {
+      "all": 12,
+      "codeOnly": 12,
+      "files": 3,
+      "adapterFiles": 3
+    },
+    "other json_*() / json()": {
+      "all": 22,
+      "codeOnly": 22,
+      "files": 2,
+      "adapterFiles": 2
+    },
+    "INSERT OR IGNORE": {
+      "all": 13,
+      "codeOnly": 13,
+      "files": 7,
+      "adapterFiles": 6
+    },
+    "INSERT OR REPLACE / REPLACE INTO": {
+      "all": 8,
+      "codeOnly": 8,
+      "files": 5,
+      "adapterFiles": 4
+    },
+    "ON CONFLICT upsert": {
+      "all": 33,
+      "codeOnly": 33,
+      "files": 17,
+      "adapterFiles": 15
+    },
+    "BEGIN IMMEDIATE / EXCLUSIVE": {
+      "all": 12,
+      "codeOnly": 3,
+      "files": 5,
+      "adapterFiles": 1
+    },
+    "AUTOINCREMENT": {
+      "all": 7,
+      "codeOnly": 7,
+      "files": 7,
+      "adapterFiles": 7
+    },
+    "INTEGER PRIMARY KEY (rowid alias)": {
+      "all": 15,
+      "codeOnly": 15,
+      "files": 12,
+      "adapterFiles": 10
+    },
+    "PRAGMA": {
+      "all": 40,
+      "codeOnly": 36,
+      "files": 14,
+      "adapterFiles": 9
+    },
+    "sqlite_master / sqlite_schema": {
+      "all": 19,
+      "codeOnly": 19,
+      "files": 11,
+      "adapterFiles": 9
+    },
+    "STRICT / WITHOUT ROWID tables": {
+      "all": 16,
+      "codeOnly": 16,
+      "files": 3,
+      "adapterFiles": 2
+    },
+    "RETURNING": {
+      "all": 3,
+      "codeOnly": 3,
+      "files": 3,
+      "adapterFiles": 2
+    },
+    "SAVEPOINT / RELEASE": {
+      "all": 2,
+      "codeOnly": 2,
+      "files": 2,
+      "adapterFiles": 1
+    },
+    "changes() / last_insert_rowid()": {
+      "all": 3,
+      "codeOnly": 2,
+      "files": 1,
+      "adapterFiles": 1
+    },
+    "unixepoch / julianday clock": {
+      "all": 37,
+      "codeOnly": 35,
+      "files": 20,
+      "adapterFiles": 17
+    },
+    "scalar MAX(a, b) / MIN(a, b)": {
+      "all": 11,
+      "codeOnly": 11,
+      "files": 8,
+      "adapterFiles": 7
+    },
+    "IFNULL / IIF / instr / group_concat": {
+      "all": 6,
+      "codeOnly": 6,
+      "files": 3,
+      "adapterFiles": 3
+    },
+    "boolean as integer (comparison in arithmetic)": {
+      "all": 1,
+      "codeOnly": 1,
+      "files": 1,
+      "adapterFiles": 1
+    },
+    "? placeholders (statements)": {
+      "all": 575,
+      "codeOnly": 467,
+      "files": 36,
+      "adapterFiles": 26
+    },
+    "INTEGER columns (int64 in SQLite)": {
+      "all": 159,
+      "codeOnly": 159,
+      "files": 29,
+      "adapterFiles": 23
+    },
+    "BLOB columns": {
+      "all": 8,
+      "codeOnly": 7,
+      "files": 3,
+      "adapterFiles": 2
+    },
+    "SQLITE_BUSY / busy handling": {
+      "all": 32,
+      "codeOnly": 19,
+      "files": 5,
+      "adapterFiles": 1
+    },
+    "LIKE / GLOB": {
+      "all": 5,
+      "codeOnly": 5,
+      "files": 2,
+      "adapterFiles": 2
+    }
+  }
+}

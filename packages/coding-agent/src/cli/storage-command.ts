@@ -1,19 +1,21 @@
 /**
  * `atomic storage status` shows which storage each domain (sessions, workflow runs, Intercom) selects, where the
  * selection comes from, whether its adapter loads and its database answers, and what the running Intercom broker
- * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
+ * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso or
+ * PostgreSQL database.
  * `atomic storage adopt` registers existing journal files in the journal store in place, and `atomic storage
  * consolidate` moves their finished runs into the store's own shards. `atomic storage export` and `atomic storage
  * import` move sessions and workflow runs between their storage and JSONL files (#4716, #4720).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { APP_NAME } from "../config.js";
 import type { IntercomBrokerControl } from "../core/intercom-broker-control.js";
 import { resolveSessionStore, selectSessionStorage } from "../core/session-storage.js";
 import { exportSessions } from "../core/session-transfer.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
+import { openAdapterSelectionDatabase } from "../core/storage/adapter-open.js";
 import { isJournalStoreError, isTeamProfileConfigError, isTeamProfileError } from "../core/storage/errors.js";
 import {
 	adoptJournals,
@@ -25,12 +27,18 @@ import {
 	WORKFLOW_RUN_EXPORT_VERSION,
 	type WorkflowRunTransferStorage,
 } from "../core/storage/journal-transfer.js";
+import { StorageProvider, type StorageSelection } from "../core/storage/provider.js";
 import {
-	checkTeamUrl,
+	checkSharedDatabaseArguments,
 	isFileUrl,
+	isPostgresUrl,
 	LIBSQL_ADAPTER_PACKAGE,
 	missingTeamToken,
+	POSTGRES_ADAPTER_PACKAGE,
+	type PostgresAuth,
 	STORAGE_TOKEN_FILE,
+	type StorageSettingsSelection,
+	selectStorage,
 } from "../core/storage/selection.js";
 import type { SessionStore } from "../core/storage/session/types.js";
 import { SESSION_FORMAT_VERSION } from "../core/storage/session/types.js";
@@ -53,14 +61,17 @@ import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } 
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
+const JOIN_USAGE = `${APP_NAME} storage join <url> [--token-file <path> | --password-file <path> | --auth azure|aws|gcp]
+                            [--prefix <prefix>]`;
+
 const HELP = `Usage:
   ${APP_NAME} storage status [--json]
-  ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]
+  ${JOIN_USAGE}
   ${APP_NAME} storage adopt <path>... [--no-discover]
   ${APP_NAME} storage consolidate
   ${APP_NAME} storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished]
-                              [--limit <n>] [--since <time>]
-  ${APP_NAME} storage import <dir> [--sessions] [--workflows]
+                              [--limit <n>] [--since <time>] [--storage <json> | --storage-file <path>]
+  ${APP_NAME} storage import <dir> [--sessions] [--workflows] [--storage <json> | --storage-file <path>]
 
 Commands:
   status   Show, for sessions, workflow runs, and Intercom, the selected storage and where the
@@ -68,10 +79,15 @@ Commands:
            whether its adapter loads, whether its database answers a SELECT 1, and what the running
            Intercom broker uses. Exits 1 when a selection is invalid, an adapter cannot load, or a
            database does not answer. Nothing is created or changed.
-  join     Use a shared libSQL / Turso database on this machine: check the token and the connection
-           with ${LIBSQL_ADAPTER_PACKAGE}, store the token in the agent directory (mode 600), and
-           write only the global \`storage\` setting. Reports environment variables and settings that
-           override it. Creates no tables; Atomic creates them on first use.
+  join     Use a shared database on this machine: a libSQL / Turso database (libsql://, https://,
+           wss:// or file:) through ${LIBSQL_ADAPTER_PACKAGE}, or a PostgreSQL database
+           (postgres:// or postgresql://) through ${POSTGRES_ADAPTER_PACKAGE}. Checks the credential
+           and the connection (SELECT 1, within 15 seconds), then writes only the global \`storage\`
+           setting; nothing is written when a check fails. A token or --password-file is stored in
+           the agent directory (mode 600); --token-file is referenced where it is, and read again
+           for every new connection. Settings hold a file reference, never a password or token.
+           Reports environment variables and settings that override it. Creates no tables; Atomic
+           creates them on first use.
   adopt    Register existing workflow journal files in the journal store in place, without copying,
            so their runs resolve by ID for status, resume, attach, fork and history://. Each <path>
            is a journal .sqlite file or a directory holding journal.sqlite. Every path is checked
@@ -86,10 +102,12 @@ Commands:
            <dir>/workflows/<runId>.jsonl (workflow run export version ${WORKFLOW_RUN_EXPORT_VERSION}), one file per
            session or run. Both kinds by default; --sessions or --workflows limits it to one. Each
            file is replaced whole, one that already holds the same bytes is not rewritten, and no
-           file is deleted. A kind kept in a shared libSQL / Turso database is skipped (an error
-           when --sessions or --workflows asks for it): every machine joined to it reads it already.
+           file is deleted. A kind kept in a shared libSQL / Turso or PostgreSQL database is skipped
+           (an error when --sessions or --workflows asks for it): every machine joined to it reads it
+           already. Name the database with --storage or --storage-file to export from it anyway.
   import   Restore the sessions in <dir>/sessions and the workflow runs in <dir>/workflows into
-           this directory's storage; other files are ignored. Every file of both kinds is checked
+           this directory's storage, or the one --storage or --storage-file names; other files are
+           ignored. Every file of both kinds is checked
            first, so a malformed or unsupported file changes nothing. Importing again adds
            nothing; a newer export of a session or run adds its later entries. Imported runs are
            not owned by any process: an interrupted one can be resumed here. If the import fails
@@ -97,8 +115,17 @@ Commands:
 
 Options:
   --json                Print the status as JSON
-  --token-file <path>   File holding the database token, for example from \`turso db tokens create\`;
-                        surrounding whitespace is removed. Required except for file: URLs
+  --token-file <path>   libSQL: file holding the database token, for example from \`turso db tokens create\`;
+                        surrounding whitespace is removed. Required except for file: URLs.
+                        PostgreSQL: a password or token file another process keeps fresh (a Vault agent,
+                        a workload-identity sidecar); its path is saved and it is read for every new connection
+  --password-file <path>
+                        PostgreSQL: file holding the database password; it is copied to the agent directory
+                        (mode 600)
+  --auth azure|aws|gcp  PostgreSQL: use the platform's identity (Microsoft Entra ID, AWS IAM, Google Cloud
+                        IAM) instead of a password
+                        PostgreSQL URLs take exactly one of --password-file, --token-file and --auth, and
+                        never a password in the URL
   --prefix <prefix>     Table prefix, to share one database between projects or teams
   --no-discover         adopt: register only the given paths
   --sessions            export, import: sessions only (with --workflows too: both)
@@ -108,17 +135,33 @@ Options:
   --limit <n>           export: at most n workflow runs, newest first, and at most n sessions,
                         most recently modified first
   --since <time>        export: only sessions modified at or after <time>, a date such as
-                        2026-11-01 or a date and time such as 2026-11-01T09:30:00Z`;
+                        2026-11-01 or a date and time such as 2026-11-01T09:30:00Z
+  --storage <json>      export, import: read from or write to this storage instead of the one selected
+                        here, given in the form of the \`storage\` setting, for example
+                        {"path":"/path/to/journal.sqlite"} or an adapter with its options and secrets.
+                        A shared database named this way is exported from and imported into: use it to
+                        move runs and sessions between stores
+  --storage-file <path> export, import: as --storage, from a JSON file, for example the \`storage\`
+                        value of another machine's settings`;
 
 const HELP_HINT = `Use "${APP_NAME} storage --help" for usage.`;
 
 export type StorageCommand =
 	| { readonly kind: "help" }
 	| { readonly kind: "status"; readonly json: boolean }
-	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string }
+	| {
+			readonly kind: "join";
+			readonly url: string;
+			readonly tokenFile?: string;
+			/** Postgres only. */
+			readonly passwordFile?: string;
+			/** Postgres only. */
+			readonly auth?: PostgresAuth;
+			readonly prefix?: string;
+	  }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
 	| { readonly kind: "consolidate" }
-	| {
+	| ({
 			readonly kind: "export";
 			readonly directory: string;
 			/** The kinds to export; both when neither `--sessions` nor `--workflows` is given. */
@@ -128,8 +171,16 @@ export type StorageCommand =
 			readonly limit?: number;
 			/** `--since`, in milliseconds since the epoch. */
 			readonly since?: number;
-	  }
-	| { readonly kind: "import"; readonly directory: string; readonly kinds: TransferKinds };
+	  } & NamedStorage)
+	| ({ readonly kind: "import"; readonly directory: string; readonly kinds: TransferKinds } & NamedStorage);
+
+/** The storage an export reads or an import writes, named with `--storage` or `--storage-file` instead of selected. */
+export interface NamedStorage {
+	/** `--storage`: a selection in the settings form. */
+	readonly storage?: StorageSettingsSelection;
+	/** `--storage-file`: a file holding one. */
+	readonly storageFile?: string;
+}
 
 /** Which kinds an export or import covers, and whether `--sessions` or `--workflows` named them. */
 export interface TransferKinds {
@@ -180,8 +231,10 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			continue;
 		}
 		if (
-			(command === "join" && (arg === "--token-file" || arg === "--prefix")) ||
-			(command === "export" && (arg === "--limit" || arg === "--since"))
+			(command === "join" &&
+				(arg === "--token-file" || arg === "--password-file" || arg === "--auth" || arg === "--prefix")) ||
+			(command === "export" && (arg === "--limit" || arg === "--since")) ||
+			((command === "export" || command === "import") && (arg === "--storage" || arg === "--storage-file"))
 		) {
 			const value = rest[++index];
 			if (value === undefined) throw new StorageCommandError(`${arg} needs a value.`);
@@ -198,21 +251,16 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	}
 	if (command === "join") {
 		const [url, ...extra] = positional;
-		if (url === undefined || extra.length > 0) {
-			throw new StorageCommandError(
-				`Usage: ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]`,
-			);
-		}
-		checkTeamUrl(url, "cli");
-		const tokenFile = values.get("--token-file");
-		if (tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
-		const prefix = values.get("--prefix");
-		return {
-			kind: "join",
+		if (url === undefined || extra.length > 0) throw new StorageCommandError(`Usage: ${JOIN_USAGE}`);
+		const checked = checkSharedDatabaseArguments({
 			url,
-			...(tokenFile === undefined ? {} : { tokenFile }),
-			...(prefix === undefined ? {} : { prefix }),
-		};
+			tokenFile: values.get("--token-file"),
+			passwordFile: values.get("--password-file"),
+			auth: values.get("--auth"),
+		});
+		if (!isPostgresUrl(url) && checked.tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
+		const prefix = values.get("--prefix");
+		return { kind: "join", ...checked, ...(prefix === undefined ? {} : { prefix }) };
 	}
 	if (command === "adopt") {
 		if (positional.length === 0)
@@ -223,6 +271,7 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 		if (positional.length > 0) throw new StorageCommandError(`Usage: ${APP_NAME} storage consolidate`);
 		return { kind: "consolidate" };
 	}
+	const named = namedStorage(values);
 	const kinds: TransferKinds =
 		sessions || workflows
 			? { sessions, workflows, explicit: true }
@@ -257,15 +306,64 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			...(runs.length === 0 ? {} : { runs }),
 			...(limit === undefined ? {} : { limit }),
 			...(since === undefined ? {} : { since }),
+			...named,
 		};
 	}
 	if (command === "import") {
 		const [directory, ...extra] = positional;
 		if (directory === undefined || extra.length > 0)
 			throw new StorageCommandError(`Usage: ${APP_NAME} storage import <dir> [--sessions] [--workflows]`);
-		return { kind: "import", directory, kinds };
+		return { kind: "import", directory, kinds, ...named };
 	}
 	throw new StorageCommandError(`Unknown storage command "${command}".\n${HELP_HINT}`);
+}
+
+function namedStorage(values: ReadonlyMap<string, string>): NamedStorage {
+	const text = values.get("--storage");
+	const storageFile = values.get("--storage-file");
+	if (text !== undefined && storageFile !== undefined)
+		throw new StorageCommandError("Pass only one of --storage and --storage-file.");
+	if (storageFile !== undefined) return { storageFile };
+	if (text === undefined) return {};
+	return { storage: storageSelectionJson(text, "--storage") };
+}
+
+/** A selection in the settings form, from JSON text; `field` names where it came from. */
+function storageSelectionJson(text: string, field: string): StorageSettingsSelection {
+	let value: StorageSettingsSelection | null;
+	try {
+		value = JSON.parse(text) as StorageSettingsSelection | null;
+	} catch {
+		value = null;
+	}
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new StorageCommandError(
+			`${field} needs a JSON object in the form of the \`storage\` setting, for example {"path":"/path/to/journal.sqlite"}.`,
+		);
+	return value;
+}
+
+/** The selection `--storage` or `--storage-file` names, checked like a settings selection; undefined for neither. */
+function namedSelection(command: NamedStorage, cwd: string): StorageSelection | undefined {
+	let value = command.storage;
+	const field = command.storageFile === undefined ? "--storage" : "--storage-file";
+	if (command.storageFile !== undefined) {
+		const path = resolve(cwd, command.storageFile);
+		let text: string;
+		try {
+			text = readFileSync(path, "utf8");
+		} catch (error) {
+			throw new StorageCommandError(`--storage-file ${path} cannot be read: ${errorText(error as Error)}.`);
+		}
+		value = storageSelectionJson(text, `--storage-file ${path}`);
+	}
+	if (value === undefined) return undefined;
+	const selection = selectStorage(value, "cli", field, "");
+	if (selection.kind !== "sqlite") return selection;
+	if (selection.path === ":memory:") return { kind: "memory" };
+	if (selection.path === "")
+		throw new StorageCommandError(`${field} names no storage: give a "path" or an "adapter" with its options.`);
+	return { ...selection, path: resolve(cwd, selection.path) };
 }
 
 export interface StorageCommandOptions {
@@ -400,13 +498,17 @@ async function joinStorage(
 	const { agentDir, cwd } = options;
 	const joined = await joinSharedDatabase({ ...command, agentDir, cwd, pinLocalSessions: false }, "cli");
 	log(`Connected to ${command.url}.`);
+	const secret = command.passwordFile === undefined ? "token" : "password";
 	if (joined.tokenPath !== undefined) {
 		log(
 			joined.token === "reused"
-				? `Kept the token in ${joined.tokenPath}; it already holds this token.`
-				: `Stored the token in ${joined.tokenPath} (mode 600).`,
+				? `Kept the ${secret} in ${joined.tokenPath}; it already holds this ${secret}.`
+				: `Stored the ${secret} in ${joined.tokenPath} (mode 600).`,
 		);
 	}
+	if (joined.referencedFile !== undefined)
+		log(`The password stays in ${joined.referencedFile} and is read again for every new connection.`);
+	if (command.auth !== undefined) log(`The adapter obtains a ${command.auth} credential for every new connection.`);
 	log(`Set \`storage\` in ${join(agentDir, "settings.json")}; other settings are unchanged.`);
 	if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
 
@@ -548,8 +650,18 @@ type Transfer<T> = { readonly target: T } | { readonly refused: string };
 function workflowTransfer(
 	options: StorageCommandOptions,
 	command: "export" | "import",
+	named: StorageSelection | undefined,
 ): Transfer<WorkflowRunTransferStorage> {
-	const selection = effectiveJournalSelection(options.cwd, options.agentDir);
+	if (named?.kind === "adapter")
+		return {
+			target: {
+				kind: "database",
+				open: () => openAdapterSelectionDatabase(named, { agentDir: options.agentDir, domain: "journal" }),
+				location: describeStorageSelection(named),
+				prefix: named.prefix,
+			},
+		};
+	const selection = named ?? effectiveJournalSelection(options.cwd, options.agentDir);
 	if (selection.kind === "sharded") return { target: { kind: "store", directory: selection.dir } };
 	if (selection.kind === "sqlite" && selection.path !== ":memory:")
 		return {
@@ -563,7 +675,7 @@ function workflowTransfer(
 		refused:
 			`${APP_NAME} storage ${command} works with a local workflow journal (the journal store or a SQLite file), but workflow runs here use ${describeStorageSelection(selection)}.` +
 			(selection.kind === "adapter"
-				? " A shared database already holds the runs of every machine joined to it, so there is nothing to export or import; use its own backups instead."
+				? " A shared database already holds the runs of every machine joined to it, so there is nothing to export or import; use its own backups, or name it with --storage or --storage-file to copy runs and sessions out of it or into it."
 				: ""),
 	};
 }
@@ -577,7 +689,21 @@ function workflowTransfer(
 async function sessionTransfer(
 	options: StorageCommandOptions,
 	command: "export" | "import",
+	named: StorageSelection | undefined,
 ): Promise<Transfer<SessionStore | undefined>> {
+	if (named !== undefined) {
+		if (named.kind !== "sqlite" && named.kind !== "adapter")
+			return {
+				refused: `${APP_NAME} storage ${command} needs stored sessions, but ${describeStorageSelection(named)} keeps nothing.`,
+			};
+		if (command === "export" && named.kind === "sqlite" && !existsSync(named.path)) return { target: undefined };
+		return {
+			target: await new StorageProvider().openSessionStore(named, {
+				agentDir: options.agentDir,
+				domain: "sessions",
+			}),
+		};
+	}
 	const settings = SettingsManager.create(options.cwd, options.agentDir, {
 		projectTrusted: projectTrust(options.cwd, options.agentDir),
 	}).getSettings();
@@ -588,9 +714,12 @@ async function sessionTransfer(
 			return {
 				refused: `${APP_NAME} storage ${command} needs stored sessions, but sessions here use ${describeStorageSelection(selection)}, which keeps nothing.`,
 			};
-		if (selection.kind === "adapter" && selection.module === LIBSQL_ADAPTER_PACKAGE)
+		if (
+			selection.kind === "adapter" &&
+			(selection.module === LIBSQL_ADAPTER_PACKAGE || selection.module === POSTGRES_ADAPTER_PACKAGE)
+		)
 			return {
-				refused: `${APP_NAME} storage ${command} works with local session storage, but sessions here use ${describeStorageSelection(selection)}. A shared database already holds the sessions of every machine joined to it, so there is nothing to export or import; use its own backups instead.`,
+				refused: `${APP_NAME} storage ${command} works with local session storage, but sessions here use ${describeStorageSelection(selection)}. A shared database already holds the sessions of every machine joined to it, so there is nothing to export or import; use its own backups, or name it with --storage or --storage-file to copy runs and sessions out of it or into it.`,
 			};
 		if (command === "export") {
 			const stored =
@@ -614,8 +743,9 @@ async function exportRuns(
 	error: (line: string) => void,
 ): Promise<number> {
 	const directory = resolve(options.cwd, command.directory);
-	const workflows = command.kinds.workflows ? workflowTransfer(options, "export") : undefined;
-	const sessions = command.kinds.sessions ? await sessionTransfer(options, "export") : undefined;
+	const named = namedSelection(command, options.cwd);
+	const workflows = command.kinds.workflows ? workflowTransfer(options, "export", named) : undefined;
+	const sessions = command.kinds.sessions ? await sessionTransfer(options, "export", named) : undefined;
 	try {
 		const refusals = [workflows, sessions].flatMap((transfer) =>
 			transfer !== undefined && "refused" in transfer ? [transfer.refused] : [],
@@ -681,8 +811,9 @@ async function importRuns(
 ): Promise<number> {
 	const directory = resolve(options.cwd, command.directory);
 	if (!existsSync(directory)) throw new StorageCommandError(`${directory}: no such directory.`);
-	const workflows = command.kinds.workflows ? workflowTransfer(options, "import") : undefined;
-	const sessions = command.kinds.sessions ? await sessionTransfer(options, "import") : undefined;
+	const named = namedSelection(command, options.cwd);
+	const workflows = command.kinds.workflows ? workflowTransfer(options, "import", named) : undefined;
+	const sessions = command.kinds.sessions ? await sessionTransfer(options, "import", named) : undefined;
 	try {
 		const refusals = [workflows, sessions].flatMap((transfer) =>
 			transfer !== undefined && "refused" in transfer ? [transfer.refused] : [],

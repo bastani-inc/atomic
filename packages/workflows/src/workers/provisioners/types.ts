@@ -1,6 +1,7 @@
 /**
  * The options of the command provisioner (#4768), with no runtime dependencies: the SDK's authoring surface imports
- * them. None of them holds a credential: each command uses its own tool's login or environment.
+ * them. None of them holds a credential: each command uses its own tool's login or environment, or short-lived tokens
+ * Atomic mints for it from a GitHub App whose private key stays in a file.
  */
 
 /** A host state, as `list` reports it. */
@@ -45,6 +46,35 @@ export interface CommandListFormat {
  *
  * Default `timeoutMs`, for each command: 120000.
  */
+/**
+ * A GitHub App the provisioner mints installation tokens from, for `gh`: each token is narrowed to `actions: write` on
+ * `repository`, reused until 5 minutes before it expires, and passed to each command as `GH_TOKEN` (for GitHub Enterprise
+ * Server, `GH_ENTERPRISE_TOKEN` with `GH_HOST`). Each option this object leaves out is read from its environment
+ * variable: `ATOMIC_GITHUB_APP_ID`, `ATOMIC_GITHUB_APP_INSTALLATION_ID`, `ATOMIC_GITHUB_APP_PRIVATE_KEY_FILE`,
+ * `ATOMIC_GITHUB_APP_REPOSITORY`, `ATOMIC_GITHUB_HOST` and `ATOMIC_GITHUB_API_URL`.
+ */
+export interface GitHubAppAuthOptions {
+	/** The app's client ID or app ID. */
+	readonly appId?: string | number;
+	readonly installationId?: string | number;
+	/** The app's PEM private key, in a file only its owner can read (mode 600 or 400). Its content is never logged. */
+	readonly privateKeyFile?: string;
+	/** `owner/name`: the one repository the tokens may dispatch and cancel workflow runs in. */
+	readonly repository?: string;
+	/** The GitHub host `gh` talks to. Default `github.com`. */
+	readonly host?: string;
+	/**
+	 * The REST API base URL. Default: `https://api.github.com` for github.com, `https://api.<host>` for a GHE.com host, and
+	 * `https://<host>/api/v3` for GitHub Enterprise Server.
+	 */
+	readonly apiUrl?: string;
+}
+
+/** Credentials the provisioner mints for its commands. */
+export interface CommandProvisionerAuth {
+	readonly githubApp: GitHubAppAuthOptions;
+}
+
 export interface CommandProvisionerOptions {
 	readonly kind: "command";
 	readonly up: CommandSteps;
@@ -54,12 +84,15 @@ export interface CommandProvisionerOptions {
 	readonly listFormat?: CommandListFormat;
 	/** How long, in milliseconds, one command may run before it is stopped and counted as a failure. */
 	readonly timeoutMs?: number;
+	/** Credentials to mint for the commands; without it, each command uses its own tool's login. */
+	readonly auth?: CommandProvisionerAuth;
 }
 
 export type WorkerHostProvisionerConfig = CommandProvisionerOptions;
 
 /**
  * Why a provisioner's command failed: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused),
- * `exit` (any other non-zero exit), `timeout`, or `malformed` (output that is not what was expected).
+ * `exit` (any other non-zero exit), `timeout`, `malformed` (output that is not what was expected), or `unavailable` (the
+ * service that mints its credentials could not be reached, or failed).
  */
-export type WorkerProvisionerErrorCode = "missing-cli" | "auth" | "exit" | "timeout" | "malformed";
+export type WorkerProvisionerErrorCode = "missing-cli" | "auth" | "exit" | "timeout" | "malformed" | "unavailable";

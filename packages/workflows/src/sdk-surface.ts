@@ -555,8 +555,10 @@ export {
 export type {
 	CommandHostState,
 	CommandListFormat,
+	CommandProvisionerAuth,
 	CommandProvisionerOptions,
 	CommandSteps,
+	GitHubAppAuthOptions,
 	WorkerHostProvisionerConfig,
 	WorkerProvisionerErrorCode,
 } from "./workers/provisioners/index.js";

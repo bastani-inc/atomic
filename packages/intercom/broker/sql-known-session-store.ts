@@ -1,4 +1,4 @@
-import { type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
 	KnownSessionLookupResult,
@@ -6,8 +6,6 @@ import type {
 	KnownSessionState,
 	KnownSessionStore,
 } from "./multinode-state-store.js";
-
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 type KnownRow = SqliteRow & {
 	target_identity: string;
@@ -49,10 +47,12 @@ export async function openSqlKnownSessionStore({
 	prefix,
 }: IntercomBrokerStateOptions): Promise<KnownSessionStore> {
 	const table = `${validateStoragePrefix(prefix)}intercom_known_sessions`;
+	const { types, nowMs, greatest } = dialectOf(database);
+	const age = greatest("0", `${nowMs} - recorded_at`);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
-				record_order INTEGER PRIMARY KEY AUTOINCREMENT,
+				record_order ${types.serialKey},
 				target_identity TEXT NOT NULL UNIQUE,
 				intercom_session_id TEXT NOT NULL,
 				name_json TEXT,
@@ -62,7 +62,7 @@ export async function openSqlKnownSessionStore({
 				groups_json TEXT NOT NULL,
 				recipient_purpose TEXT,
 				reply_capability TEXT,
-				recorded_at INTEGER NOT NULL
+				recorded_at ${types.int} NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS ${table}_intercom_id ON ${table}(intercom_session_id);
 			CREATE INDEX IF NOT EXISTS ${table}_atomic_id ON ${table}(atomic_session_id);
@@ -79,7 +79,7 @@ export async function openSqlKnownSessionStore({
 			await database.run(
 				`INSERT INTO ${table}(target_identity, intercom_session_id, name_json, name_key, atomic_session_id,
 					group_name, groups_json, recipient_purpose, reply_capability, recorded_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${STORE_NOW})
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${nowMs})
 				 ON CONFLICT(target_identity) DO UPDATE SET
 					intercom_session_id = excluded.intercom_session_id,
 					name_json = excluded.name_json,
@@ -106,10 +106,10 @@ export async function openSqlKnownSessionStore({
 			if (target.length === 0) return { status: "invalid", reason: "empty-target" };
 			const rows = await database.all<KnownRow>(
 				`SELECT target_identity, intercom_session_id, name_json, atomic_session_id, group_name, groups_json,
-					recipient_purpose, reply_capability, MAX(0, ${STORE_NOW} - recorded_at) AS age_ms
+					recipient_purpose, reply_capability, ${age} AS age_ms
 				 FROM ${table}
 				 WHERE (intercom_session_id = ? OR atomic_session_id = ? OR name_key = ?)
-					AND MAX(0, ${STORE_NOW} - recorded_at) <= ?
+					AND ${age} <= ?
 				 ORDER BY record_order`,
 				target,
 				target,
@@ -120,7 +120,7 @@ export async function openSqlKnownSessionStore({
 		},
 		async prune(olderThanMs): Promise<number> {
 			const { changes } = await database.run(
-				`DELETE FROM ${table} WHERE ${STORE_NOW} - recorded_at > ?`,
+				`DELETE FROM ${table} WHERE ${nowMs} - recorded_at > ?`,
 				olderThanMs,
 			);
 			return changes;

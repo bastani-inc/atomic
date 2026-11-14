@@ -1,0 +1,163 @@
+import type { SqliteDatabase } from "@bastani/atomic/storage";
+import { describe, it, test } from "vitest";
+import { registerSessionStoreConformance } from "../../packages/coding-agent/src/core/storage/session/conformance.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
+import { registerSqliteDatabaseConformance } from "../../packages/coding-agent/src/core/storage/testing.js";
+import type { IntercomBrokerStateOptions } from "../../packages/intercom/broker/multinode-state-store.js";
+import { openSqlHeldSendStore } from "../../packages/intercom/broker/sql-held-send-store.js";
+import { openSqlKnownSessionStore } from "../../packages/intercom/broker/sql-known-session-store.js";
+import { openSqlBrokerLeaseStore } from "../../packages/intercom/broker/sql-lease-store.js";
+import { openSqlOutboxStore } from "../../packages/intercom/broker/sql-outbox-store.js";
+import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pending-ask-store.js";
+import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
+import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
+import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
+import { registerRunJournalConformance } from "../../packages/workflows/src/durable/journal/conformance.js";
+import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import {
+	type OpenSharedStoreFixture,
+	registerBrokerLeaseStoreConformance,
+	registerCrossNodeHeldRoundTripConformance,
+	registerCrossNodeRoundTripConformance,
+	registerHeldSendStoreConformance,
+	registerKnownSessionStoreConformance,
+	registerOutboxStoreConformance,
+	registerPendingAskStoreConformance,
+	registerReleasedAskStoreConformance,
+	registerRestoringReservationStoreConformance,
+	registerSentMessageAuthorityConformance,
+} from "../helpers/intercom-multinode-contract.js";
+import { openMemoryOutboxFixture, openMemoryWakeUpBusFixture } from "../helpers/intercom-multinode-memory-reference.js";
+import { observeJournalRead } from "../helpers/journal-read-observation.js";
+import { databaseSubject, type StorageBackend, storageBackends } from "../helpers/storage-backends.js";
+import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
+
+/**
+ * Every store's behavioural contract on every storage backend (#4793): the database facade, sessions, the workflow
+ * run journal and Intercom's multi-node routing state, each on a SQLite file, a libSQL server and Postgres.
+ * test/helpers/storage-backends.ts says how to point it at servers.
+ */
+
+useTemporaryAgentDir();
+
+/**
+ * Rows that fail on a backend because of an open bug, by suite and test name, with the issue. They run as `it.fails`,
+ * so the row turns red once the bug is fixed and the fix removes its entry.
+ */
+const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * A describe/it runner for `backend`: skipped rows when the backend is (or, for a store's suite, when the backend does
+ * not run the stores yet), known failures as `it.fails`.
+ */
+function runnerFor(backend: StorageBackend, skipReason = backend.skipReason) {
+	let suite = "";
+	return {
+		describe(name: string, body: () => void) {
+			describe(name, () => {
+				const outer = suite;
+				suite = name;
+				try {
+					body();
+				} finally {
+					suite = outer;
+				}
+			});
+		},
+		it(name: string, body: () => Promise<void>) {
+			const issue = KNOWN_FAILURES.get(`${suite} > ${name}`);
+			if (skipReason !== undefined) it.skip(name, body);
+			else if (issue !== undefined) it.fails(`${name} (known failure, ${issue})`, body);
+			else it(name, body);
+		},
+	};
+}
+
+/** A shared-state fixture whose every connection is another database connection to one backend scope. */
+function scopeFixture<Store>(
+	backend: StorageBackend,
+	openStore: (options: IntercomBrokerStateOptions) => Promise<Store>,
+): OpenSharedStoreFixture<Store> {
+	return async () => {
+		const scope = await backend.openScope();
+		return {
+			connect: async () => openStore({ database: await scope.connect(), prefix: scope.prefix }),
+			close: () => scope.close(),
+		};
+	};
+}
+
+for (const backend of storageBackends) {
+	const facadeName =
+		backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
+	registerSqliteDatabaseConformance(runnerFor(backend), `database facade on ${facadeName}`, databaseSubject(backend));
+
+	const storesSkipReason = backend.skipReason ?? backend.storesSkipReason;
+	const name = storesSkipReason === undefined ? backend.name : `${backend.name} (skipped: ${storesSkipReason})`;
+	const run = storesSkipReason === undefined ? test : test.skip;
+	const runner = runnerFor(backend, storesSkipReason);
+
+	registerSessionStoreConformance(runner, `SqlSessionStore on ${name}`, async (body) => {
+		const scope = await backend.openScope();
+		try {
+			const open = async (database: SqliteDatabase) => SqlSessionStore.open(database, { prefix: scope.prefix });
+			let store = await open(await scope.connect());
+			await body({
+				get store() {
+					return store;
+				},
+				async reopen() {
+					store = await open(await scope.connect());
+					return store;
+				},
+			});
+		} finally {
+			await scope.close();
+		}
+	});
+
+	registerRunJournalConformance(
+		run,
+		`SqlRunJournal on ${name}`,
+		async () => {
+			const scope = await backend.openScope();
+			try {
+				const journal = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
+				const close = journal.close.bind(journal);
+				journal.close = async () => {
+					try {
+						await close();
+					} finally {
+						await scope.close();
+					}
+				};
+				return journal;
+			} catch (error) {
+				await scope.close();
+				throw error;
+			}
+		},
+		observeJournalRead,
+	);
+
+	const intercom = `Intercom routing on ${name}`;
+	registerBrokerLeaseStoreConformance(run, intercom, scopeFixture(backend, openSqlBrokerLeaseStore));
+	registerKnownSessionStoreConformance(run, intercom, scopeFixture(backend, openSqlKnownSessionStore));
+	registerOutboxStoreConformance(run, intercom, scopeFixture(backend, openSqlOutboxStore));
+	registerPendingAskStoreConformance(run, intercom, scopeFixture(backend, openSqlPendingAskStore));
+	registerReleasedAskStoreConformance(run, intercom, scopeFixture(backend, openSqlReleasedAskStore));
+	registerSentMessageAuthorityConformance(run, intercom, scopeFixture(backend, openSqlSentMessageAuthority));
+	registerHeldSendStoreConformance(run, intercom, scopeFixture(backend, openSqlHeldSendStore));
+	registerRestoringReservationStoreConformance(run, intercom, scopeFixture(backend, openSqlRestoringReservationStore));
+	registerCrossNodeRoundTripConformance(run, intercom, {
+		openOutbox: scopeFixture(backend, openSqlOutboxStore),
+		openPendingAsks: scopeFixture(backend, openSqlPendingAskStore),
+		openBus: openMemoryWakeUpBusFixture,
+	});
+	registerCrossNodeHeldRoundTripConformance(run, intercom, {
+		openReservations: scopeFixture(backend, openSqlRestoringReservationStore),
+		openHeldSends: scopeFixture(backend, openSqlHeldSendStore),
+		openOutbox: openMemoryOutboxFixture,
+		openBus: openMemoryWakeUpBusFixture,
+	});
+}

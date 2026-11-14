@@ -1,4 +1,10 @@
-import { type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import {
+	dialectOf,
+	type SqliteExecutor,
+	type SqliteRow,
+	type StorageDialect,
+	validateStoragePrefix,
+} from "@bastani/atomic/storage";
 import type {
 	BrokerLeaseStore,
 	IntercomBrokerStateOptions,
@@ -11,8 +17,8 @@ import type {
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
 
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-const AGE = `MAX(0, ${STORE_NOW} - renewed_at)`;
+/** Store-clock milliseconds since the lease was renewed, never negative. */
+const age = ({ greatest, nowMs }: StorageDialect) => greatest("0", `${nowMs} - renewed_at`);
 
 type HolderRow = SqliteRow & {
 	holder_id: string | null;
@@ -67,16 +73,18 @@ function stateFromRow(row: StateRow): LeaseState {
  * the table: `undefined` when no broker has created it yet. For status reports; brokers use `listLive`.
  */
 export async function readLiveBrokerNodes(
-	database: SqliteExecutor,
+	database: SqliteExecutor & { readonly dialect?: StorageDialect },
 	prefix: string | undefined,
 	staleAfterMs: number,
 ): Promise<string[] | undefined> {
 	const table = `${validateStoragePrefix(prefix)}intercom_leases`;
-	const exists = await database.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table);
-	if (exists === undefined) return undefined;
+	const dialect = dialectOf(database);
+	const exists = dialect.tableExists(table);
+	if ((await database.get(exists.sql, ...exists.params)) === undefined) return undefined;
+	const leaseAge = age(dialect);
 	const rows = await database.all<StateRow>(
-		`SELECT kind, key, holder_id, fencing_token, subject_json, ${AGE} AS age_ms FROM ${table}
-		WHERE kind = 'broker' AND holder_id IS NOT NULL AND ${AGE} <= ? ORDER BY first_acquired_order`,
+		`SELECT kind, key, holder_id, fencing_token, subject_json, ${leaseAge} AS age_ms FROM ${table}
+		WHERE kind = 'broker' AND holder_id IS NOT NULL AND ${leaseAge} <= ? ORDER BY first_acquired_order`,
 		staleAfterMs,
 	);
 	return rows.flatMap((row) => {
@@ -89,17 +97,20 @@ export async function readLiveBrokerNodes(
 export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOptions): Promise<BrokerLeaseStore> {
 	const { database } = options;
 	const table = `${validateStoragePrefix(options.prefix)}intercom_leases`;
+	const dialect = dialectOf(database);
+	const { types, nowMs } = dialect;
+	const leaseAge = age(dialect);
 	await database.exec(`
 		CREATE TABLE IF NOT EXISTS ${table}(
-			kind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token INTEGER,
-			last_token INTEGER NOT NULL, subject_json TEXT, renewed_at INTEGER,
-			first_acquired_order INTEGER NOT NULL, PRIMARY KEY(kind, key)
+			kind TEXT NOT NULL, key TEXT NOT NULL, holder_id TEXT, fencing_token ${types.int},
+			last_token ${types.int} NOT NULL, subject_json TEXT, renewed_at ${types.int},
+			first_acquired_order ${types.int} NOT NULL, PRIMARY KEY(kind, key)
 		)
 	`);
 
 	const holderOf = (executor: SqliteExecutor, key: LeaseKey) =>
 		executor.get<HolderRow>(
-			`SELECT holder_id, fencing_token, last_token, ${AGE} AS age_ms FROM ${table} WHERE kind = ? AND key = ?`,
+			`SELECT holder_id, fencing_token, last_token, ${leaseAge} AS age_ms FROM ${table} WHERE kind = ? AND key = ?`,
 			key.kind,
 			keyId(key),
 		);
@@ -125,7 +136,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 					await tx.run(
 						`INSERT INTO ${table}(kind, key, holder_id, fencing_token, last_token, subject_json, renewed_at,
 							first_acquired_order)
-						VALUES (?, ?, ?, 1, 1, ?, ${STORE_NOW},
+						VALUES (?, ?, ?, 1, 1, ?, ${nowMs},
 							(SELECT COALESCE(MAX(first_acquired_order), 0) + 1 FROM ${table}))`,
 						key.kind,
 						keyId(key),
@@ -136,7 +147,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 				}
 				if (row.holder_id === holderId) {
 					await tx.run(
-						`UPDATE ${table} SET subject_json = ?, renewed_at = ${STORE_NOW} WHERE kind = ? AND key = ?`,
+						`UPDATE ${table} SET subject_json = ?, renewed_at = ${nowMs} WHERE kind = ? AND key = ?`,
 						subjectJson,
 						key.kind,
 						keyId(key),
@@ -152,7 +163,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 				const fencingToken = Number(row.last_token) + 1;
 				await tx.run(
 					`UPDATE ${table} SET holder_id = ?, fencing_token = ?, last_token = ?, subject_json = ?,
-						renewed_at = ${STORE_NOW} WHERE kind = ? AND key = ?`,
+						renewed_at = ${nowMs} WHERE kind = ? AND key = ?`,
 					holderId,
 					fencingToken,
 					fencingToken,
@@ -172,9 +183,9 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 			return database.transaction(async (tx) => {
 				const { changes } =
 					subject === undefined
-						? await tx.run(`UPDATE ${table} SET renewed_at = ${STORE_NOW} WHERE ${owned}`, ...ownedParams(lease))
+						? await tx.run(`UPDATE ${table} SET renewed_at = ${nowMs} WHERE ${owned}`, ...ownedParams(lease))
 						: await tx.run(
-								`UPDATE ${table} SET renewed_at = ${STORE_NOW}, subject_json = ? WHERE ${owned}`,
+								`UPDATE ${table} SET renewed_at = ${nowMs}, subject_json = ? WHERE ${owned}`,
 								JSON.stringify(subject),
 								...ownedParams(lease),
 							);
@@ -197,7 +208,7 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 			const bad = invalidKey(key);
 			if (bad !== undefined) return bad;
 			const row = await database.get<StateRow>(
-				`SELECT kind, key, holder_id, fencing_token, subject_json, ${AGE} AS age_ms FROM ${table}
+				`SELECT kind, key, holder_id, fencing_token, subject_json, ${leaseAge} AS age_ms FROM ${table}
 				WHERE kind = ? AND key = ? AND holder_id IS NOT NULL`,
 				key.kind,
 				keyId(key),
@@ -206,8 +217,8 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 		},
 		async listLive(kind, staleAfterMs) {
 			const rows = await database.all<StateRow>(
-				`SELECT kind, key, holder_id, fencing_token, subject_json, ${AGE} AS age_ms FROM ${table}
-				WHERE kind = ? AND holder_id IS NOT NULL AND ${AGE} <= ? ORDER BY first_acquired_order`,
+				`SELECT kind, key, holder_id, fencing_token, subject_json, ${leaseAge} AS age_ms FROM ${table}
+				WHERE kind = ? AND holder_id IS NOT NULL AND ${leaseAge} <= ? ORDER BY first_acquired_order`,
 				kind,
 				staleAfterMs,
 			);

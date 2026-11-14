@@ -1,4 +1,4 @@
-import { type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import type {
 	HeldSend,
 	HeldSendDropResult,
@@ -19,8 +19,6 @@ type HeldRow = SqliteRow & {
 	request_json: string;
 };
 
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-
 const invalid = (reason: StateStoreInvalidReason): InvalidStateInput => ({ status: "invalid", reason });
 
 function heldSendOf(row: HeldRow): HeldSend {
@@ -38,16 +36,17 @@ function heldSendOf(row: HeldRow): HeldSend {
  */
 export async function openSqlHeldSendStore({ database, prefix }: IntercomBrokerStateOptions): Promise<HeldSendStore> {
 	const table = `${validateStoragePrefix(prefix)}intercom_held_sends`;
+	const { types, nowMs } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
-				"order" INTEGER PRIMARY KEY AUTOINCREMENT,
+				"order" ${types.serialKey},
 				message_id TEXT NOT NULL UNIQUE,
 				reservation_key TEXT NOT NULL,
 				origin_broker_id TEXT NOT NULL,
 				sender_session_id TEXT NOT NULL,
 				request_json TEXT NOT NULL,
-				held_at INTEGER NOT NULL
+				held_at ${types.int} NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS ${table}_reservation ON ${table}(reservation_key, "order");
 		`),
@@ -64,7 +63,7 @@ export async function openSqlHeldSendStore({ database, prefix }: IntercomBrokerS
 			if (messageId.length === 0) return invalid("empty-message-id");
 			const { changes } = await database.run(
 				`INSERT INTO ${table}(message_id, reservation_key, origin_broker_id, sender_session_id, request_json, held_at)
-				 VALUES (?, ?, ?, ?, ?, ${STORE_NOW}) ON CONFLICT(message_id) DO NOTHING`,
+				 VALUES (?, ?, ?, ?, ?, ${nowMs}) ON CONFLICT(message_id) DO NOTHING`,
 				messageId,
 				send.reservationKey,
 				send.originBrokerId,

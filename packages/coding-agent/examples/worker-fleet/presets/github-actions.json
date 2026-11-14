@@ -34,5 +34,8 @@
 			"*": "pending"
 		}
 	},
-	"timeoutMs": 60000
+	"timeoutMs": 60000,
+	"auth": {
+		"githubApp": { "repository": "acme/flows" }
+	}
 }

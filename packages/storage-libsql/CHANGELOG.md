@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A libSQL server (sqld) database no longer fails a write with `SQLITE_BUSY: database is locked` when the write meets the server's checkpoint. sqld answers such a write `SQLITE_BUSY` at once, without running any of it, and leaves the waiting to the client, so a write that coincided with a checkpoint failed with `StorageUnavailableError`. A statement outside a transaction, an `exec` of one statement, a batch, or the start of a transaction that the server answers busy now runs again with growing waits for up to 5 seconds. A statement the server answers busy after its transaction began, and several statements in one `exec`, do not run again ([#4817](https://github.com/bastani-inc/atomic/issues/4817)).
+
 ## [0.9.75] - 2026-11-10
 
 ### Fixed
