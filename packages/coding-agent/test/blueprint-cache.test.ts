@@ -579,6 +579,39 @@ describe("resume.cache settings overrides (#4748)", () => {
 		assert.match(keys.warnings[2] ?? "", /'~\/\.atomic'.*credentials/);
 	});
 
+	test("a child named like '..keys' is inside its parent, so credential locations stay refused (#4748)", async () => {
+		const at = fixture(undefined, {}, [
+			{ paths: ["~/.ssh/..keys", "~/.ssh/keys", "~/..ssh-like", "~/.cargo/..credentials"] },
+		]);
+		const keys = await keysOf(at);
+		assert.deepEqual(entry(keys, "stores")?.paths, [
+			join(at.home, "..ssh-like"),
+			join(at.home, ".cargo", "..credentials"),
+		]);
+		assert.equal(keys.warnings.length, 2, keys.warnings.join("\n"));
+		assert.match(keys.warnings[0] ?? "", /'~\/\.ssh\/\.\.keys'.*credentials/);
+		assert.match(keys.warnings[1] ?? "", /'~\/\.ssh\/keys'.*credentials/);
+	});
+
+	test("a worktree or store named like '..repo' is still seen inside the other (#4748)", async () => {
+		const base = temporaryDirectory();
+		const root = join(base, "..repo");
+		const home = join(base, "home", "user");
+		mkdirSync(root, { recursive: true });
+		setCache(root, [{ paths: [base, join(root, "..cache"), join(base, "..sibling")] }]);
+		const keys = await blueprintCacheKeys(root, {
+			platform: "linux",
+			arch: "x64",
+			home,
+			agentDir: join(home, "agent"),
+			env: {},
+		});
+		assert.deepEqual(entry(keys, "stores")?.paths, [join(base, "..sibling")]);
+		const omitted = keys.warnings.filter((warning) => warning.startsWith("cache path"));
+		assert.equal(omitted.length, 2, keys.warnings.join("\n"));
+		for (const warning of omitted) assert.match(warning, /outside the worktree/);
+	});
+
 	test("credential checks fold case and follow symbolic links (#4748)", async () => {
 		const at = fixture(undefined);
 		mkdirSync(join(at.home, ".ssh"), { recursive: true });

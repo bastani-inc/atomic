@@ -398,7 +398,12 @@ function storePath(path: string, home: string): string {
 /** `child` is `parent` or below it. */
 function within(parent: string, child: string): boolean {
 	const path = relative(parent, child);
-	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
+	return path === "" || !escapes(path);
+}
+
+/** `path`, relative, leaves its base: `..` or `../…`, not a child named like `..keys`; or it is absolute (another drive). */
+function escapes(path: string): boolean {
+	return path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path);
 }
 
 /**
