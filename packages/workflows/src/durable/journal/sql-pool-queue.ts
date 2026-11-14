@@ -265,6 +265,8 @@ export class SqlPoolQueue {
 	private readonly transaction: Transaction;
 	private readonly journal: JournalTables;
 	private readonly checkpoints = new PoolCheckpointIndex();
+	/** The executor a pool session store's calls go to, for every store this queue opens (see `openPoolSessions`). */
+	private readonly poolSessionScope = new AsyncLocalStorage<SqliteExecutor>();
 	/** Commits in flight by work, generation and operation, so a duplicate joins the first instead of racing it. */
 	private readonly committing = new Map<string, Promise<PoolCommitReceipt>>();
 	private draining: Promise<number> | undefined;
@@ -1567,7 +1569,10 @@ export class SqlPoolQueue {
 		return this.sessions;
 	}
 	private async openPoolSessions(tx?: SqliteExecutor): Promise<PoolSessions> {
-		const within = new AsyncLocalStorage<SqliteExecutor>();
+		// One context per queue for every store it opens: on Node 22 an AsyncLocalStorage that ran stays registered with
+		// async_hooks for the life of the process, and every async resource after it carries its slot, so one per store
+		// (a journal without batches opens one per session write) grew the heap without bound (#4768).
+		const within = this.poolSessionScope;
 		const executor = () => {
 			const current = within.getStore();
 			if (current === undefined) throw new Error("Pool session store used outside a pool write");
