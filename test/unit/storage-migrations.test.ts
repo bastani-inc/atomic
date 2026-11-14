@@ -131,6 +131,44 @@ test("a versioned store applies only missing steps, once each, and records them 
 	}
 });
 
+test("a versioned store with no steps records nothing and reports version 0 (#4793)", async () => {
+	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, []));
+	try {
+		assert.deepEqual(await applyStorageMigrations(database, "sessions", []), { applied: [], version: 0 });
+		assert.deepEqual(await database.all("SELECT * FROM atomic_migrations"), []);
+	} finally {
+		await database.close();
+	}
+});
+
+test("a migration runs again after a transient failure that applied nothing (#4793)", async () => {
+	const begun: SqliteDriverTransactionOptions[] = [];
+	const driver = recordingDriver(path, ledgerDialect, begun);
+	const begin = driver.beginTransaction.bind(driver);
+	const lost = Object.assign(new Error("connection refused"), { lost: true });
+	let failures = 1;
+	const database = createSqliteDatabase({
+		...driver,
+		beginTransaction(options) {
+			if (failures-- > 0) throw lost;
+			return begin(options);
+		},
+		transientFailure: (failure) =>
+			failure === lost ? { code: "connection-refused", outcome: "not-applied" } : undefined,
+	});
+	const warned = new Promise((resolve) => process.once("warning", resolve));
+	try {
+		assert.deepEqual(await applyStorageMigrations(database, "sessions", [tableStep(1, "one")]), {
+			applied: [1],
+			version: 1,
+		});
+		await warned;
+		assert.equal(begun.length, 1);
+	} finally {
+		await database.close();
+	}
+});
+
 test("a versioned store refuses a newer recorded version and changes nothing (#4793)", async () => {
 	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, []));
 	try {
@@ -210,7 +248,11 @@ test("migration steps must be numbered in increasing order (#4793)", async () =>
 					versions.map((version) => tableStep(version, "never")),
 				),
 				(error: StorageConfigError) =>
-					error instanceof StorageConfigError && error.reason === "versions-increasing",
+					error instanceof StorageConfigError &&
+					error.source === "sdk" &&
+					error.field === "steps" &&
+					error.reason === "versions-increasing" &&
+					error.hint === "Number migration steps 1, 2, 3, … in increasing order",
 			);
 		}
 		assert.deepEqual(await tables(database), []);

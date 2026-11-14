@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
 import { inspect } from "node:util";
-import { loadStorageAdapter, StorageConfigError } from "@bastani/atomic/storage";
+import { loadStorageAdapter, StorageConfigError, StorageUnavailableError } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import adapter, { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
@@ -124,3 +124,28 @@ test("Atomic loads the installed Postgres package by name as a storage adapter (
 		removeTempDirectory(agentDir);
 	}
 });
+
+/** An open that fails to connect gives up only after the facade's five runs and their backoff, about four seconds. */
+const FAILED_OPEN_TIMEOUT_MS = 20_000;
+
+test(
+	"Postgres requires a verified TLS connection to a host that is not this machine, unless the URL says otherwise (#4793)",
+	async () => {
+		const location = async (url: string) => {
+			const error = await openPostgresDatabase({ url }).catch((caught) => caught);
+			assert.ok(error instanceof StorageUnavailableError, inspect(error));
+			return error.location;
+		};
+		const [remote, lookalike, loopback, chosen] = await Promise.all([
+			location("postgres://atomic@db.invalid:1/atomic"),
+			location("postgres://atomic@127.db.invalid:1/atomic"),
+			location("postgres://atomic@127.0.0.1:1/atomic"),
+			location("postgres://atomic@db.invalid:1/atomic?sslmode=disable"),
+		]);
+		assert.equal(remote, "postgres://atomic@db.invalid:1/atomic?sslmode=verify-full");
+		assert.equal(lookalike, "postgres://atomic@127.db.invalid:1/atomic?sslmode=verify-full");
+		assert.equal(loopback, "postgres://atomic@127.0.0.1:1/atomic");
+		assert.equal(chosen, "postgres://atomic@db.invalid:1/atomic?sslmode=disable");
+	},
+	FAILED_OPEN_TIMEOUT_MS,
+);

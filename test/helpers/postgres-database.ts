@@ -4,13 +4,14 @@ import { openPostgresDatabase, type PostgresDatabaseOptions } from "../../packag
 
 /**
  * The server the Postgres tests run against: `ATOMIC_TEST_POSTGRES_URL` (a URL without a password) and
- * `ATOMIC_TEST_POSTGRES_PASSWORD`. Without the URL the tests are skipped locally and fail in CI.
+ * `ATOMIC_TEST_POSTGRES_PASSWORD`. Without the URL the tests are skipped, unless
+ * `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1` (CI's storage conformance job) makes that a failure.
  */
-export const postgresTestUrl = process.env.ATOMIC_TEST_POSTGRES_URL;
+export const postgresTestUrl = process.env.ATOMIC_TEST_POSTGRES_URL || undefined;
 export const postgresTestPassword = process.env.ATOMIC_TEST_POSTGRES_PASSWORD;
 
-if (postgresTestUrl === undefined && process.env.CI)
-	throw new Error("ATOMIC_TEST_POSTGRES_URL must name a PostgreSQL server in CI");
+if (postgresTestUrl === undefined && process.env.ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED === "1")
+	throw new Error("ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1 but ATOMIC_TEST_POSTGRES_URL is not set");
 
 /** Why the Postgres tests do not run here, or undefined when they do. */
 export const postgresSkipReason = postgresTestUrl === undefined ? "ATOMIC_TEST_POSTGRES_URL is not set" : undefined;
