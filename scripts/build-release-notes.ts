@@ -18,6 +18,12 @@
  * 0.9.16-alpha.7 changed only subagents and workflows and published a release
  * page whose entire body was the commit subject.
  *
+ * Packages that share a change used to describe it in each of their summaries
+ * and sections, so one change appeared two or three times (#4799). The merge
+ * therefore lists each change once within the summary and once within each
+ * `###` section, but never deduplicates across the summary and the full
+ * changelog: a change belongs in both. See `isSameChange` for the rule.
+ *
  * There is deliberately no empty-notes fallback. A version that no changelog
  * describes is a preparation mistake, and failing here costs a re-cut, whereas
  * a contentless page is only fixable after users have already seen it.
@@ -119,13 +125,173 @@ function orderSectionTitles(titles: readonly string[]): string[] {
 }
 
 /**
+ * Two bullets citing nested link sets are one change only when the smaller set
+ * holds at least this many links. One shared issue is weak evidence: an issue
+ * that spans packages gets a distinct entry per package (0.9.86's #4738 fixed
+ * the workflow resume and, separately, the coding-agent restore API), while a
+ * summary bullet cites the issue and its PR together.
+ */
+const MIN_SHARED_LINKS = 2;
+
+const GITHUB_REFERENCE_RE = /https:\/\/github\.com\/([^/\s)]+\/[^/\s)]+)\/(?:issues|pull)\/(\d+)/g;
+
+/** One bullet with its continuation lines, or a run of other lines. */
+interface Item {
+	/** The item's lines with trailing blank lines removed. */
+	readonly lines: readonly string[];
+	/** Blank lines that followed the item where it appeared. */
+	readonly trailingBlankLines: number;
+	readonly bullet: boolean;
+}
+
+interface Bullet {
+	readonly lines: readonly string[];
+	/** `owner/repo#number`; issues and pull requests share one number space. */
+	readonly links: ReadonlySet<string>;
+	/** Whitespace-normalized text, for verbatim-repeat detection and length. */
+	readonly text: string;
+}
+
+/** Every bullet judged to be one change, rendered as its most complete member. */
+interface Change {
+	best: Bullet;
+	readonly members: Bullet[];
+}
+
+/** One rendered position: an item kept as written, or the first place a change appeared. */
+interface Slot {
+	readonly item: Item;
+	readonly change?: Change;
+}
+
+function isBulletStart(line: string): boolean {
+	return line.startsWith("- ") || line.startsWith("* ");
+}
+
+/**
+ * Splits markdown into bullets and runs of other lines. A bullet keeps its
+ * indented and lazy continuation lines; an unindented line after a blank line
+ * ends it, so a closing paragraph such as "**Breaking change:**" stays prose.
+ */
+function splitItems(text: string): Item[] {
+	const items: Item[] = [];
+	let lines: string[] = [];
+	let bullet = false;
+	const flush = (): void => {
+		if (lines.length === 0) return;
+		const kept = trimBlankEdges(lines);
+		items.push({ lines: kept, trailingBlankLines: lines.length - kept.length, bullet });
+		lines = [];
+	};
+	for (const line of text.split("\n")) {
+		const afterBlank = lines.length > 0 && lines[lines.length - 1].trim() === "";
+		if (isBulletStart(line)) {
+			flush();
+			bullet = true;
+		} else if (bullet && afterBlank && line.trim() !== "" && !/^\s/.test(line)) {
+			flush();
+			bullet = false;
+		}
+		lines.push(line);
+	}
+	flush();
+	return items;
+}
+
+function toBullet(lines: readonly string[]): Bullet {
+	const text = lines.join("\n");
+	const links = new Set<string>();
+	for (const match of text.matchAll(GITHUB_REFERENCE_RE)) links.add(`${match[1].toLowerCase()}#${match[2]}`);
+	return { lines, links, text: text.replace(/\s+/g, " ").trim() };
+}
+
+function isSubset(small: ReadonlySet<string>, large: ReadonlySet<string>): boolean {
+	for (const link of small) if (!large.has(link)) return false;
+	return true;
+}
+
+/**
+ * Two bullets describe the same change when they read the same, or when one
+ * cites every issue/PR link the other does (equal sets included) and the
+ * smaller set has at least `MIN_SHARED_LINKS` links. Partly overlapping sets
+ * are distinct changes, as are bullets that share a single link.
+ */
+function isSameChange(left: Bullet, right: Bullet): boolean {
+	if (left.text === right.text) return true;
+	const [small, large] = left.links.size <= right.links.size ? [left, right] : [right, left];
+	return small.links.size >= MIN_SHARED_LINKS && isSubset(small.links, large.links);
+}
+
+/** The most complete bullet: the most links, then the longest text; ties keep the earlier one. */
+function isMoreComplete(candidate: Bullet, current: Bullet): boolean {
+	if (candidate.links.size !== current.links.size) return candidate.links.size > current.links.size;
+	return candidate.text.length > current.text.length;
+}
+
+/**
+ * Lists each change once across `blocks`, keeping their order. A repeated
+ * change is removed, and its most complete wording takes the place where the
+ * change first appeared. A block that had bullets and lost all of them is
+ * dropped with its prose, so no theme line is left without its bullets.
+ * Returns the surviving blocks.
+ */
+function dedupeBlocks(blocks: readonly string[]): string[] {
+	const changes: Change[] = [];
+	const placed: { slots: Slot[]; hadBullets: boolean }[] = [];
+
+	for (const block of blocks) {
+		const slots: Slot[] = [];
+		let hadBullets = false;
+		for (const item of splitItems(block)) {
+			if (!item.bullet) {
+				slots.push({ item });
+				continue;
+			}
+			hadBullets = true;
+			const bullet = toBullet(item.lines);
+			const change = changes.find((candidate) => candidate.members.some((member) => isSameChange(member, bullet)));
+			if (!change) {
+				const created: Change = { best: bullet, members: [bullet] };
+				changes.push(created);
+				slots.push({ item, change: created });
+				continue;
+			}
+			change.members.push(bullet);
+			if (isMoreComplete(bullet, change.best)) change.best = bullet;
+			// The removed bullet's separating blank lines stay with the item before it.
+			const previous = slots.at(-1);
+			if (previous && item.trailingBlankLines > previous.item.trailingBlankLines) {
+				slots[slots.length - 1] = {
+					...previous,
+					item: { ...previous.item, trailingBlankLines: item.trailingBlankLines },
+				};
+			}
+		}
+		placed.push({ slots, hadBullets });
+	}
+
+	const rendered: string[] = [];
+	for (const { slots, hadBullets } of placed) {
+		if (hadBullets && !slots.some((slot) => slot.change)) continue;
+		const lines: string[] = [];
+		for (const { item, change } of slots) {
+			lines.push(...(change ? change.best.lines : item.lines));
+			for (let index = 0; index < item.trailingBlankLines; index += 1) lines.push("");
+		}
+		const text = trimBlankEdges(lines).join("\n");
+		if (text.length > 0) rendered.push(text);
+	}
+	return rendered;
+}
+
+/**
  * Merges every source's section for `version` into one flat notes body.
  *
  * @throws when no source documents the version, so a contentless release page
  * can never be staged.
  */
 export function buildReleaseNotes(sources: readonly ChangelogSource[], version: string): string {
-	const preambles: string[] = [];
+	let preambles: string[] = [];
 	const merged = new Map<string, string[]>();
 
 	for (const source of orderSources(sources)) {
@@ -141,9 +307,11 @@ export function buildReleaseNotes(sources: readonly ChangelogSource[], version: 
 		}
 	}
 
+	preambles = dedupeBlocks(preambles);
 	const sectionBlocks: string[] = [];
 	for (const title of orderSectionTitles([...merged.keys()])) {
-		sectionBlocks.push(`### ${title}\n\n${(merged.get(title) ?? []).join("\n")}`);
+		const entries = dedupeBlocks(merged.get(title) ?? []);
+		if (entries.length > 0) sectionBlocks.push(`### ${title}\n\n${entries.join("\n")}`);
 	}
 
 	const blocks: string[] = [...preambles];
