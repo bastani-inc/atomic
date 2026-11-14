@@ -7,22 +7,28 @@ const OUTAGE_RETRY_BASE_MS = 50;
 const OUTAGE_RETRY_MAX_MS = 1_000;
 /**
  * Codes, from SQLite, a database server or the network, of a request the store refused only for a while: its lock
- * was busy, it ended the request's stream or transaction, or it could not be reached. Any other such code (a value or
- * a response too large, a constraint, a corrupt file) fails again the same way, so its request is not sent again.
+ * was busy, it ended the request's stream or transaction, or it could not be reached.
  */
 const PASSING_CODES = /^(SQLITE_(BUSY|LOCKED)|TRANSACTION_TIMEOUT|STREAM_EXPIRED|E[A-Z]+$|UND_ERR_)/;
-/** A code as SQLite, a database server or Node writes one, as opposed to Atomic's own lower-case codes. */
-const SYSTEM_CODE = /^[A-Z][A-Z0-9_]+$/;
 
-/** Whether `error` is the store refusing for a while (unreachable, or its lock busy), not a statement it cannot run. */
+/**
+ * Whether `error` is the store refusing for a while: a transient failure (`StorageTransientError`), or a refusal whose
+ * cause carries one of {@link PASSING_CODES}. Anything else the store refused (a value or a response too large, a
+ * constraint, a full disk, a refusal that says nothing more) may fail again the same way, so it is not sent again.
+ */
 function refusedForAWhile(error: unknown): boolean {
 	if (infrastructureFaultOf(error) !== "storage_unavailable") return false;
 	for (let current = error, depth = 0; typeof current === "object" && current !== null && depth < 8; depth++) {
-		const { code, cause } = current as { readonly code?: unknown; readonly cause?: unknown };
-		if (typeof code === "string" && SYSTEM_CODE.test(code) && !PASSING_CODES.test(code)) return false;
+		const { name, code, cause } = current as {
+			readonly name?: unknown;
+			readonly code?: unknown;
+			readonly cause?: unknown;
+		};
+		if (name === "StorageTransientError") return true;
+		if (typeof code === "string" && PASSING_CODES.test(code)) return true;
 		current = cause;
 	}
-	return true;
+	return false;
 }
 
 /**
