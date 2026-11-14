@@ -49,8 +49,6 @@ export interface PrebuildRepositoryOptions {
 	readonly park?: boolean;
 	/** The deprecated `resume.setupCommand`, run as a resume would. */
 	readonly setupCommand?: string;
-	/** What `~` in the blueprint's `cache:` paths expands to. Default: the user's home directory. */
-	readonly home?: string;
 	readonly signal?: AbortSignal;
 }
 
@@ -132,11 +130,7 @@ export async function prebuildRepository(root: string, options: PrebuildReposito
 		try {
 			if (options.park) {
 				const started = performance.now();
-				const keys = await blueprintCacheKeys(root, {
-					agentDir: options.agentDir,
-					storeDir,
-					...(options.home === undefined ? {} : { home: options.home }),
-				});
+				const keys = await blueprintCacheKeys(root, { agentDir: options.agentDir, storeDir });
 				outcome.warnings.push(...keys.warnings);
 				const seeds = seedDirectory(storeDir, repositoryIdOf(remotes));
 				const declared = (keys.entries.find((entry) => entry.name === "build")?.paths ?? [])

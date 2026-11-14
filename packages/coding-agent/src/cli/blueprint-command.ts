@@ -163,7 +163,6 @@ async function prebuild(
 		maxIdlePerRepository: settings.getWorktreePoolSettings().maxIdlePerRepository,
 		park: command.park,
 		setupCommand: settings.getResumeSetupCommand(),
-		...(options.home === undefined ? {} : { home: options.home }),
 	});
 	for (const warning of outcome.warnings) stderr(`Warning: ${warning}\n`);
 	for (const line of formatResumeTimings(outcome.timings)) stderr(`${line}\n`);

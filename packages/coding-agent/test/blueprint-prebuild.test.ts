@@ -9,6 +9,7 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -47,6 +48,7 @@ import {
 	readSeedManifest,
 	seedDirectory,
 	seedManifestPath,
+	seedPathSegments,
 	withSeedLock,
 	writeSeedManifest,
 } from "../src/core/worktree-snapshot/seeds.js";
@@ -224,6 +226,47 @@ describe("atomic blueprint prebuild (#4748)", () => {
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
 
+	test(
+		"a failing global blueprint fails the prebuild and leaves no worktree (#4748)",
+		async () => {
+			const { clone, remote } = await checkout();
+			sandbox.write(join(agentDir(), "blueprint.yaml"), forThisHost("maintenance: exit 4\n"));
+			const outcome = await prebuild(clone, true);
+			assert.equal(outcome.status, "failed");
+			assert.equal(outcome.path, undefined);
+			assert.equal(existsSync(slot([remote], 0)), false);
+			assert.equal(existsSync(seedManifestPath(storeDir(), repositoryIdOf([remote]))), false);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a shallow checkout whose remote this machine cannot reach is prebuilt from its own objects (#4748)",
+		async () => {
+			const { remote } = await checkout();
+			const shallow = sandbox.path("shallow");
+			await sandbox.git(
+				sandbox.root,
+				"clone",
+				"-q",
+				"--depth",
+				"1",
+				`file://${remote.replace(/\\/g, "/")}`,
+				shallow,
+			);
+			await sandbox.git(shallow, "remote", "set-url", "origin", "https://unreachable.invalid/acme/widgets.git");
+			const outcome = await prebuild(shallow);
+			assert.equal(outcome.status, "built");
+			assert.equal(outcome.timings.restores[0]?.fetch, "none");
+			const store = objectStorePath(storeDir(), ["https://unreachable.invalid/acme/widgets.git"]);
+			assert.equal(
+				await sandbox.git(storeDir(), `--git-dir=${store}`, "rev-parse", "--is-shallow-repository"),
+				"true",
+			);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
 	test("prebuild refuses a checkout without a remote or with uncommitted tracked changes (#4748)", async () => {
 		const { clone } = await checkout();
 		sandbox.write(join(clone, "README.md"), "uncommitted\n");
@@ -291,11 +334,13 @@ describe("atomic blueprint prebuild (#4748)", () => {
 			const outside = sandbox.path("outside");
 			sandbox.write(join(outside, "build", "keep.txt"), "outside\n");
 			const link =
-				process.platform === "win32" ? "" : `ln -s ${JSON.stringify(outside.replace(/\\/g, "/"))} linked && `;
+				process.platform === "win32"
+					? ""
+					: `ln -s ${JSON.stringify(outside.replace(/\\/g, "/"))} linked && ln -s ${JSON.stringify(outside.replace(/\\/g, "/"))} below && `;
 			const { clone, remote } = await checkout(
-				`maintenance: ${link}mkdir -p build/sub && echo out > build/sub/out.txt\ncache:\n  - path: build/sub\n    kind: build\n  - path: build\n    kind: build\n  - path: linked/build\n    kind: build\n`,
+				`maintenance: ${link}mkdir -p build/sub && echo out > build/sub/out.txt\ncache:\n  - path: build/sub\n    kind: build\n  - path: build\n    kind: build\n  - path: build\n    kind: build\n  - path: below/build\n    kind: build\n  - path: linked\n    kind: build\n  - path: never-built\n    kind: build\n`,
 			);
-			sandbox.write(join(clone, ".gitignore"), "build/\nlinked\n");
+			sandbox.write(join(clone, ".gitignore"), "build/\nlinked\nbelow\n");
 			await sandbox.commitAll(clone, "ignore the link");
 
 			const outcome = await prebuild(clone, true);
@@ -305,6 +350,7 @@ describe("atomic blueprint prebuild (#4748)", () => {
 			assert.equal(readFileSync(join(seeds, "build", "sub", "out.txt"), "utf8"), "out\n");
 			assert.equal(readFileSync(join(outside, "build", "keep.txt"), "utf8"), "outside\n");
 			assert.equal(existsSync(join(seeds, "linked")), false);
+			assert.equal(existsSync(join(seeds, "below")), false);
 		},
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
@@ -506,6 +552,33 @@ describe("repository identity across remote spellings (#4748)", () => {
 		]) {
 			assert.equal(normalizeRemoteUrl(kept), kept);
 		}
+		for (const spelling of [
+			" git@github.com:acme/widgets.git\n",
+			"github.com:acme/widgets",
+			"ssh+git://git@github.com:22/acme/widgets",
+			"git+ssh://github.com:22/acme/widgets",
+			"SSH://git@github.com/acme/widgets",
+			"git://github.com:9418/acme/widgets",
+			"ssh://git@github.com//acme/widgets",
+			"https://github.com/acme/widgets//",
+			"https://github.com/acme/widgets.GIT",
+			"https://github.com/acme/widgets/.git",
+		]) {
+			assert.equal(normalizeRemoteUrl(spelling), "https://github.com/acme/widgets", JSON.stringify(spelling));
+		}
+		assert.equal(normalizeRemoteUrl("git@[::1]:acme/widgets.git"), "https://[::1]/acme/widgets");
+		assert.equal(normalizeRemoteUrl("ssh://git@host.example:443/a/b"), "https://host.example/a/b");
+		assert.equal(normalizeRemoteUrl("git://host.example:22/a/b"), "https://host.example:22/a/b");
+		for (const kept of [
+			"./ab:cd",
+			"/srv/https://repo",
+			"ssh://[oops/repo",
+			"https://example.com/",
+			"https://example.com/.git",
+			"git@host:/",
+		]) {
+			assert.equal(normalizeRemoteUrl(kept), kept);
+		}
 		assert.notEqual(normalizeRemoteUrl("https://github.com/acme/Widgets"), "https://github.com/acme/widgets");
 		assert.equal(repositoryIdOf([SSH]), repositoryIdOf([HTTPS]));
 		assert.notEqual(legacyRepositoryIdOf([SSH]), legacyRepositoryIdOf([HTTPS]));
@@ -647,6 +720,13 @@ describe("atomic blueprint prebuild command (#4748)", () => {
 			assert.match(built.out, /^parked build in \d+\.\d s$/m);
 			assert.match(built.err, /^restored .* in \d+\.\d s/m);
 			assert.match(built.err, /^blueprint \d+\.\d s/m);
+
+			sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost("maintenance: echo ok\n"));
+			await sandbox.commitAll(clone, "no build output");
+			const nothing = await run(["prebuild", "--park", "--approve"], clone);
+			assert.equal(nothing.code, 0, nothing.err);
+			assert.match(nothing.out, /^parked nothing: /m);
+			assert.doesNotMatch((await run(["prebuild", "--approve"], clone)).out, /parked/);
 		},
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
@@ -662,4 +742,200 @@ describe("atomic blueprint prebuild command (#4748)", () => {
 		},
 		PREBUILD_TEST_TIMEOUT_MS,
 	);
+});
+
+describe("prebuild and seed edge cases (#4748)", () => {
+	test("seed paths are plain root-relative directories outside .git (#4748)", () => {
+		for (const path of ["build", "a/b", ".github/out", "node_modules"]) {
+			assert.deepEqual(seedPathSegments(path), path.split("/"));
+		}
+		for (const path of [
+			"",
+			"a//b",
+			"./a",
+			"a/.",
+			"../a",
+			"a/../b",
+			"a\\b",
+			"c:x",
+			".git",
+			".git/x",
+			".GIT/x",
+			"a/",
+		]) {
+			assert.equal(seedPathSegments(path), undefined, path);
+		}
+	});
+
+	test("a seed manifest is read only when it is whole and of the repository (#4748)", async () => {
+		const id = repositoryIdOf([HTTPS]);
+		const valid = {
+			version: 1,
+			repository: id,
+			head: "a".repeat(40),
+			tree: "b".repeat(64),
+			envHash: "e",
+			paths: ["build"],
+			worktree: "/w",
+			parkedAt: "2026-11-14T00:00:00.000Z",
+		};
+		await writeSeedManifest(storeDir(), valid);
+		assert.deepEqual(await readSeedManifest(storeDir(), id), valid);
+		if (process.platform !== "win32") assert.equal(statSync(seedManifestPath(storeDir(), id)).mode & 0o777, 0o600);
+		for (const broken of [
+			{ version: 2 },
+			{ repository: "f".repeat(24) },
+			{ head: 1 },
+			{ head: `x${"a".repeat(39)}` },
+			{ head: "a".repeat(41) },
+			{ head: `${"a".repeat(40)}x` },
+			{ tree: null },
+			{ tree: "b".repeat(39) },
+			{ tree: `${"b".repeat(40)}${"z".repeat(24)}` },
+			{ envHash: 3 },
+			{ paths: "build" },
+			{ paths: [1] },
+			{ paths: ["build", "../x"] },
+			{ worktree: null },
+			{ parkedAt: 0 },
+		]) {
+			writeFileSync(seedManifestPath(storeDir(), id), JSON.stringify({ ...valid, ...broken }));
+			assert.equal(await readSeedManifest(storeDir(), id), undefined, JSON.stringify(broken));
+		}
+		for (const text of ["null", "{", ""]) {
+			writeFileSync(seedManifestPath(storeDir(), id), text);
+			assert.equal(await readSeedManifest(storeDir(), id), undefined, text);
+		}
+	});
+
+	test("a resume without a seed is not held up by a prebuild parking one (#4748)", async () => {
+		const id = repositoryIdOf([HTTPS]);
+		const adoption = await withSeedLock(storeDir(), id, true, () =>
+			adoptPrebuiltSeed({ remotes: [HTTPS] }, { storeDir: storeDir() }),
+		);
+		assert.deepEqual(adoption, { adopted: false, reason: "missing" });
+	});
+
+	test(
+		"adoption skips parked paths below a file, and output it cannot read, and creates missing parents (#4748)",
+		async () => {
+			const { clone, remote } = await checkout();
+			const snapshot = await capture(clone);
+			const id = repositoryIdOf([remote]);
+			const seeds = seedDirectory(storeDir(), id);
+			sandbox.write(join(seeds, "README.md", "x"), "below a tracked file\n");
+			sandbox.write(join(seeds, "deep", "er", "out.txt"), "parked\n");
+			sandbox.write(join(seeds, "plain"), "a file where a directory was parked\n");
+			await writeSeedManifest(storeDir(), {
+				version: 1,
+				repository: id,
+				head: snapshot.head,
+				tree: snapshot.tree,
+				envHash: snapshot.envHash,
+				paths: ["README.md/x", "deep/er", "plain/inner"],
+				worktree: slot([remote], 0),
+				parkedAt: new Date().toISOString(),
+			});
+
+			const adoption = await adoptPrebuiltSeed(snapshot, { storeDir: storeDir() });
+
+			assert.equal(adoption.adopted, true);
+			if (!adoption.adopted) throw new Error("unreachable");
+			assert.deepEqual(adoption.moved, ["deep/er"]);
+			assert.deepEqual(adoption.skipped, ["README.md/x", "plain/inner"]);
+			assert.equal(readFileSync(join(adoption.path, "deep", "er", "out.txt"), "utf8"), "parked\n");
+			assert.equal(readFileSync(join(adoption.path, "README.md"), "utf8"), "hello\n");
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"without --park the build output stays in the prebuilt worktree and no seed is written (#4748)",
+		async () => {
+			const { clone, remote } = await checkout();
+			const outcome = await prebuild(clone);
+			assert.equal(outcome.parkMs, null);
+			assert.deepEqual(outcome.parked, []);
+			assert.equal(readFileSync(join(slot([remote], 0), "build", "out.txt"), "utf8"), "built\n");
+			assert.equal(existsSync(seedManifestPath(storeDir(), repositoryIdOf([remote]))), false);
+			assert.equal(existsSync(seedDirectory(storeDir(), repositoryIdOf([remote]))), false);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"parking without kind: build output removes the earlier seed and writes none (#4748)",
+		async () => {
+			const { clone, remote } = await checkout();
+			const first = await prebuild(clone, true);
+			assert.deepEqual(first.parked, ["build"]);
+			assert.ok(first.parkMs !== null && first.parkMs >= 0 && first.parkMs < PREBUILD_TEST_TIMEOUT_MS);
+			sandbox.write(
+				join(clone, ".atomic", "blueprint.yaml"),
+				forThisHost(`maintenance: ${JSON.stringify(INSTALL)}\n`),
+			);
+			await sandbox.commitAll(clone, "no build output");
+			const second = await prebuild(clone, true);
+			assert.equal(second.status, "built");
+			assert.deepEqual(second.parked, []);
+			assert.equal(existsSync(seedManifestPath(storeDir(), repositoryIdOf([remote]))), false);
+			assert.equal(existsSync(seedDirectory(storeDir(), repositoryIdOf([remote]))), false);
+			assert.deepEqual(
+				readdirSync(join(storeDir(), "seeds")).filter((name) => !name.endsWith(".lock")),
+				[],
+				"no staging directory is left",
+			);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a move that fails puts the parked paths back, keeps the earlier seed, and leaves the worktree idle (#4748)",
+		async () => {
+			const { clone, remote } = await checkout(
+				`maintenance: mkdir -p a b && echo a > a/f && chmod 555 b\ncache:\n  - path: a\n    kind: build\n  - path: b\n    kind: build\n`,
+			);
+			sandbox.write(join(clone, ".gitignore"), "a/\nb/\n");
+			await sandbox.commitAll(clone, "ignore a and b");
+			try {
+				await assert.rejects(prebuild(clone, true), /EACCES|EPERM/);
+				assert.equal(readFileSync(join(slot([remote], 0), "a", "f"), "utf8"), "a\n");
+				assert.notEqual(recordOf([remote], 0).releasedAt, null);
+				assert.equal(existsSync(seedManifestPath(storeDir(), repositoryIdOf([remote]))), false);
+			} finally {
+				if (existsSync(join(slot([remote], 0), "b"))) chmodSync(join(slot([remote], 0), "b"), 0o755);
+			}
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"an interrupted prebuild removes its worktree and gives its slot back (#4748)",
+		async () => {
+			const { clone, remote } = await checkout(`maintenance: sleep 5\n`);
+			const controller = new AbortController();
+			setTimeout(() => controller.abort(new Error("stop")), 1_000);
+			await assert.rejects(
+				prebuildRepository(clone, {
+					agentDir: agentDir(),
+					storeDir: storeDir(),
+					settings,
+					maxIdlePerRepository: 2,
+					signal: controller.signal,
+				}),
+			);
+			assert.equal(existsSync(slot([remote], 0)), false);
+			assert.equal(existsSync(join(storeDir(), "pool", repositoryIdOf([remote]), "0.json")), false);
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test("a prebuild of a repository without commits rejects without taking a slot (#4748)", async () => {
+		const root = sandbox.path("empty");
+		mkdirSync(root);
+		await sandbox.git(root, "init", "-q");
+		await sandbox.git(root, "remote", "add", "origin", HTTPS);
+		await assert.rejects(prebuild(root));
+		assert.equal(existsSync(join(storeDir(), "pool")), false);
+	});
 });

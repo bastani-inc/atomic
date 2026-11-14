@@ -15,7 +15,6 @@ const DEFAULT_PORTS: Readonly<Record<string, string>> = {
 	"ssh+git": "22",
 	git: "9418",
 	http: "80",
-	https: "443",
 };
 /** `[user@]host:path`, Git's scp-like syntax; a one-letter host is a Windows drive, not a host. */
 const SCP_LIKE = /^(?:[^@/\\]+@)?([^@:/\\[\]]{2,}|\[[^\]]+\]):(?!\/\/|:)(.+)$/;
@@ -42,7 +41,7 @@ export function normalizeRemoteUrl(remote: string): string {
 			return remote;
 		}
 		host = url.hostname;
-		// Parsed as HTTPS, a URL drops port 443 itself; each scheme's own default is dropped here.
+		// Parsed as HTTPS, a URL drops port 443 itself; each other scheme's default is dropped here.
 		port = url.port === "" || url.port === DEFAULT_PORTS[scheme] ? "" : `:${url.port}`;
 		path = url.pathname;
 	} else {

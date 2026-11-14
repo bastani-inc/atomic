@@ -1,5 +1,5 @@
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
@@ -133,7 +133,7 @@ export type SeedAdoption =
 			readonly path: string;
 			/** The parked paths moved into it. */
 			readonly moved: readonly string[];
-			/** Parked paths left out: their target was not empty, or the move failed. */
+			/** Parked paths left out: their place holds something, lies below a file or link, or the move failed. */
 			readonly skipped: readonly string[];
 	  }
 	| { readonly adopted: false; readonly reason: NoSeedReason };
@@ -145,7 +145,7 @@ export interface AdoptPrebuiltSeedOptions {
 
 /**
  * Turns the seed of `snapshot`'s repository into an idle pooled worktree a claim can take (#4748): restores the
- * manifest's commit and tree into a new slot, moves each parked path into its empty place there, never over content,
+ * manifest's commit and tree into a new slot, moves each parked path into its place there when nothing is there yet,
  * and releases the slot. The manifest goes once the seed is adopted, so it is adopted once. A missing or foreign seed,
  * or a restore that fails, adopts nothing and leaves the seed as it was; rejects only when `signal` aborted.
  */
@@ -227,7 +227,7 @@ export async function insideThroughDirectories(root: string, segments: readonly 
 	return true;
 }
 
-/** Moves each parked path from `seeds` to its empty or missing place in `worktree`. */
+/** Moves each parked path from `seeds` to its place in `worktree`, where nothing may be yet. */
 async function moveSeeds(seeds: string, worktree: string, paths: readonly string[]) {
 	const moved: string[] = [];
 	const skipped: string[] = [];
@@ -237,13 +237,10 @@ async function moveSeeds(seeds: string, worktree: string, paths: readonly string
 		const to = join(worktree, ...segments);
 		try {
 			if ((await entryAt(from)) === undefined) continue;
-			const target = await entryAt(to);
-			const empty = target?.isDirectory() === true && (await readdir(to)).length === 0;
-			if ((target !== undefined && !empty) || !(await insideThroughDirectories(worktree, segments))) {
+			if ((await entryAt(to)) !== undefined || !(await insideThroughDirectories(worktree, segments))) {
 				skipped.push(path);
 				continue;
 			}
-			if (empty) await rmdir(to);
 			await mkdir(dirname(to), { recursive: true });
 			await rename(from, to);
 			moved.push(path);
