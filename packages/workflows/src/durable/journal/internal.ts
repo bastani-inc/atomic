@@ -103,10 +103,66 @@ export interface SqlPoolStorage {
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
 }
 
-const poolStorage = new WeakMap<RunJournal, SqlPoolStorage>();
+/** The storage errors that say the store did not take a write, rather than that the write itself was refused. */
+const STORE_FAILURES = new Set(["StorageUnavailableError", "StorageTransientError", "StorageOutcomeUnknownError"]);
 
+/**
+ * This process's writes to one journal's pool tables (#4768): when the oldest still waiting started, by
+ * `performance.now()`, and how many in a row the store failed. Status reads it rather than writing to probe the store,
+ * since a journal runs one call at a time and a probe the store left unanswered would hold up the run's own calls.
+ */
+export class SharedStoreWrites {
+	private readonly waiting = new Map<number, number>();
+	private next = 0;
+	failuresInRow = 0;
+	lastFailure?: Error;
+
+	async watch<T>(write: () => Promise<T>): Promise<T> {
+		const id = this.next++;
+		this.waiting.set(id, performance.now());
+		try {
+			const result = await write();
+			this.failuresInRow = 0;
+			return result;
+		} catch (error) {
+			if (STORE_FAILURES.has((error as Error).name)) {
+				this.failuresInRow += 1;
+				this.lastFailure = error as Error;
+			}
+			throw error;
+		} finally {
+			this.waiting.delete(id);
+		}
+	}
+
+	/** How long the oldest write still waiting has waited; undefined when none waits. */
+	oldestWaitingMs(): number | undefined {
+		if (this.waiting.size === 0) return undefined;
+		return performance.now() - Math.min(...this.waiting.values());
+	}
+}
+
+const poolStorage = new WeakMap<RunJournal, SqlPoolStorage>();
+const poolWrites = new WeakMap<RunJournal, SharedStoreWrites>();
+
+/** Registers `journal`'s pool storage, whose writes status watches to tell a store that stopped committing (#4768). */
 export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStorage): void {
-	poolStorage.set(journal, storage);
+	const writes = new SharedStoreWrites();
+	poolWrites.set(journal, writes);
+	const batch = storage.batch;
+	poolStorage.set(journal, {
+		...storage,
+		transaction: (body) => writes.watch(() => storage.transaction(body)),
+		// A batched pool write is watched per send, as a transaction is.
+		...(batch === undefined
+			? {}
+			: { batch: (statements, options) => writes.watch(() => batch(statements, options)) }),
+	});
+}
+
+/** This process's writes to `journal`'s pool tables, for status; undefined for a journal that is not SQL. */
+export function sqlPoolWrites(journal: RunJournal): SharedStoreWrites | undefined {
+	return poolWrites.get(journal);
 }
 
 export function sqlPoolStorage(journal: RunJournal): SqlPoolStorage | undefined {

@@ -11,6 +11,7 @@ import {
 	StorageTransientError,
 } from "@bastani/atomic/storage";
 import { test } from "vitest";
+import { sqlPoolWrites } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
@@ -374,6 +375,8 @@ test("a write the server keeps leaving unanswered fails after a bounded number o
 			(error: Error) => error instanceof StorageTransientError && error.outcome === "unknown",
 		);
 		assert.equal(sent, 3);
+		// Status sees each unanswered batch as a store failure, as it sees a failed pool transaction.
+		assert.equal(sqlPoolWrites(f.journal)?.failuresInRow, 3);
 	} finally {
 		await f.close();
 	}

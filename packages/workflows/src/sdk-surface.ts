@@ -208,9 +208,17 @@ export { MemoryRunJournal } from "./durable/journal/memory-run-journal.js";
 export type { RunJournalOption, RunJournalSettings } from "./durable/journal/resolution.js";
 export { resolveRunJournal } from "./durable/journal/resolution.js";
 export type {
+	SharedPoolFailure,
 	SharedPoolFleet,
+	SharedPoolFleetController,
+	SharedPoolFleetStatus,
 	SharedPoolHost,
+	SharedPoolHostReport,
+	SharedPoolHostState,
+	SharedPoolRateLimit,
+	SharedPoolScaleEvent,
 	SharedPoolStats,
+	SharedStoreHealth,
 	WorkerHostGitSource,
 } from "./durable/journal/shared-pool-types.js";
 export { openSqlRunJournal, SqlRunJournal } from "./durable/journal/sqlite-run-journal.js";
@@ -549,6 +557,7 @@ export type {
 	WorkflowWorkerPlacementOptions,
 } from "./workers/public-options.js";
 export { DEFAULT_PLACEMENT_CLAIM_WINDOW_MS } from "./workers/public-options.js";
+export { workflowWorkerFleetLines } from "./workers/shared-pool-status-lines.js";
 export type { PooledStageInputKind } from "./workers/stage-input-kind.js";
 export { readWorkflowWorkerFleet, startWorkflowWorkerHost } from "./workers/worker-host.js";
 export type {

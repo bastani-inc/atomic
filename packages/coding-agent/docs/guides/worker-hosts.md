@@ -56,7 +56,15 @@ SIGTERM or SIGINT drains a host: it takes no more children, lets the ones it run
 
 A machine that dies, or is killed with SIGKILL, loses nothing that was committed: once its children's leases expire, other hosts take them over from their last checkpoints.
 
-`atomic worker status` lists the hosts registered in the database, their workers and labels, and when each last reported, and the queue of each running root. `--json` prints the same as JSON.
+`atomic worker status` prints the fleet: how many running or paused roots use the database and how many of their children are ready and running, then each registered host and each root's queue. `--json` prints the same as JSON, in the shape of `host.stats()`. Each host line starts with the host's state:
+
+- `busy` or `idle`: whether any of its workers runs a child. The line also shows its workers out of its slots, how many are busy, its labels, and when it last reported. Busy counts are as of the host's last report, at most 5 seconds old.
+- `draining`: it takes no more children and stops once its running ones finish.
+- `degraded`: its polls of the database fail; the line shows how many in a row and the last error.
+- `stale`: it has not reported for 15 seconds. It may have died, or lost the database. Its children go to other hosts once their leases expire.
+- `live`: a host of an older Atomic version, which does not report whether it is busy.
+
+The command never waits on a database that stops answering: after 5 seconds it prints `shared store degraded`, why, and a hint, and exits `1`. A database it cannot reach at all prints `shared store unknown` the same way. The command also tries one write that changes nothing, and prints `shared store degraded` with the hint when the database answers reads but does not commit that write within 2 seconds.
 
 ## Scale the fleet automatically
 
@@ -201,4 +209,5 @@ docker run -d --name atomic-worker -e ATOMIC_DB=libsql://pool.example.turso.io \
 
 - **`Worker host setup is incomplete`** lists every missing piece at once, with a fix for each: the adapter not installed (`atomic install npm:@bastani/atomic-storage-libsql`), a token file that cannot be read, a journal that other machines cannot open (pass `--db`), or a machine where Atomic cannot contain its workers' processes (Windows, or no native process identity). The command exits `1`.
 - **`degraded failures=… retry_in_ms=…`** means the host could not reach the database. It keeps running its children and tries again after 1 second, then twice as long after each further failure, up to 30 seconds, and prints `recovered` once it gets through. Its workers keep their children while each child's lease (`localWorkers.leaseMs`, 30 seconds by default) lasts. A child whose lease expires during a longer outage, or that writes a checkpoint while the database is unreachable, is replayed by another host from its last checkpoint.
+- **`shared store unknown` or `shared store degraded`**, or hosts that all turn `stale` at once, mean the database stopped answering or stopped committing writes. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts ([tursodatabase/libsql#2286](https://github.com/tursodatabase/libsql/issues/2286)): start sqld with `--checkpoint-interval-s 60` (`SQLD_CHECKPOINT_INTERVAL_S=60`) to avoid it, and restart it if writes stay stuck. Hosts keep their running children meanwhile.
 - **A host never claims anything.** It runs a root's children only if it has the root's worker definitions at the same paths with the same entry module, and the root uses shared placement. Check `atomic worker status`, and `/workflow status <run>` on the root's machine.

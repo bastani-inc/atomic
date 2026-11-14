@@ -35,7 +35,9 @@ Commands:
            or SIGINT drains: no new children are taken, running ones finish, then it exits 0. A second
            signal stops at once, handing running children back to other hosts, and exits 2. Exits 1 when
            setup is incomplete (every missing piece is listed) or the host fails.
-  status   List the worker hosts registered in the database and the queue of each root they serve.
+  status   List the worker hosts registered in the database, each busy, idle, draining, degraded or stale,
+           the fleet's queue, and the queue of each root they serve. Exits 1 when the database cannot be
+           read or does not answer within 5 seconds, and says why.
   controller
            Add worker hosts through a provisioner as the database's shared queues grow, and drain and remove
            hosts that sat idle. Several controllers may run; one is active at a time and another takes over
@@ -273,7 +275,8 @@ function databaseLabel(database: WorkerDatabase | undefined): string {
 	return `${url.href}${database.prefix === undefined ? "" : ` prefix=${database.prefix}`}`;
 }
 
-// The shapes of the workflows package's public entry that this command uses (`startWorkflowWorkerHost`, `readWorkflowWorkerFleet`).
+// The shapes of the workflows package's public entry that this command uses (`startWorkflowWorkerHost`,
+// `readWorkflowWorkerFleet`, `workflowWorkerFleetLines`).
 
 export interface WorkerJournalSelection {
 	readonly adapter: string;
@@ -323,27 +326,9 @@ export interface WorkerHostOptions {
 	readonly onEvent: (event: WorkerHostEvent) => void;
 }
 
-interface FleetHost {
-	readonly host: string;
-	readonly labels: Readonly<Record<string, string>>;
-	readonly workers: number;
-	readonly maxWorkers: number;
-	readonly roots: readonly string[];
-	readonly heartbeatAgoMs: number;
-}
-
-interface FleetRoot {
-	readonly root: string;
-	readonly ready: number;
-	readonly leased: number;
-	readonly completed: number;
-	readonly failed: number;
-	readonly hosts: readonly { readonly host: string; readonly leased: number }[];
-}
-
+/** A shared journal's fleet as the workflows package reads it; output prints it whole. */
 export interface WorkerFleet {
-	readonly hosts: readonly FleetHost[];
-	readonly roots: readonly FleetRoot[];
+	readonly fleet: { readonly store: { readonly state: "ok" | "degraded" | "unknown" }; readonly queue?: object };
 }
 
 /** A worker host provisioner, as the workflows package's `WorkerHostProvisioner`; the module supplies it. */
@@ -387,6 +372,8 @@ export interface WorkerHostModule {
 		readonly journal?: WorkerJournalSelection;
 		readonly agentDir: string;
 	}): Promise<WorkerFleet>;
+	/** The fleet as status lines, the same lines `/workflow status` shows of it. */
+	workflowWorkerFleetLines(fleet: WorkerFleet): string[];
 }
 
 /**
@@ -637,28 +624,6 @@ async function controller(
 	return 0;
 }
 
-function formatAgo(ms: number): string {
-	return ms < 1_000 ? `${Math.max(0, Math.round(ms))} ms` : `${(ms / 1_000).toFixed(1)} s`;
-}
-
-function fleetLines(fleet: WorkerFleet): string[] {
-	const lines = [`Hosts: ${fleet.hosts.length}`];
-	for (const host of fleet.hosts) {
-		const labels = Object.entries(host.labels).map(([key, value]) => `${key}=${value}`);
-		lines.push(
-			`  ${host.host}  workers ${host.workers}/${host.maxWorkers}  roots ${host.roots.length}  reported ${formatAgo(host.heartbeatAgoMs)} ago${labels.length === 0 ? "" : `  labels ${labels.join(",")}`}`,
-		);
-	}
-	lines.push(`Roots: ${fleet.roots.length}`);
-	for (const root of fleet.roots) {
-		const hosts = root.hosts.filter((host) => host.leased > 0).map((host) => `${host.host}(${host.leased})`);
-		lines.push(
-			`  ${root.root}  ready ${root.ready}  running ${root.leased}  completed ${root.completed}  failed ${root.failed}${hosts.length === 0 ? "" : `  on ${hosts.join(", ")}`}`,
-		);
-	}
-	return lines;
-}
-
 /** Run `atomic worker <args>` and return the exit code. */
 export async function runWorkerCommand(args: readonly string[], options: WorkerCommandOptions): Promise<number> {
 	const log = options.log ?? ((line: string) => console.log(line));
@@ -690,8 +655,9 @@ export async function runWorkerCommand(args: readonly string[], options: WorkerC
 			agentDir: options.agentDir,
 		});
 		if (command.json) log(JSON.stringify(fleet, null, 2));
-		else for (const text of fleetLines(fleet)) log(text);
-		return 0;
+		else for (const text of module.workflowWorkerFleetLines(fleet)) log(text);
+		// A store that could not be read, unknown or degraded without a queue, is a failed status, though it printed why.
+		return fleet.fleet.store.state === "ok" || fleet.fleet.queue !== undefined ? 0 : 1;
 	} catch (caught) {
 		for (const text of setupLines(caught as Error)) error(text);
 		return 1;
