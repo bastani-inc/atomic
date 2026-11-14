@@ -5,6 +5,7 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
+	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
@@ -318,4 +319,48 @@ test("an outbox claim's age is null while unclaimed and clamped to zero once cla
 		status: "held",
 		claimantId: "c",
 	});
+});
+
+/** `db`, where every column probe finds nothing and every `ALTER TABLE` fails with `failure`. */
+function failingAlters(db: SqliteDatabase, failure: Error): SqliteDatabase {
+	return {
+		...batchingFacade(db),
+		batch: undefined,
+		all: ((sql: string, ...params: SqliteValue[]) =>
+			/table_info/i.test(sql) ? Promise.resolve([]) : db.all(sql, ...params)) as SqliteDatabase["all"],
+		exec: (sql) => (sql.startsWith("ALTER TABLE") ? Promise.reject(failure) : db.exec(sql)),
+	};
+}
+
+test("a column another broker added meanwhile is not an error in Postgres's wording either (#4793)", async () => {
+	const db = await database();
+	const postgres = new Error('column "saving_at" of relation "intercom_outbox" already exists');
+	await openSqlOutboxStore({ database: failingAlters(db, postgres), prefix: "" });
+	const other = new Error('relation "intercom_outbox" already exists');
+	await assert.rejects(openSqlOutboxStore({ database: failingAlters(db, other), prefix: "" }), other);
+});
+
+test("reopening an initialized journal takes no write transaction (#4793)", async () => {
+	const db = await database();
+	await (await SqlRunJournal.open(db)).close();
+	let transactions = 0;
+	const counting: SqliteDatabase = {
+		...batchingFacade(db),
+		transaction: (callback, options) => {
+			transactions++;
+			return db.transaction(callback, options);
+		},
+	};
+	await (await SqlRunJournal.open(counting)).close();
+	assert.equal(transactions, 0);
+});
+
+test("pruning known sessions removes only the records older than the bound (#4793)", async () => {
+	const db = await database();
+	const known = await openSqlKnownSessionStore({ database: db, prefix: "" });
+	await known.record({ targetIdentity: "old", intercomSessionId: "a", group: "g", groups: ["g"] });
+	await known.record({ targetIdentity: "new", intercomSessionId: "b", group: "g", groups: ["g"] });
+	await db.run("UPDATE intercom_known_sessions SET recorded_at = 0 WHERE target_identity = 'old'");
+	assert.equal(await known.prune(60_000), 1);
+	assert.deepEqual(await db.all("SELECT target_identity FROM intercom_known_sessions"), [{ target_identity: "new" }]);
 });
