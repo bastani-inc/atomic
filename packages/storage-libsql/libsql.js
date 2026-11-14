@@ -1,4 +1,5 @@
 // @ts-check
+import { createRequire } from "node:module";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { createSqliteDatabase, redactSecrets, StorageAdapterLoadError, switchToWriteAheadLog } from "@bastani/atomic/storage";
@@ -212,6 +213,54 @@ async function collectAndFinalize() {
 	}
 }
 
+/** Marks a `libsql` Database class whose close {@link closeLocalConnectionsOnce} replaced. */
+const closesOnce = Symbol.for("@bastani/atomic-storage-libsql.closesOnce");
+
+/**
+ * Statements that hold a closing connection until its native close has returned.
+ * @type {Set<unknown>}
+ */
+const closingHolders = new Set();
+
+/**
+ * Makes every close of a local libsql connection close its SQLite handle once.
+ *
+ * libsql 0.5.29, the native driver `@libsql/client` 0.18 uses, is built from the libsql crate 0.9.30. That crate calls
+ * `sqlite3_close_v2` twice when the connection itself drops the last reference to its handle, and the second call
+ * reads the connection the first one freed (tursodatabase/libsql#2251, fixed in crate 0.10 by
+ * tursodatabase/libsql#2261, which no npm `libsql` release contains yet). The connection drops that reference when
+ * `close()` finds no statement still holding the handle: a connection used only through `exec`, or one whose
+ * statements a collection already finalized. The collections every local close runs (`releaseClosedConnections`)
+ * finalize the statements of every other open connection, so the next close in the process is such a close. On
+ * Windows the second call crashes the process (0xC0000005) without a message once the heap has reused the freed
+ * block. When a statement still holds the handle, the statement's finalizer closes the handle once and then
+ * finalizes the statement, which is safe. So each close prepares a statement first and lets it go after the close.
+ * The collections the close runs next finalize it and release the database's files.
+ * @param {string} clientEntry the resolved `@libsql/client` entry, whose `libsql` is the driver it uses
+ */
+function closeLocalConnectionsOnce(clientEntry) {
+	/** @type {{ prototype: { close(): void, prepare(sql: string): unknown, open: boolean, [closesOnce]?: true } }} */
+	const Database = createRequire(clientEntry)("libsql");
+	if (Database.prototype[closesOnce]) return;
+	const close = Database.prototype.close;
+	Database.prototype.close = function () {
+		/** @type {unknown} */
+		let holder;
+		try {
+			if (this.open) holder = this.prepare("SELECT 1");
+		} catch {
+			// A connection that cannot prepare closes as before.
+		}
+		if (holder !== undefined) closingHolders.add(holder);
+		try {
+			return close.call(this);
+		} finally {
+			closingHolders.delete(holder);
+		}
+	};
+	Database.prototype[closesOnce] = true;
+}
+
 /** How far `transientFailure` follows `cause`: a driver error wraps the network error that fetch wraps. */
 const MAX_CAUSE_DEPTH = 8;
 /**
@@ -268,6 +317,13 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		throw new StorageAdapterLoadError("@libsql/client", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 	}
 	const local = /^file:/i.test(url);
+	if (local) {
+		try {
+			closeLocalConnectionsOnce(createRequire(import.meta.url).resolve("@libsql/client"));
+		} catch (cause) {
+			throw new StorageAdapterLoadError("libsql", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
+		}
+	}
 	/** @type {import("@libsql/client").Client | undefined} */
 	let client;
 	// Create the client inside a driver call, so the facade redacts credentials from its failures. The busy timeout is a
