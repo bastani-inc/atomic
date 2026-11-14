@@ -12,6 +12,7 @@ import {
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
+import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
 import { openSqlPoolQueue, type PoolWork } from "../durable/journal/sql-pool-queue.js";
 import {
 	readSharedPoolFleet,
@@ -255,7 +256,10 @@ class WorkerHost implements WorkflowWorkerHost {
 	private stoppingNow = false;
 	private lastPlacementFailure?: WorkerHostFailure;
 	private lastDetach?: WorkerHostFailure;
-	private reported?: { readonly workers: number; readonly roots: string; readonly at: number };
+	/** What this host last reported of itself, and when, by `performance.now()`. */
+	private reported?: { readonly state: string; readonly at: number };
+	/** The host is leaving the registry: it reports itself no more. */
+	private leaving = false;
 	private lastHealth?: string;
 	/** When this host restores each binding again whose restores failed, across every root it serves (#4416). */
 	private readonly restoreBackoff = new RestoreBackoff();
@@ -299,7 +303,19 @@ class WorkerHost implements WorkflowWorkerHost {
 	/** Reports claimed and released children, exits when idle for `idleExitMs`, and polls unless backing off. */
 	private tick(): void {
 		const claimed = this.noteHeldWork();
-		if (this.stopping !== undefined) return;
+		if (this.stopping !== undefined) {
+			// A draining host goes on reporting itself, draining, while its running children finish (#4768).
+			if (this.draining && !this.stoppingNow && !this.leaving && this.polling === undefined)
+				this.polling = this.report()
+					.then(
+						() => {},
+						() => {},
+					)
+					.finally(() => {
+						this.polling = undefined;
+					});
+			return;
+		}
 		const now = performance.now();
 		if (claimed || this.workerCount().busy > 0) this.busyAt = now;
 		const idleExitMs = this.options.idleExitMs;
@@ -317,6 +333,8 @@ class WorkerHost implements WorkflowWorkerHost {
 					const failures = this.pollBackoff.succeeded();
 					if (failures === 0) return;
 					this.degraded = undefined;
+					// The registry still says degraded until the next report: it goes out with the next poll.
+					this.reported = undefined;
 					this.emit({ kind: "recovered", failures });
 				},
 				(error: Error) => {
@@ -375,37 +393,49 @@ class WorkerHost implements WorkflowWorkerHost {
 		return { workers, busy };
 	}
 
+	/**
+	 * Reports this host to the registry when its workers, roots, draining or degraded state changed, and otherwise every
+	 * {@link HOST_REPORT_MS}. Its busy count goes out with the report: a change of it alone costs no write. Returns
+	 * whether it reported.
+	 */
+	private async report(): Promise<boolean> {
+		const { workers, busy } = this.workerCount();
+		const served = [...this.satellites.keys()].sort();
+		const now = performance.now();
+		const state = JSON.stringify([workers, served, this.draining, this.degraded === undefined]);
+		if (this.reported !== undefined && this.reported.state === state && now - this.reported.at < HOST_REPORT_MS)
+			return false;
+		await this.shared.reportHost({
+			host: this.hostId,
+			labels: { ...this.options.labels },
+			git: this.git,
+			restore: this.restores,
+			workers,
+			maxWorkers: this.options.maxWorkers,
+			roots: served,
+			busy,
+			draining: this.draining,
+			...(this.degraded === undefined
+				? {}
+				: { degraded: { failures: this.degraded.failures, error: this.degraded.error } }),
+			...(this.providerId === undefined ? {} : { providerId: this.providerId }),
+		});
+		this.reported = { state, at: now };
+		return true;
+	}
+
 	/** Reports this host, lets go of roots it no longer serves, and attaches to roots it can serve. */
 	private async poll(): Promise<void> {
 		if (this.stopping !== undefined) return;
-		const workers = this.workerCount().workers;
-		const served = [...this.satellites.keys()].sort();
+		const reported = await this.report();
 		const now = performance.now();
-		if (
-			this.reported === undefined ||
-			this.reported.workers !== workers ||
-			this.reported.roots !== JSON.stringify(served) ||
-			now - this.reported.at >= HOST_REPORT_MS
-		) {
-			await this.shared.reportHost({
-				host: this.hostId,
-				labels: { ...this.options.labels },
-				git: this.git,
-				restore: this.restores,
-				workers,
-				maxWorkers: this.options.maxWorkers,
-				roots: served,
-				...(this.providerId === undefined ? {} : { providerId: this.providerId }),
+		// A fleet controller asks an idle host to drain through the journal (#4768); the drain waits for this poll.
+		if (reported && (await this.shared.drainRequested(this.hostId))) {
+			this.emit({ kind: "drain-requested" });
+			void this.drain().catch((error: Error) => {
+				this.lastDetach = failure(error);
 			});
-			this.reported = { workers, roots: JSON.stringify(served), at: now };
-			// A fleet controller asks an idle host to drain through the journal (#4768); the drain waits for this poll.
-			if (await this.shared.drainRequested(this.hostId)) {
-				this.emit({ kind: "drain-requested" });
-				void this.drain().catch((error: Error) => {
-					this.lastDetach = failure(error);
-				});
-				return;
-			}
+			return;
 		}
 		const roots = await this.shared.roots();
 		const byRoot = new Map(roots.map((root) => [root.root, root]));
@@ -549,6 +579,7 @@ class WorkerHost implements WorkflowWorkerHost {
 			maxWorkers: this.options.maxWorkers,
 			workers,
 			busy,
+			draining: this.draining,
 			roots,
 			...(this.lastPlacementFailure === undefined ? {} : { lastPlacementFailure: this.lastPlacementFailure }),
 			...(this.lastDetach === undefined ? {} : { lastDetach: this.lastDetach }),
@@ -558,6 +589,7 @@ class WorkerHost implements WorkflowWorkerHost {
 	}
 
 	drain(): Promise<void> {
+		if (!this.draining) this.reported = undefined;
 		this.draining = true;
 		this.stopping ??= this.windDown((coordinator) => coordinator.drain());
 		return this.stopping;
@@ -604,6 +636,9 @@ class WorkerHost implements WorkflowWorkerHost {
 		this.satellites.clear();
 		// Whatever the workers still held went back to the queue with them.
 		this.noteHeldWork();
+		// A report still on its way would register the host again after it left.
+		this.leaving = true;
+		await this.polling;
 		for (const satellite of satellites) await satellite.coordinator.shutdown().catch((error) => failures.push(error));
 		await this.shared.forgetHost(this.hostId).catch((error) => failures.push(error));
 		await this.journal.close().catch((error) => failures.push(error));
@@ -703,7 +738,8 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 /**
  * The worker hosts registered in a shared journal, as each last reported itself, and the pool stats of the running or
  * paused roots they serve (#4768). The journal's setup is checked as {@link startWorkflowWorkerHost} checks it, every
- * problem reported together, except process containment, which reading needs none of.
+ * problem reported together, except process containment, which reading needs none of. A store that cannot be read, or
+ * does not answer within the status budget, reads as `fleet.store.state` `"unknown"` with a hint instead of failing.
  */
 export async function readWorkflowWorkerFleet(
 	options: { readonly journal?: SharedJournalSelection; readonly agentDir?: string } = {},
@@ -712,10 +748,40 @@ export async function readWorkflowWorkerFleet(
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
-	const journal = await openSelectedRunJournal(selection as Extract<StorageSelection, { kind: "adapter" }>, agentDir);
+	const read = async (): Promise<SharedPoolFleet> => {
+		const journal = await openSelectedRunJournal(
+			selection as Extract<StorageSelection, { kind: "adapter" }>,
+			agentDir,
+		);
+		let fleet: SharedPoolFleet | undefined;
+		try {
+			// This journal serves the read alone, so it probes the store with a write that changes nothing (#4768).
+			fleet = (await readSharedPoolFleet(journal, { probeWrites: true })) ?? {
+				hosts: [],
+				roots: [],
+				fleet: {
+					store: {
+						state: "unknown",
+						message: "The journal's storage adapter is not SQL, so it holds no shared pools.",
+					},
+				},
+			};
+			return fleet;
+		} finally {
+			const closing = journal.close();
+			// Closing waits for a probe the store left unanswered; the status does not.
+			if (fleet?.fleet.store.state === "degraded") closing.catch(() => {});
+			else await closing;
+		}
+	};
 	try {
-		return (await readSharedPoolFleet(journal)) ?? { hosts: [], roots: [] };
-	} finally {
-		await journal.close();
+		return await withinStatusBudget(read());
+	} catch (error) {
+		// A store that cannot be read, or does not answer in time, reads as unknown rather than failing the status.
+		return {
+			hosts: [],
+			roots: [],
+			fleet: { store: classifySharedStoreHealth({ hostsRegistered: false, readFailure: error as Error }) },
+		};
 	}
 }

@@ -71,7 +71,11 @@ test.skipIf(process.platform === "win32")(
 		assert.equal(events.length, 1, JSON.stringify(events));
 		assert.equal(events[0]?.kind, "idle-exit");
 		assert.ok(events[0]?.kind === "idle-exit" && events[0].idleMs >= 2_500);
-		assert.deepEqual(await fleet(), { hosts: [], roots: [] }, "a drained host leaves the registry");
+		assert.deepEqual(
+			await fleet(),
+			{ hosts: [], roots: [], fleet: { store: { state: "ok" }, queue: { roots: 0, ready: 0, leased: 0 } } },
+			"a drained host leaves the registry",
+		);
 		await host.drain();
 		await host.stop();
 	},
@@ -131,6 +135,7 @@ test("reading the fleet of a journal that never ran a shared pool finds nothing 
 	assert.deepEqual(await readWorkflowWorkerFleet({ journal: journal(), agentDir: join(directory, "agent") }), {
 		hosts: [],
 		roots: [],
+		fleet: { store: { state: "ok" }, queue: { roots: 0, ready: 0, leased: 0 } },
 	});
 });
 
