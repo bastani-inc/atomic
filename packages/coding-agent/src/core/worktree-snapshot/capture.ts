@@ -257,7 +257,7 @@ async function recordOf(index: string): Promise<IndexRecord | undefined> {
 	}
 }
 
-function sameSeed(left: IndexSeed | null, right: IndexSeed | null | undefined): boolean {
+function sameSeed(left: IndexSeed | null, right: IndexSeed | null): boolean {
 	return JSON.stringify(left) === JSON.stringify(right);
 }
 
@@ -305,7 +305,8 @@ async function writeCapturedTree(
 			const seed = await indexSeedOf(userIndexPath);
 			await mkdir(dirname(index), { recursive: true });
 			const record = await recordOf(index);
-			const reseed = !sameSeed(seed, record?.seed) || !(await copyRecorded(index, record?.index, working));
+			const reseed =
+				record === undefined || !sameSeed(seed, record.seed) || !(await copyRecorded(index, record.index, working));
 			if (reseed) {
 				await rm(working, { force: true });
 				await seedFromUserIndex(userIndexPath, working);
@@ -356,11 +357,11 @@ function usableOutside(root: string, index: string): boolean {
 }
 
 /**
- * Copies `from` to `to` with `from`'s modification time when its bytes have the recorded `hash`; false when they do
- * not, or `from` does not exist. Bytes and time are read through one handle, so a rename over `from` meanwhile cannot
- * pair one file's bytes with another's time.
+ * Copies `from` to `to` with `from`'s modification time; true when its bytes have the recorded `hash`, false when they
+ * do not, and the copy must be replaced, or `from` does not exist. Bytes and time are read through one handle, so a
+ * rename over `from` meanwhile cannot pair one file's bytes with another's time.
  */
-async function copyRecorded(from: string, hash: string | undefined, to: string): Promise<boolean> {
+async function copyRecorded(from: string, hash: string, to: string): Promise<boolean> {
 	let file: FileHandle;
 	try {
 		file = await open(from, "r");
@@ -376,10 +377,9 @@ async function copyRecorded(from: string, hash: string | undefined, to: string):
 	} finally {
 		await file.close();
 	}
-	if (sha256Hex(bytes) !== hash) return false;
 	await writeFile(to, bytes);
 	await utimes(to, times.atime, times.mtime);
-	return true;
+	return sha256Hex(bytes) === hash;
 }
 
 async function writeAtomically(file: string, data: string): Promise<void> {
