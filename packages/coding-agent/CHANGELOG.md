@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added resume and capture timings ([#4748](https://github.com/bastani-inc/atomic/issues/4748)). `/session snapshot` now shows how long each checkout's last capture took and a **Last resume** block: each restored checkout with its restore phases (fetch, reconstruct, materialize, LFS, verify, publish), each blueprint step with its duration, and when the session was ready. `ATOMIC_TIMING=1` prints the same lines for `atomic --session`. Blueprint step logs record when each step started and finished and how long it ran. The session keeps the numbers in a `resume_timings` entry, readable from exports and through `latestResumeTimings()` and `formatResumeTimings()` in the SDK. A failure to record them never stops a resume.
+
 ## [0.9.87] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
