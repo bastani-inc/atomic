@@ -1,0 +1,6 @@
+{"procs":40,"mode":"interactive","statements":12,"seconds":30,"commitsPerSec":35.9,"p99MaxMs":2033,"errors":{},"writeProbes":["ok"]}
+{"procs":40,"mode":"batch","statements":12,"seconds":30,"commitsPerSec":223.9,"p99MaxMs":432,"errors":{},"writeProbes":["ok"]}
+{"procs":100,"mode":"interactive","statements":12,"seconds":30,"commitsPerSec":30,"p99MaxMs":4754,"errors":{},"writeProbes":["ok"]}
+{"procs":8,"mode":"interactive","statements":12,"seconds":30,"runs":[34.8,74.4,8.8,8.8],"p99MaxMs":[310,349,1394,1445],"writeProbes":["ok"]}
+{"procs":8,"mode":"batch","statements":12,"seconds":30,"runs":[29.6,202.9,116.2,42.1],"p99MaxMs":[40,73,266,611],"writeProbes":["timed-out","ok","ok","ok"]}
+{"note":"Controller VM is shared with other agent sessions (1-min load average 30-58 during these runs); 8-process numbers vary 8x run to run. Repeat on the Azure DB VM for clean numbers."}
