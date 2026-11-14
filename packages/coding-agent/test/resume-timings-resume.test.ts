@@ -103,7 +103,8 @@ describe("resume timings of a real resume (#4748)", () => {
 		assert.equal(timings.restores.length, 1);
 		const [restore] = timings.restores;
 		assert.equal(restore!.mode, "fresh");
-		assert.equal(restore!.fetch, "full");
+		// The snapshot's commit is pushed, so the restore fetches it at depth 1 (S3).
+		assert.equal(restore!.fetch, "shallow");
 		for (const phase of ["fetch", "reconstruct", "materialize", "verify", "publish"] as const) {
 			assert.equal(typeof restore!.phases[phase], "number", `phase ${phase}`);
 		}

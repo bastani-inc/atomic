@@ -91,8 +91,9 @@ const invocations = (name: string) => spawned.calls.map(command).filter((rest) =
 /** The repository each `git fetch` since the last reset read from, a remote URL or a bundle file, always after `--`. */
 const fetchedFrom = () =>
 	invocations("fetch").map((rest) => {
-		assert.equal(rest[4], "--");
-		return rest[5]!;
+		const separator = rest.indexOf("--");
+		assert.ok(separator > 0 && rest.slice(1, separator).every((arg) => arg.startsWith("-")), rest.join(" "));
+		return rest[separator + 1]!;
 	});
 const reset = () => {
 	spawned.calls.length = 0;
@@ -410,9 +411,11 @@ describe("what a restore leaves behind", () => {
 	test("a worktree whose HEAD is not the snapshot's head is rejected even when its tree matches", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const previousHead = await sandbox.git(clone, "rev-parse", "HEAD");
+		const blobs = new MemorySnapshotBlobStore();
+		// A depth-1 restore fetches only the snapshot's commit (#4748): an earlier restore puts the previous one in the store.
+		await restoreWorktree(await capture(clone, blobs), { blobs, storeDir: sandbox.path("host") });
 		await sandbox.git(clone, "commit", "-q", "--allow-empty", "-m", "same tree, new commit");
 		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
-		const blobs = new MemorySnapshotBlobStore();
 		const result = await captureWorktreeSnapshot(clone, { blobs });
 		assert.equal(result.status, "captured");
 		const snapshot = (result as Extract<WorktreeSnapshotCapture, { status: "captured" }>).snapshot;
