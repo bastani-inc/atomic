@@ -13,6 +13,7 @@ import { getAgentDir, getExtensionTranspileCacheDir, getProjectBlueprintPath, VE
 import { readRepositoryConfig } from "../../worktree-snapshot/capture.ts";
 import { computeEnvironmentHash, sha256Hex } from "../../worktree-snapshot/env-hash.ts";
 import { runGit } from "../../worktree-snapshot/git.ts";
+import { canonicalizeWorktreePath } from "../../worktree-snapshot/paths.ts";
 import { isDeniedSnapshotPath } from "../../worktree-snapshot/policy.ts";
 import { objectStorePath } from "../../worktree-snapshot/restore.ts";
 import { blueprintPlatformOf, parseBlueprint, selectDocument } from "./schema.ts";
@@ -270,6 +271,14 @@ function within(parent: string, child: string): boolean {
 	return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 }
 
+/**
+ * `path` as the credential checks compare it: every symbolic link in its existing part resolved, then lower-cased, so
+ * `~/.SSH` on a case-insensitive filesystem and a link to `~/.ssh` both compare equal to `~/.ssh`.
+ */
+function comparable(path: string): string {
+	return canonicalizeWorktreePath(path).toLowerCase();
+}
+
 /** Why the `kind: store` path `declared` is refused, if it is. */
 function refuseStore(declared: string, root: string, home: string, agentDir: string): string | undefined {
 	if (!expandsHome(declared) && !isAbsolute(declared)) {
@@ -278,10 +287,23 @@ function refuseStore(declared: string, root: string, home: string, agentDir: str
 	const path = storePath(declared, home);
 	if (within(path, root) || within(root, path)) return "a kind: store path must be outside the worktree";
 	const credentials = [...HOME_CREDENTIAL_PATHS.map((entry) => join(home, entry)), join(agentDir, "auth.json")];
-	const fromFilesystemRoot = path.slice(parse(path).root.length).split(sep).join("/");
+	let candidates: string[];
+	let locations: string[];
+	try {
+		candidates = [path.toLowerCase(), comparable(path)];
+		locations = credentials.flatMap((credential) => [credential.toLowerCase(), comparable(credential)]);
+	} catch {
+		return "it cannot be resolved to check it for credentials";
+	}
+	const denied = candidates.some((candidate) => {
+		const fromFilesystemRoot = candidate.slice(parse(candidate).root.length).split(sep).join("/");
+		return fromFilesystemRoot !== "" && isDeniedSnapshotPath(fromFilesystemRoot);
+	});
 	if (
-		(fromFilesystemRoot !== "" && isDeniedSnapshotPath(fromFilesystemRoot)) ||
-		credentials.some((credential) => within(credential, path) || within(path, credential))
+		denied ||
+		candidates.some((candidate) =>
+			locations.some((credential) => within(credential, candidate) || within(candidate, credential)),
+		)
 	) {
 		return "it is, holds or is inside a location that keeps credentials";
 	}
@@ -305,7 +327,7 @@ function refuseBuild(declared: string): string | undefined {
 	if (segments.length === 0 || segments.includes("..") || segments[0] === ".git") {
 		return "a kind: build path must be a directory inside the worktree, outside .git";
 	}
-	const path = segments.join("/");
+	const path = segments.join("/").toLowerCase();
 	if (isDeniedSnapshotPath(path) || WORKTREE_CREDENTIAL_FILES.has(path)) {
 		return "it is or is inside a file that keeps credentials";
 	}

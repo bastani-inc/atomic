@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
@@ -411,6 +411,24 @@ describe("blueprint cache: edge cases (#4748)", () => {
 		assert.match(keys.warnings[0] ?? "", /'\/'.*outside the worktree/);
 		assert.match(keys.warnings[1] ?? "", /outside the worktree/);
 		assert.match(keys.warnings[2] ?? "", /'~\/\.atomic'.*credentials/);
+	});
+
+	test("credential checks fold case and follow symbolic links (#4748)", async () => {
+		const at = fixture("cache: []\n");
+		mkdirSync(join(at.home, ".ssh"), { recursive: true });
+		mkdirSync(join(at.home, "tools"), { recursive: true });
+		const link = process.platform === "win32" ? "junction" : "dir";
+		symlinkSync(join(at.home, ".ssh"), join(at.home, "keys"), link);
+		symlinkSync(at.home, join(at.home, "tools", "home"), link);
+		write(
+			at.root,
+			".atomic/blueprint.yaml",
+			"cache:\n  - ~/.SSH\n  - ~/.Config/GH/hosts\n  - ~/.NPMRC\n  - ~/keys\n  - ~/tools/home\n  - ~/\n  - ~/tools\n  - path: .ENV.local\n    kind: build\n  - path: .NPMRC\n    kind: build\n",
+		);
+		const keys = await keysOf(at);
+		assert.deepEqual(entry(keys, "stores")?.paths, [join(at.home, "tools")]);
+		assert.equal(keys.warnings.length, 8, keys.warnings.join("\n"));
+		for (const warning of keys.warnings) assert.match(warning, /credentials/);
 	});
 
 	test("an unreadable blueprint or an invalid entry only warns (#4748)", async () => {
