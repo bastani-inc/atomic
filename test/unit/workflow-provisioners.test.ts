@@ -720,10 +720,6 @@ describe("command provisioner (#4768)", () => {
 		assert.equal(fits.message, `the up command exited with code 3: ${"y".repeat(600)}`);
 		const silent = await failing("process.exit(4)");
 		assert.equal(silent.message, "the up command exited with code 4");
-		const killed = await failing("process.kill(process.pid, 'SIGTERM'); setInterval(() => {}, 1000)");
-		assert.equal(killed.code, "exit");
-		assert.equal(killed.exitCode, undefined);
-		assert.equal(killed.message, "the up command was stopped by SIGTERM");
 		for (const [stderr, code] of [
 			["Unauthorized", "auth"],
 			["request unauthorised", "auth"],
@@ -741,6 +737,20 @@ describe("command provisioner (#4768)", () => {
 			const error = await failing(`process.stderr.write(${JSON.stringify(stderr)}); process.exit(1)`);
 			assert.equal(error.code, code, stderr);
 		}
+	});
+
+	posixOnly("a command killed by a signal is named by it, with no exit code (#4768)", async () => {
+		const killed = await rejection(
+			createWorkerHostProvisioner({
+				kind: "command",
+				up: script("process.kill(process.pid, 'SIGTERM'); setInterval(() => {}, 1000)"),
+				down: script("0"),
+				list: script("0"),
+			}).scaleTo(1, never()),
+		);
+		assert.equal(killed.code, "exit");
+		assert.equal(killed.exitCode, undefined);
+		assert.equal(killed.message, "the up command was stopped by SIGTERM");
 	});
 
 	posixOnly("a file that cannot be run is reported as such (#4768)", async () => {
