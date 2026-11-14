@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A session resume now restores each checkout into a worktree at a stable path, `~/.atomic/agent/worktree-snapshots/worktrees/<repository>-<n>`, that the session holds while it is open. Resuming the session again continues there, and a session never continues in a worktree another session now owns; it gets a fresh one instead. The new `snapshots.pool.maxIdlePerRepository` setting (default `2`) bounds how many idle restored worktrees of a repository are kept: a resume that restores another removes the oldest unchanged ones. Workflow runs and SDK restores into a chosen directory keep their paths ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

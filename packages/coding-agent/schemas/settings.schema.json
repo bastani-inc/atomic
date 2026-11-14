@@ -358,6 +358,18 @@
           "maximum": 9007199254740991,
           "description": "Snapshot blobs stored less than this many seconds ago are never collected, which protects captures still being recorded.",
           "default": 3600
+        },
+        "pool": {
+          "type": "object",
+          "properties": {
+            "maxIdlePerRepository": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "description": "Idle restored worktrees kept per repository in the worktree pool; the oldest unchanged ones beyond it are removed when a resume restores another.",
+              "default": 2
+            }
+          }
         }
       }
     },

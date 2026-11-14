@@ -7,10 +7,12 @@ import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,
 	formatMissingRecordNotice,
+	holdSessionWorktrees,
 	type MissingSnapshotRecord,
 	mapRestoredPath,
 	missingSnapshotRecords,
 	openResumedSession,
+	pooledWorktreeOwnedElsewhere,
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
@@ -23,6 +25,11 @@ import {
 } from "../worktree-snapshot/errors.ts";
 import { gitText, runGit } from "../worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "../worktree-snapshot/head-advance.ts";
+import {
+	DEFAULT_MAX_IDLE_PER_REPOSITORY,
+	pooledWorktreeHolder,
+	type WorktreePoolSettings,
+} from "../worktree-snapshot/pool.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
 	type VerifyWorktreeOptions,
@@ -98,6 +105,11 @@ export interface PrepareSessionResumeOptions {
 	readonly onNotices?: (notices: readonly ResumeNotice[]) => void;
 	/** Told each slow step the resume starts (checking checkouts, restoring one, building blueprints), for a progress line. */
 	readonly onProgress?: (message: string) => void;
+	/**
+	 * The worktree pool (#4748): restores go to stable slots that the session holds while it is open, keeping at most
+	 * `maxIdlePerRepository` idle slots per repository. Default: `snapshots.pool` defaults.
+	 */
+	readonly pool?: WorktreePoolSettings;
 }
 
 export type PreparedSessionResume =
@@ -319,6 +331,18 @@ export async function prepareSessionResume(
 	sessionManager: SessionManager,
 	options: PrepareSessionResumeOptions,
 ): Promise<PreparedSessionResume> {
+	const prepared = await prepareResume(sessionManager, options);
+	// The session holds the pooled worktrees it continues in until it closes (#4748).
+	if (prepared.status === "ready") {
+		await holdSessionWorktrees(sessionManager, prepared.sessionManager, resolveStoreDir(options));
+	}
+	return prepared;
+}
+
+async function prepareResume(
+	sessionManager: SessionManager,
+	options: PrepareSessionResumeOptions,
+): Promise<PreparedSessionResume> {
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	if (!options.settings.enabled || sessionManager.getLatestWorktreeSnapshots().size === 0) {
@@ -337,7 +361,10 @@ export async function prepareSessionResume(
 		const key = `${snapshot.id}\0${resolve(root)}`;
 		let verification = verified.get(key);
 		if (verification === undefined) {
-			verification = worktreeNeedsRestore(snapshot, root, options);
+			// A pooled worktree another session owns is restored fresh, as if it were gone (#4748).
+			verification = pooledWorktreeOwnedElsewhere(storeDir, root, sessionManager.getSessionId()).then(
+				(elsewhere) => elsewhere || worktreeNeedsRestore(snapshot, root, options),
+			);
 			verified.set(key, verification);
 		}
 		return verification;
@@ -375,7 +402,13 @@ export async function prepareSessionResume(
 		needsRestore &&
 		(await isDirectory(match.root)) &&
 		(await orFallBack(options, "own-checkout", new Set([match.root]), async () =>
-			checkoutsWorkedHere(new Map([[match.root, match.snapshot]]), match.cwd, options, await partial()),
+			checkoutsWorkedHere(
+				new Map([[match.root, match.snapshot]]),
+				match.cwd,
+				sessionManager.getSessionId(),
+				options,
+				await partial(),
+			),
 		).then((worked) => worked.has(match.root)));
 	// The checkout the session returned to stays as it is, whatever it changed since: only the others are restored.
 	const kept = [...(keepsOwnCheckout && match !== undefined ? [match.root] : [])];
@@ -628,13 +661,17 @@ async function recordReuse(sessionManager: SessionManager, mapping: WorktreeRoot
 	await sessionManager.appendWorktreeSnapshot(mapping.to, mapping.snapshotId, undefined, mapping);
 }
 
-type SessionCheckouts = Pick<SessionManager, "getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords">;
+type SessionCheckouts = Pick<
+	SessionManager,
+	"getBranch" | "getWorktreeRootMappings" | "getWorktreeSnapshotRecords" | "getSessionId"
+>;
 
 /** The session's checkouts as they are once `mapping`, not yet recorded, is. */
 function withMapping(sessionManager: SessionManager, mapping: WorktreeRootMapping | undefined): SessionCheckouts {
 	if (mapping === undefined) return sessionManager;
 	return {
 		getBranch: () => sessionManager.getBranch(),
+		getSessionId: () => sessionManager.getSessionId(),
 		getWorktreeSnapshotRecords: () => sessionManager.getWorktreeSnapshotRecords(),
 		getWorktreeRootMappings: () => [...sessionManager.getWorktreeRootMappings(), mapping],
 	};
@@ -702,7 +739,15 @@ async function restoreCandidates(
 		if (
 			!runsHere &&
 			!absent &&
-			(await checkoutsWorkedHere(new Map([[root, snapshot]]), cwd, options, await partial())).has(root)
+			(
+				await checkoutsWorkedHere(
+					new Map([[root, snapshot]]),
+					cwd,
+					sessionManager.getSessionId(),
+					options,
+					await partial(),
+				)
+			).has(root)
 		) {
 			left.set(
 				root,
@@ -797,6 +842,7 @@ async function restorePlanned(
 			...(git === undefined ? {} : { cannotRestore: new Map(targets.map((target) => [target.root, git])) }),
 			fallbackCwd: options.launchCwd,
 			skipMissingRecords: true,
+			pool: options.pool ?? { maxIdlePerRepository: DEFAULT_MAX_IDLE_PER_REPOSITORY },
 		});
 		for (const missing of resumed.missingRecords ?? []) {
 			if (outcome.missing.has(missing.root)) continue;
@@ -907,7 +953,13 @@ export async function continueSessionWhereItWorked(
 ): Promise<SessionManager> {
 	const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
 	const checkouts = currentWorktreeSnapshots(opened);
-	const own = await checkoutsWorkedHere(checkouts, cwd, options, await partialRestores(opened, options));
+	const own = await checkoutsWorkedHere(
+		checkouts,
+		cwd,
+		opened.getSessionId(),
+		options,
+		await partialRestores(opened, options),
+	);
 	if (own.size < checkouts.size) {
 		const prepared = await prepareSessionResume(opened, { ...options, keepInPlace: own });
 		if (prepared.status !== "ready") return opened;
@@ -922,17 +974,22 @@ export async function continueSessionWhereItWorked(
 		await recordBlueprintContext(opened, blueprints.context);
 		if (blueprints.notices.length > 0) options.onNotices?.(blueprints.notices);
 	}
-	return cwd === resolve(opened.getCwd()) ? opened : reopen(cwd);
+	const continuing = cwd === resolve(opened.getCwd()) ? opened : await reopen(cwd);
+	// The session holds the pooled worktrees it continues in until it closes (#4748).
+	await holdSessionWorktrees(opened, continuing, storeDir);
+	return continuing;
 }
 
 /**
  * The roots of the `checkouts` a session recorded that are here as checkouts it worked in on this node, as it left them
  * or changed since: a worktree this node restored for it, or a checkout whose repository holds the commit of its latest
- * snapshot. The checkout the session works in counts only while its working directory `cwd` is here too.
+ * snapshot. A pooled worktree counts only while session `sessionId` owns it: another session that took the slot works
+ * in it now (#4748). The checkout the session works in counts only while its working directory `cwd` is here too.
  */
 async function checkoutsWorkedHere(
 	checkouts: ReadonlyMap<string, WorktreeSnapshot>,
 	cwd: string,
+	sessionId: string,
 	options: PrepareSessionResumeOptions,
 	partial: ReadonlySet<string> = new Set(),
 ): Promise<Set<string>> {
@@ -940,6 +997,13 @@ async function checkoutsWorkedHere(
 	const own = new Set<string>();
 	for (const [root, snapshot] of checkouts) {
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
+		const holder = await pooledWorktreeHolder(storeDir, root);
+		if (holder !== "unpooled") {
+			// Slots share their repository's object store, so only the pool record tells whose work a slot holds.
+			const owned = holder.owner?.kind === "session" && holder.owner.id === sessionId;
+			if (owned && !partial.has(resolve(root))) own.add(root);
+			continue;
+		}
 		const restoredHere = isInside(storeDir, root) && !partial.has(resolve(root));
 		if (restoredHere || (await holdsSnapshotCommit(snapshot, root, options.signal))) own.add(root);
 	}
@@ -1064,13 +1128,17 @@ export function sessionResumeOptions(
 	entryPoint: ResumeEntryPoint,
 	launchCwd: string,
 	agentDir: string,
-	settingsManager: Pick<SettingsManager, "getWorktreeSnapshotSettings" | "getResumeSetupCommand">,
+	settingsManager: Pick<
+		SettingsManager,
+		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand"
+	>,
 	trusted: (worktree: string) => boolean,
 ): PrepareSessionResumeOptions {
 	return {
 		entryPoint,
 		launchCwd,
 		settings: settingsManager.getWorktreeSnapshotSettings(),
+		pool: settingsManager.getWorktreePoolSettings(),
 		blueprint: { agentDir, setupCommand: settingsManager.getResumeSetupCommand(), trusted },
 		storeDir: resumeStoreDir(agentDir),
 	};

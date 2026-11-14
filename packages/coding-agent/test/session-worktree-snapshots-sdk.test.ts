@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test } from "vitest";
@@ -11,6 +11,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
+import { type PoolSlotRecord, pooledWorktreeHolder } from "../src/core/worktree-snapshot/pool.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { formatWorktreeRestoreNotice, isWorkspaceConfigError, openSessionInWorktree } from "../src/index.ts";
 import { createHarness } from "./suite/harness.js";
@@ -171,6 +172,38 @@ describe("resuming through the SDK (#4245)", () => {
 		assert.equal(resumed.session.sessionManager.getCwd(), mapping.to);
 		assert.equal(readFileSync(join(mapping.to, "a.txt"), "utf8"), "recorded\n");
 		assert.equal(readFileSync(join(clone, "a.txt"), "utf8"), "drifted\n");
+	});
+
+	test("createAgentSession holds the pooled worktree it restores until the session closes, then records its last snapshot (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const first = await fauxSession({ cwd: clone, settings: { snapshots: { enabled: true } } });
+		await writeTurn(first, join(clone, "a.txt"), "recorded\n");
+		const sessionId = first.session.sessionManager.getSessionId();
+		await first.session.dispose();
+		renameSync(clone, sandbox.path("moved-away"));
+		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		cleanups.push(async () => {
+			await store.close();
+			await database.close();
+		});
+		const resumed = await fauxSession({ sessionManager: await SessionManager.open(store, sessionId) });
+		const storeDir = join(sandbox.path("agent"), "worktree-snapshots");
+		const root = resumed.session.sessionManager.getCwd();
+		assert.match(root, /[\\/]worktrees[\\/][0-9a-f]{24}-0$/);
+		const owner = { kind: "session", id: sessionId };
+		assert.deepEqual(await pooledWorktreeHolder(storeDir, root), { owner, held: true });
+		await writeTurn(resumed, join(root, "a.txt"), "changed here\n");
+		const latest = resumed.session.sessionManager.getLatestWorktreeSnapshots().get(root);
+		assert.ok(latest);
+
+		await resumed.session.dispose();
+
+		assert.deepEqual(await pooledWorktreeHolder(storeDir, root), { owner, held: false });
+		const [record] = readdirSync(join(storeDir, "pool"), { recursive: true, encoding: "utf8" })
+			.filter((name) => name.endsWith("0.json"))
+			.map((name) => JSON.parse(readFileSync(join(storeDir, "pool", name), "utf8")) as PoolSlotRecord);
+		assert.deepEqual(record?.lastState, { snapshotId: latest.id, head: latest.head, tree: latest.tree });
 	});
 });
 
