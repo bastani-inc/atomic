@@ -9,6 +9,7 @@ import {
 	AgentWakeDispatcher,
 	agentWakeDispatcher,
 } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
+import { createEventBus } from "../../packages/coding-agent/src/core/event-bus.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { AgentTaskHost } from "../../packages/coding-agent/src/core/tasks/agent-adapter.js";
 import { formatTaskCompletion } from "../../packages/coding-agent/src/core/tasks/completion.js";
@@ -21,6 +22,10 @@ import {
 	RELEASED_REPLY_FORMAT_EVENT,
 	type ReleasedReplyFormatRequest,
 } from "../../packages/intercom/released-reply-format.js";
+import {
+	RELEASED_CHILD_REPLY_EVENT,
+	type ReleasedChildReplyRequest,
+} from "../../packages/intercom/released-reply-wait.js";
 import type { AgentConfig, AgentScope } from "../../packages/subagents/src/agents/agents.js";
 import { INTERCOM_BRIDGE_MARKER } from "../../packages/subagents/src/intercom/intercom-bridge.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
@@ -3760,6 +3765,119 @@ test("a child of the earlier process whose call result is already held is woken 
 	await h.waitForLatest("heldrestart1:0", clearedOk);
 	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 0);
 	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+/** A detached call of the child's last turn whose process died with the earlier owner (#4848). */
+const DETACHED_BASH = { toolCallId: "bash-1", toolName: "bash" } as const;
+const ASK_CALL = { toolCallId: "ask-1", toolName: "intercom" } as const;
+
+/** End the child's own session on a turn whose calls have no results yet, as a released child's does. */
+async function endChildSessionOnCalls(
+	record: SubagentChildRecord,
+	calls: ReadonlyArray<{ toolCallId: string; toolName: string }>,
+): Promise<void> {
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	await session.appendMessage({
+		role: "assistant",
+		content: calls.map((call) => ({
+			type: "toolCall" as const,
+			id: call.toolCallId,
+			name: call.toolName,
+			arguments: {},
+		})),
+		api: "faux",
+		provider: "faux",
+		model: "faux",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	});
+}
+
+function resultText(result: DetachedToolResult | undefined): string {
+	return (result?.result.content ?? []).map((part) => (part.type === "text" ? part.text : "")).join("\n");
+}
+
+function assertInterruptedByRestart(results: readonly DetachedToolResult[] | undefined): void {
+	const bash = results?.find((result) => result.toolCallId === DETACHED_BASH.toolCallId);
+	assert.ok(bash, `the detached call is answered: ${JSON.stringify(results)}`);
+	assert.equal(bash.toolName, DETACHED_BASH.toolName);
+	assert.equal(bash.isError, true);
+	assert.match(resultText(bash), /interrupted when Atomic restarted/);
+	assert.match(resultText(bash), /re-run it if/i);
+	assert.doesNotMatch(resultText(bash), /still running/);
+}
+
+test("after an owner restart, a reply to a released child's ask wakes it with the reply and its detached bash call reported interrupted, never still running (#4848)", async () => {
+	const h = harness();
+	const runId = "restart-ask-bash";
+	const earlier = await releasedByEarlierProcess(h, runId, {
+		waitingOn: [
+			{ ...ASK_CALL, replyWait: { questionId: "question-1", deadline: Date.now() + 60_000, from: "peer" } },
+			DETACHED_BASH,
+		],
+	});
+	await endChildSessionOnCalls(earlier, [ASK_CALL, DETACHED_BASH]);
+	const events = createEventBus();
+	const dispatcher = agentWakeDispatcher();
+	h.wakeDispatcher = dispatcher;
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, events, dispatcher);
+	cleanups.push(async () => stop());
+	await dispatcher.whenIdle();
+	assert.equal(h.runs.filter((run) => run.options.redispatchDetachedCalls).length, 0, "the ask is not sent again");
+
+	const reply: ReleasedChildReplyRequest = {
+		childName: `subagent-worker-${runId}`,
+		replyTo: "question-1",
+		message: { id: "reply-1", timestamp: Date.now(), replyTo: "question-1", content: { text: "ship it" } },
+	};
+	events.emit(RELEASED_CHILD_REPLY_EVENT, reply);
+	assert.equal(await reply.completion, true);
+	const woken = await h.waitForLatest(
+		`${runId}:0`,
+		(record) => record.taskId !== earlier.taskId && record.state === "terminal",
+	);
+	assert.ok(woken.taskId);
+	await settled(h, woken.taskId);
+
+	const wake = h.runs.find((run) => run.options.resumeToolResults !== undefined);
+	assert.ok(wake, "the reply wakes the child");
+	const results = wake.options.resumeToolResults ?? [];
+	assert.deepEqual(
+		results.map((result) => result.toolCallId),
+		[ASK_CALL.toolCallId, DETACHED_BASH.toolCallId],
+	);
+	assert.match(resultText(results[0]), /ship it/);
+	assertInterruptedByRestart(results);
+	assert.equal(
+		h.runs.filter((run) => JSON.stringify(run).includes("still running in the background")).length,
+		0,
+		"no call is reported still running",
+	);
+});
+
+test("after an owner restart, a paused released child waiting only on a detached call gets it reported interrupted on its resume (#4848)", async () => {
+	const h = harness();
+	const runId = "restart-paused-bash";
+	const earlier = await releasedByEarlierProcess(h, runId, { waitingOn: [DETACHED_BASH], terminalStatus: "paused" });
+	await endChildSessionOnCalls(earlier, [DETACHED_BASH]);
+	bindProcessWakes(h);
+
+	const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "carry on" });
+	await settled(h, resumedTaskId(resumed));
+
+	const run = h.runs.find((item) => item.options.resumeToolResults !== undefined);
+	assert.ok(run, "the resume continues the turn the call was made in");
+	assert.equal(run.options.resumeToolResults?.length, 1);
+	assertInterruptedByRestart(run.options.resumeToolResults);
 });
 
 test("binding the owner again in the process that released its children starts nothing again (#4326)", async () => {

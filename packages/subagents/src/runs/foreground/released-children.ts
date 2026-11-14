@@ -47,6 +47,10 @@ export const SUBAGENT_RELEASED_WAKE_PROMPT =
 export const SUBAGENT_STILL_RUNNING_RESULT =
 	"This call is still running in the background. Its result arrives later as a message; do not start it again.";
 
+/** The result a detached call gets when the owner process it ran in has gone, so its result never arrives (#4848). */
+export const SUBAGENT_INTERRUPTED_BY_RESTART_RESULT =
+	"This call was interrupted when Atomic restarted, so its result will never arrive. Re-run it if you still need it.";
+
 /** The wake namespace of the children one owner session launched: one handler per owner, never one per child. */
 export function subagentWakeNamespace(ownerSessionId: string): string {
 	return `subagents/${ownerSessionId}`;
@@ -77,6 +81,21 @@ function releasedByEarlierProcess(record: SubagentChildRecord): boolean {
 		record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS &&
 		record.ownerGeneration !== SUBAGENT_OWNER_GENERATION
 	);
+}
+
+/**
+ * Whether a call a child's transcript ends on died with an earlier owner process (#4848): the child was released by
+ * an earlier generation, so nothing in this process forwards the call's result. A question's reply is routed by the
+ * broker instead, so it still arrives.
+ */
+export function interruptedByRestart(
+	record: Pick<SubagentChildRecord, "waitingOn" | "ownerGeneration">,
+): (toolCallId: string) => boolean {
+	if (record.waitingOn === undefined || record.ownerGeneration === SUBAGENT_OWNER_GENERATION) return () => false;
+	const questions = new Set(
+		record.waitingOn.flatMap((call) => (call.replyWait === undefined ? [] : [call.toolCallId])),
+	);
+	return (toolCallId) => !questions.has(toolCallId);
 }
 
 export function needsRedispatch(record: SubagentChildRecord): boolean {
@@ -242,13 +261,15 @@ export interface ReleasedChildWakePlan {
 /**
  * Plan a wake from the calls the transcript is waiting on and the results that arrived. When the results answer every
  * pending call and nothing else woke the child, the turn simply continues. Otherwise every pending call is answered
- * first, a call still running with {@link SUBAGENT_STILL_RUNNING_RESULT}, so the transcript never ends on a call
- * without a result before a new message.
+ * first, a call still running with {@link SUBAGENT_STILL_RUNNING_RESULT} and one that died with an earlier owner
+ * process with {@link SUBAGENT_INTERRUPTED_BY_RESTART_RESULT}, so the transcript never ends on a call without a result
+ * before a new message.
  */
 export function planReleasedChildWake(
 	pending: ReadonlyMap<string, string>,
 	results: readonly DetachedToolResult[],
 	hasOtherInput: boolean,
+	interrupted: (toolCallId: string) => boolean = () => false,
 ): ReleasedChildWakePlan {
 	const seen = new Set<string>();
 	const unique = results.filter((result) => !seen.has(result.toolCallId) && seen.add(result.toolCallId));
@@ -256,12 +277,16 @@ export function planReleasedChildWake(
 	const late = unique.filter((result) => !pending.has(result.toolCallId));
 	const stillRunning: DetachedToolResult[] = [...pending]
 		.filter(([toolCallId]) => !onTime.some((result) => result.toolCallId === toolCallId))
-		.map(([toolCallId, toolName]) => ({
-			toolCallId,
-			toolName,
-			result: { content: [{ type: "text", text: SUBAGENT_STILL_RUNNING_RESULT }], details: undefined },
-			isError: false,
-		}));
+		.map(([toolCallId, toolName]) => {
+			const lost = interrupted(toolCallId);
+			const text = lost ? SUBAGENT_INTERRUPTED_BY_RESTART_RESULT : SUBAGENT_STILL_RUNNING_RESULT;
+			return {
+				toolCallId,
+				toolName,
+				result: { content: [{ type: "text", text }], details: undefined },
+				isError: lost,
+			};
+		});
 	return {
 		resumeToolResults: [...onTime, ...stillRunning],
 		lateMessages: late.map(lateToolResultMessage),

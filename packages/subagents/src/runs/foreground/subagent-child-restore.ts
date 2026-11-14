@@ -43,7 +43,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
-import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
+import { interruptedByRestart, pendingToolCalls, planReleasedChildWake } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
@@ -511,7 +511,12 @@ async function relaunchChild(
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, !promptless)
+			? planReleasedChildWake(
+					pendingToolCalls(sessionManager),
+					toolResults,
+					!promptless,
+					interruptedByRestart(record),
+				)
 			: undefined;
 	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const prompts = redispatch

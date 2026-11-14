@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a released subagent being told a detached tool call (such as a long `bash`) was "still running" after Atomic restarted, though the call died with the old process and its result never arrived: when a reply, deadline or resume wakes the subagent, that call is now reported interrupted so it can re-run it ([#4848](https://github.com/bastani-inc/atomic/issues/4848))
+
 ## [0.9.86] - 2026-11-14
 
 Subagents are easier to reach and to talk to.
