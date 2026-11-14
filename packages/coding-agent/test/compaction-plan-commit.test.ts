@@ -36,6 +36,7 @@ const RUN: CompactionRungResult = {
 	text: "[User]: kept",
 	ranges: [],
 	keptRanges: [],
+	releasedRanges: [],
 	stats: {
 		linesBefore: 26,
 		linesDeleted: 25,

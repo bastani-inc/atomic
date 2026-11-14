@@ -108,3 +108,40 @@ test("live and reloaded compaction cards show only the model when collapsed or e
 		}
 	}
 });
+
+test("the compaction notice names released keepContext spans briefly (#4794)", () => {
+	initTheme("dark");
+	const stats = {
+		linesBefore: 10,
+		linesDeleted: 4,
+		linesKept: 6,
+		rangeCount: 1,
+		tokensBefore: 100,
+		tokensAfter: 50,
+		percentReduction: 50,
+	};
+	const released = new CompactionBoundaryMessageComponent({
+		text: "kept",
+		rung: "planned",
+		stats,
+		releasedRanges: [
+			{ start: 1, end: 3, reason: "duplicate" },
+			{ start: 5, end: 7, reason: "budget" },
+			{ start: 8, end: 9, reason: "budget" },
+		],
+	});
+	assert.match(
+		stripVTControlCharacters(released.render(160).join("\n")),
+		/Released 3 keepContext spans \(1 duplicate, 2 over budget\)/,
+	);
+	const message = createVerbatimCompactionMessage("kept", 100, new Date(0).toISOString(), {
+		strategy: "verbatim-lines",
+		stats,
+		rung: "planned",
+		releasedRanges: [{ start: 1, end: 3, reason: "budget" }],
+	});
+	const replayed = stripVTControlCharacters(compactionBoundaryFromMessage(message, false).render(160).join("\n"));
+	assert.match(replayed, /Released 1 keepContext span \(1 over budget\)/);
+	const plain = new CompactionBoundaryMessageComponent({ text: "kept", rung: "planned", stats });
+	assert.doesNotMatch(stripVTControlCharacters(plain.render(160).join("\n")), /Released/);
+});

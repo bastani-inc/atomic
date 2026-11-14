@@ -138,6 +138,8 @@ interface SettingsManagerBasicAccessors {
 	getCompactionCompressionRatio(): number;
 	getCompactionPreserveRecent(model?: CompactionModel): number;
 	getCompactionQuery(): string | undefined;
+	/** Share of the keep target `<keepContext>` spans may fill before older spans are released (#4794). */
+	getCompactionKeepContextShare(): number;
 	/** Wall-clock limit on automatic compaction's model planning; `undefined` when disabled. */
 	getCompactionPlanningTimeoutMs(): number | undefined;
 	/** Whether automatic compaction starts in the background at the soft threshold (#4330). */
@@ -154,6 +156,7 @@ interface SettingsManagerBasicAccessors {
 		compression_ratio: number;
 		preserve_recent: number;
 		query?: string;
+		keepContextShare: number;
 	};
 	getBranchSummarySettings(): { reserveTokens: number; skipPrompt: boolean };
 	getBranchSummarySkipPrompt(): boolean;
@@ -557,6 +560,13 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		return query && query.length > 0 ? query : undefined;
 	},
 
+	getCompactionKeepContextShare() {
+		const value = settingsInternals(this).settings.compaction?.keepContextShare;
+		return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+			? value
+			: SETTINGS_DEFAULTS.compaction.keepContextShare;
+	},
+
 	getCompactionPlanningTimeoutMs() {
 		const raw = settingsInternals(this).settings.compaction?.planningTimeoutMs;
 		// A positive fraction of a millisecond is still a limit: only 0 or "disabled" turn it off.
@@ -606,6 +616,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 			compression_ratio: this.getCompactionCompressionRatio(),
 			preserve_recent: this.getCompactionPreserveRecent(model),
 			...(query === undefined ? {} : { query }),
+			keepContextShare: this.getCompactionKeepContextShare(),
 		};
 	},
 

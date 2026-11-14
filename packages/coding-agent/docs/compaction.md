@@ -106,9 +106,18 @@ Protection includes the tags and survives repeated compaction, even if the plann
 - Put each tag on its own line. Tags mentioned inside prose do not protect content.
 - A span stays within one user or assistant message. An unclosed span protects through that message's end; a closing tag without an opener is ignored.
 - Tags in tool results have no effect. Restate important file or fetched content in your own message.
-- Protected content counts toward the keep target. Protect only essential constraints, since protecting more leaves less room for surrounding context.
+- Protected content counts toward the keep target. Tag constraints, not material: protecting more leaves less room for surrounding context.
 
-Results report protected ranges as `keptRanges`.
+Protection is best effort within a budget. Compaction always succeeds and never grows because of `keepContext`: tags change which lines survive, not whether compaction fits. Protected spans may fill at most `compaction.keepContextShare` (default `0.5`) of the keep target, in both lines and characters. When compaction has to start a fresh context window, protection is also capped at that share of the model's context window. Past that, compaction releases whole spans until the rest fit, in this order:
+
+1. Older copies of a span repeated later, compared after whitespace normalization. Restating a constraint does not add protection.
+2. The oldest spans.
+3. The 3 most recent spans.
+4. Spans in the latest user message.
+
+A released span is never cut partway by this step. It becomes ordinary content that compaction ranks with everything else, so useful lines can still survive. When protected spans fit the budget, nothing is released.
+
+Results report protected ranges as `keptRanges`, and released spans as `releasedRanges` with a `reason` of `duplicate` or `budget`. The compaction notice shows how many spans were released.
 
 ## Compaction model
 
@@ -129,7 +138,7 @@ An explicit compaction model can send the compactable transcript to a different 
 
 For classifier compaction, log in with `/login typesafe`, then set `"compactionModel": "typesafe/jev-latest"`. The classifier scores groups of transcript lines; Atomic removes lower-scored groups without rewriting the rest. Protected lines and the recent tail are not sent for scoring. If scoring fails, Atomic tries your fallback models. Group boundaries can make the retained fraction differ from the requested compression ratio.
 
-For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
+For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph receives protected spans with their tags, and released spans and tags in tool results without them, so Morph compacts those like other lines. Morph is not a chat-model choice.
 
 The compaction card shows the model that produced the result, such as `github-copilot/claude-opus-5.5` or `morph/morph-compactor`. A policy-refusal summary is headed `Context compacted · summary (fallback)`.
 

@@ -223,6 +223,13 @@
           "description": "Exact number of newest context-visible messages kept outside the compactable region.",
           "default": 2
         },
+        "keepContextShare": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the keep target that <keepContext> spans may fill. Past it, whole spans lose protection and are compacted like other lines: older duplicates first, then the oldest spans, then the 3 most recent spans, and spans in the latest user message last.",
+          "default": 0.5
+        },
         "query": {
           "type": "string",
           "description": "Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted."
@@ -1160,6 +1167,11 @@
           ],
           "description": "Default cadence, in milliseconds, of the periodic heartbeat sent to a chat for each of its running background shells and subagents. 0 disables; otherwise at least 60000. A tool call's heartbeatMs overrides it.",
           "default": 900000
+        },
+        "heartbeatWakesIdleSession": {
+          "type": "boolean",
+          "description": "Whether a task or workflow heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
+          "default": true
         }
       }
     },

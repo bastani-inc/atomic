@@ -44,6 +44,15 @@ const CompactionSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.compaction.preserve_recent,
 		}),
 	),
+	keepContextShare: Type.Optional(
+		Type.Number({
+			minimum: 0,
+			maximum: 1,
+			description:
+				"Share of the keep target that <keepContext> spans may fill. Past it, whole spans lose protection and are compacted like other lines: older duplicates first, then the oldest spans, then the 3 most recent spans, and spans in the latest user message last.",
+			default: SETTINGS_DEFAULTS.compaction.keepContextShare,
+		}),
+	),
 	query: Type.Optional(
 		Type.String({
 			description:
@@ -402,6 +411,13 @@ const TaskSettingsSchema = Type.Object({
 			description:
 				"Default cadence, in milliseconds, of the periodic heartbeat sent to a chat for each of its running background shells and subagents. 0 disables; otherwise at least 60000. A tool call's heartbeatMs overrides it.",
 			default: SETTINGS_DEFAULTS.tasks.heartbeatMs,
+		}),
+	),
+	heartbeatWakesIdleSession: Type.Optional(
+		Type.Boolean({
+			description:
+				"Whether a task or workflow heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
+			default: SETTINGS_DEFAULTS.tasks.heartbeatWakesIdleSession,
 		}),
 	),
 });

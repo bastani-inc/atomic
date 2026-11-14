@@ -4,7 +4,13 @@ import { InMemorySettingsStorage, SettingsManager } from "../src/core/settings-m
 
 const model = { provider: "provider", id: "family/model" };
 const key = "provider/family/model";
-const defaults = { enabled: true, reserveTokens: 16384, preserve_recent: 2, compression_ratio: 0.5 };
+const defaults = {
+	enabled: true,
+	reserveTokens: 16384,
+	preserve_recent: 2,
+	compression_ratio: 0.5,
+	keepContextShare: 0.5,
+};
 
 // Regression coverage for upstream #8133, adapted to Atomic's exact-message tail.
 describe("compaction model overrides", () => {
@@ -144,5 +150,15 @@ describe("compaction history recall setting", () => {
 			SettingsManager.inMemory({ compaction: { historyRecall: false } }).getCompactionHistoryRecall(),
 			false,
 		);
+	});
+});
+
+describe("compaction keepContext share setting", () => {
+	it("accepts a share from 0 to 1 and falls back to 0.5 otherwise (#4794)", () => {
+		const share = (keepContextShare: number | undefined) =>
+			SettingsManager.inMemory({ compaction: { keepContextShare } }).getCompactionSettings().keepContextShare;
+		assert.equal(share(undefined), 0.5);
+		for (const valid of [0, 0.25, 1]) assert.equal(share(valid), valid);
+		for (const invalid of [-0.1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) assert.equal(share(invalid), 0.5);
 	});
 });

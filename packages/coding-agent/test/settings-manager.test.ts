@@ -46,6 +46,7 @@ describe("SettingsManager", () => {
 				reserveTokens: 16384,
 				compression_ratio: 0.5,
 				preserve_recent: 2,
+				keepContextShare: 0.5,
 			});
 
 			const settingsPath = join(agentDir, "settings.json");
@@ -68,6 +69,7 @@ describe("SettingsManager", () => {
 				compression_ratio: 0.3,
 				preserve_recent: 4,
 				query: "focus current migration",
+				keepContextShare: 0.5,
 			});
 		});
 	});

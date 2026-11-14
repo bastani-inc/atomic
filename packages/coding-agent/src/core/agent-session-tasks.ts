@@ -147,9 +147,14 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 		deliver: async (message) => {
 			if (this._disposed || !admission.isOpen()) throw new Error("Task owner is closed");
 			// The workflow heartbeat delivery: a visible card plus a steer that waits for the next safe boundary,
-			// never interrupting a response in progress.
+			// never interrupting a response in progress, and that starts a turn in a chat left idle by an interrupt.
 			const deliver = () =>
-				this.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true });
+				this.sendCustomMessage(message, {
+					triggerTurn: true,
+					deliverAs: "steer",
+					persistWhenStreaming: true,
+					wakeIdleSession: true,
+				});
 			if (stageAdmission) await deliver();
 			else
 				await admission.admit(undefined, deliver, () => {

@@ -987,15 +987,7 @@ async function restoreValidated(
 			join(storeDir, "worktrees", `${(snapshot?.id ?? target.tree).slice(0, 12)}-${randomUUID().slice(0, 8)}`),
 	);
 	await checkTarget(path, snapshotId);
-	const patches = snapshot
-		? await Promise.all(
-				snapshot.chain.map((link, deltaIndex) =>
-					link.patch === null
-						? null
-						: loadBlob(options.blobs, link.patch, { snapshotId: snapshot.id, role: "patch", deltaIndex }),
-				),
-			)
-		: [];
+	const patches = await snapshotPatches(snapshot, options.blobs);
 	const warnings: WorktreeRestoreWarning[] = [];
 	const retained = new Set<string>();
 	const warn = (warning: WorktreeRestoreWarning) => {
@@ -1010,43 +1002,7 @@ async function restoreValidated(
 	return withScratchDirectory(async (scratch) => {
 		const store = objectStorePath(storeDir, target.remotes);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
-		await withRepositoryLock(store, async () => {
-			await ensureObjectStore(store, snapshotId, signal);
-			const fetched = await timeRestorePhase("fetch", () =>
-				ensureHead(
-					git,
-					snapshot ?? { id: null, head: target.head, remotes: target.remotes, bundle: null, omitted: [] },
-					options.blobs,
-					scratch,
-				),
-			);
-			// What a snapshot of other remotes, such as a fork at the same commit, says is pushed is not this store's.
-			const sameRemotes =
-				snapshot === null ||
-				(snapshot.remotes.length === target.remotes.length &&
-					snapshot.remotes.every((remote, index) => remote === target.remotes[index]));
-			const pushed =
-				(await configureRecordedRemotes(git, target.remotes)) && sameRemotes
-					? await pushedCommits(git, snapshot, target.head, fetched)
-					: new Set<string>();
-			await runGit(["update-ref", "--stdin"], {
-				...git,
-				input: [
-					`update refs/atomic/heads/${target.head} ${target.head}\n`,
-					...[...pushed].map((commit) => `update ${PUSHED_REFS}${commit} ${commit}\n`),
-				].join(""),
-			});
-			if (!(await hasObject(git, `${target.tree}^{tree}`))) {
-				if (!snapshot) {
-					throw new WorkspaceRestoreError("snapshot-not-found", {
-						snapshotId: null,
-						head: target.head,
-						tree: target.tree,
-					});
-				}
-				await timeRestorePhase("reconstruct", () => reconstructTree(git, snapshot, patches, scratch));
-			}
-		});
+		await storeSnapshotObjects(git, store, target, snapshot, patches, options.blobs, scratch);
 		await publishWorktree({
 			git,
 			store,
@@ -1068,6 +1024,141 @@ async function restoreValidated(
 			binding: { remotes: [...target.remotes], head: target.head, tree: target.tree, envHash: target.envHash },
 			warnings,
 		};
+	});
+}
+
+/**
+ * Makes `target`'s commit and tree objects of the shared store `store`, which `git` points at: fetches or unbundles the
+ * commit when the store lacks it, keeps it and the commits known to be pushed referenced, and rebuilds the tree from
+ * the snapshot's change sets when the store lacks it too.
+ */
+async function storeSnapshotObjects(
+	git: GitRunOptions,
+	store: string,
+	target: WorkspaceBinding,
+	snapshot: WorktreeSnapshot | null,
+	patches: readonly (Uint8Array | null)[],
+	blobs: SnapshotBlobStore | undefined,
+	scratch: string,
+): Promise<void> {
+	await withRepositoryLock(store, async () => {
+		await ensureObjectStore(store, snapshot?.id ?? null, git.signal);
+		const fetched = await timeRestorePhase("fetch", () =>
+			ensureHead(
+				git,
+				snapshot ?? { id: null, head: target.head, remotes: target.remotes, bundle: null, omitted: [] },
+				blobs,
+				scratch,
+			),
+		);
+		// What a snapshot of other remotes, such as a fork at the same commit, says is pushed is not this store's.
+		const sameRemotes =
+			snapshot === null ||
+			(snapshot.remotes.length === target.remotes.length &&
+				snapshot.remotes.every((remote, index) => remote === target.remotes[index]));
+		const pushed =
+			(await configureRecordedRemotes(git, target.remotes)) && sameRemotes
+				? await pushedCommits(git, snapshot, target.head, fetched)
+				: new Set<string>();
+		await runGit(["update-ref", "--stdin"], {
+			...git,
+			input: [
+				`update refs/atomic/heads/${target.head} ${target.head}\n`,
+				...[...pushed].map((commit) => `update ${PUSHED_REFS}${commit} ${commit}\n`),
+			].join(""),
+		});
+		if (!(await hasObject(git, `${target.tree}^{tree}`))) {
+			if (!snapshot) {
+				throw new WorkspaceRestoreError("snapshot-not-found", {
+					snapshotId: null,
+					head: target.head,
+					tree: target.tree,
+				});
+			}
+			await timeRestorePhase("reconstruct", () => reconstructTree(git, snapshot, patches, scratch));
+		}
+	});
+}
+
+/** The change sets of `snapshot`'s chain, each checked against its recorded hash; null for a link without one. */
+function snapshotPatches(
+	snapshot: WorktreeSnapshot | null,
+	blobs: SnapshotBlobStore | undefined,
+): Promise<(Uint8Array | null)[]> {
+	if (!snapshot) return Promise.resolve([]);
+	return Promise.all(
+		snapshot.chain.map((link, deltaIndex) =>
+			link.patch === null
+				? null
+				: loadBlob(blobs, link.patch, { snapshotId: snapshot.id, role: "patch", deltaIndex }),
+		),
+	);
+}
+
+export interface ResetPooledWorktreeOptions {
+	readonly storeDir: string;
+	readonly blobs?: SnapshotBlobStore;
+	readonly signal?: AbortSignal;
+	/** Runs once the snapshot's objects are in the store, right before the first write to the worktree. */
+	readonly beforeReset: () => Promise<void>;
+}
+
+/**
+ * Resets the existing pooled worktree at `slot`, whose files are exactly the recorded tree `from`, to `snapshot`
+ * (#4748): files `from` holds and the snapshot does not are removed, the snapshot's are written where they differ, and
+ * HEAD and the index name the snapshot's commit. Files Git ignores, such as dependencies and build output, stay;
+ * unchanged files keep their timestamps. Resolves to the restore's warnings once HEAD and the recomputed tree match
+ * the snapshot; rejects with `tree-mismatch` when they do not. A failure before `beforeReset` ran left the worktree
+ * untouched. Only the pool's claim calls this: it is the one way an existing worktree is rewritten.
+ */
+export async function resetPooledWorktree(
+	snapshot: WorktreeSnapshot,
+	slot: string,
+	from: { readonly tree: string },
+	options: ResetPooledWorktreeOptions,
+): Promise<WorktreeRestoreWarning[]> {
+	const { signal } = options;
+	const binding: WorkspaceBinding = {
+		remotes: [...snapshot.remotes],
+		head: snapshot.head,
+		tree: snapshot.tree,
+		envHash: snapshot.envHash,
+	};
+	assertUsableSnapshotRecord(binding, snapshot);
+	const patches = await snapshotPatches(snapshot, options.blobs);
+	return withScratchDirectory(async (scratch) => {
+		const store = objectStorePath(options.storeDir, snapshot.remotes);
+		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
+		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
+		await options.beforeReset();
+		await timeRestorePhase("materialize", async () => {
+			const attributes = join(scratch, "empty-attributes");
+			await writing(attributes, snapshot.id, () => writeFile(attributes, ""));
+			const neutral: GitRunOptions = { cwd: slot, signal, neutral: true, env: { GIT_LFS_SKIP_SMUDGE: "1" } };
+			// The index takes `from` first, keeping the timestamps of the entries it already had, so the reset below
+			// removes the files `from` holds beyond HEAD as well, and writes only what differs.
+			await runGit(["read-tree", "--reset", from.tree], neutral);
+			await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+			await runGit(
+				["-c", `core.attributesFile=${attributes}`, "read-tree", "--reset", "-u", snapshot.tree],
+				neutral,
+			);
+			await runGit(["update-ref", "--no-deref", "HEAD", snapshot.head], neutral);
+			await runGit(["read-tree", "--reset", snapshot.head], neutral);
+			await runGit(["update-index", "-q", "--refresh"], { ...neutral, allowExitCodes: [1] });
+		});
+		const warnings = snapshotRestoreWarnings(snapshot);
+		if (snapshot.filters?.drivers.includes("lfs")) {
+			const worktree: GitRunOptions = { cwd: slot, signal };
+			const pointers = await timeRestorePhase("lfs", () =>
+				pullLfsObjects(worktree, snapshot.head, snapshot.tree, snapshot.remotes),
+			);
+			if (pointers.length > 0) warnings.unshift({ code: "lfs-objects-unavailable", paths: pointers });
+		}
+		await timeRestorePhase("verify", () =>
+			verifyRestoredTree(slot, slot, snapshot.head, snapshot.tree, "tree", scratch, snapshot.id, signal),
+		);
+		return warnings;
 	});
 }
 
@@ -1426,7 +1517,6 @@ interface PublishWorktree {
 async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const { git, store, storeDir, path, head, tree, snapshot, scratch, warn, signal } = publish;
 	let measured = tree;
-	const settings = DEFAULT_WORKTREE_SNAPSHOT_SETTINGS;
 	const snapshotId = snapshot?.id ?? null;
 	await checkTarget(path, snapshotId);
 	const createdTarget = (await statIfPresent(path)) === undefined;
@@ -1444,33 +1534,51 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 			const pointers = await timeRestorePhase("lfs", () => pullLfsObjects(worktree, head, tree, snapshot.remotes));
 			if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
 		}
-		await timeRestorePhase("verify", async () => {
-			const checkout = await locateCheckout(staging, signal);
-			if (checkout instanceof Error) throw checkout;
-			const policy = await loadSnapshotPathPolicy(staging);
-			const actual = await withScratchDirectory((verifyScratch) =>
-				writeWorkingTree(checkout, settings, policy, verifyScratch, {
-					signal,
-					neutral: true,
-					seedTree: tree,
-					attributesFile: join(scratch, "empty-attributes"),
-				}),
-			);
-			measured = actual.tree;
-			if (checkout.head !== head || (publish.verify === "tree" && actual.tree !== tree)) {
-				throw new WorkspaceRestoreError("tree-mismatch", {
-					snapshotId,
-					target: path,
-					expectedTree: tree,
-					actualTree: actual.tree,
-				});
-			}
-		});
+		measured = await timeRestorePhase("verify", () =>
+			verifyRestoredTree(staging, path, head, tree, publish.verify, scratch, snapshotId, signal),
+		);
 		assertActive();
 		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
 		assertActive();
 	});
 	return measured;
+}
+
+/**
+ * Checks that the worktree at `dir`, restored for `target`, has HEAD `head` and, unless only HEAD is checked, the
+ * neutral policy tree `tree`, ignoring conversion filters through the empty attributes file in `scratch`. Resolves to
+ * the tree it measured; rejects with `tree-mismatch`.
+ */
+async function verifyRestoredTree(
+	dir: string,
+	target: string,
+	head: string,
+	tree: string,
+	verify: "tree" | "head",
+	scratch: string,
+	snapshotId: string | null,
+	signal: AbortSignal | undefined,
+): Promise<string> {
+	const checkout = await locateCheckout(dir, signal);
+	if (checkout instanceof Error) throw checkout;
+	const policy = await loadSnapshotPathPolicy(dir);
+	const actual = await withScratchDirectory((verifyScratch) =>
+		writeWorkingTree(checkout, DEFAULT_WORKTREE_SNAPSHOT_SETTINGS, policy, verifyScratch, {
+			signal,
+			neutral: true,
+			seedTree: tree,
+			attributesFile: join(scratch, "empty-attributes"),
+		}),
+	);
+	if (checkout.head !== head || (verify === "tree" && actual.tree !== tree)) {
+		throw new WorkspaceRestoreError("tree-mismatch", {
+			snapshotId,
+			target,
+			expectedTree: tree,
+			actualTree: actual.tree,
+		});
+	}
+	return actual.tree;
 }
 
 /** Moves the verified staging worktree to the restore's final path, never into a directory that appeared there. */

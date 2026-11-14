@@ -28,6 +28,14 @@ export interface LineRange {
 	end: number;
 }
 
+/** Why a `<keepContext>` span lost its protection: a newer identical copy exists, or protection was over budget. */
+export type KeepContextReleaseReason = "duplicate" | "budget";
+
+/** A whole `<keepContext>` span that compaction ranked as ordinary content instead of protecting. */
+export interface ReleasedRange extends LineRange {
+	reason: KeepContextReleaseReason;
+}
+
 export type RawLineEndpoint = number | string | boolean | null;
 
 export interface RawLineRange {
@@ -43,6 +51,8 @@ export interface NumberedRegion {
 	priorMarkerNs: ReadonlyMap<number, number>;
 	/** Optional future protected spans, expressed as one-based line numbers. */
 	protectedLineNumbers?: ReadonlySet<number>;
+	/** `<keepContext>` spans whose protection was released, oldest first; absent when none were. */
+	releasedRanges?: readonly ReleasedRange[];
 	tokenEstimate: number;
 }
 
@@ -57,6 +67,8 @@ export interface CompactedTranscript {
 	 * is diagnosable rather than a silent reduction in what compaction reclaimed.
 	 */
 	keptRanges: LineRange[];
+	/** `<keepContext>` spans whose protection was released, with the reason; empty when none were. */
+	releasedRanges: ReleasedRange[];
 	stats: VerbatimCompactionStats;
 }
 
@@ -140,6 +152,8 @@ export interface VerbatimCompactionDetails {
 	plannerModel?: CompactionPlannerModel;
 	/** Present only on a fresh rung reached after planning failed, e.g. `Compaction planning timed out after 300000 ms`. */
 	freshReason?: string;
+	/** Present only when `<keepContext>` spans lost their protection in this compaction. */
+	releasedRanges?: ReleasedRange[];
 	backupPath?: string;
 }
 
@@ -171,5 +185,7 @@ export interface VerbatimCompactionResult {
 	freshReason?: string;
 	/** Aggregate usage across every planner request and retry in this compaction. */
 	usage?: Usage;
+	/** Present only when `<keepContext>` spans lost their protection in this compaction. */
+	releasedRanges?: ReleasedRange[];
 	backupPath?: string;
 }

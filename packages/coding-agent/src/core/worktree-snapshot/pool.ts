@@ -4,11 +4,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { sha256Hex } from "./env-hash.ts";
+import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
-import { removeRestoredWorktree, verifyWorktree } from "./restore.ts";
-import type { WorktreeSnapshotSettings } from "./types.ts";
+import { removeRestoredWorktree, resetPooledWorktree, verifyWorktree } from "./restore.ts";
+import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
 /**
  * The per-machine pool of restored worktrees (#4748). A session resume restores into a slot at a stable path,
@@ -18,7 +19,8 @@ import type { WorktreeSnapshotSettings } from "./types.ts";
  * for workflow runs, by the SDK into a chosen directory, or by earlier versions have no record and are never pooled.
  *
  * A slot's owner is the holder that last took it, whether it still holds the lease or released it when it closed;
- * only the owner continues in it. Nothing here rewrites an existing worktree.
+ * only the owner continues in it. {@link claimIdleWorktree} is the one way an existing worktree is rewritten: it takes
+ * an idle slot that holds nothing but its recorded state for another snapshot, and the slot's owner with it.
  */
 
 /** The identity of a repository: the same `sha24(remotes)` that names its shared object store under `repositories/`. */
@@ -49,6 +51,11 @@ export interface PoolSlotRecord {
 	readonly blueprintDigest: string | null;
 	/** When the holder released the slot; null while it is held, or when its holder stopped without releasing it. */
 	readonly releasedAt: string | null;
+	/**
+	 * The state a claim is resetting the slot to, set before its files change and cleared once they verify: a slot that
+	 * still has it holds a mix of two recorded states, never anything else, and is never claimed.
+	 */
+	readonly resetting?: PoolLastState;
 }
 
 /** What a session resume restores into a new slot. */
@@ -203,21 +210,28 @@ function isOwner(value: unknown): value is PoolOwner {
 	return (owner?.kind === "session" || owner?.kind === "prebuild") && typeof owner.id === "string";
 }
 
+function isState(value: unknown): value is PoolLastState {
+	const state = value as Partial<PoolLastState> | null | undefined;
+	return (
+		typeof state?.head === "string" &&
+		typeof state.tree === "string" &&
+		(state.snapshotId === null || typeof state.snapshotId === "string")
+	);
+}
+
 async function readRecord(file: string, storeDir: string, repository: RepositoryId, slot: SlotNumber) {
 	const record = JSON.parse(await readFile(file, "utf8")) as Partial<PoolSlotRecord> | null;
-	const state = record?.lastState as Partial<PoolLastState> | undefined;
 	const valid =
 		record?.version === 1 &&
 		record.repository === repository &&
 		record.slot === slot &&
 		record.path === pooledWorktreePath(storeDir, repository, slot) &&
 		isOwner(record.holder) &&
-		typeof state?.head === "string" &&
-		typeof state.tree === "string" &&
-		(state.snapshotId === null || typeof state.snapshotId === "string") &&
+		isState(record.lastState) &&
 		typeof record.envHash === "string" &&
 		(record.blueprintDigest === null || typeof record.blueprintDigest === "string") &&
-		(record.releasedAt === null || typeof record.releasedAt === "string");
+		(record.releasedAt === null || typeof record.releasedAt === "string") &&
+		(record.resetting === undefined || isState(record.resetting));
 	return valid ? (record as PoolSlotRecord) : undefined;
 }
 
@@ -437,38 +451,63 @@ export interface EvictIdleWorktreesOptions {
 	readonly signal?: AbortSignal;
 }
 
+/** The readable records of the slots of `repository`. Rejects when the pool cannot be listed. */
+async function slotRecords(storeDir: string, repository: RepositoryId): Promise<PoolSlotRecord[]> {
+	const records: PoolSlotRecord[] = [];
+	for (const name of await readdir(join(resolve(storeDir), "pool", repository))) {
+		const match = RECORD_NAME.exec(name);
+		if (!match) continue;
+		const slot = Number(match[1]) as SlotNumber;
+		const record = await readRecord(recordFile(storeDir, repository, slot), storeDir, repository, slot).catch(
+			() => undefined,
+		);
+		if (record !== undefined) records.push(record);
+	}
+	return records;
+}
+
+/** The records of the slots of `repository` no live process holds. Rejects when the pool cannot be listed. */
+async function idleRecords(storeDir: string, repository: RepositoryId): Promise<PoolSlotRecord[]> {
+	const idle: PoolSlotRecord[] = [];
+	for (const record of await slotRecords(storeDir, repository)) {
+		if (!(await isHeld(recordFile(storeDir, repository, record.slot)))) idle.push(record);
+	}
+	return idle;
+}
+
+/** Newest released first; a slot whose holder stopped without releasing it counts as the oldest. */
+function byNewestRelease(a: PoolSlotRecord, b: PoolSlotRecord): number {
+	return (b.releasedAt ?? "").localeCompare(a.releasedAt ?? "") || a.slot - b.slot;
+}
+
 /**
  * Removes the oldest idle slots of `repository` beyond `maxIdle`, each under its record lock and only while no process
  * leases it: a slot whose directory
  * is gone loses its record, and a slot still exactly in its last state loses its worktree and record. A slot that
- * changed since, which may hold work no snapshot recorded, is kept. Resolves to the paths it removed; a failure keeps
- * that slot and never throws.
+ * changed since, which may hold work no snapshot recorded, is kept. A slot a claim stopped resetting holds nothing but
+ * recorded states and is never claimed, so it goes whatever `maxIdle` says. Resolves to the paths it removed; a failure
+ * keeps that slot and never throws.
  */
 export async function evictIdleWorktrees(
 	storeDir: string,
 	repository: RepositoryId,
 	options: EvictIdleWorktreesOptions,
 ): Promise<string[]> {
-	const directory = join(resolve(storeDir), "pool", repository);
-	const idle: PoolSlotRecord[] = [];
+	let idle: PoolSlotRecord[];
 	try {
-		for (const name of await readdir(directory)) {
-			const match = RECORD_NAME.exec(name);
-			if (!match) continue;
-			const slot = Number(match[1]) as SlotNumber;
-			const file = recordFile(storeDir, repository, slot);
-			const record = await readRecord(file, storeDir, repository, slot).catch(() => undefined);
-			if (record !== undefined && !(await isHeld(file))) idle.push(record);
-		}
+		idle = await idleRecords(storeDir, repository);
 	} catch (error) {
+		const directory = join(resolve(storeDir), "pool", repository);
 		reportDebug("storage", "worktree-pool-evict-failed", { directory, ...failureDebugFields(error) });
 		return [];
 	}
-	// Newest released first; a slot whose holder stopped without releasing it counts as the oldest.
-	idle.sort((a, b) => (b.releasedAt ?? "").localeCompare(a.releasedAt ?? "") || a.slot - b.slot);
-	let excess = idle.length - options.maxIdle;
 	const removed: string[] = [];
-	for (const record of idle.reverse()) {
+	for (const record of idle.filter((slot) => slot.resetting !== undefined)) {
+		if (await evictSlot(storeDir, record, options)) removed.push(record.path);
+	}
+	const kept = idle.filter((slot) => slot.resetting === undefined).sort(byNewestRelease);
+	let excess = kept.length - options.maxIdle;
+	for (const record of kept.reverse()) {
 		if (excess <= 0) break;
 		if (await evictSlot(storeDir, record, options)) {
 			removed.push(record.path);
@@ -486,12 +525,8 @@ async function evictSlot(storeDir: string, record: PoolSlotRecord, options: Evic
 			const current = await readRecord(file, storeDir, record.repository, record.slot);
 			if (current === undefined || (await otherLeases(file)) > 0) return false;
 			if (await exists(current.path)) {
-				const { head, tree } = current.lastState;
-				await verifyWorktree({ remotes: [], head, tree, envHash: current.envHash }, current.path, {
-					settings: options.settings,
-					signal: options.signal,
-				});
-				if (await holdsUnrecordedFiles(current.path, tree, options.signal)) return false;
+				const stopped = current.resetting !== undefined;
+				if (!stopped && !(await holdsRecordedStateOnly(current, options.settings, options.signal))) return false;
 				await removeRestoredWorktree(current.path, { storeDir, signal: options.signal, onWarning: () => {} });
 			}
 			await rm(file, { force: true });
@@ -500,6 +535,162 @@ async function evictSlot(storeDir: string, record: PoolSlotRecord, options: Evic
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-evict-kept", { path: record.path, ...failureDebugFields(error) });
 		return false;
+	}
+}
+
+/**
+ * Whether the slot of `record` holds exactly its last state: its HEAD and policy tree, and nothing verification leaves
+ * out that no snapshot recorded. Rejects when it cannot tell, as when the slot's HEAD or files changed.
+ */
+async function holdsRecordedStateOnly(
+	record: PoolSlotRecord,
+	settings: WorktreeSnapshotSettings,
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	const { head, tree } = record.lastState;
+	await verifyWorktree({ remotes: [], head, tree, envHash: record.envHash }, record.path, { settings, signal });
+	return !(await holdsUnrecordedFiles(record.path, tree, signal));
+}
+
+/** Why {@link claimIdleWorktree} took no slot. */
+export type NoIdleWorktreeReason = "none" | "busy" | "dirty" | "fetch-failed" | "reset-failed" | "verify-failed";
+
+export interface NoIdleWorktree {
+	readonly claimed: false;
+	/** Why the last candidate was not taken, or `none` when the repository has no idle slot. */
+	readonly reason: NoIdleWorktreeReason;
+}
+
+/** A slot a claim reset to the snapshot, held for the claiming owner: release `lease` exactly once. */
+export interface ClaimedWorktree {
+	readonly claimed: true;
+	readonly lease: WorktreeLease;
+	readonly warnings: readonly WorktreeRestoreWarning[];
+}
+
+export interface ClaimIdleWorktreeOptions {
+	readonly storeDir: string;
+	readonly owner: PoolOwner;
+	/** The snapshot settings each slot's last state was recorded under, to tell an unchanged slot from a changed one. */
+	readonly settings: WorktreeSnapshotSettings;
+	/** Blob storage holding the snapshot's patches and bundle. */
+	readonly blobs?: SnapshotBlobStore;
+	readonly signal?: AbortSignal;
+}
+
+/**
+ * Takes an idle slot of `snapshot`'s repository for `options.owner` and resets it to the snapshot (#4748), keeping the
+ * files Git ignores, such as dependencies and build output, so the blueprint's maintenance has little to rebuild.
+ * Candidates are the slots of the repository, those last restored for the snapshot's environment first, then the most
+ * recently released; a slot a live process holds is busy. Only a slot that holds exactly its recorded last state, and
+ * nothing no snapshot recorded, is taken, so its previous owner restores its snapshot elsewhere and loses nothing. The slot is marked before its files
+ * change and unmarked once they verify, so a claim stopped half way leaves a slot no claim takes and eviction removes.
+ * Resolves to the held slot with HEAD and tree equal to the snapshot's, or to why none was taken: then the caller
+ * restores fresh. Rejects only when `signal` aborted.
+ */
+export async function claimIdleWorktree(
+	snapshot: WorktreeSnapshot,
+	options: ClaimIdleWorktreeOptions,
+): Promise<ClaimedWorktree | NoIdleWorktree> {
+	const storeDir = resolve(options.storeDir);
+	let candidates: PoolSlotRecord[];
+	try {
+		candidates = await slotRecords(storeDir, repositoryIdOf(snapshot.remotes));
+	} catch {
+		return { claimed: false, reason: "none" };
+	}
+	const sameEnvironment = (record: PoolSlotRecord) => (record.envHash === snapshot.envHash ? 0 : 1);
+	candidates.sort((a, b) => sameEnvironment(a) - sameEnvironment(b) || byNewestRelease(a, b));
+	// A slot a live process holds is busy: each candidate's lease is checked under its record lock.
+	let reason: NoIdleWorktreeReason = "none";
+	for (const candidate of candidates) {
+		options.signal?.throwIfAborted();
+		const outcome = await claimSlot(storeDir, candidate, snapshot, options);
+		if (outcome.claimed) return outcome;
+		reason = outcome.reason;
+	}
+	options.signal?.throwIfAborted();
+	return { claimed: false, reason };
+}
+
+async function claimSlot(
+	storeDir: string,
+	candidate: PoolSlotRecord,
+	snapshot: WorktreeSnapshot,
+	options: ClaimIdleWorktreeOptions,
+): Promise<ClaimedWorktree | NoIdleWorktree> {
+	const file = recordFile(storeDir, candidate.repository, candidate.slot);
+	const target: PoolLastState = { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree };
+	let taken: { before: PoolSlotRecord; held: HeldSlot } | NoIdleWorktreeReason;
+	try {
+		// The owner and the mark change with the lease, under the record lock, so the previous owner never holds the slot
+		// again once the claim took it.
+		taken = await withSlotLock(file, false, async () => {
+			if (heldSlots.has(file) || (await otherLeases(file)) > 0) return "busy";
+			const before = await readRecord(file, storeDir, candidate.repository, candidate.slot);
+			if (before === undefined || before.resetting !== undefined) return "dirty";
+			if (!(await holdsRecordedStateOnly(before, options.settings, options.signal).catch(() => false))) {
+				return "dirty";
+			}
+			const marked: PoolSlotRecord = { ...before, holder: options.owner, releasedAt: null, resetting: target };
+			const unlease = await leaseSlot(file);
+			try {
+				await writeRecord(file, marked);
+			} catch (error) {
+				await unlease().catch(() => {});
+				throw error;
+			}
+			const held: HeldSlot = { owner: options.owner, references: 1, record: marked, unlease };
+			heldSlots.set(file, held);
+			return { before, held };
+		});
+	} catch (error) {
+		reportDebug("storage", "worktree-pool-claim-skipped", { file, ...failureDebugFields(error) });
+		return { claimed: false, reason: (error as NodeJS.ErrnoException).code === "ELOCKED" ? "busy" : "dirty" };
+	}
+	if (typeof taken === "string") return { claimed: false, reason: taken };
+	const { before, held } = taken;
+	let resetting = false;
+	try {
+		const warnings = await resetPooledWorktree(snapshot, before.path, before.lastState, {
+			storeDir,
+			blobs: options.blobs,
+			signal: options.signal,
+			beforeReset: async () => {
+				resetting = true;
+			},
+		});
+		const claimed: PoolSlotRecord = {
+			...before,
+			holder: options.owner,
+			lastState: target,
+			envHash: snapshot.envHash,
+			releasedAt: null,
+		};
+		await withSlotLock(file, true, () => writeRecord(file, claimed));
+		held.record = claimed;
+		return { claimed: true, lease: newLease(claimed, storeDir, options.owner), warnings };
+	} catch (error) {
+		reportDebug("storage", "worktree-pool-claim-failed", { file, ...failureDebugFields(error) });
+		// A slot whose files never changed goes back to its owner as it was; one changed half way stays marked.
+		const end = async () => {
+			heldSlots.delete(file);
+			await held.unlease().catch(() => {});
+		};
+		try {
+			await withSlotLock(file, true, async () => {
+				try {
+					if (!resetting) await writeRecord(file, before);
+				} finally {
+					await end();
+				}
+			});
+		} catch (cause) {
+			reportDebug("storage", "worktree-pool-claim-undo-failed", { file, ...failureDebugFields(cause) });
+			await end();
+		}
+		const verifyFailed = isWorkspaceRestoreError(error) && error.code === "tree-mismatch";
+		return { claimed: false, reason: !resetting ? "fetch-failed" : verifyFailed ? "verify-failed" : "reset-failed" };
 	}
 }
 

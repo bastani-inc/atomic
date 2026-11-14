@@ -127,7 +127,7 @@ Protected lines already consuming the keep target: ${protectedCount}
 Additional unprotected lines you may keep: ${unprotectedKeepBudget}
 
 <EXTREMELY_IMPORTANT>
-Protected ranges are absolute. Callers wrap content they never want compressed in \`<keepContext>\` / \`</keepContext>\` tags, and every line of such a span, tag lines included, is listed above as protected. Tagged content survives verbatim regardless of the compression ratio.
+Protected ranges are absolute. Callers wrap content they never want compressed in \`<keepContext>\` / \`</keepContext>\` tags, and the host lists those spans, tag lines included, as protected. Only the listed ranges are protected: a tagged span missing from the protected field was released by the host (an older duplicate, or over the protection budget) and is ordinary content to rank like any other line.
 Never emit a deletion record covering a protected line, whatever the keep target says. Protected lines count against the keep target rather than raising it, so the unprotected remainder must compress harder to reach the same total. If the protected ranges alone meet or exceed the keep target, delete every remaining low-priority line and keep all protected lines.
 </EXTREMELY_IMPORTANT>
 
