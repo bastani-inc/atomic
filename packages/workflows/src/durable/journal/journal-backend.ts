@@ -1521,7 +1521,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				}
 				// Read the token first: a commit racing the version read moves it again before the next call.
 				const token = await journal.changeToken();
-				if (token === this.catalogToken) return;
+				if (token !== undefined && token === this.catalogToken) return;
 				const versions = await journal.runVersions();
 				for (const runId of new Set([...this.sequences.keys(), ...this.summarized.keys(), ...versions.keys()]))
 					await this.serialize(runId, () => this.catchUp(runId, versions.get(runId), journal), false);
