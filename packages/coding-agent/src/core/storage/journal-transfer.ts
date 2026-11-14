@@ -93,10 +93,20 @@ export interface WorkflowRunExportEvent {
 	readonly payload: WorkflowRunExportValue;
 }
 
-/** The local workflow journal storage that runs are exported from and imported into. */
+/**
+ * The workflow journal storage that runs are exported from and imported into: the local journal store, a SQLite file,
+ * or a database a named selection opens (`open` is called for each use and the database closed after it; `location`
+ * names it in reports and errors).
+ */
 export type WorkflowRunTransferStorage =
 	| { readonly kind: "store"; readonly directory: string }
-	| { readonly kind: "sqlite"; readonly path: string; readonly prefix?: string };
+	| { readonly kind: "sqlite"; readonly path: string; readonly prefix?: string }
+	| {
+			readonly kind: "database";
+			readonly open: () => Promise<SqliteDatabase>;
+			readonly location: string;
+			readonly prefix?: string;
+	  };
 
 export interface WorkflowRunExportOptions {
 	/** Only these runs; a run the storage does not hold fails the export before any file is written. */
@@ -138,7 +148,11 @@ type JsonObject = { readonly [key: string]: WorkflowRunExportValue };
 type Tables = ReturnType<typeof runJournalTables>;
 
 function storageLocation(storage: WorkflowRunTransferStorage): string {
-	return storage.kind === "store" ? storage.directory : storage.path;
+	return storage.kind === "store" ? storage.directory : storage.kind === "sqlite" ? storage.path : storage.location;
+}
+
+function storagePrefix(storage: WorkflowRunTransferStorage): string | undefined {
+	return storage.kind === "store" ? undefined : storage.prefix;
 }
 
 function parseStored(text: string, path: string, runId: string, what: string): WorkflowRunExportValue {
@@ -214,6 +228,8 @@ interface ExportSource {
 	readonly path: string;
 	readonly shardId?: number;
 	readonly database: SqliteDatabase;
+	/** Whether the source is read in one read transaction, which closing it ends. */
+	readonly snapshot: boolean;
 	readonly runs: readonly JournalRunTableRow[];
 	readonly byId: ReadonlyMap<string, JournalRunTableRow>;
 }
@@ -225,36 +241,40 @@ interface UnreadableSource {
 	readonly oldFormat: boolean;
 }
 
-/** Opens a journal file for an export and begins its read transaction; the reason when it cannot. */
+/**
+ * Opens a journal file for an export and begins its read transaction; the reason when it cannot. `open` opens a
+ * named selection's database instead, which is read without a transaction: its runs are each read whole.
+ */
 async function openExportSource(
 	path: string,
 	t: Tables,
 	shardId: number | undefined,
+	open?: () => Promise<SqliteDatabase>,
 ): Promise<ExportSource | UnreadableSource> {
-	if (!existsSync(path)) return { path, reason: "the journal file no longer exists", oldFormat: false };
+	if (open === undefined && !existsSync(path))
+		return { path, reason: "the journal file no longer exists", oldFormat: false };
 	let database: SqliteDatabase;
 	try {
-		database = await openNodeSqliteDatabase(path, { readOnly: true });
+		database = await (open ?? (() => openNodeSqliteDatabase(path, { readOnly: true })))();
 	} catch (error) {
 		return { path, reason: `the journal file cannot be opened: ${(error as Error).message}`, oldFormat: false };
 	}
 	try {
-		await database.exec("BEGIN");
+		if (open === undefined) await database.exec("BEGIN");
 		if (!(await hasTables(database, t))) {
-			await database.exec("COMMIT");
-			await database.close();
+			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: "it has no workflow runs in the current journal format", oldFormat: true };
 		}
 		const version = await schemaVersion(database, t);
 		if (version !== RUN_JOURNAL_SCHEMA_VERSION) {
-			await database.exec("COMMIT");
-			await database.close();
+			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: `unsupported journal schema version ${String(version)}`, oldFormat: false };
 		}
 		const runs = await database.all<JournalRunTableRow>(`SELECT * FROM ${t.runs} ORDER BY run_id`);
 		return {
 			path,
 			database,
+			snapshot: open === undefined,
 			runs,
 			byId: new Map(runs.map((run) => [run.run_id, run])),
 			...(shardId === undefined ? {} : { shardId }),
@@ -265,8 +285,8 @@ async function openExportSource(
 	}
 }
 
-async function closeExportSource(source: ExportSource): Promise<void> {
-	await source.database.exec("COMMIT").catch(() => undefined);
+async function closeExportSource(source: Pick<ExportSource, "database" | "snapshot">): Promise<void> {
+	if (source.snapshot) await source.database.exec("COMMIT").catch(() => undefined);
 	await source.database.close();
 }
 
@@ -421,7 +441,7 @@ export async function exportWorkflowRuns(
 	directory: string,
 	options: WorkflowRunExportOptions = {},
 ): Promise<WorkflowRunExportReport> {
-	const t = runJournalTables(storage.kind === "sqlite" ? storage.prefix : undefined);
+	const t = runJournalTables(storagePrefix(storage));
 	const skipped: { path: string; runId?: string; reason: string }[] = [];
 	const sources = new ExportSources(t);
 	let single: ExportSource | undefined;
@@ -429,10 +449,18 @@ export async function exportWorkflowRuns(
 		async () => {
 			const listed = new Map<string, { readonly source: ExportSource; readonly run: JournalRunTableRow }>();
 			const unexported = new Map<string, { path: string; runId: string; reason: string }>();
-			if (storage.kind === "sqlite") {
-				if (existsSync(storage.path)) {
-					const opened = await openExportSource(storage.path, t, undefined);
+			if (storage.kind === "sqlite" || storage.kind === "database") {
+				if (storage.kind === "database" || existsSync(storage.path)) {
+					const opened = await openExportSource(
+						storageLocation(storage),
+						t,
+						undefined,
+						storage.kind === "database" ? storage.open : undefined,
+					);
 					if ("database" in opened) single = opened;
+					// A named database that cannot be read fails the export: an empty export would pass for a backup.
+					else if (storage.kind === "database" && !opened.oldFormat)
+						throw new StorageTransferError({ path: opened.path, reason: opened.reason });
 					else skipped.push({ path: opened.path, reason: opened.reason });
 				}
 				for (const run of single?.runs ?? []) listed.set(run.run_id, { source: single!, run });
@@ -476,11 +504,24 @@ export async function exportWorkflowRuns(
 			await mkdir(directory, { recursive: true });
 			const written: string[] = [];
 			const unchanged: string[] = [];
-			for (const { source, run } of selected) {
-				const events = await source.database.all<JournalEventTableRow>(
-					`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-					run.run_id,
-				);
+			for (const { source, run: listedRun } of selected) {
+				const readEvents = (executor: SqliteExecutor) =>
+					executor.all<JournalEventTableRow>(
+						`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
+						listedRun.run_id,
+					);
+				// A source without a read snapshot reads each run's row and events together, in one transaction, so a
+				// run that finishes meanwhile is exported with the status its events reach.
+				const { run, events } = source.snapshot
+					? { run: listedRun, events: await readEvents(source.database) }
+					: await source.database.transaction(async (tx) => ({
+							run:
+								(await tx.get<JournalRunTableRow>(
+									`SELECT * FROM ${t.runs} WHERE run_id = ?`,
+									listedRun.run_id,
+								)) ?? listedRun,
+							events: await readEvents(tx),
+						}));
 				const outcome = await writeLinesAtomically(
 					transferFile(directory, run.run_id),
 					exportLines(run, events, source.path),
@@ -773,14 +814,23 @@ async function writeImport(
 	);
 }
 
-/** A journal file an import reads its runs from while it decides what to write: read-only, opened once. */
+/**
+ * A journal file an import reads its runs from while it decides what to write: read-only, opened once. A named
+ * selection's database is opened through its own `open`.
+ */
 class ReadOnlyFiles {
 	private readonly opened = new Map<string, Promise<SqliteDatabase>>();
+	private readonly named?: Extract<WorkflowRunTransferStorage, { kind: "database" }>;
+
+	constructor(named?: Extract<WorkflowRunTransferStorage, { kind: "database" }>) {
+		this.named = named;
+	}
 
 	read(path: string): Promise<SqliteDatabase> {
 		let database = this.opened.get(path);
 		if (database === undefined) {
-			database = openNodeSqliteDatabase(path, { readOnly: true });
+			// A named selection's database is the only one its import reads.
+			database = this.named?.open() ?? openNodeSqliteDatabase(path, { readOnly: true });
 			this.opened.set(path, database);
 		}
 		return database;
@@ -856,9 +906,9 @@ export async function planWorkflowRunImport(
 	storage: WorkflowRunTransferStorage,
 	runs: readonly ParsedWorkflowRun[],
 ): Promise<WorkflowRunImportPlan> {
-	const t = runJournalTables(storage.kind === "sqlite" ? storage.prefix : undefined);
+	const t = runJournalTables(storagePrefix(storage));
 	const location = storageLocation(storage);
-	const files = new ReadOnlyFiles();
+	const files = new ReadOnlyFiles(storage.kind === "database" ? storage : undefined);
 	const planned: PlannedRun[] = [];
 	if (runs.length === 0) return { storage, runs: planned };
 	await withCleanup(
@@ -872,8 +922,9 @@ export async function planWorkflowRunImport(
 							catalog === undefined ? undefined : await storedShard(catalog, files, t, run.header.runId);
 						let path = found?.shard.path;
 						if (storage.kind === "sqlite") path = existsSync(storage.path) ? storage.path : undefined;
+						if (storage.kind === "database") path = storage.location;
 						let stored: StoredRun | undefined;
-						if (path !== undefined && existsSync(path)) {
+						if (path !== undefined && (storage.kind === "database" || existsSync(path))) {
 							try {
 								stored = await readStoredRun(await files.read(path), t, run.header.runId);
 							} catch (error) {
@@ -917,7 +968,7 @@ interface ImportGroup {
  */
 export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promise<WorkflowRunImportReport> {
 	const { storage } = plan;
-	const prefix = storage.kind === "sqlite" ? storage.prefix : undefined;
+	const prefix = storagePrefix(storage);
 	const t = runJournalTables(prefix);
 	const report = { added: [] as string[], updated: [] as string[], unchanged: [] as string[] };
 	const pending = plan.runs.filter((run) => {
@@ -945,7 +996,8 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 		const ordered = [...groups.values()].sort((left, right) => (left.path < right.path ? -1 : 1));
 		for (const group of ordered) {
 			try {
-				group.database = await openNodeSqliteDatabase(group.path);
+				group.database =
+					storage.kind === "database" ? await storage.open() : await openNodeSqliteDatabase(group.path);
 			} catch (error) {
 				throw unreadableShard(group.runs[0]!.run, group.path, error as Error);
 			}

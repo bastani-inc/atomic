@@ -113,7 +113,7 @@ describe("atomic storage and atomic intercom arguments", () => {
 				(error: Error) => isTeamProfileConfigError(error) && error.code === code && error.field === field,
 			);
 		rejects(["join", "libsql://db.example.turso.io"], "missing-token", "--token-file");
-		rejects(["join", "postgres://db", "--token-file", "t"], "unsupported-url", "<url>");
+		rejects(["join", "mysql://db", "--token-file", "t"], "unsupported-url", "<url>");
 		rejects(["join", "file:./shared.sqlite"], "relative-file-url", "<url>");
 		assert.throws(() => parseStorageCommand(["join"]), /Usage: .* storage join <url>/);
 		assert.throws(() => parseStorageCommand(["join", "file:/x", "--token-file"]), /--token-file needs a value/);
