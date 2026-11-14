@@ -232,8 +232,8 @@ class DriverDatabase implements SqliteDatabase {
 	private readonly redact: (text: string) => string;
 	private readonly queue = new CallQueue();
 	private closePromise?: Promise<void>;
-	/** Ends the wait before a call runs again, when closing begins during it. */
-	private wakeRetry?: () => void;
+	/** End the waits before calls run again, when closing begins during them. */
+	private readonly wakeRetries = new Set<() => void>();
 	private retryReported = false;
 	private readonly executor: SqliteExecutor;
 	readonly batch?: (statements: readonly SqliteStatement[]) => Promise<SqliteRow[][]>;
@@ -303,14 +303,16 @@ class DriverDatabase implements SqliteDatabase {
 			this.retryReported = true;
 			process.emitWarning(failure);
 		}
+		let wake: (() => void) | undefined;
 		await new Promise<void>((resolve) => {
 			const timer = setTimeout(resolve, transientRetryDelayMs(failure.attempts));
-			this.wakeRetry = () => {
+			wake = () => {
 				clearTimeout(timer);
 				resolve();
 			};
+			this.wakeRetries.add(wake);
 		});
-		this.wakeRetry = undefined;
+		if (wake) this.wakeRetries.delete(wake);
 		return this.closePromise === undefined;
 	}
 
@@ -462,7 +464,7 @@ class DriverDatabase implements SqliteDatabase {
 		this.closePromise ??= Promise.all([this.queue.drained(), ...this.concurrent]).then(() =>
 			this.call(() => this.driver.close()),
 		);
-		this.wakeRetry?.();
+		for (const wake of this.wakeRetries) wake();
 		return this.closePromise;
 	}
 }
