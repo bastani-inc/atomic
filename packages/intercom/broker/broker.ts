@@ -3230,12 +3230,16 @@ class IntercomBroker {
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
     const unanswered = this.pendingQuestions.takeForSender(sessionId);
-    if (unanswered.length > 0 && departed.supervisorId !== undefined && departed.registrationName !== undefined) {
-      this.releasedAskerReplies.keep(
-        { sessionId, childName: departed.registrationName },
-        unanswered,
-        this.restoringRecipients.releasedOwner(departed.registrationName),
-      );
+    if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {
+      // #4765: an ask kept while its recipient was away waits on the owner's route too, so the recipient's later end
+      // fails it through the owner rather than dropping it.
+      const waiting = [...unanswered, ...this.pendingQuestions.takeDormantForReleasedAsker(sessionId)];
+      if (waiting.length > 0)
+        this.releasedAskerReplies.keep(
+          { sessionId, childName: departed.registrationName },
+          waiting,
+          this.restoringRecipients.releasedOwner(departed.registrationName),
+        );
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);

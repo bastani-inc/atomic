@@ -110,6 +110,24 @@ export class AwayAsks {
 		).run(senderReturnAddress, senderSessionId);
 	}
 
+	/**
+	 * #4765: the released subagent `senderSessionId` is away now too. Its questions kept while only their recipient was
+	 * away, which have no asker identity, leave this table: they wait for a reply or a failure on its owner's route.
+	 */
+	takeForReleasedAsker(senderSessionId: string): PendingQuestion[] {
+		const rows = this.statement(
+			"SELECT message_id, target_session_id FROM away_questions WHERE sender_session_id = ? AND sender_return_address = '' ORDER BY kept_at",
+		).all(senderSessionId);
+		this.statement("DELETE FROM away_questions WHERE sender_session_id = ? AND sender_return_address = ''").run(
+			senderSessionId,
+		);
+		return rows.map((row) => ({
+			messageId: String(row.message_id),
+			senderSessionId,
+			targetSessionId: String(row.target_session_id),
+		}));
+	}
+
 	/** The kept question `questionId` that `replierSessionId` answers, if its asker is away. */
 	question(
 		questionId: string,

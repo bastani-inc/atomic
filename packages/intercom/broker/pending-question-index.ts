@@ -36,6 +36,11 @@ export class PendingQuestionIndex {
     this.away?.markAsker(senderSessionId, senderReturnAddress);
   }
 
+  /** A released subagent asker: its questions kept for an away recipient move to its owner's route (#4765). */
+  takeDormantForReleasedAsker(senderSessionId: string): PendingQuestion[] {
+    return this.away?.takeForReleasedAsker(senderSessionId) ?? [];
+  }
+
   /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
   hasDormantReply(questionId: string, replierSessionId: string): boolean {
     return this.awayAsks().question(questionId, replierSessionId) !== undefined;
