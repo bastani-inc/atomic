@@ -162,7 +162,7 @@ export class SqlSessionStore implements SessionStore {
 	private readonly cwdMatcher?: SessionCwdMatcher;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
-	private readonly scopes = new Map<string, { readonly token: string; readonly ids: readonly string[] }>();
+	private readonly scopes = new Map<string, { readonly token: string | undefined; readonly ids: readonly string[] }>();
 	/** Listed summaries of sessions that still exist at the cached version; never more than the store holds. */
 	private readonly summaries = new Map<string, { readonly version: string; readonly summary: SessionSummary }>();
 	/**
@@ -504,7 +504,7 @@ export class SqlSessionStore implements SessionStore {
 		const cached = this.scopes.get(key);
 		// A cached id without a summary is never expected; re-reading the scope repairs it instead of dropping it.
 		const scope =
-			cached?.token === token && cached.ids.every((id) => this.summaries.has(id))
+			token !== undefined && cached?.token === token && cached.ids.every((id) => this.summaries.has(id))
 				? cached
 				: { token, ids: await this.readScope(query, cached !== undefined) };
 		// Map order is recency order: re-inserting marks the scope as used, and the oldest scope is evicted first.
@@ -538,10 +538,13 @@ export class SqlSessionStore implements SessionStore {
 
 	/**
 	 * `data_version` moves when another connection commits and `total_changes()` when this one writes, so
-	 * together they cover writers in every process; the table aggregates also catch a change to the sessions
-	 * table if the adapter does not serve every statement from one connection.
+	 * together they cover writers in every process, but only on one connection: Atomic's own SQLite adapter serves
+	 * every statement from one. Over an adapter that may not, such as a libSQL server whose every HTTP request is a
+	 * new stream, neither moves, and no column of the sessions table changes on every write by every version, so
+	 * there is no token and each listing revalidates its scope (#4805).
 	 */
-	private async changeToken(): Promise<string> {
+	private async changeToken(): Promise<string | undefined> {
+		if (this.database.descriptor.adapter !== "node-sqlite") return undefined;
 		const { changeMarkers, rowOrder } = this.dialect;
 		const row = await this.database.get<SqliteRow>(
 			`SELECT ${changeMarkers.columns},

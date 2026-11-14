@@ -10,6 +10,7 @@ import {
 	createWorkerHostProvisioner,
 	WorkerProvisionerError,
 } from "../../packages/workflows/src/workers/provisioners/index.js";
+import { FakeGitHubApp } from "../helpers/fake-github-app.js";
 import { FakeCloud, type FakeCloudKind, runProvisionerConformance } from "../helpers/provisioner-conformance.js";
 
 const never = () => new AbortController().signal;
@@ -39,11 +40,18 @@ const PRESETS: readonly { readonly file: string; readonly cli: string; readonly 
 	{ file: "github-actions.json", cli: "gh", kind: "gh" },
 ];
 
-function preset(file: string): CommandProvisionerOptions {
+/** A shipped preset as it reads, `auth` included. */
+function shippedPreset(file: string): CommandProvisionerOptions {
 	const path = fileURLToPath(
 		new URL(`../../packages/coding-agent/examples/worker-fleet/presets/${file}`, import.meta.url),
 	);
 	return JSON.parse(readFileSync(path, "utf8")) as CommandProvisionerOptions;
+}
+
+/** A shipped preset without its `auth`: the CLI's own login, such as `gh` with a fine-grained token. */
+function preset(file: string): CommandProvisionerOptions {
+	const { auth: _auth, ...config } = shippedPreset(file);
+	return config;
 }
 
 /** A fake cloud of `kind` with its fake CLI on `PATH`, and the secret the CLI prints when it refuses credentials. */
@@ -64,6 +72,28 @@ for (const { file, cli, kind } of PRESETS)
 			dispose: () => cloud.dispose(),
 		};
 	});
+
+// The recommended path for the gh preset: installation tokens Atomic mints from a GitHub App, against a fake GitHub API.
+runProvisionerConformance("github-actions.json preset with GitHub App auth", async () => {
+	const github = await FakeGitHubApp.start();
+	const cloud = fakeCloud("gh", "gh");
+	setEnv("FAKE_GH_APP", "1");
+	const shipped = shippedPreset("github-actions.json");
+	return {
+		cloud,
+		secret: SECRET,
+		provisioner: (options) =>
+			createWorkerHostProvisioner({
+				...shipped,
+				auth: { githubApp: { ...shipped.auth?.githubApp, ...github.auth() } },
+				...options,
+			}),
+		dispose: () => {
+			cloud.dispose();
+			github.close();
+		},
+	};
+});
 
 async function rejection(promise: Promise<unknown>): Promise<WorkerProvisionerError> {
 	try {

@@ -633,11 +633,14 @@ export function registerRunJournalConformance(
 		const { changeToken, runVersions, snapshotTail } = journal;
 		if (changeToken === undefined || runVersions === undefined || snapshotTail === undefined)
 			return assert.fail("changeToken, runVersions and snapshotTail must be implemented together");
+		// A journal that cannot tell that nothing changed has no token at all, never one that stays put on a change.
 		const empty = await changeToken.call(journal);
+		const tokened = empty !== undefined;
 		assert.equal(await changeToken.call(journal), empty);
 		await journal.createRun(header);
 		const created = await changeToken.call(journal);
-		assert.notEqual(created, empty);
+		assert.equal(created !== undefined, tokened);
+		if (tokened) assert.notEqual(created, empty);
 		assert.deepEqual(await runVersions.call(journal), new Map([[header.runId, { seq: 0, at: 0 }]]));
 		assert.equal(await snapshotTail.call(journal, header.runId), undefined);
 		const held = await lease(journal);
@@ -647,7 +650,9 @@ export function registerRunJournalConformance(
 			type: "CheckpointRecorded",
 			payload: { kind: "tool", completedAt: 7 },
 		});
-		assert.notEqual(await changeToken.call(journal), created);
+		const appended = await changeToken.call(journal);
+		assert.equal(appended !== undefined, tokened);
+		if (tokened) assert.notEqual(appended, created);
 		const latest = { seq: checkpoint.entry.seq, at: checkpoint.entry.at };
 		assert.deepEqual(await runVersions.call(journal), new Map([[header.runId, latest]]));
 		assert.deepEqual(await snapshotTail.call(journal, header.runId), {

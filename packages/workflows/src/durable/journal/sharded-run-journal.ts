@@ -454,17 +454,20 @@ export class ShardedRunJournal implements RunJournal {
 		});
 	}
 
-	async changeToken(): Promise<string> {
+	async changeToken(): Promise<string | undefined> {
 		this.assertOpen();
 		return this.operation(async () => {
 			const tokens = [await this.catalog.changeToken()];
 			for (const record of await this.catalog.shards()) {
 				const journal = await this.listable(record);
-				tokens.push(
-					journal === undefined
-						? `unavailable:${this.unavailable.get(record.id)!.code}`
-						: ((await journal.changeToken?.()) ?? "untracked"),
-				);
+				if (journal === undefined) tokens.push(`unavailable:${this.unavailable.get(record.id)!.code}`);
+				else if (journal.changeToken === undefined) tokens.push("untracked");
+				else {
+					const token = await journal.changeToken();
+					// A shard that cannot tell that nothing changed leaves the store without a token (#4814).
+					if (token === undefined) return undefined;
+					tokens.push(token);
+				}
 			}
 			return JSON.stringify(tokens);
 		});
