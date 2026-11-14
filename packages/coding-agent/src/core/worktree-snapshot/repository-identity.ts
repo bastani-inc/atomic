@@ -9,6 +9,13 @@ export type RepositoryId = string & { readonly __brand: "RepositoryId" };
 
 /** Schemes whose remotes name a host and a repository path, which SSH and HTTPS spellings of one repository share. */
 const NETWORK_SCHEMES: ReadonlySet<string> = new Set(["ssh", "git+ssh", "ssh+git", "git", "http", "https"]);
+/** SSH schemes, whose user decides which account's repositories a path names. */
+const SSH_SCHEMES: ReadonlySet<string> = new Set(["ssh", "git+ssh", "ssh+git"]);
+/**
+ * The account Git hosting services serve every repository over SSH from, so its remotes name a repository as their
+ * HTTPS spelling does. Another user's SSH paths are that user's, relative to its home directory.
+ */
+const HOSTING_USER = "git";
 const DEFAULT_PORTS: Readonly<Record<string, string>> = {
 	ssh: "22",
 	"git+ssh": "22",
@@ -17,14 +24,15 @@ const DEFAULT_PORTS: Readonly<Record<string, string>> = {
 	http: "80",
 };
 /** `[user@]host:path`, Git's scp-like syntax; a one-letter host is a Windows drive, not a host. */
-const SCP_LIKE = /^(?:[^@/\\]+@)?([^@:/\\[\]]{2,}|\[[^\]]+\]):(?!\/\/|:)(.+)$/;
+const SCP_LIKE = /^(?:([^@/\\]+)@)?([^@:/\\[\]]{2,}|\[[^\]]+\]):(?!\/\/|:)(.+)$/;
 const SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//;
 
 /**
- * `remote` as the identity compares it: an SSH, Git or HTTP(S) remote becomes `https://<host>[:port]/<path>`, with
- * the host lower-cased, the user, any credentials and a default port dropped, and slashes and a trailing `.git` trimmed
- * from the path, so `git@github.com:o/r.git`, `ssh://git@GitHub.com/o/r` and `https://github.com/o/r.git` are one
- * repository. Local paths, `file://` and other remotes are kept as written.
+ * `remote` as the identity compares it: an HTTP(S) or Git remote, or an SSH one as the `git` user of hosting services,
+ * becomes `https://<host>[:port]/<path>`, with the host lower-cased, any credentials and a default port dropped, and
+ * slashes and a trailing `.git` trimmed from the path, so `git@github.com:o/r.git`, `ssh://git@GitHub.com/o/r` and
+ * `https://github.com/o/r.git` are one repository. SSH remotes of another user or none, whose paths may be relative to
+ * that user's home directory, local paths, `file://` and other remotes are kept as written.
  */
 export function normalizeRemoteUrl(remote: string): string {
 	const trimmed = remote.trim();
@@ -40,15 +48,16 @@ export function normalizeRemoteUrl(remote: string): string {
 		} catch {
 			return remote;
 		}
+		if (SSH_SCHEMES.has(scheme) && url.username !== HOSTING_USER) return remote;
 		host = url.hostname;
 		// Parsed as HTTPS, a URL drops port 443 itself; each other scheme's default is dropped here.
 		port = url.port === "" || url.port === DEFAULT_PORTS[scheme] ? "" : `:${url.port}`;
 		path = url.pathname;
 	} else {
 		const scp = SCP_LIKE.exec(trimmed);
-		if (scp === null) return remote;
-		host = scp[1]!;
-		path = scp[2]!;
+		if (scp === null || scp[1] !== HOSTING_USER) return remote;
+		host = scp[2]!;
+		path = scp[3]!;
 	}
 	const repository = path
 		.replace(/^\/+/, "")

@@ -164,6 +164,24 @@ async function editedSession(clone: string): Promise<{ manager: SessionManager; 
 	return { manager, snapshot };
 }
 
+/**
+ * A prebuild that parked `build/`, then a new machine: only the cache paths `atomic blueprint cache-key` prints are
+ * restored into an empty store, as a runner's cache action restores them.
+ */
+async function restoredCache(clone: string): Promise<void> {
+	const outcome = await prebuild(clone, true);
+	assert.equal(outcome.status, "built");
+	assert.deepEqual(outcome.parked, ["build"]);
+	assert.equal(existsSync(join(outcome.path!, "build")), false, "parking moves the build output out");
+	const keys = await blueprintCacheKeys(clone, { agentDir: agentDir(), storeDir: storeDir() });
+	const saved = keys.entries.filter((entry) => entry.name === "build" || entry.name === "git");
+	const paths = saved.flatMap((entry) => entry.paths);
+	const cache = sandbox.path("cache");
+	for (const [index, path] of paths.entries()) cpSync(path, join(cache, String(index)), { recursive: true });
+	rmSync(storeDir(), { recursive: true, force: true });
+	for (const [index, path] of paths.entries()) cpSync(join(cache, String(index)), path, { recursive: true });
+}
+
 describe("atomic blueprint prebuild (#4748)", () => {
 	test(
 		"prebuild leaves an idle slot that a later resume claims with its install kept (#4748)",
@@ -357,24 +375,6 @@ describe("atomic blueprint prebuild (#4748)", () => {
 });
 
 describe("seed adoption on resume (#4748)", () => {
-	/**
-	 * A prebuild that parked `build/`, then a new machine: only the cache paths `atomic blueprint cache-key` prints are
-	 * restored into an empty store, as a runner's cache action restores them.
-	 */
-	async function restoredCache(clone: string): Promise<void> {
-		const outcome = await prebuild(clone, true);
-		assert.equal(outcome.status, "built");
-		assert.deepEqual(outcome.parked, ["build"]);
-		assert.equal(existsSync(join(outcome.path!, "build")), false, "parking moves the build output out");
-		const keys = await blueprintCacheKeys(clone, { agentDir: agentDir(), storeDir: storeDir() });
-		const saved = keys.entries.filter((entry) => entry.name === "build" || entry.name === "git");
-		const paths = saved.flatMap((entry) => entry.paths);
-		const cache = sandbox.path("cache");
-		for (const [index, path] of paths.entries()) cpSync(path, join(cache, String(index)), { recursive: true });
-		rmSync(storeDir(), { recursive: true, force: true });
-		for (const [index, path] of paths.entries()) cpSync(join(cache, String(index)), path, { recursive: true });
-	}
-
 	test(
 		"a resume with no idle slot adopts the seed of a restored cache, claims it and keeps the build output (#4748)",
 		async () => {
@@ -554,9 +554,8 @@ describe("repository identity across remote spellings (#4748)", () => {
 		}
 		for (const spelling of [
 			" git@github.com:acme/widgets.git\n",
-			"github.com:acme/widgets",
 			"ssh+git://git@github.com:22/acme/widgets",
-			"git+ssh://github.com:22/acme/widgets",
+			"git+ssh://git@github.com:22/acme/widgets",
 			"SSH://git@github.com/acme/widgets",
 			"git://github.com:9418/acme/widgets",
 			"ssh://git@github.com//acme/widgets",
@@ -576,10 +575,15 @@ describe("repository identity across remote spellings (#4748)", () => {
 			"https://example.com/",
 			"https://example.com/.git",
 			"git@host:/",
+			"github.com:acme/widgets",
+			"alice@host.example:repo.git",
+			"ssh://alice@host.example/repo.git",
+			"ssh://host.example/repo.git",
 		]) {
 			assert.equal(normalizeRemoteUrl(kept), kept);
 		}
 		assert.notEqual(normalizeRemoteUrl("https://github.com/acme/Widgets"), "https://github.com/acme/widgets");
+		assert.notEqual(repositoryIdOf(["alice@host.example:repo.git"]), repositoryIdOf(["bob@host.example:repo.git"]));
 		assert.equal(repositoryIdOf([SSH]), repositoryIdOf([HTTPS]));
 		assert.notEqual(legacyRepositoryIdOf([SSH]), legacyRepositoryIdOf([HTTPS]));
 		assert.equal(repositoryIdOf(["/srv/repo.git"]), legacyRepositoryIdOf(["/srv/repo.git"]));
@@ -807,6 +811,25 @@ describe("prebuild and seed edge cases (#4748)", () => {
 			assert.equal(await readSeedManifest(storeDir(), id), undefined, text);
 		}
 	});
+
+	test.skipIf(process.platform === "win32")(
+		"a seed whose lock cannot be taken is not adopted, and the resume restores fresh (#4748)",
+		async () => {
+			const { clone, remote } = await checkout();
+			await restoredCache(clone);
+			const { manager } = await editedSession(clone);
+			chmodSync(join(storeDir(), "seeds"), 0o555);
+			try {
+				const prepared = await resume(manager);
+				assert.equal(prepared.sessionManager.getCwd(), slot([remote], 0));
+				assert.equal(existsSync(join(slot([remote], 0), "build")), false);
+				assert.equal(latestResumeTimings(prepared.sessionManager)?.restores[0]?.mode, "fresh");
+			} finally {
+				chmodSync(join(storeDir(), "seeds"), 0o755);
+			}
+		},
+		PREBUILD_TEST_TIMEOUT_MS,
+	);
 
 	test("a resume without a seed is not held up by a prebuild parking one (#4748)", async () => {
 		const id = repositoryIdOf([HTTPS]);

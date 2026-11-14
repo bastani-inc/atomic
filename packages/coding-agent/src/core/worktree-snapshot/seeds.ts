@@ -90,9 +90,9 @@ export async function writeSeedManifest(storeDir: string, manifest: SeedManifest
 /** Why no seed was adopted. */
 /**
  * `missing`: no seed of the repository. `busy`: a prebuild is replacing it. `path-taken`: the worktree path it was
- * built at is in use. `restore-failed`: its commit could not be restored.
+ * built at is in use. `restore-failed`: its commit could not be restored. `unavailable`: its lock could not be taken.
  */
-export type NoSeedReason = "missing" | "busy" | "path-taken" | "restore-failed";
+export type NoSeedReason = "missing" | "busy" | "path-taken" | "restore-failed" | "unavailable";
 
 /** The seed lock's constants: a stopped process loses it after 30 seconds. */
 const SEED_LOCK_STALE_MS = 30_000;
@@ -161,8 +161,11 @@ export async function adoptPrebuiltSeed(
 			adoptLocked(snapshot, storeDir, repository, options),
 		);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ELOCKED") throw error;
-		return { adopted: false, reason: "busy" };
+		options.signal?.throwIfAborted();
+		if ((error as NodeJS.ErrnoException).code === "ELOCKED") return { adopted: false, reason: "busy" };
+		// A seed lock that cannot be taken, as in a read-only seed directory, only loses the seed.
+		reportDebug("storage", "worktree-seed-lock-failed", { repository, ...failureDebugFields(error) });
+		return { adopted: false, reason: "unavailable" };
 	}
 }
 
