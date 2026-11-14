@@ -105,6 +105,18 @@ A pooled child on a worker host that must restore its bound tree does the same: 
 
 `/session snapshot` lists the latest snapshot of each checkout in the session (branch, `HEAD`, tree, patch chain, bundled commits, omissions, conversion settings), showing a restored checkout once, under the worktree it was restored into, and compares it with the current checkout the way resume does, so it reports a match when only `HEAD` moved forward over the recorded tree, with a `git diff --stat` when the snapshot's tree is available locally.
 
+It also shows how long the last turn's capture of each checkout took (`last capture took 0.4 s`) and, after a resume that restored a checkout or built a blueprint, a **Last resume** block that says where that resume's time went:
+
+```text
+Last resume
+
+  restored /work/app in 18.5 s (fetch 9.9 full, materialize 1.4, LFS 6.0, verify 0.2)
+  blueprint 41.9 s (npm install 8.6, Build 33.3)
+  ready after 62.8 s
+```
+
+Each restored checkout gets one line with its restore phases in seconds: `fetch` (getting the snapshot's commit, followed by `full` when it was fetched from a remote or `bundle` when it came from the snapshot's bundle), `reconstruct` (applying the recorded changes), `materialize` (writing the files), `LFS` (downloading LFS objects), `verify` (checking the files against the snapshot) and `publish` (moving the worktree into place). A checkout restored with less than its snapshot says `(degraded)`. The blueprint line lists each step that ran, marking a step that `failed` or `timed-out`. `ready after` counts from the start of the resume, or from the start of the process for `atomic --session`, until the checkouts were restored and the blueprints built; loading extensions and the model afterwards is not included. Set `ATOMIC_TIMING=1` to print the same lines to stderr when Atomic starts with a resume. The session keeps these numbers in a `resume_timings` entry, so they are also in exports and readable from the SDK.
+
 ## Moving a session as a file
 
 `/export session.jsonl` writes the session with the patch and bundle content of its snapshots inline, each once, and reports how much it includes. `--import session.jsonl` and `/import` check every blob against its hash and store it in the target storage before the session is saved. `/share` leaves snapshot content out of the gist.
