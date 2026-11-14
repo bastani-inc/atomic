@@ -9,7 +9,7 @@ USER node
 RUN atomic install npm:@bastani/atomic-storage-libsql
 # COPY --chown=node flows/ /srv/flows/
 STOPSIGNAL SIGTERM
-# exec makes atomic PID 1, so the platform's SIGTERM drains the host. ATOMIC_DB and ATOMIC_WORKER_PROVIDER_ID come from
+# exec makes atomic PID 1, so the platform's SIGTERM drains the host. ATOMIC_DB and ATOMIC_PROVIDER_ID come from
 # the environment; the token is a mounted secret file, never an environment variable or build argument.
 ENTRYPOINT ["sh", "-c", "exec atomic worker start --db \"$ATOMIC_DB\" --token-file /run/secrets/atomic-db-token \"$@\"", "--"]
 CMD ["--slots", "4"]
