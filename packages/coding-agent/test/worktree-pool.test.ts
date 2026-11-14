@@ -7,13 +7,18 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
-import { type PrepareSessionResumeOptions, prepareSessionResume } from "../src/core/resume/session-resume.ts";
+import {
+	type PrepareSessionResumeOptions,
+	prepareSessionResume,
+	sessionResumeOptions,
+} from "../src/core/resume/session-resume.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import {
 	releaseSessionWorktrees,
 	resumeSessionWorktree,
 	SessionWorktreeSnapshotRecorder,
 } from "../src/core/session-worktree-snapshots.ts";
+import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
@@ -329,5 +334,24 @@ describe("worktree pool eviction (#4748)", () => {
 		assert.equal(readFileSync(join(slot(snapshot, 0), "file.txt"), "utf8"), "uncaptured work\n");
 		assert.equal(existsSync(slot(snapshot, 2)), true);
 		assert.equal(fourth, slot(snapshot, 3));
+	});
+});
+
+describe("worktree pool settings (#4748)", () => {
+	test("resume options read snapshots.pool.maxIdlePerRepository, and an invalid value falls back to 2 (#4748)", () => {
+		const optionsWith = (pool: unknown) =>
+			sessionResumeOptions(
+				"cli",
+				"/launch",
+				"/agent",
+				SettingsManager.inMemory({ snapshots: { pool } } as Parameters<typeof SettingsManager.inMemory>[0]),
+				() => true,
+			).pool;
+		assert.deepEqual(optionsWith(undefined), { maxIdlePerRepository: 2 });
+		assert.deepEqual(optionsWith({ maxIdlePerRepository: 0 }), { maxIdlePerRepository: 0 });
+		assert.deepEqual(optionsWith({ maxIdlePerRepository: 5 }), { maxIdlePerRepository: 5 });
+		for (const invalid of [-1, 1.5, "3"]) {
+			assert.deepEqual(optionsWith({ maxIdlePerRepository: invalid }), { maxIdlePerRepository: 2 });
+		}
 	});
 });
