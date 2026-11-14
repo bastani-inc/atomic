@@ -213,6 +213,11 @@ function keepContextMarker(line: string): "open" | "close" | undefined {
 	return undefined;
 }
 
+/** Whether a line is a `<keepContext>` or `</keepContext>` marker, role header aside. */
+export function isKeepContextMarkerLine(line: string): boolean {
+	return keepContextMarker(line) !== undefined;
+}
+
 /** Message roles whose payload is external, so its tag text is data rather than syntax. */
 const UNTRUSTED_MARKER_ROLE = "Tool result";
 
@@ -296,7 +301,7 @@ export function keepContextSpans(lines: readonly string[]): KeepContextSpan[] {
 export function keepContextSpanKey(lines: readonly string[], span: LineRange): string {
 	return lines
 		.slice(span.start - 1, span.end)
-		.filter((line) => keepContextMarker(line) === undefined)
+		.filter((line) => !isKeepContextMarkerLine(line))
 		.map((line) => line.replace(ROLE_HEADER_RE, ""))
 		.join("\n")
 		.replace(/\s+/g, " ")

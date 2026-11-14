@@ -138,7 +138,7 @@ An explicit compaction model can send the compactable transcript to a different 
 
 For classifier compaction, log in with `/login typesafe`, then set `"compactionModel": "typesafe/jev-latest"`. The classifier scores groups of transcript lines; Atomic removes lower-scored groups without rewriting the rest. Protected lines and the recent tail are not sent for scoring. If scoring fails, Atomic tries your fallback models. Group boundaries can make the retained fraction differ from the requested compression ratio.
 
-For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph is not a chat-model choice.
+For Morph compaction, use `/login morph` or set `MORPH_API_KEY`, then choose `morph/morph-compactor` in the selector or a settings file. Without a credential, the selector marks Morph as `requires /login morph`. Morph receives the compactable transcript without thinking, but not the recent tail. Atomic reconstructs surviving lines from the originals and preserves `<keepContext>` spans. Morph receives protected spans with their tags, and released spans and tags in tool results without them, so Morph compacts those like other lines. Morph is not a chat-model choice.
 
 The compaction card shows the model that produced the result, such as `github-copilot/claude-opus-5.5` or `morph/morph-compactor`. A policy-refusal summary is headed `Context compacted · summary (fallback)`.
 

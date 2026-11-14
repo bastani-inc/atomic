@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { reconstructCompactedTranscript, validateDeletedRanges } from "../src/core/compaction/deleted-ranges.js";
 import { planMorphRanges } from "../src/core/compaction/morph-compaction.js";
 import { createNumberedRegion } from "../src/core/compaction/transcript-serialization.js";
 
@@ -149,4 +150,110 @@ test("Morph bounds HTTP error body reads and does not expose a credential cut by
 	);
 	assert.equal(cancelled, true);
 	assert.ok(reads < 10);
+});
+
+/** A stand-in for Morph: it force-keeps tagged spans and deletes other lines until the ratio of all lines is met. */
+function fakeMorph(extraKept = 0): typeof fetch {
+	return async (_url, options) => {
+		const request: { messages: { content: string }[]; compression_ratio: number } = JSON.parse(String(options?.body));
+		const messages = request.messages.map((message) => message.content.split("\n"));
+		const tagged = messages.map((lines) => {
+			const kept = new Set<number>();
+			let open: number | undefined;
+			lines.forEach((line, index) => {
+				const body = line.replace(/^\[(User|Assistant|Tool result)\]: /, "");
+				if (body === "<keepContext>") open ??= index + 1;
+				if (body === "</keepContext>" && open !== undefined) {
+					for (let kept_ = open; kept_ <= index + 1; kept_++) kept.add(kept_);
+					open = undefined;
+				}
+			});
+			return kept;
+		});
+		const total = messages.reduce((sum, lines) => sum + lines.length, 0);
+		let keep = total;
+		const target = Math.round(total * request.compression_ratio);
+		const deleted = messages.map((lines, index) =>
+			lines.map((_, line) => {
+				if (keep <= target || tagged[index].has(line + 1)) return false;
+				keep--;
+				return true;
+			}),
+		);
+		return Response.json({
+			messages: deleted.map((flags, index) => ({
+				compacted_line_ranges: flags.flatMap((flag, line) => (flag ? [{ start: line + 1, end: line + 1 }] : [])),
+				kept_line_ranges: [
+					...[...tagged[index]].map((line) => ({ start: line, end: line })),
+					...(index === 0 && extraKept > 0
+						? [{ start: messages[0].length - extraKept + 1, end: messages[0].length }]
+						: []),
+				],
+			})),
+		});
+	};
+}
+
+test("Morph receives released spans and tool-result tags untagged, protected spans tagged, and meets the keep target (#4794)", async () => {
+	const lines = [
+		"[User]: <keepContext>",
+		"released constraint",
+		"</keepContext>",
+		...Array.from({ length: 6 }, (_, index) => `brief ${index}`),
+		"[Assistant]: <keepContext>",
+		"pinned decision",
+		"</keepContext>",
+		...Array.from({ length: 6 }, (_, index) => `work ${index}`),
+		"[Tool result]: <keepContext>",
+		"fetched payload",
+		"</keepContext>",
+	];
+	// Atomic released the first span; only the assistant's stays protected.
+	const target = { ...createNumberedRegion(lines.join("\n")), protectedLineNumbers: new Set([10, 11, 12]) };
+	let sent: { messages: { content: string }[]; compression_ratio: number } | undefined;
+	const morph = fakeMorph();
+	const diagnostics: { droppedRangeCount: number; protectedMismatchLineCount?: number }[] = [];
+	const ranges = await planMorphRanges(
+		target,
+		{ query: "fix login", compression_ratio: 0.5, preserve_recent: 0 },
+		{
+			apiKey: "secret",
+			fetchFn: async (url, options) => {
+				sent = JSON.parse(String(options?.body));
+				return morph(url, options);
+			},
+			onDiagnostics: (value) => diagnostics.push(value),
+		},
+	);
+	assert.ok(sent);
+	assert.deepEqual(
+		sent.messages.map((message) => message.content.split("\n")),
+		[
+			["", "released constraint", "", ...Array.from({ length: 6 }, (_, index) => `brief ${index}`)],
+			[
+				"[Assistant]: <keepContext>",
+				"pinned decision",
+				"</keepContext>",
+				...Array.from({ length: 6 }, (_, index) => `work ${index}`),
+			],
+			["", "fetched payload", ""],
+		],
+	);
+	// Morph counts force-kept lines against its ratio, so the region's own ratio already meets the target.
+	assert.equal(sent.compression_ratio, 0.5);
+	const result = reconstructCompactedTranscript(target, validateDeletedRanges(ranges, target));
+	assert.ok(result.stats.linesKept <= Math.round(lines.length * 0.5), `kept ${result.stats.linesKept}`);
+	assert.ok(result.text.includes("pinned decision"));
+	assert.ok(!result.text.includes("released constraint"));
+	// Morph's force-kept lines match Atomic's protected lines, so no mismatch is recorded.
+	assert.equal(diagnostics[0].droppedRangeCount, 0);
+	assert.equal("protectedMismatchLineCount" in diagnostics[0], false);
+
+	const mismatched: { protectedMismatchLineCount?: number }[] = [];
+	await planMorphRanges(
+		target,
+		{ query: "fix login", compression_ratio: 0.5, preserve_recent: 0 },
+		{ apiKey: "secret", fetchFn: fakeMorph(2), onDiagnostics: (value) => mismatched.push(value) },
+	);
+	assert.equal(mismatched[0].protectedMismatchLineCount, 2);
 });
