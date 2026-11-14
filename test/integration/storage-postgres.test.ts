@@ -4,11 +4,13 @@ import { inspect } from "node:util";
 import {
 	postgresDialect,
 	StorageConfigError,
+	StorageRollbackError,
 	StorageTransientError,
 	type StorageTransientErrorCode,
 	type StorageTransientOutcome,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
+import pg from "pg";
 import { describe, test } from "vitest";
 import adapter, { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import {
@@ -62,7 +64,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 			const database = await open();
 			const row = await database.get(
 				`SELECT 9223372036854775807::bigint AS big, -9007199254740992::bigint AS edge, 42::bigint AS small,
-					7::int AS int4, 3::smallint AS int2, 1.25::float8 AS real, 0.5::numeric AS fraction,
+					7::int AS int4, 3::smallint AS int2, 1.25::float8 AS real, 1.5::float4 AS single, 0.5::numeric AS fraction,
 					9007199254740993.0::numeric(20, 1) AS wholeNumeric,
 					(SELECT SUM(x) FROM (VALUES (9223372036854775807::bigint), (1::bigint)) AS t(x)) AS sum,
 					true AS yes, false AS no, '\\x00ff'::bytea AS bytes, '{"a": 1}'::jsonb AS json,
@@ -76,6 +78,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 				int4: 7,
 				int2: 3,
 				real: 1.25,
+				single: 1.5,
 				fraction: 0.5,
 				wholenumeric: 9007199254740993n,
 				sum: 9223372036854775808n,
@@ -95,6 +98,11 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 			const database = await open();
 			await database.exec("CREATE TABLE items (id BIGINT PRIMARY KEY, value TEXT); CREATE TABLE other (id BIGINT)");
 			await database.exec("PRAGMA foreign_keys = ON");
+			await database.exec("  pragma journal_mode = WAL;  \n");
+			// Only a statement that is a PRAGMA and nothing else is dropped.
+			await assert.rejects(database.exec("PRAGMA foreign_keys = ON; SELECT 1"), StorageUnavailableError);
+			await assert.rejects(database.exec("SELECT 1; PRAGMA foreign_keys = ON"), StorageUnavailableError);
+			await assert.rejects(database.exec("XPRAGMA foreign_keys"), StorageUnavailableError);
 			assert.deepEqual(
 				await database.run("INSERT INTO items(id, value) VALUES (?, ?), (?, ?)", 9223372036854775807n, "a", 1, "b"),
 				{ changes: 2 },
@@ -109,11 +117,79 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		});
 	});
 
-	test("carries the Postgres dialect (#4793)", async () => {
+	test("carries the Postgres dialect and names its connections (#4793)", async () => {
 		await withPostgresDatabase(async ({ open }) => {
 			const database = await open();
 			assert.equal(database.dialect, postgresDialect);
 			assert.equal(database.descriptor.adapter, "postgres");
+			assert.deepEqual(await database.get("SELECT current_setting('application_name') AS name"), { name: "atomic" });
+		});
+	});
+
+	test("close ends every connection the database opened (#4793)", async () => {
+		await withPostgresDatabase(async ({ admin, url }) => {
+			// A database of its own, which DROP DATABASE without FORCE refuses while any connection is open.
+			const name = `${new URL(url).pathname.slice(1)}_close`;
+			await admin.exec(`CREATE DATABASE ${name}`);
+			try {
+				const database = await openPostgresDatabase({
+					url: postgresUrlFor(name),
+					...(postgresTestPassword === undefined ? {} : { password: postgresTestPassword }),
+				});
+				await Promise.all([
+					database.get("SELECT 1 AS one"),
+					database.transaction((tx) => tx.get("SELECT 1 AS one")),
+				]);
+				await database.close();
+				await admin.exec(`DROP DATABASE ${name}`);
+			} finally {
+				await admin.exec(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+			}
+		});
+	});
+
+	test("the adapter passes a password option to the server when settings give no secret (#4793)", async () => {
+		await withPostgresDatabase(async ({ url }) => {
+			const database = await adapter.openDatabase(
+				{
+					url,
+					...(postgresTestPassword === undefined ? {} : { password: postgresTestPassword }),
+					maxConnections: 1,
+				},
+				{ agentDir: "/nonexistent", domain: "sessions" },
+			);
+			try {
+				assert.deepEqual(await database.get("SELECT 1 AS one"), { one: 1 });
+			} finally {
+				await database.close();
+			}
+		});
+	});
+
+	test("a connection whose rollback failed is closed, not reused (#4793)", async () => {
+		await withPostgresDatabase(async ({ open }) => {
+			const database = await open({ maxConnections: 1 });
+			await database.exec("CREATE TABLE items (id BIGINT PRIMARY KEY)");
+			const query = pg.Client.prototype.query;
+			const failure = new Error("fixture rollback failure");
+			pg.Client.prototype.query = function (this: pg.Client, ...args: Parameters<pg.Client["query"]>) {
+				if (args[0] === "ROLLBACK") return Promise.reject(failure);
+				return Reflect.apply(query, this, args);
+			} as pg.Client["query"];
+			try {
+				await assert.rejects(
+					database.transaction(async (tx) => {
+						await tx.run("INSERT INTO items(id) VALUES (?)", 1);
+						throw new Error("abandon");
+					}),
+					StorageRollbackError,
+				);
+			} finally {
+				pg.Client.prototype.query = query;
+			}
+			// The only connection held the open transaction; a new one commits on its own.
+			await database.transaction((tx) => tx.run("INSERT INTO items(id) VALUES (?)", 2));
+			assert.deepEqual(await database.all("SELECT id FROM items ORDER BY id"), [{ id: 2 }]);
 		});
 	});
 
@@ -213,6 +289,8 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 			assert.equal(await conflicts(domain("team_a"), domain("team_a")), true);
 			assert.equal(await conflicts(domain("team_a"), domain("team_b")), false);
 			assert.equal(await conflicts(whole, whole), true);
+			assert.equal(await conflicts(domain("it's"), domain("it's")), true);
+			assert.equal(await conflicts(domain("it's"), domain("its")), false);
 		});
 	});
 
@@ -253,6 +331,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 					["40P01", "lock-conflict", "not-applied"],
 					["55P03", "lock-conflict", "not-applied"],
 					["57014", "transaction-timeout", "not-applied"],
+					["25P03", "transaction-timeout", "not-applied"],
 					["53300", "connection-refused", "not-applied"],
 					["57P03", "connection-refused", "not-applied"],
 					["08001", "connection-refused", "not-applied"],
@@ -362,13 +441,19 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		assert.equal(missing instanceof StorageTransientError, false);
 	});
 
-	test("an empty password from the password source is refused, not retried (#4793)", async () => {
-		const error = await openPostgresAdmin({ password: async () => "" }).catch((caught) => caught);
-		assert.ok(error instanceof StorageUnavailableError, inspect(error));
-		assert.equal(error instanceof StorageTransientError, false);
-		let cause: unknown = error.cause;
-		while (cause instanceof Error && !(cause instanceof StorageConfigError)) cause = cause.cause;
-		assert.ok(cause instanceof StorageConfigError, inspect(error));
+	test("an empty password is refused, not retried, and leaves no half-open connection behind (#4793)", async () => {
+		// The scope's DROP DATABASE … WITH (FORCE) waits for a connection the server is still authenticating.
+		await withPostgresDatabase(async ({ open }) => {
+			for (const password of [async () => "", ""]) {
+				const error = await open({ password }).catch((caught) => caught);
+				assert.ok(error instanceof StorageUnavailableError, inspect(error));
+				assert.equal(error instanceof StorageTransientError, false);
+				let cause: unknown = error.cause;
+				while (cause instanceof Error && !(cause instanceof StorageConfigError)) cause = cause.cause;
+				assert.ok(cause instanceof StorageConfigError, inspect(error));
+				assert.equal(cause.reason, "empty-token");
+			}
+		});
 	});
 
 	test("reads a rotated password file for the next new connection (#4793)", async () => {
@@ -396,6 +481,9 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 				);
 				try {
 					assert.deepEqual(await database.get("SELECT current_user AS who"), { who: role });
+					const echoed = await database.get("SELECT 'fixture-first-password'::int").catch((caught) => caught);
+					assert.ok(echoed instanceof StorageUnavailableError, inspect(echoed));
+					assert.equal(inspect(echoed, { depth: null }).includes("fixture-first-password"), false);
 					// Rotate: the old password stops working, and the connections that used it end.
 					writeTextSync(file, "fixture-second-password\n");
 					await admin.exec(`ALTER ROLE ${role} PASSWORD 'fixture-second-password'`);
