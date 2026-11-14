@@ -312,13 +312,15 @@ export const STORAGE_TRANSIENT_ERROR_CODES = [
 	"transaction-timeout",
 	"connection-refused",
 	"connection-lost",
+	"lock-conflict",
 ] as const;
 /**
  * Why a call to a database server failed for a while: `"stream-expired"`, the server ended a stream that stayed idle
  * too long, as a stream does whose process was stopped in the middle of a transaction; `"transaction-timeout"`, the
  * server rolled back a transaction that kept the write lock while another writer waited; `"connection-refused"`, no
  * connection to the server could be made; `"connection-lost"`, the connection broke while a request was on its way or
- * being answered.
+ * being answered; `"lock-conflict"`, the server aborted the transaction to resolve a lock conflict (a serialization
+ * failure, a deadlock, or a lock wait that timed out).
  */
 export type StorageTransientErrorCode = (typeof STORAGE_TRANSIENT_ERROR_CODES)[number];
 /**
