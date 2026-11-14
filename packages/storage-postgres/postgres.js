@@ -310,7 +310,7 @@ export async function openPostgresDatabase(options) {
 		DEFAULT_STATEMENT_TIMEOUT_MS,
 	);
 
-	/** @type {Pick<typeof import("pg"), "Pool" | "DatabaseError" | "types">} */
+	/** @type {Pick<typeof import("pg"), "Pool" | "Client" | "DatabaseError" | "types">} */
 	let pg;
 	/** @type {typeof import("pg-connection-string").parseIntoClientConfig} */
 	let parseUrl;
@@ -339,7 +339,21 @@ export async function openPostgresDatabase(options) {
 	// The URL is parsed here rather than passed as `connectionString`, whose empty password would replace `password`.
 	const connection = parseUrl(connectionString);
 	delete connection.password;
+	// pg leaves the socket of a connection that failed to start open, for instance when the password source failed while
+	// the server waited for the password; the server keeps that half-started backend until its authentication timeout,
+	// and meanwhile it holds up statements that wait for every backend, such as `DROP DATABASE`.
+	class ClosingClient extends pg.Client {
+		/** @param {(error: Error | undefined) => void} callback */
+		// @ts-expect-error pg-pool always passes a callback, so the promise form is left out.
+		connect(callback) {
+			super.connect((/** @type {Error | undefined} */ error) => {
+				if (error) this.connection.stream.destroy();
+				callback(error);
+			});
+		}
+	}
 	const pool = new pg.Pool({
+		Client: /** @type {typeof pg.Client} */ (/** @type {unknown} */ (ClosingClient)),
 		...connection,
 		...(password === undefined ? {} : { password }),
 		max: maxConnections,
