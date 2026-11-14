@@ -8,6 +8,7 @@ import {
 	type SqliteDriverExecutor,
 	type SqliteDriverResult,
 	type SqliteStatement,
+	STORAGE_TRANSIENT_RETRY_ATTEMPTS,
 	StorageTransientError,
 } from "@bastani/atomic/storage";
 import { test } from "vitest";
@@ -86,10 +87,13 @@ function countingDriver(path: string) {
 		},
 		close: () => connection.close(),
 		// A request the client gave up waiting for, as the libSQL adapter abandons one: it may have committed.
-		transientFailure: (failure) =>
-			(failure as { name?: unknown }).name === "TimeoutError"
-				? { code: "connection-lost", outcome: "unknown" }
-				: undefined,
+		transientFailure: (failure) => {
+			const name = (failure as { name?: unknown }).name;
+			if (name === "TimeoutError") return { code: "connection-lost", outcome: "unknown" };
+			// A connection the server refused: the request never reached it.
+			if (name === "RefusedError") return { code: "connection-refused", outcome: "not-applied" };
+			return undefined;
+		},
 	};
 	return { driver, requests, priorities, hooks, connection };
 }
@@ -694,6 +698,37 @@ test("without batches, a first session commit that rolls back leaves later sessi
 		const receipt = await create("op-2", "session");
 		assert.equal(receipt.lastSeq, 1);
 	} finally {
+		await f.close();
+	}
+});
+
+test("a pool write is planned again only after a fence or a lost answer: other failures, and refusals the database already retried, reach the caller (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		let sent = 0;
+		f.hooks.beforeBatch = () => {
+			sent++;
+			throw new Error("disk I/O error");
+		};
+		await assert.rejects(f.pool.renew(f.lease, attempt, 60_000), (error: Error) =>
+			/disk I\/O error/.test(String((error.cause as Error | undefined)?.message)),
+		);
+		assert.equal(sent, 1);
+		sent = 0;
+		f.hooks.beforeBatch = () => {
+			sent++;
+			throw Object.assign(new Error("connection refused"), { name: "RefusedError" });
+		};
+		await assert.rejects(
+			f.pool.renew(f.lease, attempt, 60_000),
+			(error: Error) => error instanceof StorageTransientError && error.outcome === "not-applied",
+		);
+		// The database's own retries of a refusal that wrote nothing, and no plan after them.
+		assert.equal(sent, STORAGE_TRANSIENT_RETRY_ATTEMPTS);
+	} finally {
+		f.hooks.beforeBatch = undefined;
 		await f.close();
 	}
 });
