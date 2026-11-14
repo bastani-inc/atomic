@@ -37,6 +37,7 @@ import { canonicalizeWorktreePath } from "./worktree-snapshot/paths.ts";
 import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
 import {
 	admitPooledWorktree,
+	claimIdleWorktree,
 	discardPooledWorktree,
 	evictIdleWorktrees,
 	holdRestoredWorktree,
@@ -438,8 +439,11 @@ export interface ResumeSessionWorktreeOptions {
 	readonly skipMissingRecords?: boolean;
 	/**
 	 * Restore into pooled slots at stable paths, leased by this session until it closes (#4748), keeping at most
-	 * `maxIdlePerRepository` idle slots of each repository restored into. A recorded checkout in a slot another session
-	 * owns is restored fresh. Without it, restores go to new paths outside the pool, as for workflow runs.
+	 * `maxIdlePerRepository` idle slots of each repository restored into. A restore first claims an idle slot of the
+	 * repository that holds only its recorded state, reset to the snapshot with its ignored files kept, and restores
+	 * into a new slot when none can be claimed. A recorded checkout in a slot another session owns is restored the same
+	 * way. The session holds the pooled worktrees it owns, compared or restored, until it closes. Without it, restores go
+	 * to new paths outside the pool, as for workflow runs.
 	 */
 	readonly pool?: { readonly maxIdlePerRepository: number };
 }
@@ -474,6 +478,9 @@ export async function resumeSessionWorktree(
 	options: ResumeSessionWorktreeOptions,
 ): Promise<SessionWorktreeResume> {
 	if (!options.settings.enabled) return { status: "none" };
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	// The session holds the pooled slots it owns before comparing them, so no claim resets one it continues in (#4748).
+	if (options.pool) await holdSessionWorktrees(sessionManager, sessionManager, storeDir);
 	const pending = options.pendingMappings ?? [];
 	const existing = [...sessionManager.getWorktreeRootMappings(), ...pending];
 	const records = sessionManager.getWorktreeSnapshotRecords();
@@ -499,7 +506,6 @@ export async function resumeSessionWorktree(
 	const unrestored: UnrestoredWorktree[] = [];
 	let continuedIn: string;
 	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
-	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const owner = sessionOwner(sessionManager);
 	const leases = new Map<WorktreeRootMapping, WorktreeLease>();
 	const admitted = new Set<RepositoryId>();
@@ -560,28 +566,52 @@ export async function resumeSessionWorktree(
 				sessionManager.getEntries(),
 			);
 			let restored: Extract<BestWorktreeRestore, { status: "restored" }>;
-			const lease = options.pool ? await admitSlot(storeDir, snapshot, owner) : undefined;
+			let lease: WorktreeLease | undefined;
+			let claimed = false;
+			// The exact state, else the best this host can restore, else continue without the checkout.
+			const restoreFresh = (slot: WorktreeLease | undefined) =>
+				restoreBestWorktree(snapshot, {
+					blobs,
+					storeDir: options.storeDir,
+					signal: options.signal,
+					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+					...(slot === undefined
+						? {}
+						: {
+								restore: (target, restoreOptions) => restoreWorktreeAt(target, slot.path, restoreOptions),
+								restoreDegraded: (degraded, failure, restoreOptions) =>
+									restoreDegradedWorktreeAt(degraded, failure, slot.path, restoreOptions),
+							}),
+				});
 			try {
-				// The exact state, else the best this host can restore, else continue without the checkout.
 				const best = await timeCheckoutRestore(
 					root,
-					() =>
-						restoreBestWorktree(snapshot, {
+					async (): Promise<BestWorktreeRestore> => {
+						if (!options.pool) return restoreFresh(undefined);
+						// An idle slot of the repository keeps its dependencies and build output; else a new slot (#4748).
+						const claim = await claimIdleWorktree(snapshot, {
+							storeDir,
+							owner,
+							settings: options.settings,
 							blobs,
-							storeDir: options.storeDir,
 							signal: options.signal,
-							candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
-							...(lease === undefined
-								? {}
-								: {
-										restore: (target, restoreOptions) =>
-											restoreWorktreeAt(target, lease.path, restoreOptions),
-										restoreDegraded: (degraded, failure, restoreOptions) =>
-											restoreDegradedWorktreeAt(degraded, failure, lease.path, restoreOptions),
-									}),
-						}),
+						});
+						if (claim.claimed) {
+							lease = claim.lease;
+							claimed = true;
+							return { status: "restored", path: claim.lease.path, warnings: claim.warnings };
+						}
+						lease = await admitSlot(storeDir, snapshot, owner);
+						return restoreFresh(lease);
+					},
 					(outcome) =>
-						outcome.status === "unrestored" ? undefined : outcome.degraded === undefined ? "fresh" : "degraded",
+						outcome.status === "unrestored"
+							? undefined
+							: claimed
+								? "claimed"
+								: outcome.degraded === undefined
+									? "fresh"
+									: "degraded",
 				);
 				if (best.status === "unrestored") {
 					if (lease) await discardPooledWorktree(lease);
@@ -1148,7 +1178,8 @@ export function describeLastCapture(
 
 /**
  * Opens `sessionManager`'s session where it should continue: in place when its checkout matches the last snapshot,
- * in the restored worktree otherwise. Returns the notices to show for a restore it performed.
+ * in the restored worktree otherwise. With `pool`, the opened session holds its pooled worktrees until it closes.
+ * Returns the notices to show for a restore it performed.
  */
 export async function openSessionInWorktree(
 	sessionManager: SessionManager,
@@ -1158,13 +1189,22 @@ export async function openSessionInWorktree(
 	readonly notices: { readonly type: "info" | "warning"; readonly message: string }[];
 }> {
 	const resume = await resumeSessionWorktree(sessionManager, options);
-	return openResumedSession(
+	const opened = await openResumedSession(
 		sessionManager,
 		resume.status === "none" ? sessionManager.getCwd() : resume.cwd,
 		resume.status === "restored" ? resume.mappings : [],
 		options.sessionDirectory,
 		resume.status === "none" ? [] : resume.unrestored.map((checkout) => checkout.record),
 	);
+	// The opened session takes over the pooled slots, held until it closes (#4748).
+	if (options.pool) {
+		await holdSessionWorktrees(
+			sessionManager,
+			opened.sessionManager,
+			options.storeDir ?? defaultWorktreeSnapshotStoreDir(),
+		);
+	}
+	return opened;
 }
 
 /**
