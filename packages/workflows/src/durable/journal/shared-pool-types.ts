@@ -13,6 +13,8 @@ export interface SharedPoolHost {
 	readonly maxWorkers: number;
 	/** The roots this host serves. */
 	readonly roots: readonly string[];
+	/** The id its provisioner knows it by, for a host a fleet controller started (`ATOMIC_WORKER_PROVIDER_ID`). */
+	readonly providerId?: string;
 	readonly heartbeatAgoMs: number;
 }
 
