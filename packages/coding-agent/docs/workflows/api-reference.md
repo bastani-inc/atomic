@@ -81,7 +81,7 @@ That example heartbeats every 30 minutes: a run started at 09:00 raises boundari
 
 #### Delivery and unread cards
 
-Each heartbeat arrives in main chat as a `workflows:workflow-heartbeat` card. It names the workflow, run id, cadence, and elapsed time, with `/workflow status <runId>` as the inspection hint. Its queued steer waits for the parent's next protocol-safe boundary and never interrupts streaming text.
+Each heartbeat arrives in main chat as a `workflows:workflow-heartbeat` card. It names the workflow, run id, cadence, and elapsed time, with `/workflow status <runId>` as the inspection hint. Its queued steer waits for the parent's next protocol-safe boundary and never interrupts streaming text. When main chat is idle, including right after you interrupt it, the heartbeat starts a turn at once; [`tasks.heartbeatWakesIdleSession`](/settings#tasks) turns that off.
 
 Only one heartbeat per run can be outstanding. Its slot stays occupied until the card is consumed into the conversation, even if the parent's turn ends or its queue is paused. Boundaries reached while that slot is occupied are skipped, not stacked. Delivery resumes at the first future boundary.
 

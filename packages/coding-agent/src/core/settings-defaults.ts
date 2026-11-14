@@ -107,5 +107,7 @@ export const SETTINGS_DEFAULTS = {
 	tasks: {
 		/** Same 15-minute default as workflow heartbeats. */
 		heartbeatMs: 15 * 60_000,
+		/** A task or workflow heartbeat starts a turn in an idle chat, including after an interrupt. */
+		heartbeatWakesIdleSession: true,
 	},
 } as const;

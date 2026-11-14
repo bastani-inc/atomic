@@ -4,6 +4,7 @@ import { afterEach, describe, test } from "vitest";
 import type { MessageEndEventResult } from "../../packages/coding-agent/src/core/extensions/event-results.js";
 import { createHarness, type Harness } from "../../packages/coding-agent/test/suite/harness.js";
 import {
+	installWorkflowHeartbeatScheduler,
 	isWorkflowHeartbeatTerminalRun,
 	workflowHeartbeatConsumedIdentity,
 	workflowHeartbeatContextInvalidation,
@@ -190,6 +191,77 @@ describe("workflow heartbeat parent pickup signal", () => {
 		assert.ok(observed.settled.length >= 2, "the foreign custom message actually settled");
 
 		assert.deepEqual(observed.consumed, [{ runId: "probe-run", scheduledAt: 1 }]);
+	});
+
+	test("a workflow heartbeat starts one turn when the parent is idle after an interrupt (#4795)", async () => {
+		const { harness, observed } = await createObservingHarness();
+		const started = Promise.withResolvers<void>();
+		const seen: string[] = [];
+		harness.setResponses([
+			async (_context, options) => {
+				started.resolve();
+				await new Promise<void>((resolve) => {
+					if (options?.signal?.aborted) resolve();
+					else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return fauxAssistantMessage("interrupted");
+			},
+			(context) => {
+				seen.push(JSON.stringify(context.messages.at(-1)));
+				return fauxAssistantMessage("The run is on track.");
+			},
+			fauxAssistantMessage("spare"),
+		]);
+		const active = harness.session.prompt("start a streaming turn");
+		await started.promise;
+		// Esc: pause queued input, then abort the response.
+		harness.session.pauseQueuedMessages();
+		await harness.session.abort();
+		await active;
+		const turnsBefore = harness.eventsOfType("agent_start").length;
+
+		const store = createStore();
+		const runId = "wake-run";
+		const startedAt = 1_000_000;
+		store.recordRunStart({
+			id: runId,
+			name: "wake-probe",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [],
+			startedAt,
+		});
+		const timers: Array<() => void> = [];
+		let now = startedAt;
+		const scheduler = installWorkflowHeartbeatScheduler({
+			store,
+			now: () => now,
+			timers: {
+				setTimeout: (handler) => {
+					timers.push(handler);
+					return {};
+				},
+				clearTimeout: () => {},
+			},
+			parentAvailabilityReported: true,
+			resolveIntervalMinutes: () => 1,
+			sendMessage: (message, options) => harness.session.sendCustomMessage(message, options),
+		});
+		try {
+			const run = store.runs().find((candidate) => candidate.id === runId);
+			assert.ok(run !== undefined);
+			scheduler.scheduleWorkflowHeartbeats(run, 1);
+			now = startedAt + 60_000;
+			for (const fire of timers.splice(0)) fire();
+
+			await waitFor(() => seen.length === 1 && !harness.session.isStreaming, "the heartbeat turn");
+			assert.equal(harness.eventsOfType("agent_start").length - turnsBefore, 1, "one turn, without the user");
+			assert.match(seen[0] ?? "", /wake-probe/);
+			assert.ok(observed.consumed.some((identity) => identity.runId === runId));
+		} finally {
+			scheduler.dispose();
+		}
 	});
 });
 

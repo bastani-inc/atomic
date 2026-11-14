@@ -20,6 +20,8 @@ interface SettingsManagerResourceAccessors {
 	getSearchContextAfter(): number;
 	/** Default task heartbeat cadence in milliseconds; `0` disables. Invalid values use the default. */
 	getTaskHeartbeatMs(): number;
+	/** Whether a heartbeat arriving after an interrupt starts a turn in the idle chat. */
+	getTaskHeartbeatWakesIdleSession(): boolean;
 	getNpmCommand(): string[] | undefined;
 	setNpmCommand(command: string[] | undefined): void;
 	getCollapseChangelog(): boolean;
@@ -141,6 +143,11 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		return typeof value === "number" && Number.isFinite(value) && (value === 0 || value >= 60_000)
 			? value
 			: SETTINGS_DEFAULTS.tasks.heartbeatMs;
+	},
+
+	getTaskHeartbeatWakesIdleSession() {
+		const value = settingsInternals(this).settings.tasks?.heartbeatWakesIdleSession;
+		return typeof value === "boolean" ? value : SETTINGS_DEFAULTS.tasks.heartbeatWakesIdleSession;
 	},
 
 	getNpmCommand() {

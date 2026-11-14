@@ -37,6 +37,15 @@ export interface SendMessageOptions {
 	 * event instead of a bare `Operation aborted`.
 	 */
 	interruptAbortMessage?: string;
+
+	/**
+	 * Heartbeats only: when an interrupt has left queued input paused and the chat idle, resume it so this
+	 * message starts a turn. Messages the interrupt held go with it; text the user typed but has not sent keeps the
+	 * chat paused. The `tasks.heartbeatWakesIdleSession` setting turns this off.
+	 *
+	 * @internal
+	 */
+	wakeIdleSession?: boolean;
 }
 
 export type SendMessagesOptions = Omit<SendMessageOptions, "deliverAs" | "interruptAbortMessage"> & {

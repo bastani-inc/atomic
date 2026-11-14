@@ -575,6 +575,7 @@ Plain names establish a replacement list before its modifiers apply. A project l
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `tasks.heartbeatMs` | number | `900000` | How often, in milliseconds, a running background shell or subagent sends its chat a [task heartbeat](/background-tasks#task-heartbeats). `0` turns heartbeats off; other values must be at least `60000`. An invalid value uses the default. A tool call's `heartbeatMs` overrides it for that task. |
+| `tasks.heartbeatWakesIdleSession` | boolean | `true` | Whether a [task heartbeat](/background-tasks#task-heartbeats) or [workflow heartbeat](/workflows/api-reference#heartbeatintervalminutes) that arrives while the chat is idle after an interrupt (Esc) starts a turn at once. When `false`, it waits for your next message, as Intercom messages and finished-task notices do. |
 
 ```json
 { "tasks": { "heartbeatMs": 1800000 } }
