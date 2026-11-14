@@ -325,7 +325,7 @@ test("a direct run() judges its own checkout under the snapshot settings the run
 
 	assert.equal(result.status, "completed", result.error);
 	assert.equal(liveRuns, 1);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 });
 
 test("a trusted restore builds its repository's own blueprint in the restored worktree and keeps it (#4588)", async () => {
@@ -476,7 +476,7 @@ test("a run whose recorded edits were committed here resumes in place with no re
 	await finished;
 
 	assert.equal(liveRuns, 1);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 	assert.equal(recorded.backend.getWorkflow(recorded.runId)?.worktreeRootMappings, undefined);
 });
 
@@ -516,7 +516,7 @@ test("a run's own snapshot settings decide whether its checkout changed before t
 	await finished;
 
 	assert.equal(liveRuns, 1);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 });
 
 test("cancelling a run's resume stops the setup command of the checkout it restored and removes the worktree (#4329)", async () => {
@@ -797,7 +797,7 @@ test("a worker host runs the setup command of its own agent directory in the wor
 
 	assert.equal(restored, worktree);
 	assert.equal(readFileSync(marker, "utf8"), `${realpathSync(worktree)}\n`);
-	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots")), false);
+	assert.equal(existsSync(sandbox.path("agent", "worktree-snapshots", "worktrees")), false);
 });
 
 test("a worker host whose setup command fails keeps the worktree it restored from its own store and reports the warning (#4588)", async () => {
