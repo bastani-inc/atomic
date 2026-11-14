@@ -670,6 +670,14 @@ const LOCK_WAIT_RECHECK_MS = 250;
  * `LOCK_WAIT_RECHECK_MS`, so writers polling a stalled lock leave the stalled holder the CPU it needs.
  */
 const UNWATCHED_LOCK_RETRY_MS = 20;
+/**
+ * How long a refused writer keeps trying the lock on every event-loop turn once another connection has committed
+ * since its last look (see `attemptThroughRelease`): one Windows timer tick (15.6 ms), so the attempts cover the time
+ * between two ticks, when a writer that does not queue and runs on its own timers lets go of the lock.
+ */
+const LOCK_RELEASE_RETRY_MS = 16;
+/** Most attempts in one `LOCK_RELEASE_RETRY_MS` span, so it ends even on a clock that does not move. */
+const LOCK_RELEASE_RETRY_ATTEMPTS = 1_000;
 /** Most transactions one group commit carries, so a batch cannot keep the write lock from other processes for long. */
 const MAX_GROUP_COMMIT_TRANSACTIONS = 128;
 /**
@@ -947,15 +955,12 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				if (ticket !== undefined) notices = await this.watchTicket(ticket, notices);
 				const behind = ticket !== undefined && (await this.queueFileOp(() => ticket!.behindOthers()));
 				if (!behind) {
-					try {
-						this.tryBegin();
+					const refused = this.attemptBegin();
+					if (refused === undefined) {
 						this.acquired(waitStarted);
 						return;
-					} catch (error) {
-						const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
-						if (!isSqliteBusy(cause)) throw error;
-						lastCause = cause;
 					}
+					lastCause = refused;
 					if (ticket === undefined && queue !== undefined) {
 						// A release before this ticket existed told nobody: watch it, then try once more before waiting.
 						ticket = await this.queueFileOp(async () => queue.join(await queue.liveTicketsOffLoop()));
@@ -964,13 +969,18 @@ class NodeSqliteDatabase implements SqliteDatabase {
 				}
 				// Only another connection's commit is progress; a queued writer measures its stall the same way.
 				const current = this.dataVersion();
+				const committed = version !== undefined && current !== version;
 				if (version === undefined) version = current;
-				else if (current !== version) {
+				else if (committed) {
 					version = current;
 					stalledSince = performance.now();
 				}
 				const stalledMs = performance.now() - stalledSince;
 				if (stalledMs >= lockWaitMs) throw this.lockWaitTimeout(lockWaitMs, stalledMs, behind, lastCause);
+				if (!behind && committed && (await this.attemptThroughRelease())) {
+					this.acquired(waitStarted);
+					return;
+				}
 				const recheckMs =
 					notices?.watching === true || stalledMs >= this.lockWaitMs
 						? LOCK_WAIT_RECHECK_MS
@@ -983,6 +993,36 @@ class NodeSqliteDatabase implements SqliteDatabase {
 			// Gone before the commit, so the release that follows hands the turn to the next writer, not to this one.
 			await ticket?.leave();
 		}
+	}
+
+	/** One attempt at the lock: `undefined` once it is taken, or the SQLITE_BUSY that refused it. Anything else throws. */
+	private attemptBegin(): unknown {
+		try {
+			this.tryBegin();
+			return undefined;
+		} catch (error) {
+			const cause = error instanceof StorageUnavailableError ? error.cause : undefined;
+			if (!isSqliteBusy(cause)) throw error;
+			return cause;
+		}
+	}
+
+	/**
+	 * After a refused attempt, while other connections are committing through the lock, keeps attempting it on every
+	 * event-loop turn for `LOCK_RELEASE_RETRY_MS`; returns whether it took the lock. A timer only ever wakes this writer
+	 * on the system's timer tick, and on Windows that tick is 15.6 ms, shared by every process: a writer that does
+	 * not queue (a raw SQLite client, an older Atomic) and takes the lock again from its own timer does so on the same
+	 * tick, so the lock is free only between ticks and a writer that tried only when its timer fired never found it
+	 * free while that writer kept committing. Trying on every turn for a tick finds the lock the moment such a
+	 * writer's commit lets go of it.
+	 */
+	private async attemptThroughRelease(): Promise<boolean> {
+		const until = performance.now() + LOCK_RELEASE_RETRY_MS;
+		for (let attempt = 0; attempt < LOCK_RELEASE_RETRY_ATTEMPTS && performance.now() < until; attempt++) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			if (this.attemptBegin() === undefined) return true;
+		}
+		return false;
 	}
 
 	/**
