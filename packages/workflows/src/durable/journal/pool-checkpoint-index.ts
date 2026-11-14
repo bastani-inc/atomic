@@ -189,6 +189,12 @@ async function readCheckpointPages(
 	return rows;
 }
 
+/**
+ * The most checkpoints a process keeps of its own commits past the index's watermark (see
+ * {@link PoolCheckpointIndex.recordOwn}).
+ */
+const OWN_MAX = 64;
+
 /** The most checkpoints, and bytes of their payloads, a commit's read carries for the checkpoint index. */
 const PREFETCH_MAX_CHECKPOINTS = 64;
 const PREFETCH_MAX_BYTES = 256 * 1024;
@@ -215,12 +221,17 @@ export class PoolCheckpointIndex {
 	/** Checkpoints this process committed for each root past the index's watermark, until a read folds them in. */
 	private readonly own = new Map<string, IndexedEntry[]>();
 
-	/** Notes a checkpoint this process committed as the root's event `seq` under `key`. */
+	/**
+	 * Notes a checkpoint this process committed as the root's event `seq` under `key`. Past {@link OWN_MAX} of them the
+	 * root has no view without a read ({@link known}), and the read that plans the next commit folds them in: a process
+	 * that commits for many workers of one root never reads otherwise, and kept every checkpoint it committed (#4768).
+	 */
 	recordOwn(root: string, seq: number, key: string, checkpoint: DurableCheckpoint): void {
 		if (checkpoint.kind === "ui") return;
 		const base = this.roots.get(root);
 		if (base === undefined || seq <= base.seq) return;
 		const entries = this.own.get(root) ?? [];
+		if (entries.length >= OWN_MAX) return;
 		entries.push({ seq, order: Buffer.from(key, "utf8"), checkpoint });
 		this.own.set(root, entries);
 	}
@@ -237,6 +248,7 @@ export class PoolCheckpointIndex {
 		const base = this.roots.get(root);
 		if (base === undefined || base.seq === 0) return undefined;
 		const own = (this.own.get(root) ?? []).filter((entry) => entry.seq > base.seq);
+		if (own.length >= OWN_MAX) return undefined;
 		const delta = new Partitions();
 		for (const entry of own) delta.add(entry);
 		const view = new PoolCheckpointView(base, base.seq, delta);
