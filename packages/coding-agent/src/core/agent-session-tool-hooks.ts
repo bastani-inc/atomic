@@ -66,7 +66,6 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		if (isDetachedToolCall(this, toolCall.id)) return undefined;
 		const parentToolCallId = getParentToolCallId();
 		const replacement = withBlueprintReport(
-			this,
 			toolCall.id,
 			result,
 			await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId }),
@@ -78,8 +77,8 @@ export function _installAgentToolHooks(this: AgentSession): void {
 	};
 }
 
-/** What the agent is told about a blueprint build a tool call waited for, by session and tool call id. */
-const blueprintReports = new WeakMap<AgentSession, Map<string, string>>();
+/** What the agent is told about a blueprint build, by the id of the tool call that waited for it. */
+const blueprintReports = new Map<string, string | undefined>();
 
 /**
  * With `resume.waitForBlueprint: "tools"`, holds a tool that runs project code or reads the worktree until the
@@ -103,14 +102,7 @@ async function waitForBlueprintBuild(
 	} catch {
 		return { block: true, reason: "Interrupted while waiting for the environment build of this resumed session." };
 	}
-	if (report !== undefined) {
-		let reports = blueprintReports.get(session);
-		if (reports === undefined) {
-			reports = new Map();
-			blueprintReports.set(session, reports);
-		}
-		reports.set(toolCall.id, report);
-	}
+	blueprintReports.set(toolCall.id, report);
 	return undefined;
 }
 
@@ -119,15 +111,13 @@ async function waitForBlueprintBuild(
  * waited for in front of its content.
  */
 function withBlueprintReport(
-	session: AgentSession,
 	toolCallId: string,
 	result: AgentToolResult<unknown>,
 	replacement: AfterToolCallResult | undefined,
 ): AfterToolCallResult | undefined {
-	const reports = blueprintReports.get(session);
-	const report = reports?.get(toolCallId);
+	const report = blueprintReports.get(toolCallId);
+	blueprintReports.delete(toolCallId);
 	if (report === undefined) return replacement;
-	reports?.delete(toolCallId);
 	return { ...replacement, content: [{ type: "text", text: report }, ...(replacement?.content ?? result.content)] };
 }
 
