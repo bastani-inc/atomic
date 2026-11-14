@@ -171,3 +171,51 @@ test("store hooks of an adapter receive the live-secret context and the prefix (
 		removeTempDirectory(home);
 	}
 });
+
+test("a journal through an adapter with only openDatabase gets the database and the live-secret context (#4793)", async () => {
+	const home = makeTempDirectory("storage-live-secret-journal-");
+	const agentDir = join(home, "agent");
+	const probe: LiveSecretProbe = {};
+	Reflect.set(globalThis, PROBE, probe);
+	await writeFileEnsuringDir(
+		join(agentDir, "adapter.ts"),
+		[
+			`const probe = (globalThis as Record<symbol, any>)[Symbol.for("atomic-test/storage-live-secrets-4793")];`,
+			"export default {",
+			"\tatomicStorageAdapter: 1 as const,",
+			'\tliveSecrets: ["password"],',
+			"\tasync openDatabase(options: Record<string, unknown>, context: unknown) {",
+			"\t\tprobe.options = options;",
+			"\t\tprobe.context = context;",
+			"\t\treturn probe.database;",
+			"\t},",
+			"};",
+			"",
+		].join("\n"),
+	);
+	probe.database = await openNodeSqliteDatabase(join(home, "journal.sqlite"));
+	const journals: SqliteDatabase[] = [];
+	const provider = new StorageProvider({
+		memory: () => {
+			throw new Error("not a memory journal");
+		},
+		sql: async (database) => {
+			journals.push(database);
+			return { close: async () => {}, createRun: async () => {} } as never;
+		},
+	});
+	try {
+		const journal = await provider.openRunJournal(
+			{ kind: "adapter", module: "./adapter.ts", secrets: { password: inMemorySecret("pw") } },
+			{ agentDir, domain: "journal" },
+		);
+		assert.equal(journals.length, 1);
+		assert.deepEqual(probe.options, {});
+		assert.equal(await probe.context?.secret?.("password"), "pw");
+		await journal.close();
+	} finally {
+		Reflect.deleteProperty(globalThis, PROBE);
+		await probe.database?.close();
+		removeTempDirectory(home);
+	}
+});

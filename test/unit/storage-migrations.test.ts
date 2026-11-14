@@ -248,7 +248,11 @@ test("migration steps must be numbered in increasing order (#4793)", async () =>
 					versions.map((version) => tableStep(version, "never")),
 				),
 				(error: StorageConfigError) =>
-					error instanceof StorageConfigError && error.reason === "versions-increasing",
+					error instanceof StorageConfigError &&
+					error.source === "sdk" &&
+					error.field === "steps" &&
+					error.reason === "versions-increasing" &&
+					error.hint === "Number migration steps 1, 2, 3, … in increasing order",
 			);
 		}
 		assert.deepEqual(await tables(database), []);
