@@ -562,7 +562,8 @@ export class SessionManager {
 	 * Record a checkout's snapshot at the current leaf. Pass the snapshot when it is new; omit it to refer to an earlier
 	 * entry's snapshot with the same id (an unchanged capture). `restore` records that the snapshot was restored on
 	 * this host into `root`, and `restoreWarnings` what that restore reported beyond its snapshot record. `unrestored`
-	 * records that a resume continued without restoring the checkout at `root` (#4733).
+	 * records that a resume continued without restoring the checkout at `root` (#4733). `captureMs` is how long the
+	 * turn's capture took (#4748).
 	 */
 	appendWorktreeSnapshot(
 		root: string,
@@ -571,6 +572,7 @@ export class SessionManager {
 		restore?: WorktreeRootMapping,
 		restoreWarnings: readonly WorktreeRestoreHostWarning[] = [],
 		unrestored?: WorktreeUnrestored,
+		captureMs?: number,
 	): Promise<string> {
 		return this.runMutation(async () => {
 			if (snapshot !== undefined && snapshot.id !== snapshotId) {
@@ -597,6 +599,7 @@ export class SessionManager {
 				this.byId,
 				this.leafId,
 				unrestored,
+				captureMs,
 			);
 			await this._appendEntry(entry);
 			return entry.id;

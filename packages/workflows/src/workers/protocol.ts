@@ -76,6 +76,12 @@ export interface WorkerStart {
 	 * one request (`localWorkers.heartbeatMs`, a quarter of `localWorkers.leaseMs` by default).
 	 */
 	readonly heartbeatMs: number;
+	/**
+	 * How long the attempt's work lease lasts (`localWorkers.leaseMs`). A heartbeat that fails because the journal is
+	 * unreachable leaves the attempt running until this long has passed since its last renewal (#4768). Unset: the
+	 * first such failure ends the attempt.
+	 */
+	readonly leaseMs?: number;
 	readonly admission?: AdmissionConfiguration;
 	/** Children raise `ctx.ui` prompts as prompt nodes for the root to answer (#3996). */
 	readonly promptNodes?: boolean;

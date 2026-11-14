@@ -41,6 +41,26 @@ export interface IncludedWorkspace {
 	readonly file: string;
 }
 
+/**
+ * What a `cache:` entry holds: `store` (the default) is a package manager's store outside the worktree; `build` is build
+ * output inside the worktree that only a trusted prebuild parks for a cache save.
+ */
+export type BlueprintCacheKind = "store" | "build";
+
+/** One `cache:` entry, as written. Paths are resolved and checked when the cache keys are computed. */
+export interface BlueprintCacheEntry {
+	readonly path: string;
+	readonly kind: BlueprintCacheKind;
+	/** Root-relative files whose content keys the entry; undefined keys it by the environment hash inputs. */
+	readonly keyFiles: readonly string[] | undefined;
+}
+
+/** The Atomic-only `cache:` section. An invalid entry is left out with a message in `ignored`; it never fails a blueprint. */
+export interface BlueprintCacheSection {
+	readonly entries: readonly BlueprintCacheEntry[];
+	readonly ignored: readonly string[];
+}
+
 /** One YAML document of a blueprint file: the platforms it targets and its sections. */
 export interface BlueprintDocument {
 	/** The platform labels of `runs-on`, lower-cased, with `default` resolved to `linux`. */
@@ -54,6 +74,8 @@ export interface BlueprintDocument {
 	readonly postBuild: readonly BlueprintStep[];
 	/** Root repository blueprint only. */
 	readonly includes: readonly IncludedWorkspace[];
+	/** The `cache:` section, undefined when the document has none. Only resumes and runners use it, never a build. */
+	readonly cache?: BlueprintCacheSection;
 }
 
 export interface BlueprintWarning {

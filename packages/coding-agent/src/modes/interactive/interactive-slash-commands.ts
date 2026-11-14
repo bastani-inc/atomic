@@ -1,7 +1,9 @@
 import { computeCacheWaste, createCacheMissModelSource, formatCacheWaste } from "../../core/cache-stats.ts";
+import { formatResumeTimings, latestResumeTimings } from "../../core/resume/timings.ts";
 import {
 	compareWorktreeSnapshot,
 	currentWorktreeSnapshots,
+	describeLastCapture,
 	describeSnapshotExport,
 	describeWorktreeRestoreStatus,
 	describeWorktreeSnapshot,
@@ -418,6 +420,8 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 		lines.push(...describeWorktreeSnapshot(root, snapshot));
 		const restoreStatus = describeWorktreeRestoreStatus(this.sessionManager, root);
 		if (restoreStatus) lines.push(theme.fg("warning", `  ${restoreStatus}`));
+		const capture = describeLastCapture(this.sessionManager, root);
+		if (capture) lines.push(theme.fg("dim", `  ${capture}`));
 		const comparison = await compareWorktreeSnapshot(snapshot, root, settings);
 		if (comparison.status === "match")
 			lines.push(
@@ -437,6 +441,10 @@ InteractiveModeBase.prototype.handleSessionSnapshotCommand = async function (thi
 			if (comparison.stat) lines.push(...comparison.stat.split("\n").map((line) => `  ${line}`));
 		}
 		lines.push("");
+	}
+	const timings = latestResumeTimings(this.sessionManager);
+	if (timings !== undefined) {
+		lines.push(theme.bold("Last resume"), "", ...formatResumeTimings(timings).map((line) => `  ${line}`));
 	}
 	this.chatContainer.addChild(new Text(lines.join("\n").trimEnd(), 1, 0));
 	this.ui.requestRender();

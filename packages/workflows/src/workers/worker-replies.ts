@@ -1,5 +1,6 @@
 import type { PoolWork } from "../durable/journal/sql-pool-queue.js";
 import { rehydrateError, serializeError } from "../shared/error-codec.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import type { WorkerDeliver, WorkerReply, WorkerRequest } from "./protocol.js";
 import { workerRefusal } from "./worker-refusal.js";
 
@@ -8,6 +9,11 @@ export interface PendingWorkerRequest {
 	readonly resolve: (value: WorkerReply["value"]) => void;
 	readonly reject: (error: Error) => void;
 	readonly deliver?: WorkerDeliver;
+	/**
+	 * A storage outage refusing this request does not fence the attempt: the request's caller decides, as a heartbeat
+	 * that keeps its attempt while its lease lasts does (#4768).
+	 */
+	readonly outageTolerant?: boolean;
 }
 
 /** What a worker learned from its replies about its attempt and its root: once set, neither goes back. */
@@ -53,8 +59,13 @@ export function receiveWorkerReply(
 		receiver?.resolve(reply.value);
 		return undefined;
 	}
+	const error = rehydrateError(reply.error);
+	if (receiver?.outageTolerant === true && infrastructureFaultOf(error) === "storage_unavailable") {
+		receiver.reject(error);
+		return undefined;
+	}
 	const refusal = workerRefusal(
-		rehydrateError(reply.error),
+		error,
 		held === undefined ? undefined : { workId: held.id, generation: held.generation },
 	);
 	if (refusal.kind === "root-lease-lost") state.rootLeaseLost = true;

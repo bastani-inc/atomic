@@ -25,6 +25,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 	});
 });
 
+import { ResumeTimingsRecorder, timeCheckoutRestore } from "../../packages/coding-agent/src/core/resume/timings.ts";
 import {
 	captureWorktreeSnapshot,
 	MemorySnapshotBlobStore,
@@ -95,6 +96,33 @@ async function restoreCollectingWarnings(snapshot: WorktreeSnapshot, blobs: Memo
 	});
 	return { restored, warnings };
 }
+
+describe("LFS restore timings (#4748)", () => {
+	test("an LFS restore reports its download as the LFS phase of the checkout restore it runs in (#4748)", async () => {
+		const { blobs, snapshot } = await lfsSnapshotWithTwoRemotes();
+		fakeLfs([]);
+		const recorder = new ResumeTimingsRecorder();
+		await recorder.run(() =>
+			timeCheckoutRestore(
+				snapshot.root,
+				() => restoreCollectingWarnings(snapshot, blobs),
+				() => "fresh",
+			),
+		);
+		const [restore] = recorder.finish().restores;
+		assert.ok(restore);
+		assert.deepEqual(Object.keys(restore.phases).sort(), [
+			"fetch",
+			"lfs",
+			"materialize",
+			"publish",
+			"reconstruct",
+			"verify",
+		]);
+		const sum = Object.values(restore.phases).reduce((total, ms) => total + ms, 0);
+		assert.ok(sum <= restore.ms, `phases ${sum} ms within the restore's ${restore.ms} ms`);
+	});
+});
 
 describe("which remotes an LFS restore pulls from (#4245)", () => {
 	test("the first recorded remote that has the objects ends the search, and the pull names it after `--`", async () => {

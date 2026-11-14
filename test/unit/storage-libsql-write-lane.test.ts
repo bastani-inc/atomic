@@ -78,7 +78,7 @@ test("a process sends at most four write batches to a server at once, over all i
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 19);
 });
 
-test("write batches a server leaves unanswered three times in a row warn once, naming the sqld fix (#4768)", async () => {
+test("write batches a server leaves unanswered three times in a row warn once per stall, naming the sqld fix, and a write answered after it says so (#4768)", async () => {
 	const fake = await server();
 	const real = globalThis.fetch;
 	let hang = false;
@@ -87,24 +87,33 @@ test("write batches a server leaves unanswered three times in a row warn once, n
 	);
 	const database = await open(fake.url);
 	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
-	const warnings: Error[] = [];
+	const warnings: (Error & { code?: string })[] = [];
 	const onWarning = (warning: Error) => warnings.push(warning);
 	process.on("warning", onWarning);
-	try {
+	const stall = async () => {
 		hang = true;
 		for (let attempt = 0; attempt < 4; attempt++)
 			await assert.rejects(
 				database.batch!(insert(attempt)),
 				(error: Error & { outcome?: string }) => error.outcome === "unknown",
 			);
+		hang = false;
+	};
+	try {
+		await stall();
+		await database.batch!(insert(10));
+		await stall();
 		await new Promise((resolve) => setImmediate(resolve));
 	} finally {
 		process.off("warning", onWarning);
 	}
-	const stalled = warnings.filter(
-		(warning) => (warning as Error & { code?: string }).code === "ATOMIC_LIBSQL_WRITES_STALLED",
-	);
-	assert.equal(stalled.length, 1);
-	assert.match(stalled[0]!.message, /libsql\/issues\/2286/);
-	assert.match(stalled[0]!.message, /--checkpoint-interval-s/);
+	const codes = warnings.map((warning) => warning.code).filter((code) => code?.startsWith("ATOMIC_LIBSQL_WRITES_"));
+	assert.deepEqual(codes, [
+		"ATOMIC_LIBSQL_WRITES_STALLED",
+		"ATOMIC_LIBSQL_WRITES_RECOVERED",
+		"ATOMIC_LIBSQL_WRITES_STALLED",
+	]);
+	const stalled = warnings.find((warning) => warning.code === "ATOMIC_LIBSQL_WRITES_STALLED")!;
+	assert.match(stalled.message, /libsql\/issues\/2286/);
+	assert.match(stalled.message, /--checkpoint-interval-s/);
 });

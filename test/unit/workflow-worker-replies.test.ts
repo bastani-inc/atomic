@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import { StorageTransientError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import { rehydrateError, serializeError } from "../../packages/workflows/src/shared/error-codec.js";
 import {
@@ -147,4 +148,41 @@ test("an attempt's admission refuses what a late caller asks once the attempt le
 		return true;
 	});
 	assert.deepEqual(asked, ["session"]);
+});
+
+test("a storage outage refusing an outage-tolerant request leaves the attempt to its caller; others fence it (#4768)", () => {
+	const outage = new StorageTransientError(
+		{ adapter: "libsql", location: "http://db" },
+		{ code: "connection-lost", outcome: "not-applied", attempts: 1 },
+		new Error("fetch failed"),
+	);
+	const tolerant = harness();
+	tolerant.pending.set(1, {
+		resolve: () => assert.fail("refused"),
+		reject: (error) => tolerant.settled.push({ id: 1, error }),
+		outageTolerant: true,
+	});
+	tolerant.receive({ id: 1, error: serializeError(outage) });
+	assert.deepEqual(tolerant.state, { attemptFenced: false, rootLeaseLost: false, retired: false });
+	assert.equal(tolerant.settled[0]?.error?.name, "StorageTransientError", "the caller gets the outage itself");
+
+	const strict = harness();
+	strict.add(2);
+	strict.receive({ id: 2, error: serializeError(outage) });
+	assert.equal(strict.state.attemptFenced, true);
+	assert.ok(isWorkAttemptFencedError(strict.settled[0]?.error));
+
+	// A tolerant request still fences on any other refusal.
+	const stale = harness();
+	stale.pending.set(3, {
+		resolve: () => {},
+		reject: (error) => stale.settled.push({ id: 3, error }),
+		outageTolerant: true,
+	});
+	stale.receive({
+		id: 3,
+		error: serializeError(new StaleWorkLeaseError({ root: "root", workId: "work", generation: 4, reason: "fenced" })),
+	});
+	assert.equal(stale.state.attemptFenced, true);
+	assert.ok(isWorkAttemptFencedError(stale.settled[0]?.error));
 });

@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import { failureDebugFields, reportDebug } from "./debug.ts";
+import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
@@ -33,7 +35,26 @@ import { gitText, runGit } from "./worktree-snapshot/git.ts";
 import { isHeadOnlyAdvance } from "./worktree-snapshot/head-advance.ts";
 import { canonicalizeWorktreePath } from "./worktree-snapshot/paths.ts";
 import { loadSnapshotPathPolicy } from "./worktree-snapshot/policy.ts";
-import { removeRestoredWorktree, snapshotRestoreWarnings, verifyWorktree } from "./worktree-snapshot/restore.ts";
+import {
+	admitPooledWorktree,
+	discardPooledWorktree,
+	evictIdleWorktrees,
+	holdRestoredWorktree,
+	type PoolOwner,
+	pooledWorktreeHolder,
+	type RepositoryId,
+	recordPooledWorktreeState,
+	releaseRestoredWorktree,
+	type WorktreeLease,
+} from "./worktree-snapshot/pool.ts";
+import {
+	defaultWorktreeSnapshotStoreDir,
+	removeRestoredWorktree,
+	restoreDegradedWorktreeAt,
+	restoreWorktreeAt,
+	snapshotRestoreWarnings,
+	verifyWorktree,
+} from "./worktree-snapshot/restore.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -141,11 +162,19 @@ export class SessionWorktreeSnapshotRecorder {
 		for (const root of roots) {
 			const previous = this.deps.sessionManager.getLatestWorktreeSnapshots().get(root);
 			try {
+				const started = performance.now();
 				const result = await captureWorktreeSnapshot(root, { settings, previous, blobs });
-				if (result.status === "captured") {
-					await this.deps.sessionManager.appendWorktreeSnapshot(root, result.snapshot.id, result.snapshot);
-				} else if (result.status === "unchanged") {
-					await this.deps.sessionManager.appendWorktreeSnapshot(root, result.snapshot.id);
+				const captureMs = Math.floor(performance.now() - started);
+				if (result.status === "captured" || result.status === "unchanged") {
+					await this.deps.sessionManager.appendWorktreeSnapshot(
+						root,
+						result.snapshot.id,
+						result.status === "captured" ? result.snapshot : undefined,
+						undefined,
+						[],
+						undefined,
+						captureMs,
+					);
 				} else if (result.status === "unavailable") {
 					this.report(result.reason);
 				}
@@ -170,6 +199,14 @@ export class SessionWorktreeSnapshotRecorder {
 		void scheduleSnapshotCollection(this.deps.sessionManager.getSessionStore().snapshotBlobs, settings);
 	}
 
+	/**
+	 * Releases the pooled worktrees this session holds (#4748), each with the latest snapshot the session recorded of
+	 * it as its known state. Called when the session closes; never throws.
+	 */
+	async releaseWorktrees(): Promise<void> {
+		await releaseSessionWorktrees(this.deps.sessionManager);
+	}
+
 	private reportFailure(error: unknown): void {
 		const reason = isGitUnavailableError(error) ? error : findWorkspaceError(error);
 		if (!reason) throw error;
@@ -186,6 +223,76 @@ async function nearestExisting(directory: string): Promise<string> {
 				throw unreadablePathError(current, error);
 		}
 		if (resolve(current, "..") === current) return current;
+	}
+}
+
+/** The pooled worktrees each open session holds, released when it closes (#4748). */
+const sessionLeases = new WeakMap<SessionManager, WorktreeLease[]>();
+
+function sessionOwner(sessionManager: Pick<SessionManager, "getSessionId">): PoolOwner {
+	return { kind: "session", id: sessionManager.getSessionId() };
+}
+
+function holdFor(sessionManager: SessionManager, lease: WorktreeLease): void {
+	const leases = sessionLeases.get(sessionManager) ?? [];
+	leases.push(lease);
+	sessionLeases.set(sessionManager, leases);
+}
+
+/**
+ * Whether the worktree at `root` is a pooled slot that another session owns (#4748): this session must not continue
+ * in it, and restores its checkout fresh as if the worktree were gone. Reads only; false for any unpooled path.
+ */
+export async function pooledWorktreeOwnedElsewhere(
+	storeDir: string,
+	root: string,
+	sessionId: string,
+): Promise<boolean> {
+	const holder = await pooledWorktreeHolder(storeDir, root);
+	return holder !== "unpooled" && (holder.owner?.kind !== "session" || holder.owner.id !== sessionId);
+}
+
+/**
+ * Makes `to`, the session a resume opened, hold every pooled worktree of its checkouts that it owns, then releases what
+ * `from`, the session the resume restored on, held, when it is another object (#4748). A slot leased by a live process
+ * of the same session stays with that process. Never throws: a resume continues without a lease.
+ */
+export async function holdSessionWorktrees(
+	from: SessionManager,
+	to: SessionManager,
+	storeDir: string = defaultWorktreeSnapshotStoreDir(),
+): Promise<void> {
+	try {
+		const owner = sessionOwner(to);
+		const held = new Set((sessionLeases.get(to) ?? []).map((lease) => lease.path));
+		for (const root of currentWorktreeSnapshots(to).keys()) {
+			if (held.has(root)) continue;
+			const lease = await holdRestoredWorktree(storeDir, root, owner);
+			if (lease !== undefined) holdFor(to, lease);
+		}
+	} catch (error) {
+		reportDebug("storage", "worktree-pool-hold-failed", failureDebugFields(error));
+	}
+	if (from !== to) await releaseSessionWorktrees(from);
+}
+
+/** Releases every pooled worktree `sessionManager` holds, with the latest snapshot it recorded of each. Never throws. */
+export async function releaseSessionWorktrees(sessionManager: SessionManager): Promise<void> {
+	const leases = sessionLeases.get(sessionManager) ?? [];
+	sessionLeases.delete(sessionManager);
+	if (leases.length === 0) return;
+	const latest = [...sessionManager.getLatestWorktreeSnapshots()];
+	for (const lease of leases) {
+		try {
+			const path = canonicalizeWorktreePath(lease.path);
+			const snapshot = latest.find(([root]) => canonicalizeWorktreePath(root) === path)?.[1];
+			await releaseRestoredWorktree(
+				lease,
+				snapshot && { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree },
+			);
+		} catch (error) {
+			reportDebug("storage", "worktree-pool-release-failed", failureDebugFields(error));
+		}
 	}
 }
 
@@ -329,6 +436,12 @@ export interface ResumeSessionWorktreeOptions {
 	 * instead of failing with `snapshot-not-found` before anything is restored (#4733).
 	 */
 	readonly skipMissingRecords?: boolean;
+	/**
+	 * Restore into pooled slots at stable paths, leased by this session until it closes (#4748), keeping at most
+	 * `maxIdlePerRepository` idle slots of each repository restored into. A recorded checkout in a slot another session
+	 * owns is restored fresh. Without it, restores go to new paths outside the pool, as for workflow runs.
+	 */
+	readonly pool?: { readonly maxIdlePerRepository: number };
 }
 
 /**
@@ -386,6 +499,10 @@ export async function resumeSessionWorktree(
 	const unrestored: UnrestoredWorktree[] = [];
 	let continuedIn: string;
 	let selected: { root: string; snapshot: WorktreeSnapshot } | undefined;
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	const owner = sessionOwner(sessionManager);
+	const leases = new Map<WorktreeRootMapping, WorktreeLease>();
+	const admitted = new Set<RepositoryId>();
 	try {
 		for (const [original, snapshot] of latest) {
 			options.signal?.throwIfAborted();
@@ -397,28 +514,33 @@ export async function resumeSessionWorktree(
 				left.push({ root, snapshot, reason: cannot });
 				continue;
 			}
+			const gone = (cause?: Error) =>
+				new WorkspaceDriftError(
+					{
+						root,
+						expectedHead: snapshot.head,
+						actualHead: null,
+						expectedTree: snapshot.tree,
+						actualTree: null,
+						snapshotId: snapshot.id,
+					},
+					cause,
+				);
 			let drift: WorkspaceDriftError;
-			try {
-				await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });
-				continue;
-			} catch (error) {
-				options.signal?.throwIfAborted();
-				if (isWorkspaceDriftError(error)) {
-					if (await isHeadOnlyAdvance(error, options.signal)) continue;
-					drift = error;
-				} else if (isWorkspaceSnapshotError(error)) {
-					drift = new WorkspaceDriftError(
-						{
-							root,
-							expectedHead: snapshot.head,
-							actualHead: null,
-							expectedTree: snapshot.tree,
-							actualTree: null,
-							snapshotId: snapshot.id,
-						},
-						error,
-					);
-				} else throw error;
+			// A slot another session owns holds its work, not this one's: restore fresh, as if it were gone (#4748).
+			if (options.pool && (await pooledWorktreeOwnedElsewhere(storeDir, root, owner.id))) drift = gone();
+			else {
+				try {
+					await verifyWorktree(snapshot, root, { settings: options.settings, signal: options.signal });
+					continue;
+				} catch (error) {
+					options.signal?.throwIfAborted();
+					if (isWorkspaceDriftError(error)) {
+						if (await isHeadOnlyAdvance(error, options.signal)) continue;
+						drift = error;
+					} else if (isWorkspaceSnapshotError(error)) drift = gone(error);
+					else throw error;
+				}
 			}
 			const refused = (error: Error) =>
 				new WorkspaceDriftError(
@@ -438,20 +560,37 @@ export async function resumeSessionWorktree(
 				sessionManager.getEntries(),
 			);
 			let restored: Extract<BestWorktreeRestore, { status: "restored" }>;
+			const lease = options.pool ? await admitSlot(storeDir, snapshot, owner) : undefined;
 			try {
 				// The exact state, else the best this host can restore, else continue without the checkout.
-				const best = await restoreBestWorktree(snapshot, {
-					blobs,
-					storeDir: options.storeDir,
-					signal: options.signal,
-					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
-				});
+				const best = await timeCheckoutRestore(
+					root,
+					() =>
+						restoreBestWorktree(snapshot, {
+							blobs,
+							storeDir: options.storeDir,
+							signal: options.signal,
+							candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+							...(lease === undefined
+								? {}
+								: {
+										restore: (target, restoreOptions) =>
+											restoreWorktreeAt(target, lease.path, restoreOptions),
+										restoreDegraded: (degraded, failure, restoreOptions) =>
+											restoreDegradedWorktreeAt(degraded, failure, lease.path, restoreOptions),
+									}),
+						}),
+					(outcome) =>
+						outcome.status === "unrestored" ? undefined : outcome.degraded === undefined ? "fresh" : "degraded",
+				);
 				if (best.status === "unrestored") {
+					if (lease) await discardPooledWorktree(lease);
 					left.push({ root, snapshot, reason: best.reason });
 					continue;
 				}
 				restored = best;
 			} catch (error) {
+				if (lease) await discardPooledWorktree(lease).catch(() => {});
 				options.signal?.throwIfAborted();
 				if (!(error instanceof Error)) throw error;
 				throw refused(error);
@@ -465,6 +604,19 @@ export async function resumeSessionWorktree(
 				...(restored.degraded === undefined ? {} : { degraded: restored.degraded }),
 			};
 			mappings.push(mapping);
+			if (lease) {
+				leases.set(mapping, lease);
+				admitted.add(lease.repository);
+				if (restored.degraded !== undefined) {
+					await recordPooledWorktreeState(lease, {
+						snapshotId: snapshot.id,
+						head: restored.degraded.head,
+						tree: restored.degraded.tree,
+					}).catch((error: unknown) =>
+						reportDebug("storage", "worktree-pool-state-failed", failureDebugFields(error)),
+					);
+				}
+			}
 			warnings.push(...restored.warnings);
 			hostWarnings.set(
 				mapping,
@@ -516,6 +668,8 @@ export async function resumeSessionWorktree(
 			} catch (cleanupCause) {
 				cleanupFailures.push(cleanupCause);
 			}
+			const lease = leases.get(mapping);
+			if (lease) await discardPooledWorktree(lease).catch(() => {});
 		}
 		if (cleanupFailures.length > 0 && error instanceof Error && Object.isExtensible(error)) {
 			Object.defineProperty(error, "cleanupCause", {
@@ -525,11 +679,46 @@ export async function resumeSessionWorktree(
 		}
 		throw error;
 	}
+	for (const lease of leases.values()) holdFor(sessionManager, lease);
+	if (options.pool) {
+		for (const repository of admitted) {
+			await evictIdleWorktrees(storeDir, repository, {
+				maxIdle: options.pool.maxIdlePerRepository,
+				settings: options.settings,
+				signal: options.signal,
+			});
+		}
+	}
 	const snapshot = selected?.snapshot ?? [...latest.values()].at(-1)!;
 	const missing = missingRecords.length === 0 ? {} : { missingRecords };
 	return mappings.length === 0
 		? { status: "verified", snapshot, cwd: continuedIn, unrestored, ...missing }
 		: { status: "restored", snapshot, mappings, cwd: continuedIn, warnings, unrestored, ...missing };
+}
+
+/**
+ * Takes a new pooled slot for a restore of `snapshot` (#4748). When the pool cannot be used, the restore goes to a new
+ * path outside it, as before the pool: undefined, with the reason in the debug log.
+ */
+async function admitSlot(
+	storeDir: string,
+	snapshot: WorktreeSnapshot,
+	owner: PoolOwner,
+): Promise<WorktreeLease | undefined> {
+	try {
+		return await admitPooledWorktree(
+			{
+				storeDir,
+				remotes: snapshot.remotes,
+				lastState: { snapshotId: snapshot.id, head: snapshot.head, tree: snapshot.tree },
+				envHash: snapshot.envHash,
+			},
+			owner,
+		);
+	} catch (error) {
+		reportDebug("storage", "worktree-pool-admit-failed", failureDebugFields(error));
+		return undefined;
+	}
 }
 
 /** The one-line notice shown when a session or run continues in a restored worktree. */
@@ -932,6 +1121,29 @@ export function describeWorktreeSnapshot(root: string, snapshot: WorktreeSnapsho
 			? snapshotRestoreWarnings({ ...snapshot, omitted: [] }).map(formatWorktreeRestoreWarning)
 			: []),
 	];
+}
+
+/**
+ * How long the latest turn's capture of the checkout now at `root` took, as a line, also when that capture was of the
+ * checkout before a restore moved it to `root`; undefined when no capture recorded it.
+ */
+export function describeLastCapture(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+	root: string,
+): string | undefined {
+	const branch = sessionManager.getBranch();
+	const mappings = sessionManager.getWorktreeRootMappings();
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (
+			entry.type === "worktree_snapshot" &&
+			typeof entry.captureMs === "number" &&
+			mapRestoredPath(entry.root, mappings) === resolve(root)
+		) {
+			return `last capture took ${(entry.captureMs / 1000).toFixed(1)} s`;
+		}
+	}
+	return undefined;
 }
 
 /**

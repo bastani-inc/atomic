@@ -11,11 +11,18 @@ import {
 } from "@bastani/atomic";
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
-import { openSqlPoolQueue } from "../durable/journal/sql-pool-queue.js";
-import { type SharedPoolRoot, SqlSharedPool, type WorkerHostGitSource } from "../durable/journal/sql-shared-pool.js";
+import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
+import { openSqlPoolQueue, type PoolWork } from "../durable/journal/sql-pool-queue.js";
+import {
+	readSharedPoolFleet,
+	type SharedPoolRoot,
+	SqlSharedPool,
+	type WorkerHostGitSource,
+} from "../durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../durable/journal/types.js";
 import type { CoordinatorEvent, CoordinatorInbound, CoordinatorPort } from "./coordinator-protocol.js";
 import { definitionDigest, type WorkerDefinitionSource } from "./definitions.js";
+import { HostPollBackoff } from "./host-poll-backoff.js";
 import { defaultWorkerEntry } from "./local-pool.js";
 import {
 	SharedPoolSetupError,
@@ -32,9 +39,11 @@ import { RestoreBackoff } from "./restore-backoff.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
 import { snapshotRestore } from "./snapshot-restore.js";
 import type {
+	SharedJournalSelection,
 	WorkerHostFailure,
 	WorkerHostGit,
 	WorkflowWorkerHost,
+	WorkflowWorkerHostEvent,
 	WorkflowWorkerHostOptions,
 	WorkflowWorkerHostStats,
 } from "./worker-host-types.js";
@@ -45,6 +54,7 @@ export type {
 	WorkerHostFailure,
 	WorkerHostGit,
 	WorkflowWorkerHost,
+	WorkflowWorkerHostEvent,
 	WorkflowWorkerHostOptions,
 	WorkflowWorkerHostStats,
 } from "./worker-host-types.js";
@@ -71,6 +81,14 @@ function failure(error: Error): WorkerHostFailure {
 		: { name: error.name, message: error.message };
 }
 
+/** A held child, as `claimed` and `released` events name it. */
+function heldEvent(
+	root: string,
+	work: PoolWork,
+): { readonly root: string; readonly childRunId: string; readonly work: string; readonly generation: number } {
+	return { root, childRunId: work.childRunId, work: work.id, generation: work.generation };
+}
+
 /** Whether a root's satellites keep serving it: while it runs, and while it is paused, its workers' sessions with it. */
 function active(status: string | undefined): boolean {
 	return status === "running" || status === "paused";
@@ -91,6 +109,8 @@ function validated(options: WorkflowWorkerHostOptions): void {
 		throw new WorkerPlacementConfigError("sdk", "placement.prefer", "invalid-option", "a function");
 	if (options.git !== undefined && (typeof options.git.path !== "string" || options.git.path === ""))
 		throw new WorkerPlacementConfigError("sdk", "git.path", "invalid-option", "a non-empty path");
+	if (options.idleExitMs !== undefined && (!Number.isSafeInteger(options.idleExitMs) || options.idleExitMs < 1))
+		throw new WorkerPlacementConfigError("sdk", "idleExitMs", "invalid-option", "must be a positive integer");
 }
 
 /** Where a host's git comes from and, for a host given a restore function but no git, the setup problem that says so. */
@@ -237,6 +257,17 @@ class WorkerHost implements WorkflowWorkerHost {
 	private lastHealth?: string;
 	/** When this host restores each binding again whose restores failed, across every root it serves (#4416). */
 	private readonly restoreBackoff = new RestoreBackoff();
+	/** When this host polls the journal again after its polls failed (#4768). */
+	private readonly pollBackoff = new HostPollBackoff();
+	private degraded?: NonNullable<WorkflowWorkerHostStats["degraded"]>;
+	/** The work this host's workers held at the last tick, by root and work id, to report what they claimed and released. */
+	private held = new Map<string, { readonly root: string; readonly work: PoolWork }>();
+	/** When a worker of this host last held a child, by `performance.now()`. */
+	private busyAt = performance.now();
+	private settleClosed!: () => void;
+	readonly closed = new Promise<void>((resolve) => {
+		this.settleClosed = resolve;
+	});
 
 	constructor(
 		readonly hostId: string,
@@ -249,16 +280,79 @@ class WorkerHost implements WorkflowWorkerHost {
 		private readonly restorePort: WorkspaceRestore | undefined,
 		private readonly options: WorkflowWorkerHostOptions,
 	) {
-		this.timer = setInterval(() => {
-			this.polling ??= this.poll()
-				.catch((error: Error) => {
-					// A pass that failed (the journal unreachable, say) is retried on the next one; stats say why.
+		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
+	}
+
+	private emit(event: WorkflowWorkerHostEvent): void {
+		try {
+			this.options.onEvent?.(event);
+		} catch {
+			// A listener's failure is its own: the host goes on.
+		}
+	}
+
+	/** Reports claimed and released children, exits when idle for `idleExitMs`, and polls unless backing off. */
+	private tick(): void {
+		const claimed = this.noteHeldWork();
+		if (this.stopping !== undefined) return;
+		const now = performance.now();
+		if (claimed || this.workerCount().busy > 0) this.busyAt = now;
+		const idleExitMs = this.options.idleExitMs;
+		if (idleExitMs !== undefined && now - this.busyAt >= idleExitMs) {
+			this.emit({ kind: "idle-exit", idleMs: Math.round(now - this.busyAt) });
+			void this.drain().catch((error: Error) => {
+				this.lastDetach = failure(error);
+			});
+			return;
+		}
+		if (this.polling !== undefined || !this.pollBackoff.due()) return;
+		this.polling = this.poll()
+			.then(
+				() => {
+					const failures = this.pollBackoff.succeeded();
+					if (failures === 0) return;
+					this.degraded = undefined;
+					this.emit({ kind: "recovered", failures });
+				},
+				(error: Error) => {
+					// A pass that failed (the journal unreachable, say) is retried after a backoff; the host's running children
+					// go on, and stats say why (#4768).
 					this.lastDetach = failure(error);
-				})
-				.finally(() => {
-					this.polling = undefined;
-				});
-		}, HOST_POLL_MS);
+					const { failures, retryInMs } = this.pollBackoff.failed();
+					this.degraded = { failures, since: this.degraded?.since ?? Date.now(), error: failure(error) };
+					this.emit({ kind: "degraded", failures, retryInMs, error: failure(error) });
+				},
+			)
+			.finally(() => {
+				this.polling = undefined;
+			});
+	}
+
+	/**
+	 * Emits `claimed` for each child a worker of this host took since the last tick, and `released` for each it let go,
+	 * a child that came and went between two ticks included. Returns whether any was claimed.
+	 */
+	private noteHeldWork(): boolean {
+		const key = (root: string, work: PoolWork) => `${root}\0${work.id}\0${work.generation}`;
+		const current = new Map<string, { readonly root: string; readonly work: PoolWork }>();
+		const claims: { readonly root: string; readonly work: PoolWork }[] = [];
+		for (const [root, satellite] of this.satellites) {
+			for (const work of satellite.coordinator.takeClaims()) claims.push({ root, work });
+			for (const work of satellite.coordinator.heldWork()) current.set(key(root, work), { root, work });
+		}
+		for (const [held, { root, work }] of this.held)
+			if (!current.has(held)) this.emit({ kind: "released", ...heldEvent(root, work) });
+		for (const { root, work } of claims) {
+			const claim = key(root, work);
+			if (this.held.has(claim)) continue;
+			this.emit({ kind: "claimed", ...heldEvent(root, work) });
+			if (!current.has(claim)) this.emit({ kind: "released", ...heldEvent(root, work) });
+		}
+		for (const [held, { root, work }] of current)
+			if (!this.held.has(held) && !claims.some((claim) => key(claim.root, claim.work) === held))
+				this.emit({ kind: "claimed", ...heldEvent(root, work) });
+		this.held = current;
+		return claims.length > 0;
 	}
 
 	private get restores(): boolean {
@@ -426,9 +520,12 @@ class WorkerHost implements WorkflowWorkerHost {
 
 	async stats(): Promise<WorkflowWorkerHostStats> {
 		const { workers, busy } = this.workerCount();
+		// A root whose stats the journal cannot give now, while it is unreachable, is left out (#4768).
 		const roots =
 			this.stopping === undefined
-				? await Promise.all([...this.satellites.keys()].map((root) => this.shared.stats(root)))
+				? (await Promise.allSettled([...this.satellites.keys()].map((root) => this.shared.stats(root)))).flatMap(
+						(result) => (result.status === "fulfilled" ? [result.value] : []),
+					)
 				: [];
 		return {
 			hostId: this.hostId,
@@ -442,6 +539,7 @@ class WorkerHost implements WorkflowWorkerHost {
 			...(this.lastPlacementFailure === undefined ? {} : { lastPlacementFailure: this.lastPlacementFailure }),
 			...(this.lastDetach === undefined ? {} : { lastDetach: this.lastDetach }),
 			...(this.lastHealth === undefined ? {} : { lastHealth: this.lastHealth }),
+			...(this.degraded === undefined ? {} : { degraded: this.degraded }),
 		};
 	}
 
@@ -468,7 +566,16 @@ class WorkerHost implements WorkflowWorkerHost {
 	 * first failure is the one thrown; any later one is attached to it as its `cleanupCause`.
 	 */
 	private async windDown(each: (coordinator: PoolCoordinator) => Promise<void>): Promise<void> {
-		clearInterval(this.timer);
+		try {
+			await this.windDownOnce(each);
+		} finally {
+			// Ticks went on reporting the children the workers let go of while they wound down; polls ended at once.
+			clearInterval(this.timer);
+			this.settleClosed();
+		}
+	}
+
+	private async windDownOnce(each: (coordinator: PoolCoordinator) => Promise<void>): Promise<void> {
 		const failures: unknown[] = [];
 		await this.polling;
 		for (const result of await Promise.allSettled(
@@ -481,6 +588,8 @@ class WorkerHost implements WorkflowWorkerHost {
 			if (result.status === "rejected") failures.push(result.reason);
 		const satellites = [...this.satellites.values()];
 		this.satellites.clear();
+		// Whatever the workers still held went back to the queue with them.
+		this.noteHeldWork();
 		for (const satellite of satellites) await satellite.coordinator.shutdown().catch((error) => failures.push(error));
 		await this.shared.forgetHost(this.hostId).catch((error) => failures.push(error));
 		await this.journal.close().catch((error) => failures.push(error));
@@ -574,5 +683,25 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 		const cleanup: unknown[] = [];
 		await journal.close().catch((closing) => cleanup.push(closing));
 		throw withCleanupFailures(error, cleanup);
+	}
+}
+
+/**
+ * The worker hosts registered in a shared journal, as each last reported itself, and the pool stats of the running or
+ * paused roots they serve (#4768). The journal's setup is checked as {@link startWorkflowWorkerHost} checks it, every
+ * problem reported together, except process containment, which reading needs none of.
+ */
+export async function readWorkflowWorkerFleet(
+	options: { readonly journal?: SharedJournalSelection; readonly agentDir?: string } = {},
+): Promise<SharedPoolFleet> {
+	const agentDir = options.agentDir ?? getAgentDir();
+	const selection = sharedJournalSelection(options.journal, { agentDir });
+	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
+	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
+	const journal = await openSelectedRunJournal(selection as Extract<StorageSelection, { kind: "adapter" }>, agentDir);
+	try {
+		return (await readSharedPoolFleet(journal)) ?? { hosts: [], roots: [] };
+	} finally {
+		await journal.close();
 	}
 }

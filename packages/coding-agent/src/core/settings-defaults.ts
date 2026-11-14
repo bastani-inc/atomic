@@ -35,6 +35,10 @@ export const SETTINGS_DEFAULTS = {
 		autoCollect: true,
 		collectIntervalSeconds: 3600,
 		graceSeconds: 3600,
+		pool: {
+			/** Idle pooled worktrees kept per repository (#4748). */
+			maxIdlePerRepository: 2,
+		},
 	},
 	retry: {
 		enabled: true,

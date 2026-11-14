@@ -32,6 +32,8 @@ Patches and bundles are stored once, by content hash, in the same storage as the
 
 A capture that finds `HEAD`, the recomputed tree, and the set of left-out files all unchanged records a reference to the previous snapshot instead of a new one. A newly left-out file, such as a new `.env.local`, records a new snapshot that lists it in `omitted`, so a restore warns about it.
 
+Each checkout's captures share a private Git index under `~/.atomic/agent/worktree-snapshots/capture-index/`, so after the first capture, unchanged files are not read again; this matters most in fresh clones such as CI checkouts. It never changes what a snapshot records. Deleting the directory is safe: the next capture rebuilds it from your index, and a capture that cannot use it, for example because it is damaged, captures without it.
+
 Snapshot commands use the Git Atomic resolves, including a portable copy it provisions when Git is not installed. If Git cannot be provided, or a directory is not inside a Git repository, nothing is recorded for it and behavior is exactly as without snapshots. In-memory sessions record nothing. A persisted store that cannot hold blobs (JSONL session directories, storage adapters without a database) records nothing and reports `blob-store-unsupported` once.
 
 When a file or directory a capture has to read cannot be read, for example because of a permission error or a symbolic link that loops, that checkout's capture records nothing and reports `unreadable-path` naming the path. The turn or stage carries on. Make the path readable, or list it in `.atomic/snapshot-ignore`, to snapshot that checkout again.
@@ -60,6 +62,7 @@ Tracked files that are denied or ignored keep their `HEAD` content in the snapsh
 | `snapshots.autoCollect` | boolean | `true` | Delete snapshot content nothing retains when a session closes or a workflow run finishes. See [Retention and collection](#retention-and-collection) |
 | `snapshots.collectIntervalSeconds` | number | `3600` | Shortest time between two automatic collections of one database, in seconds |
 | `snapshots.graceSeconds` | number | `3600` | Content stored or reused less than this many seconds ago is never collected; `0` turns this protection off |
+| `snapshots.pool.maxIdlePerRepository` | number | `2` | Idle restored worktrees kept per repository; see [Restored worktrees](#restored-worktrees) |
 
 The SDK takes the same fields as `createAgentSession({ snapshots })` and workflow `RunOpts.snapshots`; they override settings. Invalid values fail with `WorkspaceConfigError` before anything runs.
 
@@ -83,7 +86,15 @@ When a session resumes, Atomic checks every checkout the session recorded a snap
 
 A working directory reached through a symbolic link is matched by the directory the link points at, because snapshot roots are Git's physical top-level directories.
 
-Restored worktrees share one object store per repository on each host (`~/.atomic/agent/worktree-snapshots/repositories/`), so many restores of one base cost about one base plus their deltas. That store has the snapshot's recorded remotes, the first named `origin`, the next `origin-2`, and so on, with the credential-free URLs the snapshot recorded, so `git fetch` and `git push` work in a restored worktree once you have access. Remotes are configured only when every recorded remote is a local path, an scp-like `host:path`, or an `https`, `http`, `ssh`, `git` or `file` URL without credentials; otherwise, and for a repository without remotes, the store has none. Commits a recorded remote is known to have, the ones the restore fetched and those the snapshot recorded as pushed, get remote-tracking refs under `refs/remotes/atomic/pushed/`. A snapshot captured in a restored worktree therefore records the same remotes and bundles only the commits that are really unpushed, so a session can move across any number of machines; commits that only a bundle carried stay unpushed. The session records the old-to-new root mapping (`SessionManager.getWorktreeRootMappings()`), and later resumes keep using the new root.
+### Restored worktrees
+
+A session resume restores each checkout into a worktree at a stable path, `~/.atomic/agent/worktree-snapshots/worktrees/<repository>-<n>`, where `<repository>` names the repository by its remotes and `<n>` is the lowest number free on this machine. The session holds that worktree while it is open and releases it when it closes (quitting, `/new`, or `/resume` of another session), or when its process stops. The record of each worktree lives in `~/.atomic/agent/worktree-snapshots/pool/`.
+
+A worktree belongs to the session it was restored for, also after that session closes, so resuming the session again continues in it as it left it. A session never continues in a worktree that another session now holds or owns: it gets a fresh worktree instead, as if its old one were gone. Worktrees that workflow runs restore, that the SDK restores into a directory you chose, and that earlier versions of Atomic restored keep their own paths and are never part of this.
+
+When a resume restores a worktree and more than `snapshots.pool.maxIdlePerRepository` worktrees of that repository are idle (no open session holds them), Atomic removes the oldest idle ones that are still exactly as their session's latest snapshot recorded them. An idle worktree with changes no snapshot recorded is kept, and so is one holding files snapshots leave out, such as an untracked file or an ignored `.env`; other ignored files, such as dependencies and build output, are removed with the worktree. If the pool cannot be used, for example because its directory cannot be written, the resume restores into a new worktree as before.
+
+Restored worktrees share one object store per repository on each host (`~/.atomic/agent/worktree-snapshots/repositories/`), so many restores of one base cost about one base plus their deltas. A restore that needs a commit the store lacks fetches only that commit (`--depth=1`), so a restored worktree starts with a shallow history: `git log` stops at the restored commit. Run `git fetch --unshallow origin` in the worktree when you need the rest. When a remote refuses a shallow fetch, or a restore needs older history (a snapshot's unpushed commits built on an older commit, or an earlier commit to fall back to), Atomic fetches the full history instead. That store has the snapshot's recorded remotes, the first named `origin`, the next `origin-2`, and so on, with the credential-free URLs the snapshot recorded, so `git fetch` and `git push` work in a restored worktree once you have access. Remotes are configured only when every recorded remote is a local path, an scp-like `host:path`, or an `https`, `http`, `ssh`, `git` or `file` URL without credentials; otherwise, and for a repository without remotes, the store has none. Commits a recorded remote is known to have, the ones the restore fetched and those the snapshot recorded as pushed, get remote-tracking refs under `refs/remotes/atomic/pushed/`. A snapshot captured in a restored worktree therefore records the same remotes and bundles only the commits that are really unpushed, so a session can move across any number of machines; commits that only a bundle carried stay unpushed. The session records the old-to-new root mapping (`SessionManager.getWorktreeRootMappings()`), and later resumes keep using the new root.
 
 A checkout matches its snapshot when every file of the recorded tree has the recorded content and `HEAD` is the recorded commit; `verifyWorktree` checks exactly that, while resume also accepts a `HEAD` that descends from the recorded commit over the same tree. Unchanged recorded files are compared even when this host's excludes or size settings would leave them out; those settings only decide whether a file the snapshot never had counts as a change. A recorded file whose content changed and that is now left out, for example because it grew past `snapshots.maxFileBytes` or is listed in `.atomic/snapshot-ignore`, counts as drift. A checkout whose repository does not hold the recorded tree is treated as drifted and restored.
 
@@ -104,6 +115,18 @@ A pooled child on a worker host that must restore its bound tree does the same: 
 ## Inspecting snapshots
 
 `/session snapshot` lists the latest snapshot of each checkout in the session (branch, `HEAD`, tree, patch chain, bundled commits, omissions, conversion settings), showing a restored checkout once, under the worktree it was restored into, and compares it with the current checkout the way resume does, so it reports a match when only `HEAD` moved forward over the recorded tree, with a `git diff --stat` when the snapshot's tree is available locally.
+
+It also shows how long the last turn's capture of each checkout took (`last capture took 0.4 s`) and, after a resume that restored a checkout or built a blueprint, a **Last resume** block that says where that resume's time went:
+
+```text
+Last resume
+
+  restored /work/app in 18.5 s (fetch 9.9 full, materialize 1.4, LFS 6.0, verify 0.2)
+  blueprint 41.9 s (npm install 8.6, Build 33.3)
+  ready after 62.8 s
+```
+
+Each restored checkout gets one line with its restore phases in seconds: `fetch` (getting the snapshot's commit, followed by `full` when it was fetched from a remote or `bundle` when it came from the snapshot's bundle), `reconstruct` (applying the recorded changes), `materialize` (writing the files), `LFS` (downloading LFS objects), `verify` (checking the files against the snapshot) and `publish` (moving the worktree into place). A checkout restored with less than its snapshot says `(degraded)`. The blueprint line lists each step that ran, marking a step that `failed` or `timed-out`. `ready after` counts from the start of the resume, or from the start of the process for `atomic --session`, until the checkouts were restored and the blueprints built; loading extensions and the model afterwards is not included. With [`resume.waitForBlueprint: "tools"`](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs), `ready after` stops once the checkouts are restored, and the blueprint line appears when the build ends. Set `ATOMIC_TIMING=1` to print the same lines to stderr when Atomic starts with a resume. The session keeps these numbers in a `resume_timings` entry, so they are also in exports and readable from the SDK.
 
 ## Moving a session as a file
 

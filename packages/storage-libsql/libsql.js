@@ -204,13 +204,21 @@ let unansweredWrites = 0;
 let stalledWritesReported = false;
 
 /**
- * Counts a write batch's outcome toward the process's warning that a server stopped taking writes. sqld 0.24.33 and
- * earlier can stop granting its write lock to anyone (tursodatabase/libsql#2286): the warning names the fix.
+ * Counts a write batch's outcome toward the process's warning that a server stopped taking writes, once per stall: the
+ * first write answered after it warns that writes go through again. sqld 0.24.33 and earlier can stop granting its
+ * write lock to anyone (tursodatabase/libsql#2286): the stall warning names the fix.
  * @param {unknown} error undefined for a batch the server answered
  * @param {string} location
  */
 function noteWriteOutcome(error, location) {
 	if (!isTimeout(error)) {
+		// A write answered after a reported stall: the server takes writes again, and a later stall warns again.
+		if (stalledWritesReported)
+			process.emitWarning(
+				`The libSQL server at ${location} is taking writes again after ${unansweredWrites} unanswered write requests.`,
+				{ code: "ATOMIC_LIBSQL_WRITES_RECOVERED" },
+			);
+		stalledWritesReported = false;
 		unansweredWrites = 0;
 		return;
 	}

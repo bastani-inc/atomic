@@ -168,6 +168,19 @@ const SnapshotSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.snapshots.graceSeconds,
 		}),
 	),
+	pool: Type.Optional(
+		Type.Object({
+			maxIdlePerRepository: Type.Optional(
+				Type.Integer({
+					minimum: 0,
+					maximum: Number.MAX_SAFE_INTEGER,
+					description:
+						"Idle restored worktrees kept per repository in the worktree pool; the oldest unchanged ones beyond it are removed when a resume restores another.",
+					default: SETTINGS_DEFAULTS.snapshots.pool.maxIdlePerRepository,
+				}),
+			),
+		}),
+	),
 });
 
 const ResumeSettingsSchema = Type.Object({
@@ -176,6 +189,12 @@ const ResumeSettingsSchema = Type.Object({
 			description:
 				"Deprecated: move the command into the maintenance section of a blueprint (.atomic/blueprint.yaml in the repository, or ~/.atomic/agent/blueprint.yaml). Until it is removed, runs as one global maintenance step in each worktree restored on resume, in a trusted project.",
 			deprecated: true,
+		}),
+	),
+	waitForBlueprint: Type.Optional(
+		Type.Union([Type.Literal("prompt"), Type.Literal("tools")], {
+			description:
+				'When a resume restores a worktree, what waits for its blueprint build. "prompt" (default): the session opens once the build has finished. "tools": the session opens and the first request goes out while the build runs; tools that run project code or read the worktree wait for it.',
 		}),
 	),
 });
@@ -558,6 +577,24 @@ const WorkflowsSettingsSchema = Type.Union(
 					{ additionalProperties: false },
 				),
 			),
+			workers: Type.Optional(
+				Type.Object(
+					{
+						placement: Type.Literal("shared", {
+							description:
+								'"shared": the pooled children of roots started with /workflow run also run on worker hosts (`atomic worker start`) that open the same shared journal. Requires localWorkers and a journal selected through a storage adapter such as libSQL / Turso.',
+						}),
+						claimWindowMs: Type.Optional(
+							Type.Integer({
+								minimum: 1,
+								description:
+									"Milliseconds bound work may wait unclaimed while no live host can restore its workspace, before the child fails. Default: 60000.",
+							}),
+						),
+					},
+					{ additionalProperties: false },
+				),
+			),
 			admission: Type.Optional(
 				Type.Object(
 					{
@@ -581,7 +618,7 @@ const WorkflowsSettingsSchema = Type.Union(
 	],
 	{
 		description:
-			'Local workflow paths, or an object with "paths", "autoAdvanceAfterSteer", "journal" storage, "localWorkers" and "admission" settings.',
+			'Local workflow paths, or an object with "paths", "autoAdvanceAfterSteer", "journal" storage, "localWorkers", "workers" and "admission" settings.',
 	},
 );
 

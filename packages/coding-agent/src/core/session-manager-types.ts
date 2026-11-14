@@ -266,6 +266,8 @@ export interface WorktreeSnapshotEntry extends SessionEntryBase {
 	restoreWarnings?: WorktreeRestoreHostWarning[];
 	/** Present on the entry written when a resume continued without restoring this checkout (#4733). */
 	unrestored?: WorktreeUnrestored;
+	/** How long the turn's capture of this checkout took, in milliseconds; present on entries a turn's capture wrote. */
+	captureMs?: number;
 	/**
 	 * Base64 patch and bundle content by SHA-256, carried by exported session files so a moved file is complete.
 	 * Import verifies each hash and moves the content into the store's blob table.

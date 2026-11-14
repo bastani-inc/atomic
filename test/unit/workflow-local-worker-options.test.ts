@@ -248,3 +248,11 @@ test("merging host worker settings into run options only merges (#4313)", () => 
 	assert.equal(withWorkerSettings({}, { workflows: ["workflows"] }).localWorkers, undefined);
 	assert.equal(withWorkerSettings({}, undefined).localWorkers, undefined);
 });
+
+test("shared placement in settings applies where the run sets none (#4768)", () => {
+	const shared = { placement: "shared" as const };
+	assert.equal(withWorkerSettings({}, { workflows: { workers: shared } }).workers, shared);
+	const own = { placement: "shared" as const, claimWindowMs: 5 };
+	assert.equal(withWorkerSettings({ workers: own }, { workflows: { workers: shared } }).workers, own);
+	assert.equal(withWorkerSettings({}, { workflows: {} }).workers, undefined);
+});

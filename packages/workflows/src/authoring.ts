@@ -635,7 +635,12 @@ export {
 } from "./shared/workflow-infrastructure-error.js";
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
 export * from "./durable/fork-errors.js";
-export type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./durable/journal/shared-pool-types.js";
+export type {
+	SharedPoolFleet,
+	SharedPoolHost,
+	SharedPoolStats,
+	WorkerHostGitSource,
+} from "./durable/journal/shared-pool-types.js";
 export {
 	READINESS_DECISION_THRESHOLDS,
 	type ReadinessDecisionThresholds,
@@ -716,6 +721,7 @@ export type {
 	WorkerHostFailure,
 	WorkerHostGit,
 	WorkflowWorkerHost,
+	WorkflowWorkerHostEvent,
 	WorkflowWorkerHostOptions,
 	WorkflowWorkerHostStats,
 } from "./workers/worker-host-types.js";
@@ -726,6 +732,14 @@ export type {
 export declare function startWorkflowWorkerHost(
 	options: import("./workers/worker-host-types.js").WorkflowWorkerHostOptions,
 ): Promise<import("./workers/worker-host-types.js").WorkflowWorkerHost>;
+/**
+ * The worker hosts registered in a shared journal and the pool stats of the running or paused roots they serve
+ * (#4768). Default journal: the one this machine selects for workflow runs.
+ */
+export declare function readWorkflowWorkerFleet(options?: {
+	readonly journal?: import("./workers/worker-host-types.js").SharedJournalSelection;
+	readonly agentDir?: string;
+}): Promise<import("./durable/journal/shared-pool-types.js").SharedPoolFleet>;
 export type {
 	RestoredWorkspace,
 	WorkspaceHookOptions,

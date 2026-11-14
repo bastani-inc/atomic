@@ -100,3 +100,32 @@ test("a host without local worker settings runs and resumes as before (#4313)", 
 		removeTempDirectory(directory);
 	}
 });
+
+test("workflows.workers in settings gives runs the workflow tool starts shared placement (#4768)", async () => {
+	const directory = makeTempDirectory("shared-placement-settings-dispatch-");
+	const journal = await resolveRunJournal({ journal: { path: join(directory, "journal.sqlite") } });
+	const store = createStore();
+	const jobs = createJobTracker();
+	const runtime = createExtensionRuntime({
+		definitions: [definition],
+		journal,
+		store,
+		jobs,
+		cwd: directory,
+		adapters: {},
+		resolveJournalSettings: () => ({
+			workflows: { localWorkers: { count: 1, definitions: [] }, workers: { placement: "shared" } },
+		}),
+	});
+	try {
+		const started = await runtime.dispatch({ action: "run", workflow: definition.name });
+		if (started.action !== "run") assert.fail(JSON.stringify(started));
+		// A journal on this machine's file is not shared: the run is refused for shared placement, as the SDK's is.
+		assert.equal(started.status, "failed", JSON.stringify(started));
+		assert.match(started.error ?? "", /Shared worker pool setup incomplete/);
+		assert.match(started.error ?? "", /shared-journal-required/);
+	} finally {
+		await journal.close();
+		removeTempDirectory(directory);
+	}
+});
