@@ -143,7 +143,7 @@ export async function blueprintCacheKeys(
 		else if (!stores.some((existing) => existing.path === path)) stores.push({ ...member, path });
 	};
 	for (const { manager, keyFiles, paths } of detected) {
-		for (const path of paths) addStore(path, { declaration: ["detected", manager, path], keyFiles });
+		for (const path of paths) addStore(path, { declaration: ["detected", manager], keyFiles });
 	}
 	for (const setting of settings) {
 		const member = {
@@ -219,7 +219,8 @@ async function blueprintDigest(root: string, warnings: string[]): Promise<string
 
 /** The `resume.cache` setting, project over global, with each file that could not be read named in `warnings`. */
 function settingsCache(root: string, agentDir: string, warnings: string[]): readonly CacheSetting[] {
-	const settings = SettingsManager.create(root, agentDir, { projectTrusted: true });
+	// The checkout is the project; its settings are read like its blueprint, and every path they name is checked below.
+	const settings = SettingsManager.create(root, agentDir);
 	for (const { path, error } of settings.drainErrors()) {
 		if (path !== undefined)
 			warnings.push(`${path} could not be read, so its resume.cache is ignored: ${error.message}`);

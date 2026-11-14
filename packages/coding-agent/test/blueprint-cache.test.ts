@@ -144,7 +144,7 @@ describe("blueprint.yaml stays in Devin's format (#4748)", () => {
 
 	test("a blueprint with cache: no longer changes the cache entries, and cache-key repeats the hint (#4748)", async () => {
 		const declared = fixture(
-			"maintenance: npm ci\ncache:\n  - ~/.cargo/registry\n  - path: target\n    kind: build\n",
+			"maintenance: npm ci\nclone:\n  depth: 1\ncache:\n  - ~/.cargo/registry\n  - path: target\n    kind: build\n",
 			{ "package-lock.json": "{}\n" },
 		);
 		const plain = fixture("maintenance: npm ci\n", { "package-lock.json": "{}\n" });
@@ -156,6 +156,10 @@ describe("blueprint.yaml stays in Devin's format (#4748)", () => {
 		assert.deepEqual(without.warnings, []);
 		assert.equal(withCache.warnings.length, 1);
 		assert.match(withCache.warnings[0] ?? "", /'cache' is ignored.*resume\.cache/);
+		write(declared.root, ".atomic/blueprint.yaml", "maintenance:\n  - uses: not-a-reference\ncache: [~/.npm]\n");
+		const invalid = await keysOf(declared);
+		assert.deepEqual(names(invalid), ["stores", "git", "atomic"]);
+		assert.deepEqual(invalid.warnings, []);
 	});
 });
 
@@ -176,6 +180,9 @@ describe("store detection (#4748)", () => {
 		{ files: ["go.sum"], stores: ["go/pkg/mod", ".cache/go-build"] },
 		{ files: ["build.gradle.kts"], stores: [".gradle/caches", ".gradle/wrapper"] },
 		{ files: ["gradle/wrapper/gradle-wrapper.properties"], stores: [".gradle/caches", ".gradle/wrapper"] },
+		{ files: ["build.gradle"], stores: [".gradle/caches", ".gradle/wrapper"] },
+		{ files: ["settings.gradle.kts"], stores: [".gradle/caches", ".gradle/wrapper"] },
+		{ files: ["gradle.lockfile"], stores: [".gradle/caches", ".gradle/wrapper"] },
 		{ files: ["pom.xml"], stores: [".m2/repository"] },
 	];
 
@@ -228,6 +235,8 @@ describe("store detection (#4748)", () => {
 			join(local, "go-build"),
 		]);
 		assert.match(entry(windows, "stores")?.key ?? "", /^atomic-stores-v1-windows-x64-/);
+		const moved = await keysOf(at, { platform: "win32", env: { LOCALAPPDATA: join(at.home, "Local") } });
+		assert.equal(entry(moved, "stores")?.paths[0], join(at.home, "Local", "npm-cache"));
 	});
 
 	test("store locations follow each package manager's environment variables (#4748)", async () => {
@@ -294,6 +303,12 @@ describe("store detection (#4748)", () => {
 			join(at.home, ".gradle", "caches"),
 			join(at.home, ".gradle", "wrapper"),
 		]);
+		const empty = await keysOf(at, { env: { npm_config_cache: "", CARGO_HOME: "" } });
+		assert.equal(entry(empty, "stores")?.paths[0], join(at.home, ".npm"));
+		const berry = await keysOf(plainDirectory({ "yarn.lock": "x\n", ".yarnrc.yml": "x\n" }), {
+			env: { YARN_GLOBAL_FOLDER: outside("berry"), YARN_CACHE_FOLDER: outside("yarn") },
+		});
+		assert.deepEqual(entry(berry, "stores")?.paths, [outside("berry", "cache")]);
 		const pnpmHome = await keysOf(plainDirectory({ "pnpm-lock.yaml": "x\n" }), {
 			env: { PNPM_HOME: outside("pnpm-home") },
 		});
@@ -313,6 +328,22 @@ describe("store detection (#4748)", () => {
 		write(at.root, ".atomic/blueprint.yaml", "maintenance: npm ci --prefer-offline\n");
 		assert.notEqual(entry(await keysOf(at), "stores")?.key, entry(lockChanged, "stores")?.key);
 		assert.notEqual(entry(await keysOf(at, { arch: "arm64" }), "stores")?.key, entry(lockChanged, "stores")?.key);
+	});
+
+	test("detected store keys are stable across machines and releases, and an unreadable blueprint counts as absent (#4748)", async () => {
+		const files = { "package-lock.json": "{}\n", "Cargo.lock": "x\n", "pom.xml": "<project/>\n" };
+		const at = plainDirectory(files);
+		const pinned = "atomic-stores-v1-linux-x64-1b46d9e12987cc07";
+		assert.equal(entry(await keysOf(at), "stores")?.key, pinned);
+		const elsewhere = plainDirectory(files);
+		assert.equal(
+			entry(await keysOf(elsewhere, { env: { CARGO_HOME: join(elsewhere.home, "cargo") } }), "stores")?.key,
+			pinned,
+		);
+		mkdirSync(join(at.root, ".atomic", "blueprint.yaml"), { recursive: true });
+		assert.equal(entry(await keysOf(at), "stores")?.key, pinned);
+		write(elsewhere.root, ".atomic", "not a directory\n");
+		assert.equal(entry(await keysOf(elsewhere), "stores")?.key, pinned);
 	});
 
 	test("a store an environment variable points at credentials or into the worktree is refused (#4748)", async () => {
@@ -437,8 +468,8 @@ describe("resume.cache settings overrides (#4748)", () => {
 
 	test("resume.cache entries are trimmed and normalized, and each malformed field is named (#4748)", async () => {
 		const at = fixture(undefined, {}, [
-			{ paths: ["  /opt/a  ", "a\nb", 5, ""] },
-			{ paths: ["/opt/uv"], kind: null, keyFiles: ["locks\\uv.lock"] },
+			{ paths: ["  /opt/a  ", "a\nb", 5, "", "   "] },
+			{ paths: ["/opt/uv"], kind: null, keyFiles: null },
 			{ paths: ["/opt/x"], kind: "artifact" },
 			{ kind: "build" },
 			{ paths: "/opt/x" },
@@ -446,39 +477,53 @@ describe("resume.cache settings overrides (#4748)", () => {
 			{ paths: ["/opt/x"], keyFiles: "x.lock" },
 			{ paths: ["/opt/x"], keyFiles: ["/abs.lock"] },
 			{ paths: ["/opt/x"], keyFiles: ["C:/x.lock"] },
-			{ paths: ["/opt/x"], keyFiles: ["../x.lock"] },
+			{ paths: ["/opt/x"], keyFiles: ["ok.lock", "../x.lock"] },
+			{ paths: ["/opt/x"], keyFiles: ["..\\x.lock"] },
+			{ paths: ["/opt/x"], keyFiles: [""] },
 			{ paths: ["/opt/x"], keyFiles: [5] },
 		]);
 		const keys = await keysOf(at);
 		assert.deepEqual(entry(keys, "stores")?.paths, [resolve("/opt/a"), resolve("/opt/uv")]);
-		assert.equal(keys.warnings.length, 12, keys.warnings.join("\n"));
-		for (const warning of keys.warnings.slice(0, 3)) assert.match(warning, /^resume\.cache\[0\]\.paths\[\d\]:.*path/);
-		assert.match(keys.warnings[3] ?? "", /^resume\.cache\[2\]: 'kind' must be 'store' or 'build'/);
-		assert.match(keys.warnings[4] ?? "", /^resume\.cache\[3\]: 'paths' must be a list/);
-		assert.match(keys.warnings[5] ?? "", /^resume\.cache\[4\]: 'paths' must be a list/);
-		for (const warning of keys.warnings.slice(6)) assert.match(warning, /'keyFiles' must be a list/);
+		assert.equal(keys.warnings.length, 15, keys.warnings.join("\n"));
+		for (const warning of keys.warnings.slice(0, 4)) assert.match(warning, /^resume\.cache\[0\]\.paths\[\d\]:.*path/);
+		assert.match(keys.warnings[4] ?? "", /^resume\.cache\[2\]: 'kind' must be 'store' or 'build'/);
+		assert.match(keys.warnings[5] ?? "", /^resume\.cache\[3\]: 'paths' must be a list/);
+		assert.match(keys.warnings[6] ?? "", /^resume\.cache\[4\]: 'paths' must be a list/);
+		for (const warning of keys.warnings.slice(7)) assert.match(warning, /'keyFiles' must be a list/);
 
 		for (const [setting, pattern] of [
 			['{"resume":{"cache":5}}', /^resume\.cache must be a list/],
 			['{"resume":{"cache":{"paths":["/opt/single"]}}}', /^resume\.cache must be a list/],
 			['{"resume":{"cache":[7]}}', /^resume\.cache\[0\]: an entry must be/],
+			['{"resume":{"cache":[null]}}', /^resume\.cache\[0\]: an entry must be/],
 		] as const) {
 			setCache(at.root, setting);
 			const invalid = await keysOf(at);
 			assert.deepEqual(names(invalid), ["git", "atomic"]);
 			assert.match(invalid.warnings[0] ?? "", pattern);
 		}
+		for (const setting of ['{"resume":{"cache":null}}', '{"compaction":{"background":"yes"}}']) {
+			setCache(at.root, setting);
+			assert.deepEqual((await keysOf(at)).warnings, [], setting);
+		}
+	});
+
+	test("keyFiles written with backslashes name the same root-relative file (#4748)", async () => {
+		const at = fixture(undefined, { "locks/uv.lock": "1\n" }, [{ paths: ["/opt/uv"], keyFiles: ["locks\\uv.lock"] }]);
+		const first = entry(await keysOf(at), "stores")?.key;
+		write(at.root, "locks/uv.lock", "2\n");
+		assert.notEqual(entry(await keysOf(at), "stores")?.key, first);
 	});
 
 	test("a cache path with glob characters or a leading ! is ignored, so it cannot match credentials (#4748)", async () => {
 		const at = fixture(undefined, {}, [
-			{ paths: ["~/.ss[h]/*", "~/.npm/**", "!~/.npm", "~/{a,b}", "~/x?", "~/.npm"] },
+			{ paths: ["~/.ss[h]/*", "~/.npm/**", "!~/.npm", " !~/.npm", "~/{a,b}", "~/x?", "~/.npm", "~/a!b"] },
 			{ paths: ["targe[t]"], kind: "build" },
 		]);
 		const keys = await keysOf(at);
-		assert.deepEqual(entry(keys, "stores")?.paths, [join(at.home, ".npm")]);
+		assert.deepEqual(entry(keys, "stores")?.paths, [join(at.home, ".npm"), join(at.home, "a!b")]);
 		assert.equal(entry(keys, "build"), undefined);
-		assert.equal(keys.warnings.length, 6);
+		assert.equal(keys.warnings.length, 7);
 		for (const warning of keys.warnings) assert.match(warning, /glob characters/);
 	});
 
@@ -528,12 +573,12 @@ describe("resume.cache settings overrides (#4748)", () => {
 	});
 
 	test("a missing or directory key file counts as absent, and keys are stable across releases (#4748)", async () => {
-		const at = fixture(undefined, {}, [{ paths: ["/opt/store"], keyFiles: ["deps.lock", "deps"] }]);
+		const at = fixture(undefined, {}, [{ paths: ["/opt/store"], keyFiles: ["deps.lock", "deps", "README.md/x"] }]);
 		mkdirSync(join(at.root, "deps"));
 		const absent = entry(await keysOf(at), "stores")?.key;
-		assert.equal(absent, "atomic-stores-v1-linux-x64-5861b0036fadf45e");
+		assert.equal(absent, "atomic-stores-v1-linux-x64-a602ebfba426fb26");
 		write(at.root, "deps.lock", "1\n");
-		assert.equal(entry(await keysOf(at), "stores")?.key, "atomic-stores-v1-linux-x64-8a81d4f14dc2c40f");
+		assert.equal(entry(await keysOf(at), "stores")?.key, "atomic-stores-v1-linux-x64-c50ad7a1f30a90e3");
 	});
 
 	test("an unparseable settings file is left out with a warning (#4748)", async () => {
