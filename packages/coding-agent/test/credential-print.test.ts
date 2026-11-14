@@ -1904,6 +1904,7 @@ describe("credential egress chokepoint", () => {
 	const RAW_STDOUT_EGRESS = [
 		`cli/auth-terminal.ts: process.stdout.write(\`\${line}\\n\`)`,
 		`cli/auth-terminal.ts: process.stdout.write(message)`,
+		`cli/blueprint-command.ts: process.stdout.write(text)`,
 		`cli/credential-print.ts: writeRawStdoutOnce(payload)`,
 		`main.ts: writeRawStdout(\`\${output}\\n\`)`,
 		`modes/interactive-engine/engine-child-liveness.ts: writeRawStdoutControl(serializeInteractiveEngineMessage({ type: "engine_activity_started", activity }))`,

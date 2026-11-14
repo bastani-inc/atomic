@@ -101,6 +101,7 @@ A section is either a string, which is one `run` step, or a list of steps. A lis
 - **Platforms.** `runs-on` is a string or a list, default `default`. `default` and `linux` are the same platform; `macos` and `windows` are always explicit. A file can hold several `---` documents, each a mapping, and two documents cannot resolve to the same platform. A machine uses only the document for its own platform; when none matches, nothing runs and nothing is shown.
 - **Includes.** The repository blueprint may list workspace directories in `includes`. An entry is a directory, or the full path of its blueprint file (`<dir>/.atomic/blueprint.yaml`; no other file name is read), without `..`, and each workspace appears once. Includes are not allowed in a workspace blueprint. A missing workspace blueprint, or a missing workspace directory, means that workspace is removed. `includes` is ignored in the global blueprint, and `post-build` is allowed only there.
 - **Clone.** `clone` is accepted and ignored, with a warning: a restore recreates the recorded tree instead of cloning.
+- **Cache.** `cache:` is an Atomic-only key that names what a CI runner should cache between jobs. Builds never read it, an invalid entry is ignored and never fails the blueprint, and Devin and older Atomic versions ignore it. See [Caches for runners](#caches-for-runners).
 
 ### Builds
 
@@ -131,6 +132,34 @@ The agent is told that the environment is still being built. Tools that run proj
 ### What the agent sees
 
 The first turn of a resumed session carries each applicable blueprint's `maintenance` steps and `knowledge` items, labelled with what happened: ran in this build, not yet run on this machine (skipped or untrusted), or not run or partial with the failing step and its log. The same holds for the stages of a resumed workflow run and for pooled children that start in a restored worktree: their sessions get that worktree's context and its `$ENVRC` variables. The agent re-runs `maintenance` itself when it finds that dependencies changed. Atomic's default system prompt also asks the agent to keep `.atomic/blueprint.yaml` current as part of normal work: to write one when a repository has none, to update it in the same change that adds a dependency, tool or workspace, to record hard-won commands in `knowledge`, to leave secrets out, and to fix it after a Partial build. It edits `~/.atomic/agent/blueprint.yaml` only when you ask.
+
+### Caches for runners
+
+On an ephemeral runner, such as a GitHub-hosted one, every resume starts with an empty home directory: dependencies download again, the repository is fetched in full, and Atomic transpiles your extensions again. The `cache:` section of the repository blueprint lists what is worth keeping, and `atomic blueprint cache-key` prints a key, a restore prefix and the paths of each entry for a cache action such as `actions/cache`. Atomic never uploads or downloads caches itself.
+
+```yaml
+cache:
+  - path: ~/.npm                  # kind: store (the default): a package manager's store outside the worktree
+  - path: ~/.cargo/registry
+  - path: target                  # relative paths are inside the worktree
+    kind: build                   # build output, opt-in
+    key-files: [Cargo.lock, rust-toolchain.toml]
+```
+
+An entry is a path or `{ path, kind, key-files }`. A `kind: store` path is absolute or starts with `~/`, and lies outside the worktree. A `kind: build` path is relative to the repository root; it names build output that a trusted job parks under `~/.atomic/agent/worktree-snapshots/seeds/` for a later restore. `key-files` lists root-relative files whose content keys the entry; without it, an entry is keyed by the dependency files that decide a snapshot's environment (lockfiles and toolchain files). Paths are plain paths: an entry with glob characters (`*`, `?`, `[`, `]`, `{`, `}`) or a leading `!` is ignored, since a cache action would read it as a pattern. Quote a bare `~` (`"~"`): YAML reads it as empty. Atomic reads `cache:` from the repository blueprint's document for the runner's platform only.
+
+```sh
+atomic blueprint cache-key [dir] [--format text|json|github-output]
+```
+
+| Entry | Paths | Key changes when |
+|---|---|---|
+| `stores` | the `kind: store` paths | their key files, the declared entries, the OS or the architecture change |
+| `build` | the parked `kind: build` paths | the same inputs |
+| `git` | Atomic's Git object store of the repository | the checkout's HEAD changes; restore the newest entry by its prefix |
+| `atomic` | Atomic's extension transpile cache | the Atomic version, the OS or the architecture change |
+
+An entry with no paths is left out. The `git` and `build` entries need a Git remote, since the object store is named after the checkout's remote URLs, and match a session only when the checkout spells its remotes as the session recorded them. Paths that could hold credentials (`~/.ssh`, `~/.cargo` with its `credentials.toml`, `~/.config/gh`, `.npmrc`, `.env*` and the [snapshot deny list](/worktree-snapshots#what-is-left-out)), `kind: store` paths inside the worktree and invalid entries are left out with a warning on stderr. The credential checks ignore letter case and follow symbolic links, so `~/.SSH` and a link to `~/.ssh` are refused too. They look at the declared paths, not at the files inside them, which may not exist yet when the keys are printed: declare only directories that hold packages and build output, never one where a tool keeps tokens or keys. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines to append to `$GITHUB_OUTPUT`; see [Caching between runs](/guides/team-setup#caching-between-runs) for a workflow.
 
 ### `resume.setupCommand` and `.atomic/setup`
 

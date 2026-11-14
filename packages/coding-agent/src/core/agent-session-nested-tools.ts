@@ -63,9 +63,11 @@ export function executeNestedToolCall(
 					),
 					assistantMessage,
 					context: { messages: session.agent.state.messages, tools: session.agent.state.tools },
-					beforeToolCall: (context) =>
-						parentCall.run(parentId, async () => session.agent.beforeToolCall?.(context)),
-					afterToolCall: (context) => parentCall.run(parentId, async () => session.agent.afterToolCall?.(context)),
+					// The nested call's signal reaches the hooks, so interrupting it also stops its wait for a blueprint build.
+					beforeToolCall: (context, hookSignal) =>
+						parentCall.run(parentId, async () => session.agent.beforeToolCall?.(context, hookSignal)),
+					afterToolCall: (context, hookSignal) =>
+						parentCall.run(parentId, async () => session.agent.afterToolCall?.(context, hookSignal)),
 					signal,
 					onUpdate,
 				});
