@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
@@ -126,6 +125,11 @@ const LISTING_SCOPES = 8;
  * ended before it committed runs again (#4383); `append` and `replace` check `expectSeq` again on each run.
  */
 const SESSION_TRANSACTION: SqliteTransactionOptions = { retryTransientFailures: true };
+
+/** A write revision: 32 random hex digits, the form SQLite's `lower(hex(randomblob(16)))` gave earlier builds. */
+function newRevision(): string {
+	return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function summaryFromRow(row: SummaryRow): SessionSummary {
 	const header = JSON.parse(row.header_json) as SessionRecordHeader;
@@ -719,7 +723,7 @@ export class SqlSessionStore implements SessionStore {
 			summary.summary === undefined ? null : this.encode(summary.summary),
 			summary.summarizedThroughId ?? null,
 			this.encode(state),
-			randomBytes(16).toString("hex"),
+			newRevision(),
 		);
 		return texts;
 	}
