@@ -832,6 +832,52 @@ test("commits by other connections keep a waiting writer from giving up, however
 	assert.deepEqual(await values(database), ["patient through progress"]);
 });
 
+test("a writer still takes the lock from a raw writer that lets go only between the writer's timer wakes", async () => {
+	const { database, holder, counts } = await fixture();
+	holder.exec("CREATE TABLE other (n INTEGER)");
+	holder.exec("BEGIN IMMEDIATE");
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	// Like a writer in another process on Windows, where every timer fires on the same clock tick: it commits a moment
+	// after the waiting writer's refused attempt and takes the lock again on its next timer, before the waiting writer's
+	// recheck timer, which fires on that same tick, so the waiting writer's timer never finds the lock free.
+	let cycling = false;
+	const retake = () => {
+		try {
+			holder.exec("BEGIN IMMEDIATE");
+		} catch (error) {
+			if (!isSqliteBusy(error)) throw error;
+		}
+	};
+	const release = () => {
+		holder.exec("INSERT INTO other VALUES (1); COMMIT");
+		setTimeout(retake, 0);
+	};
+	const counted = DatabaseSync.prototype.exec;
+	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string): void {
+		try {
+			counted.call(this, sql);
+		} catch (error) {
+			if (cycling && this !== holder && sql === "BEGIN IMMEDIATE") setImmediate(release);
+			throw error;
+		}
+	};
+	cleanups.push(() => {
+		DatabaseSync.prototype.exec = counted;
+	});
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('between ticks')"));
+	const write$ = settledFlag(write);
+	await untilWaiting();
+	cycling = true;
+	for (let tick = 0; tick < 6 && !write$.settled; tick++) {
+		await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+		// The refused recheck is followed by the holder's next timer and the writer's next recheck.
+		while (!write$.settled && vi.getTimerCount() < 2) await turn();
+	}
+	assert.equal(write$.settled, true, `still waiting after ${counts.attempts.length} attempts`);
+	await write;
+	assert.deepEqual(await values(database), ["between ticks"]);
+});
+
 test("the connection's holder record says held while it holds the lock and free once it lets go (#4316)", async () => {
 	const { database, path } = await fixture();
 	const record = () => {
