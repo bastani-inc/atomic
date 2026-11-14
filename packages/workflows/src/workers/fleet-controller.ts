@@ -377,8 +377,9 @@ export class FleetController implements WorkflowFleetController {
 				return;
 			}
 			case "remove":
+				// Its drains stay until the provider no longer lists it (#4803): a removal the provider accepted may take
+				// minutes, and a worker that restarts on the instance meanwhile must not take children.
 				await this.call((signal) => this.options.provisioner.drain(action.id, signal));
-				for (const host of joined?.drainHosts ?? []) await store.clearDrain(fence, host);
 				this.emit({ kind: "removed", id: action.id, reason: action.reason });
 				await store.record(fence, {
 					kind: "remove",

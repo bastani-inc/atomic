@@ -153,7 +153,7 @@ export default {
 
 Start each host it creates with `atomic worker start --provider-id <id>`, or the environment variable `ATOMIC_PROVIDER_ID`, set to the id `list` reports for it, so the controller can match the two. On Kubernetes a host uses its pod name by default.
 
-A drain applies to the instance, not only to the worker on it. If a drained host's worker restarts, for example when a pod's container restarts, it registers under a new host id but with the same provider id, so it drains again at once and takes no children until the controller has removed the instance. A host started without a provider id is matched by its host id only. When the provider no longer lists an instance, the controller forgets its drain, so a new instance that reuses the id serves normally.
+A drain applies to the instance, not only to the worker on it. If a drained host's worker restarts, for example when a pod's container restarts, it registers under a new host id but with the same provider id, so it drains again at once and takes no children until the provider has removed the instance, including while a deletion is still in progress. A host started without a provider id is matched by its host id only. When the provider no longer lists an instance, the controller forgets its drain, so a new instance that reuses the id serves normally.
 
 SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, where `provisioner` is a module's provisioner or `createWorkerHostProvisioner(config)`, or call `startWorkflowFleetController({ provisioner, … })`. When such a root ends, its controller asks the idle hosts above the target to drain at once, but nothing removes them from your provider afterwards unless another controller runs. Have your provisioner reap hosts that exited, or run `atomic worker controller` for a fleet that serves many roots.
 
@@ -210,7 +210,7 @@ Atomic ships presets in its package's `examples/worker-fleet/presets` directory.
 How each preset removes a host:
 
 - The Azure, AWS and Google Cloud presets delete the named instance and lower the group's size in one call, so the platform never picks a victim.
-- The Kubernetes preset deletes the drained pod, then scales the Deployment down by one, so the ReplicaSet does not replace it. If the ReplicaSet already started a replacement, the scale-down removes it, because a ReplicaSet removes pods that are not ready yet first. For scaling to zero on Kubernetes, prefer KEDA on [the scaling signal](#the-scaling-signal).
+- The Kubernetes preset deletes the drained pod, then scales the Deployment down by one, so the ReplicaSet does not replace it. If the ReplicaSet already started a replacement, the scale-down removes it, because a ReplicaSet removes pods that are not ready, or have been ready for the shortest time, first. For scaling to zero on Kubernetes, prefer KEDA on [the scaling signal](#the-scaling-signal).
 - The GitHub Actions preset starts one workflow run per host, each running `atomic worker start --idle-exit`, and cancels a run only if it never registered. A drained host's run ends by itself.
 
 Give each host its provider id: the instance id from the cloud's metadata service, the pod name from the downward API, or `${{ github.run_id }}` in Actions. The recipes below do this.

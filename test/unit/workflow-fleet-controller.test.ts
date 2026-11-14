@@ -377,6 +377,38 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
+	"a worker that restarts while its instance is still being deleted stays drained until the provider stops listing it (#4803)",
+	async () => {
+		let deleted = false;
+		const removing: string[] = [];
+		// The provider accepts the removal at once, as a delete with --no-wait does, and lists the instance until it is gone.
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return deleted ? [] : [{ id: "vm-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain(id) {
+				removing.push(id);
+			},
+		};
+		const first = await workerHost("h1", "vm-1");
+		await controller(provisioner, [], { idleDrainMs: 0 });
+		await first.host.closed;
+		await until("the instance's removal to be requested", () => removing.length > 0);
+		await sleep(3 * TICK_MS);
+		const store = await openStore();
+		assert.deepEqual((await store.snapshot()).drains, [{ host: "h1", providerId: "vm-1" }]);
+		const restarted = await workerHost("h2", "vm-1");
+		await until("the restarted host to be asked to drain", () => restarted.events.length > 0, 10_000);
+		assert.deepEqual(restarted.events, [{ kind: "drain-requested" }]);
+		await restarted.host.closed;
+		deleted = true;
+		await until("the drain request to be cleared", async () => (await store.snapshot()).drains.length === 0);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
 	"a drain request reaches the host id it names, and a host without a provider id only by its host id (#4803)",
 	async () => {
 		const store = await openStore();
