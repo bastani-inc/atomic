@@ -561,6 +561,7 @@ async function fetchCommits(
 			try {
 				await runFetch(git, remote, missing, ["--depth=1"]);
 				supplied = true;
+				noteRestoreFetch("shallow");
 				continue;
 			} catch (error) {
 				if (!isWorkspaceGitError(error)) throw error;

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import { prepareSessionResume } from "../src/core/resume/session-resume.js";
+import { latestResumeTimings } from "../src/core/resume/timings.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
@@ -535,6 +536,40 @@ describe("optional checkouts restore concurrently (#4748)", () => {
 			} finally {
 				clearInterval(watch);
 			}
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"the resume timings say whether each restore fetched at depth 1 or fell back to the full fetch (#4748)",
+		async () => {
+			const { clone: first } = await sandbox.remoteWithClone("first");
+			const { clone: second } = await sandbox.remoteWithClone("second");
+			const manager = await sessionWithOptionalCheckouts(first, [second]);
+			renameSync(first, sandbox.path("first-gone"));
+			renameSync(second, sandbox.path("second-gone"));
+			const refusing = gitRefusingDepth();
+			// The second checkout's restore runs after the first: from then on Git refuses depth-1 fetches.
+			setWorktreeSnapshotGit(async () =>
+				manager.getWorktreeRootMappings().length > 0 ? refusing : sandbox.executable,
+			);
+
+			const prepared = await prepareSessionResume(manager, {
+				entryPoint: "cli",
+				launchCwd: sandbox.root,
+				settings,
+				storeDir: sandbox.path("host"),
+				blueprints: "skip",
+			});
+
+			assert.equal(prepared.status, "ready");
+			const timings = latestResumeTimings(prepared.status === "ready" ? prepared.sessionManager : manager);
+			assert.deepEqual(
+				timings?.restores.map((restore) => [restore.root, restore.fetch]),
+				[
+					[first, "shallow"],
+					[second, "full"],
+				],
+			);
 		},
 	);
 
