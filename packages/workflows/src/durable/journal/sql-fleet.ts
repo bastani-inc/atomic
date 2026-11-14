@@ -255,7 +255,10 @@ export class SqlFleetStore {
 		});
 	}
 
-	/** Forgets the drain of `host`, once its provider removed it: a host that registers with that id later serves. */
+	/**
+	 * Forgets the drain of `host`, once its provider no longer lists its instance: a host that registers with that id
+	 * later serves.
+	 */
 	async clearDrain(fence: FleetFence, host: string): Promise<void> {
 		await this.storage.transaction((tx) =>
 			tx.run(`DELETE FROM ${this.drains} WHERE host = ? AND ${this.fenced()}`, host, fence.holder, fence.epoch),

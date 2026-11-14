@@ -152,16 +152,10 @@ interface Bullet {
 	readonly text: string;
 }
 
-/** Every bullet judged to be one change, rendered as its most complete member. */
-interface Change {
-	best: Bullet;
-	readonly members: Bullet[];
-}
-
-/** One rendered position: an item kept as written, or the first place a change appeared. */
+/** One rendered position: an item kept as written, or a bullet identified by its index in input order. */
 interface Slot {
 	readonly item: Item;
-	readonly change?: Change;
+	readonly bullet?: number;
 }
 
 function isBulletStart(line: string): boolean {
@@ -222,24 +216,32 @@ function isSameChange(left: Bullet, right: Bullet): boolean {
 	return small.links.size >= MIN_SHARED_LINKS && isSubset(small.links, large.links);
 }
 
-/** The most complete bullet: the most links, then the longest text; ties keep the earlier one. */
-function isMoreComplete(candidate: Bullet, current: Bullet): boolean {
+/**
+ * Whether `candidate` is the more complete wording of a change than `current`:
+ * more links, then longer text, then the text that sorts first, so the choice
+ * never depends on input order. Identical text keeps the earlier bullet.
+ */
+function ranksAbove(candidate: Bullet, candidateIndex: number, current: Bullet, currentIndex: number): boolean {
 	if (candidate.links.size !== current.links.size) return candidate.links.size > current.links.size;
-	return candidate.text.length > current.text.length;
+	if (candidate.text.length !== current.text.length) return candidate.text.length > current.text.length;
+	if (candidate.text !== current.text) return candidate.text < current.text;
+	return candidateIndex < currentIndex;
 }
 
 /**
- * Lists each change once across `blocks`, keeping their order. A repeated
- * change is removed, and its most complete wording takes the place where the
- * change first appeared. A bullet that matches several earlier changes joins
- * them into one. A block that had bullets and lost all of them also loses the
- * theme line before them; any prose after its bullets, such as a
- * "**Breaking change:**" note, stays. Returns the blocks left with content.
+ * Lists each change once across `blocks`, keeping their order. Every bullet
+ * that no more complete wording of the same change covers is kept, so two
+ * distinct changes are never merged through a third bullet that both cover
+ * (#4835). A covered bullet is removed. When exactly one kept bullet covers
+ * it, that kept bullet moves to the first place its change appeared; a bullet
+ * that several kept bullets cover anchors none of them. A block that had
+ * bullets and lost all of them also loses the theme line before them; any
+ * prose after its bullets, such as a "**Breaking change:**" note, stays.
+ * Returns the blocks left with content.
  */
 function dedupeBlocks(blocks: readonly string[]): string[] {
-	const changes: Change[] = [];
+	const bullets: Bullet[] = [];
 	const placed: { slots: Slot[]; hadBullets: boolean }[] = [];
-
 	for (const block of blocks) {
 		const slots: Slot[] = [];
 		let hadBullets = false;
@@ -249,48 +251,52 @@ function dedupeBlocks(blocks: readonly string[]): string[] {
 				continue;
 			}
 			hadBullets = true;
-			const bullet = toBullet(item.lines);
-			const matching = changes.filter((change) => change.members.some((member) => isSameChange(member, bullet)));
-			const [first, ...rest] = matching;
-			if (!first) {
-				const created: Change = { best: bullet, members: [bullet] };
-				changes.push(created);
-				slots.push({ item, change: created });
-				continue;
-			}
-			// Later matches fold into the earliest; their slots render nothing.
-			for (const change of rest) {
-				first.members.push(...change.members);
-				if (isMoreComplete(change.best, first.best)) first.best = change.best;
-				changes.splice(changes.indexOf(change), 1);
-			}
-			first.members.push(bullet);
-			if (isMoreComplete(bullet, first.best)) first.best = bullet;
-			slots.push({ item });
+			slots.push({ item, bullet: bullets.length });
+			bullets.push(toBullet(item.lines));
 		}
 		placed.push({ slots, hadBullets });
 	}
 
-	const live = new Set(changes);
+	const kept = bullets
+		.map((_, index) => index)
+		.filter(
+			(index) =>
+				!bullets.some(
+					(other, otherIndex) =>
+						otherIndex !== index &&
+						isSameChange(bullets[index], other) &&
+						ranksAbove(other, otherIndex, bullets[index], index),
+				),
+		);
+	// Each kept bullet renders at the earliest of its own position and the
+	// positions of the bullets only it covers.
+	const anchors = new Map<number, number>(kept.map((index) => [index, index]));
+	for (const [index, bullet] of bullets.entries()) {
+		if (anchors.has(index)) continue;
+		const covering = kept.filter((keptIndex) => isSameChange(bullet, bullets[keptIndex]));
+		if (covering.length === 1) anchors.set(covering[0], Math.min(anchors.get(covering[0]) ?? index, index));
+	}
+	const renderedAt = new Map<number, Bullet>();
+	for (const [keptIndex, anchor] of anchors) renderedAt.set(anchor, bullets[keptIndex]);
+
 	const rendered: string[] = [];
 	for (const { slots, hadBullets } of placed) {
-		const kept = slots.filter((slot) =>
-			slot.item.bullet ? slot.change !== undefined && live.has(slot.change) : true,
-		);
+		const isKept = (slot: Slot): boolean => slot.bullet === undefined || renderedAt.has(slot.bullet);
 		const firstBullet = slots.findIndex((slot) => slot.item.bullet);
-		const orphanedTheme = hadBullets && !kept.some((slot) => slot.item.bullet);
+		const orphanedTheme = hadBullets && !slots.some((slot) => slot.item.bullet && isKept(slot));
 		const lines: string[] = [];
 		// Blank lines are emitted before the next kept item, so a removed item's
 		// separation survives and the block never ends with blanks.
 		let blanks = 0;
 		for (const [index, slot] of slots.entries()) {
-			const drop = !kept.includes(slot) || (orphanedTheme && index < firstBullet);
+			const drop = !isKept(slot) || (orphanedTheme && index < firstBullet);
 			if (drop) {
 				blanks = Math.max(blanks, slot.item.trailingBlankLines);
 				continue;
 			}
 			if (lines.length > 0) for (let line = 0; line < blanks; line += 1) lines.push("");
-			lines.push(...(slot.change ? slot.change.best.lines : slot.item.lines));
+			const bullet = slot.bullet === undefined ? undefined : renderedAt.get(slot.bullet);
+			lines.push(...(bullet ? bullet.lines : slot.item.lines));
 			blanks = slot.item.trailingBlankLines;
 		}
 		if (lines.length > 0) rendered.push(lines.join("\n"));
