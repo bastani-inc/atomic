@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
@@ -24,8 +25,12 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
+import {
+	type AdmissionConfiguration,
+	SqlResourceAdmission,
+} from "../../packages/workflows/src/workers/resource-admission.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { fileExistsSync, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const BUDGET = poolTestBudgetMs(2);
 
@@ -40,11 +45,16 @@ const tooLarge = () =>
 async function runOneChild(
 	fixture: string,
 	exportName: string,
-	fault: (database: Awaited<ReturnType<typeof openNodeSqliteDatabase>>) => void,
+	fault: (database: Awaited<ReturnType<typeof openNodeSqliteDatabase>>, directory: string) => void,
 	/** A stand-in worker module instead of the real worker. */
 	workerEntry?: string,
 	/** Pool options the case sets: its workers, its work lease, how soon a worker hands a refused child on. */
-	options: { readonly workers?: number; readonly leaseMs?: number; readonly outageHandoffMs?: number } = {},
+	options: {
+		readonly workers?: number;
+		readonly leaseMs?: number;
+		readonly outageHandoffMs?: number;
+		readonly admission?: AdmissionConfiguration;
+	} = {},
 ) {
 	const directory = makeTempDirectory("pool-attempt-counting-");
 	const path = join(directory, "journal.sqlite");
@@ -83,11 +93,12 @@ async function runOneChild(
 		workers: options.workers ?? 1,
 		...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
 		...(options.outageHandoffMs === undefined ? {} : { outageHandoffMs: options.outageHandoffMs }),
+		...(options.admission === undefined ? {} : { admission: options.admission }),
 		definitions: [{ definition: child, path: childPath, exportName }],
 		coordinator: "in-process",
 		...(workerEntry === undefined ? {} : { workerEntry }),
 	});
-	fault(database);
+	fault(database, directory);
 	const runId = randomUUID();
 	try {
 		const result = await run(
@@ -103,7 +114,18 @@ async function runOneChild(
 		);
 		vi.restoreAllMocks();
 		const items = await (await openSqlPoolQueue(journal)).inspect(runId);
-		return { root: result.status, outcome, items };
+		// Every session permit the run's attempts took and have not given back.
+		const permits =
+			options.admission === undefined
+				? []
+				: (
+						await (
+							await SqlResourceAdmission.open(journal, { ...options.admission, root: runId, holder: "test" })
+						).inspect()
+					)
+						.filter((permit) => permit.kind === "session" && permit.state !== "released")
+						.map((permit) => [permit.attempt, permit.state]);
+		return { root: result.status, outcome, items, permits };
 	} finally {
 		vi.restoreAllMocks();
 		await pool.close().catch(() => {});
@@ -456,6 +478,58 @@ test.skipIf(process.platform === "win32")(
 			result.items.map((item) => [item.state, item.generation]),
 			[["failed", 3]],
 		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a real worker whose attempt is fenced while its stage session is open still commits that session's last entries and gives its permit back (#4768)",
+	async () => {
+		let fenced = false;
+		/** What the first attempt committed after its fence: its stage session's closing writes. */
+		const afterFence: string[] = [];
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"heldStageChild",
+			(_database, directory) => {
+				const commit = SqlPoolQueue.prototype.commit;
+				vi.spyOn(SqlPoolQueue.prototype, "commit").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["commit"]>
+				) {
+					if (args[1].generation === 1 && fenced) afterFence.push(args[3].kind);
+					return commit.apply(this, args);
+				});
+				// While the first attempt's stage waits for its model's reply, its heartbeat finds the work lease taken:
+				// the attempt is fenced mid-turn, and the reply then arrives, so the session has entries to write as it closes.
+				const heartbeat = SqlPoolQueue.prototype.heartbeat;
+				vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["heartbeat"]>
+				) {
+					if (args[1].generation === 1 && fileExistsSync(join(directory, "waiting"))) {
+						fenced = true;
+						writeFileSync(join(directory, "release"), "");
+						throw new StaleWorkLeaseError({
+							root: args[0].runId,
+							workId: args[1].id,
+							generation: 1,
+							reason: "expired",
+						});
+					}
+					return heartbeat.apply(this, args);
+				});
+			},
+			undefined,
+			{ workers: 1, admission: { limits: { session: 4 } } },
+		);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		assert.equal(result.items[0]?.generation, 2, JSON.stringify(result.items));
+		assert.ok(
+			afterFence.length > 0,
+			`the fenced attempt's session wrote its last entries as it closed: ${JSON.stringify(afterFence)}`,
+		);
+		assert.deepEqual(result.permits, [], "every ended attempt gave its stage's session permit back");
 	},
 	BUDGET.timeoutMs,
 );

@@ -397,11 +397,14 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	 * again (#4768). Past the lease, the refusal ends the attempt as fenced, as any refusal did before.
 	 */
 	const attemptRequest = async (message: Request): Promise<WorkerReply["value"]> => {
-		const held = heldAttempt;
+		// A commit belongs to the attempt that may still write, which outlasts the worker's hold on it while a fenced
+		// attempt's stage sessions close and write their last entries; any other request belongs to the attempt held.
+		const owner = () => (message.kind === "commit" ? writableAttempt : heldAttempt);
+		const held = owner();
 		const attempt = held === undefined ? undefined : { workId: held.id, generation: held.generation };
-		// Every send, the first included, is for the attempt that made the request, while it is still the one this
-		// worker holds (and, for a commit, may still write): an ended attempt's write never reaches its replay (#4768).
-		const current = () => heldAttempt === held && (message.kind !== "commit" || writableAttempt === held);
+		// Every send, the first included, is for the attempt that made the request, while it is still that attempt's to
+		// make: an ended attempt's write never reaches its replay (#4768).
+		const current = () => held !== undefined && owner() === held;
 		try {
 			return await retryWithinLease(
 				() => {
@@ -414,7 +417,12 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				start.outageHandoffMs ?? OUTAGE_HANDOFF_MS,
 			);
 		} catch (error) {
-			if (infrastructureFaultOf(error) !== "storage_unavailable" || heldAttempt !== held) throw error;
+			if (
+				infrastructureFaultOf(error) !== "storage_unavailable" ||
+				heldAttempt === undefined ||
+				heldAttempt !== held
+			)
+				throw error;
 			replies.attemptFenced = true;
 			attemptFault = error as Error;
 			// The store refused it for a while past the handoff bound, within the lease: another host may get through,
@@ -428,7 +436,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		// One operation for every send of a commit: one the storage took before its answer was lost is not applied twice.
 		send: async (mutation) => {
 			const operation = randomUUID();
-			const held = heldAttempt;
+			const held = writableAttempt;
 			return (await attemptRequest({
 				kind: "commit",
 				operation,
