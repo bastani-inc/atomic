@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Per-turn worktree snapshots are cheaper in fresh clones such as CI checkouts: each checkout's captures keep a private Git index between turns under `~/.atomic/agent/worktree-snapshots/capture-index/`, so unchanged files are no longer read again on every turn, and staged ignored files are found with one listing. A capture that cannot use that index captures as before, and snapshots record the same content ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
