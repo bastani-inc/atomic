@@ -6,6 +6,7 @@ import {
 	postgresDialect,
 	type SqliteDatabase,
 	type SqliteRow,
+	type SqliteStatement,
 	type StorageDialect,
 	sqliteDialect,
 } from "@bastani/atomic/storage";
@@ -24,6 +25,7 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"INTEGER PRIMARY KEY AUTOINCREMENT",
 		"BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
 	],
+	["byteOrderCollation", (d) => d.byteOrderCollation, "", ' COLLATE "C"'],
 	["tableOptions", (d) => d.tableOptions, " STRICT", ""],
 	["withoutRowidTableOptions", (d) => d.withoutRowidTableOptions, " STRICT, WITHOUT ROWID", ""],
 	[
@@ -162,8 +164,7 @@ describe("the SQLite dialect runs on SQLite (#4793)", () => {
 	});
 
 	test("catalog probes find tables and columns, with defaults (#4793)", async () => {
-		const probe = async (statement: { sql: string; params: readonly (string | number | null)[] }) =>
-			database.get(statement.sql, ...statement.params);
+		const probe = async (statement: SqliteStatement) => database.get(statement.sql, ...statement.params);
 		assert.deepEqual(await probe(d.tableExists("items")), { name: "items" });
 		assert.equal(await probe(d.tableExists("missing")), undefined);
 		await database.exec("ALTER TABLE keyed ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0");
