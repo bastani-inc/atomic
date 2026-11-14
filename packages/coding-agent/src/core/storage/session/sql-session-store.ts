@@ -613,7 +613,7 @@ export class SqlSessionStore implements SessionStore {
 		const rows = await this.database.all<SummaryRow>(
 			`SELECT ${LISTING_COLUMNS}, (
 				SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
-				FROM (SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
+				FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
 			) AS search_texts_json
 			FROM ${this.tables.sessions} AS s WHERE ${where}`,
 			...params,

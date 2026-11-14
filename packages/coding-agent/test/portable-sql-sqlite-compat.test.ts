@@ -3,14 +3,15 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
-import type { SessionEntry } from "../src/core/session-manager-types.ts";
-import type { SqliteDatabase, SqliteRow } from "../src/core/storage/database.ts";
-import { sqliteDialect } from "../src/core/storage/dialect.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.ts";
-import { SqlSnapshotBlobStore, snapshotIndexTables } from "../src/core/worktree-snapshot/blob-store.ts";
+import type { SessionEntry } from "../src/core/session-manager-types.js";
+import type { SqliteDatabase, SqliteRow } from "../src/core/storage/database.js";
+import { sqliteDialect } from "../src/core/storage/dialect.js";
+import { StorageSchemaVersionError } from "../src/core/storage/errors.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.js";
+import { SqlSnapshotBlobStore, snapshotIndexTables } from "../src/core/worktree-snapshot/blob-store.js";
 
 /**
  * The SQLite schema and index rows the session store and the snapshot blob store wrote before their SQL went through
@@ -326,11 +327,19 @@ test("a journal's transaction creates the blob tables and indexes its tables, on
 	);
 });
 
-/** The database `inner` is, speaking a dialect that records migrations in a ledger as Postgres does. */
+/**
+ * The database `inner` is, speaking a dialect that records migrations in a ledger and aggregates in its own order, as
+ * Postgres does.
+ */
 function versioned(inner: SqliteDatabase): SqliteDatabase {
 	return {
 		descriptor: inner.descriptor,
-		dialect: { ...sqliteDialect, versionedMigrations: true },
+		dialect: {
+			...sqliteDialect,
+			versionedMigrations: true,
+			orderedConcat: (expression, separator, orderBy) =>
+				`group_concat(${expression}, ${separator} ORDER BY ${orderBy})`,
+		},
 		exec: (sql) => inner.exec(sql),
 		run: (sql, ...params) => inner.run(sql, ...params),
 		get: (sql, ...params) => inner.get(sql, ...params),
@@ -348,7 +357,12 @@ test("a store with a migration ledger records step 1 of the session and blob dom
 		{ domain: "sessions", version: 1 },
 		{ domain: "snapshot-blobs", version: 1 },
 	]);
-	await store.create(header("a"), [message("a1", null)]);
+	await store.create(header("a"), [message("a1", null), message("a2", "a1")]);
 	const blob = await store.putBlob("a", new TextEncoder().encode("blob"));
 	assert.equal(new TextDecoder().decode(await store.getBlob("a", blob.hash)), "blob");
+	const [listed] = await Array.fromAsync(store.list({}));
+	assert.equal(listed?.searchText, "a1 a2");
+	// A newer schema keeps every table this build knows, and is still refused.
+	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 2, 0)");
+	await assert.rejects(SqlSessionStore.open(database, { prefix: "team_" }), StorageSchemaVersionError);
 });

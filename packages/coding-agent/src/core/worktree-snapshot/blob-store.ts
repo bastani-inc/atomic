@@ -732,7 +732,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
-		if (!found.every((row) => row !== undefined)) {
+		// A versioned database always checks its ledger, so a newer schema with the same tables is refused.
+		if (dialect.versionedMigrations || !found.every((row) => row !== undefined)) {
 			await applyStorageMigrations(
 				database,
 				SNAPSHOT_BLOB_DOMAIN,
