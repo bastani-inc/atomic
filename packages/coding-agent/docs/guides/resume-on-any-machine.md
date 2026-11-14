@@ -119,6 +119,16 @@ A step fails when its command exits non-zero, a PowerShell error is raised, or i
 
 Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs` with the step's name, command, start and finish times, duration, exit status or timeout and output; the warning gives the path. The fix is to read the log, fix the environment and the blueprint, and resume: a worktree whose last build failed or never finished is built again on its next resume, whether you resume a session or a workflow run, and an edited blueprint is rebuilt. Builds that run at the same time, for example several pooled children restoring on one host, take turns writing the build record.
 
+### Start the first turn while the build runs
+
+By default a resume opens the session once the build has finished. To send the first request while the build still runs, set `resume.waitForBlueprint` to `"tools"` in your settings:
+
+```json
+{ "resume": { "waitForBlueprint": "tools" } }
+```
+
+The agent is told that the environment is still being built. Tools that run project code or read the worktree (`bash`, `powershell`, `edit`, `write`, `read`, `ls`, `find`, `grep`, `search`, and extension tools that write files) wait until the build ends. The first of them then shows how the build went, with the same warnings a resume shows when it waits, before its own output. A failed build releases the tools as a finished one does. Interrupting the turn stops the wait, not the build. If Atomic exits before the build ends, the next resume builds the worktree again.
+
 ### What the agent sees
 
 The first turn of a resumed session carries each applicable blueprint's `maintenance` steps and `knowledge` items, labelled with what happened: ran in this build, not yet run on this machine (skipped or untrusted), or not run or partial with the failing step and its log. The same holds for the stages of a resumed workflow run and for pooled children that start in a restored worktree: their sessions get that worktree's context and its `$ENVRC` variables. The agent re-runs `maintenance` itself when it finds that dependencies changed. Atomic's default system prompt also asks the agent to keep `.atomic/blueprint.yaml` current as part of normal work: to write one when a repository has none, to update it in the same change that adds a dependency, tool or workspace, to record hard-won commands in `knowledge`, to leave secrets out, and to fix it after a Partial build. It edits `~/.atomic/agent/blueprint.yaml` only when you ask.

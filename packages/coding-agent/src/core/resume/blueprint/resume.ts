@@ -123,6 +123,34 @@ async function setUpAndDescribe(options: SetUpBlueprintsOptions): Promise<Resume
 }
 
 /**
+ * What a resumed session's first turn carries while the blueprint build runs behind it (`resume.waitForBlueprint:
+ * "tools"`), in place of the blueprint context the build produces.
+ */
+export const BLUEPRINT_BUILDING_CONTEXT = [
+	"<blueprint_context>",
+	"This session was resumed, and the environment of the worktrees it restored is still being built by their blueprints (.atomic/blueprint.yaml files). Tools that run project code or read the worktree wait until the build ends; the first of them then reports how the build went and what the blueprints say.",
+	"</blueprint_context>",
+].join("\n");
+
+/**
+ * What the agent is told about a blueprint build that ran behind the first turn, with the first tool that waited for
+ * it: whether it finished cleanly, the warnings the user would have seen at resume, and the blueprint context.
+ */
+export function blueprintBuildReport(blueprints: ResumedBlueprints): string {
+	const status = blueprints.outcome?.status;
+	const clean = blueprints.notices.length === 0 && status !== "partial" && status !== "failed";
+	return [
+		"<blueprint_build_finished>",
+		clean
+			? "The environment build of this resumed session has finished."
+			: "The environment build of this resumed session has finished with problems:",
+		...blueprints.notices.map((notice) => `- ${notice.message}`),
+		"</blueprint_build_finished>",
+		...(blueprints.context === undefined ? [] : [blueprints.context]),
+	].join("\n");
+}
+
+/**
  * Builds the blueprints of the worktrees a resume restored and describes every checkout the session works in. Never
  * rejects for a blueprint or for the state it keeps: a failure is in the outcome and the notices, and an unexpected
  * one becomes a warning that the session resumed anyway. Only `signal` aborting rejects, with its reason.

@@ -165,6 +165,8 @@ interface SettingsManagerBasicAccessors {
 	 * repository-chosen command on a machine that never trusted the repository.
 	 */
 	getResumeSetupCommand(): string | undefined;
+	/** `resume.waitForBlueprint`: `"prompt"` (default) holds the session until the blueprint build ends; `"tools"` holds only tools. */
+	getResumeWaitForBlueprint(): "prompt" | "tools";
 	getRetryEnabled(): boolean;
 	setRetryEnabled(enabled: boolean): void;
 	getRetrySettings(): {
@@ -631,6 +633,10 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	getResumeSetupCommand() {
 		const command = settingsInternals(this).globalSettings.resume?.setupCommand?.trim();
 		return command ? command : undefined;
+	},
+
+	getResumeWaitForBlueprint() {
+		return settingsInternals(this).settings.resume?.waitForBlueprint === "tools" ? "tools" : "prompt";
 	},
 
 	getRetryEnabled() {
