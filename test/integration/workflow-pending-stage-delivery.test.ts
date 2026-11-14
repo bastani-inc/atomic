@@ -20,8 +20,6 @@ const GROUP = `workflow:${RUN_ID}`;
 const TARGET = `workflow:${RUN_ID}/reviewer`;
 const BROKER_FRAME_TIMEOUT_MS = 5_000;
 const BROKER_STARTUP_TIMEOUT_MS = 10_000;
-/** Store changes publish routes in batches; this outlasts one batch window. */
-const routesPublished = () => new Promise<void>((resolve) => setTimeout(resolve, 60));
 const BROKER_SHUTDOWN_TIMEOUT_MS = 5_000;
 const STORE_EVENT_TIMEOUT_MS = 5_000;
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -1739,7 +1737,8 @@ test.each([
 		let observer = new IntercomClient();
 		let asker = new RawBrokerClient();
 		rawClients.add(asker);
-		let disposeBridge = (): void => {};
+		let disposeBridge: (() => void) & Pick<ReturnType<typeof registerPendingStageIntercomBridge>, "flush"> =
+			Object.assign(() => {}, { flush: async () => {} });
 		// PR #2895: force the Windows ordering where another socket's list overtakes
 		// a one-way roster update. Only a request on the route socket is a wire fence.
 		const pendingWrites = new Map<InstanceType<typeof IntercomClient>, Array<() => void>>();
@@ -1845,8 +1844,8 @@ test.each([
 				store.recordRunStart(snapshot(true));
 			}
 			assert.equal(store.runs().length, 1, "one authoritative snapshot must survive owner/broker replay");
-			await routesPublished();
-			await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+			// Announce the batched route change and await its acknowledgment; a fixed sleep loses to a stretched batch.
+			await disposeBridge.flush();
 			await assertEndpoints(first, "still-connected");
 			await first.shutdown();
 			await observer.listDirectory();
@@ -4500,7 +4499,9 @@ for (const scenario of ["startup replacement", "durable acknowledgment replay"] 
 						}),
 					})
 					.prompt("later task");
-				await owner.waitForEventCompletion("atomic:workflow-pending-stage-route");
+				// The receipt reaches the broker with the next batched route announcement. An earlier announcement's
+				// completion can already be settled, so announce the pending batch and await it rather than racing the timer.
+				await disposeBridge.flush();
 				const listing = await executeIntercom(sender, { action: "list" });
 				assert.match(listing.content[0]?.text ?? "", /delivery .* stage .* delivered/);
 				return { result: String(result) };
