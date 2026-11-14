@@ -110,12 +110,12 @@ export const sqliteFileBackend: StorageBackend = {
  * Tables the facade suite (`registerSqliteDatabaseConformance`) creates under fixed names. A scope on the shared server
  * drops them too, so its runs start from nothing; no other suite on the server uses them.
  */
-const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items"];
+const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items", "integers", "reals", "texts", "blobs"];
 
 /** Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. */
 async function dropLibsqlScope(database: SqliteDatabase, prefix: string): Promise<void> {
 	const rows = await database.all(
-		"SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (?, ?, ?, ?))",
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${FACADE_SUITE_TABLES.map(() => "?").join(", ")}))`,
 		prefix,
 		prefix,
 		...FACADE_SUITE_TABLES,

@@ -417,12 +417,12 @@ jobs:
         shell: bash
         timeout-minutes: 1
         run: until curl -fsS "$ATOMIC_TEST_LIBSQL_URL/health"; do sleep 1; done
-      # The file filters select the matrix and every integration file that needs a libSQL server, including the
-      # shared-pool scale cases (#4790).
+      # The file filters select the matrix, the Postgres adapter's own tests, and every integration file that needs a
+      # libSQL server, including the shared-pool scale cases (#4790).
       - name: Storage conformance and libSQL server tests
         run: >-
           bun run scripts/run-test-suite.ts --label "storage conformance (linux-x64)"
-          -- npm run test:integration -- storage-conformance-matrix sqld shared-pool-scale
+          -- npm run test:integration -- storage-conformance-matrix storage-postgres sqld shared-pool-scale
       - name: Upload test diagnostics
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
