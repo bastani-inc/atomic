@@ -878,6 +878,64 @@ test("a writer still takes the lock from a raw writer that lets go only between 
 	assert.deepEqual(await values(database), ["between ticks"]);
 });
 
+test("a writer that keeps finding the lock held while other connections commit goes back to its recheck timer", async () => {
+	const { database, holder, counts } = await fixture();
+	holder.exec("CREATE TABLE other (n INTEGER)");
+	holder.exec("BEGIN IMMEDIATE; INSERT INTO other VALUES (0)");
+	// A frozen clock: only the attempt bound ends the writer's attempts between its rechecks.
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const write = database.transaction((tx) => tx.run("INSERT INTO items VALUES ('after the commits')"));
+	const write$ = settledFlag(write);
+	await untilWaiting();
+	for (let round = 1; round <= 3; round++) {
+		holder.exec(`COMMIT; BEGIN IMMEDIATE; INSERT INTO other VALUES (${round})`);
+		const before = counts.attempts.length;
+		await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+		await untilWaiting();
+		assert.ok(counts.attempts.length > before + 1, `round ${round}: tried again after its recheck`);
+		assert.ok(
+			counts.attempts.length <= before + 1_001,
+			`round ${round}: ${counts.attempts.length - before} attempts`,
+		);
+	}
+	assert.equal(write$.settled, false);
+	holder.exec("COMMIT");
+	await vi.advanceTimersByTimeAsync(WATCHED_RECHECK_MS);
+	await write;
+	assert.deepEqual(await values(database), ["after the commits"]);
+});
+
+test("a BEGIN IMMEDIATE that fails for a reason other than a busy lock fails the transaction at once", async () => {
+	const { database } = await fixture();
+	const ioError = Object.assign(new Error("disk I/O error"), {
+		code: "ERR_SQLITE_ERROR",
+		errcode: 10,
+		errstr: "disk I/O error",
+	});
+	let attempts = 0;
+	const counted = DatabaseSync.prototype.exec;
+	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string): void {
+		if (sql === "BEGIN IMMEDIATE") {
+			attempts += 1;
+			throw ioError;
+		}
+		counted.call(this, sql);
+	};
+	cleanups.push(() => {
+		DatabaseSync.prototype.exec = counted;
+	});
+	const error = await database
+		.transaction((tx) => tx.run("INSERT INTO items VALUES ('never')"), { lockWaitMs: 100 })
+		.then(
+			() => assert.fail("wrote without the lock"),
+			(failure: unknown) => failure,
+		);
+	assert.ok(error instanceof StorageUnavailableError, String(error));
+	assert.equal(isStorageWriteLockTimeoutError(error), false);
+	assert.equal(error.cause, ioError);
+	assert.equal(attempts, 1);
+});
+
 test("the connection's holder record says held while it holds the lock and free once it lets go (#4316)", async () => {
 	const { database, path } = await fixture();
 	const record = () => {
