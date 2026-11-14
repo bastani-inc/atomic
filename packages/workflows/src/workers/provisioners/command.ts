@@ -6,9 +6,10 @@
 
 import type { ProvisionedHost, WorkerHostProvisioner } from "../fleet-types.js";
 import { parseJson, runCli, WorkerProvisionerError } from "./cli.js";
+import type { GitHubAppCredentials } from "./github-app.js";
 import type { CommandListFormat, CommandProvisionerOptions, CommandSteps } from "./types.js";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+export const DEFAULT_TIMEOUT_MS = 120_000;
 /** What the common CLIs print when their credentials are missing, expired or refused. */
 const AUTH_FAILURE = new RegExp(
 	[
@@ -72,7 +73,14 @@ function malformed(format: CommandListFormat | undefined): WorkerProvisionerErro
 	);
 }
 
-export function createCommandProvisioner(options: CommandProvisionerOptions): WorkerHostProvisioner {
+/**
+ * The command provisioner of `options`. With `credentials`, each command also gets the variables that carry a token
+ * minted for it, in its own environment only.
+ */
+export function createCommandProvisioner(
+	options: CommandProvisionerOptions,
+	credentials?: Pick<GitHubAppCredentials, "env">,
+): WorkerHostProvisioner {
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const format = options.listFormat;
 	/** When each host without a `since` of its own was first listed in its state. */
@@ -87,15 +95,23 @@ export function createCommandProvisioner(options: CommandProvisionerOptions): Wo
 		);
 		return run;
 	};
-	const run = (
+	const run = async (
 		name: "up" | "down" | "list",
 		args: readonly string[],
 		env: Readonly<Record<string, string>>,
 		signal: AbortSignal,
 	) => {
 		const [file, ...rest] = args;
+		const token = credentials === undefined ? {} : await credentials.env(signal);
 		return runCli(
-			{ label: `the ${name} command`, file: file!, args: rest, timeoutMs, env, authFailure: AUTH_FAILURE },
+			{
+				label: `the ${name} command`,
+				file: file!,
+				args: rest,
+				timeoutMs,
+				env: { ...env, ...token },
+				authFailure: AUTH_FAILURE,
+			},
 			signal,
 		);
 	};

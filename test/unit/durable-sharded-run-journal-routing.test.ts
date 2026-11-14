@@ -270,7 +270,7 @@ test("the change token moves with catalog commits, shard commits and a shard tha
 	await journal.close();
 	rmSync(join(root, "old"), { recursive: true, force: true });
 	const reopened = await open();
-	const token = JSON.parse(await reopened.changeToken()) as string[];
+	const token = JSON.parse((await reopened.changeToken())!) as string[];
 	assert.ok(token.includes("unavailable:shard-missing"), JSON.stringify(token));
 });
 
