@@ -40,7 +40,8 @@ export interface CommandListFormat {
  *   runs only when `list` reports fewer than `target` hosts, and with `upEach`, once for each host to add.
  * - `down` removes the host `{id}` (`ATOMIC_PROVIDER_ID`); `{remaining}` (`ATOMIC_REMAINING`) is the count `list`
  *   reported, less one. It runs only for a host `list` reports and that is not draining already.
- * - `list` prints the hosts as JSON, read as `listFormat` says.
+ * - `list` prints the hosts as JSON, read as `listFormat` says. Several list commands report their hosts together, a
+ *   host two of them report counting once.
  *
  * Default `timeoutMs`, for each command: 120000.
  */
@@ -49,7 +50,7 @@ export interface CommandProvisionerOptions {
 	readonly up: CommandSteps;
 	readonly upEach?: boolean;
 	readonly down: CommandSteps;
-	readonly list: readonly string[];
+	readonly list: CommandSteps;
 	readonly listFormat?: CommandListFormat;
 	/** How long, in milliseconds, one command may run before it is stopped and counted as a failure. */
 	readonly timeoutMs?: number;

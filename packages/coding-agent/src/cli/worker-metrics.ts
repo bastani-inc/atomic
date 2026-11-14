@@ -109,7 +109,12 @@ export async function serveWorkerMetrics(options: {
 		response.end(body);
 	};
 	const handle = async (request: IncomingMessage, response: ServerResponse) => {
-		const path = new URL(request.url ?? "/", "http://metrics").pathname;
+		let path: string;
+		try {
+			path = new URL(request.url ?? "/", "http://metrics").pathname;
+		} catch {
+			return send(response, 400, "text/plain", "Bad request\n");
+		}
 		if (path !== "/metrics" && path !== "/scaling") return send(response, 404, "text/plain", "Not found\n");
 		if (request.method !== "GET" && request.method !== "HEAD") {
 			response.setHeader("allow", "GET, HEAD");
@@ -133,7 +138,11 @@ export async function serveWorkerMetrics(options: {
 		return send(response, 200, "application/json", `${JSON.stringify(fleet.scaling)}\n`);
 	};
 	const server = createServer((request, response) => {
-		void handle(request, response);
+		// A request never stops the server: whatever fails answering it ends that response only.
+		handle(request, response).catch(() => {
+			if (!response.headersSent) send(response, 500, "text/plain", "Internal error\n");
+			else response.destroy();
+		});
 	});
 	// Bounded: a client that sends nothing, or reads slowly, is cut off.
 	server.requestTimeout = 10_000;

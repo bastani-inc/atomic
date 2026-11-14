@@ -91,14 +91,17 @@ describe("command provisioner presets (#4768)", () => {
 					args.slice(1).map((arg) => arg.replace(/\{(\w+)\}/g, (_, name: string) => values[name]!));
 				const ups = (Array.isArray(config.up[0]) ? config.up : [config.up]) as string[][];
 				const downs = (Array.isArray(config.down[0]) ? config.down : [config.down]) as string[][];
+				const lists = ((Array.isArray(config.list[0]) ? config.list : [config.list]) as string[][]).map((list) =>
+					list.slice(1),
+				);
 				const upCalls = config.upEach === true ? [0, 1].map(() => ups[0]!) : ups;
 				assert.deepEqual(
 					cloud.calls(),
 					[
-						config.list.slice(1),
+						...lists,
 						...upCalls.map((up) => fill(up, { target: "2", add: config.upEach === true ? "1" : "2" })),
-						config.list.slice(1),
-						config.list.slice(1),
+						...lists,
+						...lists,
 						...downs.map((down) => fill(down, { id, remaining: "1" })),
 					],
 					file,
@@ -300,6 +303,44 @@ describe("command provisioner (#4768)", () => {
 				"the list command printed JSON that its listFormat does not match: an array of hosts with distinct ids and states it maps.",
 			);
 		}
+	});
+
+	test("several list commands report their hosts together, a host two report counting once (#4768)", async () => {
+		const print = (hosts: object[]) => script(`process.stdout.write(${JSON.stringify(JSON.stringify(hosts))})`);
+		const fleet = createWorkerHostProvisioner({
+			kind: "command",
+			up: script("0"),
+			down: script("0"),
+			list: [
+				print([
+					{ id: "a", state: "pending", since: 1 },
+					{ id: "b", state: "pending", since: 2 },
+				]),
+				print([
+					{ id: "b", state: "running", since: 3 },
+					{ id: "c", state: "running", since: 4 },
+				]),
+				print([]),
+			],
+		});
+		assert.deepEqual(await fleet.list(never()), [
+			{ id: "a", state: "pending", since: 1 },
+			{ id: "b", state: "running", since: 3 },
+			{ id: "c", state: "running", since: 4 },
+		]);
+		const twice = createWorkerHostProvisioner({
+			kind: "command",
+			up: script("0"),
+			down: script("0"),
+			list: [
+				print([]),
+				print([
+					{ id: "x", state: "running" },
+					{ id: "x", state: "pending" },
+				]),
+			],
+		});
+		assert.equal((await rejection(twice.list(never()))).code, "malformed");
 	});
 
 	test("list accepts ISO times and a hostId, and rejects hosts it cannot read (#4768)", async () => {
@@ -550,9 +591,10 @@ describe("command provisioner (#4768)", () => {
 			() => createWorkerHostProvisioner({ ...ok, up: [["a"], []] }),
 			/up must be a non-empty array of strings: an executable and its arguments, or a non-empty array of such commands, run in order\./,
 		);
+		assert.equal(createWorkerHostProvisioner({ ...ok, list: [["a"], ["b"]] }).kind, "command");
 		assert.throws(
-			() => createWorkerHostProvisioner({ ...ok, list: [["a"]] as unknown as string[] }),
-			/list must be a non-empty array of strings: an executable and its arguments\.$/,
+			() => createWorkerHostProvisioner({ ...ok, list: [["a"], [""]] }),
+			/list must be a non-empty array of strings: an executable and its arguments, or a non-empty array of such commands, run in order\./,
 		);
 		assert.throws(() => createWorkerHostProvisioner({ ...ok, up: [[]] }), /up must be a non-empty array/);
 		assert.throws(

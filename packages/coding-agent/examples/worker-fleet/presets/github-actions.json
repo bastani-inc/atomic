@@ -7,8 +7,18 @@
 	"upEach": true,
 	"down": ["gh", "run", "cancel", "{id}", "--repo", "acme/flows"],
 	"list": [
-		"gh", "run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml",
-		"--json", "databaseId,status,createdAt", "--limit", "100"
+		[
+			"gh", "run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml", "--status", "queued",
+			"--json", "databaseId,status,createdAt", "--limit", "100"
+		],
+		[
+			"gh", "run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml", "--status", "in_progress",
+			"--json", "databaseId,status,createdAt", "--limit", "100"
+		],
+		[
+			"gh", "run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml", "--status", "waiting",
+			"--json", "databaseId,status,createdAt", "--limit", "100"
+		]
 	],
 	"listFormat": {
 		"id": "databaseId",

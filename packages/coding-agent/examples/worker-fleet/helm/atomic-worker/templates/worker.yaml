@@ -16,6 +16,26 @@ spec:
     spec:
       terminationGracePeriodSeconds: {{ .Values.drainSeconds }}
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      initContainers:
+        - name: token
+          image: busybox:1.36
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - install -o 1000 -g 1000 -m 600 /secret/token /run/secrets/atomic-db-token
+          volumeMounts:
+            - name: token-secret
+              mountPath: /secret
+              readOnly: true
+            - name: token
+              mountPath: /run/secrets
       containers:
         - name: worker
           image: "{{ .Values.image }}"
@@ -33,11 +53,15 @@ spec:
               memory: "{{ .Values.resources.requests.memory }}"
           volumeMounts:
             - name: token
-              mountPath: /run/secrets/atomic-db-token
-              subPath: token
+              mountPath: /run/secrets
               readOnly: true
       volumes:
-        - name: token
+        - name: token-secret
           secret:
             secretName: "{{ .Values.tokenSecret }}"
             defaultMode: 0400
+        # The token, copied for the container's user (node, uid 1000) with mode 600: a Secret volume's files are root's.
+        - name: token
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi

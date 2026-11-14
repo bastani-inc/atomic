@@ -109,10 +109,16 @@ function gh() {
 	if (has("workflow", "run", "atomic-workers.yml", "--repo", "acme/flows")) {
 		if (!args.includes("workers=1")) fail("could not create workflow dispatch event: expected workers=1", 1);
 		update(create);
-	} else if (has("run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml", "--json")) {
-		if (args[7] !== "databaseId,status,createdAt") fail("Unknown JSON field", 1);
+	} else if (has("run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml", "--status")) {
+		if (args[9] !== "databaseId,status,createdAt") fail("Unknown JSON field", 1);
 		const statuses = { creating: "queued", running: "in_progress", deleting: "completed" };
-		json(listed().map((run) => ({ createdAt: new Date(run.created).toISOString(), databaseId: run.id, status: statuses[run.phase] })));
+		// The preset lists queued runs first: that call is the list that moves the cloud on, the others only read it.
+		const runs = args[7] === "queued" ? listed() : readState().hosts;
+		json(
+			runs
+				.filter((run) => statuses[run.phase] === args[7])
+				.map((run) => ({ createdAt: new Date(run.created).toISOString(), databaseId: run.id, status: statuses[run.phase] })),
+		);
 	} else if (has("run", "cancel")) {
 		if (!removeOne(args[2])) fail(`run ${args[2]} not found`);
 		process.stdout.write(`✓ Request to cancel workflow ${args[2]} submitted.\n`);

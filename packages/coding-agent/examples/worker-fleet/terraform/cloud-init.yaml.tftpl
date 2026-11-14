@@ -20,9 +20,12 @@ write_files:
       Restart=on-failure
       [Install]
       WantedBy=multi-user.target
+# Block scalars hold the commands' own quotes as they are; cloud-init runs each string with sh.
 runcmd:
-  - [sh, -c, "mkdir -p /etc/atomic && echo ATOMIC_WORKER_PROVIDER_ID=$(${provider_id_command}) > /etc/atomic/worker.env"]
-  - [sh, -c, "${token_command} > /etc/atomic/token && chmod 600 /etc/atomic/token && chown atomic:atomic /etc/atomic/token"]
+  - |
+    mkdir -p /etc/atomic && echo "ATOMIC_WORKER_PROVIDER_ID=$(${provider_id_command})" > /etc/atomic/worker.env
+  - |
+    umask 077 && ${token_command} > /etc/atomic/token && chown atomic:atomic /etc/atomic/token
   - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]
   - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-libsql"]
   - [systemctl, enable, --now, atomic-worker]

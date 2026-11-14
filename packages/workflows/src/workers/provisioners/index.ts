@@ -33,17 +33,11 @@ function isCommand(value: Loose[string]): boolean {
 	);
 }
 
-function checkSteps(field: string, value: Loose[string], multiple: boolean): void {
+function checkSteps(field: string, value: Loose[string]): void {
 	if (isCommand(value)) return;
-	if (
-		multiple &&
-		Array.isArray(value) &&
-		value.length > 0 &&
-		value.every((command: Loose[string]) => isCommand(command))
-	)
-		return;
+	if (Array.isArray(value) && value.length > 0 && value.every((command: Loose[string]) => isCommand(command))) return;
 	throw invalid(
-		`${field} must be a non-empty array of strings: an executable and its arguments${multiple ? ", or a non-empty array of such commands, run in order" : ""}.`,
+		`${field} must be a non-empty array of strings: an executable and its arguments, or a non-empty array of such commands, run in order.`,
 	);
 }
 
@@ -73,9 +67,9 @@ export function createWorkerHostProvisioner(config: WorkerHostProvisionerConfig)
 	const fields = config as unknown as Loose;
 	if (fields.kind !== "command")
 		throw new TypeError(`Invalid provisioner options: kind must be "command", not ${JSON.stringify(fields.kind)}.`);
-	checkSteps("up", fields.up, true);
-	checkSteps("down", fields.down, true);
-	checkSteps("list", fields.list, false);
+	checkSteps("up", fields.up);
+	checkSteps("down", fields.down);
+	checkSteps("list", fields.list);
 	if (fields.upEach !== undefined && typeof fields.upEach !== "boolean")
 		throw invalid("upEach must be true or false when given.");
 	checkListFormat(fields.listFormat);

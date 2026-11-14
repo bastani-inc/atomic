@@ -108,11 +108,27 @@ export function createCommandProvisioner(options: CommandProvisionerOptions): Wo
 		for (const command of commands(options[name])) await run(name, fill(command, values), env, signal);
 	};
 	const list = async (signal: AbortSignal): Promise<ProvisionedHost[]> => {
-		const output = parseJson("the list command", await run("list", options.list, {}, signal)) as JsonValue;
-		const items = format?.items === undefined ? output : at(output, format.items);
-		if (!Array.isArray(items)) throw malformed(format);
 		const now = Date.now();
 		const seen = new Map<string, { readonly state: string; readonly at: number }>();
+		/** Every command's hosts by id: a host that two commands report, as one changed state between them, counts once. */
+		const listed = new Map<string, ProvisionedHost>();
+		for (const command of commands(options.list)) {
+			const output = parseJson("the list command", await run("list", command, {}, signal)) as JsonValue;
+			const hosts = read(output, now, seen);
+			if (new Set(hosts.map((host) => host.id)).size !== hosts.length) throw malformed(format);
+			for (const host of hosts) listed.set(host.id, host);
+		}
+		firstListed = seen;
+		return [...listed.values()];
+	};
+	/** The hosts of one list command's output. */
+	const read = (
+		output: JsonValue,
+		now: number,
+		seen: Map<string, { readonly state: string; readonly at: number }>,
+	): ProvisionedHost[] => {
+		const items = format?.items === undefined ? output : at(output, format.items);
+		if (!Array.isArray(items)) throw malformed(format);
 		const hosts: ProvisionedHost[] = [];
 		for (const item of items as readonly JsonValue[]) {
 			const id = at(item, format?.id ?? "id");
@@ -146,8 +162,6 @@ export function createCommandProvisioner(options: CommandProvisionerOptions): Wo
 				since: time,
 			});
 		}
-		if (new Set(hosts.map((host) => host.id)).size !== hosts.length) throw malformed(format);
-		firstListed = seen;
 		return hosts;
 	};
 	return {

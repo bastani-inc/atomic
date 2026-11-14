@@ -10,13 +10,46 @@ terraform {
 variable "subnet_ids" { type = list(string) }
 variable "ami_id" { description = "An Ubuntu 24.04 AMI" }
 variable "database" { default = "libsql://pool.example.turso.io" }
-variable "token_command" { description = "Prints the database token, e.g. `aws secretsmanager get-secret-value … --query SecretString --output text` with the instance role" }
+variable "token_command" { description = "Prints the database token with the instance role, e.g. `aws secretsmanager get-secret-value --secret-id <arn> --query SecretString --output text` (install the AWS CLI in the image)" }
 variable "max_hosts" { default = 20 }
+variable "token_secret_arn" { description = "The Secrets Manager secret holding the database token" }
+
+# The workers' instance role: it reads the token secret and nothing else.
+data "aws_iam_policy_document" "assume_ec2" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "workers" {
+  name               = "atomic-workers"
+  assume_role_policy = data.aws_iam_policy_document.assume_ec2.json
+}
+
+resource "aws_iam_role_policy" "workers_token" {
+  role = aws_iam_role.workers.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = var.token_secret_arn }]
+  })
+}
+
+resource "aws_iam_instance_profile" "workers" {
+  name = "atomic-workers"
+  role = aws_iam_role.workers.name
+}
 
 resource "aws_launch_template" "workers" {
   name_prefix   = "atomic-workers-"
   image_id      = var.ami_id
   instance_type = "m7i.xlarge"
+  iam_instance_profile {
+    arn = aws_iam_instance_profile.workers.arn
+  }
   metadata_options {
     http_tokens = "required"
   }

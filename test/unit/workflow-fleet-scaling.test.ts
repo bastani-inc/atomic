@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { connect } from "node:net";
 import { test } from "vitest";
 import {
 	parseWorkerCommand,
@@ -170,6 +171,24 @@ test("the metrics server serves /metrics and /scaling from one read per interval
 		assert.deepEqual(await unknown.json(), { error: "The shared store could not be read.", store: "unknown" });
 		assert.match(await (await get("/metrics")).text(), /^atomic_fleet_store_up 0$/m);
 		assert.equal(reads, 4);
+		// A request target that is not a URL answers 400, and the server keeps serving.
+		const raw = await new Promise<string>((resolve, reject) => {
+			const [host, port] = [
+				server.address.slice(0, server.address.lastIndexOf(":")),
+				server.address.slice(server.address.lastIndexOf(":") + 1),
+			];
+			const socket = connect(Number(port), host, () =>
+				socket.end("GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+			);
+			let text = "";
+			socket.on("data", (chunk) => {
+				text += String(chunk);
+			});
+			socket.on("end", () => resolve(text));
+			socket.on("error", reject);
+		});
+		assert.match(raw, /^HTTP\/1\.1 400 /);
+		assert.equal((await get("/metrics")).status, 200);
 	} finally {
 		await server.close();
 	}

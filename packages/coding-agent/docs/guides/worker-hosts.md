@@ -190,7 +190,7 @@ A command provisioner runs three commands of yours, each an executable and its a
 - `down` removes the host `{id}` (`ATOMIC_PROVIDER_ID`), which drained already or never started, and lowers the count by one. `{remaining}` (`ATOMIC_REMAINING`) is the count `list` reported, less one. It runs only for a host that `list` reports and that is not `draining` already, so removing a host twice, or one already gone, does nothing.
 - `list` prints the hosts as JSON: by default an array of `{ "id": "vm-3", "state": "running", "since": "2026-11-14T09:30:00Z" }`, where `state` is `pending`, `running`, `draining`, `stopped` or `failed`, and `since` (milliseconds or ISO 8601) and `hostId` (the Atomic host id, when you know it) are optional. `listFormat` reads other JSON: `items` is the path to the array (such as `AutoScalingGroups.0.Instances`), `id`, `state`, `since` and `hostId` are paths in each item, and `states` maps your platform's states to host states. A state mapped to `null` leaves the host out, for hosts your platform no longer counts, such as one being deleted; `"*"` maps any state not listed.
 
-`up` and `down` may each be several commands run in order, as `[["first", "…"], ["second", "…"]]`. Changes run one at a time. `timeoutMs` (default 120000) bounds each command; a command still running then, or when the controller gives up on the call, is stopped together with every process it started.
+`up` and `down` may each be several commands run in order, as `[["first", "…"], ["second", "…"]]`. So may `list`: its commands report their hosts together, and a host two of them report counts once. Changes run one at a time. `timeoutMs` (default 120000) bounds each command; a command still running then, or when the controller gives up on the call, is stopped together with every process it started.
 
 Credentials come only from each tool's own login or environment; nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout` or `malformed` (output the list format does not match).
 
@@ -202,7 +202,7 @@ Atomic ships presets in its package's `examples/worker-fleet/presets` directory.
 | `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource |
 | `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` |
 | `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` |
-| `github-actions.json` | `gh workflow run` once per host, `gh run list`, `gh run cancel` | Run id | A fine-grained token for that one repository with **Actions: read and write**, as `GH_TOKEN` |
+| `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | A fine-grained token for that one repository with **Actions: read and write**, as `GH_TOKEN` |
 
 How each preset removes a host:
 
@@ -217,7 +217,7 @@ Give each host its provider id: the instance id from the cloud's metadata servic
 The package's `examples/worker-fleet` directory has a starting point for each platform:
 
 - `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it.
-- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero.
+- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. An init container copies the token from its Secret into memory, readable only by the container's user.
 - `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0, and the least-privilege role for the controller's preset.
 - `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
 - `presets/`: the command provisioner presets above.

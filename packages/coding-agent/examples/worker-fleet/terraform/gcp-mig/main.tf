@@ -69,6 +69,6 @@ resource "google_project_iam_member" "controller" {
   # Only this group.
   condition {
     title      = "atomic-workers only"
-    expression = "resource.name.startsWith(\"projects/${var.project}/zones/${var.zone}/instanceGroupManagers/atomic-workers\") || resource.name.startsWith(\"projects/${var.project}/zones/${var.zone}/instances/atomic-workers-\")"
+    expression = "resource.name == \"projects/${var.project}/zones/${var.zone}/instanceGroupManagers/atomic-workers\" || resource.name.matches(\"^projects/${var.project}/zones/${var.zone}/instances/atomic-workers-[a-z0-9]{4}$\")"
   }
 }
