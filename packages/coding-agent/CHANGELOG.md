@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.87] - 2026-11-14
+
+Asks from released subagents no longer vanish when their recipient comes and goes.
+
+- **Reliable failed-ask notices for released subagents.** When a released subagent's ask goes to a session that leaves, returns and then ends, the subagent now gets one "Your ask <id> to <name> failed" message instead of losing the ask silently. The notice also survives a broker restart or a reconnect, and `pending` stops listing the ask ([#4765](https://github.com/bastani-inc/atomic/issues/4765), [#4767](https://github.com/bastani-inc/atomic/pull/4767)).
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

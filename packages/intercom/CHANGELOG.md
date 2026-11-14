@@ -4,6 +4,16 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.87] - 2026-11-14
+
+Asks from released subagents no longer vanish when their recipient comes and goes.
+
+- **Reliable failed-ask notices for released subagents.** When a released subagent's ask goes to a session that leaves, returns and then ends, the subagent now gets one "Your ask <id> to <name> failed" message instead of losing the ask silently. The notice also survives a broker restart or a reconnect, and `pending` stops listing the ask ([#4765](https://github.com/bastani-inc/atomic/issues/4765), [#4767](https://github.com/bastani-inc/atomic/pull/4767)).
+
+### Fixed
+
+- Fixed an Intercom ask from a released subagent that was dropped with no failed-ask message when its recipient went away before the subagent was released, then came back and ended. The broker now puts that ask on the owner's route for the released subagent, as it does for an ask whose recipient is still connected, so the owner wakes the subagent with one "Your ask <id> to <name> failed" message and `pending` no longer lists it. The ask also stays saved under the subagent's own session, so after a broker restart, or when the subagent reconnects without being released, the subagent still gets the failure once. A workflow stage released between turns already got its failure in this order; a test now covers it ([#4765](https://github.com/bastani-inc/atomic/issues/4765), [#4767](https://github.com/bastani-inc/atomic/pull/4767))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
