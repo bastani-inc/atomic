@@ -5,20 +5,53 @@ import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.j
 const OUTAGE_RETRY_BASE_MS = 50;
 /** The largest bound on that wait. */
 const OUTAGE_RETRY_MAX_MS = 1_000;
+/**
+ * SQLite result codes of a statement the database could not run because another writer held its lock: anything else
+ * coded `SQLITE_*` (a value too big, a constraint, a corrupt file) fails again the same way, so it is not sent again.
+ */
+const LOCK_CODES = /^SQLITE_(BUSY|LOCKED)/;
+
+/** Whether `error` is the store refusing for a while (unreachable, or its lock busy), not a statement it cannot run. */
+function refusedForAWhile(error: unknown): boolean {
+	if (infrastructureFaultOf(error) !== "storage_unavailable") return false;
+	for (let current = error, depth = 0; typeof current === "object" && current !== null && depth < 8; depth++) {
+		const { code, cause } = current as { readonly code?: unknown; readonly cause?: unknown };
+		if (typeof code === "string" && code.startsWith("SQLITE_") && !LOCK_CODES.test(code)) return false;
+		current = cause;
+	}
+	return true;
+}
+
+/** How long a request is sent again before the process says so once, on stderr, with the store's last refusal. */
+const OUTAGE_NOTICE_MS = 30_000;
 
 /**
  * Sends `send` again while the storage refuses it (`storage_unavailable`: unreachable, or its write lock stayed busy)
  * and `leaseLeft()` says the attempt still holds its lease, waiting a random time up to a bound that doubles from
  * `OUTAGE_RETRY_BASE_MS` to `OUTAGE_RETRY_MAX_MS` between sends (#4768). Contention on a shared store slows a pooled
  * child down this way instead of ending its attempt, which would spend one of the child's retries on a fault that is
- * not its own. Any other failure, or one past the lease, goes to the caller.
+ * not its own. Any other failure, a statement the database cannot run included, or one past the lease, goes to the
+ * caller.
  */
-export async function retryWithinLease<T>(send: () => Promise<T>, leaseLeft: () => boolean): Promise<T> {
+export async function retryWithinLease<T>(
+	send: () => Promise<T>,
+	leaseLeft: () => boolean,
+	/** What `send` sends, as a notice names it. */
+	what = "a request",
+): Promise<T> {
+	const started = performance.now();
+	let noticed = false;
 	for (let attempt = 0; ; attempt++) {
 		try {
 			return await send();
 		} catch (error) {
-			if (infrastructureFaultOf(error) !== "storage_unavailable" || !leaseLeft()) throw error;
+			if (!refusedForAWhile(error) || !leaseLeft()) throw error;
+			if (!noticed && performance.now() - started >= OUTAGE_NOTICE_MS) {
+				noticed = true;
+				process.stderr.write(
+					`atomic-workflows: the shared store has refused ${what} for ${Math.round((performance.now() - started) / 1000)} s; still retrying: ${String((error as Error)?.stack ?? error)}\n`,
+				);
+			}
 		}
 		await delay(Math.random() * Math.min(OUTAGE_RETRY_MAX_MS, OUTAGE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16)));
 	}

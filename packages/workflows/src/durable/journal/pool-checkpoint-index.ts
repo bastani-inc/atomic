@@ -126,6 +126,11 @@ export class PoolCheckpointRead implements PoolCheckpointSource {
 		return this.index.prefetchColumns(events, this.root);
 	}
 	prefetch(row: SqliteRow): void {
+		// More checkpoints, or larger ones, than one row carries: the next read reads them itself.
+		if (row.cp_added === null) {
+			this.prefetched = undefined;
+			return;
+		}
 		this.prefetched = {
 			from: Number(row.cp_from),
 			head: row.cp_head as string | null,
@@ -145,6 +150,10 @@ export class PoolCheckpointRead implements PoolCheckpointSource {
 		this.pending = undefined;
 	}
 }
+
+/** The most checkpoints, and bytes of their payloads, a commit's read carries for the checkpoint index. */
+const PREFETCH_MAX_CHECKPOINTS = 64;
+const PREFETCH_MAX_BYTES = 256 * 1024;
 
 /** What {@link PoolCheckpointIndex.prefetchColumns} selected, as one row's columns. */
 interface PoolCheckpointPrefetch {
@@ -200,14 +209,21 @@ export class PoolCheckpointIndex {
 		return new PoolCheckpointRead(this, root);
 	}
 
-	/** See {@link PoolCheckpointRead.prefetchColumns}. */
+	/**
+	 * See {@link PoolCheckpointRead.prefetchColumns}. The checkpoints come along only while they are few and small
+	 * ({@link PREFETCH_MAX_CHECKPOINTS}, {@link PREFETCH_MAX_BYTES}); otherwise `cp_added` is NULL. A queue that has not
+	 * read the root yet, as on a host that just took over a child, would otherwise ask for every checkpoint of the root
+	 * in one value, past what the database returns in one (#4768).
+	 */
 	prefetchColumns(events: string, root: string): { readonly sql: string; readonly params: readonly SqliteValue[] } {
 		const from = this.roots.get(root)?.seq ?? 0;
+		const added = `SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? ORDER BY seq LIMIT ${PREFETCH_MAX_CHECKPOINTS + 1}`;
 		return {
 			sql: `? AS cp_from,
 			(SELECT json_object('seq', seq, 'key', key, 'at', at) FROM ${events} WHERE run_id = ? ORDER BY seq DESC LIMIT 1) AS cp_head,
 			(SELECT json_object('key', key, 'at', at) FROM ${events} WHERE run_id = ? AND seq = ?) AS cp_mark,
-			(SELECT json_group_array(json_array(seq, key, payload)) FROM (SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND type = ? ORDER BY seq)) AS cp_added`,
+			(SELECT CASE WHEN COUNT(*) <= ${PREFETCH_MAX_CHECKPOINTS} AND COALESCE(SUM(length(payload)), 0) <= ${PREFETCH_MAX_BYTES}
+				THEN json_group_array(json_array(seq, key, payload)) END FROM (${added})) AS cp_added`,
 			params: [from, root, root, from, root, from, RUN_EVENT_TYPES.checkpointRecorded],
 		};
 	}

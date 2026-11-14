@@ -37,6 +37,8 @@ function countingDriver(path: string) {
 	const requests: Request[] = [];
 	/** Whether each batch asked for the priority lane, in order. */
 	const priorities: boolean[] = [];
+	/** The longest text value any statement returned. */
+	const largest = { bytes: 0 };
 	const hooks: { beforeBatch?: (connection: DatabaseSync) => void; afterCommit?: () => void } = {};
 	const execute = (sql: string, params: readonly unknown[]): SqliteDriverResult => {
 		const statement = connection.prepare(sql);
@@ -45,6 +47,8 @@ function countingDriver(path: string) {
 		if (columns.length === 0)
 			return { columns, rows: [], changes: Number(statement.run(...(params as never[])).changes) };
 		const rows = statement.all(...(params as never[])).map((row) => columns.map((name) => row[name]!));
+		for (const row of rows)
+			for (const value of row) if (typeof value === "string") largest.bytes = Math.max(largest.bytes, value.length);
 		return { columns, rows, changes: 0 };
 	};
 	const outside: SqliteDriverExecutor = {
@@ -95,7 +99,7 @@ function countingDriver(path: string) {
 			return undefined;
 		},
 	};
-	return { driver, requests, priorities, hooks, connection };
+	return { driver, requests, priorities, largest, hooks, connection };
 }
 
 const { work, boundary } = poolWorkFixture();
@@ -729,6 +733,56 @@ test("a pool write is planned again only after a fence or a lost answer: other f
 		assert.equal(sent, STORAGE_TRANSIENT_RETRY_ATTEMPTS);
 	} finally {
 		f.hooks.beforeBatch = undefined;
+		await f.close();
+	}
+});
+
+test("a replay on another host commits its next checkpoint after an earlier attempt's (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const first = await f.pool.claim(f.lease, "h1/w1", [work], 60_000);
+		assert.ok(first);
+		await f.pool.commit(f.lease, first, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		await f.pool.commit(f.lease, first, "op-2", { kind: "checkpoint", checkpoint: tool(2) });
+		// The first attempt's host went away: its work is ready again, and another host's queue takes it.
+		f.connection.exec("UPDATE acme_wf_runs_work SET state = 'ready', worker = NULL, expires_at = 0, ready_at = 0");
+		const other = await openSqlPoolQueue(f.journal);
+		const replay = await other.claim(f.lease, "h2/w1", [work], 60_000);
+		assert.equal(replay?.generation, 2);
+		const receipt = await Promise.race([
+			other.commit(f.lease, replay!, "op-3", { kind: "checkpoint", checkpoint: tool(3) }),
+			new Promise<never>((_, reject) =>
+				setTimeout(() => reject(new Error("the replay's commit did not finish")), 5_000),
+			),
+		]);
+		assert.equal(typeof receipt.seq, "number");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a host that has not read the root yet commits without asking for all of the root's checkpoints in one value (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const first = await f.pool.claim(f.lease, "h1/w1", [work], 60_000);
+		assert.ok(first);
+		// Many large checkpoints, as a long fan-out leaves in the root's journal.
+		const big = "x".repeat(16 * 1024);
+		for (let index = 1; index <= 40; index++)
+			await f.pool.commit(f.lease, first, `op-${index}`, {
+				kind: "checkpoint",
+				checkpoint: { ...tool(index), output: { index, big } },
+			});
+		f.connection.exec("UPDATE acme_wf_runs_work SET state = 'ready', worker = NULL, expires_at = 0, ready_at = 0");
+		const other = await openSqlPoolQueue(f.journal);
+		const replay = await other.claim(f.lease, "h2/w1", [work], 60_000);
+		assert.ok(replay);
+		f.largest.bytes = 0;
+		const receipt = await other.commit(f.lease, replay, "op-41", { kind: "checkpoint", checkpoint: tool(41) });
+		assert.equal(typeof receipt.seq, "number");
+		// No value larger than the root's checkpoints together: the commit read them as they are, not in one value.
+		assert.ok(f.largest.bytes < 300 * 1024, `largest value read: ${f.largest.bytes} bytes`);
+	} finally {
 		await f.close();
 	}
 });

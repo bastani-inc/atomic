@@ -381,7 +381,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const attemptRequest = async (message: Request): Promise<WorkerReply["value"]> => {
 		const held = heldAttempt;
 		try {
-			return await retryWithinLease(() => request(message, undefined, true), leaseLeft);
+			return await retryWithinLease(() => request(message, undefined, true), leaseLeft, `a ${message.kind} request`);
 		} catch (error) {
 			if (infrastructureFaultOf(error) !== "storage_unavailable") throw error;
 			replies.attemptFenced = true;
