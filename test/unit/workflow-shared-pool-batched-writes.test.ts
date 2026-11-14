@@ -16,6 +16,7 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
@@ -86,7 +87,7 @@ function countingDriver(path: string) {
 				? { code: "connection-lost", outcome: "unknown" }
 				: undefined,
 	};
-	return { driver, requests, hooks };
+	return { driver, requests, hooks, connection };
 }
 
 const { work, boundary } = poolWorkFixture();
@@ -389,6 +390,97 @@ test("a claim whose answer was lost hands out the row it took instead of taking 
 			[false, "ready", null],
 			[true, "leased", "host/w1"],
 		]);
+	} finally {
+		await f.close();
+	}
+});
+
+/** A refusal as its typed error and reason, for comparing the batched path's refusals with the transactional path's. */
+const refusal = (reason: string) => (error: Error) =>
+	error instanceof StaleWorkLeaseError && (error as Error & { reason?: string }).reason === reason;
+
+test("batched writes refuse a paused root's attempt, an expired attempt and a lost root lease with the transactional path's typed errors (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		// Paused: no writes of its attempts, and no claims.
+		f.connection.exec("UPDATE acme_wf_runs SET status = 'paused'");
+		await assert.rejects(
+			f.pool.commit(f.lease, attempt, "op-2", { kind: "checkpoint", checkpoint: tool(2) }),
+			refusal("root-not-running"),
+		);
+		await assert.rejects(f.pool.complete(f.lease, attempt, { runId: work.childRunId }), refusal("root-not-running"));
+		assert.equal(await f.pool.claim(f.lease, "host/w2", [work], 60_000), undefined);
+		// Paused by its pool control, the attempt writes again.
+		await f.pool.setControl(f.lease, "paused");
+		await f.pool.commit(f.lease, attempt, "op-2", { kind: "checkpoint", checkpoint: tool(2) });
+		f.connection.exec("UPDATE acme_wf_runs SET status = 'running'");
+		await f.pool.setControl(f.lease, "running");
+		// Expired: refused, though a heartbeat still takes it back while the attempt holds the work.
+		f.connection.exec("UPDATE acme_wf_runs_work SET expires_at = 1");
+		await assert.rejects(
+			f.pool.commit(f.lease, attempt, "op-3", { kind: "checkpoint", checkpoint: tool(3) }),
+			refusal("expired"),
+		);
+		await assert.rejects(f.pool.renew(f.lease, attempt, 60_000), refusal("expired"));
+		await assert.rejects(f.pool.complete(f.lease, attempt, { runId: work.childRunId }), refusal("expired"));
+		const extended = await f.pool.extend(f.lease, attempt, 60_000);
+		assert.ok(extended.expiresAt > Date.now());
+		// The same operation with another request is a conflict, not a second write.
+		await assert.rejects(
+			f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(3) }),
+			/Pool operation identity conflict/,
+		);
+		// A result for another child is refused; the right one completes, and completing it again is accepted.
+		await assert.rejects(
+			f.pool.complete(f.lease, attempt, { runId: "another-child" }),
+			/Pool result identity mismatch/,
+		);
+		await f.pool.complete(f.lease, attempt, { runId: work.childRunId });
+		await f.pool.complete(f.lease, attempt, { runId: work.childRunId });
+		await assert.rejects(
+			f.pool.complete(f.lease, attempt, { runId: work.childRunId, other: true }),
+			/Pool result identity conflict/,
+		);
+		// The root's lease taken by another holder fences every write.
+		f.connection.exec("UPDATE acme_wf_leases SET holder_id = 'another', epoch = epoch + 1");
+		await assert.rejects(f.pool.claim(f.lease, "host/w2", [work], 60_000), StaleLeaseError);
+		await assert.rejects(
+			f.shared.appendStageInput(f.lease, {
+				work: attempt.id,
+				runId: run.runId,
+				stageId: "stage",
+				kind: "question-read",
+				op: "read-2",
+				payload: JSON.stringify({ promptId: "q" }),
+			}),
+			StaleLeaseError,
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a batched write planned from a stale cached attempt is refused by its fences and named from a read (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		// Another host took the work over; this queue's cached row still says it holds it.
+		f.connection.exec("UPDATE acme_wf_runs_work SET generation = generation + 1, worker = 'host/w2'");
+		const counted = f.requestsOf(() =>
+			f.pool.commit(f.lease, attempt, "op-2", { kind: "checkpoint", checkpoint: tool(2) }),
+		);
+		await assert.rejects(counted, (error: Error) => error instanceof StaleWorkLeaseError);
+		await assert.rejects(f.pool.complete(f.lease, attempt, { runId: work.childRunId }), StaleWorkLeaseError);
+		await assert.rejects(f.pool.renew(f.lease, attempt, 60_000), StaleWorkLeaseError);
+		await assert.rejects(
+			f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, [])),
+			StaleWorkLeaseError,
+		);
 	} finally {
 		await f.close();
 	}
