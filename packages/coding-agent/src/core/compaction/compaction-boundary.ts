@@ -25,6 +25,7 @@ import {
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 } from "./compaction-types.js";
+import { normalizeKeepContextShare, releaseKeepContextSpans } from "./keep-context-release.js";
 import {
 	createConversationRegion,
 	type FullOutputLocators,
@@ -251,10 +252,15 @@ export function prepareCompactionBoundary(
 	const tailMessages = visible.slice(tailStart);
 
 	const regionConversation = convertToLlm(regionMessages.map((item) => item.message));
-	const region = createConversationRegion(
+	const conversationRegion = createConversationRegion(
 		regionConversation,
 		previous ? previousSummaryText(previous.entry) : undefined,
 		control.history && fullOutputLocators(regionMessages, regionConversation, control.history),
+	);
+	const region = releaseKeepContextSpans(
+		conversationRegion,
+		Math.round(conversationRegion.lines.length * parameters.compression_ratio),
+		normalizeKeepContextShare(settings.keepContextShare),
 	);
 	if (!control.allowSmallRegion && region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 

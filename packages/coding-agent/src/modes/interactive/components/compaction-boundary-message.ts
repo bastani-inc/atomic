@@ -20,6 +20,19 @@ interface BoundaryView {
 	model?: string;
 	/** Authoritative whole-context count, preferred for "Compacted from N tokens". */
 	tokensBefore?: number;
+	releasedRanges?: VerbatimCompactionDetails["releasedRanges"];
+}
+
+/** One short line naming the `<keepContext>` spans that lost protection, or undefined when none did. */
+function releasedSpansNotice(released: BoundaryView["releasedRanges"]): string | undefined {
+	if (!released || released.length === 0) return undefined;
+	const duplicates = released.filter((range) => range.reason === "duplicate").length;
+	const reasons = [
+		...(duplicates > 0 ? [`${duplicates} duplicate`] : []),
+		...(released.length > duplicates ? [`${released.length - duplicates} over budget`] : []),
+	];
+	const noun = released.length === 1 ? "span" : "spans";
+	return `Released ${released.length} keepContext ${noun} (${reasons.join(", ")})`;
 }
 
 /** Renders the durable verbatim compaction boundary without markdown reflow. */
@@ -37,6 +50,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 				tokensBefore: result.tokensBefore,
 				backend: result.backend,
 				model: result.model,
+				releasedRanges: result.releasedRanges,
 			};
 		} else {
 			this.view = result;
@@ -74,6 +88,8 @@ export class CompactionBoundaryMessageComponent extends Box {
 		);
 		content.addChild(new Text(label, 0, 0));
 		if (this.view.model) content.addChild(new Text(theme.fg("dim", this.view.model), 0, 0));
+		const released = releasedSpansNotice(this.view.releasedRanges);
+		if (released) content.addChild(new Text(theme.fg("dim", released), 0, 0));
 		content.addChild(new Spacer(1));
 		if (this.expanded) {
 			content.addChild(
@@ -133,6 +149,7 @@ export function compactionBoundaryFromMessage(
 			tokensBefore: details.tokensBefore ?? details.stats.tokensBefore,
 			backend: details.backend,
 			model: details.model,
+			releasedRanges: details.releasedRanges,
 		},
 		outputPad,
 	);

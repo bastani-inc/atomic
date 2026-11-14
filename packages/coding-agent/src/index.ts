@@ -391,6 +391,7 @@ export {
 	type PolicyRefusalPhase,
 	prepareBranchEntries,
 	prepareCompactionBoundary,
+	type ReleasedRange,
 	runVerbatimCompaction,
 	type SidecarDirectory,
 	serializeConversation,

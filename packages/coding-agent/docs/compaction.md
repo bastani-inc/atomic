@@ -106,9 +106,18 @@ Protection includes the tags and survives repeated compaction, even if the plann
 - Put each tag on its own line. Tags mentioned inside prose do not protect content.
 - A span stays within one user or assistant message. An unclosed span protects through that message's end; a closing tag without an opener is ignored.
 - Tags in tool results have no effect. Restate important file or fetched content in your own message.
-- Protected content counts toward the keep target. Protect only essential constraints, since protecting more leaves less room for surrounding context.
+- Protected content counts toward the keep target. Tag constraints, not material: protecting more leaves less room for surrounding context.
 
-Results report protected ranges as `keptRanges`.
+Protection is best effort within a budget. Compaction always succeeds and never grows because of `keepContext`: tags change which lines survive, not whether compaction fits. Protected spans may fill at most `compaction.keepContextShare` (default `0.5`) of the keep target, in both lines and characters. Past that, compaction releases whole spans until the rest fit, in this order:
+
+1. Older copies of a span repeated later, compared after whitespace normalization. Restating a constraint does not add protection.
+2. The oldest spans.
+3. The 3 most recent spans.
+4. Spans in the latest user message.
+
+A released span is never cut partway by this step. It becomes ordinary content that compaction ranks with everything else, so useful lines can still survive. When protected spans fit the budget, nothing is released.
+
+Results report protected ranges as `keptRanges`, and released spans as `releasedRanges` with a `reason` of `duplicate` or `budget`. The compaction notice shows how many spans were released.
 
 ## Compaction model
 

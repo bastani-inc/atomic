@@ -44,6 +44,15 @@ const CompactionSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.compaction.preserve_recent,
 		}),
 	),
+	keepContextShare: Type.Optional(
+		Type.Number({
+			minimum: 0,
+			maximum: 1,
+			description:
+				"Share of the keep target that <keepContext> spans may fill. Past it, older duplicate spans and then the oldest spans lose protection and are compacted like other lines. Spans in the latest user message and the 3 most recent spans are always kept.",
+			default: SETTINGS_DEFAULTS.compaction.keepContextShare,
+		}),
+	),
 	query: Type.Optional(
 		Type.String({
 			description:

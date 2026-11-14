@@ -223,6 +223,13 @@
           "description": "Exact number of newest context-visible messages kept outside the compactable region.",
           "default": 2
         },
+        "keepContextShare": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the keep target that <keepContext> spans may fill. Past it, older duplicate spans and then the oldest spans lose protection and are compacted like other lines. Spans in the latest user message and the 3 most recent spans are always kept.",
+          "default": 0.5
+        },
         "query": {
           "type": "string",
           "description": "Relevance focus for selecting older lines to retain. Defaults to the last user message when omitted."

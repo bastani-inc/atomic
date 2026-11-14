@@ -649,6 +649,7 @@ async function runCompactionLadder(
 					text: summary.summary,
 					ranges: [],
 					keptRanges: [],
+					releasedRanges: [],
 					stats: {
 						linesBefore: preparation.region.lines.length,
 						linesDeleted: 0,
