@@ -573,3 +573,15 @@ test.skipIf(process.platform === "win32")(
 	},
 	REAL_HOST_TIMEOUT_MS,
 );
+
+test("a draining host that still reports itself does not count as able to restore a binding (#4768)", async () => {
+	const f = await sharedRoot();
+	try {
+		await f.shared.reportHost(host("h-restorer", { busy: 1, draining: true }));
+		assert.equal(await f.shared.capableHostLive("root", 60_000, "binding"), false, "it takes no more work");
+		await f.shared.reportHost(host("h-restorer", { busy: 1 }));
+		assert.equal(await f.shared.capableHostLive("root", 60_000, "binding"), true);
+	} finally {
+		await f.close();
+	}
+});

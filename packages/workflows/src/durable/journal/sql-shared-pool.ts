@@ -313,13 +313,14 @@ export class SqlSharedPool {
 
 	/**
 	 * Whether a host serving `root` could restore the binding with affinity key `binding` now: it has a restore port and
-	 * git, reported within `ttlMs`, and does not back off from restoring that binding after its restores failed (#4416).
-	 * A host that does not serve the root, such as one without its worker definitions, never claims its work.
+	 * git, reported within `ttlMs`, is not draining (#4768), and does not back off from restoring that binding after its
+	 * restores failed (#4416). A host that does not serve the root, such as one without its worker definitions, never
+	 * claims its work.
 	 */
 	async capableHostLive(root: string, ttlMs: number, binding: string): Promise<boolean> {
 		const row = await this.storage.read((executor) =>
 			executor.get(
-				`SELECT 1 AS live FROM ${this.hosts} h WHERE restore = 1 AND git != 'unavailable' AND heartbeat_at >= ${STORE_NOW} - ?
+				`SELECT 1 AS live FROM ${this.hosts} h WHERE restore = 1 AND git != 'unavailable' AND draining = 0 AND heartbeat_at >= ${STORE_NOW} - ?
 				AND EXISTS (SELECT 1 FROM json_each(roots) WHERE value = ?)
 				AND NOT EXISTS (SELECT 1 FROM ${this.backoffs} b WHERE b.host = h.host AND b.binding = ? AND b.until > ${STORE_NOW})
 				LIMIT 1`,
