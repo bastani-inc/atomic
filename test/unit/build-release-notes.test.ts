@@ -329,6 +329,35 @@ describe("release-note deduplication (#4799)", () => {
 		assert.equal(notes, `### Fixed\n\n${partialA}\n${singleA}\n${partialB}\n${singleB}\n`);
 	});
 
+	test("joins changes that a later, broader bullet connects (#4799)", () => {
+		const oneTwo = "- One-two ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2))";
+		const oneThree = "- One-three ([#1](https://github.com/o/r/issues/1), [#3](https://github.com/o/r/pull/3))";
+		const all =
+			"- All three ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2), [#3](https://github.com/o/r/pull/3))";
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\n### Changed\n\n${oneTwo}\n` },
+				{ name: "intercom", content: `## [1.0.0]\n\n### Changed\n\n${oneThree}\n` },
+				{ name: "subagents", content: `## [1.0.0]\n\n### Changed\n\n${all}\n` },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, `### Changed\n\n${all}\n`);
+	});
+
+	test("keeps a package summary's breaking-change note when its bullets repeat earlier ones (#4799)", () => {
+		const bullet = "- **Same.** Text ([#1](https://github.com/o/r/issues/1), [#2](https://github.com/o/r/pull/2)).";
+		const warning = "**Breaking change:** rename `foo` to `bar`.";
+		const notes = buildReleaseNotes(
+			[
+				{ name: "coding-agent", content: `## [1.0.0]\n\nTheme.\n\n${bullet}\n` },
+				{ name: "workflows", content: `## [1.0.0]\n\nOther theme.\n\n${bullet}\n\n${warning}\n` },
+			],
+			"1.0.0",
+		);
+		assert.equal(notes, `Theme.\n\n${bullet}\n\n${warning}\n`);
+	});
+
 	test("drops a verbatim repeat of a bullet with no links (#4799)", () => {
 		const notes = buildReleaseNotes(
 			[

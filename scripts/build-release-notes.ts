@@ -231,9 +231,10 @@ function isMoreComplete(candidate: Bullet, current: Bullet): boolean {
 /**
  * Lists each change once across `blocks`, keeping their order. A repeated
  * change is removed, and its most complete wording takes the place where the
- * change first appeared. A block that had bullets and lost all of them is
- * dropped with its prose, so no theme line is left without its bullets.
- * Returns the surviving blocks.
+ * change first appeared. A bullet that matches several earlier changes joins
+ * them into one. A block that had bullets and lost all of them also loses the
+ * theme line before them; any prose after its bullets, such as a
+ * "**Breaking change:**" note, stays. Returns the blocks left with content.
  */
 function dedupeBlocks(blocks: readonly string[]): string[] {
 	const changes: Change[] = [];
@@ -249,37 +250,50 @@ function dedupeBlocks(blocks: readonly string[]): string[] {
 			}
 			hadBullets = true;
 			const bullet = toBullet(item.lines);
-			const change = changes.find((candidate) => candidate.members.some((member) => isSameChange(member, bullet)));
-			if (!change) {
+			const matching = changes.filter((change) => change.members.some((member) => isSameChange(member, bullet)));
+			const [first, ...rest] = matching;
+			if (!first) {
 				const created: Change = { best: bullet, members: [bullet] };
 				changes.push(created);
 				slots.push({ item, change: created });
 				continue;
 			}
-			change.members.push(bullet);
-			if (isMoreComplete(bullet, change.best)) change.best = bullet;
-			// The removed bullet's separating blank lines stay with the item before it.
-			const previous = slots.at(-1);
-			if (previous && item.trailingBlankLines > previous.item.trailingBlankLines) {
-				slots[slots.length - 1] = {
-					...previous,
-					item: { ...previous.item, trailingBlankLines: item.trailingBlankLines },
-				};
+			// Later matches fold into the earliest; their slots render nothing.
+			for (const change of rest) {
+				first.members.push(...change.members);
+				if (isMoreComplete(change.best, first.best)) first.best = change.best;
+				changes.splice(changes.indexOf(change), 1);
 			}
+			first.members.push(bullet);
+			if (isMoreComplete(bullet, first.best)) first.best = bullet;
+			slots.push({ item });
 		}
 		placed.push({ slots, hadBullets });
 	}
 
+	const live = new Set(changes);
 	const rendered: string[] = [];
 	for (const { slots, hadBullets } of placed) {
-		if (hadBullets && !slots.some((slot) => slot.change)) continue;
+		const kept = slots.filter((slot) =>
+			slot.item.bullet ? slot.change !== undefined && live.has(slot.change) : true,
+		);
+		const firstBullet = slots.findIndex((slot) => slot.item.bullet);
+		const orphanedTheme = hadBullets && !kept.some((slot) => slot.item.bullet);
 		const lines: string[] = [];
-		for (const { item, change } of slots) {
-			lines.push(...(change ? change.best.lines : item.lines));
-			for (let index = 0; index < item.trailingBlankLines; index += 1) lines.push("");
+		// Blank lines are emitted before the next kept item, so a removed item's
+		// separation survives and the block never ends with blanks.
+		let blanks = 0;
+		for (const [index, slot] of slots.entries()) {
+			const drop = !kept.includes(slot) || (orphanedTheme && index < firstBullet);
+			if (drop) {
+				blanks = Math.max(blanks, slot.item.trailingBlankLines);
+				continue;
+			}
+			if (lines.length > 0) for (let line = 0; line < blanks; line += 1) lines.push("");
+			lines.push(...(slot.change ? slot.change.best.lines : slot.item.lines));
+			blanks = slot.item.trailingBlankLines;
 		}
-		const text = trimBlankEdges(lines).join("\n");
-		if (text.length > 0) rendered.push(text);
+		if (lines.length > 0) rendered.push(lines.join("\n"));
 	}
 	return rendered;
 }
