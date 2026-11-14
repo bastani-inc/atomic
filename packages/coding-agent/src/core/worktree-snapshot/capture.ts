@@ -13,7 +13,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
 import {
@@ -289,6 +289,11 @@ async function writeCapturedTree(
 	).split("\n");
 	const userIndexPath = isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
 	const index = captureIndexPath(storeDir, gitDir, root);
+	// A store inside the checkout would capture its own files: capture there as without a private index.
+	const fromRoot = relative(root, canonicalizeWorktreePath(index));
+	if (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot)) {
+		return writeWorkingTree(checkout, settings, policy, scratch, { signal });
+	}
 	return inTurn(index, async () => {
 		const working = `${index}.${process.pid}.tmp`;
 		try {
@@ -314,10 +319,11 @@ async function writeCapturedTree(
 			await rename(working, index);
 			return state;
 		} catch {
+			const remove = (files: readonly string[]) =>
+				Promise.all(files.map((file) => rm(file, { force: true }))).catch(() => undefined);
+			await remove([working, `${working}.lock`]);
 			signal?.throwIfAborted();
-			await Promise.all(
-				[index, `${index}.json`, working, `${working}.lock`].map((file) => rm(file, { force: true })),
-			).catch(() => undefined);
+			await remove([index, `${index}.json`]);
 			return writeWorkingTree(checkout, settings, policy, scratch, { signal });
 		}
 	});

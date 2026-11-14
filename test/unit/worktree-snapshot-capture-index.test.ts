@@ -10,12 +10,12 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import {
 	captureWorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
-import { runGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
+import { runGit, setWorktreeSnapshotGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import {
 	captureIndexPath,
 	defaultWorktreeSnapshotStoreDir,
@@ -29,7 +29,10 @@ let sandbox: GitSandbox;
 beforeEach(() => {
 	sandbox = new GitSandbox();
 });
-afterEach(() => sandbox.dispose());
+afterEach(() => {
+	vi.unstubAllEnvs();
+	sandbox.dispose();
+});
 
 async function captureOf(dir: string, maxFileBytes?: number) {
 	const result: WorktreeSnapshotCapture = await captureWorktreeSnapshot(dir, { settings: { maxFileBytes } });
@@ -251,6 +254,52 @@ describe("a private index that cannot be used falls back to today's capture (#47
 			assert.equal(JSON.parse(readFileSync(`${index}.json`, "utf8")).version, 1);
 		});
 	}
+});
+
+describe("where the private index may not go (#4748)", () => {
+	test("a store inside the checkout is not captured: the capture keeps no private index there (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+		vi.stubEnv("ATOMIC_CODING_AGENT_DIR", join(clone, "agent-home"));
+		sandbox.write(join(clone, "a.txt"), "changed\n");
+
+		const first = await treeOf(clone);
+		const second = await treeOf(clone);
+
+		assert.equal(second, first);
+		const paths = (await sandbox.git(clone, "ls-tree", "-r", "--name-only", second)).split("\n");
+		assert.deepEqual(paths, ["a.txt"]);
+		assert.equal(existsSync(join(clone, "agent-home")), false);
+	});
+
+	test("a cancelled capture leaves no working copy of the private index behind (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+		await treeThroughPrivateIndex(clone);
+		sandbox.write(join(clone, "a.txt"), "changed\n");
+		const controller = new AbortController();
+		let invocations = 0;
+		const executable = sandbox.executable;
+		const restore = setWorktreeSnapshotGit(async () => {
+			// After locating the checkout and its index: the working copy of the private index exists by then.
+			if (++invocations === 5) controller.abort(new Error("cancelled by the user"));
+			return executable;
+		});
+		try {
+			await assert.rejects(
+				captureWorktreeSnapshot(clone, { signal: controller.signal }),
+				(error: unknown) => error === controller.signal.reason,
+			);
+		} finally {
+			setWorktreeSnapshotGit(restore);
+		}
+
+		assert.deepEqual(
+			readdirSync(join(defaultWorktreeSnapshotStoreDir(), "capture-index")).filter(
+				(name) => name.endsWith(".tmp") || name.endsWith(".lock"),
+			),
+			[],
+		);
+		assert.equal(await treeThroughPrivateIndex(clone), await treeWithoutPrivateIndex(clone));
+	});
 });
 
 describe("capture cost with a persistent private index (#4748)", () => {
