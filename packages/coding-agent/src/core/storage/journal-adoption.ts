@@ -4,6 +4,7 @@ import { open, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
+import { type StorageDialect, sqliteDialect } from "./dialect.js";
 import type { StorageFailureCause } from "./errors.js";
 import {
 	isJournalAdoptError,
@@ -46,23 +47,28 @@ export function runJournalTables(prefix = ""): Readonly<Record<keyof typeof RUN_
 	return renderStorageIdentifiers("journal", RUN_JOURNAL_TABLE_NAMES, prefix);
 }
 
-/** `CREATE TABLE IF NOT EXISTS` statements for a SQL run journal's runs, events and leases tables. */
-export function runJournalTableDefinitions(prefix = ""): string {
+/**
+ * `CREATE TABLE IF NOT EXISTS` statements for a SQL run journal's runs, events and leases tables, in `dialect`. The
+ * runs and events tables carry the dialect's row order column, which the journal's change token and the snapshot
+ * reference index read, and event keys compare by their UTF-8 bytes, as the journal's key range reads expect.
+ */
+export function runJournalTableDefinitions(prefix = "", dialect: StorageDialect = sqliteDialect): string {
 	const t = runJournalTables(prefix);
+	const { int } = dialect.types;
 	return `
 		CREATE TABLE IF NOT EXISTS ${t.runs}(
 			run_id TEXT PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL,
-			created_at INTEGER NOT NULL, status TEXT NOT NULL, header_json TEXT NOT NULL
+			created_at ${int} NOT NULL, status TEXT NOT NULL, header_json TEXT NOT NULL${dialect.rowOrderColumn}
 		);
 		CREATE TABLE IF NOT EXISTS ${t.events}(
 			run_id TEXT NOT NULL,
-			seq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT,
-			type TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL,
+			seq ${int} NOT NULL, epoch ${int} NOT NULL, key TEXT${dialect.byteOrderCollation},
+			type TEXT NOT NULL, payload TEXT NOT NULL, at ${int} NOT NULL${dialect.rowOrderColumn},
 			PRIMARY KEY(run_id, seq), UNIQUE(run_id, key)
 		);
 		CREATE TABLE IF NOT EXISTS ${t.leases}(
 			run_id TEXT PRIMARY KEY,
-			holder_id TEXT, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL
+			holder_id TEXT, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL
 		);
 	`;
 }
@@ -71,9 +77,13 @@ export function runJournalTableDefinitions(prefix = ""): string {
  * Creates a SQL run journal's metadata and tables inside the caller's transaction when they are missing, and checks
  * that an existing journal has the supported schema version. Throws `StorageSchemaVersionError` otherwise.
  */
-export async function ensureRunJournalSchema(tx: SqliteExecutor, prefix = ""): Promise<void> {
+export async function ensureRunJournalSchema(
+	tx: SqliteExecutor,
+	prefix = "",
+	dialect: StorageDialect = sqliteDialect,
+): Promise<void> {
 	const t = runJournalTables(prefix);
-	await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(schema_version INTEGER NOT NULL)`);
+	await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(schema_version ${dialect.types.int} NOT NULL)`);
 	const versions = await tx.all<SqliteRow & { schema_version: SqliteValue }>(`SELECT schema_version FROM ${t.meta}`);
 	if (versions.length === 0) await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, RUN_JOURNAL_SCHEMA_VERSION);
 	else if (versions.length > 1 || versions[0]!.schema_version !== RUN_JOURNAL_SCHEMA_VERSION)
@@ -82,7 +92,7 @@ export async function ensureRunJournalSchema(tx: SqliteExecutor, prefix = ""): P
 			versions.length > 1 ? `${versions.length} rows` : versions[0]!.schema_version,
 			RUN_JOURNAL_SCHEMA_VERSION,
 		);
-	await tx.exec(runJournalTableDefinitions(prefix));
+	await tx.exec(runJournalTableDefinitions(prefix, dialect));
 }
 
 /** Most journals one adoption follows through the run references it finds. */

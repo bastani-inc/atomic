@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
+import { existsSync, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -33,9 +33,10 @@ import {
 	runGit,
 	withWorktreeSnapshotGit,
 } from "./git.ts";
-import { defaultWorktreeSnapshotStoreDir } from "./paths.ts";
+import { canonicalizeWorktreePath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
+import { legacyRepositoryIdOf, repositoryIdOf } from "./repository-identity.ts";
 import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	resolveWorktreeSnapshotSettings,
@@ -446,9 +447,35 @@ async function withRestoreRecord(
 	}
 }
 
-/** The shared object store of the repository that `remotes` name, under `storeDir`. */
+/**
+ * The shared object store of the repository that `remotes` name, under `storeDir`: named after the normalized remotes
+ * (#4748), so SSH and HTTPS checkouts of one repository share it, or after the remotes as spelled when only a store an
+ * earlier version created that way exists.
+ */
 export function objectStorePath(storeDir: string, remotes: readonly string[]): string {
-	return join(storeDir, "repositories", `${sha256Hex(remotes.join("\n")).slice(0, 24)}.git`);
+	const store = join(storeDir, "repositories", `${repositoryIdOf(remotes)}.git`);
+	const legacy = join(storeDir, "repositories", `${legacyRepositoryIdOf(remotes)}.git`);
+	return existsSync(store) || !existsSync(legacy) ? store : legacy;
+}
+
+/**
+ * Puts the commit `head` of the local checkout at `checkout` into the shared object store of the repository `remotes`
+ * name (#4748), so a restore of it fetches nothing from a remote: a CI job's checkout keeps its credentials to itself.
+ * A shallow checkout leaves the store shallow, as a depth-1 restore fetch does.
+ */
+export async function storeCheckoutHead(
+	storeDir: string,
+	remotes: readonly string[],
+	checkout: string,
+	head: string,
+	signal?: AbortSignal,
+): Promise<void> {
+	const store = objectStorePath(resolve(storeDir), remotes);
+	const git: GitRunOptions = { cwd: checkout, signal, env: { GIT_DIR: store } };
+	await withRepositoryLock(store, async () => {
+		await ensureObjectStore(store, null, signal);
+		if (!(await hasObject(git, `${head}^{commit}`))) await runFetch(git, checkout, [head], ["--update-shallow"]);
+	});
 }
 
 async function initializedStore(store: string): Promise<boolean> {
@@ -1126,8 +1153,9 @@ export async function resetPooledWorktree(
 	};
 	assertUsableSnapshotRecord(binding, snapshot);
 	const patches = await snapshotPatches(snapshot, options.blobs);
+	// The slot's own store: one an earlier version named after the remotes as spelled stays the slot's (#4748).
+	const store = await linkedObjectStore(options.storeDir, slot, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(options.storeDir, snapshot.remotes);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
 		await options.beforeReset();
@@ -1160,6 +1188,17 @@ export async function resetPooledWorktree(
 		);
 		return warnings;
 	});
+}
+
+/** The shared object store under `storeDir` that the restored worktree at `worktree` belongs to. */
+async function linkedObjectStore(storeDir: string, worktree: string, signal: AbortSignal | undefined): Promise<string> {
+	const store = resolve(
+		await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, signal }),
+	);
+	if (canonicalizeWorktreePath(dirname(store)) !== canonicalizeWorktreePath(join(storeDir, "repositories"))) {
+		throw new WorkspaceRestoreError("unsafe-target", { snapshotId: null, target: worktree, reason: "not-restored" });
+	}
+	return store;
 }
 
 /** Restore errors after which a degraded restore can still give the session part of its snapshot (#4733). */
@@ -1596,7 +1635,9 @@ async function moveIntoPlace(
 	} else {
 		await writing(path, snapshotId, () => rmdir(path));
 	}
-	await runGit(["worktree", "move", staging, path], git);
+	// `-f` replaces only a registration whose directory is gone, as a store restored from a CI cache keeps for the
+	// worktree its saving job built at this path (#4748); a directory at the path was refused above.
+	await runGit(["worktree", "move", "-f", staging, path], git);
 	// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
 	// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone.
 	const registered = await registeredWorktrees(git);

@@ -35,7 +35,8 @@ import { useTemporaryAgentDir } from "../helpers/temporary-agent-dir.js";
 /**
  * Every store's behavioural contract on every storage backend (#4793): the database facade, sessions, the workflow
  * run journal and Intercom's multi-node routing state, each on a SQLite file, a libSQL server and Postgres.
- * test/helpers/storage-backends.ts says how to point it at servers.
+ * test/helpers/storage-backends.ts says how to point it at servers. The shared worker pool's stores are not here yet:
+ * their SQL is SQLite's until P5 of #4793 makes it portable.
  */
 
 useTemporaryAgentDir();
@@ -44,15 +45,11 @@ useTemporaryAgentDir();
  * Rows that fail on a backend because of an open bug, by suite and test name, with the issue. They run as `it.fails`,
  * so the row turns red once the bug is fixed and the fix removes its entry.
  */
-const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map([
-	[
-		"SqlSessionStore on libSQL server (sqld) > computes summaries from messages and the latest metadata without rewriting text",
-		"#4805",
-	],
-]);
+const KNOWN_FAILURES: ReadonlyMap<string, string> = new Map();
 
 /** A describe/it runner for `backend`: skipped rows when the backend is, known failures as `it.fails`. */
 function runnerFor(backend: StorageBackend) {
+	const { skipReason } = backend;
 	let suite = "";
 	return {
 		describe(name: string, body: () => void) {
@@ -68,7 +65,7 @@ function runnerFor(backend: StorageBackend) {
 		},
 		it(name: string, body: () => Promise<void>) {
 			const issue = KNOWN_FAILURES.get(`${suite} > ${name}`);
-			if (backend.skipReason !== undefined) it.skip(name, body);
+			if (skipReason !== undefined) it.skip(name, body);
 			else if (issue !== undefined) it.fails(`${name} (known failure, ${issue})`, body);
 			else it(name, body);
 		},
@@ -93,8 +90,7 @@ for (const backend of storageBackends) {
 	const name = backend.skipReason === undefined ? backend.name : `${backend.name} (skipped: ${backend.skipReason})`;
 	const run = backend.skipReason === undefined ? test : test.skip;
 	const runner = runnerFor(backend);
-
-	registerSqliteDatabaseConformance(runner, `database facade on ${name}`, databaseSubject(backend));
+	registerSqliteDatabaseConformance(runnerFor(backend), `database facade on ${name}`, databaseSubject(backend));
 
 	registerSessionStoreConformance(runner, `SqlSessionStore on ${name}`, async (body) => {
 		const scope = await backend.openScope();
@@ -123,11 +119,14 @@ for (const backend of storageBackends) {
 			try {
 				const journal = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
 				const close = journal.close.bind(journal);
+				// The suite closes a journal more than once; the scope closes with the first.
+				let scopeClosed: Promise<void> | undefined;
 				journal.close = async () => {
 					try {
 						await close();
 					} finally {
-						await scope.close();
+						scopeClosed ??= scope.close();
+						await scopeClosed;
 					}
 				};
 				return journal;

@@ -655,7 +655,7 @@ A failed build resolves the barrier with the same notice as today; an aborted tu
 ## 9. Security
 
 1. **Package stores by default.** npm, pnpm, uv, cargo and Go verify what they read from stores. Build output is
-   opt-in per path (`kind: build`).
+   opt-in per path (`"kind": "build"` in `resume.cache`).
 2. **One writer of shared build content.** Only `prebuildRepository` parks seeds, only for a trusted project and a
    successful build. On GitHub, save only from a prebuild job on the default branch (`push`, `schedule`,
    `workflow_dispatch`); agent jobs use `actions/cache/restore`, which cannot save.
@@ -667,7 +667,7 @@ A failed build resolves the barrier with the same notice as today; an aborted tu
    ever claimed by the same OS user. Project trust is keyed by path; a slot is claimed only for the same repository
    identity, so trust given to a slot path stays with that repository.
 6. **Remaining risk:** a trusted job that builds merged malicious code produces poisoned build output. Keep
-   `kind: build` off for repositories that accept outside contributions; the 7-day full-build rule extends to seeds.
+   build paths out of `resume.cache` for repositories that accept outside contributions; the 7-day full-build rule extends to seeds.
 
 ## 10. Fallbacks (resume always works)
 

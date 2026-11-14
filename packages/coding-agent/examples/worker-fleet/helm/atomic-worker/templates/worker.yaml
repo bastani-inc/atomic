@@ -13,7 +13,11 @@ spec:
     metadata:
       labels:
         app: "{{ .Release.Name }}"
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
+      serviceAccountName: "{{ .Release.Name }}"
       terminationGracePeriodSeconds: {{ .Values.drainSeconds }}
       automountServiceAccountToken: false
       securityContext:
@@ -57,9 +61,17 @@ spec:
               readOnly: true
       volumes:
         - name: token-secret
+          {{- if .Values.tokenSecretProviderClass }}
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "{{ .Values.tokenSecretProviderClass }}"
+          {{- else }}
           secret:
             secretName: "{{ .Values.tokenSecret }}"
             defaultMode: 0400
+          {{- end }}
         # The token, copied for the container's user (node, uid 1000) with mode 600: a Secret volume's files are root's.
         - name: token
           emptyDir:
