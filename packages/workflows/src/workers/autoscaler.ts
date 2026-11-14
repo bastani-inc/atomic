@@ -124,13 +124,22 @@ export interface FleetPlan {
 }
 
 /** Children the roots can run at once: ready and running work, each root's capped by its session limit. */
-function demand(roots: readonly FleetRootDemand[]): number {
+export function fleetDemand(roots: readonly FleetRootDemand[]): number {
 	let total = 0;
 	for (const root of roots) {
 		const wanted = root.blocked ? root.leased : root.ready + root.leased;
 		total += Math.min(wanted, root.sessionLimit ?? wanted);
 	}
 	return total;
+}
+
+/**
+ * The serving hosts the fleet should have: `clamp(minHosts, maxHosts, min(ceil(demand / workersPerHost),
+ * rateCapHosts))`. It is the policy's scaling signal, which `atomic worker metrics` exports for other autoscalers.
+ */
+export function fleetTarget(policy: FleetPolicy, roots: readonly FleetRootDemand[], rateCapHosts?: number): number {
+	const wanted = Math.min(Math.ceil(fleetDemand(roots) / policy.workersPerHost), rateCapHosts ?? Infinity);
+	return Math.max(policy.minHosts, Math.min(policy.maxHosts, wanted));
 }
 
 /**
@@ -203,11 +212,7 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 		pending++;
 	}
 	const ready = observation.roots.reduce((total, root) => total + (root.blocked ? 0 : root.ready), 0);
-	const wanted = Math.min(
-		Math.ceil(demand(observation.roots) / policy.workersPerHost),
-		observation.rateCapHosts ?? Infinity,
-	);
-	const target = Math.max(policy.minHosts, Math.min(policy.maxHosts, wanted));
+	const target = fleetTarget(policy, observation.roots, observation.rateCapHosts);
 	const serving = live + pending;
 	const over = ready > policy.scaleUpQueueDepth || (ready > 0 && serving === 0);
 	const overSince = over ? (state.overSince ?? now) : undefined;
