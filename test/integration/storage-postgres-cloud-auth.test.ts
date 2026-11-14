@@ -1,51 +1,38 @@
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
 import { inspect } from "node:util";
-import { StorageConfigError } from "@bastani/atomic/storage";
 import { afterEach, describe, test, vi } from "vitest";
-import adapter from "../../packages/storage-postgres/postgres.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 
-/** A fake GCP metadata server that issues `token()` as the access token, and counts what it issued. */
-async function fakeMetadataServer(
-	token: () => string | undefined,
-): Promise<{ host: string; issued(): number; close(): Promise<void> }> {
-	let issued = 0;
-	const server: Server = createServer((request, response) => {
-		const value = token();
-		if (value === undefined || request.headers["metadata-flavor"] !== "Google") {
-			response.writeHead(403, { "content-type": "application/json" });
-			response.end(JSON.stringify({ error: "access_denied" }));
-			return;
-		}
-		issued++;
-		response.writeHead(200, { "content-type": "application/json" });
-		response.end(JSON.stringify({ access_token: value, expires_in: 3600, token_type: "Bearer" }));
-	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address() as AddressInfo;
-	return {
-		host: `127.0.0.1:${port}`,
-		issued: () => issued,
-		close: () =>
-			new Promise<void>((resolve) => {
-				server.closeAllConnections();
-				server.close(() => resolve());
-			}),
-	};
+/**
+ * Replaces `google-auth-library` with a GoogleAuth whose tokens come from `issue`, and loads the adapter with it.
+ * Returns the adapter and how many tokens were asked for.
+ */
+async function adapterWithGoogleAuth(issue: () => Promise<string | null>) {
+	let requested = 0;
+	vi.doMock("google-auth-library", () => ({
+		GoogleAuth: class {
+			getAccessToken() {
+				requested++;
+				return issue();
+			}
+		},
+	}));
+	vi.resetModules();
+	const { default: adapter } = await import("../../packages/storage-postgres/postgres.js");
+	return { adapter, requested: () => requested };
 }
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+	vi.doUnmock("google-auth-library");
+	vi.resetModules();
+});
 
 describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#4793)", () => {
-	test("a cloud auth selection connects with the platform's token and never reads a password secret (#4793)", async () => {
+	test("a cloud auth selection connects with the SDK's token and never reads a password secret (#4793)", async () => {
 		await withPostgresDatabase(async ({ admin, url, name }) => {
 			const role = `${name}_iam`;
 			const token = "fixture-iam-token-for-role";
-			const metadata = await fakeMetadataServer(() => token);
-			vi.stubEnv("GCE_METADATA_HOST", metadata.host);
-			vi.stubEnv("PATH", "");
+			const { adapter, requested } = await adapterWithGoogleAuth(async () => token);
 			try {
 				await admin.exec(`CREATE ROLE ${role} LOGIN PASSWORD '${token}'`);
 				await admin.exec(`GRANT CONNECT ON DATABASE ${name} TO ${role}`);
@@ -62,12 +49,12 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 				try {
 					const reads = await Promise.all([1, 2, 3, 4].map(() => database.get("SELECT current_user AS who")));
 					assert.deepEqual(reads, Array(4).fill({ who: role }));
-					assert.equal(metadata.issued(), 1);
+					// One token per new connection, and the pool opens at most two.
+					assert.ok(requested() >= 1 && requested() <= 2, `asked for ${requested()} tokens`);
 				} finally {
 					await database.close();
 				}
 			} finally {
-				await metadata.close();
 				await admin.run("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = ?", role);
 				await admin.exec(`REVOKE ALL ON DATABASE ${name} FROM ${role}`).catch(() => {});
 				await admin.exec(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
@@ -75,31 +62,23 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres cloud IAM auth (#479
 		});
 	});
 
-	test("a cloud auth that issues no token fails to open, naming the sources and not a credential (#4793)", async () => {
+	test("a cloud auth that issues no token fails to open, with the SDK's reason and no credential (#4793)", async () => {
 		await withPostgresDatabase(async ({ url }) => {
-			const metadata = await fakeMetadataServer(() => undefined);
-			vi.stubEnv("GCE_METADATA_HOST", metadata.host);
-			vi.stubEnv("PATH", "");
-			try {
-				const error = await adapter
-					.openDatabase({ url, auth: "gcp-iam" }, { agentDir: "/nonexistent", domain: "journal" })
-					.then(
-						(database) => database.close().then(() => assert.fail("expected the open to fail")),
-						(caught: Error) => caught,
-					);
-				const rendered = inspect(error, { depth: null });
-				let config: Error | undefined = error;
-				while (config !== undefined && !(config instanceof StorageConfigError))
-					config = config.cause as Error | undefined;
-				assert.ok(config instanceof StorageConfigError, rendered);
-				assert.equal(config.reason, "auth-unavailable");
-				assert.match(
-					config.message,
-					/metadata server: HTTP 403: access_denied; gcloud CLI: `gcloud` was not found on PATH/,
+			const { adapter } = await adapterWithGoogleAuth(() =>
+				Promise.reject(new Error("Could not load the default credentials")),
+			);
+			const error = await adapter
+				.openDatabase({ url, auth: "gcp-iam" }, { agentDir: "/nonexistent", domain: "journal" })
+				.then(
+					(database) => database.close().then(() => assert.fail("expected the open to fail")),
+					(caught: Error) => caught,
 				);
-			} finally {
-				await metadata.close();
-			}
+			let config: Error | undefined = error;
+			while (config !== undefined && config.name !== "StorageConfigError")
+				config = config.cause as Error | undefined;
+			assert.ok(config !== undefined, inspect(error, { depth: null }));
+			assert.equal((config as Error & { reason?: string }).reason, "auth-unavailable");
+			assert.match(config.message, /gcp-iam found no token \(Could not load the default credentials\)/);
 		});
 	});
 });

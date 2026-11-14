@@ -56,13 +56,17 @@ On Azure, AWS and Google Cloud the adapter can sign in with the machine's cloud 
 }
 ```
 
-For each new connection the adapter asks the platform for a short-lived token and sends it as the password. Tokens are kept in memory only, reused until 5 minutes before they expire, and never written to settings, logs or error messages. Each credential source has a time limit: 5 seconds for a metadata endpoint, 30 seconds for a CLI. When no source gives a token, opening fails with `StorageConfigError` reason `auth-unavailable`, and the message names each source tried and why it failed.
+Each cloud signs in through its own SDK, which the adapter does not bundle. Install the one your `auth` needs beside the adapter (these are the versions the adapter is tested with):
 
-| `auth` | Where the token comes from, in order |
-|---|---|
-| `azure-entra` | AKS workload identity (`AZURE_FEDERATED_TOKEN_FILE`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`); otherwise the App Service or Container Apps identity endpoint (`IDENTITY_ENDPOINT`, `IDENTITY_HEADER`) or the VM managed identity (IMDS); then `az account get-access-token --resource-type oss-rdbms` (a developer's `az login`). `AZURE_CLIENT_ID` selects a user-assigned identity. |
-| `aws-iam` | `aws rds generate-db-auth-token` for the URL's host, port and user, with the AWS CLI v2's own credential chain (instance profile, IRSA, `AWS_*` variables, profiles). The region comes from an RDS host name, otherwise from the CLI's configuration. The host and user must not contain spaces, quotes or shell metacharacters (`invalid-auth-target`). |
-| `gcp-iam` | The metadata server's token for the default service account (Compute Engine, GKE, Cloud Run); then `gcloud auth print-access-token` (a developer's `gcloud auth login`). |
+| `auth` | SDK | Install | Where the token comes from |
+|---|---|---|---|
+| `azure-entra` | `@azure/identity` | `atomic install npm:@azure/identity@4.14.1` | `DefaultAzureCredential` with the scope `https://ossrdbms-aad.database.windows.net/.default`: `AZURE_*` variables, AKS workload identity, managed identity (VM, App Service, Container Apps; `AZURE_CLIENT_ID` selects a user-assigned one), then a developer's `az login`. |
+| `aws-iam` | `@aws-sdk/rds-signer` | `atomic install npm:@aws-sdk/rds-signer@3.1169.0` | The RDS `Signer` for the URL's host, port and user, with the AWS SDK's default credential chain (`AWS_*` variables, profiles, IRSA, instance profile). The region comes from an RDS host name, otherwise from the SDK's configuration (`AWS_REGION` or the profile). |
+| `gcp-iam` | `google-auth-library` | `atomic install npm:google-auth-library@11.3.4` | `GoogleAuth` with the scope `https://www.googleapis.com/auth/sqlservice.login`: Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, the metadata server on Compute Engine, GKE and Cloud Run, or a developer's `gcloud auth application-default login`). |
+
+In an SDK project, `npm install` the same package next to `@bastani/atomic-storage-postgres`; each is an optional peer dependency. Only the configured cloud's SDK is loaded, when the store opens its first connection.
+
+For each new connection the adapter asks the SDK for a short-lived token and sends it as the password. Tokens are kept in memory only and never written to settings, logs or error messages; Azure tokens are reused until 5 minutes before they expire, and the AWS and Google SDKs cache their own credentials. One token request may take up to 8 seconds. When the SDK is missing or gives no token, opening fails with `StorageConfigError` reason `auth-unavailable`; the message names the package to install, or the SDK's own reason with anything shaped like a credential removed.
 
 Cloud tokens require TLS; keep `sslmode=verify-full` (the default for a remote host) or at least `require`.
 

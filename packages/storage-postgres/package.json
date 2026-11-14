@@ -22,6 +22,16 @@
   "atomic": { "storageAdapters": ["./postgres.js"] },
   "pi": { "storageAdapters": ["./postgres.js"] },
   "dependencies": { "pg": "8.23.1", "pg-connection-string": "2.14.1" },
-  "peerDependencies": { "@bastani/atomic": "*" },
-  "peerDependenciesMeta": { "@bastani/atomic": { "optional": true } }
+  "peerDependencies": {
+    "@aws-sdk/rds-signer": "^3.1169.0",
+    "@azure/identity": "^4.14.1",
+    "@bastani/atomic": "*",
+    "google-auth-library": "^10.9.1 || ^11.3.4"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/rds-signer": { "optional": true },
+    "@azure/identity": { "optional": true },
+    "@bastani/atomic": { "optional": true },
+    "google-auth-library": { "optional": true }
+  }
 }

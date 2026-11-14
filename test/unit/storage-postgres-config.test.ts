@@ -210,7 +210,7 @@ test("the Postgres adapter checks the options settings give it before connecting
 		"statementTimeoutMs",
 		"positive-integer-required",
 	);
-	await assertRefused(() => adapter.openDatabase({ url, auth: "gcp-iam" }, context), "auth", "auth-unavailable");
+	await assertRefused(() => adapter.openDatabase({ url, auth: "kerberos" }, context), "auth", "unsupported-auth");
 	await assertRefused(
 		() => adapter.openDatabase({ url: "postgres://atomic:fixture-secret@127.0.0.1:1/atomic" }, context),
 		"url",
