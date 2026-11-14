@@ -624,7 +624,12 @@ export async function unshallowRestoredWorktree(
 	const store = common.stdout.toString("utf8").trim();
 	if (common.exitCode !== 0 || !SHARED_STORE.test(store)) return false;
 	const git: GitRunOptions = { cwd: dirname(store), signal, env: { GIT_DIR: store } };
-	return unshallowStore(git, await configuredRemoteUrls(git), commits);
+	// Sibling worktrees of one store are compared at once: one fetches its history, the others find it complete.
+	return withRepositoryLock(store, async () =>
+		(await historyFetchOptions(git)).length === 0
+			? true
+			: unshallowStore(git, await configuredRemoteUrls(git), commits),
+	);
 }
 
 /**

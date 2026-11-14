@@ -319,6 +319,31 @@ describe("ancestry across a shallow store's boundary (#4748)", () => {
 		assert.equal(await isHeadOnlyAdvance(drift), true);
 	});
 
+	test("sibling restored worktrees of one shallow store are both advances when checked at once (#4748)", async () => {
+		const { clone } = await longHistory(5);
+		const blobs = new MemorySnapshotBlobStore();
+		const storeDir = sandbox.path("host");
+		const snapshot = await capture(clone, blobs);
+		const worktrees = [
+			await restoreWorktree(snapshot, { blobs, storeDir }),
+			await restoreWorktree(snapshot, { blobs, storeDir }),
+		];
+		const older = await sandbox.git(clone, "rev-parse", "HEAD~2");
+		const drifts = worktrees.map(
+			(restored) =>
+				new WorkspaceDriftError({
+					root: restored.path,
+					expectedHead: older,
+					actualHead: snapshot.head,
+					expectedTree: snapshot.tree,
+					actualTree: snapshot.tree,
+					snapshotId: null,
+				}),
+		);
+
+		assert.deepEqual(await Promise.all(drifts.map((drift) => isHeadOnlyAdvance(drift))), [true, true]);
+	});
+
 	test("a restored worktree whose remote is gone keeps its shallow store, and ancestry below the boundary is not an advance (#4748)", async () => {
 		const { remote, clone } = await longHistory(5);
 		const blobs = new MemorySnapshotBlobStore();
