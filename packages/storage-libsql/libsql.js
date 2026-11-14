@@ -194,6 +194,10 @@ async function collectAndFinalize() {
  */
 const MAX_IN_FLIGHT_WRITES = 4;
 
+/** The first bound on the wait before a server transaction whose lock was busy begins again; each later one doubles. */
+const BEGIN_RETRY_BASE_MS = 20;
+/** The largest bound on that wait. */
+const BEGIN_RETRY_MAX_MS = 1000;
 /** Write batches in a row a server left unanswered, after which its writes count as stalled. */
 const STALLED_WRITES_WARNING_AFTER = 3;
 /**
@@ -474,10 +478,39 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				);
 			return options?.priority === true ? sent() : limitedWrite(sent);
 		},
-		async beginTransaction() {
-			const transaction = await waitForLock(async () => (await connection()).transaction("write"));
+		async beginTransaction(options) {
+			let transaction = await waitForLock(async () => (await connection()).transaction("write"));
+			if (local)
+				return {
+					...statements(async () => transaction, watch),
+					commit: () => watch(() => transaction.commit()),
+					rollback: () => watch(() => transaction.rollback()),
+					close: () => transaction.close(),
+				};
+			// A server's transaction takes the write lock with its first statement (`BEGIN IMMEDIATE` goes with it). One
+			// that found the lock busy wrote nothing and ran nothing of the caller's, so it begins again and sends that
+			// statement again, after a random wait, for up to the caller's `lockWaitMs` (#4768): the caller only waits.
+			let begun = false;
+			const deadline = Date.now() + (options?.lockWaitMs ?? 0);
+			/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
+			const first = async (operation) => {
+				if (begun) return watch(operation);
+				for (let attempt = 0; ; attempt++) {
+					try {
+						const result = await watch(operation);
+						begun = true;
+						return result;
+					} catch (error) {
+						if (!isLockBusy(error) || Date.now() >= deadline) throw error;
+					}
+					transaction.close();
+					const bound = Math.min(BEGIN_RETRY_MAX_MS, BEGIN_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
+					await new Promise((resolve) => setTimeout(resolve, Math.random() * bound));
+					transaction = await (await connection()).transaction("write");
+				}
+			};
 			return {
-				...statements(async () => transaction, watch),
+				...statements(async () => transaction, first),
 				commit: () => watch(() => transaction.commit()),
 				rollback: () => watch(() => transaction.rollback()),
 				close: () => transaction.close(),

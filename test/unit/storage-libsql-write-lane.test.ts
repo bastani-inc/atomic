@@ -176,3 +176,25 @@ test("only the third unanswered write in a row warns of a stall, any answer star
 		process.off("atomic-libsql-write-health" as "warning", onHealth as never);
 	}
 });
+
+test("a server transaction whose first statement finds the lock busy begins again within its lockWaitMs, and fails at once without one (#4768)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	let runs = 0;
+	fake.fail({ kind: "result-error", code: "SQLITE_BUSY" }, { kind: "result-error", code: "SQLITE_BUSY" });
+	await database.transaction(
+		async (tx) => {
+			runs++;
+			await tx.run("INSERT INTO events VALUES (?)", 1);
+			await tx.run("INSERT INTO events VALUES (?)", 2);
+		},
+		{ lockWaitMs: 30_000 },
+	);
+	// The callback ran once: the transaction began again under it.
+	assert.equal(runs, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+	fake.fail({ kind: "result-error", code: "SQLITE_BUSY" });
+	await assert.rejects(database.transaction(async (tx) => tx.run("INSERT INTO events VALUES (?)", 3)));
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2);
+});

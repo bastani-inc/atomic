@@ -63,8 +63,11 @@ export interface SqliteDriverTransientFailure {
 export interface SqliteDriver extends SqliteDriverExecutor {
 	/** Diagnostic identity. Its `location` passes through `redact` before the facade exposes it. */
 	readonly descriptor: StorageDescriptor;
-	/** Begins a write transaction that holds the database's write lock, like `BEGIN IMMEDIATE`. */
-	beginTransaction(): Awaitable<SqliteDriverTransaction>;
+	/**
+	 * Begins a write transaction that holds the database's write lock, like `BEGIN IMMEDIATE`. `options` are the
+	 * caller's, as `SqliteDatabase.transaction` took them: a driver may honor their `lockWaitMs` while it takes the lock.
+	 */
+	beginTransaction(options?: SqliteTransactionOptions): Awaitable<SqliteDriverTransaction>;
 	/**
 	 * Optional. Runs the statements in order in one write transaction, in one request: all commit or none do. Provide it
 	 * only when the driver sends the whole batch at once; the facade then offers `SqliteDatabase.batch`. `options` are the
@@ -450,14 +453,15 @@ class DriverDatabase implements SqliteDatabase {
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		return this.queue.push(() => this.retrying((attempt) => this.runTransaction(callback, attempt), replay));
+		return this.queue.push(() => this.retrying((attempt) => this.runTransaction(callback, attempt, options), replay));
 	}
 
 	private async runTransaction<T>(
 		callback: (transaction: SqliteExecutor) => Promise<T>,
 		attempt: Attempt,
+		options?: SqliteTransactionOptions,
 	): Promise<T> {
-		const connection = await this.call(() => this.driver.beginTransaction(), attempt);
+		const connection = await this.call(() => this.driver.beginTransaction(options), attempt);
 		const handleQueue = new CallQueue();
 		let active = true;
 		let result: T;
