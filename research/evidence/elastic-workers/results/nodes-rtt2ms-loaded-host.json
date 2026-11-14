@@ -1,0 +1,106 @@
+{
+  "sqldArgs": null,
+  "slots": 2,
+  "children": 120,
+  "steps": 10,
+  "payload": 256,
+  "proxyOneWayMs": 1,
+  "trials": [
+    {
+      "hosts": 3,
+      "slots": 2,
+      "proxyOneWayMs": 1,
+      "hostsReadyMs": 2130,
+      "status": "stalled",
+      "runTimeoutMs": 240000,
+      "progress": {
+        "work": [
+          {
+            "state": "completed",
+            "n": 103
+          },
+          {
+            "state": "leased",
+            "n": 7
+          },
+          {
+            "state": "ready",
+            "n": 10
+          }
+        ],
+        "events": [
+          {
+            "n": 1299
+          }
+        ]
+      },
+      "writeProbe": {
+        "write": []
+      },
+      "trace": null,
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 588,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 593,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 598,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 626,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 628,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 631,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 687,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 743,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 750,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 837,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ]
+    }
+  ],
+  "note": "LOADED HOST: controller load average 170-245 on 80 cores during this run. Sweep stopped after the 3-host trial on supervisor instruction; 10/20-host and 30 ms RTT trials and the kill -9 trial are to be repeated below load 60 or on Azure. The 3-host trial was not wedged (write probe succeeded); it simply had not finished 120 children within the 240 s budget."
+}

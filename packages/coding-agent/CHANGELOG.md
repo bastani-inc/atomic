@@ -11,6 +11,12 @@
 
 - Fixed a workflow child on a local worker or worker host being replayed elsewhere when the shared database was unreachable for a moment: the worker keeps the child while its lease lasts, and an idle worker waits out the outage instead of exiting ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
+## [0.9.87] - 2026-11-14
+
+Asks from released subagents no longer vanish when their recipient comes and goes.
+
+- **Reliable failed-ask notices for released subagents.** When a released subagent's ask goes to a session that leaves, returns and then ends, the subagent now gets one "Your ask <id> to <name> failed" message instead of losing the ask silently, also after a broker restart, and `pending` stops listing it ([#4765](https://github.com/bastani-inc/atomic/issues/4765), [#4767](https://github.com/bastani-inc/atomic/pull/4767)).
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

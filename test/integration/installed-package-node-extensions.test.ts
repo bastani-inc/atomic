@@ -16,11 +16,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { afterAll, test } from "vitest";
 import { withoutSqliteExperimentalWarning } from "../fixtures/sdk-host-fixture-support.mjs";
-import { bunExecutable, moduleDir, spawnSyncCollect } from "../helpers/runtime.js";
+import { bunExecutable, moduleDir, readStreamText, spawnProcess, spawnSyncCollect } from "../helpers/runtime.js";
 
 const repoRoot = resolve(moduleDir(import.meta.url), "../..");
 const repoNodeModules = join(repoRoot, "node_modules");
@@ -81,13 +83,17 @@ if (!distBuilt || !nodeExe) {
 }
 
 let tmpRoot: string | undefined;
+let installedAtomicDir: string | undefined;
 let packedRoot: string | undefined;
+
+// Removing the copied package (tens of megabytes of dist files) is structural work under a loaded host.
+const LAYOUT_CLEANUP_TIMEOUT_MS = 120_000;
 
 afterAll(() => {
 	if (tmpRoot) fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
 	if (!packedRoot) return;
 	fs.rmSync(packedRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
-});
+}, LAYOUT_CLEANUP_TIMEOUT_MS);
 
 /** Symlink (junction on Windows, so no elevation is needed) a real directory. */
 function linkDir(target: string, linkPath: string): void {
@@ -102,6 +108,7 @@ function linkDir(target: string, linkPath: string): void {
  * workspace-path short circuit.
  */
 function buildInstalledLayout(): string {
+	if (installedAtomicDir) return installedAtomicDir;
 	tmpRoot = fs.mkdtempSync(join(os.tmpdir(), "atomic-node-smoke-"));
 	const layoutNodeModules = join(tmpRoot, "install", "node_modules");
 	fs.mkdirSync(layoutNodeModules, { recursive: true });
@@ -129,8 +136,105 @@ function buildInstalledLayout(): string {
 	fs.mkdirSync(atomicDest, { recursive: true });
 	fs.copyFileSync(join(packageDir, "package.json"), join(atomicDest, "package.json"));
 	fs.cpSync(join(packageDir, "dist"), join(atomicDest, "dist"), { recursive: true, dereference: true });
+	installedAtomicDir = atomicDest;
 	return atomicDest;
 }
+
+/** Files below `dir`, relative to it; empty when `dir` is missing. */
+function filesBelow(dir: string): string[] {
+	if (!fs.existsSync(dir)) return [];
+	return fs
+		.readdirSync(dir, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile())
+		.map((entry) => join(entry.parentPath, entry.name).slice(dir.length + 1));
+}
+
+// One real CLI start under Node, including the installed-layout copy, is structural work.
+const INSTALLED_FIRST_START_TIMEOUT_MS = 240_000;
+
+runTest(
+	"installed layout starts in a fresh HOME without transpiling builtins (#4748)",
+	async () => {
+		const atomicDest = buildInstalledLayout();
+		assert.ok(tmpRoot, "layout setup must assign tmpRoot");
+		assert.ok(nodeExe, "real node executable must be resolved before the start runs");
+		const homeDir = fs.mkdtempSync(join(tmpRoot, "fresh-home-"));
+		const workDir = fs.mkdtempSync(join(tmpRoot, "fresh-cwd-"));
+
+		// A minimal OpenAI-compatible endpoint: the first request lists every tool the start registered.
+		const requestedTools: string[][] = [];
+		const server = createServer((request, response) => {
+			let body = "";
+			request.on("data", (chunk: Buffer) => {
+				body += chunk.toString();
+			});
+			request.on("end", () => {
+				const parsed = JSON.parse(body || "{}") as { tools?: { function?: { name?: string } }[] };
+				requestedTools.push((parsed.tools ?? []).map((tool) => tool.function?.name ?? ""));
+				response.writeHead(200, { "content-type": "text/event-stream" });
+				const chunk = { id: "fixture", object: "chat.completion.chunk", created: 0, model: "fixture-model" };
+				response.write(
+					`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: { role: "assistant", content: "ok" } }] })}\n\n`,
+				);
+				response.write(
+					`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+				);
+				response.end("data: [DONE]\n\n");
+			});
+		});
+		await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+		try {
+			const { port } = server.address() as AddressInfo;
+			const agentDir = join(homeDir, ".atomic", "agent");
+			fs.mkdirSync(agentDir, { recursive: true });
+			fs.writeFileSync(
+				join(agentDir, "models.json"),
+				JSON.stringify({
+					providers: {
+						fixture: {
+							baseUrl: `http://127.0.0.1:${port}/v1`,
+							api: "openai-completions",
+							apiKey: "fixture-key",
+							models: [{ id: "fixture-model" }],
+						},
+					},
+				}),
+			);
+			fs.writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ defaultProvider: "fixture", defaultModel: "fixture-model", quietStartup: true }),
+			);
+			// The calling session's Atomic and pi variables (agent dir, model, intercom session) must not reach the child.
+			const env: Record<string, string | undefined> = Object.fromEntries(
+				Object.entries(process.env).filter(([name]) => !/^(?:ATOMIC|PI)_/.test(name)),
+			);
+			const child = spawnProcess([nodeExe, join(atomicDest, "dist", "cli.js"), "-p", "hi", "--no-session"], {
+				cwd: workDir,
+				env: { ...env, HOME: homeDir, USERPROFILE: homeDir },
+				stdout: "pipe",
+				stderr: "pipe",
+				timeout: INSTALLED_FIRST_START_TIMEOUT_MS,
+			});
+			const [stdout, stderr, exitCode] = await Promise.all([
+				readStreamText(child.stdout),
+				readStreamText(child.stderr),
+				child.exited,
+			]);
+			const output = `${stdout}${stderr}`;
+			assert.equal(exitCode, 0, `first start failed:\n${output}`);
+			assert.ok(!output.includes("Failed to load extension"), `extension load failure:\n${output}`);
+			const tools = requestedTools[0] ?? [];
+			for (const builtinTool of ["workflow", "subagent", "web_search", "fetch_content", "intercom"]) {
+				assert.ok(tools.includes(builtinTool), `builtin tool ${builtinTool} missing from ${tools.join(",")}`);
+			}
+			// The builtins ship prebundled and load natively, so a first start has nothing to transpile.
+			assert.deepEqual(filesBelow(join(agentDir, "cache", "jiti")), []);
+		} finally {
+			await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+		}
+	},
+	INSTALLED_FIRST_START_TIMEOUT_MS,
+);
 
 runTest(
 	"installed @bastani/atomic loads builtin extensions under Node",
