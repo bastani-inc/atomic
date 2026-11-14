@@ -3,11 +3,11 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
-import { sha256Hex } from "./env-hash.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
+import { type RepositoryId, repositoryIdOf, repositoryIdsOf } from "./repository-identity.ts";
 import { removeRestoredWorktree, resetPooledWorktree, verifyWorktree } from "./restore.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
@@ -23,8 +23,9 @@ import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, Workt
  * an idle slot that holds nothing but its recorded state for another snapshot, and the slot's owner with it.
  */
 
-/** The identity of a repository: the same `sha24(remotes)` that names its shared object store under `repositories/`. */
-export type RepositoryId = string & { readonly __brand: "RepositoryId" };
+export type { RepositoryId } from "./repository-identity.ts";
+export { repositoryIdOf } from "./repository-identity.ts";
+
 export type SlotNumber = number & { readonly __brand: "SlotNumber" };
 
 /** Who holds a slot: a session, by its id, or a prebuild. */
@@ -99,10 +100,6 @@ const LEASE_STALE_MS = 30_000;
 const LEASE_UPDATE_MS = 10_000;
 const SLOT_NAME = /^([0-9a-f]{24})-(\d{1,6})$/;
 const RECORD_NAME = /^(\d{1,6})\.json$/;
-
-export function repositoryIdOf(remotes: readonly string[]): RepositoryId {
-	return sha256Hex(remotes.join("\n")).slice(0, 24) as RepositoryId;
-}
 
 export function pooledWorktreePath(storeDir: string, repository: RepositoryId, slot: SlotNumber): string {
 	return join(resolve(storeDir), "worktrees", `${repository}-${slot}`);
@@ -593,11 +590,10 @@ export async function claimIdleWorktree(
 	options: ClaimIdleWorktreeOptions,
 ): Promise<ClaimedWorktree | NoIdleWorktree> {
 	const storeDir = resolve(options.storeDir);
-	let candidates: PoolSlotRecord[];
-	try {
-		candidates = await slotRecords(storeDir, repositoryIdOf(snapshot.remotes));
-	} catch {
-		return { claimed: false, reason: "none" };
+	// Slots an earlier version admitted under the remotes as spelled are the repository's too (#4748).
+	const candidates: PoolSlotRecord[] = [];
+	for (const repository of repositoryIdsOf(snapshot.remotes)) {
+		candidates.push(...(await slotRecords(storeDir, repository).catch(() => [])));
 	}
 	const sameEnvironment = (record: PoolSlotRecord) => (record.envHash === snapshot.envHash ? 0 : 1);
 	candidates.sort((a, b) => sameEnvironment(a) - sameEnvironment(b) || byNewestRelease(a, b));

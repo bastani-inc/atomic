@@ -1,11 +1,5 @@
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "../storage/database.js";
-import {
-	dialectOf,
-	type StorageDialect,
-	type StorageJsonSource,
-	type StorageTrigger,
-	sqliteDialect,
-} from "../storage/dialect.js";
+import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
@@ -799,7 +793,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all
 	 * of them.
 	 */
-	static async initialize(transaction: SqliteExecutor, prefix = "", dialect = sqliteDialect): Promise<void> {
+	static async initialize(transaction: SqliteExecutor, prefix = "", dialect: StorageDialect): Promise<void> {
 		const t = snapshotIndexTables(prefix);
 		await createSnapshotIndexTables(transaction, t, prefix, dialect);
 		await installMissingSources(transaction, t, prefix, dialect);

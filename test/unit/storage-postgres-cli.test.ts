@@ -252,7 +252,13 @@ export default {
 			descriptor: { adapter: "postgres", location: host },
 			async exec(sql) { record(sql); },
 			async run() { return { changes: 0 }; },
-			async get(sql) { record(sql); return /server_version/.test(sql) ? { version: "16.4" } : { ok: 1 }; },
+			async get(sql) {
+				record(sql);
+				if (/server_version/.test(sql)) return { version: "16.4" };
+				// An empty database: no table exists.
+				if (/sqlite_master|information_schema/.test(sql)) return undefined;
+				return { ok: 1 };
+			},
 			async all() { return []; },
 			async transaction(body) { return body(this); },
 			async close() {},

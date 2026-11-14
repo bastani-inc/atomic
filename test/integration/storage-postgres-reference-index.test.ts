@@ -94,6 +94,14 @@ const EARLY_WRITES: readonly Write[] = [
 	entry("s1", 2, "e2", snapshotEntry("e1", "s1a")),
 	entry("s1", 3, "e3", { type: "message", parentId: "e2" }),
 	entry("s1", 4, "e4", snapshotEntry("missing", "s1b")),
+	// JSON that Postgres's jsonb cannot hold (a NUL or a lone surrogate escape), outside the values the index reads.
+	event(
+		"r4",
+		1,
+		"CheckpointRecorded",
+		json({ kind: "tool", note: "\u0000", worktreeSnapshots: [snapshot("n", "n-b")] }),
+	),
+	entry("s3", 1, "g1", snapshotEntry(null, "s3a", { note: "nul \u0000, lone \ud800" })),
 ];
 
 /** Writes after the index exists, in both databases. */
@@ -121,6 +129,14 @@ const LATE_WRITES: readonly Write[] = [
 	entry("s1", 6, "e6", { type: "message", parentId: "e5" }),
 	entry("s1", 7, "e3", { type: "message", parentId: "e2" }),
 	entry("s2", 1, "f1", snapshotEntry(null, "s2a")),
+	event("r4", 2, "StatusChanged", status("r4", "failed", { note: "\u0000\udfff" })),
+	[
+		"INSERT INTO wf_runs_work (id, descriptor) VALUES (?, ?)",
+		"w5",
+		json({ note: "\u0000", execution: { workspaceSnapshot: snapshot("w5", "w5-b") } }),
+	],
+	entry("s3", 2, "g2", { type: "message", parentId: "g1", text: "\u0000\udfff" }),
+	entry("s3", 3, "g3", snapshotEntry("g2", "s3b", { note: "\u0000" })),
 	["DELETE FROM session_entries WHERE session_id = ? AND seq = ?", "s1", 6],
 ];
 
@@ -177,6 +193,9 @@ describe("the reference index on SQLite", () => {
 				"hash=w4-b owner=work:w4",
 				"hash=w4-p1 owner=work:w4",
 				"hash=w4-p2 owner=work:w4",
+				"hash=w5-b owner=work:w5",
+				"hash=w5-p1 owner=work:w5",
+				"hash=w5-p2 owner=work:w5",
 			]);
 			assert.deepEqual(index.snapshot_run_refs, [
 				"hash=a-b run_id=r1",
@@ -186,9 +205,22 @@ describe("the reference index on SQLite", () => {
 				"hash=b-p2 run_id=r1",
 				"hash=d-p1 run_id=r3",
 				"hash=d-p2 run_id=r3",
+				"hash=n-b run_id=r4",
+				"hash=n-p1 run_id=r4",
+				"hash=n-p2 run_id=r4",
 			]);
-			assert.deepEqual(index.snapshot_run_state, ["retained=0 run_id=r1 seq=5", "retained=0 run_id=r3 seq=1"]);
-			assert.equal(index.snapshot_session_links.length, 7);
+			assert.deepEqual(index.snapshot_run_state, [
+				"retained=0 run_id=r1 seq=5",
+				"retained=0 run_id=r3 seq=1",
+				"retained=1 run_id=r4 seq=2",
+			]);
+			assert.equal(index.snapshot_session_links.length, 10);
+			assert.deepEqual(
+				index.snapshot_session_refs
+					.filter((row) => row.includes("session_id=s3"))
+					.map((row) => row.split(" ").find((column) => column.startsWith("prev_seq"))),
+				["prev_seq=1", "prev_seq=null"],
+			);
 			assert.ok(index.snapshot_session_refs.some((row) => row.includes("restore_to=/elsewhere")));
 		} finally {
 			await database.close();
