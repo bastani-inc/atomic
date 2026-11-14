@@ -28,6 +28,7 @@ import {
 	WORKFLOWS_JOURNAL_ENV,
 } from "./process-selection.js";
 import {
+	adapterOpenContext,
 	loadStorageAdapter,
 	resolveAdapterOptions,
 	type StorageOpenContext,
@@ -314,10 +315,11 @@ async function probeSelection(
 	const hook = adapter.openDatabase.bind(adapter);
 	let options: Awaited<ReturnType<typeof resolveAdapterOptions>>;
 	try {
-		options = await resolveAdapterOptions(selection, context);
+		options = await resolveAdapterOptions(selection, context, adapter.liveSecrets);
 	} catch (error) {
 		return { adapter: loaded, connection: { status: "failed", detail: errorText(error as Error) } };
 	}
+	const adapterContext = adapterOpenContext(selection, context);
 	if (typeof options.url === "string" && options.url.startsWith("file:")) {
 		// Normal adapter hooks may create files. Probe local SQLite through the read-only opener instead.
 		if (!options.url.startsWith("file:/")) {
@@ -340,7 +342,10 @@ async function probeSelection(
 			return { adapter: loaded, connection: { status: "failed", detail: errorText(error as Error) } };
 		}
 	}
-	return { adapter: loaded, connection: await roundTrip(() => hook(options, context), "The database", inspect) };
+	return {
+		adapter: loaded,
+		connection: await roundTrip(() => hook(options, adapterContext), "The database", inspect),
+	};
 }
 
 async function roundTrip(
