@@ -1,0 +1,68 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 4,
+  "children": 64,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "killedHostAtMs": null,
+      "trace": null,
+      "sqldQueryCount": 40874,
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 245,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 249,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 485,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 8,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 1219,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 55917,
+      "activeMs": 49898,
+      "checkpointsPerSec": 25.7,
+      "latencyMs": {
+        "p50": 915.51,
+        "p90": 1192.72,
+        "p99": 1430.8,
+        "max": 1689.33
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 5,
+        "h5": 8,
+        "h0": 8,
+        "h4": 8,
+        "h2": 8,
+        "h1": 5,
+        "h6": 7,
+        "h3": 8,
+        "h7": 7
+      }
+    }
+  ]
+}

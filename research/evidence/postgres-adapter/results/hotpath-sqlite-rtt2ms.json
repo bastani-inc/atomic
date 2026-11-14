@@ -1,0 +1,120 @@
+{
+  "backend": "sqlite",
+  "slots": 4,
+  "perSlot": 2,
+  "steps": 20,
+  "payload": 256,
+  "sqldArgs": [
+    "--checkpoint-interval-s",
+    "60"
+  ],
+  "machine": {
+    "cpus": 80
+  },
+  "trials": [
+    {
+      "backend": "sqlite",
+      "hosts": 8,
+      "slots": 4,
+      "oneWayLatencyMs": 1,
+      "children": 64,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 64
+      },
+      "invariants": {
+        "events": 1280,
+        "distinctKeys": 1280,
+        "maxSeq": 1280
+      },
+      "checkpoints": 1280,
+      "wallMs": 42461,
+      "activeMs": 41733,
+      "checkpointsPerSec": 30.7,
+      "latencyMs": {
+        "p50": 793.85,
+        "p90": 1129.29,
+        "p99": 1386,
+        "max": 1609.1
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 190,
+      "errors": {
+        "stale: work": 5
+      }
+    },
+    {
+      "backend": "sqlite",
+      "hosts": 16,
+      "slots": 4,
+      "oneWayLatencyMs": 1,
+      "children": 128,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 128
+      },
+      "invariants": {
+        "events": 2560,
+        "distinctKeys": 2560,
+        "maxSeq": 2560
+      },
+      "checkpoints": 2560,
+      "wallMs": 86412,
+      "activeMs": 85229,
+      "checkpointsPerSec": 30,
+      "latencyMs": {
+        "p50": 1523.52,
+        "p90": 2086.57,
+        "p99": 2644.1,
+        "max": 4288.76
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 490,
+      "errors": {
+        "stale: work": 15,
+        "Storage unavailable: libsql at http://127.0.0.1:36329": 14
+      }
+    },
+    {
+      "backend": "sqlite",
+      "hosts": 32,
+      "slots": 4,
+      "oneWayLatencyMs": 1,
+      "children": 256,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 256
+      },
+      "invariants": {
+        "events": 5120,
+        "distinctKeys": 5120,
+        "maxSeq": 5120
+      },
+      "checkpoints": 5120,
+      "wallMs": 216485,
+      "activeMs": 214639,
+      "checkpointsPerSec": 23.9,
+      "latencyMs": {
+        "p50": 3064.94,
+        "p90": 4548.12,
+        "p99": 5927.25,
+        "max": 12389.92
+      },
+      "commitsOver5s": 259,
+      "stallsOver5s": 0,
+      "maxGapMs": 1452,
+      "errors": {
+        "stale: work": 98,
+        "Storage unavailable: libsql at http://127.0.0.1:42179": 89
+      }
+    }
+  ]
+}
