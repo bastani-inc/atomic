@@ -3,7 +3,7 @@ import {
 	type KeepContextSpan,
 	keepContextSpanKey,
 	keepContextSpans,
-	ROLE_HEADER_RE,
+	messageBoundaries,
 } from "./transcript-serialization.js";
 
 /** Default share of the keep target that `<keepContext>` protection may fill before spans are released. */
@@ -19,12 +19,9 @@ export function normalizeKeepContextShare(value: number | undefined): number {
 		: DEFAULT_KEEP_CONTEXT_SHARE;
 }
 
-/** One-based line of the region's last `[User]: ` header, or undefined when it has none. */
-function latestUserHeaderLine(lines: readonly string[]): number | undefined {
-	for (let index = lines.length - 1; index >= 0; index--) {
-		if (ROLE_HEADER_RE.exec(lines[index])?.[1] === "User") return index + 1;
-	}
-	return undefined;
+/** First line of the region's latest user message, taken from its message boundaries; undefined when it has none. */
+function latestUserHeaderLine(region: NumberedRegion): number | undefined {
+	return messageBoundaries(region.lines, region.messageSpans).findLast((boundary) => boundary.role === "user")?.line;
 }
 
 /** Characters a line occupies in the region's text, its newline included. */
@@ -69,8 +66,8 @@ export function releaseKeepContextSpans(
 	if (fits()) return region;
 
 	// A span an earlier call released is no longer protected and is not released again.
-	const spans = keepContextSpans(lines).filter((span) => protectedLines.has(span.start));
-	const latestUser = latestUserHeaderLine(lines);
+	const spans = keepContextSpans(lines, region.messageSpans).filter((span) => protectedLines.has(span.start));
+	const latestUser = latestUserHeaderLine(region);
 	const firstRecent = spans.length - KEEP_CONTEXT_RECENT_SPANS;
 	/** 0: older spans, 1: the most recent spans, 2: spans in the latest user message. */
 	const tier = (span: KeepContextSpan, index: number): number =>
