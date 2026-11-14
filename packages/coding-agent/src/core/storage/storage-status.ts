@@ -327,7 +327,7 @@ async function probeSelection(
 	}
 	let options: Awaited<ReturnType<typeof resolveAdapterOptions>>;
 	try {
-		options = await resolveAdapterOptions(selection, context);
+		options = await resolveAdapterOptions(selection, context, adapter.liveSecrets);
 	} catch (error) {
 		return { adapter: loaded, connection: { status: "failed", detail: errorText(error as Error) } };
 	}

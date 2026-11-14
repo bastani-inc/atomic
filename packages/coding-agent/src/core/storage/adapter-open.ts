@@ -5,6 +5,7 @@
 
 import type { SqliteDatabase } from "./database.js";
 import {
+	adapterOpenContext,
 	loadStorageAdapter,
 	resolveAdapterOptions,
 	type StorageAdapterModule,
@@ -15,8 +16,9 @@ import {
 export type AdapterSelection = Extract<StorageSelection, { kind: "adapter" }>;
 
 /**
- * Open `selection` through `adapter.openDatabase` with its secrets resolved as the provider resolves them. Throws
- * when the adapter has no `openDatabase` hook.
+ * Open `selection` through `adapter.openDatabase` with its secrets resolved as the provider resolves them: the
+ * adapter's `liveSecrets` through `context.secret`, read again on every call, the others in its options. Throws when
+ * the adapter has no `openDatabase` hook.
  */
 export async function openAdapterSelectionDatabase(
 	selection: AdapterSelection,
@@ -25,6 +27,7 @@ export async function openAdapterSelectionDatabase(
 ): Promise<SqliteDatabase> {
 	const loaded = adapter ?? (await loadStorageAdapter(selection.module, context));
 	if (loaded.openDatabase === undefined) throw new Error(`${selection.module} has no openDatabase hook`);
-	const options = await resolveAdapterOptions(selection, context);
-	return loaded.openDatabase(options, context);
+	const opening = adapterOpenContext(selection, context);
+	const options = await resolveAdapterOptions(selection, opening, loaded.liveSecrets);
+	return loaded.openDatabase(options, opening);
 }
