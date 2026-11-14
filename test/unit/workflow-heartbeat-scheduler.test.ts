@@ -770,7 +770,12 @@ describe("workflow heartbeat delivery", () => {
 		// persists a card and queues a hidden reconciliation instead of aborting
 		// the active response lives in
 		// packages/coding-agent/test/suite/agent-session-message-batch.test.ts.
-		assert.deepEqual(send.options, { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true });
+		assert.deepEqual(send.options, {
+			triggerTurn: true,
+			deliverAs: "steer",
+			persistWhenStreaming: true,
+			wakeIdleSession: true,
+		});
 		assert.notEqual(send.options?.deliverAs, "interrupt");
 		assert.equal(send.customType, WORKFLOW_HEARTBEAT_CUSTOM_TYPE);
 		assert.equal(send.display, true);

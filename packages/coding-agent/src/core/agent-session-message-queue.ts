@@ -3,6 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { commitAdmittedCustomMessage, commitAdmittedCustomMessages } from "./agent-session-custom-message-commit.ts";
 import { forwardedMessageOptions, resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import { holdsTurnsForDetachedResults } from "./agent-session-detached-tools.ts";
+import { wakeIdleSessionForHeartbeat } from "./agent-session-heartbeat-wake.ts";
 import { cancelHeldInput, heldInputView } from "./agent-session-held-input.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { recordPersistenceFailure } from "./agent-session-persistence-failures.ts";
@@ -151,7 +152,12 @@ export async function sendCustomMessage<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessage(message, options);
 	assertSessionOpen(this);
-	return deliveredMessageTurn(this, () => admittedCustomMessage.call(this, message, options));
+	return deliveredMessageTurn(this, () => {
+		const waking = wakeIdleSessionForHeartbeat(this, options);
+		return waking
+			? waking.then(() => admittedCustomMessage.call(this, message, options))
+			: admittedCustomMessage.call(this, message, options);
+	});
 }
 
 /**
@@ -207,7 +213,12 @@ export async function sendCustomMessages<T = unknown>(
 	const currentOwner = resolveWorkflowStageDeliveryTarget(this);
 	if (currentOwner !== this) return currentOwner.sendCustomMessages(messages, options);
 	assertSessionOpen(this);
-	return deliveredMessageTurn(this, () => admittedCustomMessages.call(this, messages, options));
+	return deliveredMessageTurn(this, () => {
+		const waking = wakeIdleSessionForHeartbeat(this, options);
+		return waking
+			? waking.then(() => admittedCustomMessages.call(this, messages, options))
+			: admittedCustomMessages.call(this, messages, options);
+	});
 }
 
 async function admittedCustomMessages<T>(

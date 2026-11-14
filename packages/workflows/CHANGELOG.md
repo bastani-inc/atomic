@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- A workflow heartbeat that arrives while main chat is idle after an interrupt now starts a turn at once instead of waiting for your next message; `tasks.heartbeatWakesIdleSession` turns this off ([#4795](https://github.com/bastani-inc/atomic/issues/4795))
 - Fixed a pooled child being taken off its worker and replayed elsewhere when a single heartbeat failed because the journal's database was briefly unreachable. The worker now keeps the child while its lease lasts and renews it with the next heartbeat that gets through, and an idle worker waits out the outage instead of exiting ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 ## [0.9.86] - 2026-11-14

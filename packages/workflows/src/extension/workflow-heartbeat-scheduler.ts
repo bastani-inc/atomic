@@ -372,10 +372,11 @@ export function installWorkflowHeartbeatScheduler(
 					display: true,
 					details,
 				},
-				// Identical to the lifecycle notice options: the parent's active
-				// response is never aborted; the steer waits for the next
-				// protocol-safe boundary and is persisted meanwhile.
-				{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true },
+				// The lifecycle notice options: the parent's active response is never
+				// aborted; the steer waits for the next protocol-safe boundary and is
+				// persisted meanwhile. Unlike a lifecycle notice, it also starts a turn
+				// in a parent left idle by an interrupt (#4795).
+				{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true, wakeIdleSession: true },
 			);
 			if (result === undefined) return true;
 			return Promise.resolve(result).then(

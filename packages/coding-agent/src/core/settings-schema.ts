@@ -404,6 +404,13 @@ const TaskSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.tasks.heartbeatMs,
 		}),
 	),
+	heartbeatWakesIdleSession: Type.Optional(
+		Type.Boolean({
+			description:
+				"Whether a task or workflow heartbeat that arrives while the chat is idle after an interrupt starts a turn at once. When false, it waits for your next message.",
+			default: SETTINGS_DEFAULTS.tasks.heartbeatWakesIdleSession,
+		}),
+	),
 });
 
 function codemodeMode(options?: TSchemaOptions) {
