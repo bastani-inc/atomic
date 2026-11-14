@@ -86,7 +86,8 @@ import {
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { DispatchSnapshots } from "./dispatch-snapshot.js";
-import { FleetController, type WorkflowFleetOptions } from "./fleet-controller.js";
+import { FleetController } from "./fleet-controller.js";
+import type { WorkflowFleetOptions } from "./fleet-types.js";
 import {
 	HeldPromptAnswers,
 	type HeldPromptOutcome,

@@ -491,6 +491,7 @@ export {
 	WorkflowAdmissionError,
 } from "./workers/admission-errors.js";
 export { loadWorkerWorkflow } from "./workers/definitions.js";
+export { startWorkflowFleetController } from "./workers/fleet-controller.js";
 export type {
 	ProvisionedHost,
 	WorkerFleetPolicyOptions,
@@ -501,8 +502,7 @@ export type {
 	WorkflowFleetFailure,
 	WorkflowFleetOptions,
 	WorkflowFleetStatus,
-} from "./workers/fleet-controller.js";
-export { startWorkflowFleetController } from "./workers/fleet-controller.js";
+} from "./workers/fleet-types.js";
 export type {
 	RemoteStageCommand,
 	SerializedWorkerPlacementError,

@@ -12,22 +12,34 @@ import {
 	type FleetPolicy,
 	type FleetPolicyState,
 	INITIAL_FLEET_STATE,
-	type ProvisionedHost,
 	planFleet,
 	resolveFleetPolicy,
-	type WorkerFleetPolicyOptions,
-	type WorkerHostProvisioner,
 } from "./autoscaler.js";
+import type {
+	ProvisionedHost,
+	WorkerHostProvisioner,
+	WorkflowFleetController,
+	WorkflowFleetControllerOptions,
+	WorkflowFleetEvent,
+	WorkflowFleetFailure,
+	WorkflowFleetOptions,
+	WorkflowFleetStatus,
+} from "./fleet-types.js";
 import { HostPollBackoff } from "./host-poll-backoff.js";
 import { SharedPoolSetupError, WorkerPlacementConfigError } from "./placement-errors.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
-import type { SharedJournalSelection } from "./worker-host-types.js";
 
 export type {
 	ProvisionedHost,
 	WorkerFleetPolicyOptions,
 	WorkerHostProvisioner,
-} from "./autoscaler.js";
+	WorkflowFleetController,
+	WorkflowFleetControllerOptions,
+	WorkflowFleetEvent,
+	WorkflowFleetFailure,
+	WorkflowFleetOptions,
+	WorkflowFleetStatus,
+} from "./fleet-types.js";
 
 /** How often a fleet controller ticks, unless `tickMs` says otherwise: Buildkite's scaler polls about this often. */
 export const DEFAULT_FLEET_TICK_MS = 10_000;
@@ -37,72 +49,6 @@ const PROVIDER_CALL_TIMEOUT_MS = 120_000;
 const PROVIDER_BACKOFF_MAX_MS = 600_000;
 /** Longest error text a fleet event keeps. */
 const ERROR_TEXT_MAX = 1_024;
-
-/** A fleet's provisioner and its policy: what `workers.provisioner` and `startWorkflowFleetController` take (#4768). */
-export interface WorkflowFleetOptions extends WorkerFleetPolicyOptions {
-	readonly provisioner: WorkerHostProvisioner;
-	/** How often, in milliseconds, the controller looks at the queues and the provider. Default 10000. */
-	readonly tickMs?: number;
-}
-
-/** A failure the controller recorded instead of throwing. */
-export interface WorkflowFleetFailure {
-	readonly name: string;
-	readonly message: string;
-}
-
-/**
- * What a fleet controller reports as it happens (#4768). `active` and `standby` follow the controller lease: one
- * controller of a journal is active at a time, and a standby one takes over once the active one stops renewing it.
- * `scale-up`, `drain-requested` and `removed` are its decisions. `degraded` is a provisioner or journal call that
- * failed: the fleet keeps its hosts, and the controller tries again after `retryInMs`; `recovered` follows the first
- * tick that succeeded after it.
- */
-export type WorkflowFleetEvent =
-	| { readonly kind: "active"; readonly epoch: number }
-	| { readonly kind: "standby"; readonly holder: string }
-	| { readonly kind: "scale-up"; readonly target: number; readonly desired: number; readonly live: number }
-	| { readonly kind: "drain-requested"; readonly id: string; readonly host: string }
-	| { readonly kind: "removed"; readonly id: string; readonly reason: string }
-	| {
-			readonly kind: "degraded";
-			readonly failures: number;
-			readonly retryInMs: number;
-			readonly error: WorkflowFleetFailure;
-	  }
-	| { readonly kind: "recovered"; readonly failures: number };
-
-export interface WorkflowFleetStatus {
-	/** `active` while it holds the controller lease, `standby` while another controller does. */
-	readonly role: "starting" | "active" | "standby" | "stopped";
-	/** This controller's lease holder id. */
-	readonly holder: string;
-	readonly provisioner: string;
-	/** The lease epoch it holds while active. */
-	readonly epoch?: number;
-	/** The last tick's plan, while active. */
-	readonly target?: number;
-	readonly live?: number;
-	readonly pending?: number;
-	/** Set while its provisioner or journal calls fail. */
-	readonly degraded?: { readonly failures: number; readonly since: number; readonly error: WorkflowFleetFailure };
-}
-
-export interface WorkflowFleetController {
-	readonly holder: string;
-	status(): WorkflowFleetStatus;
-	/** Stops ticking, gives the controller lease up so another controller takes over at once, and closes. */
-	stop(): Promise<void>;
-	/** Settles once the controller stopped. Never rejects. */
-	readonly closed: Promise<void>;
-}
-
-export interface WorkflowFleetControllerOptions extends WorkflowFleetOptions {
-	/** The shared journal. Default: the journal this machine selects for workflow runs. */
-	readonly journal?: SharedJournalSelection;
-	readonly agentDir?: string;
-	readonly onEvent?: (event: WorkflowFleetEvent) => void;
-}
 
 function asFailure(error: unknown): WorkflowFleetFailure {
 	const name = error instanceof Error ? error.name : "Error";

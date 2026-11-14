@@ -1,5 +1,5 @@
 import type { Workspace } from "@bastani/atomic";
-import type { WorkflowFleetOptions } from "./fleet-controller.js";
+import type { WorkflowFleetOptions } from "./fleet-types.js";
 import type { WorkspaceBinding } from "./workspace-binding.js";
 
 export interface WorkflowAdmissionOptions {
