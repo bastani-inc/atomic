@@ -104,7 +104,7 @@ class FakeCloud implements WorkerHostProvisioner {
 					ATOMIC_STORAGE: "",
 					ATOMIC_TEAM_URL: "",
 					SHARED_POOL_HOST: id,
-					ATOMIC_WORKER_PROVIDER_ID: id,
+					ATOMIC_PROVIDER_ID: id,
 				},
 			},
 			this.deadline,
