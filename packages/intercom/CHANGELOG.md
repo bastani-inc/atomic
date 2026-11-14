@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an Intercom ask from a released subagent that was dropped with no failed-ask message when its recipient went away before the subagent was released, then came back and ended. The broker now puts that ask on the owner's route for the released subagent, as it does for an ask whose recipient is still connected, so the owner wakes the subagent with one "Your ask <id> to <name> failed" message and `pending` no longer lists it. The ask also stays saved under the subagent's own session, so after a broker restart, or when the subagent reconnects without being released, the subagent still gets the failure once. A workflow stage released between turns already got its failure in this order; a test now covers it ([#4765](https://github.com/bastani-inc/atomic/issues/4765))
+
 ## [0.9.86] - 2026-11-14
 
 Intercom asks stop blocking, and one send can reach many sessions.

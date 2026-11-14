@@ -110,6 +110,29 @@ export class AwayAsks {
 		).run(senderReturnAddress, senderSessionId);
 	}
 
+	/**
+	 * #4765: the questions the released subagent `senderSessionId` asked that are kept while their recipient is away. They
+	 * stay here too, so the ask survives a broker restart and a subagent back under its own id.
+	 */
+	forReleasedAsker(senderSessionId: string): PendingQuestion[] {
+		return this.statement(
+			"SELECT message_id, target_session_id FROM away_questions WHERE sender_session_id = ? ORDER BY kept_at",
+		)
+			.all(senderSessionId)
+			.map((row) => ({
+				messageId: String(row.message_id),
+				senderSessionId,
+				targetSessionId: String(row.target_session_id),
+			}));
+	}
+
+	/** The kept question was answered some other way: it no longer waits here. */
+	forget(question: PendingQuestion): void {
+		this.statement(
+			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		).run(question.messageId, question.senderSessionId, question.targetSessionId);
+	}
+
 	/** The kept question `questionId` that `replierSessionId` answers, if its asker is away. */
 	question(
 		questionId: string,
@@ -138,10 +161,13 @@ export class AwayAsks {
 		// registered with now; a recipient's come back to the id it is asked under.
 		const proven = returnAddress ?? "";
 		const rows = this.statement(
-			"SELECT message_id, sender_session_id, target_session_id, sender_return_address FROM away_questions WHERE (sender_return_address <> '' AND sender_return_address = ?) OR (sender_return_address = '' AND sender_session_id = ?) OR target_session_id = ? ORDER BY kept_at",
+			"SELECT message_id, sender_session_id, target_session_id, sender_return_address, kept_at FROM away_questions WHERE (sender_return_address <> '' AND sender_return_address = ?) OR (sender_return_address = '' AND sender_session_id = ?) OR target_session_id = ? ORDER BY kept_at",
 		).all(proven, sessionId, sessionId);
 		const remove = this.statement(
 			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		);
+		const rebind = this.statement(
+			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
 		);
 		const restored: PendingQuestion[] = [];
 		for (const row of rows) {
@@ -152,7 +178,15 @@ export class AwayAsks {
 			};
 			const askerBack = proven !== "" && row.sender_return_address === proven;
 			const question = askerBack ? { ...kept, senderSessionId: sessionId } : kept;
-			if (!isConnected(question.senderSessionId) || !isConnected(question.targetSessionId)) continue;
+			if (!isConnected(question.senderSessionId) || !isConnected(question.targetSessionId)) {
+				// #4765: an asker back under a new id while its recipient is still away keeps the question under that id, so
+				// the recipient's answer to it clears the question and its later end does not fail it again.
+				if (question.senderSessionId !== kept.senderSessionId) {
+					remove.run(kept.messageId, kept.senderSessionId, kept.targetSessionId);
+					rebind.run(question.messageId, question.senderSessionId, question.targetSessionId, proven, Number(row.kept_at));
+				}
+				continue;
+			}
 			remove.run(kept.messageId, kept.senderSessionId, kept.targetSessionId);
 			restored.push(question);
 		}
@@ -163,7 +197,12 @@ export class AwayAsks {
 	 * The recipient `target` ended, or can no longer answer: each kept question to it becomes a failed-ask message held
 	 * for its away asker. Returns the questions failed.
 	 */
-	failForTarget(target: SessionInfo, reason: string, idPrefix: string): PendingQuestion[] {
+	failForTarget(
+		target: SessionInfo,
+		reason: string,
+		idPrefix: string,
+		failedElsewhere: (question: PendingQuestion) => boolean,
+	): PendingQuestion[] {
 		const rows = this.statement(
 			"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
 		).all(target.id);
@@ -177,6 +216,8 @@ export class AwayAsks {
 			const returnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
 			// A recipient's own asks to an away session keep no asker identity: only an away asker learns of the end.
 			if (returnAddress === "") continue;
+			// #4765: a released subagent's owner is handed this failure on its own route, which wakes the subagent.
+			if (failedElsewhere(question)) continue;
 			failed.push(question);
 			this.hold({ ...question, senderReturnAddress: returnAddress }, target, {
 				// Unguessable, so no other session can name it.

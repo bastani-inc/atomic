@@ -438,6 +438,7 @@ class IntercomBroker {
     mkdirSync(INTERCOM_DIR, { recursive: true, mode: 0o700 });
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
+    this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
   }
 
   /**
@@ -2710,6 +2711,11 @@ class IntercomBroker {
       });
       return true;
     }
+    this.pendingQuestions.forgetDormant({
+      messageId: route.questionId,
+      senderSessionId: route.askerSessionId,
+      targetSessionId: route.replierSessionId,
+    });
     this.handOffReleasedReply(route, from.info, message, socket, attemptId);
     return true;
   };
@@ -3230,12 +3236,16 @@ class IntercomBroker {
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
 
     const unanswered = this.pendingQuestions.takeForSender(sessionId);
-    if (unanswered.length > 0 && departed.supervisorId !== undefined && departed.registrationName !== undefined) {
+    if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {
+      // #4765: an ask kept while its recipient was away waits on the owner's route too, so the recipient's later end
+      // fails it through the owner, which wakes the subagent. It stays kept under the subagent's own return address as
+      // well, so a broker restart or a subagent back without its owner still gets the failure, held for it alone.
       this.releasedAskerReplies.keep(
         { sessionId, childName: departed.registrationName },
-        unanswered,
+        [...unanswered, ...this.pendingQuestions.dormantForReleasedAsker(sessionId)],
         this.restoringRecipients.releasedOwner(departed.registrationName),
       );
+      this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
