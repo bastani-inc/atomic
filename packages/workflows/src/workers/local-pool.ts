@@ -96,6 +96,7 @@ import {
 	questionIdentity,
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
+import { retryWithinLease } from "./lease-outage.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
 import { childPlacement } from "./placement-choice.js";
 import { WorkerPlacementConfigError } from "./placement-errors.js";
@@ -1405,21 +1406,30 @@ export class LocalWorkerPool {
 		if (options.stageUiBroker !== undefined) this.questionBroker ??= options.stageUiBroker;
 		this.evaluateBudget();
 		await this.flushRootRun();
-		const enqueued = (await this.command({
-			kind: "enqueue",
-			descriptor: {
-				boundaryId: options.parentRun.stageId,
-				childRunId: options.runId!,
-				scope: options.durableScope.scopePrefix,
-				definition: `${selectedSource.path}#${selectedSource.exportName}`,
-				digest: selectedSource.digest,
-				inputs,
-				execution,
-			},
-			boundary,
-			...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
-			...(await forkSessionClaims(this.backend, root, options.durableScope.scopePrefix)),
-		})) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
+		// The shared store refusing the enqueue for a while (its write lock busy under other hosts' writes) delays the
+		// child rather than failing it (#4768): an enqueue sent again finds the same work, and the pool's own failure,
+		// its close, or the root's abort still end the wait.
+		const claims = await forkSessionClaims(this.backend, root, options.durableScope.scopePrefix);
+		const descriptor = {
+			boundaryId: options.parentRun.stageId,
+			childRunId: options.runId!,
+			scope: options.durableScope.scopePrefix,
+			definition: `${selectedSource.path}#${selectedSource.exportName}`,
+			digest: selectedSource.digest,
+			inputs,
+			execution,
+		};
+		const enqueued = (await retryWithinLease(
+			() =>
+				this.command({
+					kind: "enqueue",
+					descriptor,
+					boundary,
+					...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
+					...claims,
+				}),
+			() => !this.closed && this.failure === undefined && options.signal?.aborted !== true,
+		)) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
 		this.works.set(work.id, work);
 		if (enqueued.result !== undefined && !this.results.has(work.id)) this.results.set(work.id, enqueued.result);

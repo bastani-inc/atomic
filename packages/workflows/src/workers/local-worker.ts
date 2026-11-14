@@ -41,6 +41,7 @@ import { admittedSessionAdapter } from "./admission-binding.js";
 import { AttemptFence, endedAttemptRefusal } from "./attempt-fence.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
+import { retryWithinLease } from "./lease-outage.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { completedAttemptResult, remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
@@ -253,24 +254,30 @@ export async function openWorkerJournals(
 		durableSelection === undefined
 			? undefined
 			: await openDurableJournal(JSON.parse(durableSelection) as PoolDurableJournal);
-	const poolJournal =
-		start.journalPath === undefined ? durable : await resolveRunJournal({ journal: { path: start.journalPath } });
-	if (poolJournal === undefined)
-		throw new WorkerPlacementConfigError(
-			"env",
-			POOL_DURABLE_JOURNAL_ENV,
-			"invalid-option",
-			"a shared pool's worker needs it",
-		);
-	const storage = sqlPoolStorage(poolJournal)!;
-	const sessions =
-		start.journalPath === undefined
-			? await openPoolSessions(storage)
-			: await new StorageProvider().openSessionStore(
-					{ kind: "sqlite", path: start.journalPath, prefix: `${storage.tables.runs}_pool_` },
-					{ agentDir: "", domain: "sessions" },
-				);
-	return { journal: durable ?? poolJournal, poolJournal, sessions };
+	// Closed again when the rest fails, so a worker that tries again while the store is busy holds no extra connection.
+	try {
+		const poolJournal =
+			start.journalPath === undefined ? durable : await resolveRunJournal({ journal: { path: start.journalPath } });
+		if (poolJournal === undefined)
+			throw new WorkerPlacementConfigError(
+				"env",
+				POOL_DURABLE_JOURNAL_ENV,
+				"invalid-option",
+				"a shared pool's worker needs it",
+			);
+		const storage = sqlPoolStorage(poolJournal)!;
+		const sessions =
+			start.journalPath === undefined
+				? await openPoolSessions(storage)
+				: await new StorageProvider().openSessionStore(
+						{ kind: "sqlite", path: start.journalPath, prefix: `${storage.tables.runs}_pool_` },
+						{ agentDir: "", domain: "sessions" },
+					);
+		return { journal: durable ?? poolJournal, poolJournal, sessions };
+	} catch (error) {
+		await durable?.close().catch(() => {});
+		throw error;
+	}
 }
 
 /** Entry of every local worker process; the same module also runs a pool's coordinator. */
@@ -336,7 +343,13 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const durableSelection = process.env[POOL_DURABLE_JOURNAL_ENV];
 	// Read once and removed, so the tools this worker starts do not inherit it.
 	delete process.env[POOL_DURABLE_JOURNAL_ENV];
-	const { journal, poolJournal, sessions } = await openWorkerJournals(start, durableSelection);
+	// A worker starting while other hosts keep the shared store's write lock busy waits for it, as an idle worker waits
+	// out an outage, instead of exiting with the child it was started for (#4768): its coordinator's startup timeout
+	// still bounds the wait.
+	const { journal, poolJournal, sessions } = await retryWithinLease(
+		() => openWorkerJournals(start, durableSelection),
+		() => true,
+	);
 	const journalReads = new Set(["descriptor", "getRun", "listRuns", "read", "readKey", "leaseState", "close"]);
 	const readOnlyJournal = new Proxy(journal, {
 		get(target, key) {
@@ -358,9 +371,32 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	// The root holds the checkpoints of every child of the pool; the worker keeps only those of the child it runs.
 	await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
 	configurePooledWatchTrace(start.journalPath ?? join(process.cwd(), "shared-pool"), `worker:${process.pid}`);
+	/** When the held attempt's lease was last renewed, by `performance.now()`: at its claim, then by each heartbeat. */
+	let leaseRenewedAt = 0;
+	const leaseLeft = () => start.leaseMs !== undefined && performance.now() - leaseRenewedAt < start.leaseMs;
+	/**
+	 * A request of the held attempt that a storage refusal does not end while the attempt's lease lasts: it is sent
+	 * again (#4768). Past the lease, the refusal ends the attempt as fenced, as any refusal did before.
+	 */
+	const attemptRequest = async (message: Request): Promise<WorkerReply["value"]> => {
+		const held = heldAttempt;
+		try {
+			return await retryWithinLease(() => request(message, undefined, true), leaseLeft);
+		} catch (error) {
+			if (infrastructureFaultOf(error) !== "storage_unavailable") throw error;
+			replies.attemptFenced = true;
+			throw workerRefusal(
+				error as Error,
+				held === undefined ? undefined : { workId: held.id, generation: held.generation },
+			).error;
+		}
+	};
 	const commit = poolWorkerCommit({
-		send: async (mutation) =>
-			(await request({ kind: "commit", operation: randomUUID(), mutation })) as unknown as PoolCommitReceipt,
+		// One operation for every send of a commit: one the storage took before its answer was lost is not applied twice.
+		send: async (mutation) => {
+			const operation = randomUUID();
+			return (await attemptRequest({ kind: "commit", operation, mutation })) as unknown as PoolCommitReceipt;
+		},
 		catchUp: () => reader.catchUpWorkflow(start.root),
 	});
 	const reads = new Set([
@@ -499,6 +535,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				continue;
 			}
 			replies.attemptFenced = false;
+			leaseRenewedAt = performance.now();
 			if (!work) {
 				if (replies.retired) break;
 				await delay(25 + Math.random() * 25);
@@ -633,16 +670,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// control reaches the attempt between heartbeats.
 			// A heartbeat the journal's outage refused keeps the attempt while its lease lasts; the next one that gets through
 			// renews it (#4768). Past the lease, another worker may hold the child, so the attempt ends as fenced.
-			let renewedAt = performance.now();
+			leaseRenewedAt = performance.now();
 			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, async () => {
 				try {
 					offerControl(
 						(await request({ kind: "heartbeat", reports: usageReports() }, undefined, true)) as PoolControl,
 					);
-					renewedAt = performance.now();
+					leaseRenewedAt = performance.now();
 				} catch (error) {
 					if (infrastructureFaultOf(error) !== "storage_unavailable") return failPulse(error as Error);
-					if (start.leaseMs !== undefined && performance.now() - renewedAt < start.leaseMs) return;
+					if (leaseLeft()) return;
 					replies.attemptFenced = true;
 					failPulse(workerRefusal(error as Error, { workId: work.id, generation: work.generation }).error);
 				}
@@ -700,7 +737,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				await control.settled();
 				await publication;
 				// The last heartbeat records the attempt's final usage before it ends, and reads whether the pool quits.
-				const finalControl = (await request({ kind: "heartbeat", reports: usageReports() })) as PoolControl;
+				const finalControl = (await attemptRequest({ kind: "heartbeat", reports: usageReports() })) as PoolControl;
+				leaseRenewedAt = performance.now();
 				if (finalControl.state === "quit") {
 					await request({ kind: "controlled", revision: finalControl.revision });
 					return;
@@ -717,7 +755,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// still closing after the bound writes nothing more: its writes would land in the attempt served next.
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
-				await request({ kind: "complete", result: completedAttemptResult(result, store) });
+				await attemptRequest({ kind: "complete", result: completedAttemptResult(result, store) });
 			} catch (error) {
 				if (!replies.attemptFenced) throw error;
 				// Its new owner, if any, replays the child; this worker ends the attempt and serves the next one.
