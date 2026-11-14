@@ -270,10 +270,8 @@ class WorkerHost implements WorkflowWorkerHost {
 	readonly closed = new Promise<void>((resolve) => {
 		this.settleClosed = resolve;
 	});
-	/** The id this host's provisioner knows it by (#4768). */
-	private get providerId(): string | undefined {
-		return this.options.providerId ?? (process.env.ATOMIC_WORKER_PROVIDER_ID || undefined);
-	}
+	/** The id this host's provisioner knows it by, as it was when the host started (#4768). */
+	private readonly providerId: string | undefined;
 
 	constructor(
 		readonly hostId: string,
@@ -286,6 +284,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		private readonly restorePort: WorkspaceRestore | undefined,
 		private readonly options: WorkflowWorkerHostOptions,
 	) {
+		this.providerId = options.providerId ?? (process.env.ATOMIC_WORKER_PROVIDER_ID || undefined);
 		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
 	}
 

@@ -8,6 +8,7 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import { recordedPlacement } from "../../packages/workflows/src/workers/public-pool.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 
@@ -48,6 +49,7 @@ async function fixture(before?: (database: Awaited<ReturnType<typeof openLibsqlD
 			...(providerId === undefined ? {} : { providerId }),
 		});
 	return {
+		journal,
 		lease,
 		queue,
 		shared,
@@ -144,3 +146,52 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 );
+
+test.skipIf(process.platform === "win32")(
+	"the shared pool's tables open again, a holder renews only at its own epoch, and events keep missing figures as null (#4768)",
+	async () => {
+		const f = await fixture();
+		try {
+			// Every host and root opens the shared pool: opening it again finds the provider id column there.
+			await f.report("h1", "vm-1");
+			const again = await SqlSharedPool.open(f.journal, f.queue);
+			assert.deepEqual(
+				(await again.registeredHosts()).map((host) => host.providerId),
+				["vm-1"],
+			);
+			assert.deepEqual(await f.store.acquire("A", undefined, 60_000), { held: true, epoch: 1 });
+			assert.deepEqual(await f.store.acquire("A", 7, 60_000), { held: false, holder: "A", epoch: 1 });
+			assert.equal(await f.store.record({ holder: "A", epoch: 1 }, { kind: "active", reason: "r" }), true);
+			assert.deepEqual(
+				(await f.store.recent(1)).map(({ kind, target, live, reason, error }) => ({
+					kind,
+					target,
+					live,
+					reason,
+					error,
+				})),
+				[{ kind: "active", target: null, live: null, reason: "r", error: null }],
+			);
+		} finally {
+			await f.close();
+		}
+	},
+);
+
+test.skipIf(process.platform === "win32")("recordedPlacement never keeps a root's provisioner (#4768)", async () => {
+	const provisioner = {
+		provisioner: { kind: "k", list: async () => [], scaleTo: async () => {}, drain: async () => {} },
+	};
+	assert.deepEqual(await recordedPlacement({ placement: "shared", claimWindowMs: 5, provisioner }), {
+		placement: { placement: "shared", claimWindowMs: 5, workspace: undefined },
+	});
+	const binding = {
+		remotes: ["https://example.invalid/r.git"],
+		head: "a".repeat(40),
+		tree: "b".repeat(40),
+		envHash: "e",
+	};
+	const placed = await recordedPlacement({ placement: "shared", workspace: binding, provisioner });
+	assert.equal("provisioner" in placed.placement, false);
+	assert.deepEqual(placed.placement.workspace, binding);
+});

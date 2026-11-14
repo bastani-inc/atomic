@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
@@ -251,4 +251,67 @@ test.skipIf(process.platform === "win32")(
 		}
 	},
 	BUDGET.timeoutMs,
+);
+
+/** The root's own pool only: one cold start. */
+const ROOT_FLEET_BUDGET = poolTestBudgetMs(1);
+
+test.skipIf(process.platform === "win32")(
+	"a root with workers.provisioner runs a fleet controller while it runs, never records the provisioner, and releases the lease when it ends (#4768)",
+	async () => {
+		const directory = makeTempDirectory("worker-root-fleet-");
+		const deadline = Date.now() + ROOT_FLEET_BUDGET.waitMs;
+		const url = pathToFileURL(join(directory, "shared.db")).href;
+		const journal = { adapter: libsql, options: { url }, prefix: PREFIX };
+		let root: BudgetedProcess | undefined;
+		try {
+			root = spawnWithinBudget(
+				[process.execPath, rootFixture, "start", directory, "3", "1", "distributed"],
+				{
+					cwd: directory,
+					stdout: "ignore",
+					detached: true,
+					env: {
+						...process.env,
+						SHARED_POOL_HOST: "root",
+						SHARED_POOL_AGENT_DIR: join(directory, "root", "agent"),
+						SHARED_POOL_ADAPTER: libsql,
+						SHARED_POOL_URL: url,
+						SHARED_POOL_PREFIX: PREFIX,
+						SHARED_POOL_ROOT: randomUUID(),
+						SHARED_POOL_WORK_MS: "3000",
+						SHARED_POOL_FLEET: "1",
+					},
+				},
+				deadline,
+			);
+			await expectExitedCleanly(root);
+			const outcome = await readJson<Outcome>(join(directory, "outcome-start.json"));
+			assert.equal(outcome.status, "completed", JSON.stringify(outcome));
+			const calls = readFileSync(join(directory, "fleet-calls"), "utf8").trim().split("\n");
+			assert.ok(calls.includes("list"), calls.join(", "));
+			// Three children at one worker a host, at most two hosts.
+			assert.ok(calls.includes("scaleTo 2"), calls.join(", "));
+			const reader = await resolveRunJournal({ journal, agentDir: join(directory, "reader", "agent") });
+			try {
+				const store = await SqlFleetStore.open(reader);
+				assert.ok((await store.recent(100)).some((event) => event.kind === "scale-up"));
+				// The root's controller gave its lease up as the root ended: a new controller takes it at once.
+				const taken = await store.acquire("next", undefined, 60_000);
+				assert.equal(taken.held, true);
+			} finally {
+				await reader.close();
+			}
+			// The provisioner is in nothing the root wrote to the shared database.
+			for (const file of readdirSync(directory).filter((name) => name.startsWith("shared.db")))
+				assert.ok(
+					!readFileSync(join(directory, file)).includes("fleet-fixture-4768"),
+					`${file} holds the provisioner`,
+				);
+		} finally {
+			killGroup(root);
+			removeTempDirectory(directory);
+		}
+	},
+	ROOT_FLEET_BUDGET.timeoutMs,
 );

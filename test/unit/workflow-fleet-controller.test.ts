@@ -609,3 +609,55 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual((await store.snapshot()).drains, []);
 	},
 );
+
+test.skipIf(process.platform === "win32")(
+	"a worker host refuses an empty providerId, and otherwise reports the one ATOMIC_WORKER_PROVIDER_ID gives (#4768)",
+	async () => {
+		for (const providerId of ["", 7])
+			await assert.rejects(
+				startWorkflowWorkerHost({
+					journal: selection(),
+					agentDir: join(directory, "bad"),
+					maxWorkers: 1,
+					providerId: providerId as string,
+				}),
+				(error: Error & { field?: string; code?: string }) => {
+					assert.deepEqual([error.field, error.code], ["providerId", "invalid-option"]);
+					return true;
+				},
+			);
+		const previous = process.env.ATOMIC_WORKER_PROVIDER_ID;
+		const store = await openStore();
+		try {
+			process.env.ATOMIC_WORKER_PROVIDER_ID = "vm-env";
+			const fromEnv = await startWorkflowWorkerHost({
+				journal: selection(),
+				agentDir: join(directory, "env"),
+				maxWorkers: 1,
+				hostId: "h-env",
+				restore: false,
+			});
+			hosts.push(fromEnv);
+			process.env.ATOMIC_WORKER_PROVIDER_ID = "";
+			const unset = await startWorkflowWorkerHost({
+				journal: selection(),
+				agentDir: join(directory, "unset"),
+				maxWorkers: 1,
+				hostId: "h-unset",
+				restore: false,
+			});
+			hosts.push(unset);
+			await until("both hosts to register", async () => (await store.snapshot()).hosts.length === 2);
+			assert.deepEqual(
+				(await store.snapshot()).hosts.map((host) => [host.host, host.providerId]),
+				[
+					["h-env", "vm-env"],
+					["h-unset", undefined],
+				],
+			);
+		} finally {
+			if (previous === undefined) delete process.env.ATOMIC_WORKER_PROVIDER_ID;
+			else process.env.ATOMIC_WORKER_PROVIDER_ID = previous;
+		}
+	},
+);

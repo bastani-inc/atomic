@@ -542,6 +542,18 @@ test("worker controller parses its provisioner module and policy, and refuses op
 			(error: Error) => error instanceof WorkerCommandError && error.field === field,
 		);
 	refused(["controller"], "--provisioner");
+	assert.throws(
+		() => parseWorkerCommand(["controller"], { cwd: root }),
+		/Pass the provisioner module the controller drives/,
+	);
+	assert.throws(
+		() => parseWorkerCommand(["status", "--min-hosts", "1"], { cwd: root }),
+		/"atomic worker status" does not take it/,
+	);
+	assert.throws(
+		() => parseWorkerCommand(["controller", "--provisioner", "p", "--min-hosts", "1x"], { cwd: root }),
+		/Pass an integer of at least 0/,
+	);
 	refused(["controller", "--provisioner", "p.mjs", "--slots", "2"], "--slots");
 	refused(["controller", "--provisioner", "p.mjs", "--workers-per-host", "0"], "--workers-per-host");
 	refused(["controller", "--provisioner", "p.mjs", "--boot-timeout", "0"], "--boot-timeout");
@@ -648,6 +660,33 @@ test("worker controller exits 1 when the provisioner module does not export a pr
 	});
 	assert.equal(code, 1);
 	assert.match(err[0] ?? "", /does not export a provisioner/);
+	const methods = "list: async () => [], scaleTo: async () => {}, drain: async () => {}";
+	for (const [name, body] of [
+		["no-kind", `{ ${methods} }`],
+		["no-list", "{ kind: 'k', scaleTo: async () => {}, drain: async () => {} }"],
+		["no-scale", "{ kind: 'k', list: async () => [], drain: async () => {} }"],
+		["no-drain", "{ kind: 'k', list: async () => [], scaleTo: async () => {} }"],
+		["nothing", "undefined"],
+	] as const) {
+		const partial = join(root, `${name}.mjs`);
+		writeFileSync(partial, `export default ${body};\n`);
+		err.length = 0;
+		assert.equal(
+			await runWorkerCommand(["controller", "--provisioner", partial], {
+				cwd: root,
+				agentDir: join(root, "agent"),
+				log: () => {},
+				error: (line) => err.push(line),
+				loadModule: async () => ({
+					startWorkflowWorkerHost: () => assert.fail("no host"),
+					readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+					startWorkflowFleetController: () => assert.fail(`no controller for ${name}`),
+				}),
+			}),
+			1,
+		);
+		assert.match(err[0] ?? "", /does not export a provisioner/, name);
+	}
 	const factory = join(root, "factory.mjs");
 	writeFileSync(
 		factory,
