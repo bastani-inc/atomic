@@ -7,6 +7,10 @@
 - Added resume and capture timings ([#4748](https://github.com/bastani-inc/atomic/issues/4748)). `/session snapshot` now shows how long each checkout's last capture took and a **Last resume** block: each restored checkout with its restore phases (fetch, reconstruct, materialize, LFS, verify, publish), each blueprint step with its duration, and when the session was ready. `ATOMIC_TIMING=1` prints the same lines for `atomic --session`. Blueprint step logs record when each step started and finished and how long it ran. The session keeps the numbers in a `resume_timings` entry, readable from exports and through `latestResumeTimings()` and `formatResumeTimings()` in the SDK. A failure to record them never stops a resume.
 - Added `resume.waitForBlueprint`, an opt-in setting that lets a resumed session's first turn start while the blueprint build of its restored worktrees still runs. With `"tools"`, the first request goes out once the worktrees are restored; tools that run project code or read the worktree wait for the build, and the first of them reports how it went. A failed build releases them with the usual warning, and interrupting the turn stops only the wait. The default, `"prompt"`, keeps today's behaviour ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
 
+### Changed
+
+- A resume restore that needs a commit this machine lacks now fetches only that commit (`--depth=1`) instead of the repository's whole history, which roughly halves a cold restore of a long-lived repository; it fetches the full history when a remote refuses a shallow fetch or the restore needs older commits. Restored worktrees therefore start with a shallow history (`git fetch --unshallow origin` brings the rest). A session's other checkouts are now restored concurrently, up to four at a time, instead of one after another ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

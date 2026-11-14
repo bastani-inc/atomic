@@ -838,7 +838,11 @@ async function restorePlanned(
 		missingNotices: [] as ResumeNotice[],
 	};
 	let restored = false;
-	const restore = async (targets: readonly RestoreTarget[], pending: WorktreeRootMapping | undefined) => {
+	const restore = async (
+		targets: readonly RestoreTarget[],
+		pending: WorktreeRootMapping | undefined,
+		beforeRecord?: () => Promise<void>,
+	) => {
 		restored = true;
 		const git = plan.git;
 		for (const target of targets) {
@@ -860,6 +864,7 @@ async function restorePlanned(
 			...(git === undefined ? {} : { cannotRestore: new Map(targets.map((target) => [target.root, git])) }),
 			fallbackCwd: options.launchCwd,
 			skipMissingRecords: true,
+			beforeRecord,
 		});
 		for (const missing of resumed.missingRecords ?? []) {
 			if (outcome.missing.has(missing.root)) continue;
@@ -874,10 +879,22 @@ async function restorePlanned(
 		return resumed.cwd;
 	};
 	if (plan.required.length > 0 || reused !== undefined) outcome.cwd = await restore(plan.required, reused);
-	for (const target of plan.optional) {
+	// Optional checkouts restore at once, as many as verification compares (#4748); each records its outcome only after
+	// the one before it has, so the session lists them, and their notices, in the order a serial resume would.
+	let previous = Promise.resolve();
+	const turns = plan.optional.map((target) => {
+		const before = previous;
+		let done!: () => void;
+		previous = new Promise<void>((resolveTurn) => {
+			done = resolveTurn;
+		});
+		return { target, before, done };
+	});
+	const outcomes = await settleBounded(turns, VERIFY_CONCURRENCY, async ({ target, before, done }) => {
 		try {
-			await restore([target], undefined);
+			await restore([target], undefined, () => before);
 		} catch (error) {
+			await before;
 			if (options.signal?.aborted || !isCheckoutFailure(error)) throw error;
 			outcome.failed.push(
 				notRestored(
@@ -886,8 +903,12 @@ async function restorePlanned(
 					`${absentOrChanged(target)}, and restoring it failed: ${describeFailure(error)}`,
 				),
 			);
+		} finally {
+			await before;
+			done();
 		}
-	}
+	});
+	for (const result of outcomes) if (result.status === "rejected") throw result.reason;
 	// With nothing to restore, no restore listed the checkouts whose snapshot record is missing (#4744).
 	if (!restored) {
 		for (const missing of missingSnapshotRecords(sessionManager)) {
