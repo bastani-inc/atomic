@@ -18,6 +18,21 @@ import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cl
 import { startOutageProxy } from "../helpers/outage-proxy.js";
 import { sleep } from "../helpers/runtime.js";
 
+/** The scaling signal of a fleet with no work and no host, under the default policy. */
+const EMPTY_SCALING = {
+	desiredHosts: 0,
+	desiredWorkers: 0,
+	demand: 0,
+	queueDepth: 0,
+	running: 0,
+	hosts: 0,
+	busySlots: 0,
+	idleSlots: 0,
+	minHosts: 0,
+	maxHosts: 10,
+	workersPerHost: 4,
+};
+
 const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
 /** A failed poll waits out the storage facade's transient retries (about 4 s) before it fails. */
 const OUTAGE_TEST_TIMEOUT_MS = 60_000;
@@ -73,7 +88,12 @@ test.skipIf(process.platform === "win32")(
 		assert.ok(events[0]?.kind === "idle-exit" && events[0].idleMs >= 2_500);
 		assert.deepEqual(
 			await fleet(),
-			{ hosts: [], roots: [], fleet: { store: { state: "ok" }, queue: { roots: 0, ready: 0, leased: 0 } } },
+			{
+				hosts: [],
+				roots: [],
+				fleet: { store: { state: "ok" }, queue: { roots: 0, ready: 0, leased: 0 } },
+				scaling: EMPTY_SCALING,
+			},
 			"a drained host leaves the registry",
 		);
 		await host.drain();
@@ -136,6 +156,7 @@ test("reading the fleet of a journal that never ran a shared pool finds nothing 
 		hosts: [],
 		roots: [],
 		fleet: { store: { state: "ok" }, queue: { roots: 0, ready: 0, leased: 0 } },
+		scaling: EMPTY_SCALING,
 	});
 });
 
