@@ -57,7 +57,13 @@ function configError(field, reason, hint) {
 /** Whether `host` reaches this machine without a network: a socket directory, a loopback name or address. */
 function isLocalHost(/** @type {string} */ host) {
 	const name = host.replace(/^\[|\]$/g, "").toLowerCase();
-	return name === "" || name.startsWith("/") || name === "localhost" || name === "::1" || /^127\./.test(name);
+	return (
+		name === "" ||
+		name.startsWith("/") ||
+		name === "localhost" ||
+		name === "::1" ||
+		/^127(?:\.\d{1,3}){3}$/.test(name)
+	);
 }
 
 /**
@@ -126,7 +132,13 @@ export function numberPlaceholders(sql) {
 		} else if (character === "'") {
 			const escapes = /[eE]/.test(sql[index - 1] ?? "") && !isWordCharacter(sql[index - 2]);
 			index++;
-			while (index < sql.length && sql[index] !== "'") index += escapes && sql[index] === "\\" ? 2 : 1;
+			// A doubled quote is a quote inside the same string, which keeps its backslash escapes.
+			while (index < sql.length) {
+				if (escapes && sql[index] === "\\") index += 2;
+				else if (sql[index] !== "'") index++;
+				else if (sql[index + 1] === "'") index += 2;
+				else break;
+			}
 			index++;
 		} else if (character === '"') {
 			index = sql.indexOf('"', index + 1);
@@ -175,7 +187,7 @@ const BYTEA = 17;
 
 /**
  * Turns each column's text into a SQLite value: integers as numbers or `bigint`s (the facade turns safe ones into
- * numbers), a whole `NUMERIC` (such as a `SUM` of `BIGINT`s) as an integer, booleans as 1 or 0, `BYTEA` as bytes,
+ * numbers), a whole `NUMERIC` (such as a `SUM` of `BIGINT`s, or `2.00`) as an integer, booleans as 1 or 0, `BYTEA` as bytes,
  * and everything else, JSON and timestamps included, as its text.
  * @param {typeof import("pg").types} pgTypes
  */
@@ -196,7 +208,10 @@ function sqliteTypes(pgTypes) {
 				case FLOAT8:
 					return Number;
 				case NUMERIC:
-					return (/** @type {string} */ text) => (/^-?\d+$/.test(text) ? BigInt(text) : Number(text));
+					return (/** @type {string} */ text) => {
+						const whole = /^(-?\d+)(?:\.0*)?$/.exec(text);
+						return whole === null ? Number(text) : BigInt(/** @type {string} */ (whole[1]));
+					};
 				case BOOL:
 					return (/** @type {string} */ text) => (text === "t" ? 1 : 0);
 				case BYTEA:
