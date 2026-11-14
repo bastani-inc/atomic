@@ -667,3 +667,33 @@ test("without batches, pool writes run in transactions and still refuse a token 
 		await f.close();
 	}
 });
+
+test("without batches, a first session commit that rolls back leaves later session commits working (#4768)", async () => {
+	const f = await fixture(false);
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		const create = (operation: string, sessionId: string) =>
+			f.pool.commit(f.lease, attempt, operation, {
+				kind: "session-create",
+				checkpoint: {
+					kind: "stage",
+					workflowId: "root",
+					checkpointId: `${work.scope}:session:${sessionId}`,
+					name: "stage",
+					replayKey: `${work.scope}:stage:${sessionId}`,
+					sessionId,
+					completedAt: 0,
+					topology: { version: 1, stageId: "stage", parentIds: [], sourceOrder: 0, run },
+				},
+				header: { ...header, id: sessionId },
+				entries: [entry(`m-${sessionId}`)],
+			});
+		// The first session write fails inside its transaction, after the session tables were created there.
+		await assert.rejects(create("op-1", "session\0bad"));
+		const receipt = await create("op-2", "session");
+		assert.equal(receipt.lastSeq, 1);
+	} finally {
+		await f.close();
+	}
+});

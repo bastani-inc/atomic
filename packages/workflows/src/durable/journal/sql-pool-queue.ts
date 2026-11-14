@@ -1540,38 +1540,42 @@ export class SqlPoolQueue {
 	 * there instead of in a transaction of its own.
 	 */
 	private poolSessions(tx?: SqliteExecutor): Promise<PoolSessions> {
-		this.sessions ??= (async () => {
-			const within = new AsyncLocalStorage<SqliteExecutor>();
-			const executor = () => {
-				const current = within.getStore();
-				if (current === undefined) throw new Error("Pool session store used outside a pool write");
-				return current;
-			};
-			const prefix = `${this.journal.runs}_pool_`;
-			const database: SqliteDatabase = {
-				descriptor: { adapter: "pool-transaction", location: prefix },
-				exec: (sql) => executor().exec(sql),
-				run: (sql, ...params) => executor().run(sql, ...params),
-				get: (sql, ...params) => executor().get(sql, ...params),
-				all: (sql, ...params) => executor().all(sql, ...params),
-				transaction: (body) => body(executor()),
-				close: async () => {},
-			};
-			const open = (executor: SqliteExecutor) =>
-				within.run(executor, () =>
-					new StorageProvider().openSessionStore(
-						{ kind: "database", database, prefix },
-						{ agentDir: "", domain: "sessions" },
-					),
-				);
-			// In the caller's transaction when it holds one, or in a transaction of its own.
-			const store = await (tx === undefined ? this.transaction(open) : open(tx));
-			return { store, within };
-		})().catch((error: Error) => {
+		// Opened inside a caller's transaction, a store is that write's own: the transaction may still roll its tables
+		// back, so it is not kept for later writes, which open it again as every pool session write did before (#4768).
+		if (tx !== undefined) return this.openPoolSessions(tx);
+		this.sessions ??= this.openPoolSessions().catch((error: Error) => {
 			this.sessions = undefined;
 			throw error;
 		});
 		return this.sessions;
+	}
+	private async openPoolSessions(tx?: SqliteExecutor): Promise<PoolSessions> {
+		const within = new AsyncLocalStorage<SqliteExecutor>();
+		const executor = () => {
+			const current = within.getStore();
+			if (current === undefined) throw new Error("Pool session store used outside a pool write");
+			return current;
+		};
+		const prefix = `${this.journal.runs}_pool_`;
+		const database: SqliteDatabase = {
+			descriptor: { adapter: "pool-transaction", location: prefix },
+			exec: (sql) => executor().exec(sql),
+			run: (sql, ...params) => executor().run(sql, ...params),
+			get: (sql, ...params) => executor().get(sql, ...params),
+			all: (sql, ...params) => executor().all(sql, ...params),
+			transaction: (body) => body(executor()),
+			close: async () => {},
+		};
+		const open = (executor: SqliteExecutor) =>
+			within.run(executor, () =>
+				new StorageProvider().openSessionStore(
+					{ kind: "database", database, prefix },
+					{ agentDir: "", domain: "sessions" },
+				),
+			);
+		// In the caller's transaction when it holds one, or in a transaction of its own.
+		const store = await (tx === undefined ? this.transaction(open) : open(tx));
+		return { store, within };
 	}
 	/**
 	 * A checkpoint commit planned into `write`, from what `read` sees: validation against the root's recorded
