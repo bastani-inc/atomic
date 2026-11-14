@@ -287,7 +287,7 @@ export class LegacySessionStore implements SessionStore {
 
 	private async markDeleted(sessionId: string): Promise<void> {
 		const database = await this.deletionDatabase();
-		await database.run(`INSERT OR IGNORE INTO ${DELETED_TABLE} VALUES (?, ?)`, sessionId, Date.now());
+		await database.run(`INSERT INTO ${DELETED_TABLE} VALUES (?, ?) ON CONFLICT DO NOTHING`, sessionId, Date.now());
 	}
 }
 
