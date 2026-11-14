@@ -3,6 +3,8 @@ import { LineCounter, parseAllDocuments } from "yaml";
 import { BLUEPRINT_FILE_NAME, CONFIG_DIR_NAME } from "../../../config.js";
 import { BlueprintInvalidError, type BlueprintInvalidReason, type BlueprintScope } from "./errors.ts";
 import type {
+	BlueprintCacheEntry,
+	BlueprintCacheSection,
 	BlueprintDocument,
 	BlueprintPlatform,
 	BlueprintShell,
@@ -133,6 +135,7 @@ function readDocument(
 	if ("clone" in mapping) {
 		warnClone("'clone' is ignored: a resume restores the recorded tree instead of cloning the repository");
 	}
+	const cache = readCache(mapping.cache);
 	return {
 		platforms: readPlatforms(mapping["runs-on"], invalid),
 		shell: readShell(mapping.shell, invalid),
@@ -141,6 +144,7 @@ function readDocument(
 		knowledge: readKnowledge(mapping.knowledge, invalid),
 		postBuild: readSteps(mapping["post-build"], "post-build", invalid),
 		includes: scope === "repository" ? readIncludes(mapping.includes, invalid) : [],
+		...(cache === undefined ? {} : { cache }),
 	};
 }
 
@@ -248,6 +252,59 @@ function readKnowledge(value: YamlValue, invalid: Invalid): KnowledgeItem[] {
 		}
 		return { name: stringified(item.name), contents: stringified(item.contents) };
 	});
+}
+
+/** A path whose text a cache path or key file may not contain: control characters such as a newline. */
+const CONTROL_CHARACTER = /\p{Cc}/u;
+/**
+ * Characters a cache action reads as a glob or an exclusion (`!`), which could match paths the credential checks never
+ * saw, such as `~/.ss[h]`. A cache path is a plain path.
+ */
+const GLOB_CHARACTER = /[*?[\]{}]|^\s*!/u;
+
+/**
+ * Reads the Atomic-only `cache:` section leniently: an invalid entry, or a section that is not a list, is left out with
+ * a message and never fails the blueprint, so a resume never depends on it.
+ */
+function readCache(value: YamlValue): BlueprintCacheSection | undefined {
+	if (value === undefined || value === null) return undefined;
+	if (!Array.isArray(value)) {
+		return { entries: [], ignored: ["'cache' must be a list of paths or { path, kind, key-files } items; ignored"] };
+	}
+	const entries: BlueprintCacheEntry[] = [];
+	const ignored: string[] = [];
+	for (const [index, item] of value.entries()) {
+		const read = readCacheEntry(item);
+		if (typeof read === "string") ignored.push(`cache[${index}]: ${read}; entry ignored`);
+		else entries.push(read);
+	}
+	return { entries, ignored };
+}
+
+function readCacheEntry(item: YamlValue): BlueprintCacheEntry | string {
+	const mapping: YamlMapping | undefined =
+		typeof item === "string" ? { path: item } : isMapping(item) ? item : undefined;
+	if (mapping === undefined) return "an entry must be a path or a { path, kind, key-files } mapping";
+	const path = mapping.path;
+	if (typeof path !== "string" || path.trim() === "" || CONTROL_CHARACTER.test(path)) {
+		return "'path' must be a non-empty single-line string";
+	}
+	if (GLOB_CHARACTER.test(path)) return "'path' must be a plain path, without glob characters or a leading '!'";
+	const kind = mapping.kind === undefined || mapping.kind === null ? "store" : mapping.kind;
+	if (kind !== "store" && kind !== "build") return "'kind' must be 'store' or 'build'";
+	const declared = mapping["key-files"];
+	if (declared === undefined || declared === null) return { path: path.trim(), kind, keyFiles: undefined };
+	const keyFiles = Array.isArray(declared) ? declared : [declared];
+	if (keyFiles.length === 0 || !keyFiles.every(isRelativeFile)) {
+		return "'key-files' must be a file or a list of files relative to the repository root, without '..'";
+	}
+	return { path: path.trim(), kind, keyFiles: keyFiles.map((file) => file.replaceAll("\\", "/")) };
+}
+
+function isRelativeFile(value: YamlValue): value is string {
+	if (typeof value !== "string" || value === "" || CONTROL_CHARACTER.test(value)) return false;
+	const segments = value.replaceAll("\\", "/").split("/");
+	return !posix.isAbsolute(value.replaceAll("\\", "/")) && !/^[A-Za-z]:/.test(value) && !segments.includes("..");
 }
 
 function readIncludes(value: YamlValue, invalid: Invalid): IncludedWorkspace[] {

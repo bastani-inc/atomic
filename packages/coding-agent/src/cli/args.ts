@@ -355,7 +355,8 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} storage <command>         Show storage selections and connectivity, or join a shared database
   ${APP_NAME} team <command>            Join or leave a team database (shared workflow runs and Intercom, private sessions)
   ${APP_NAME} intercom <command>        Show or restart this machine's Intercom broker
-  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/team/intercom
+  ${APP_NAME} blueprint cache-key       Print cache keys and paths for a runner's cache action (actions/cache)
+  ${APP_NAME} <command> --help          Show help for install/remove/uninstall/update/list/config/auth/mcp/storage/team/intercom/blueprint
 
 ${chalk.bold("Options:")}
   --provider <name>              Provider to search for --model (requires --model)
