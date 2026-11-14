@@ -442,6 +442,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		await exitAfterCommand();
 		return;
 	}
+	if (args[0] === "worker") {
+		const { runWorkerCommand } = await import("./cli/worker-command.js");
+		process.exitCode = await runWorkerCommand(args.slice(1), { cwd, agentDir });
+		await exitAfterCommand();
+		return;
+	}
 	if (args[0] === "intercom") {
 		const { runIntercomCommand } = await import("./cli/intercom-command.js");
 		process.exitCode = await runIntercomCommand(args.slice(1), { agentDir });

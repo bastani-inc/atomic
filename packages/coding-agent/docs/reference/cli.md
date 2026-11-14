@@ -176,6 +176,22 @@ The help text:
 
 See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-shared-database) and [Running Intercom across machines](/intercom/operations#running-intercom-across-machines).
 
+## Worker Commands
+
+```bash
+atomic worker start [--db <url>] [--token-file <path>] [--prefix <prefix>] [--slots <n>]
+                    [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
+atomic worker status [--db <url>] [--token-file <path>] [--prefix <prefix>] [--json]
+```
+
+`atomic worker start` runs this machine as a worker host of a shared workflow database. It runs the pooled children of every root that started with shared placement on that database, at most `--slots` at once. `--db` names a libSQL or Turso database (`libsql://`, `https://`, `wss://`, or an absolute `file:` URL) for this process only and writes nothing to settings. Without `--db`, it uses the journal this machine already selects, for example after `atomic team join`. `--token-file` names the file that holds the database token. Only the file's path is passed on: the token is never printed, logged, or put on a child process's command line. A token file that other users can read gets a warning. URLs that carry the token themselves are refused. `--slots` defaults to half the CPUs, from 1 to 16. `--label` adds a label that `atomic worker status` shows, and can be repeated. `--host-id` sets the host's id; by default the machine keeps one in its agent directory. `--no-restore` takes only work whose repository tree is already on this machine. `--idle-exit <ms>` drains and exits once no child has run for that long.
+
+It prints one line per event: `ready host=… slots=… journal=…`, `claimed child=… root=… attempt=…`, `released …` when a child finished or went back to the queue, `degraded failures=… retry_in_ms=… error=…` when a poll of the database failed, `recovered failures=…`, `idle-exit`, `draining`, `stopping`, and `drained` or `stopped`. `--json` prints the same events as one JSON object per line, each with `event` and `time`.
+
+SIGTERM or SIGINT drains the host: it takes no more children, lets the running ones finish, and exits `0`. A second signal stops the host at once. The children it held go back to the queue for other hosts, and the command exits `2`. It exits `1` when setup is incomplete (it lists every missing piece, such as the adapter, the token file, or process containment) or when the host fails. If the database becomes unreachable, the host keeps its running children, prints `degraded`, and polls again after 1 second, then twice as long after each further failure, up to 30 seconds.
+
+`atomic worker status` lists the worker hosts registered in the database, with their workers, labels, and when each last reported, and the queue of each running root they serve. See [Running workers on many machines](/guides/worker-hosts).
+
 ## Modes
 
 | Flag | Description |

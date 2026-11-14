@@ -212,8 +212,8 @@ export function poolUserDatabase(journal: RunJournal): string | undefined {
 }
 
 /**
- * The run options with the host's `workflows.localWorkers` and `workflows.admission` settings where the options set
- * none. Only a merge: a run or resume validates the local worker settings it takes before it starts.
+ * The run options with the host's `workflows.localWorkers`, `workflows.workers` and `workflows.admission` settings
+ * where the options set none. Only a merge: a run or resume validates the worker settings it takes before it starts.
  */
 export function withWorkerSettings(options: RunOpts, settings?: RunJournalSettings): RunOpts {
 	const configured = settings?.workflows;
@@ -221,6 +221,7 @@ export function withWorkerSettings(options: RunOpts, settings?: RunJournalSettin
 	return {
 		...options,
 		localWorkers: options.localWorkers ?? configured.localWorkers,
+		workers: options.workers ?? configured.workers,
 		admission: options.admission ?? configured.admission,
 	};
 }

@@ -564,6 +564,24 @@ const WorkflowsSettingsSchema = Type.Union(
 					{ additionalProperties: false },
 				),
 			),
+			workers: Type.Optional(
+				Type.Object(
+					{
+						placement: Type.Literal("shared", {
+							description:
+								'"shared": the pooled children of roots started with /workflow run also run on worker hosts (`atomic worker start`) that open the same shared journal. Requires localWorkers and a journal selected through a storage adapter such as libSQL / Turso.',
+						}),
+						claimWindowMs: Type.Optional(
+							Type.Integer({
+								minimum: 1,
+								description:
+									"Milliseconds bound work may wait unclaimed while no live host can restore its workspace, before the child fails. Default: 60000.",
+							}),
+						),
+					},
+					{ additionalProperties: false },
+				),
+			),
 			admission: Type.Optional(
 				Type.Object(
 					{
@@ -587,7 +605,7 @@ const WorkflowsSettingsSchema = Type.Union(
 	],
 	{
 		description:
-			'Local workflow paths, or an object with "paths", "autoAdvanceAfterSteer", "journal" storage, "localWorkers" and "admission" settings.',
+			'Local workflow paths, or an object with "paths", "autoAdvanceAfterSteer", "journal" storage, "localWorkers", "workers" and "admission" settings.',
 	},
 );
 

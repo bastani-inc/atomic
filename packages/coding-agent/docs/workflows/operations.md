@@ -974,7 +974,7 @@ Each worker process must report that it is ready within `localWorkers.startupTim
 
 A worker that exits is detected immediately, and its child is replayed from its last committed checkpoint on a replacement worker. A worker that is still running keeps its child as long as it keeps responding, even when the pool is briefly too busy to process its heartbeats. Only a running worker that has not responded for `localWorkers.leaseMs` milliseconds (30000 by default) is stopped and its child replayed. When a root is resumed after its process crashed, children that were held by the crashed process's workers are replayed on the new workers right away.
 
-A worker that exits or is killed while it runs a child does not stop the root. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker, up to three attempts per child. A child that loses its third worker fails alone with `worker_retry_limit`; the pool and the root's other children keep running. One child's failure never stops the pool: it fails only that child, and the pool closes when the root ends. A child whose result was recorded keeps it whatever happens to the pool afterwards. A fault of the pool itself that reaches a running child, such as a journal write the database refused or a refused lease (`stale_work_lease`), replays the child the same way instead of failing it; after its third attempt the child fails with the retryable `worker_retry_limit`, naming the fault. A busy machine slows workers but does not fail them: a worker that still responds keeps its child however late its heartbeats are processed, and a stage's queued Intercom messages are delivered however slowly the worker acknowledges them. A stage on a worker reads its queued and sticky Intercom messages itself and receives them before its first turn, so it starts without waiting for a busy root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run; the messages stay queued and arrive live or on the stage's next drain.
+A worker that exits or is killed while it runs a child does not stop the root. The root fences that worker's attempt and replays the child from its last committed checkpoint on a replacement worker, up to three attempts per child. A child that loses its third worker fails alone with `worker_retry_limit`; the pool and the root's other children keep running. One child's failure never stops the pool: it fails only that child, and the pool closes when the root ends. A child whose result was recorded keeps it whatever happens to the pool afterwards. A journal the worker briefly cannot reach does not end its child: a heartbeat that fails because the database is unreachable keeps the child running while its lease (`localWorkers.leaseMs`) lasts, and the next heartbeat that gets through renews it. An idle worker waits out the outage instead of exiting. A fault of the pool itself that reaches a running child, such as a checkpoint write the database refused, an outage longer than the lease, or a refused lease (`stale_work_lease`), replays the child the same way instead of failing it; after its third attempt the child fails with the retryable `worker_retry_limit`, naming the fault. A busy machine slows workers but does not fail them: a worker that still responds keeps its child however late its heartbeats are processed, and a stage's queued Intercom messages are delivered however slowly the worker acknowledges them. A stage on a worker reads its queued and sticky Intercom messages itself and receives them before its first turn, so it starts without waiting for a busy root. If the root later fails to record or deliver them, the run's status shows one `Intercom delivery:` line for the whole run; the messages stay queued and arrive live or on the stage's next drain.
 
 When the pool cannot confirm a worker's cleanup, the worker is retired and replaced, and its unfinished child replays on another worker. This happens when a tool process group the worker started is still running after SIGKILL, or the worker process itself outlives SIGKILL. The event shows as a warning on the root run and is written to the worker's log. It never fails a child. The process permits of those groups stay quarantined: they stay counted against `admission.limits`, and closing the pool reports them. A tool process that waits for capacity which only quarantined permits hold waits at most 15 seconds for those groups to exit. It then fails with the retryable `worker_cleanup_unconfirmed`, naming the groups and the limit, and on a worker that ends the child's attempt, so the child replays within its three attempts and then fails with `worker_retry_limit` instead of waiting forever. Capacity held by running work is waited for however long it takes. Processes that a command detaches into their own session, such as an `ssh` ControlMaster daemon, are not part of the worker's cleanup and do not delay it.
 
@@ -1000,9 +1000,17 @@ Pooled SDK runs reject process-bound adapter, UI, persistence and similar runtim
 
 ### Workers on other hosts
 
-A root can let workers on other machines run its pooled children when every machine opens the same shared journal, such as a libSQL or Turso database selected through the [libSQL adapter](/storage#selecting-an-adapter). This is opt-in, SDK-only, and changes nothing for roots that do not use it. The default local SQLite journal keeps its workers on its own machine.
+A root can let workers on other machines run its pooled children when every machine opens the same shared journal, such as a libSQL or Turso database selected through the [libSQL adapter](/storage#selecting-an-adapter). This is opt-in and changes nothing for roots that do not use it. The default local SQLite journal keeps its workers on its own machine.
 
-Start the root with `workers: { placement: "shared" }` beside `localWorkers`:
+The quickest way is from the command line. Start a worker host on each other machine with one command:
+
+```bash
+atomic worker start --db libsql://pool.example.com --token-file /etc/atomic/token
+```
+
+Then set `workflows.workers` to `{ "placement": "shared" }` beside `workflows.localWorkers` in settings on the machine that starts the runs, so roots that `/workflow run` starts use shared placement. [Running workers on many machines](/guides/worker-hosts) covers the command, draining, and running it as a systemd service, from cloud-init, or in a container.
+
+From the SDK, start the root with `workers: { placement: "shared" }` beside `localWorkers`:
 
 ```ts
 await run(root, {}, {
@@ -1014,7 +1022,7 @@ await run(root, {}, {
 });
 ```
 
-Then start a worker host on each other machine, with the same journal selection:
+Then start a worker host on each other machine with `atomic worker start`, or from code with the same journal selection:
 
 ```ts
 import { startWorkflowWorkerHost } from "@bastani/atomic/workflows";
@@ -1026,6 +1034,10 @@ const host = await startWorkflowWorkerHost({
 });
 // host.stats(), then host.drain() to finish running children, or host.stop() to stop now.
 ```
+
+`startWorkflowWorkerHost` also takes `idleExitMs`, which drains and stops the host once none of its workers ran a child for that long, and `onEvent`, which receives `claimed` and `released` as its workers take and let go of children, `degraded` and `recovered` while its polls of the journal fail and once they succeed again, and `idle-exit`. Without `journal`, it opens the journal this machine selects for workflow runs. `host.closed` settles once the host has stopped, whichever way it stopped. `readWorkflowWorkerFleet({ journal })` returns the registered hosts and the pool stats of each running root, as `atomic worker status` prints them.
+
+A host that cannot reach the journal keeps its running children. It polls again after 1 second, then twice as long after each further failure, up to 30 seconds, and `host.stats().degraded` says how many polls failed in a row and why.
 
 Worker hosts run on Linux or macOS, like local workers: on Windows, or where Atomic's native process identity does not load, `startWorkflowWorkerHost` fails with `SharedPoolSetupError` (code `process-containment-unavailable`) before it opens the journal.
 

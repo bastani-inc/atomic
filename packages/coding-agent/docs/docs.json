@@ -56,6 +56,7 @@
               "background-tasks",
               "guides/intercom",
               "guides/team-setup",
+              "guides/worker-hosts",
               "computer-use"
             ]
           },

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `idleExitMs`, `onEvent` and an optional `journal` (default: the journal this machine selects) to `startWorkflowWorkerHost`, with `host.closed` and `host.stats().degraded`, and `readWorkflowWorkerFleet()`, which lists a shared journal's worker hosts and root queues. A host whose polls of the journal fail keeps its running children and polls again after 1 s, doubling up to 30 s. `workflows.workers` in settings gives roots the workflow tool starts shared placement ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
+### Fixed
+
+- Fixed a pooled child being taken off its worker and replayed elsewhere when a single heartbeat failed because the journal's database was briefly unreachable. The worker now keeps the child while its lease lasts and renews it with the next heartbeat that gets through, and an idle worker waits out the outage instead of exiting ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ## [0.9.86] - 2026-11-14
 
 Workflow runs always resume, and stage chats complete file mentions.

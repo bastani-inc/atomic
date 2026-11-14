@@ -28,6 +28,7 @@ For work that continues while you chat, follow [Background tasks](/background-ta
 ## More guides and references
 
 - [Team and CI setup](/guides/team-setup) shares workflow runs and Intercom with a team through one database while sessions stay private, and sets up CI runners from environment variables.
+- [Running workers on many machines](/guides/worker-hosts) turns any machine into a worker host for shared workflow runs with `atomic worker start`, as a systemd service, from cloud-init, or in a container.
 - [Computer use](/computer-use) covers desktop apps, browsers, and terminals across macOS, Linux, and Windows.
 - [Environment variables](/environment-variables) lists Atomic/Pi aliases, provider credentials, and bash session metadata.
 - [Settings](/settings) lists global and project settings.

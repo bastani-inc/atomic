@@ -35,3 +35,9 @@ export interface SharedPoolStats {
 		readonly expiresInMs: number;
 	}[];
 }
+
+/** Every worker host registered in a journal, and the pool stats of each running or paused root they serve (#4768). */
+export interface SharedPoolFleet {
+	readonly hosts: readonly SharedPoolHost[];
+	readonly roots: readonly SharedPoolStats[];
+}
