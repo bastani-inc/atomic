@@ -6,9 +6,10 @@ Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomi
 
 ```text
 Pull request / selected branch push
-└─ test.yml (five concurrent work jobs + one result gate)
+└─ test.yml (six concurrent work jobs + one result gate)
    ├─ unit-tests (Linux, Windows; five shards each): build package -> one unit shard
    ├─ integration-tests (Linux, Windows; four shards each): build package -> one integration shard
+   ├─ storage-conformance (Linux): build package -> storage matrix and libSQL server tests (Postgres, sqld services)
    ├─ agent-suite (Linux, Windows; three shards each): native bindings -> one pi-ai + coding-agent shard (Node)
    ├─ release-archive (Linux, Windows): build package -> binaries -> smoke
    ├─ static-checks (Linux): typecheck, docs, installer container smoke, contracts
@@ -85,7 +86,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 
 | Workflow and jobs | Before | Now | Shape |
 | --- | --- | --- | --- |
-| `test.yml` unit-tests, integration-tests and agent-suite (Linux legs) | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
+| `test.yml` unit-tests, integration-tests and agent-suite (Linux legs); storage-conformance | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
 | `test.yml` unit-tests, integration-tests and agent-suite (Windows legs) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-8x16` | 8 vCPU, 16 GB (upsized; see [Sizing](#sizing)) |
 | `test.yml` release-archive (Linux leg); `static-checks`; `test` result gate | `blacksmith-4vcpu-ubuntu-2404` | `namespace-profile-atomic-ci-linux-amd64-4x16` | 4 vCPU, 16 GB |
 | `test.yml` release-archive (Windows leg) | `blacksmith-4vcpu-windows-2025` | `namespace-profile-atomic-ci-windows-amd64-4x16` | 4 vCPU, 16 GB |
@@ -107,7 +108,7 @@ Validate workflow changes with YAML parsing, actionlint, maintainer review, and 
 
 | Profile tag | OS | Arch | Shape | Builder mode | Access Level | Created with | Jobs |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs) |
+| `atomic-ci-linux-amd64-8x16` | Ubuntu 24.04 | amd64 | 8x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` unit-tests, integration-tests, agent-suite (Linux legs), storage-conformance |
 | `atomic-ci-linux-amd64-4x16` | Ubuntu 24.04 | amd64 | 4x16 | No remote builder | Restricted | `nsc` (below), then dashboard | `test.yml` release-archive (Linux leg), static-checks, `test` result gate; `codeql.yml` analyze |
 | `atomic-ci-windows-amd64-8x16` | Windows Server 2022 | amd64 | 8x16 | No remote builder | Restricted | Dashboard only | `test.yml` unit-tests, integration-tests, agent-suite (Windows legs) |
 | `atomic-ci-windows-amd64-4x16` | Windows Server 2022 | amd64 | 4x16 | No remote builder | Restricted | Dashboard only | `test.yml` release-archive (Windows leg) |
@@ -273,7 +274,7 @@ reach CI through their PRs, without duplicate push runs. There is no
 `concurrency:` cancellation group: cancelling an in-flight run can leave a
 required context cancelled without a successful replacement for that SHA.
 
-Five independent job definitions expand to twenty-seven work-job instances and three
+Six independent job definitions expand to twenty-eight work-job instances and three
 result-gate legs. Unit and integration suites run on separate Linux/Windows VMs,
 each building its own prerequisites. This duplicates setup cost but avoids
 serial dependencies between suites. The unit, integration and agent suites are split
@@ -286,7 +287,7 @@ no test is removed.
 Steps stay in one job only when one consumes another's build output. Nothing is passed between jobs as an artifact because waiting for a producer job introduces a serial dependency. The dependency edge can lengthen the critical path; this is not a claim that uploading and downloading the bytes costs more than recompiling.
 
 - `test/unit/pi-0.82.1-artifacts.test.ts` gates its assertions on `packages/coding-agent/dist` and degrades to `test.skip` with a warning when the build has not run, so the unit suite must stay behind the package build. Moving it into a build-less job would lose coverage without failing anything.
-- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`. All five work-job definitions install Node; `integration-tests` owns this package smoke.
+- `test/integration/installed-package-node-extensions.test.ts` needs `dist/` and Node and is hard-required by `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`. All six work-job definitions install Node; `integration-tests` owns this package smoke.
 - `packages/coding-agent/test/native-binding-exports.test.ts` is hard-required by `ATOMIC_REQUIRE_NATIVE_BINDING_SMOKE=1`, so the vitest suite stays behind `npm run build --workspace=@bastani/atomic-natives`.
 - `packages/coding-agent/test/tools-05-01.suite.ts` runs the real ripgrep against files on disk. `agent-suite` installs a pinned ripgrep (version and per-platform SHA-256 in the job's `env` and matrix) into `$RUNNER_TEMP/ripgrep/bin` and puts it first on `PATH` before the coding-agent suite; the archive comes from an Actions cache keyed by its digest and is checked against the digest on every run, so only a cache miss downloads it, in that setup step with retries. `ATOMIC_REQUIRE_PROVISIONED_RIPGREP=1` then turns on offline mode for those tests and adds a check that ripgrep resolves, so a missing install fails at once instead of falling back to Atomic's latest-release download inside a test (#4389). To move the pin, change `RIPGREP_VERSION` and both `ripgrep_sha256` values together, taking each digest from the release's `.sha256` asset.
 - `scripts/build-binaries.sh` reuses `packages/natives/native/*.node` when present and otherwise builds them, so `release-archive` carries its own Rust toolchain and pays that build again rather than waiting on `agent-suite`. Both root-suite jobs also build native bindings explicitly. The CI project's native global setup builds a missing binding in `static-checks`, so a cold static job needs Rust despite having no explicit toolchain step.
@@ -353,6 +354,7 @@ job deadline.
 | --- | ---: | ---: | --- |
 | Unit tests (each shard) | 14 min | 14 min | Slowest recent unsharded job 925 s ([run 40564552364](https://github.com/bastani-inc/atomic/actions/runs/40564552364)): 411 s of setup with a 261 s checkout plus a quarter of 514 s of tests, plus 50% |
 | Integration tests (each shard) | 12 min | 12 min | Slowest four-shard job 340 s ([Windows 2/4](https://github.com/bastani-inc/atomic/actions/runs/40569411594)), scaled by 4/3 for three shards: `ceil(453 × 1.5 / 60)` |
+| Storage conformance | 30 min | not run | Not yet measured: about 5 min of setup as in an integration shard, plus the two shared-pool scale cases (#4790), each bounded at 10 min by the test itself |
 | Agent suite (each shard) | 10 min | 10 min | Slowest recent unsharded job 540 s ([run 40564552364](https://github.com/bastani-inc/atomic/actions/runs/40564552364)): about 290 s of setup plus a third of its suites, plus 50% |
 | Release archive | 4 min | 7 min | [Linux build](https://github.com/bastani-inc/atomic/actions/runs/34653564242/job/103440964907), [Windows finalization](https://github.com/bastani-inc/atomic/actions/runs/34035777039/job/101493452122) |
 | Static checks | 5 min | not run | [182-second finalization timeout](https://github.com/bastani-inc/atomic/actions/runs/34873678170/job/104075487913) |
@@ -383,6 +385,14 @@ errors. Whole-job timeouts remain independent hang limits. npm's request policy 
 and two retries; that is less than the smallest npm-installing job cap, but does
 not guarantee a whole install fits. Rust installation and its retry each have
 a four-minute step cap; PR-only Mintlify validation has a five-minute step cap.
+
+### Storage backend matrix
+
+`test/integration/storage-conformance-matrix.test.ts` runs every store's conformance suite (the database facade, sessions, the workflow run journal and Intercom's multi-node routing stores) against each storage backend in `test/helpers/storage-backends.ts`: a SQLite file, a libSQL server (sqld) and Postgres. A server backend runs when its URL is set (`ATOMIC_TEST_LIBSQL_URL`, `ATOMIC_TEST_POSTGRES_URL` with `ATOMIC_TEST_POSTGRES_PASSWORD`) and is skipped otherwise, so the integration shards run the SQLite rows on both OSes. The Postgres rows stay skipped until the Postgres adapter lands (#4793).
+
+The `storage-conformance` job runs `postgres:16` and `libsql-server` v0.24.33 as service containers, both pinned by digest, and sets `ATOMIC_TEST_STORAGE_BACKENDS_REQUIRED=1`: a missing URL then fails the run instead of skipping its rows. sqld runs with `SQLD_CHECKPOINT_INTERVAL_S=60`, the setting that keeps v0.24.33 taking writes under contention (tursodatabase/libsql#2286, #4790). Besides the matrix, the job runs every integration file that needs a libSQL server (`*sqld*`, `workflow-shared-pool-scale`); the integration shards skip them. Service containers need Linux, so the job has no Windows leg.
+
+A row that fails on a backend because of an open bug is listed in the test file's `KNOWN_FAILURES` with its issue and runs as an expected failure, so it turns red once the bug is fixed.
 
 ### Diagnostics and smoke coverage
 
@@ -736,7 +746,7 @@ After native and smoke jobs pass, `build`:
    Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly twelve npm tarballs.
-6. Builds release notes from every `packages/*/CHANGELOG.md` with `scripts/build-release-notes.ts`. A version summary leads when present, with the merged `###` sections folded under "Full changelog".
+6. Builds release notes from every `packages/*/CHANGELOG.md` with `scripts/build-release-notes.ts`. A version summary leads when present, with the merged `###` sections folded under "Full changelog". Within the summary and within each section, bullets for one change are listed once: two bullets are the same change when they read the same, or when one cites every issue/PR link the other does and the smaller set has at least two links. The most complete bullet (most links, then longest) is kept where the change first appeared.
 7. Creates `SHA256SUMS` for the eight binary archives.
 8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
 

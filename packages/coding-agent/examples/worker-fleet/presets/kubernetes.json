@@ -1,0 +1,26 @@
+{
+	"kind": "command",
+	"up": ["kubectl", "--namespace", "atomic", "scale", "deployment/atomic-worker", "--replicas={target}"],
+	"down": [
+		[
+			"kubectl", "--namespace", "atomic", "annotate", "pod", "{id}",
+			"controller.kubernetes.io/pod-deletion-cost=-1000", "--overwrite"
+		],
+		["kubectl", "--namespace", "atomic", "scale", "deployment/atomic-worker", "--replicas={remaining}"]
+	],
+	"list": [
+		"kubectl", "--namespace", "atomic", "get", "pods", "--selector", "app=atomic-worker",
+		"--output", "go-template=[{{range $i, $p := .items}}{{if $i}},{{end}}{\"id\":\"{{$p.metadata.name}}\",\"state\":\"{{if $p.metadata.deletionTimestamp}}Terminating{{else}}{{$p.status.phase}}{{end}}\"}{{end}}]"
+	],
+	"listFormat": {
+		"states": {
+			"Pending": "pending",
+			"Running": "running",
+			"Terminating": null,
+			"Succeeded": null,
+			"Failed": null,
+			"*": "pending"
+		}
+	},
+	"timeoutMs": 30000
+}

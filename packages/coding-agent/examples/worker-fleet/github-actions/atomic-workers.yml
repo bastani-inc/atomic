@@ -1,0 +1,55 @@
+# Burst worker hosts on GitHub Actions (#4768). Copy to .github/workflows/atomic-workers.yml. `workers` fans out that
+# many jobs, each running `atomic worker start --idle-exit`, which exits once no child ran for `idle-exit-ms`. Run it by
+# hand for a burst, call it from another workflow, or let presets/github-actions.json dispatch it one host at a time.
+# Repository secret: ATOMIC_DB_TOKEN. Repository variable: ATOMIC_DB.
+name: atomic-workers
+on:
+  workflow_dispatch:
+    inputs:
+      workers: { description: "Worker hosts to start", type: number, default: 1 }
+      idle-exit-ms: { description: "Exit after this long with no child", type: number, default: 300000 }
+  workflow_call:
+    inputs:
+      workers: { type: number, default: 1 }
+      idle-exit-ms: { type: number, default: 300000 }
+    secrets:
+      ATOMIC_DB_TOKEN: { required: true }
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      hosts: ${{ steps.hosts.outputs.hosts }}
+    steps:
+      - id: hosts
+        env:
+          WORKERS: ${{ inputs.workers }}
+        run: echo "hosts=$(jq -cn --argjson n "$WORKERS" '[range($n)]')" >> "$GITHUB_OUTPUT"
+  worker:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJSON(needs.plan.outputs.hosts) }}
+    steps:
+      # Check out your workflow definitions, if roots do not bind their children to a workspace.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm install -g @bastani/atomic && atomic install npm:@bastani/atomic-storage-libsql
+      - name: Serve until idle
+        env:
+          ATOMIC_DB: ${{ vars.ATOMIC_DB }}
+          ATOMIC_DB_TOKEN: ${{ secrets.ATOMIC_DB_TOKEN }}
+          # One run per host when the preset dispatches it; the controller matches the host by its run id.
+          ATOMIC_WORKER_PROVIDER_ID: ${{ inputs.workers == 1 && github.run_id || format('{0}-{1}', github.run_id, matrix.host) }}
+          IDLE_EXIT_MS: ${{ inputs.idle-exit-ms }}
+        run: |
+          umask 077
+          printf '%s' "$ATOMIC_DB_TOKEN" > "$RUNNER_TEMP/atomic-db-token"
+          unset ATOMIC_DB_TOKEN
+          exec atomic worker start --db "$ATOMIC_DB" --token-file "$RUNNER_TEMP/atomic-db-token" \
+            --slots 2 --idle-exit "$IDLE_EXIT_MS"

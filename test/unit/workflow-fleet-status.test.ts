@@ -571,6 +571,7 @@ test(
 				loadModule: async () => ({
 					startWorkflowWorkerHost: () => assert.fail("status starts no host"),
 					startWorkflowFleetController: () => assert.fail("status runs no controller"),
+					createWorkerHostProvisioner: () => assert.fail("status builds no provisioner"),
 					readWorkflowWorkerFleet: async () => fleet,
 					workflowWorkerFleetLines,
 				}),
@@ -607,18 +608,22 @@ test.skipIf(process.platform === "win32")(
 			const status = async (): Promise<SharedPoolFleet> => {
 				const out: string[] = [];
 				const err: string[] = [];
-				const code = await runWorkerCommand(["status", "--json", "--db", url, "--prefix", PREFIX], {
-					cwd: directory,
-					agentDir,
-					log: (line) => out.push(line),
-					error: (line) => err.push(line),
-					loadModule: async () => ({
-						startWorkflowWorkerHost,
-						readWorkflowWorkerFleet,
-						workflowWorkerFleetLines,
-						startWorkflowFleetController: () => assert.fail("status runs no controller"),
-					}),
-				});
+				const code = await runWorkerCommand(
+					["status", "--json", "--db", url, "--prefix", PREFIX, "--workers-per-host", "3", "--max-hosts", "5"],
+					{
+						cwd: directory,
+						agentDir,
+						log: (line) => out.push(line),
+						error: (line) => err.push(line),
+						loadModule: async () => ({
+							startWorkflowWorkerHost,
+							readWorkflowWorkerFleet,
+							workflowWorkerFleetLines,
+							startWorkflowFleetController: () => assert.fail("status runs no controller"),
+							createWorkerHostProvisioner: () => assert.fail("status builds no provisioner"),
+						}),
+					},
+				);
 				assert.equal(code, 0, err.join("\n"));
 				return JSON.parse(out.join("\n")) as SharedPoolFleet;
 			};
@@ -656,6 +661,19 @@ test.skipIf(process.platform === "win32")(
 				},
 			);
 			assert.deepEqual(reported.fleet, { store: { state: "ok" }, queue: { roots: 1, ready: 2, leased: 0 } });
+			assert.deepEqual(reported.scaling, {
+				desiredHosts: 1,
+				desiredWorkers: 3,
+				demand: 2,
+				queueDepth: 2,
+				running: 0,
+				hosts: 1,
+				busySlots: 0,
+				idleSlots: 3,
+				minHosts: 0,
+				maxHosts: 5,
+				workersPerHost: 3,
+			});
 			assert.deepEqual(
 				reported.roots.map((root) => [root.root, root.ready, root.fleet]),
 				[["root", 2, reported.fleet]],

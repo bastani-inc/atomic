@@ -38,7 +38,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		await withPostgresDatabase(async ({ open }) => {
 			const database = await open();
 			const row = await database.get(
-				`SELECT ?::text AS first, '?' AS quoted, E'\\'?' AS escaped, "?column"."?" AS identifier,
+				`SELECT ?::text AS first, '?' AS quoted, E'\\'?' AS escaped, E'can''t \\' ?' AS doubled, "?column"."?" AS identifier,
 					$$?$$ AS dollar, $tag$ ? $tag$ AS tagged, /* ? /* nested ? */ ? */ ?::bigint AS second -- ?
 				FROM (SELECT 'x' AS "?") AS "?column"`,
 				"one",
@@ -48,6 +48,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 				first: "one",
 				quoted: "?",
 				escaped: "'?",
+				doubled: "can't ' ?",
 				identifier: "x",
 				dollar: "?",
 				tagged: " ? ",
@@ -62,6 +63,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 			const row = await database.get(
 				`SELECT 9223372036854775807::bigint AS big, -9007199254740992::bigint AS edge, 42::bigint AS small,
 					7::int AS int4, 3::smallint AS int2, 1.25::float8 AS real, 0.5::numeric AS fraction,
+					9007199254740993.0::numeric(20, 1) AS wholeNumeric,
 					(SELECT SUM(x) FROM (VALUES (9223372036854775807::bigint), (1::bigint)) AS t(x)) AS sum,
 					true AS yes, false AS no, '\\x00ff'::bytea AS bytes, '{"a": 1}'::jsonb AS json,
 					'2026-01-02 03:04:05+00'::timestamptz AS at, NULL AS nothing, ?::bytea AS bound`,
@@ -75,6 +77,7 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 				int2: 3,
 				real: 1.25,
 				fraction: 0.5,
+				wholenumeric: 9007199254740993n,
 				sum: 9223372036854775808n,
 				yes: 1,
 				no: 0,

@@ -290,12 +290,14 @@ Use these sections under `## [Unreleased]`:
 - A release section opens with a human-readable summary: the prose between the
   `## [x.y.z]` heading and its first `###` section. Write it when preparing the
   release (the `publish-release` workflow does this), never under `## [Unreleased]`.
-  Use one theme-title sentence, then short bullets grouped by theme, each with a bold
-  lead, the benefit to the user, and links to the core PRs or issues at the end, plus
-  a `**Breaking change:**` line when `### Breaking Changes` is non-empty. The GitHub
-  Release page shows the summary first with the merged `###` sections folded under
-  "Full changelog", and the startup What's New banner shows the same summary with a
-  pointer to `/changelog`. A section without a summary keeps the flat merged output
+  Write one summary per release, in `packages/coding-agent/CHANGELOG.md` only, covering
+  every package; never repeat a change across packages' summaries, and keep it brief.
+  Use one theme-title sentence, then one short bullet per change grouped by theme, each
+  with a bold lead, the benefit to the user, and links to the core PRs or issues at the
+  end, plus a `**Breaking change:**` line when `### Breaking Changes` is non-empty. The
+  GitHub Release page shows the summary first with the merged `###` sections folded
+  under "Full changelog", and the startup What's New banner shows the coding-agent
+  summary with a pointer to `/changelog`. A section without a summary keeps the flat merged output
   and the full banner.
 - Do not open a section with a preamble that names the prereleases it covers and
   redirects the reader, e.g. "Cumulative release of the `0.9.19-alpha.1` through

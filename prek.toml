@@ -10,7 +10,8 @@ hooks = [
   { id = "check-json", exclude = "^\\.agents/skills/.*\\.json$" },
   { id = "check-merge-conflict" },
   { id = "check-toml" },
-  { id = "check-yaml" },
+  # Helm templates are YAML only once rendered.
+  { id = "check-yaml", exclude = "^packages/coding-agent/examples/worker-fleet/helm/[^/]+/templates/" },
   { id = "detect-private-key" },
 ]
 
