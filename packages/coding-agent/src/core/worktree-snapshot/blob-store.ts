@@ -766,7 +766,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
-		// A ledger tells which steps a database lacks even when every table exists, so a versioned database always asks it.
+		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
+		// lacks, such as the index triggers, runs even when every table exists.
 		if (dialect.versionedMigrations || !found.every((row) => row !== undefined)) {
 			await applyStorageMigrations(
 				database,
