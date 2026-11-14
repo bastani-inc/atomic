@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added resume and capture timings ([#4748](https://github.com/bastani-inc/atomic/issues/4748)). `/session snapshot` now shows how long each checkout's last capture took and a **Last resume** block: each restored checkout with its restore phases (fetch, reconstruct, materialize, LFS, verify, publish), each blueprint step with its duration, and when the session was ready. `ATOMIC_TIMING=1` prints the same lines for `atomic --session`. Blueprint step logs record when each step started and finished and how long it ran. The session keeps the numbers in a `resume_timings` entry, readable from exports and through `latestResumeTimings()` and `formatResumeTimings()` in the SDK. A failure to record them never stops a resume.
+
 ### Changed
 
 - Per-turn worktree snapshots are cheaper in fresh clones such as CI checkouts: each checkout's captures keep a private Git index between turns under `~/.atomic/agent/worktree-snapshots/capture-index/`, so unchanged files are no longer read again on every turn, and staged ignored files are found with one listing. A capture that cannot use that index captures as before, and snapshots record the same content ([#4748](https://github.com/bastani-inc/atomic/issues/4748))

@@ -1,6 +1,7 @@
 import { writeSync } from "node:fs";
 import { join } from "node:path";
 import { getPowerShellConfig, getShellConfig, type ShellConfig } from "../../../utils/shell.ts";
+import { recordBlueprintStep } from "../timings.ts";
 import { type ActionFetcher, runAction } from "./actions.ts";
 import { bashPath, evaluateEnvrc, shellQuote } from "./envrc.ts";
 import {
@@ -121,6 +122,7 @@ async function startStep(
 	append(
 		log,
 		[
+			`# started: ${new Date().toISOString()}`,
 			`# blueprint: ${context.blueprint}`,
 			`# scope: ${context.scope}`,
 			`# section: ${location.section}`,
@@ -160,6 +162,11 @@ function describeExit(exit: ProcessExit, timeoutMs: number): string {
 	if (exit.spawnError) return `# could not be started: ${exit.spawnError.message}`;
 	if (exit.signal !== null) return `# stopped by signal ${exit.signal}`;
 	return `# exit status ${exit.exitStatus}`;
+}
+
+/** The step's end and how long it ran, for its log. */
+function describeEnd(started: number): string {
+	return `# finished: ${new Date().toISOString()}\n# duration: ${Math.floor(performance.now() - started)} ms\n`;
 }
 
 function failureOf(
@@ -207,15 +214,16 @@ export async function runSection(
 		const logPath = join(context.logDirectory, `${context.logPrefix}-${section}-${index + 1}.log`);
 		let log: Awaited<ReturnType<typeof openStepLog>> | undefined;
 		let error: BlueprintError | undefined;
+		const started = performance.now();
 		try {
 			log = await openStepLog(logPath);
 			const exit = await startStep(step, location, steps.length, context, log);
-			append(log, `\n${describeExit(exit, context.timeoutMs)}\n`);
+			append(log, `\n${describeExit(exit, context.timeoutMs)}\n${describeEnd(started)}`);
 			error = failureOf(exit, location, logPath, context.timeoutMs);
 		} catch (thrown) {
 			if (context.signal?.aborted) throw thrown;
 			const cause = thrown instanceof Error ? thrown : new Error(String(thrown));
-			if (log !== undefined) append(log, `\n# failed: ${cause.message}\n`);
+			if (log !== undefined) append(log, `\n# failed: ${cause.message}\n${describeEnd(started)}`);
 			error =
 				thrown instanceof BlueprintError
 					? thrown
@@ -226,6 +234,12 @@ export async function runSection(
 		} finally {
 			await log?.close();
 		}
+		recordBlueprintStep({
+			section,
+			name: location.step,
+			ms: Math.floor(performance.now() - started),
+			exit: error === undefined ? "ok" : error instanceof BlueprintStepTimedOutError ? "timed-out" : "failed",
+		});
 		if (error !== undefined) {
 			const written = log === undefined ? null : logPath;
 			return {
