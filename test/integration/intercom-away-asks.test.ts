@@ -249,3 +249,75 @@ test(
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
+
+test(
+	"a released subagent back under a new id that gets its answer is not told the ask failed when the recipient ends (#4765)",
+	async () => {
+		const childName = "subagent-asker-new-id-4765";
+		const owner = await connect("owner-new-id-4765", { returnAddress: randomUUID(), ownerToken: randomUUID() });
+		const childReturnAddress = randomUUID();
+		const childFirst = await connect(childName, {
+			returnAddress: childReturnAddress,
+			supervisor: await owner.client.authorizeSupervisorChild(childName),
+		});
+		const firstId = idOf(childFirst.client);
+		const recipientReturnAddress = randomUUID();
+		const recipientFirst = await connect("recipient-new-id-4765", { returnAddress: recipientReturnAddress });
+		const recipientId = idOf(recipientFirst.client);
+		const questionId = randomUUID();
+		const asked = await childFirst.client.send("recipient-new-id-4765", {
+			messageId: questionId,
+			text: "which port, once you are back?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
+
+		// The recipient goes away, then the child is released, and its owner restores it under a new Intercom id.
+		await recipientFirst.client.disconnect({ resumable: true });
+		await owner.client.reserveReleasedChildren([{ childName, wake: true }]);
+		await childFirst.client.disconnect({ resumable: true });
+		const childBack = await connect(childName, {
+			returnAddress: childReturnAddress,
+			supervisor: await owner.client.authorizeSupervisorChild(childName),
+		});
+		const backId = idOf(childBack.client);
+		assert.notEqual(backId, firstId, "the child is back under a new id");
+
+		// The recipient comes back, answers the child, and then ends.
+		const recipientBack = await connect("recipient-new-id-4765", {
+			returnAddress: recipientReturnAddress,
+			preferredSessionId: recipientId,
+		});
+		const replyId = randomUUID();
+		const replied = await recipientBack.client.send(backId, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: backId,
+		});
+		assert.equal(replied.delivered, true, replied.reason);
+		await vi.waitFor(() => assert.equal(childBack.received.length, 1), WAIT);
+		await recipientBack.client.disconnect();
+		await sleep(SETTLE_MS);
+
+		// Nothing says the answered ask failed, now or when the child's session registers again.
+		await childBack.client.disconnect({ resumable: true });
+		const childAgain = await connect(childName, {
+			returnAddress: childReturnAddress,
+			preferredSessionId: backId,
+			supervisor: await owner.client.authorizeSupervisorChild(childName),
+		});
+		await sleep(SETTLE_MS);
+		assert.deepEqual(
+			[...childBack.received, ...childAgain.received].map((message) => ({
+				id: message.id,
+				failed: message.replyError !== undefined,
+			})),
+			[{ id: replyId, failed: false }],
+			"the child gets only the answer",
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
