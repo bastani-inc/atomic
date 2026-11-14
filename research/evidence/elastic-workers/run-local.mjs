@@ -166,9 +166,14 @@ async function trial(hosts) {
 					? JSON.parse(readFileSync(join(work, "sqld/dbs/default/stats.json"), "utf8"))
 					: null;
 				killGroup(root, "SIGKILL");
+				// Whether the server recovers once every client is gone: a store stuck inside sqld stays stuck.
+				for (const p of processes) killGroup(p, "SIGKILL");
+				await sleep(20_000);
+				const writeAfterClientsGone = await probe(`http://127.0.0.1:${port}`, { write: "CREATE TABLE IF NOT EXISTS zz_probe2(x)" }, 15_000);
 				return {
+					writeAfterClientsGone,
 					hosts, slots, proxyOneWayMs: latencyMs, hostsReadyMs, status: "stalled", runTimeoutMs: RUN_TIMEOUT_MS,
-					progress, writeProbe: write, trace: traced ? analyze(traced.records) : null, sqldSlowest: stats?.slowest_queries ?? null,
+					progress, writeProbe: write, trace: traced ? analyze(traced.records) : null, pendingAtStall: traced ? traced.pending() : null, sqldSlowest: stats?.slowest_queries ?? null,
 					sqldLogTail: sqldLog.join("").slice(-3000), logTail: log.join("").slice(-3000),
 				};
 			}
