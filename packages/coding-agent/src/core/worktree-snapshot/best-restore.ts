@@ -1,5 +1,11 @@
-import { isGitUnavailableError, isWorkspaceError, isWorkspaceRestoreError } from "./errors.ts";
 import {
+	isGitUnavailableError,
+	isWorkspaceError,
+	isWorkspaceRestoreError,
+	type WorkspaceRestoreError,
+} from "./errors.ts";
+import {
+	type DegradedWorktree,
 	isDegradableRestoreFailure,
 	type RestoreDegradedWorktreeOptions,
 	type RestoredWorktree,
@@ -37,6 +43,12 @@ export interface RestoreBestWorktreeOptions extends RestoreDegradedWorktreeOptio
 		target: WorkspaceBinding | WorktreeSnapshot,
 		options: RestoreWorktreeSnapshotOptions,
 	) => Promise<Pick<RestoredWorktree, "path"> & Partial<Pick<RestoredWorktree, "warnings">>>;
+	/** What restores the best reachable state instead of `restoreDegradedWorktree`. */
+	readonly restoreDegraded?: (
+		snapshot: WorktreeSnapshot,
+		failure: WorkspaceRestoreError,
+		options: RestoreDegradedWorktreeOptions,
+	) => Promise<DegradedWorktree>;
 }
 
 /** The best restore of a checkout this host could make (#4733, #4738). */
@@ -62,7 +74,14 @@ export async function restoreBestWorktree(
 	snapshot: WorktreeSnapshot,
 	options: RestoreBestWorktreeOptions = {},
 ): Promise<BestWorktreeRestore> {
-	const { target, snapshots, restore = restoreWorktree, candidates, ...shared } = options;
+	const {
+		target,
+		snapshots,
+		restore = restoreWorktree,
+		restoreDegraded = restoreDegradedWorktree,
+		candidates,
+		...shared
+	} = options;
 	try {
 		const exact = await restore(target ?? snapshot, { ...shared, ...(snapshots === undefined ? {} : { snapshots }) });
 		return { status: "restored", path: exact.path, warnings: exact.warnings ?? [] };
@@ -70,7 +89,7 @@ export async function restoreBestWorktree(
 		if (options.signal?.aborted || !isRecoverableRestoreFailure(error)) throw error;
 		if (isDegradableRestoreFailure(error)) {
 			try {
-				const degraded = await restoreDegradedWorktree(snapshot, error, {
+				const degraded = await restoreDegraded(snapshot, error, {
 					...shared,
 					...(candidates === undefined ? {} : { candidates }),
 				});
