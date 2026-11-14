@@ -865,7 +865,9 @@ describe("prebuild and seed edge cases (#4748)", () => {
 			assert.equal(adoption.adopted, true);
 			if (!adoption.adopted) throw new Error("unreachable");
 			assert.deepEqual(adoption.moved, ["deep/er"]);
-			assert.deepEqual(adoption.skipped, ["README.md/x", "plain/inner"]);
+			// Windows reports a path below a file as missing (ENOENT), so there is nothing to skip.
+			const belowFile = process.platform === "win32" ? [] : ["plain/inner"];
+			assert.deepEqual(adoption.skipped, ["README.md/x", ...belowFile]);
 			assert.equal(readFileSync(join(adoption.path, "deep", "er", "out.txt"), "utf8"), "parked\n");
 			assert.equal(readFileSync(join(adoption.path, "README.md"), "utf8"), "hello\n");
 		},
