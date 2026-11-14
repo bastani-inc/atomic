@@ -47,6 +47,8 @@ export const DEFAULT_FLEET_TICK_MS = 10_000;
 const PROVIDER_CALL_TIMEOUT_MS = 120_000;
 /** The longest a controller waits after provisioner failures in a row before it tries again. */
 const PROVIDER_BACKOFF_MAX_MS = 600_000;
+/** The longest the last pass of a stopping root's controller may take. */
+const FINAL_PASS_TIMEOUT_MS = 10_000;
 /** Longest error text a fleet event keeps. */
 const ERROR_TEXT_MAX = 1_024;
 
@@ -119,6 +121,10 @@ export class FleetController implements WorkflowFleetController {
 	private degraded?: NonNullable<WorkflowFleetStatus["degraded"]>;
 	private timer?: NodeJS.Timeout;
 	private ticking?: Promise<void>;
+	/** Aborted when the running tick must stop acting: the lease was lost or may have expired, or the controller stops. */
+	private tickAbort = new AbortController();
+	/** When, by `Date.now()`, the lease was last taken or renewed, measured before the request. */
+	private renewedAt = 0;
 	private stopping?: Promise<void>;
 	private settleClosed!: () => void;
 	readonly closed = new Promise<void>((resolve) => {
@@ -133,6 +139,11 @@ export class FleetController implements WorkflowFleetController {
 			readonly unref?: boolean;
 			/** Called once it stopped, such as to close a journal it opened. */
 			readonly onClose?: () => Promise<void>;
+			/**
+			 * When it stops while active, asks every idle host above the target to drain at once, so a root that runs the
+			 * only controller does not leave its idle hosts serving after it ends.
+			 */
+			readonly drainIdleOnStop?: boolean;
 		},
 	) {
 		const checked = checkFleetOptions(options);
@@ -192,9 +203,17 @@ export class FleetController implements WorkflowFleetController {
 		this.emit({ kind: "recovered", failures });
 	}
 
-	/** One provisioner call, aborted when the controller stops or the call takes too long. */
+	/**
+	 * One provisioner call, aborted when the controller stops, the tick lost its lease, or the call takes too long. An
+	 * abort stops the controller acting on the call; a request the provider already received may still complete.
+	 */
 	private call<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
-		const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS)]);
+		this.tickAbort.signal.throwIfAborted();
+		const signal = AbortSignal.any([
+			this.abort.signal,
+			this.tickAbort.signal,
+			AbortSignal.timeout(PROVIDER_CALL_TIMEOUT_MS),
+		]);
 		return untilAborted(
 			Promise.resolve().then(() => run(signal)),
 			signal,
@@ -204,7 +223,9 @@ export class FleetController implements WorkflowFleetController {
 	/** Takes or renews the lease; returns the fence while this controller holds it. */
 	private async lead(): Promise<FleetFence | undefined> {
 		this.store ??= await SqlFleetStore.open(this.journal);
+		const asked = Date.now();
 		const lease = await this.store.acquire(this.holder, this.epoch, this.leaseMs);
+		if (lease.held) this.renewedAt = asked;
 		if (!lease.held) {
 			if (this.role !== "standby") this.emit({ kind: "standby", holder: lease.holder });
 			this.role = "standby";
@@ -235,6 +256,8 @@ export class FleetController implements WorkflowFleetController {
 		}
 		if (fence === undefined || !this.backoff.due() || this.stopping !== undefined) return;
 		const store = this.store!;
+		this.tickAbort = new AbortController();
+		const renewal = this.keepLeading(fence, this.tickAbort);
 		try {
 			const listed = await this.call((signal) => this.options.provisioner.list(signal));
 			const snapshot = await store.snapshot();
@@ -248,10 +271,14 @@ export class FleetController implements WorkflowFleetController {
 			this.state = plan.state;
 			this.plan = plan;
 			const ready = snapshot.roots.reduce((total, root) => total + (root.blocked ? 0 : root.ready), 0);
-			for (const action of plan.actions) await this.act(action, fence, plan, hosts, ready);
+			for (const action of plan.actions) {
+				this.tickAbort.signal.throwIfAborted();
+				await this.act(action, fence, plan, hosts, ready);
+			}
 			this.succeeded();
 		} catch (error) {
-			if (this.stopping !== undefined) return;
+			// A tick that lost its lease or was stopped acts no further; the next tick finds out which.
+			if (this.stopping !== undefined || this.tickAbort.signal.aborted) return;
 			const failure = asFailure(error);
 			await store
 				.record(fence, {
@@ -262,7 +289,57 @@ export class FleetController implements WorkflowFleetController {
 				})
 				.catch(() => {});
 			this.fail(error);
+		} finally {
+			clearInterval(renewal);
 		}
+	}
+
+	/**
+	 * Renews the lease every `tickMs` while a tick acts, which a provider call can take longer than the lease. Aborts
+	 * `tick` once another controller holds the lease, or once the lease may have expired because renewals failed: from
+	 * then on this controller makes no provider call, so two controllers never act on the fleet at once.
+	 */
+	private keepLeading(fence: FleetFence, tick: AbortController): NodeJS.Timeout {
+		const timer = setInterval(() => {
+			if (Date.now() - this.renewedAt >= this.leaseMs - this.tickMs) {
+				tick.abort(new Error("The fleet controller may have lost its lease"));
+				return;
+			}
+			const asked = Date.now();
+			void this.store!.acquire(this.holder, fence.epoch, this.leaseMs).then(
+				(lease) => {
+					if (lease.held && lease.epoch === fence.epoch) this.renewedAt = asked;
+					else tick.abort(new Error("The fleet controller lost its lease"));
+				},
+				() => {
+					// A renewal that failed is retried at the next interval, until the lease may have expired.
+				},
+			);
+		}, this.tickMs);
+		timer.unref();
+		return timer;
+	}
+
+	/**
+	 * The last pass of a stopping root's controller: every idle host above the fleet's target, by the queues as they are
+	 * now, is asked to drain at once, whatever `idleDrainMs` says. Hosts that hold work are left serving.
+	 */
+	private async drainIdle(fence: FleetFence): Promise<void> {
+		const store = this.store!;
+		const signal = AbortSignal.timeout(FINAL_PASS_TIMEOUT_MS);
+		const listed = await untilAborted(
+			Promise.resolve().then(() => this.options.provisioner.list(signal)),
+			signal,
+		);
+		const snapshot = await store.snapshot();
+		const hosts = joinHosts(listed, snapshot);
+		const plan = planFleet(
+			{ ...this.policy, idleDrainMs: 0 },
+			{ now: Date.now(), roots: snapshot.roots, hosts: hosts.map((entry) => entry.view) },
+			this.state,
+		);
+		for (const action of plan.actions)
+			if (action.kind === "mark-draining") await this.act(action, fence, plan, hosts, 0);
 	}
 
 	private async act(
@@ -293,7 +370,7 @@ export class FleetController implements WorkflowFleetController {
 					kind: "drain",
 					target: plan.target,
 					live: plan.live,
-					reason: `${action.id} (${host}) idle for ${this.policy.idleDrainMs} ms`,
+					reason: `${action.id} (${host}) idle, above the target of ${plan.target}`,
 				});
 				return;
 			}
@@ -314,9 +391,12 @@ export class FleetController implements WorkflowFleetController {
 	stop(): Promise<void> {
 		this.stopping ??= (async () => {
 			clearTimeout(this.timer);
-			this.abort.abort(new Error("The fleet controller stopped"));
+			this.tickAbort.abort(new Error("The fleet controller stopped"));
 			await this.ticking;
 			const epoch = this.epoch;
+			if (this.options.drainIdleOnStop === true && this.store !== undefined && epoch !== undefined)
+				await this.drainIdle({ holder: this.holder, epoch }).catch(() => {});
+			this.abort.abort(new Error("The fleet controller stopped"));
 			if (this.store !== undefined && epoch !== undefined)
 				await this.store.release({ holder: this.holder, epoch }).catch(() => {});
 			this.role = "stopped";

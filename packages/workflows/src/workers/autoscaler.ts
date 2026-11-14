@@ -105,7 +105,7 @@ export const INITIAL_FLEET_STATE: FleetPolicyState = {
 export type FleetRemovalReason = "drained" | "boot-timeout" | "failed" | "stopped";
 
 export type FleetAction =
-	/** `provisioner.scaleTo(desired)`: `target` serving hosts, plus the hosts still draining. */
+	/** `provisioner.scaleTo(desired)`: `target` serving hosts, plus the hosts the provider keeps that do not serve. */
 	| { readonly kind: "scale-up"; readonly target: number; readonly desired: number }
 	/** Ask the idle host to drain: it takes no more children and leaves the registry. */
 	| { readonly kind: "mark-draining"; readonly id: string }
@@ -166,6 +166,11 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 	let pending = 0;
 	for (const host of hosts) {
 		const draining = host.draining || host.state === "draining";
+		// A host that booted since the last tick forgets the failures before it, whether or not it took work at once.
+		if (host.registered && state.unregisteredSince[host.id] !== undefined) {
+			bootFailures = 0;
+			holdUntil = 0;
+		}
 		if (host.leased > 0) {
 			// Busy: never touched. It counts as serving unless it is on its way out.
 			if (!draining && host.state !== "stopped" && host.state !== "failed") live++;
@@ -182,11 +187,6 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 			continue;
 		}
 		if (host.registered) {
-			// A host that booted since the last tick forgets the failures before it.
-			if (state.unregisteredSince[host.id] !== undefined) {
-				bootFailures = 0;
-				holdUntil = 0;
-			}
 			live++;
 			const since = state.idleSince[host.id] ?? now;
 			idleSince[host.id] = since;
@@ -216,10 +216,10 @@ export function planFleet(policy: FleetPolicy, observation: FleetObservation, st
 		now >= holdUntil &&
 		(serving < policy.minHosts || (overSince !== undefined && now - overSince >= policy.scaleUpDelayMs))
 	) {
-		const draining = hosts.filter(
-			(host) => (host.draining || host.state === "draining") && !removedIds.has(host.id),
-		).length;
-		actions.push({ kind: "scale-up", target, desired: target + draining });
+		// The provider counts every host it lists until `drain` removes it: those that do not serve (draining, or busy
+		// and failed or stopped) stay in the count, so the new count only ever adds hosts.
+		const kept = hosts.filter((host) => !removedIds.has(host.id)).length;
+		actions.push({ kind: "scale-up", target, desired: target + kept - serving });
 	} else if (serving > target) {
 		const drainable = idle
 			.filter((host) => now - host.since >= policy.idleDrainMs)

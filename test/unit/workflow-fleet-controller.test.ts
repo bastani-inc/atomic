@@ -9,6 +9,7 @@ import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-
 import type { Lease, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/autoscaler.js";
 import {
+	FleetController,
 	startWorkflowFleetController,
 	type WorkflowFleetController,
 	type WorkflowFleetEvent,
@@ -29,11 +30,14 @@ const TICK_MS = 100;
 let directory: string;
 const journals: RunJournal[] = [];
 const controllers: WorkflowFleetController[] = [];
+/** Worker hosts a test started, stopped whether or not it passed. */
+const hosts: { stop(): Promise<void> }[] = [];
 beforeEach(() => {
 	directory = makeLibsqlDirectory();
 });
 afterEach(async () => {
 	await Promise.all(controllers.splice(0).map((controller) => controller.stop()));
+	await Promise.all(hosts.splice(0).map((host) => host.stop().catch(() => {})));
 	await Promise.all(journals.splice(0).map((journal) => journal.close()));
 	await removeLibsqlDirectory(directory);
 });
@@ -123,20 +127,16 @@ test.skipIf(process.platform === "win32")(
 	},
 );
 
-test.skipIf(process.platform === "win32")(
-	"the fleet keeps the last 1000 events (#4768)",
-	async () => {
-		const store = await openStore();
-		const fence = { holder: "A", epoch: 1 };
-		await store.acquire("A", undefined, 60_000);
-		for (let index = 0; index < 1_005; index++) await store.record(fence, { kind: "scale-up", reason: `${index}` });
-		const kept = await store.recent(2_000);
-		assert.equal(kept.length, 1_000);
-		assert.equal(kept[0]!.reason, "5");
-		assert.equal(kept.at(-1)!.reason, "1004");
-	},
-	60_000,
-);
+test.skipIf(process.platform === "win32")("the fleet keeps the last 1000 events (#4768)", async () => {
+	const store = await openStore();
+	const fence = { holder: "A", epoch: 1 };
+	await store.acquire("A", undefined, 60_000);
+	for (let index = 0; index < 1_005; index++) await store.record(fence, { kind: "scale-up", reason: `${index}` });
+	const kept = await store.recent(2_000);
+	assert.equal(kept.length, 1_000);
+	assert.equal(kept[0]!.reason, "5");
+	assert.equal(kept.at(-1)!.reason, "1004");
+});
 
 test.skipIf(process.platform === "win32")(
 	"of two controllers one is active; when it stops the other takes over with a higher epoch (#4768)",
@@ -271,6 +271,7 @@ test.skipIf(process.platform === "win32")(
 			restore: false,
 			onEvent: (event) => hostEvents.push(event),
 		});
+		hosts.push(host);
 		const removed: string[] = [];
 		const provisioner: WorkerHostProvisioner = {
 			kind: "fake",
@@ -303,12 +304,81 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(
 			recorded.filter((event) => event.kind !== "active").map((event) => [event.kind, event.reason]),
 			[
-				["drain", "vm-1 (h1) idle for 0 ms"],
+				["drain", "vm-1 (h1) idle, above the target of 0"],
 				["remove", "vm-1: drained"],
 			],
 		);
 	},
-	60_000,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a controller that loses its lease during a slow provider call aborts it and makes no further call (#4768)",
+	async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let listSignal: AbortSignal | undefined;
+		const scaled: number[] = [];
+		const provisioner: WorkerHostProvisioner = {
+			kind: "slow",
+			async list(signal) {
+				listSignal = signal;
+				await gate;
+				return [];
+			},
+			async scaleTo(target) {
+				scaled.push(target);
+			},
+			async drain() {},
+		};
+		const running = await controller(provisioner, [], { minHosts: 1 });
+		await until("the slow list call", () => listSignal !== undefined);
+		const epoch = running.status().epoch!;
+		// Another controller takes the lease over while the call runs (a lease of 0 ms is always expired).
+		const store = await openStore();
+		assert.deepEqual(await store.acquire("other", undefined, 0), { held: true, epoch: epoch + 1 });
+		await until("the call to be aborted", () => listSignal!.aborted);
+		release();
+		await until("the controller to stand by", () => running.status().role === "standby");
+		assert.deepEqual(scaled, [], "a controller that lost its lease never scales");
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a root's controller asks its idle hosts to drain when it stops, without waiting idleDrainMs (#4768)",
+	async () => {
+		const hostEvents: WorkflowWorkerHostEvent[] = [];
+		const host = await startWorkflowWorkerHost({
+			journal: selection(),
+			agentDir: join(directory, "host"),
+			maxWorkers: 1,
+			hostId: "h1",
+			providerId: "vm-1",
+			restore: false,
+			onEvent: (event) => hostEvents.push(event),
+		});
+		hosts.push(host);
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return [{ id: "vm-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain() {},
+		};
+		const journal = await openJournal();
+		const rootController = new FleetController(journal, { provisioner, tickMs: TICK_MS, drainIdleOnStop: true });
+		controllers.push(rootController);
+		await until("the controller to lead", () => rootController.status().role === "active");
+		const store = await openStore();
+		await until("the host to register", async () => (await store.snapshot()).hosts.length === 1);
+		await sleep(3 * TICK_MS);
+		assert.deepEqual(hostEvents, [], "the default idleDrainMs keeps the idle host while the controller runs");
+		await rootController.stop();
+		await host.closed;
+		assert.deepEqual(hostEvents, [{ kind: "drain-requested" }]);
+	},
 );
 
 test("startWorkflowFleetController refuses a provisioner without its methods, and a policy whose caps cannot hold (#4768)", async () => {

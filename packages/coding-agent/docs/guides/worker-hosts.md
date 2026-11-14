@@ -80,7 +80,7 @@ atomic worker controller --provisioner ./provisioner.mjs --db libsql://pool.exam
   --token-file /etc/atomic/token --max-hosts 20 --workers-per-host 8
 ```
 
-SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, or call `startWorkflowFleetController({ provisioner, … })`.
+SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, or call `startWorkflowFleetController({ provisioner, … })`. When such a root ends, its controller asks the idle hosts above the target to drain at once, but nothing removes them from your provider afterwards unless another controller runs. Have your provisioner reap hosts that exited, or run `atomic worker controller` for a fleet that serves many roots.
 
 Every 10 seconds the controller:
 

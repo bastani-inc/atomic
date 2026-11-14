@@ -109,7 +109,7 @@ function randomPolicy(next: () => number): FleetPolicy {
 	});
 }
 
-test("the fleet target never leaves minHosts..maxHosts, and a scale-up never asks for more than maxHosts plus the hosts draining (#4768)", () => {
+test("the fleet target never leaves minHosts..maxHosts, and a scale-up never asks for more than maxHosts plus the hosts kept that do not serve (#4768)", () => {
 	for (let seed = 1; seed <= 400; seed++) {
 		const next = random(seed);
 		const policy = randomPolicy(next);
@@ -119,11 +119,10 @@ test("the fleet target never leaves minHosts..maxHosts, and a scale-up never ask
 			const plan = planFleet(policy, observation, state);
 			state = plan.state;
 			assert.ok(plan.target >= policy.minHosts && plan.target <= policy.maxHosts, `seed ${seed}: ${plan.target}`);
-			const draining = observation.hosts.filter(
-				(entry) => (entry.draining || entry.state === "draining") && !removed(plan).includes(entry.id),
-			).length;
+			const kept = observation.hosts.filter((entry) => !removed(plan).includes(entry.id)).length;
+			const idle = kept - plan.live - plan.pending;
 			for (const desired of scaleTargets(plan))
-				assert.ok(desired <= policy.maxHosts + draining, `seed ${seed}: scaleTo(${desired})`);
+				assert.ok(desired <= policy.maxHosts + idle, `seed ${seed}: scaleTo(${desired})`);
 		}
 	}
 });
@@ -153,9 +152,8 @@ test("a scale-up never lowers the provider's count below the hosts it runs, so t
 			const observation = randomObservation(next, 1_000_000 + tick * 30_000);
 			const plan = planFleet(policy, observation, state);
 			state = plan.state;
-			const kept = observation.hosts.filter(
-				(entry) => entry.state !== "stopped" && entry.state !== "failed" && !removed(plan).includes(entry.id),
-			).length;
+			// Every host the provider lists counts until `drain` removes it, failed and stopped ones included.
+			const kept = observation.hosts.filter((entry) => !removed(plan).includes(entry.id)).length;
 			for (const desired of scaleTargets(plan)) assert.ok(desired > kept, `seed ${seed}: ${desired} <= ${kept}`);
 		}
 	}
@@ -323,6 +321,33 @@ test("boot backoff doubles with each failure in a row and stops at BOOT_BACKOFF.
 		now = Math.max(now, state.holdUntil);
 	}
 	assert.deepEqual(holds, [0, 30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000]);
+});
+
+test("busy hosts the provider reports failed are kept in the count a scale-up asks for, so it never cuts capacity (#4768)", () => {
+	const failedBusy = ["a", "b", "c"].map((id) => host(id, { state: "failed", registered: false, leased: 1 }));
+	const plans = ticks(POLICY, [observe(0, [root(3, 3)], failedBusy), observe(20_000, [root(3, 3)], failedBusy)]);
+	// Demand 6 is 3 hosts, none of which serves: three more, on top of the three kept.
+	assert.deepEqual(scaleTargets(plans[1]!), [6]);
+});
+
+test("a host that registers already busy forgets the boot failures before it (#4768)", () => {
+	const policy = { ...POLICY, minHosts: 1, maxHosts: 1, bootTimeoutMs: 1 };
+	let state = planFleet(
+		policy,
+		observe(0, [], [host("p1", { registered: false, state: "pending" })]),
+		INITIAL_FLEET_STATE,
+	).state;
+	state = planFleet(policy, observe(1, [], [host("p1", { registered: false, state: "pending" })]), state).state;
+	state = planFleet(policy, observe(2, [], [host("p2", { registered: false, state: "pending" })]), state).state;
+	state = planFleet(policy, observe(3, [], [host("p2", { registered: false, state: "pending" })]), state).state;
+	assert.equal(state.bootFailures, 2);
+	state = planFleet(policy, observe(4, [], [host("p3", { registered: false, state: "pending" })]), {
+		...state,
+		holdUntil: 0,
+	}).state;
+	state = planFleet(policy, observe(5, [root(0, 1)], [host("p3", { leased: 1 })]), state).state;
+	assert.equal(state.bootFailures, 0);
+	assert.equal(state.holdUntil, 0);
 });
 
 test("a busy host that stopped reporting is never removed, however long it is silent (#4768)", () => {

@@ -745,7 +745,11 @@ export class LocalWorkerPool {
 		}
 		// The fleet controller runs beside the root and never fails it: its failures are its own status (#4768).
 		if (this.options.shared !== undefined && this.options.fleet !== undefined && !this.closed)
-			this.fleet ??= new FleetController(this.backend.journal, { ...this.options.fleet, unref: true });
+			this.fleet ??= new FleetController(this.backend.journal, {
+				...this.options.fleet,
+				unref: true,
+				drainIdleOnStop: true,
+			});
 		await this.command({
 			kind: "start",
 			sources: this.sources,
