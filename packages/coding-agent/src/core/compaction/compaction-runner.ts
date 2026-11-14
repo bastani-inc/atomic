@@ -17,6 +17,7 @@ import type {
 	CompactedTranscript,
 	CompactionPlannerModel,
 	CompactionUrgency,
+	NumberedRegion,
 	PlannerAuth,
 	RawLineRange,
 	VerbatimCompactionPreparation,
@@ -29,6 +30,7 @@ import {
 	type FallbackPlannerContext,
 	plannerAttemptKey,
 } from "./fallback-planner.js";
+import { normalizeKeepContextShare, releaseKeepContextSpans } from "./keep-context-release.js";
 import type { CompactionModelSelection } from "./model-resolver.js";
 import { planMorphRanges } from "./morph-compaction.js";
 import { runPiSummaryFallback } from "./pi-summary-fallback.js";
@@ -189,10 +191,30 @@ function withWholeContextStats(
  * is deliberately absent from the public door's return value, which is exactly a
  * `CompactedTranscript`.
  */
-function buildFreshTranscript(preparation: VerbatimCompactionPreparation): CompactedTranscript {
-	const region = preparation.region;
+function buildFreshTranscript(
+	preparation: VerbatimCompactionPreparation,
+	region: NumberedRegion = preparation.region,
+): CompactedTranscript {
 	const whole: RawLineRange[] = region.lines.length > 0 ? [{ start: 1, end: region.lines.length }] : [];
 	return reconstructCompactedTranscript(region, validateDeletedRanges(whole, region));
+}
+
+/**
+ * The region with protection also capped at `keepContextShare` of the window the fresh context must
+ * fit, after the kept tail. Protection sized against a transcript larger than the window could
+ * otherwise keep more than the window holds, where no tags would keep nothing.
+ */
+function fitProtectionToWindow(
+	preparation: VerbatimCompactionPreparation,
+	limit: number,
+	keptTail: boolean,
+): NumberedRegion {
+	const region = preparation.region;
+	if (!Number.isFinite(limit) || region.protectedLineNumbers === undefined) return region;
+	const tailTokens = keptTail && hasKeptTailTokenEstimate(preparation) ? getKeptTailTokenEstimate(preparation) : 0;
+	const share = normalizeKeepContextShare(preparation.settings.keepContextShare);
+	const maxChars = Math.max(0, Math.floor((limit - tailTokens) * share)) * 4;
+	return releaseKeepContextSpans(region, targetKeepLines(preparation), share, maxChars);
 }
 
 function buildFreshContextWindow(preparation: VerbatimCompactionPreparation, hardInputLimit: number): FreshWindowBuild {
@@ -207,7 +229,10 @@ function buildFreshContextWindow(preparation: VerbatimCompactionPreparation, har
 	const keptTail =
 		preparation.keptTailMessageCount === 0 ||
 		(hasKeptTailTokenEstimate(preparation) && getKeptTailTokenEstimate(preparation) <= limit);
-	return { transcript: buildFreshTranscript(preparation), keptTail };
+	return {
+		transcript: buildFreshTranscript(preparation, fitProtectionToWindow(preparation, limit, keptTail)),
+		keptTail,
+	};
 }
 
 /**
@@ -649,6 +674,7 @@ async function runCompactionLadder(
 					text: summary.summary,
 					ranges: [],
 					keptRanges: [],
+					releasedRanges: [],
 					stats: {
 						linesBefore: preparation.region.lines.length,
 						linesDeleted: 0,

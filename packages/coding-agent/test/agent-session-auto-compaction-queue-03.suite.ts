@@ -31,6 +31,7 @@ const compactionMocks = vi.hoisted(() => ({
 		},
 		rung: "planned" as const,
 		keptTail: true,
+		releasedRanges: [],
 	})),
 	estimateContextTokens: vi.fn(() => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null })),
 }));

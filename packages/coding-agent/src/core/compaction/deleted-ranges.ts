@@ -187,6 +187,7 @@ export function reconstructCompactedTranscript(region: NumberedRegion, ranges: V
 		text,
 		ranges: finalRanges,
 		keptRanges: contiguousRanges(region.protectedLineNumbers ?? new Set<number>()),
+		releasedRanges: (region.releasedRanges ?? []).map((range) => ({ ...range })),
 		stats: {
 			linesBefore: region.lines.length,
 			linesDeleted,

@@ -18,6 +18,7 @@ import {
 	type FallbackPlannerContext,
 	getKeptTailTokenEstimate,
 	prepareCompactionBoundary,
+	type ReleasedRange,
 	recallHistory,
 	runVerbatimCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
@@ -248,6 +249,7 @@ export async function planVerbatimCompaction(
 				summaryFirstKeptEntryId?: string;
 				summaryTokensBefore?: number;
 				freshReason?: string;
+				releasedRanges?: ReleasedRange[];
 		  }
 		| undefined;
 
@@ -335,6 +337,7 @@ export async function planVerbatimCompaction(
 			...(run.summaryFirstKeptEntryId ? { summaryFirstKeptEntryId: run.summaryFirstKeptEntryId } : {}),
 			...(run.summaryTokensBefore !== undefined ? { summaryTokensBefore: run.summaryTokensBefore } : {}),
 			...(run.freshReason ? { freshReason: run.freshReason } : {}),
+			...(run.releasedRanges.length > 0 ? { releasedRanges: run.releasedRanges } : {}),
 		};
 	}
 	assertCompactionOpen(this);
@@ -375,6 +378,7 @@ export async function planVerbatimCompaction(
 			...(compacted.model ? { model: compacted.model } : {}),
 			...(compacted.summary ? { summary: compacted.summary } : {}),
 			...(compacted.freshReason ? { freshReason: compacted.freshReason } : {}),
+			...(compacted.releasedRanges ? { releasedRanges: compacted.releasedRanges } : {}),
 		},
 		...(compacted.usage ? { usage: compacted.usage } : {}),
 		fromExtension,
@@ -435,6 +439,7 @@ export async function finishVerbatimCommit(
 		...(details.model ? { model: details.model } : {}),
 		...(details.summary ? { summary: details.summary } : {}),
 		...(details.freshReason ? { freshReason: details.freshReason } : {}),
+		...(details.releasedRanges ? { releasedRanges: details.releasedRanges } : {}),
 		...(planned.usage ? { usage: planned.usage } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};

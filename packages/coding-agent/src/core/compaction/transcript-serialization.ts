@@ -1,5 +1,5 @@
 import type { ImageContent, Message, TextContent } from "@bastani/pi-ai/compat";
-import type { NumberedRegion } from "./compaction-types.js";
+import type { LineRange, NumberedRegion } from "./compaction-types.js";
 
 export const FILTERED_MARKER_RE = /^\(filtered (\d+) lines\)$/;
 export const LINE_NUMBER_SEPARATOR = "→";
@@ -213,6 +213,11 @@ function keepContextMarker(line: string): "open" | "close" | undefined {
 	return undefined;
 }
 
+/** Whether a line is a `<keepContext>` or `</keepContext>` marker, role header aside. */
+export function isKeepContextMarkerLine(line: string): boolean {
+	return keepContextMarker(line) !== undefined;
+}
+
 /** Message roles whose payload is external, so its tag text is data rather than syntax. */
 const UNTRUSTED_MARKER_ROLE = "Tool result";
 
@@ -238,8 +243,14 @@ function roleMayProtect(role: string | undefined): boolean {
 	return role !== UNTRUSTED_MARKER_ROLE;
 }
 
+/** One `<keepContext>` span: its one-based inclusive lines, tag lines included. */
+export interface KeepContextSpan extends LineRange {
+	/** One-based line of the role header that starts the span's message; undefined before the first header. */
+	messageHeaderLine: number | undefined;
+}
+
 /**
- * One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines.
+ * The `<keepContext>` spans of a region, oldest first, each inclusive of its tag lines.
  *
  * Spans are scoped to a single message: a role header ends any span still open, and an unclosed
  * span protects through the end of its own message rather than the end of the region. Together
@@ -249,21 +260,27 @@ function roleMayProtect(role: string | undefined): boolean {
  *
  * Nested openers flatten into the outermost span, and a closing tag with no opener is inert.
  */
-export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
-	const protectedLines = new Set<number>();
+export function keepContextSpans(lines: readonly string[]): KeepContextSpan[] {
+	const spans: KeepContextSpan[] = [];
 	let openIndex: number | undefined;
 	let role: string | undefined;
-	const protectThrough = (endIndex: number): void => {
+	let headerLine: number | undefined;
+	const closeThrough = (endIndex: number): void => {
 		if (openIndex === undefined) return;
-		for (let line = openIndex; line <= endIndex; line++) protectedLines.add(line + 1);
+		spans.push({
+			start: openIndex + 1,
+			end: endIndex + 1,
+			messageHeaderLine: headerLine,
+		});
 		openIndex = undefined;
 	};
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
 		const header = ROLE_HEADER_RE.exec(line);
 		if (header) {
-			protectThrough(index - 1);
+			closeThrough(index - 1);
 			role = header[1];
+			headerLine = index + 1;
 		}
 		if (!roleMayProtect(role)) continue;
 		const marker = keepContextMarker(line);
@@ -271,9 +288,32 @@ export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
 			if (openIndex === undefined) openIndex = index;
 			continue;
 		}
-		if (marker === "close") protectThrough(index);
+		if (marker === "close") closeThrough(index);
 	}
-	protectThrough(lines.length - 1);
+	closeThrough(lines.length - 1);
+	return spans;
+}
+
+/**
+ * The text a span protects with its tags and role header removed and whitespace collapsed, so
+ * two restatements of the same constraint compare equal.
+ */
+export function keepContextSpanKey(lines: readonly string[], span: LineRange): string {
+	return lines
+		.slice(span.start - 1, span.end)
+		.filter((line) => !isKeepContextMarkerLine(line))
+		.map((line) => line.replace(ROLE_HEADER_RE, ""))
+		.join("\n")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/** One-based line numbers covered by `<keepContext>` spans, inclusive of the tag lines. */
+export function keepContextLineNumbers(lines: readonly string[]): Set<number> {
+	const protectedLines = new Set<number>();
+	for (const span of keepContextSpans(lines)) {
+		for (let line = span.start; line <= span.end; line++) protectedLines.add(line);
+	}
 	return protectedLines;
 }
 

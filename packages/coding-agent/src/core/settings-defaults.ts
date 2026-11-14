@@ -11,6 +11,8 @@ export const SETTINGS_DEFAULTS = {
 		reserveTokens: 16384,
 		compression_ratio: 0.5,
 		preserve_recent: 2,
+		/** Share of the keep target `<keepContext>` spans may fill before older spans are released (#4794). */
+		keepContextShare: 0.5,
 		/** Wall-clock limit on automatic compaction's model planning, so it cannot block a turn (#4198). */
 		planningTimeoutMs: 300_000,
 		/** Compact a frozen prefix in the background past the soft threshold; commit at a turn boundary (#4330). */
