@@ -1,0 +1,118 @@
+{
+  "sqld": "v0.24.33",
+  "sqldArgs": null,
+  "results": [
+    {
+      "clients": 8,
+      "mode": "interactive",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 112.8,
+      "latencyMs": {
+        "p50": 68,
+        "p99": 130,
+        "max": 159
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 32,
+      "mode": "interactive",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 150.9,
+      "latencyMs": {
+        "p50": 213,
+        "p99": 349,
+        "max": 449
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 64,
+      "mode": "interactive",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 148.8,
+      "latencyMs": {
+        "p50": 432,
+        "p99": 838,
+        "max": 1138
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 128,
+      "mode": "interactive",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 120.1,
+      "latencyMs": {
+        "p50": 1073,
+        "p99": 2286,
+        "max": 2449
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 8,
+      "mode": "batch",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 305.9,
+      "latencyMs": {
+        "p50": 22,
+        "p99": 52,
+        "max": 81
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 32,
+      "mode": "batch",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 282.4,
+      "latencyMs": {
+        "p50": 92,
+        "p99": 324,
+        "max": 523
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 64,
+      "mode": "batch",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 232.1,
+      "latencyMs": {
+        "p50": 269,
+        "p99": 533,
+        "max": 689
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    },
+    {
+      "clients": 128,
+      "mode": "batch",
+      "statements": 8,
+      "seconds": 30,
+      "commitsPerSec": 235.5,
+      "latencyMs": {
+        "p50": 546,
+        "p99": 1313,
+        "max": 1528
+      },
+      "errors": {},
+      "writeProbe": "ok"
+    }
+  ]
+}
