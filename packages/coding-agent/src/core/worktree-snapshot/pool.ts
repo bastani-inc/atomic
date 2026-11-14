@@ -451,26 +451,28 @@ export interface EvictIdleWorktreesOptions {
 	readonly signal?: AbortSignal;
 }
 
-/** The readable records of the slots of `repository`, and whether a live process holds each. Rejects when the pool cannot be listed. */
-async function slotRecords(
-	storeDir: string,
-	repository: RepositoryId,
-): Promise<{ readonly record: PoolSlotRecord; readonly held: boolean }[]> {
-	const slots: { record: PoolSlotRecord; held: boolean }[] = [];
+/** The readable records of the slots of `repository`. Rejects when the pool cannot be listed. */
+async function slotRecords(storeDir: string, repository: RepositoryId): Promise<PoolSlotRecord[]> {
+	const records: PoolSlotRecord[] = [];
 	for (const name of await readdir(join(resolve(storeDir), "pool", repository))) {
 		const match = RECORD_NAME.exec(name);
 		if (!match) continue;
 		const slot = Number(match[1]) as SlotNumber;
-		const file = recordFile(storeDir, repository, slot);
-		const record = await readRecord(file, storeDir, repository, slot).catch(() => undefined);
-		if (record !== undefined) slots.push({ record, held: await isHeld(file) });
+		const record = await readRecord(recordFile(storeDir, repository, slot), storeDir, repository, slot).catch(
+			() => undefined,
+		);
+		if (record !== undefined) records.push(record);
 	}
-	return slots;
+	return records;
 }
 
 /** The records of the slots of `repository` no live process holds. Rejects when the pool cannot be listed. */
 async function idleRecords(storeDir: string, repository: RepositoryId): Promise<PoolSlotRecord[]> {
-	return (await slotRecords(storeDir, repository)).filter((slot) => !slot.held).map((slot) => slot.record);
+	const idle: PoolSlotRecord[] = [];
+	for (const record of await slotRecords(storeDir, repository)) {
+		if (!(await isHeld(recordFile(storeDir, repository, record.slot)))) idle.push(record);
+	}
+	return idle;
 }
 
 /** Newest released first; a slot whose holder stopped without releasing it counts as the oldest. */
@@ -579,9 +581,9 @@ export interface ClaimIdleWorktreeOptions {
 /**
  * Takes an idle slot of `snapshot`'s repository for `options.owner` and resets it to the snapshot (#4748), keeping the
  * files Git ignores, such as dependencies and build output, so the blueprint's maintenance has little to rebuild.
- * Candidates are the slots no live process holds, those last restored for the snapshot's environment first, then the
- * most recently released. Only a slot that holds exactly its recorded last state, and nothing no snapshot recorded, is
- * taken, so its previous owner restores its snapshot elsewhere and loses nothing. The slot is marked before its files
+ * Candidates are the slots of the repository, those last restored for the snapshot's environment first, then the most
+ * recently released; a slot a live process holds is busy. Only a slot that holds exactly its recorded last state, and
+ * nothing no snapshot recorded, is taken, so its previous owner restores its snapshot elsewhere and loses nothing. The slot is marked before its files
  * change and unmarked once they verify, so a claim stopped half way leaves a slot no claim takes and eviction removes.
  * Resolves to the held slot with HEAD and tree equal to the snapshot's, or to why none was taken: then the caller
  * restores fresh. Rejects only when `signal` aborted.
@@ -591,16 +593,16 @@ export async function claimIdleWorktree(
 	options: ClaimIdleWorktreeOptions,
 ): Promise<ClaimedWorktree | NoIdleWorktree> {
 	const storeDir = resolve(options.storeDir);
-	let slots: { readonly record: PoolSlotRecord; readonly held: boolean }[];
+	let candidates: PoolSlotRecord[];
 	try {
-		slots = await slotRecords(storeDir, repositoryIdOf(snapshot.remotes));
+		candidates = await slotRecords(storeDir, repositoryIdOf(snapshot.remotes));
 	} catch {
 		return { claimed: false, reason: "none" };
 	}
-	const candidates = slots.filter((slot) => !slot.held).map((slot) => slot.record);
 	const sameEnvironment = (record: PoolSlotRecord) => (record.envHash === snapshot.envHash ? 0 : 1);
 	candidates.sort((a, b) => sameEnvironment(a) - sameEnvironment(b) || byNewestRelease(a, b));
-	let reason: NoIdleWorktreeReason = candidates.length < slots.length ? "busy" : "none";
+	// A slot a live process holds is busy: each candidate's lease is checked under its record lock.
+	let reason: NoIdleWorktreeReason = "none";
 	for (const candidate of candidates) {
 		options.signal?.throwIfAborted();
 		const outcome = await claimSlot(storeDir, candidate, snapshot, options);

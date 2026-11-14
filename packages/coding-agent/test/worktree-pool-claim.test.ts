@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
+	appendFileSync,
 	chmodSync,
 	cpSync,
 	existsSync,
+	mkdirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -34,6 +37,7 @@ import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.j
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import {
 	claimIdleWorktree,
+	evictIdleWorktrees,
 	holdRestoredWorktree,
 	type PoolSlotRecord,
 	pooledWorktreeHolder,
@@ -100,7 +104,7 @@ async function capture(root: string): Promise<WorktreeSnapshot> {
 
 /**
  * Two snapshots of one checkout that ignores `node_modules/` and `build/`: A edits `file.txt` and adds the untracked
- * `only-a.txt`; B edits `file.txt` differently, without `only-a.txt`, and `edit` may change more. The checkout is then
+ * `only-a.txt` next to the untracked `shared.txt` both keep; B edits `file.txt` differently, without `only-a.txt`, and `edit` may change more. The checkout is then
  * moved away, so every session restores.
  */
 async function twoSnapshots(edit?: (clone: string) => void) {
@@ -110,6 +114,7 @@ async function twoSnapshots(edit?: (clone: string) => void) {
 	});
 	sandbox.write(join(clone, "file.txt"), "A\n");
 	sandbox.write(join(clone, "only-a.txt"), "A only\n");
+	sandbox.write(join(clone, "shared.txt"), "in both\n");
 	const a = await capture(clone);
 	rmSync(join(clone, "only-a.txt"));
 	sandbox.write(join(clone, "file.txt"), "B\n");
@@ -385,6 +390,128 @@ await withWorktreeSnapshotGit({ path: ${JSON.stringify(git)}, env }, () =>
 	);
 });
 
+describe("claim candidates and failures (#4748)", () => {
+	/** `count` sessions restored A into slots 0.. and released them, oldest slot first; returns their sessions. */
+	async function idleSlots(a: WorktreeSnapshot, clone: string, count: number): Promise<SessionManager[]> {
+		const sessions: SessionManager[] = [];
+		for (let n = 0; n < count; n++) sessions.push((await resume(await sessionOf(clone, a))).sessionManager);
+		for (const session of sessions) {
+			await releaseSessionWorktrees(session);
+			await sleep(5);
+		}
+		return sessions;
+	}
+
+	test("a claim prefers slots of the snapshot's environment, newest released first, and moves past one it cannot take (#4748)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlots(a, clone, 3);
+		// Slot 2, the newest, was restored for another environment; slot 1, the newest of the rest, has uncaptured work.
+		writeFileSync(recordFile(a, 2), JSON.stringify({ ...recordOf(a, 2), envHash: "another-environment" }));
+		sandbox.write(join(slot(a, 1), "file.txt"), "uncaptured\n");
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+
+		assert.equal(claim.claimed && claim.lease.path, slot(a, 0));
+		if (claim.claimed) await releaseRestoredWorktree(claim.lease);
+		assert.equal(readFileSync(join(slot(a, 1), "file.txt"), "utf8"), "uncaptured\n");
+		assert.equal(readFileSync(join(slot(a, 2), "file.txt"), "utf8"), "A\n");
+	});
+
+	test("a slot another process leases is busy (#4748)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+		const lease = `${recordFile(a, 0)}.999-other.lease.lock`;
+		mkdirSync(lease);
+
+		assert.deepEqual(await claimIdleWorktree(b, claimOptions()), { claimed: false, reason: "busy" });
+
+		rmSync(lease, { recursive: true });
+		assert.equal((await claimIdleWorktree(b, claimOptions())).claimed, true);
+	});
+
+	test("a reset Git cannot write leaves the slot marked, and its record names the claim (#4748)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+		const gitDir = await sandbox.git(slot(a, 0), "rev-parse", "--absolute-git-dir");
+		writeFileSync(join(gitDir, "index.lock"), "");
+
+		assert.deepEqual(await claimIdleWorktree(b, claimOptions()), { claimed: false, reason: "reset-failed" });
+
+		assert.deepEqual(recordOf(a, 0).resetting, { snapshotId: b.id, head: b.head, tree: b.tree });
+		assert.deepEqual(recordOf(a, 0).holder, Y);
+	});
+
+	test("a claim refuses a snapshot record that fails the security checks and leaves the slot as it was (#4748)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+		const before = recordOf(a, 0);
+
+		assert.deepEqual(await claimIdleWorktree({ ...b, id: "../not-a-snapshot-id" }, claimOptions()), {
+			claimed: false,
+			reason: "fetch-failed",
+		});
+
+		assert.deepEqual(recordOf(a, 0), before);
+		assert.equal(readFileSync(join(slot(a, 0), "file.txt"), "utf8"), "A\n");
+	});
+
+	test("a marked slot is never claimed, even unchanged, and eviction removes it without counting it (#4748)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		const [, z] = await idleSlots(a, clone, 2);
+		// A claim stopped right after marking slot 0, before its files changed.
+		writeFileSync(
+			recordFile(a, 0),
+			JSON.stringify({ ...recordOf(a, 0), resetting: { snapshotId: b.id, head: b.head, tree: b.tree } }),
+		);
+		const held = await holdRestoredWorktree(storeDir(), slot(a, 1), { kind: "session", id: z!.getSessionId() });
+		assert.ok(held);
+		// Slot 1 is busy, and slot 0, though exactly in its recorded state, is marked.
+		assert.equal((await claimIdleWorktree(b, claimOptions())).claimed, false);
+		assert.equal(readFileSync(join(slot(a, 0), "file.txt"), "utf8"), "A\n");
+		await releaseRestoredWorktree(held);
+
+		const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(a.remotes), { maxIdle: 1, settings });
+
+		assert.deepEqual(removed, [slot(a, 0)]);
+		assert.equal(existsSync(slot(a, 1)), true);
+	});
+
+	test("a claim resets with Git's stored content whatever the machine's conversion settings, as a restore does (#4748)", async () => {
+		const attributes = sandbox.path("global-attributes");
+		writeFileSync(attributes, "*.txt text eol=crlf\n");
+		appendFileSync(
+			sandbox.globalConfig,
+			`[core]\n\tautocrlf = true\n\tattributesFile = ${attributes.replace(/\\/g, "/")}\n`,
+		);
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+
+		assert.equal(claim.claimed, true);
+		if (claim.claimed) await releaseRestoredWorktree(claim.lease);
+		assert.equal(readFileSync(join(slot(a, 0), "file.txt"), "utf8"), "B\n");
+	});
+
+	test("a claim rewrites only the files that differ, so unchanged ones keep their timestamps (#4748)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+		// README.md is tracked; shared.txt is untracked and recorded by both snapshots; file.txt differs.
+		const mtime = (file: string) => statSync(join(slot(a, 0), file)).mtimeMs;
+		const before = { readme: mtime("README.md"), shared: mtime("shared.txt"), file: mtime("file.txt") };
+		await sleep(50);
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+
+		assert.equal(claim.claimed, true);
+		if (claim.claimed) await releaseRestoredWorktree(claim.lease);
+		assert.deepEqual(
+			{ readme: mtime("README.md"), shared: mtime("shared.txt"), file: mtime("file.txt") === before.file },
+			{ readme: before.readme, shared: before.shared, file: false },
+		);
+	});
+});
+
 describe("pooled resume edges (#4748)", () => {
 	test("a pooled resume that continues in its own idle slot holds it, so no claim can take it meanwhile (#4748)", async () => {
 		const { a, b, clone } = await twoSnapshots();
@@ -419,15 +546,16 @@ describe("pooled resume edges (#4748)", () => {
 			sessions.map((session) => session.getCwd()),
 			[0, 1, 2, 3].map((n) => slot(a, n)),
 		);
-		for (const session of sessions) {
+		// Released newest slot first, so slot 0 is the most recently released and slot 3 the oldest.
+		for (const session of [...sessions].reverse()) {
 			await releaseSessionWorktrees(session);
 			await sleep(5);
 		}
 
 		const fifth = await resume(await sessionOf(clone, a));
 
-		assert.equal(fifth.sessionManager.getCwd(), slot(a, 3));
-		assert.equal(existsSync(slot(a, 0)), false);
+		assert.equal(fifth.sessionManager.getCwd(), slot(a, 0));
+		assert.equal(existsSync(slot(a, 3)), false);
 		assert.equal(existsSync(slot(a, 1)), true);
 		assert.equal(existsSync(slot(a, 2)), true);
 	});
@@ -441,6 +569,12 @@ describe("pooled resume edges (#4748)", () => {
 		assert.equal(first.status === "restored" && first.mappings[0]?.to, slot(a, 0));
 		assert.equal((await resumeSessionWorktree(x, pool)).status, "verified");
 		await releaseSessionWorktrees(x);
+		// An unpooled resume, as for workflow runs, compares the slot without holding it.
+		assert.equal((await resumeSessionWorktree(x, { settings, storeDir: storeDir() })).status, "verified");
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(a, 0)), {
+			owner: { kind: "session", id: x.getSessionId() },
+			held: false,
+		});
 		writeFileSync(recordFile(a, 0), JSON.stringify({ ...recordOf(a, 0), holder: Y }));
 		const held = await holdRestoredWorktree(storeDir(), slot(a, 0), Y);
 		assert.ok(held);

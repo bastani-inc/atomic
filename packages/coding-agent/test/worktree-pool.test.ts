@@ -691,6 +691,7 @@ describe("worktree pool records and leases (#4748)", () => {
 			{ ...valid, envHash: 4 },
 			{ ...valid, blueprintDigest: 5 },
 			{ ...valid, releasedAt: 6 },
+			{ ...valid, resetting: { ...valid.lastState, tree: 7 } },
 		];
 		for (const variant of variants) {
 			writeFileSync(file, JSON.stringify(variant));
