@@ -61,8 +61,9 @@ import { ModelRuntime } from "./core/model-runtime.js";
 import { flushRawStdout, restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { registerHostStoragePackages } from "./core/package-manager-storage-adapters.js";
 import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from "./core/project-trust.ts";
+import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
-import type { ResumeNotice } from "./core/resume/session-resume.ts";
+import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
@@ -665,6 +666,10 @@ export async function main(argv: string[], options?: MainOptions) {
 		if (opened === "cancelled") process.exit(0);
 		sessionManager = opened.sessionManager;
 		worktreeRestoreDiagnostics = opened.notices;
+		// The host that started this engine may still be building the resumed session's blueprints.
+		if (engineEnv.child === "1" && engineEnv.hostPid !== undefined) {
+			holdToolsUntilOwnerBuilt(resumeStoreDir(agentDir), Number(engineEnv.hostPid), sessionManager.getSessionId());
+		}
 	} catch (error) {
 		const message = resumeFailureMessage(error);
 		if (message === undefined) throw error;
@@ -1057,6 +1062,8 @@ export async function main(argv: string[], options?: MainOptions) {
 	};
 	createRuntime.prepareResume = prepareRuntime;
 	time("createRuntimeFactory");
+	// The engine runs the session's tools, so it waits for a blueprint build this host still runs behind the first turn.
+	if (isolateInteractiveHost) await shareBlueprintBuild(resumeStoreDir(agentDir), sessionManager.getSessionId());
 	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
 	const runtime = await createRuntimeForMode(
 		createRuntime,

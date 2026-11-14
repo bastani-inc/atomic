@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `resume.waitForBlueprint`, an opt-in setting that lets a resumed session's first turn start while the blueprint build of its restored worktrees still runs. With `"tools"`, the first request goes out once the worktrees are restored; tools that run project code or read the worktree wait for the build, and the first of them reports how it went. A failed build releases them with the usual warning, and interrupting the turn stops only the wait. The default, `"prompt"`, keeps today's behaviour ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

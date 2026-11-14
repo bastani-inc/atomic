@@ -14,13 +14,14 @@ import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
+import { awaitBlueprintReady, BLUEPRINT_GATED_TOOLS, blueprintBuildPending } from "./resume/blueprint/barrier.ts";
 import { sessionBlobOutput } from "./session-tool-output.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 import { workspaceSandboxDenial } from "./workspace/session.ts";
 
 export function _installAgentToolHooks(this: AgentSession): void {
-	this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args }) => {
+	this.agent.beforeToolCall = async ({ assistantMessage, toolCall, args }, signal) => {
 		const runner = this._extensionRunner;
 		// #4226: a tool call never runs before its assistant message is saved, or once a save of the run failed.
 		// Only that message's own processing is awaited: listeners of later events such as tool_execution_start
@@ -29,6 +30,8 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
 		const sandboxDenial = workspaceSandboxDenial(this._workspace, toolCall.name);
 		if (sandboxDenial !== undefined) return { block: true, reason: sandboxDenial.message };
+		const blueprintWait = await waitForBlueprintBuild(this, toolCall, signal);
+		if (blueprintWait !== undefined) return blueprintWait;
 		if (!runner.hasHandlers("tool_call")) {
 			return undefined;
 		}
@@ -62,12 +65,70 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		// A detached call's placeholder is no result: resumeDetachedTurn finalizes its real result when it arrives.
 		if (isDetachedToolCall(this, toolCall.id)) return undefined;
 		const parentToolCallId = getParentToolCallId();
-		const replacement = await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId });
+		const replacement = withBlueprintReport(
+			this,
+			toolCall.id,
+			result,
+			await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId }),
+		);
 		if (parentToolCallId) return replacement;
 		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
 		else this._terminatingToolCallIds.delete(toolCall.id);
 		return replacement;
 	};
+}
+
+/** What the agent is told about a blueprint build a tool call waited for, by session and tool call id. */
+const blueprintReports = new WeakMap<AgentSession, Map<string, string>>();
+
+/**
+ * With `resume.waitForBlueprint: "tools"`, holds a tool that runs project code or reads the worktree until the
+ * blueprint build of the session's resume has settled, and keeps the build's report for that call's result. Returns
+ * the block of a call whose turn was aborted during the wait; the build goes on.
+ */
+async function waitForBlueprintBuild(
+	session: AgentSession,
+	toolCall: Pick<ToolCall, "id" | "name">,
+	signal: AbortSignal | undefined,
+): Promise<{ block: true; reason: string } | undefined> {
+	const sessionId = session.sessionManager.getSessionId();
+	if (!blueprintBuildPending(sessionId)) return undefined;
+	const gated =
+		BLUEPRINT_GATED_TOOLS.has(toolCall.name) ||
+		session._toolDefinitions.get(toolCall.name)?.definition.writesFiles === true;
+	if (!gated) return undefined;
+	let report: string | undefined;
+	try {
+		report = await awaitBlueprintReady(sessionId, signal);
+	} catch {
+		return { block: true, reason: "Interrupted while waiting for the environment build of this resumed session." };
+	}
+	if (report !== undefined) {
+		let reports = blueprintReports.get(session);
+		if (reports === undefined) {
+			reports = new Map();
+			blueprintReports.set(session, reports);
+		}
+		reports.set(toolCall.id, report);
+	}
+	return undefined;
+}
+
+/**
+ * The finalized `replacement` of the result of tool call `toolCallId`, with the report of the blueprint build the call
+ * waited for in front of its content.
+ */
+function withBlueprintReport(
+	session: AgentSession,
+	toolCallId: string,
+	result: AgentToolResult<unknown>,
+	replacement: AfterToolCallResult | undefined,
+): AfterToolCallResult | undefined {
+	const reports = blueprintReports.get(session);
+	const report = reports?.get(toolCallId);
+	if (report === undefined) return replacement;
+	reports?.delete(toolCallId);
+	return { ...replacement, content: [{ type: "text", text: report }, ...(replacement?.content ?? result.content)] };
 }
 
 /** A finished tool call's result as its tool reported it, before the session finalizes it for history. */

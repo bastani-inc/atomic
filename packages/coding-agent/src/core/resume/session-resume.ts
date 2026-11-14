@@ -34,9 +34,12 @@ import type {
 	WorktreeSnapshotSettings,
 	WorktreeUnrestored,
 } from "../worktree-snapshot/types.ts";
+import { holdToolsUntilBuilt } from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
 import {
+	BLUEPRINT_BUILDING_CONTEXT,
 	type BlueprintCheckout,
+	blueprintBuildReport,
 	checkoutsNeedingRebuild,
 	enclosingRepositoryRoot,
 	inheritedRemotes,
@@ -98,6 +101,13 @@ export interface PrepareSessionResumeOptions {
 	readonly onNotices?: (notices: readonly ResumeNotice[]) => void;
 	/** Told each slow step the resume starts (checking checkouts, restoring one, building blueprints), for a progress line. */
 	readonly onProgress?: (message: string) => void;
+	/**
+	 * `"prompt"` (default): the resume returns once the blueprints of the worktrees it restored are built. `"tools"`: it
+	 * returns once they are restored and the build goes on behind the session's first turn; the session's tools that run
+	 * project code or read the worktree wait for it (`awaitBlueprintReady`), and the first of them reports how it
+	 * went. The build's warnings then reach the agent and the user with that tool's result, not `notices`.
+	 */
+	readonly waitForBlueprint?: "prompt" | "tools";
 }
 
 export type PreparedSessionResume =
@@ -424,6 +434,19 @@ export async function prepareSessionResume(
 			.map((mapping) => resolve(mapping.to))
 			.filter((root) => isInside(storeDir, root)),
 	);
+	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
+		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
+		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), building.then(blueprintBuildReport));
+		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
+		return {
+			status: "ready",
+			sessionManager: opened.sessionManager,
+			notices,
+			blueprintNotices: [],
+			missingRecordNotices: resumed.missingNotices,
+			blueprintContext: BLUEPRINT_BUILDING_CONTEXT,
+		};
+	}
 	if (restoredNow.size > 0 && options.blueprints !== "skip") {
 		options.onProgress?.("Setting up the blueprints of restored worktrees");
 	}
@@ -1064,7 +1087,10 @@ export function sessionResumeOptions(
 	entryPoint: ResumeEntryPoint,
 	launchCwd: string,
 	agentDir: string,
-	settingsManager: Pick<SettingsManager, "getWorktreeSnapshotSettings" | "getResumeSetupCommand">,
+	settingsManager: Pick<
+		SettingsManager,
+		"getWorktreeSnapshotSettings" | "getResumeSetupCommand" | "getResumeWaitForBlueprint"
+	>,
 	trusted: (worktree: string) => boolean,
 ): PrepareSessionResumeOptions {
 	return {
@@ -1073,5 +1099,6 @@ export function sessionResumeOptions(
 		settings: settingsManager.getWorktreeSnapshotSettings(),
 		blueprint: { agentDir, setupCommand: settingsManager.getResumeSetupCommand(), trusted },
 		storeDir: resumeStoreDir(agentDir),
+		waitForBlueprint: settingsManager.getResumeWaitForBlueprint(),
 	};
 }
