@@ -135,7 +135,7 @@ cache:
     key-files: [Cargo.lock, rust-toolchain.toml]
 ```
 
-An entry is a path or `{ path, kind, key-files }`. A `kind: store` path is absolute or starts with `~/`, and lies outside the worktree. A `kind: build` path is relative to the repository root; it names build output that a trusted job parks under `~/.atomic/agent/worktree-snapshots/seeds/` for a later restore. `key-files` lists root-relative files whose content keys the entry; without it, an entry is keyed by the dependency files that decide a snapshot's environment (lockfiles and toolchain files). Quote a bare `~` (`"~"`): YAML reads it as empty. Atomic reads `cache:` from the repository blueprint's document for the runner's platform only.
+An entry is a path or `{ path, kind, key-files }`. A `kind: store` path is absolute or starts with `~/`, and lies outside the worktree. A `kind: build` path is relative to the repository root; it names build output that a trusted job parks under `~/.atomic/agent/worktree-snapshots/seeds/` for a later restore. `key-files` lists root-relative files whose content keys the entry; without it, an entry is keyed by the dependency files that decide a snapshot's environment (lockfiles and toolchain files). Paths are plain paths: an entry with glob characters (`*`, `?`, `[`, `]`, `{`, `}`) or a leading `!` is ignored, since a cache action would read it as a pattern. Quote a bare `~` (`"~"`): YAML reads it as empty. Atomic reads `cache:` from the repository blueprint's document for the runner's platform only.
 
 ```sh
 atomic blueprint cache-key [dir] [--format text|json|github-output]

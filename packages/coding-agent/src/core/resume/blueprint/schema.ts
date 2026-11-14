@@ -256,6 +256,11 @@ function readKnowledge(value: YamlValue, invalid: Invalid): KnowledgeItem[] {
 
 /** A path whose text a cache path or key file may not contain: control characters such as a newline. */
 const CONTROL_CHARACTER = /\p{Cc}/u;
+/**
+ * Characters a cache action reads as a glob or an exclusion (`!`), which could match paths the credential checks never
+ * saw, such as `~/.ss[h]`. A cache path is a plain path.
+ */
+const GLOB_CHARACTER = /[*?[\]{}]|^\s*!/u;
 
 /**
  * Reads the Atomic-only `cache:` section leniently: an invalid entry, or a section that is not a list, is left out with
@@ -284,6 +289,7 @@ function readCacheEntry(item: YamlValue): BlueprintCacheEntry | string {
 	if (typeof path !== "string" || path.trim() === "" || CONTROL_CHARACTER.test(path)) {
 		return "'path' must be a non-empty single-line string";
 	}
+	if (GLOB_CHARACTER.test(path)) return "'path' must be a plain path, without glob characters or a leading '!'";
 	const kind = mapping.kind === undefined || mapping.kind === null ? "store" : mapping.kind;
 	if (kind !== "store" && kind !== "build") return "'kind' must be 'store' or 'build'";
 	const declared = mapping["key-files"];

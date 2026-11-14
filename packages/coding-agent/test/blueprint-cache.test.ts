@@ -4,15 +4,16 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
-import { parseBlueprintCommand, runBlueprintCommand } from "../src/cli/blueprint-command.ts";
-import { getExtensionTranspileCacheDir } from "../src/config.ts";
+import { parseBlueprintCommand, runBlueprintCommand } from "../src/cli/blueprint-command.js";
+import { getExtensionTranspileCacheDir } from "../src/config.js";
 import {
 	type BlueprintCacheKeys,
 	blueprintCacheKeys,
 	formatBlueprintCacheKeys,
-} from "../src/core/resume/blueprint/cache.ts";
-import { parseBlueprint } from "../src/core/resume/blueprint/schema.ts";
-import { objectStorePath } from "../src/core/worktree-snapshot/restore.ts";
+} from "../src/core/resume/blueprint/cache.js";
+import { parseBlueprint } from "../src/core/resume/blueprint/schema.js";
+import { objectStorePath } from "../src/core/worktree-snapshot/restore.js";
+import { forThisHost } from "./helpers/blueprint-fixtures.js";
 
 const REMOTE = "https://example.com/acme/widgets.git";
 const scratch: string[] = [];
@@ -300,7 +301,7 @@ describe("cache-key formats and CLI (#4748)", () => {
 	});
 
 	test("atomic blueprint cache-key prints github-output for a subdirectory of a checkout (#4748)", async () => {
-		const at = fixture(STORES);
+		const at = fixture(forThisHost("cache:\n  - path: ~/.npm\n"));
 		mkdirSync(join(at.root, "src"));
 		const out: string[] = [];
 		const err: string[] = [];
@@ -371,6 +372,16 @@ describe("blueprint cache: edge cases (#4748)", () => {
 		for (const message of ignored.slice(3)) assert.match(message, /'key-files'/);
 		assert.ok(!("cache" in (parseBlueprint("maintenance: npm ci\n", location).documents[0] ?? {})));
 		assert.deepEqual(parseBlueprint("cache: []\n", location).documents[0]?.cache, { entries: [], ignored: [] });
+	});
+
+	test("a cache path with glob characters or a leading ! is ignored, so it cannot match credentials (#4748)", () => {
+		const document = parseBlueprint(
+			"cache:\n  - '~/.ss[h]/*'\n  - ~/.npm/**\n  - '!~/.npm'\n  - '~/{a,b}'\n  - ~/x?\n  - path: 'targe[t]'\n    kind: build\n  - ~/.npm\n",
+			location,
+		).documents[0];
+		assert.deepEqual(document?.cache?.entries, [{ path: "~/.npm", kind: "store", keyFiles: undefined }]);
+		assert.equal(document?.cache?.ignored.length, 6);
+		for (const message of document?.cache?.ignored ?? []) assert.match(message, /glob characters/);
 	});
 
 	test("kind: build paths must stay inside the worktree, outside .git, and off credential files (#4748)", async () => {
@@ -480,7 +491,7 @@ describe("blueprint cache: edge cases (#4748)", () => {
 		assert.match((await run(["cache-key", "--format"], directory)).err, /--format must be/);
 		assert.match((await run(["cache-key", "a", "b"], directory)).err, /at most one directory/);
 
-		write(directory, ".atomic/blueprint.yaml", "cache:\n  - ~/.npm\n  - ~/.ssh\n");
+		write(directory, ".atomic/blueprint.yaml", forThisHost("cache:\n  - ~/.npm\n  - ~/.ssh\n"));
 		const plain = await run(["cache-key", "--format", "json"], directory, join(directory, "..", "home"));
 		assert.equal(plain.code, 0);
 		const printed = JSON.parse(plain.out) as BlueprintCacheKeys;
