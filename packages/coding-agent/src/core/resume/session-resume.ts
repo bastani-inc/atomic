@@ -1044,33 +1044,43 @@ export async function continueSessionWhereItWorked(
 	options: PrepareSessionResumeOptions,
 	reopen: (cwd: string) => Promise<SessionManager> = (cwd) => opened.openSessionById(opened.getSessionId(), cwd),
 ): Promise<SessionManager> {
-	const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
-	const checkouts = currentWorktreeSnapshots(opened);
-	const own = await checkoutsWorkedHere(
-		checkouts,
-		cwd,
-		opened.getSessionId(),
-		options,
-		await partialRestores(opened, options),
-	);
-	if (own.size < checkouts.size) {
-		const prepared = await prepareSessionResume(opened, { ...options, keepInPlace: own });
-		if (prepared.status !== "ready") return opened;
-		if (prepared.blueprintNotices.length > 0) options.onNotices?.(prepared.blueprintNotices);
-		return prepared.sessionManager;
-	}
 	const storeDir = resolveStoreDir(options);
-	if (checkouts.size === 0) {
-		await describeBlueprintsInPlace(opened, storeDir, options);
-	} else {
-		const blueprints = await setUpCheckoutBlueprints(opened, new Set(), storeDir, options);
-		await recordBlueprintContext(opened, blueprints.context);
-		if (blueprints.notices.length > 0) options.onNotices?.(blueprints.notices);
+	// The session holds the pooled worktrees it owns before anything else, so no eviction removes one while its
+	// blueprints are set up again, and until it closes (#4748).
+	await holdSessionWorktrees(opened, opened, storeDir);
+	try {
+		const cwd = mapRestoredPath(opened.getCwd(), opened.getWorktreeRootMappings());
+		const checkouts = currentWorktreeSnapshots(opened);
+		const own = await checkoutsWorkedHere(
+			checkouts,
+			cwd,
+			opened.getSessionId(),
+			options,
+			await partialRestores(opened, options),
+		);
+		if (own.size < checkouts.size) {
+			const prepared = await prepareSessionResume(opened, { ...options, keepInPlace: own });
+			if (prepared.status !== "ready") {
+				await holdSessionWorktrees(opened, opened, storeDir);
+				return opened;
+			}
+			if (prepared.blueprintNotices.length > 0) options.onNotices?.(prepared.blueprintNotices);
+			return prepared.sessionManager;
+		}
+		if (checkouts.size === 0) {
+			await describeBlueprintsInPlace(opened, storeDir, options);
+		} else {
+			const blueprints = await setUpCheckoutBlueprints(opened, new Set(), storeDir, options);
+			await recordBlueprintContext(opened, blueprints.context);
+			if (blueprints.notices.length > 0) options.onNotices?.(blueprints.notices);
+		}
+		const continuing = cwd === resolve(opened.getCwd()) ? opened : await reopen(cwd);
+		await holdSessionWorktrees(opened, continuing, storeDir);
+		return continuing;
+	} catch (error) {
+		await releaseSessionWorktrees(opened);
+		throw error;
 	}
-	const continuing = cwd === resolve(opened.getCwd()) ? opened : await reopen(cwd);
-	// The session holds the pooled worktrees it continues in until it closes (#4748).
-	await holdSessionWorktrees(opened, continuing, storeDir);
-	return continuing;
 }
 
 /**

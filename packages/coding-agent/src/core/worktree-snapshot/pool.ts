@@ -513,12 +513,16 @@ async function evictSlot(storeDir: string, record: PoolSlotRecord, options: Evic
 }
 
 /**
- * Whether the worktree at `path` holds files its recorded `tree` does not, that verification leaves out: an untracked
- * file outside the tree, as when untracked files are not captured or are on the deny list, or an ignored file on the
+ * Whether the worktree at `path` holds files its recorded `tree` does not, that verification leaves out: staged content
+ * that is neither HEAD's nor the tree's, an untracked file outside the tree, as when untracked files are not captured or are on the deny list, or an ignored file on the
  * deny list, such as `.env`. Other ignored files, build output and dependencies, are rebuilt and may go.
  */
 async function holdsUnrecordedFiles(path: string, tree: string, signal: AbortSignal | undefined): Promise<boolean> {
 	const git = { cwd: path, signal };
+	// Staged content lives only in the index: it is recorded only when it is HEAD's or the recorded tree's.
+	const stagedDiffers = async (base: string) =>
+		(await runGit(["diff", "--cached", "--quiet", base, "--"], { ...git, allowExitCodes: [1] })).exitCode !== 0;
+	if ((await stagedDiffers("HEAD")) && (await stagedDiffers(tree))) return true;
 	const recorded = new Set(nulFields((await runGit(["ls-tree", "-r", "-z", "--name-only", tree], git)).stdout));
 	const untracked = nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout);
 	if (untracked.some((file) => !recorded.has(file))) return true;

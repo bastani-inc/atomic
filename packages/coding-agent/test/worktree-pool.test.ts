@@ -9,6 +9,7 @@ import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import {
+	continueSessionWhereItWorked,
 	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
@@ -388,6 +389,41 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		if (again.status === "ready") opened.push(again.sessionManager);
 	});
 
+	test("a woken session holds its slot before rebuilding its blueprints, so no eviction can remove it meanwhile (#4748)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const x = await sessionOf(clone, snapshot);
+		const first = await prepareSessionResume(x, prepareOptions());
+		assert.equal(first.status, "ready");
+		if (first.status !== "ready") return;
+		await releaseSessionWorktrees(first.sessionManager);
+		const pool = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes));
+		const leasedDuringBuild: boolean[] = [];
+
+		const woken = await continueSessionWhereItWorked(
+			first.sessionManager,
+			prepareOptions({
+				blueprints: "build",
+				blueprint: {
+					agentDir: sandbox.path("agent"),
+					setupCommand: "true",
+					trusted: () => {
+						leasedDuringBuild.push(readdirSync(pool).some((name) => name.endsWith(".lease.lock")));
+						return true;
+					},
+				},
+			}),
+		);
+		opened.push(woken);
+
+		assert.ok(leasedDuringBuild.length > 0);
+		assert.deepEqual(new Set(leasedDuringBuild), new Set([true]));
+		assert.equal(woken.getCwd(), slot(snapshot, 0));
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(snapshot, 0)), {
+			owner: { kind: "session", id: x.getSessionId() },
+			held: true,
+		});
+	});
+
 	test("unpooled restores keep today's paths and ownership, as for workflow runs and earlier versions (#4748)", async () => {
 		const { snapshot, clone } = await recordedSnapshot();
 		const x = await sessionOf(clone, snapshot);
@@ -456,6 +492,22 @@ describe("worktree pool eviction (#4748)", () => {
 		await restoredRoot(await sessionOf(clone, snapshot), 0);
 
 		assert.equal(readFileSync(join(slot(snapshot, 0), ".env"), "utf8"), "TOKEN=secret\n");
+		assert.equal(existsSync(slot(snapshot, 1)), false);
+	});
+
+	test("an idle slot with staged edits that differ from its files is never evicted (#4748)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const sessions = await Promise.all([1, 2].map(() => sessionOf(clone, snapshot)));
+		for (const session of sessions) await restoredRoot(session, 0);
+		for (const session of sessions) await releaseSessionWorktrees(session);
+		const staged = slot(snapshot, 0);
+		sandbox.write(join(staged, "README.md"), "staged only\n");
+		await sandbox.git(staged, "add", "README.md");
+		sandbox.write(join(staged, "README.md"), "hello\n");
+
+		await restoredRoot(await sessionOf(clone, snapshot), 0);
+
+		assert.equal(await sandbox.git(staged, "show", ":README.md"), "staged only");
 		assert.equal(existsSync(slot(snapshot, 1)), false);
 	});
 
