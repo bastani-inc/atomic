@@ -33,6 +33,8 @@ type Request = "batch" | "transaction" | "statement";
 function countingDriver(path: string) {
 	const connection: DatabaseSync = new Database(path);
 	const requests: Request[] = [];
+	/** Whether each batch asked for the priority lane, in order. */
+	const priorities: boolean[] = [];
 	const hooks: { beforeBatch?: (connection: DatabaseSync) => void; afterCommit?: () => void } = {};
 	const execute = (sql: string, params: readonly unknown[]): SqliteDriverResult => {
 		const statement = connection.prepare(sql);
@@ -65,8 +67,9 @@ function countingDriver(path: string) {
 			connection.exec("BEGIN IMMEDIATE");
 			return { ...inside, commit: () => connection.exec("COMMIT"), rollback: () => connection.exec("ROLLBACK") };
 		},
-		batch(statements: readonly SqliteStatement[]) {
+		batch(statements: readonly SqliteStatement[], options?: { readonly priority?: boolean }) {
 			requests.push("batch");
+			priorities.push(options?.priority === true);
 			hooks.beforeBatch?.(connection);
 			connection.exec("BEGIN IMMEDIATE");
 			let results: SqliteDriverResult[];
@@ -87,7 +90,7 @@ function countingDriver(path: string) {
 				? { code: "connection-lost", outcome: "unknown" }
 				: undefined,
 	};
-	return { driver, requests, hooks, connection };
+	return { driver, requests, priorities, hooks, connection };
 }
 
 const { work, boundary } = poolWorkFixture();
@@ -111,10 +114,12 @@ const entry = (id: string): SessionEntry => ({
 	message: { role: "user", content: id, timestamp: 1 },
 });
 
-async function fixture() {
+/** `batched: false` drops the driver's batch, as a node:sqlite journal has none: pool writes then run in transactions. */
+async function fixture(batched = true) {
 	const directory = makeTempDirectory("pool-batched-writes-");
 	const counting = countingDriver(join(directory, "journal.db"));
-	const database = createSqliteDatabase(counting.driver);
+	const { batch: _batch, ...withoutBatch } = counting.driver;
+	const database = createSqliteDatabase(batched ? counting.driver : withoutBatch);
 	const journal = await SqlRunJournal.open(database, { prefix: "acme_" });
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 	await backend.commitWorkflowRegistration({
@@ -481,6 +486,180 @@ test("a batched write planned from a stale cached attempt is refused by its fenc
 			f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, [])),
 			StaleWorkLeaseError,
 		);
+	} finally {
+		await f.close();
+	}
+});
+
+const timedOut = () => Object.assign(new Error("the request timed out"), { name: "TimeoutError" });
+
+test("lease renewals, heartbeats and host reports take the priority lane; commits, claims and completions do not (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const lanes = async (operation: () => Promise<unknown>) => {
+			f.priorities.length = 0;
+			await operation();
+			return [...f.priorities];
+		};
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		assert.deepEqual(f.priorities, [false]);
+		assert.deepEqual(
+			await lanes(() => f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) })),
+			[false],
+		);
+		assert.deepEqual(await lanes(() => f.pool.renew(f.lease, attempt, 60_000)), [true]);
+		assert.deepEqual(await lanes(() => f.pool.extend(f.lease, attempt, 60_000)), [true]);
+		assert.deepEqual(
+			await lanes(() => f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, []))),
+			[true],
+		);
+		const host = {
+			host: "host",
+			labels: {},
+			git: "system" as const,
+			restore: true,
+			workers: 1,
+			maxWorkers: 2,
+			roots: ["root"],
+		};
+		assert.deepEqual(await lanes(() => f.shared.reportHost(host)), [true]);
+		assert.deepEqual(await lanes(() => f.pool.complete(f.lease, attempt, { runId: work.childRunId })), [false]);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a commit or completion for a token its queue does not hold is refused from a read, without sending a write (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		const forged = [
+			{ ...attempt, worker: "host/other" },
+			{ ...attempt, generation: attempt.generation + 1 },
+			{ ...attempt, epoch: attempt.epoch + 1 },
+			{ ...attempt, id: "missing-work" },
+		];
+		for (const token of forged) {
+			const label = JSON.stringify(token);
+			const committed = f.requestsOf(() =>
+				f.pool.commit(f.lease, token, "op-2", { kind: "checkpoint", checkpoint: tool(2) }),
+			);
+			await assert.rejects(committed, StaleWorkLeaseError, label);
+			assert.equal(f.requests.includes("batch"), false, label);
+			f.requests.length = 0;
+			await assert.rejects(f.pool.complete(f.lease, token, { runId: work.childRunId }), StaleWorkLeaseError, label);
+			assert.equal(f.requests.includes("batch"), false, label);
+		}
+		// A root lease of another incarnation is refused the same way.
+		f.requests.length = 0;
+		await assert.rejects(
+			f.pool.commit({ ...f.lease, epoch: f.lease.epoch + 1 }, attempt, "op-2", {
+				kind: "checkpoint",
+				checkpoint: tool(2),
+			}),
+		);
+		assert.equal(f.requests.includes("batch"), false);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a queue that did not claim an attempt, as after its host restarted, commits and completes it from a read (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		const restarted = await openSqlPoolQueue(f.journal);
+		const receipt = await restarted.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		assert.equal(typeof receipt.seq, "number");
+		await restarted.complete(f.lease, attempt, { runId: work.childRunId });
+		assert.equal((await f.pool.inspect("root"))[0]?.state, "completed");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a heartbeat reports the root's pool control, and one whose record has no batched form still records in a transaction (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.setControl(f.lease, "paused");
+		const paused = await f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, []));
+		assert.equal(paused.control.state, "paused");
+		assert.ok(paused.control.revision > 0);
+		assert.equal(paused.work.id, attempt.id);
+		const plain = await f.requestsOf(() =>
+			f.pool.heartbeat(f.lease, attempt, 60_000, async (tx) => Number((await tx.get("SELECT 7 AS seven"))!.seven)),
+		);
+		assert.equal(plain.value.recorded, 7);
+		assert.equal(plain.value.control.state, "paused");
+		assert.ok(plain.value.work.expiresAt > Date.now());
+		assert.deepEqual(plain.sent.includes("transaction"), true);
+	} finally {
+		await f.close();
+	}
+});
+
+test("a claim with no compatible definitions takes nothing, and a claim whose send failed before it committed claims once (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const none = await f.requestsOf(() => f.pool.claim(f.lease, "host/w1", [], 60_000));
+		assert.equal(none.value, undefined);
+		assert.equal(none.sent.includes("batch"), false);
+		f.hooks.beforeBatch = () => {
+			f.hooks.beforeBatch = undefined;
+			throw timedOut();
+		};
+		const claimed = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.equal(claimed?.generation, 1);
+		const items = await f.pool.inspect("root");
+		assert.deepEqual(
+			items.map((item) => [item.id === claimed?.id, item.state]),
+			[[true, "leased"]],
+		);
+	} finally {
+		await f.close();
+	}
+});
+
+test("without batches, pool writes run in transactions and still refuse a token their queue does not hold (#4768)", async () => {
+	const f = await fixture(false);
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		const forged = { ...attempt, worker: "host/other" };
+		const sent = await f.requestsOf(async () => {
+			await assert.rejects(f.pool.renew(f.lease, forged, 60_000), StaleWorkLeaseError);
+			await assert.rejects(f.pool.extend(f.lease, forged, 60_000), StaleWorkLeaseError);
+			await assert.rejects(
+				f.pool.commit(f.lease, forged, "op-1", { kind: "checkpoint", checkpoint: tool(1) }),
+				StaleWorkLeaseError,
+			);
+			await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+			await f.pool.commit(f.lease, attempt, "op-2", {
+				kind: "session-create",
+				checkpoint: {
+					kind: "stage",
+					workflowId: "root",
+					checkpointId: `${work.scope}:session:0`,
+					name: "stage",
+					replayKey: `${work.scope}:stage`,
+					sessionId: "session",
+					completedAt: 0,
+					topology: { version: 1, stageId: "stage", parentIds: [], sourceOrder: 0, run },
+				},
+				header,
+				entries: [entry("m1")],
+			});
+			const beat = await f.pool.heartbeat(f.lease, attempt, 60_000, f.usage.recording(f.lease, attempt, []));
+			assert.equal(beat.control.state, "running");
+		});
+		assert.equal(sent.sent.includes("batch"), false);
+		assert.ok(sent.sent.includes("transaction"));
 	} finally {
 		await f.close();
 	}

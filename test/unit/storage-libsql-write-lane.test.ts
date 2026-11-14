@@ -126,3 +126,53 @@ test("write batches a server leaves unanswered three times in a row warn once pe
 	assert.match(stalled.message, /libsql\/issues\/2286/);
 	assert.match(stalled.message, /--checkpoint-interval-s/);
 });
+
+test("a busy-lock answer of TRANSACTION_TIMEOUT alone is sent again, and any other failed batch fails at once whatever its lockWaitMs (#4768)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	fake.fail({ kind: "result-error", code: "TRANSACTION_TIMEOUT" });
+	await database.batch!(insert(1), { lockWaitMs: 30_000 });
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+	const before = fake.pipelines.length;
+	fake.fail({ kind: "result-error", code: "SQLITE_CONSTRAINT" });
+	await assert.rejects(database.batch!(insert(2), { lockWaitMs: 30_000 }));
+	assert.equal(fake.pipelines.length - before, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 1);
+});
+
+test("only the third unanswered write in a row warns of a stall, any answer starts the count again, and no recovery is reported without a stall (#4768)", async () => {
+	const fake = await server();
+	const real = globalThis.fetch;
+	let hang = false;
+	vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+		hang ? Promise.reject(new DOMException("The operation timed out.", "TimeoutError")) : real(input, init),
+	);
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const reports: boolean[] = [];
+	const onHealth = (report: { stalled: boolean }) => reports.push(report.stalled);
+	process.on("atomic-libsql-write-health" as "warning", onHealth as never);
+	const unanswered = async (times: number) => {
+		hang = true;
+		for (let attempt = 0; attempt < times; attempt++) await assert.rejects(database.batch!(insert(attempt)));
+		hang = false;
+	};
+	try {
+		await database.batch!(insert(100));
+		await unanswered(2);
+		await database.batch!(insert(101));
+		await unanswered(2);
+		for (let attempt = 0; attempt < 3; attempt++) {
+			fake.fail({ kind: "result-error", code: "SQLITE_BUSY" });
+			await assert.rejects(database.batch!(insert(attempt)));
+		}
+		// A busy answer is an answer: the count starts again.
+		await unanswered(2);
+		assert.deepEqual(reports, []);
+		await unanswered(1);
+		assert.deepEqual(reports, [true]);
+	} finally {
+		process.off("atomic-libsql-write-health" as "warning", onHealth as never);
+	}
+});
