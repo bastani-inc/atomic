@@ -1,5 +1,4 @@
 import type { SqliteExecutor, SqliteTransactionOptions } from "@bastani/atomic/storage";
-import { SharedStoreWrites } from "./shared-store-health.js";
 import {
 	type AppendOutcome,
 	type JournalEntry,
@@ -90,6 +89,45 @@ export interface SqlPoolStorage {
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
+}
+
+/** The storage errors that say the store did not take a write, rather than that the write itself was refused. */
+const STORE_FAILURES = new Set(["StorageUnavailableError", "StorageTransientError", "StorageOutcomeUnknownError"]);
+
+/**
+ * This process's writes to one journal's pool tables (#4768): when the oldest still waiting started, by
+ * `performance.now()`, and how many in a row the store failed. Status reads it rather than writing to probe the store,
+ * since a journal runs one call at a time and a probe the store left unanswered would hold up the run's own calls.
+ */
+export class SharedStoreWrites {
+	private readonly waiting = new Map<number, number>();
+	private next = 0;
+	failuresInRow = 0;
+	lastFailure?: Error;
+
+	async watch<T>(write: () => Promise<T>): Promise<T> {
+		const id = this.next++;
+		this.waiting.set(id, performance.now());
+		try {
+			const result = await write();
+			this.failuresInRow = 0;
+			return result;
+		} catch (error) {
+			if (STORE_FAILURES.has((error as Error).name)) {
+				this.failuresInRow += 1;
+				this.lastFailure = error as Error;
+			}
+			throw error;
+		} finally {
+			this.waiting.delete(id);
+		}
+	}
+
+	/** How long the oldest write still waiting has waited; undefined when none waits. */
+	oldestWaitingMs(): number | undefined {
+		if (this.waiting.size === 0) return undefined;
+		return performance.now() - Math.min(...this.waiting.values());
+	}
 }
 
 const poolStorage = new WeakMap<RunJournal, SqlPoolStorage>();
