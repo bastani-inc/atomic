@@ -376,9 +376,14 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		if (first.status !== "ready") return;
 		await releaseSessionWorktrees(first.sessionManager);
 		const file = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes), "0.json");
-		writeFileSync(file, JSON.stringify({ ...recordOf(snapshot, 0), holder: { kind: "session", id: "session-y" } }));
+		const y = { kind: "session" as const, id: "session-y" };
+		writeFileSync(file, JSON.stringify({ ...recordOf(snapshot, 0), holder: y }));
+		// Session Y works in it, so no claim can take it either.
+		const held = await holdRestoredWorktree(storeDir(), slot(snapshot, 0), y);
+		assert.ok(held);
 
 		const prepared = await prepareSessionResume(resumed(first, x), prepareOptions({ launchCwd: slot(snapshot, 0) }));
+		await releaseRestoredWorktree(held);
 
 		assert.equal(prepared.status, "ready");
 		if (prepared.status !== "ready") return;
@@ -494,25 +499,26 @@ describe("worktree pool ownership on resume (#4748)", () => {
 describe("worktree pool eviction (#4748)", () => {
 	test("a restore removes the oldest unchanged idle slots beyond maxIdlePerRepository, keeping changed ones (#4748)", async () => {
 		const { snapshot, clone } = await recordedSnapshot();
-		const sessions = await Promise.all([1, 2, 3].map(() => sessionOf(clone, snapshot)));
+		const sessions = await Promise.all([1, 2, 3, 4].map(() => sessionOf(clone, snapshot)));
 		const roots: string[] = [];
 		for (const session of sessions) roots.push(await restoredRoot(session, 2));
-		assert.deepEqual(roots, [slot(snapshot, 0), slot(snapshot, 1), slot(snapshot, 2)]);
-		// Released oldest first: slot 0, then 1, then 2. Slot 0 has work no snapshot recorded.
+		assert.deepEqual(roots, [slot(snapshot, 0), slot(snapshot, 1), slot(snapshot, 2), slot(snapshot, 3)]);
+		// Released oldest first: slot 0, then 1, 2 and 3. Slot 0 has work no snapshot recorded.
 		for (const session of sessions) {
 			await releaseSessionWorktrees(session);
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 		sandbox.write(join(slot(snapshot, 0), "file.txt"), "uncaptured work\n");
 
-		const fourth = await restoredRoot(await sessionOf(clone, snapshot), 2);
+		const fifth = await restoredRoot(await sessionOf(clone, snapshot), 2);
 
-		// Three idle slots, two kept: slot 1, the oldest unchanged one, goes; slot 0 has changes and stays.
+		// The fifth claims slot 3, the newest released. Of the three idle slots left, two are kept: slot 1, the oldest
+		// unchanged one, goes; slot 0 has changes and stays.
+		assert.equal(fifth, slot(snapshot, 3));
 		assert.equal(existsSync(slot(snapshot, 1)), false);
 		assert.equal(await pooledWorktreeHolder(storeDir(), slot(snapshot, 1)), "unpooled");
 		assert.equal(readFileSync(join(slot(snapshot, 0), "file.txt"), "utf8"), "uncaptured work\n");
 		assert.equal(existsSync(slot(snapshot, 2)), true);
-		assert.equal(fourth, slot(snapshot, 3));
 	});
 
 	test("an idle slot holding a file no snapshot records, such as an untracked .env, is never evicted (#4748)", async () => {
@@ -685,6 +691,7 @@ describe("worktree pool records and leases (#4748)", () => {
 			{ ...valid, envHash: 4 },
 			{ ...valid, blueprintDigest: 5 },
 			{ ...valid, releasedAt: 6 },
+			{ ...valid, resetting: { ...valid.lastState, tree: 7 } },
 		];
 		for (const variant of variants) {
 			writeFileSync(file, JSON.stringify(variant));
