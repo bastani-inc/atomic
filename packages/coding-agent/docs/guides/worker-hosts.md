@@ -64,6 +64,53 @@ A machine that dies, or is killed with SIGKILL, loses nothing that was committed
 
 The command never waits on a database that stops answering: after 5 seconds it prints `shared store degraded`, why, and a hint, and exits `1`. A database it cannot reach at all prints `shared store unknown` the same way.
 
+## Scale the fleet automatically
+
+A fleet controller adds worker hosts when the queues of the database's shared roots grow, and drains and removes hosts that sat idle. It drives a provisioner: a JavaScript module that starts and removes machines in your cloud or cluster. The provisioner has three methods:
+
+```js
+// provisioner.mjs
+export default {
+  kind: "my-cloud",
+  // Every host it manages: { id, state: "pending" | "running" | "draining" | "stopped" | "failed", since }.
+  async list(signal) { /* … */ return []; },
+  // Run `target` hosts, counting every host list() reports. Only ever called to add hosts.
+  async scaleTo(target, signal) { /* … */ },
+  // Remove one host, which drained already or never registered, and lower the count by one.
+  async drain(id, signal) { /* … */ },
+};
+```
+
+Start each host it creates with `atomic worker start` and the environment variable `ATOMIC_WORKER_PROVIDER_ID` set to the host's provider id, so the controller can match the two. Then run the controller on any machine that opens the database:
+
+```bash
+atomic worker controller --provisioner ./provisioner.mjs --db libsql://pool.example.turso.io \
+  --token-file /etc/atomic/token --max-hosts 20 --workers-per-host 8
+```
+
+SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, or call `startWorkflowFleetController({ provisioner, … })`. When such a root ends, its controller asks the idle hosts above the target to drain at once, but nothing removes them from your provider afterwards unless another controller runs. Have your provisioner reap hosts that exited, or run `atomic worker controller` for a fleet that serves many roots.
+
+Every 10 seconds the controller:
+
+- computes a target of `ceil(demand / workersPerHost)` hosts, kept between `minHosts` and `maxHosts`. Demand is the ready and running children of every running root, each root capped by its `admission.limits.session`. A root whose budget is spent, or that is paused, counts only its running children.
+- adds hosts with `scaleTo` when more than `scaleUpQueueDepth` children have been waiting for `scaleUpDelayMs`, or when children wait and no host runs at all. Hosts below `minHosts` are added at once.
+- asks a host to drain once it has held no child for `idleDrainMs` and the fleet is above its target. The host takes no more children and exits as on SIGTERM; the controller then calls `drain`. A host that holds a child is never drained or removed.
+- removes a host that has not registered `bootTimeoutMs` after it started, or that the provider reports failed, and replaces it once. Further failures in a row wait 30 seconds, then twice as long each time, up to 10 minutes.
+
+| Option | Default | |
+| --- | --- | --- |
+| `minHosts` / `--min-hosts` | 0 | Hosts kept however idle |
+| `maxHosts` / `--max-hosts` | 10 | Hosts never exceeded |
+| `workersPerHost` / `--workers-per-host` | 4 | The `--slots` the hosts start with |
+| `scaleUpQueueDepth` / `--scale-up-queue-depth` | `workersPerHost` | Children allowed to wait before hosts are added |
+| `scaleUpDelayMs` / `--scale-up-delay` | 20000 | How long they wait first |
+| `idleDrainMs` / `--idle-drain` | 300000 | Idle time before a host is drained |
+| `bootTimeoutMs` / `--boot-timeout` | 600000 | Time a new host has to register |
+
+You can run several controllers, such as one per root machine. One is active at a time through a lease in the database; another takes over within 30 seconds when it stops or dies. A provisioner that fails (a missing CLI, refused credentials, a quota) never fails, pauses or blocks a run: the controller prints `degraded`, keeps the hosts the fleet has, and tries again after 10 seconds, then twice as long after each further failure, up to 10 minutes. Every decision and failure is recorded in the database's last 1000 fleet events.
+
+The provisioner runs in the controller's process with that machine's credentials. Nothing it is given or returns goes to the database except host ids, states and error messages, so keep secrets out of its error messages.
+
 ## Run it as a systemd service
 
 `/etc/systemd/system/atomic-worker.service`:

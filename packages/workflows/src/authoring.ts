@@ -758,6 +758,25 @@ export declare function workflowWorkerFleetLines(
 	fleet: import("./durable/journal/shared-pool-types.js").SharedPoolFleet,
 ): string[];
 export type {
+	ProvisionedHost,
+	WorkerFleetPolicyOptions,
+	WorkerHostProvisioner,
+	WorkflowFleetController,
+	WorkflowFleetControllerOptions,
+	WorkflowFleetEvent,
+	WorkflowFleetFailure,
+	WorkflowFleetOptions,
+	WorkflowFleetStatus,
+} from "./workers/fleet-types.js";
+/**
+ * Starts a fleet controller on a shared journal (#4768): it adds worker hosts through `options.provisioner` as the
+ * queues of the journal's shared roots grow, and drains and removes idle ones. One controller of a journal is active at
+ * a time. Default journal: the one this machine selects for workflow runs.
+ */
+export declare function startWorkflowFleetController(
+	options: import("./workers/fleet-types.js").WorkflowFleetControllerOptions,
+): Promise<import("./workers/fleet-types.js").WorkflowFleetController>;
+export type {
 	RestoredWorkspace,
 	WorkspaceHookOptions,
 	WorkspacePreference,

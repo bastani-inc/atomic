@@ -1,4 +1,5 @@
 import type { Workspace } from "@bastani/atomic";
+import type { WorkflowFleetOptions } from "./fleet-types.js";
 import type { WorkspaceBinding } from "./workspace-binding.js";
 
 export interface WorkflowAdmissionOptions {
@@ -62,10 +63,17 @@ export interface WorkflowWorkerPlacementOptions {
 	 * with `WorkspaceRestoreUnavailableError`. Default {@link DEFAULT_PLACEMENT_CLAIM_WINDOW_MS}.
 	 */
 	readonly claimWindowMs?: number;
+	/**
+	 * Adds and removes worker hosts for the journal's shared roots while this root runs (#4768): the root runs a fleet
+	 * controller with this provisioner and policy, one of the journal's controllers, of which one is active at a time.
+	 * Unset: no controller, and hosts join and leave by themselves. Never saved with the root, so a resume runs without
+	 * one unless it passes it again, and a provisioner failure never fails or pauses the root.
+	 */
+	readonly provisioner?: WorkflowFleetOptions;
 }
 
-/** Shared placement as a root records it: its workspace resolved to the binding's identity. */
-export type RecordedWorkerPlacement = Omit<WorkflowWorkerPlacementOptions, "workspace"> & {
+/** Shared placement as a root records it: its workspace resolved to the binding's identity, without its provisioner. */
+export type RecordedWorkerPlacement = Omit<WorkflowWorkerPlacementOptions, "workspace" | "provisioner"> & {
 	readonly workspace?: WorkspaceBinding;
 };
 

@@ -569,6 +569,7 @@ test(
 				error: (line) => out.push(line),
 				loadModule: async () => ({
 					startWorkflowWorkerHost: () => assert.fail("status starts no host"),
+					startWorkflowFleetController: () => assert.fail("status runs no controller"),
 					readWorkflowWorkerFleet: async () => fleet,
 					workflowWorkerFleetLines,
 				}),
@@ -610,7 +611,12 @@ test.skipIf(process.platform === "win32")(
 					agentDir,
 					log: (line) => out.push(line),
 					error: (line) => err.push(line),
-					loadModule: async () => ({ startWorkflowWorkerHost, readWorkflowWorkerFleet, workflowWorkerFleetLines }),
+					loadModule: async () => ({
+						startWorkflowWorkerHost,
+						readWorkflowWorkerFleet,
+						workflowWorkerFleetLines,
+						startWorkflowFleetController: () => assert.fail("status runs no controller"),
+					}),
 				});
 				assert.equal(code, 0, err.join("\n"));
 				return JSON.parse(out.join("\n")) as SharedPoolFleet;

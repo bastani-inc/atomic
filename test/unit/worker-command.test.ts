@@ -10,6 +10,7 @@ import {
 	runWorkerCommand,
 	WorkerCommandError,
 	type WorkerFleet,
+	type WorkerFleetEvent,
 	type WorkerHostEvent,
 	type WorkerHostModule,
 	type WorkerHostOptions,
@@ -147,6 +148,7 @@ function fakeModule(behavior: { readonly setup?: Error; readonly drain?: Error }
 			return { fleet: { store: { state: "ok" as const } } };
 		},
 		workflowWorkerFleetLines: () => [],
+		startWorkflowFleetController: () => assert.fail("start runs no controller"),
 	};
 	return { module, given, calls, emit: (event: WorkerHostEvent) => emit(event) };
 }
@@ -302,7 +304,7 @@ test("worker help and refused command lines exit without loading the workflows p
 	});
 	const unknown = await run(["serve"], unloadable);
 	assert.deepEqual(unknown.err, [
-		'Invalid worker command: <command>. Use start or status. Use "atomic worker --help" for usage.',
+		'Invalid worker command: <command>. Use start, status or controller. Use "atomic worker --help" for usage.',
 	]);
 	const broken = await run(["status"], unloadable);
 	assert.deepEqual(broken, { code: 1, out: [], err: ["Error: the workflows package did not load"] });
@@ -332,6 +334,7 @@ test("worker status prints the fleet as the workflows package's lines, or as JSO
 	const asked: unknown[] = [];
 	const module = (fleet: WorkerFleet | Error) => async (): Promise<WorkerHostModule> => ({
 		startWorkflowWorkerHost: () => assert.fail("status starts no host"),
+		startWorkflowFleetController: () => assert.fail("status runs no controller"),
 		async readWorkflowWorkerFleet(options) {
 			asked.push(options);
 			if (fleet instanceof Error) throw fleet;
@@ -474,6 +477,226 @@ test("worker start reports a setup failure that is not a shared pool's by its me
 		["process containment is not available"],
 		"a missing token file is the host's to report",
 	);
+});
+
+test("worker controller parses its provisioner module and policy, and refuses options of other commands (#4768)", () => {
+	const command = parseWorkerCommand(
+		[
+			"controller",
+			"--provisioner",
+			"fleet/provisioner.mjs",
+			"--min-hosts",
+			"0",
+			"--max-hosts",
+			"20",
+			"--workers-per-host",
+			"8",
+			"--scale-up-queue-depth",
+			"0",
+			"--scale-up-delay",
+			"5000",
+			"--idle-drain",
+			"60000",
+			"--boot-timeout",
+			"300000",
+			"--json",
+		],
+		{ cwd: root },
+	);
+	assert.deepEqual(command, {
+		kind: "controller",
+		provisioner: join(root, "fleet", "provisioner.mjs"),
+		policy: {
+			minHosts: 0,
+			maxHosts: 20,
+			workersPerHost: 8,
+			scaleUpQueueDepth: 0,
+			scaleUpDelayMs: 5000,
+			idleDrainMs: 60000,
+			bootTimeoutMs: 300000,
+		},
+		json: true,
+	});
+	const refused = (args: string[], field: string) =>
+		assert.throws(
+			() => parseWorkerCommand(args, { cwd: root }),
+			(error: Error) => error instanceof WorkerCommandError && error.field === field,
+		);
+	refused(["controller"], "--provisioner");
+	assert.throws(
+		() => parseWorkerCommand(["controller"], { cwd: root }),
+		/Pass the provisioner module the controller drives/,
+	);
+	assert.throws(
+		() => parseWorkerCommand(["status", "--min-hosts", "1"], { cwd: root }),
+		/"atomic worker status" does not take it/,
+	);
+	assert.throws(
+		() => parseWorkerCommand(["controller", "--provisioner", "p", "--min-hosts", "1x"], { cwd: root }),
+		/Pass an integer of at least 0/,
+	);
+	refused(["controller", "--provisioner", "p.mjs", "--slots", "2"], "--slots");
+	refused(["controller", "--provisioner", "p.mjs", "--workers-per-host", "0"], "--workers-per-host");
+	refused(["controller", "--provisioner", "p.mjs", "--boot-timeout", "0"], "--boot-timeout");
+	refused(["controller", "--provisioner", "p.mjs", "--min-hosts", "-1"], "--min-hosts");
+	refused(["start", "--max-hosts", "2"], "--max-hosts");
+	refused(["status", "--provisioner", "p.mjs"], "--provisioner");
+});
+
+test("worker controller runs the fleet controller with the module's provisioner, prints its events, and stops on SIGTERM (#4768)", async () => {
+	const out: string[] = [];
+	const err: string[] = [];
+	const signals = new EventEmitter();
+	const given: Parameters<WorkerHostModule["startWorkflowFleetController"]>[0][] = [];
+	const calls: string[] = [];
+	const provisioner = { kind: "fake", list: async () => [], scaleTo: async () => {}, drain: async () => {} };
+	let emit: (event: WorkerFleetEvent) => void = () => {};
+	const module: WorkerHostModule = {
+		startWorkflowWorkerHost: () => assert.fail("controller starts no host"),
+		readWorkflowWorkerFleet: () => assert.fail("controller reads no fleet"),
+		workflowWorkerFleetLines: () => [],
+		async startWorkflowFleetController(options) {
+			given.push(options);
+			emit = options.onEvent;
+			return {
+				holder: "machine/1/abc",
+				async stop() {
+					calls.push("stop");
+				},
+			};
+		},
+	};
+	const exit = runWorkerCommand(
+		[
+			"controller",
+			"--provisioner",
+			"p.mjs",
+			"--db",
+			"libsql://pool.example.turso.io",
+			"--token-file",
+			tokenFile,
+			"--max-hosts",
+			"3",
+		],
+		{
+			cwd: root,
+			agentDir: join(root, "agent"),
+			log: (line) => out.push(line),
+			error: (line) => err.push(line),
+			signals: signals as unknown as Pick<NodeJS.Process, "on" | "off">,
+			loadModule: async () => module,
+			loadProvisioner: async (path) => {
+				assert.equal(path, join(root, "p.mjs"));
+				return provisioner;
+			},
+		},
+	);
+	while (out.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(out[0], "controller holder=machine/1/abc journal=libsql://pool.example.turso.io");
+	assert.equal(given[0]?.provisioner, provisioner);
+	assert.equal(given[0]?.maxHosts, 3);
+	assert.deepEqual(given[0]?.journal, {
+		adapter: LIBSQL_ADAPTER_PACKAGE,
+		options: { url: "libsql://pool.example.turso.io" },
+		secrets: { authToken: { file: tokenFile } },
+	});
+	emit({ kind: "active", epoch: 4 });
+	emit({ kind: "scale-up", target: 3, desired: 3, live: 1 });
+	emit({ kind: "drain-requested", id: "vm-2", host: "h2" });
+	emit({ kind: "removed", id: "vm-2", reason: "drained" });
+	emit({ kind: "degraded", failures: 2, retryInMs: 20000, error: { name: "Error", message: "quota exceeded" } });
+	emit({ kind: "recovered", failures: 2 });
+	emit({ kind: "standby", holder: "other" });
+	signals.emit("SIGTERM", "SIGTERM");
+	assert.equal(await exit, 0);
+	assert.deepEqual(calls, ["stop"]);
+	assert.deepEqual(out.slice(1), [
+		"active epoch=4",
+		"scale-up target=3 desired=3 live=1",
+		"drain-requested id=vm-2 host=h2",
+		"removed id=vm-2 reason=drained",
+		"degraded failures=2 retry_in_ms=20000 error=Error: quota exceeded",
+		"recovered failures=2",
+		"standby holder=other",
+		"stopping signal=SIGTERM",
+		"stopped holder=machine/1/abc",
+	]);
+	assert.deepEqual(err, []);
+	assert.equal(signals.listenerCount("SIGTERM"), 0);
+});
+
+test("worker controller exits 1 when the provisioner module does not export a provisioner (#4768)", async () => {
+	const path = join(root, "not-a-provisioner.mjs");
+	writeFileSync(path, "export default { kind: 'x' };\n");
+	const err: string[] = [];
+	const code = await runWorkerCommand(["controller", "--provisioner", path], {
+		cwd: root,
+		agentDir: join(root, "agent"),
+		log: () => {},
+		error: (line) => err.push(line),
+		loadModule: async () => ({
+			startWorkflowWorkerHost: () => assert.fail("no host"),
+			readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+			startWorkflowFleetController: () => assert.fail("no controller without a provisioner"),
+			workflowWorkerFleetLines: () => [],
+		}),
+	});
+	assert.equal(code, 1);
+	assert.match(err[0] ?? "", /does not export a provisioner/);
+	const methods = "list: async () => [], scaleTo: async () => {}, drain: async () => {}";
+	for (const [name, body] of [
+		["no-kind", `{ ${methods} }`],
+		["no-list", "{ kind: 'k', scaleTo: async () => {}, drain: async () => {} }"],
+		["no-scale", "{ kind: 'k', list: async () => [], drain: async () => {} }"],
+		["no-drain", "{ kind: 'k', list: async () => [], scaleTo: async () => {} }"],
+		["nothing", "undefined"],
+	] as const) {
+		const partial = join(root, `${name}.mjs`);
+		writeFileSync(partial, `export default ${body};\n`);
+		err.length = 0;
+		assert.equal(
+			await runWorkerCommand(["controller", "--provisioner", partial], {
+				cwd: root,
+				agentDir: join(root, "agent"),
+				log: () => {},
+				error: (line) => err.push(line),
+				loadModule: async () => ({
+					startWorkflowWorkerHost: () => assert.fail("no host"),
+					readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+					startWorkflowFleetController: () => assert.fail(`no controller for ${name}`),
+					workflowWorkerFleetLines: () => [],
+				}),
+			}),
+			1,
+		);
+		assert.match(err[0] ?? "", /does not export a provisioner/, name);
+	}
+	const factory = join(root, "factory.mjs");
+	writeFileSync(
+		factory,
+		"export default () => ({ kind: 'f', list: async () => [], scaleTo: async () => {}, drain: async () => {} });\n",
+	);
+	const kinds: string[] = [];
+	const signals = new EventEmitter();
+	const exit = runWorkerCommand(["controller", "--provisioner", factory], {
+		cwd: root,
+		agentDir: join(root, "agent"),
+		log: () => {},
+		error: () => {},
+		signals: signals as unknown as Pick<NodeJS.Process, "on" | "off">,
+		loadModule: async () => ({
+			startWorkflowWorkerHost: () => assert.fail("no host"),
+			readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+			workflowWorkerFleetLines: () => [],
+			async startWorkflowFleetController(options) {
+				kinds.push(options.provisioner.kind);
+				setTimeout(() => signals.emit("SIGINT", "SIGINT"), 5);
+				return { holder: "h", async stop() {} };
+			},
+		}),
+	});
+	assert.equal(await exit, 0);
+	assert.deepEqual(kinds, ["f"]);
 });
 
 /** The real command loads the bundled workflows package through the extension host's module loader. */

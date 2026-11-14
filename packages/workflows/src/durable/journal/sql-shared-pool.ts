@@ -19,6 +19,7 @@ import {
 	sharedStoreHealth,
 	withoutUrlCredentials,
 } from "./shared-store-health.js";
+import { fleetDrainsSchema } from "./sql-fleet.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
@@ -37,6 +38,7 @@ const HOST_STATUS_COLUMNS = {
 	slots_busy: "INTEGER",
 	draining: "INTEGER NOT NULL DEFAULT 0",
 	degraded: "TEXT",
+	provider_id: "TEXT",
 } as const;
 
 /** A stage input that answers a prompt the stage raised; its payload is the answer. */
@@ -145,6 +147,7 @@ export class SqlSharedPool {
 	private readonly stageLeases: string;
 	private readonly workspaces: string;
 	private readonly backoffs: string;
+	private readonly drains: string;
 	private readonly work: string;
 	private constructor(
 		private readonly storage: SqlPoolStorage,
@@ -159,6 +162,7 @@ export class SqlSharedPool {
 		this.stageLeases = `${runs}_stage_leases`;
 		this.workspaces = `${runs}_stage_workspaces`;
 		this.backoffs = `${runs}_pool_restore_backoffs`;
+		this.drains = `${runs}_fleet_drains`;
 		this.work = `${runs}_work`;
 	}
 
@@ -207,8 +211,10 @@ export class SqlSharedPool {
 					host TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,
 					recorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)
 				);
+				${fleetDrainsSchema(runs)};
 			`);
-			// A registry an older version created lacks the status columns; its hosts go on writing without them.
+			// A registry an older version created lacks the status and provider id columns; its hosts go on writing
+			// without them.
 			const present = new Set(
 				(await tx.all<SqliteRow & { name: string }>("SELECT name FROM pragma_table_info(?)", pool.hosts)).map(
 					(column) => column.name,
@@ -284,11 +290,12 @@ export class SqlSharedPool {
 		validateText("key", host.host);
 		await this.storage.transaction((tx) =>
 			tx.run(
-				`INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded)
-				VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?, ?, ?, ?)
+				`INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id)
+				VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?, ?, ?, ?, ?)
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
 				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
-				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded`,
+				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded,
+				provider_id = excluded.provider_id`,
 				host.host,
 				JSON.stringify(host.labels),
 				host.git,
@@ -299,8 +306,17 @@ export class SqlSharedPool {
 				host.busy ?? null,
 				host.draining === true ? 1 : 0,
 				host.degraded === undefined ? null : JSON.stringify(host.degraded),
+				host.providerId ?? null,
 			),
 		);
+	}
+
+	/** Whether a fleet controller asked `host` to drain (#4768). */
+	async drainRequested(host: string): Promise<boolean> {
+		const row = await this.storage.read((executor) =>
+			executor.get(`SELECT 1 AS asked FROM ${this.drains} WHERE host = ?`, host),
+		);
+		return row !== undefined;
 	}
 
 	/** Removes a stopped worker host from the registry, with the restore backoffs it recorded. */
@@ -823,6 +839,7 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 				workers: number;
 				max_workers: number;
 				roots: string;
+				provider_id?: string | null;
 				ago: number;
 				slots_busy?: number | null;
 				draining?: number;
@@ -856,6 +873,7 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 			workers: Number(row.workers),
 			maxWorkers: Number(row.max_workers),
 			roots: JSON.parse(row.roots) as string[],
+			...(row.provider_id === undefined || row.provider_id === null ? {} : { providerId: row.provider_id }),
 			...reported,
 			state: hostState(reported),
 		};

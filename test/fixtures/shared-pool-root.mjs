@@ -1,4 +1,4 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
@@ -116,6 +116,32 @@ const options = {
 		placement: "shared",
 		...(binding === undefined ? {} : { workspace: binding }),
 		...(process.env.SHARED_POOL_CLAIM_WINDOW_MS === undefined ? {} : { claimWindowMs: Number(process.env.SHARED_POOL_CLAIM_WINDOW_MS) }),
+		// SHARED_POOL_FLEET=1 (#4768): the root runs a fleet controller whose provisioner records each call in `fleet-calls`
+		// and has no host to start.
+		...(process.env.SHARED_POOL_FLEET === "1"
+			? {
+					provisioner: {
+						provisioner: {
+							kind: "fleet-fixture-4768",
+							async list() {
+								appendFileSync(join(directory, "fleet-calls"), "list\n");
+								return [];
+							},
+							async scaleTo(target) {
+								appendFileSync(join(directory, "fleet-calls"), `scaleTo ${target}\n`);
+							},
+							async drain(id) {
+								appendFileSync(join(directory, "fleet-calls"), `drain ${id}\n`);
+							},
+						},
+						tickMs: 200,
+						scaleUpQueueDepth: 0,
+						scaleUpDelayMs: 0,
+						workersPerHost: 1,
+						maxHosts: 2,
+					},
+				}
+			: {}),
 	},
 	admission: { limits: { session: Number(process.env.SHARED_POOL_SESSIONS ?? "8") } },
 };

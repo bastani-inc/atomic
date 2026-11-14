@@ -112,6 +112,8 @@ function validated(options: WorkflowWorkerHostOptions): void {
 		throw new WorkerPlacementConfigError("sdk", "git.path", "invalid-option", "a non-empty path");
 	if (options.idleExitMs !== undefined && (!Number.isSafeInteger(options.idleExitMs) || options.idleExitMs < 1))
 		throw new WorkerPlacementConfigError("sdk", "idleExitMs", "invalid-option", "must be a positive integer");
+	if (options.providerId !== undefined && (typeof options.providerId !== "string" || options.providerId === ""))
+		throw new WorkerPlacementConfigError("sdk", "providerId", "invalid-option", "a non-empty string");
 }
 
 /** Where a host's git comes from and, for a host given a restore function but no git, the setup problem that says so. */
@@ -272,6 +274,8 @@ class WorkerHost implements WorkflowWorkerHost {
 	readonly closed = new Promise<void>((resolve) => {
 		this.settleClosed = resolve;
 	});
+	/** The id this host's provisioner knows it by, as it was when the host started (#4768). */
+	private readonly providerId: string | undefined;
 
 	constructor(
 		readonly hostId: string,
@@ -284,6 +288,7 @@ class WorkerHost implements WorkflowWorkerHost {
 		private readonly restorePort: WorkspaceRestore | undefined,
 		private readonly options: WorkflowWorkerHostOptions,
 	) {
+		this.providerId = options.providerId ?? (process.env.ATOMIC_WORKER_PROVIDER_ID || undefined);
 		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
 	}
 
@@ -302,7 +307,10 @@ class WorkerHost implements WorkflowWorkerHost {
 			// A draining host goes on reporting itself, draining, while its running children finish (#4768).
 			if (this.draining && !this.stoppingNow && !this.leaving && this.polling === undefined)
 				this.polling = this.report()
-					.catch(() => {})
+					.then(
+						() => {},
+						() => {},
+					)
 					.finally(() => {
 						this.polling = undefined;
 					});
@@ -387,15 +395,16 @@ class WorkerHost implements WorkflowWorkerHost {
 
 	/**
 	 * Reports this host to the registry when its workers, roots, draining or degraded state changed, and otherwise every
-	 * {@link HOST_REPORT_MS}. Its busy count goes out with the report: a change of it alone costs no write.
+	 * {@link HOST_REPORT_MS}. Its busy count goes out with the report: a change of it alone costs no write. Returns
+	 * whether it reported.
 	 */
-	private async report(): Promise<void> {
+	private async report(): Promise<boolean> {
 		const { workers, busy } = this.workerCount();
 		const served = [...this.satellites.keys()].sort();
 		const now = performance.now();
 		const state = JSON.stringify([workers, served, this.draining, this.degraded === undefined]);
 		if (this.reported !== undefined && this.reported.state === state && now - this.reported.at < HOST_REPORT_MS)
-			return;
+			return false;
 		await this.shared.reportHost({
 			host: this.hostId,
 			labels: { ...this.options.labels },
@@ -409,15 +418,25 @@ class WorkerHost implements WorkflowWorkerHost {
 			...(this.degraded === undefined
 				? {}
 				: { degraded: { failures: this.degraded.failures, error: this.degraded.error } }),
+			...(this.providerId === undefined ? {} : { providerId: this.providerId }),
 		});
 		this.reported = { state, at: now };
+		return true;
 	}
 
 	/** Reports this host, lets go of roots it no longer serves, and attaches to roots it can serve. */
 	private async poll(): Promise<void> {
 		if (this.stopping !== undefined) return;
-		await this.report();
+		const reported = await this.report();
 		const now = performance.now();
+		// A fleet controller asks an idle host to drain through the journal (#4768); the drain waits for this poll.
+		if (reported && (await this.shared.drainRequested(this.hostId))) {
+			this.emit({ kind: "drain-requested" });
+			void this.drain().catch((error: Error) => {
+				this.lastDetach = failure(error);
+			});
+			return;
+		}
 		const roots = await this.shared.roots();
 		const byRoot = new Map(roots.map((root) => [root.root, root]));
 		for (const [root, satellite] of [...this.satellites]) {

@@ -34,6 +34,8 @@ export interface SharedPoolHostReport {
 	readonly draining?: boolean;
 	/** Set while the host's polls of the journal fail: how many in a row, and the last failure (#4768). */
 	readonly degraded?: { readonly failures: number; readonly error: SharedPoolFailure };
+	/** The id its provisioner knows it by, for a host a fleet controller started (`ATOMIC_WORKER_PROVIDER_ID`). */
+	readonly providerId?: string;
 }
 
 /**
