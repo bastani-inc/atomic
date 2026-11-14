@@ -75,6 +75,7 @@ test("the transient-failure guard matches instances and copies with a known code
 		"transaction-timeout",
 		"connection-refused",
 		"connection-lost",
+		"lock-conflict",
 	]);
 	assert.equal(isStorageTransientError({ name: "StorageTransientError", code: "busy" }), false);
 	assert.equal(isStorageTransientError({ name: "StorageUnavailableError", code: "stream-expired" }), false);

@@ -30,6 +30,7 @@ import {
 	StaleLeaseError,
 	StorageUnavailableError,
 } from "../../packages/workflows/src/durable/journal/types.js";
+import { connectionPerCallDatabase } from "../helpers/connection-per-call-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 let root: string;
@@ -199,6 +200,13 @@ test("a run deleted from its shard behind the catalog's back reads as absent, no
 	assert.deepEqual(entries, []);
 });
 
+test("a store with a shard whose database runs each call on its own connection has no change token (#4814)", async () => {
+	const journal = await open((path) => SqlRunJournal.open(connectionPerCallDatabase(path)));
+	await start(journal, "remote");
+	assert.equal(await journal.changeToken(), undefined);
+	assert.deepEqual([...(await journal.runVersions()).keys()], ["remote"]);
+});
+
 test("shards without the optional change tracking still list, version and tail (#4325)", async () => {
 	const journal = await open(async (path) => {
 		const shard = await openSqlRunJournal(path);
@@ -206,7 +214,7 @@ test("shards without the optional change tracking still list, version and tail (
 		return shard;
 	});
 	await start(journal, "plain");
-	assert.ok((JSON.parse(await journal.changeToken()) as string[]).includes("untracked"));
+	assert.ok((JSON.parse((await journal.changeToken())!) as string[]).includes("untracked"));
 	assert.deepEqual(await journal.runVersions(), new Map([["plain", { seq: 0, at: 0 }]]));
 	assert.equal(await journal.snapshotTail("plain"), undefined);
 	const elsewhere = { ...journal.shardOf("plain")!, id: 999 };

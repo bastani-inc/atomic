@@ -388,11 +388,15 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	/**
-	 * `data_version` moves when another connection commits and `total_changes()` when this one writes; the
-	 * table aggregates also catch run changes if the adapter does not serve every statement from one connection.
+	 * `data_version` moves when another connection commits and `total_changes()` when this one writes, so together
+	 * they cover writers in every process, but only on one connection: Atomic's own SQLite adapter serves every
+	 * statement from one. Over an adapter that may not, such as a libSQL server whose every HTTP request is a new
+	 * stream, neither moves, and the table aggregates miss a deleted run replaced by one with as many events (its
+	 * events reuse the deleted rowids), so there is no token and each catalog read compares every run's version (#4814).
 	 */
-	async changeToken(): Promise<string> {
+	async changeToken(): Promise<string | undefined> {
 		this.assertOpen();
+		if (this.database.descriptor.adapter !== "node-sqlite") return undefined;
 		return this.operation(async () => {
 			const row = await this.database.get<SqliteRow>(
 				`SELECT data_version, total_changes() AS changes,

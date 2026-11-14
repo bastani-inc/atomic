@@ -22,8 +22,9 @@ const SETUP_FILE = "test/setup-workflow-durability.ts";
 // Only imports erased by the configured emit and dynamic imports are excluded. The count includes the storage
 // module's leaf `write-ahead-log.ts`, which imports nothing, the snapshot blob tables (`worktree-snapshot/blob-store.ts`),
 // and the journal store's catalog and adoption modules, which the storage entry exports for SDK callers, with their
-// leaves `cleanup.ts` and `file-identity.ts` (#4325).
-const MAX_REACHABLE_MODULES = 44;
+// leaves `cleanup.ts` and `file-identity.ts` (#4325), and the SQL dialect, fenced-path registry and migration runner
+// the storage entry exports for adapters and stores (`dialect.ts`, `fenced-paths.ts`, `migrations.ts`; #4793).
+const MAX_REACHABLE_MODULES = 47;
 
 function runtimeImports(file: string, eagerOnly = false): string[] {
 	try {

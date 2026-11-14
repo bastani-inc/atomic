@@ -20,6 +20,7 @@ import { createJobTracker } from "../../packages/workflows/src/runs/background/j
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { connectionPerCallDatabase } from "../helpers/connection-per-call-database.js";
 import { JournalTestDatabase } from "../helpers/journal-database.js";
 import { testRunId } from "../helpers/run-id.js";
 import { bunExecutable, makeTempDirectory, removeTempDirectory, sleep, spawnSyncCollect } from "../helpers/runtime.js";
@@ -109,11 +110,18 @@ describe("/workflow resume catalog cache", () => {
 		removeTempDirectory(dir);
 	});
 
-	test("an unchanged reopen returns the same catalog without reading any events", async () => {
+	test("an unchanged reopen returns the same catalog without reading any events or run versions", async () => {
 		const first = await reader.prepareWorkflowCatalog();
 		events.events = 0;
+		const runVersions = reader.journal.runVersions.bind(reader.journal);
+		let versionReads = 0;
+		reader.journal.runVersions = () => {
+			versionReads++;
+			return runVersions();
+		};
 		assert.deepEqual(await reader.prepareWorkflowCatalog(), first);
 		assert.equal(events.events, 0);
+		assert.equal(versionReads, 0, "an unchanged token skips the per-run version read");
 		assert.deepEqual(statuses(first.resumable), {
 			[testRunId("paused-run")]: "paused",
 			[testRunId("failed-run")]: "failed",
@@ -235,6 +243,30 @@ describe("/workflow resume catalog cache", () => {
 			[workflowId],
 		);
 	});
+
+	test.each(["this store", "another connection"] as const)(
+		"a journal whose database runs each call on its own connection lists changes written through %s (#4814)",
+		async (writer) => {
+			const journal = await SqlRunJournal.open(connectionPerCallDatabase(path));
+			const perCall = await JournalDurableBackend.open(journal);
+			opened.push(perCall);
+			await perCall.prepareWorkflowCatalog();
+			let writing: JournalDurableBackend = await otherConnection();
+			if (writer === "this store") {
+				writing = await JournalDurableBackend.open(journal, { ownsJournal: false });
+				opened.push(writing);
+			}
+			// The run that wrote last is replaced by one with as many events: the run count and the last event's rowid
+			// are as they were.
+			await writing.deleteWorkflow(testRunId("completed-run"));
+			await register(writing, testRunId("replacing-run"), "completed");
+			assert.deepEqual(statuses((await perCall.prepareWorkflowCatalog()).completed), {
+				[testRunId("replacing-run")]: "completed",
+			});
+			await writing.commitWorkflowStatus(testRunId("paused-run"), "failed");
+			assert.equal(statuses((await perCall.prepareWorkflowCatalog()).resumable)[testRunId("paused-run")], "failed");
+		},
+	);
 
 	test("selecting a listed run that another connection deleted does not resume it", async () => {
 		const other = await otherConnection();

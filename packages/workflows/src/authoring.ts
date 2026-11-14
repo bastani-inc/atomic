@@ -783,8 +783,10 @@ export declare function startWorkflowFleetController(
 export type {
 	CommandHostState,
 	CommandListFormat,
+	CommandProvisionerAuth,
 	CommandProvisionerOptions,
 	CommandSteps,
+	GitHubAppAuthOptions,
 	WorkerHostProvisionerConfig,
 	WorkerProvisionerErrorCode,
 } from "./workers/provisioners/types.js";

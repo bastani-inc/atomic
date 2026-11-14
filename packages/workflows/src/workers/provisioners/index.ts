@@ -4,15 +4,18 @@
  */
 
 import type { WorkerHostProvisioner } from "../fleet-types.js";
-import { createCommandProvisioner } from "./command.js";
-import type { CommandProvisionerOptions, WorkerHostProvisionerConfig } from "./types.js";
+import { createCommandProvisioner, DEFAULT_TIMEOUT_MS } from "./command.js";
+import { GitHubAppCredentials, resolveGitHubApp } from "./github-app.js";
+import type { CommandProvisionerOptions, GitHubAppAuthOptions, WorkerHostProvisionerConfig } from "./types.js";
 
 export { WorkerProvisionerError } from "./cli.js";
 export type {
 	CommandHostState,
 	CommandListFormat,
+	CommandProvisionerAuth,
 	CommandProvisionerOptions,
 	CommandSteps,
+	GitHubAppAuthOptions,
 	WorkerHostProvisionerConfig,
 	WorkerProvisionerErrorCode,
 } from "./types.js";
@@ -76,5 +79,16 @@ export function createWorkerHostProvisioner(config: WorkerHostProvisionerConfig)
 	const timeoutMs = fields.timeoutMs;
 	if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1))
 		throw invalid("timeoutMs must be a positive integer.");
-	return createCommandProvisioner(config as CommandProvisionerOptions);
+	const auth = fields.auth;
+	if (auth === undefined) return createCommandProvisioner(config as CommandProvisionerOptions);
+	if (typeof auth !== "object" || auth === null || Array.isArray(auth) || (auth as Loose).githubApp === undefined)
+		throw invalid("auth must be an object with githubApp.");
+	const githubApp = (auth as Loose).githubApp;
+	if (typeof githubApp !== "object" || githubApp === null || Array.isArray(githubApp))
+		throw invalid("auth.githubApp must be an object.");
+	const credentials = new GitHubAppCredentials(
+		resolveGitHubApp(githubApp as GitHubAppAuthOptions),
+		(timeoutMs as number | undefined) ?? DEFAULT_TIMEOUT_MS,
+	);
+	return createCommandProvisioner(config as CommandProvisionerOptions, credentials);
 }
