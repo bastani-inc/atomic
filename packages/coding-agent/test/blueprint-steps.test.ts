@@ -31,6 +31,7 @@ import {
 	type StepContext,
 } from "../src/core/resume/blueprint/steps.ts";
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
+import { ResumeTimingsRecorder } from "../src/core/resume/timings.js";
 import type { ShellConfig } from "../src/utils/shell.ts";
 import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
@@ -56,6 +57,22 @@ const markers = () => path("markers.txt");
 const results = () => path("results.txt");
 
 /** The lines of `file`: bash ends them with LF, PowerShell's `Add-Content` with CRLF on Windows. */
+/** A step log with its start and finish times and its duration, which differ per run, replaced by placeholders. */
+function timesOmitted(log: string): string {
+	return log
+		.replace(/^# (started|finished): \d{4}-\d\d-\d\dT[\d:.]+Z$/gm, "# $1: <time>")
+		.replace(/^# duration: \d+ ms$/m, "# duration: <ms>");
+}
+
+/** Asserts that a step's log ends with `line`, then when the step finished and how long it ran (#4748). */
+function assertLogEnd(log: string, line: string | RegExp): void {
+	const end = timesOmitted(log).endsWith("\n# finished: <time>\n# duration: <ms>\n");
+	assert.ok(end, `log ends with its finish time and duration:\n${log}`);
+	const before = log.slice(0, log.lastIndexOf("# finished: "));
+	if (typeof line === "string") assert.ok(before.endsWith(`\n${line}\n`), before);
+	else assert.match(before, line);
+}
+
 function lines(file: string): string[] {
 	return existsSync(file) ? readFileSync(file, "utf8").split(/\r?\n/u).filter(Boolean) : [];
 }
@@ -129,11 +146,16 @@ function lowestFreeDescriptor(): number {
 describe("a section's steps and their logs (#4588)", () => {
 	test("every step gets its own log with the header, its output and its exit status (#4588)", async () => {
 		const steps = [run("echo hello", "Say hello"), run("echo second")];
+		const started = performance.now();
 		const result = await runSection("maintenance", steps, context());
+		const wallMs = performance.now() - started;
+		const duration = Number(/^# duration: (\d+) ms$/m.exec(readLog("maintenance", 1))?.[1]);
+		assert.ok(duration <= wallMs, `the step's ${duration} ms within the section's ${wallMs} ms`);
 		assert.deepEqual(result, { completed: 2 });
 		assert.equal(
-			readLog("maintenance", 1),
+			timesOmitted(readLog("maintenance", 1)),
 			[
+				"# started: <time>",
 				`# blueprint: ${path("repo", ".atomic", "blueprint.yaml")}`,
 				"# scope: repository",
 				"# section: maintenance",
@@ -145,6 +167,8 @@ describe("a section's steps and their logs (#4588)", () => {
 				"hello",
 				"",
 				"# exit status 0",
+				"# finished: <time>",
+				"# duration: <ms>",
 				"",
 			].join("\n"),
 		);
@@ -193,7 +217,7 @@ describe("a section's steps and their logs (#4588)", () => {
 		assert.equal(failure.error.cause, undefined);
 		assert.equal(failure.logPath, logPathOf("initialize", 2));
 		assert.equal(failure.outputTail, readLog("initialize", 2));
-		assert.match(failure.outputTail, /\noops\n\n# exit status 7\n$/);
+		assertLogEnd(failure.outputTail, /\noops\n\n# exit status 7\n$/);
 		assert.deepEqual(lines(markers()), []);
 		assert.equal(existsSync(logPathOf("initialize", 3)), false);
 	});
@@ -204,12 +228,12 @@ describe("a section's steps and their logs (#4588)", () => {
 		if (process.platform === "win32") {
 			assert.equal(failure.error.signal, null);
 			assert.ok(failure.error.exitStatus !== null && failure.error.exitStatus !== 0);
-			assert.match(failure.outputTail, /\n# exit status \d+\n$/);
+			assertLogEnd(failure.outputTail, /\n# exit status \d+\n$/);
 			return;
 		}
 		assert.equal(failure.error.signal, "SIGTERM");
 		assert.equal(failure.error.exitStatus, null);
-		assert.match(failure.outputTail, /\n# stopped by signal SIGTERM\n$/);
+		assertLogEnd(failure.outputTail, "# stopped by signal SIGTERM");
 	});
 
 	test("a step that cannot be started is a failure that keeps the spawn error as its cause (#4588)", async () => {
@@ -221,7 +245,7 @@ describe("a section's steps and their logs (#4588)", () => {
 		assert.equal(failure.error.signal, null);
 		assert.ok(failure.error.cause instanceof Error);
 		assert.equal((failure.error.cause as NodeJS.ErrnoException).code, "ENOENT");
-		assert.ok(failure.outputTail.endsWith(`\n# could not be started: ${failure.error.cause.message}\n`));
+		assertLogEnd(failure.outputTail, `# could not be started: ${failure.error.cause.message}`);
 	});
 
 	test("a step that outlives the timeout is stopped and reported as timed out in its section (#4588)", async () => {
@@ -244,7 +268,7 @@ describe("a section's steps and their logs (#4588)", () => {
 			phase: "post-build",
 		});
 		assert.ok(typeof elapsedMs === "number" && elapsedMs >= 300, `elapsed ${String(elapsedMs)} ms`);
-		assert.match(failure.outputTail, /\n# timed out after 400 ms and was stopped\n$/);
+		assertLogEnd(failure.outputTail, "# timed out after 400 ms and was stopped");
 		assert.deepEqual(lines(markers()), ["started"]);
 	});
 
@@ -359,6 +383,29 @@ describe("cancelling a section (#4588)", () => {
 	});
 });
 
+describe("step timings (#4748)", () => {
+	test("each step reports its section, name, duration and how it ended to the resume it runs in (#4748)", async () => {
+		const recorder = new ResumeTimingsRecorder();
+		const started = performance.now();
+		await recorder.run(async () => {
+			await runSection("initialize", [run("echo ok", "Fine"), run("exit 3", "Broken")], context());
+			await runSection("post-build", [run("sleep 30", "Hang")], context({ timeoutMs: 400 }));
+		});
+		const wallMs = performance.now() - started;
+		const steps = recorder.finish().blueprint;
+		assert.deepEqual(
+			steps.map(({ section, name, exit }) => [section, name, exit]),
+			[
+				["initialize", "Fine", "ok"],
+				["initialize", "Broken", "failed"],
+				["post-build", "Hang", "timed-out"],
+			],
+		);
+		assert.ok(steps[2]!.ms >= 300, `the timed-out step ran ${steps[2]!.ms} ms`);
+		assert.ok(steps.reduce((sum, step) => sum + step.ms, 0) <= wallMs);
+	});
+});
+
 describe("uses steps (#4588)", () => {
 	function fetcher(calls: string[], files: Record<string, string>): ActionFetcher {
 		return async ({ owner, repo, ref, destination }) => {
@@ -428,10 +475,14 @@ describe("uses steps (#4588)", () => {
 		assert.ok(calls[0]?.startsWith("acme/hello@v1 -> "));
 		assert.ok(calls[0]?.includes(path("actions")));
 		const log = readLog("initialize", 2);
-		assert.ok(log.startsWith(`# blueprint: ${path("repo", ".atomic", "blueprint.yaml")}\n# scope: repository\n`));
+		assert.ok(
+			timesOmitted(log).startsWith(
+				`# started: <time>\n# blueprint: ${path("repo", ".atomic", "blueprint.yaml")}\n# scope: repository\n`,
+			),
+		);
 		assert.ok(log.includes("# step: Use it (2/2)\n"));
 		assert.ok(log.includes(`# cwd: ${path("repo")}\n# command:\nuses github.com/acme/hello@v1\n# --- output ---\n`));
-		assert.ok(log.endsWith("\n# exit status 0\n"));
+		assertLogEnd(log, "# exit status 0");
 		const exported = await evaluateEnvrc(path("build.envrc"), process.env);
 		assert.equal(exported.EXPORTED, "from-action");
 	});
@@ -491,7 +542,7 @@ describe("uses steps (#4588)", () => {
 		);
 		assert.ok(failure.error.cause instanceof Error);
 		assert.equal(failure.error.cause.message, "Sourcing the ENVRC file failed with status 3: boom");
-		assert.ok(failure.outputTail.endsWith("\n# failed: Sourcing the ENVRC file failed with status 3: boom\n"));
+		assertLogEnd(failure.outputTail, "# failed: Sourcing the ENVRC file failed with status 3: boom");
 	});
 });
 

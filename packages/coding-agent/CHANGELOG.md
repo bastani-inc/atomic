@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added resume and capture timings ([#4748](https://github.com/bastani-inc/atomic/issues/4748)). `/session snapshot` now shows how long each checkout's last capture took and a **Last resume** block: each restored checkout with its restore phases (fetch, reconstruct, materialize, LFS, verify, publish), each blueprint step with its duration, and when the session was ready. `ATOMIC_TIMING=1` prints the same lines for `atomic --session`. Blueprint step logs record when each step started and finished and how long it ran. The session keeps the numbers in a `resume_timings` entry, readable from exports and through `latestResumeTimings()` and `formatResumeTimings()` in the SDK. A failure to record them never stops a resume.
+
 ### Changed
 
 - A resume restore that needs a commit this machine lacks now fetches only that commit (`--depth=1`) instead of the repository's whole history, which roughly halves a cold restore of a long-lived repository; it fetches the full history when a remote refuses a shallow fetch or the restore needs older commits. Restored worktrees therefore start with a shallow history (`git fetch --unshallow origin` brings the rest). A session's other checkouts are now restored concurrently, up to four at a time, instead of one after another ([#4748](https://github.com/bastani-inc/atomic/issues/4748))

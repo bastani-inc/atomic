@@ -322,6 +322,12 @@ Atomic records one of its own: when the oversized result of an agent released wh
 {"type":"custom","id":"j0k1l2m3","parentId":"c3d4e5f6","timestamp":"2024-12-03T14:22:00.000Z","customType":"atomic.leaf"}
 ```
 
+A resume that restored a checkout or ran a blueprint step records where its time went in a `custom` entry with `customType: "resume_timings"`. Durations are whole milliseconds; `phases` holds only the phases that ran (`fetch`, `reconstruct`, `materialize`, `lfs`, `verify`, `publish`, `seed`), `mode` is `fresh`, `claimed`, `in-place` or `degraded`, `fetch` is `none`, `shallow`, `full` or `bundle`, and `exit` is `ok`, `failed` or `timed-out`. `latestResumeTimings(sessionManager)` returns the latest one and `formatResumeTimings()` the lines `/session snapshot` shows.
+
+```json
+{"type":"custom","id":"k1l2m3n4","parentId":"j0k1l2m3","timestamp":"2024-12-03T14:23:00.000Z","customType":"resume_timings","data":{"version":1,"startedAt":"2024-12-03T14:22:00.000Z","restores":[{"root":"/home/me/project","mode":"fresh","fetch":"full","ms":18520,"phases":{"fetch":9900,"materialize":1400,"verify":210,"publish":12}}],"blueprint":[{"section":"maintenance","name":"npm install","ms":8600,"exit":"ok"}],"firstPromptReadyMs":28400,"blueprintReadyMs":28300}}
+```
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.
@@ -384,6 +390,7 @@ The repository state of one checkout at the end of a turn that called a file-wri
 - `restore.degraded`: Present when the resume restored less than the snapshot (#4733): `{ "stage": "partial-changes" | "closest-commit", "head", "tree", "basis"?, "missingLinks", "missingPaths", "missingCommits", "cause", "causeReason"?, "hint" }`. `head` and `tree` are what the worktree holds; `basis` (`pushed-base`, `earlier-snapshot` or `branch-tip`) says where a `closest-commit` restore's commit came from.
 - `unrestored`: Present on an entry written when a resume continued without restoring the checkout at `root` (#4733), never together with `restore`: `{ "snapshotId", "continuedIn", "place": "recorded" | "launch", "cause", "causeReason"?, "detail", "hint", "at" }`.
 - `restoreWarnings`: Optional, only with `restore`: what that restore reported beyond the snapshot record, `{ "code": "lfs-objects-unavailable", "paths": [...] }` or `{ "code": "stale-restore-retained", "path": "...", "kind": "worktree" | "record" | "records-directory" }`.
+- `captureMs`: Present on an entry a turn's capture wrote: how long that capture took, in milliseconds.
 - `blobs`: Present only in exported files: base64 patch and bundle content keyed by SHA-256. Import verifies and stores them, then drops this field.
 
 ## Tree Structure
