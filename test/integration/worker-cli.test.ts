@@ -35,7 +35,7 @@ const TAKEOVER_BUDGET = poolTestBudgetMs(3);
 /** A short work lease, so a surviving node takes a killed node's child over within the test. */
 const TAKEOVER_LEASE_MS = 4_000;
 /** How long each child of the outage scenario works: the outage, its retries and the recovery fit inside it. */
-const OUTAGE_WORK_MS = 30_000;
+const OUTAGE_WORK_MS = 45_000;
 
 interface Scenario {
 	readonly directory: string;
@@ -342,9 +342,9 @@ test.skipIf(process.platform === "win32")(
 			);
 			proxy.cut();
 			await until(
-				"node B to report two failed polls",
+				"node B to report three failed polls",
 				s,
-				() => node!.stdout.filter((line) => line.startsWith("degraded ")).length >= 2,
+				() => node!.stdout.filter((line) => line.startsWith("degraded ")).length >= 3,
 				[node.process, root],
 			);
 			proxy.restore();
