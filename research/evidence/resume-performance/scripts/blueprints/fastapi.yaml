@@ -1,0 +1,8 @@
+maintenance:
+  - name: Restore build cache (benchmark)
+    run: if [ -n "${BENCH_BUILD_CACHE:-}" ] && [ -f "$BENCH_BUILD_CACHE" ]; then tar -I zstd -xf "$BENCH_BUILD_CACHE"; fi
+  - name: Install dependencies
+    run: uv sync --locked
+knowledge:
+  - name: test
+    contents: Run `uv run pytest`.

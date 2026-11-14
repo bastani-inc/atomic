@@ -1,0 +1,8 @@
+atomic tracked=7676 fresh-clone:
+{"dir":"/home/azureuser/bench/racy/atomic","reps":5,"median_ms":{"full":397,"unchanged":374,"incremental":397}}
+atomic after git status:
+{"dir":"/home/azureuser/bench/racy/atomic","reps":5,"median_ms":{"full":110,"unchanged":95,"incremental":108}}
+fastapi tracked=3242 fresh-clone:
+{"dir":"/home/azureuser/bench/racy/fastapi","reps":5,"median_ms":{"full":165,"unchanged":148,"incremental":166}}
+fastapi after git status:
+{"dir":"/home/azureuser/bench/racy/fastapi","reps":5,"median_ms":{"full":55,"unchanged":40,"incremental":55}}

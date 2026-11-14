@@ -1,0 +1,9 @@
+# Shared 80-vCPU build host (the first round's), current main b2b49c6bb, load average 30.7-31.0 during this run.
+atomic tracked=7676 fresh-clone:
+{"dir":"/fast/tmp/resume-perf-main/racy/atomic","reps":5,"median_ms":{"full":477,"unchanged":430,"incremental":486}}
+atomic after git status:
+{"dir":"/fast/tmp/resume-perf-main/racy/atomic","reps":5,"median_ms":{"full":127,"unchanged":92,"incremental":127}}
+fastapi tracked=3242 fresh-clone:
+{"dir":"/fast/tmp/resume-perf-main/racy/fastapi","reps":5,"median_ms":{"full":76,"unchanged":45,"incremental":72}}
+fastapi after git status:
+{"dir":"/fast/tmp/resume-perf-main/racy/fastapi","reps":5,"median_ms":{"full":73,"unchanged":46,"incremental":74}}

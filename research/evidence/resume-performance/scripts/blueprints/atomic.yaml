@@ -1,0 +1,10 @@
+maintenance:
+  - name: Restore build cache (benchmark)
+    run: if [ -n "${BENCH_BUILD_CACHE:-}" ] && [ -f "$BENCH_BUILD_CACHE" ]; then tar -I zstd -xf "$BENCH_BUILD_CACHE"; fi
+  - name: Install dependencies
+    run: npm install --ignore-scripts --no-audit --no-fund
+  - name: Build
+    run: npm run build
+knowledge:
+  - name: test
+    contents: Run `npm run test:unit`.

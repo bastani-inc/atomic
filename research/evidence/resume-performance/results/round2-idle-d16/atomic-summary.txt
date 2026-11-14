@@ -1,0 +1,16 @@
+machineA install exit=0 ms=45604
+machineA session start=1794642361422 end=1794642368599
+baseline no-session -p ms=2035
+session 01a1d905-3f6c-72ff-9e08-eba7a6e11f9f
+load 4.69 3.19 1.60 atomic rep1
+cold start=1794642370741 firstRequest=1794642433551 end=1794642433766 ttfp_ms=62810
+warmstores start=1794642433866 firstRequest=1794642490281 end=1794642490752 ttfp_ms=56415
+reuse reset_ms=117 maintenance_ms=16687 exit=0
+reuse back=20 reset_ms=188 maintenance_ms=10416 exit=0
+warmlocal start=1794642519233 firstRequest=1794642559653 end=1794642559926 ttfp_ms=40420
+load 6.27 4.34 2.31 atomic rep2
+cold start=1794642561162 firstRequest=1794642623110 end=1794642623406 ttfp_ms=61948
+warmstores start=1794642624608 firstRequest=1794642680590 end=1794642680880 ttfp_ms=55982
+reuse reset_ms=715 maintenance_ms=17691 exit=0
+reuse back=20 reset_ms=402 maintenance_ms=10419 exit=0
+warmlocal start=1794642711153 firstRequest=1794642751323 end=1794642751536 ttfp_ms=40170

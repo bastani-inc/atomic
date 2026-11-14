@@ -1,0 +1,17 @@
+# First run, load average up to ~230 on the shared host: small-repository numbers are dominated by load; the Atomic row is the reliable one.
+ripgrep tracked=226 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/ripgrep","reps":5,"median_ms":{"full":436,"unchanged":231,"incremental":418}}
+ripgrep after git status:
+{"dir":"/fast/tmp/resume-perf/racy/ripgrep","reps":5,"median_ms":{"full":653,"unchanged":470,"incremental":664}}
+t3turbo tracked=141 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/t3turbo","reps":5,"median_ms":{"full":564,"unchanged":449,"incremental":695}}
+t3turbo after git status:
+{"dir":"/fast/tmp/resume-perf/racy/t3turbo","reps":5,"median_ms":{"full":347,"unchanged":661,"incremental":610}}
+fastapi tracked=3242 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/fastapi","reps":5,"median_ms":{"full":586,"unchanged":388,"incremental":484}}
+fastapi after git status:
+{"dir":"/fast/tmp/resume-perf/racy/fastapi","reps":5,"median_ms":{"full":654,"unchanged":362,"incremental":611}}
+atomic tracked=7645 fresh-clone:
+{"dir":"/fast/tmp/resume-perf/racy/atomic","reps":5,"median_ms":{"full":1446,"unchanged":1500,"incremental":1350}}
+atomic after git status:
+{"dir":"/fast/tmp/resume-perf/racy/atomic","reps":5,"median_ms":{"full":253,"unchanged":185,"incremental":245}}

@@ -1,0 +1,12 @@
+npm install --ignore-scripts --no-audit --no-fund exit=0 ms=898
+npm --workspace=@bastani/pi-ai run generate-models exit=0 ms=1480
+npm --workspace=@bastani/pi-ai run build:offline exit=0 ms=1372
+node scripts/alias-pi-ai.mjs exit=0 ms=40
+npm --workspace=@bastani/atomic-natives run build exit=0 ms=8481
+npm --workspace=@bastani/atomic run build exit=0 ms=4642
+npm install --ignore-scripts --no-audit --no-fund exit=0 ms=909
+npm --workspace=@bastani/pi-ai run generate-models exit=0 ms=1450
+npm --workspace=@bastani/pi-ai run build:offline exit=0 ms=1310
+node scripts/alias-pi-ai.mjs exit=0 ms=37
+npm --workspace=@bastani/atomic-natives run build exit=0 ms=8298
+npm --workspace=@bastani/atomic run build exit=0 ms=4537

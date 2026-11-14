@@ -1,0 +1,518 @@
+[
+ {
+  "project": "ripgrep",
+  "stage": "cold",
+  "rep": 1,
+  "fetch_ms": 872,
+  "reconstruct_ms": 24,
+  "materialize_ms": 42,
+  "lfs_ms": 0,
+  "verify_ms": 66,
+  "publish_ms": 4,
+  "restore_total_ms": 1007,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    4
+   ],
+   [
+    "_-maintenance-2",
+    571
+   ],
+   [
+    "_-maintenance-3",
+    6551
+   ]
+  ],
+  "blueprint_total_ms": 7126,
+  "before_restore_ms": 681,
+  "other_ms": 1918,
+  "time_to_first_prompt_ms": 10051
+ },
+ {
+  "project": "ripgrep",
+  "stage": "cold",
+  "rep": 2,
+  "fetch_ms": 630,
+  "reconstruct_ms": 24,
+  "materialize_ms": 43,
+  "lfs_ms": 0,
+  "verify_ms": 73,
+  "publish_ms": 4,
+  "restore_total_ms": 774,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    564
+   ],
+   [
+    "_-maintenance-3",
+    6668
+   ]
+  ],
+  "blueprint_total_ms": 7237,
+  "before_restore_ms": 684,
+  "other_ms": 2135,
+  "time_to_first_prompt_ms": 10146
+ },
+ {
+  "project": "ripgrep",
+  "stage": "warmstores",
+  "rep": 1,
+  "fetch_ms": 613,
+  "reconstruct_ms": 23,
+  "materialize_ms": 41,
+  "lfs_ms": 0,
+  "verify_ms": 76,
+  "publish_ms": 4,
+  "restore_total_ms": 757,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    4
+   ],
+   [
+    "_-maintenance-2",
+    49
+   ],
+   [
+    "_-maintenance-3",
+    6551
+   ]
+  ],
+  "blueprint_total_ms": 6604,
+  "before_restore_ms": 677,
+  "other_ms": 1913,
+  "time_to_first_prompt_ms": 9274
+ },
+ {
+  "project": "ripgrep",
+  "stage": "warmstores",
+  "rep": 2,
+  "fetch_ms": 676,
+  "reconstruct_ms": 24,
+  "materialize_ms": 43,
+  "lfs_ms": 0,
+  "verify_ms": 67,
+  "publish_ms": 4,
+  "restore_total_ms": 813,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    4
+   ],
+   [
+    "_-maintenance-2",
+    49
+   ],
+   [
+    "_-maintenance-3",
+    6660
+   ]
+  ],
+  "blueprint_total_ms": 6713,
+  "before_restore_ms": 692,
+  "other_ms": 2147,
+  "time_to_first_prompt_ms": 9673
+ },
+ {
+  "project": "ripgrep",
+  "stage": "warmlocal",
+  "rep": 1,
+  "fetch_ms": 8,
+  "reconstruct_ms": 8,
+  "materialize_ms": 44,
+  "lfs_ms": 0,
+  "verify_ms": 67,
+  "publish_ms": 4,
+  "restore_total_ms": 131,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    49
+   ],
+   [
+    "_-maintenance-3",
+    6807
+   ]
+  ],
+  "blueprint_total_ms": 6861,
+  "before_restore_ms": 693,
+  "other_ms": 1958,
+  "time_to_first_prompt_ms": 8950
+ },
+ {
+  "project": "ripgrep",
+  "stage": "warmlocal",
+  "rep": 2,
+  "fetch_ms": 8,
+  "reconstruct_ms": 8,
+  "materialize_ms": 44,
+  "lfs_ms": 0,
+  "verify_ms": 67,
+  "publish_ms": 4,
+  "restore_total_ms": 130,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    4
+   ],
+   [
+    "_-maintenance-2",
+    49
+   ],
+   [
+    "_-maintenance-3",
+    6632
+   ]
+  ],
+  "blueprint_total_ms": 6685,
+  "before_restore_ms": 694,
+  "other_ms": 1970,
+  "time_to_first_prompt_ms": 8785
+ },
+ {
+  "project": "fastapi",
+  "stage": "cold",
+  "rep": 1,
+  "fetch_ms": 3329,
+  "reconstruct_ms": 33,
+  "materialize_ms": 384,
+  "lfs_ms": 0,
+  "verify_ms": 383,
+  "publish_ms": 4,
+  "restore_total_ms": 4133,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    4
+   ],
+   [
+    "_-maintenance-2",
+    4173
+   ]
+  ],
+  "blueprint_total_ms": 4177,
+  "before_restore_ms": 688,
+  "other_ms": 2138,
+  "time_to_first_prompt_ms": 10448
+ },
+ {
+  "project": "fastapi",
+  "stage": "cold",
+  "rep": 2,
+  "fetch_ms": 3130,
+  "reconstruct_ms": 34,
+  "materialize_ms": 384,
+  "lfs_ms": 0,
+  "verify_ms": 349,
+  "publish_ms": 4,
+  "restore_total_ms": 3901,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    4
+   ],
+   [
+    "_-maintenance-2",
+    4179
+   ]
+  ],
+  "blueprint_total_ms": 4183,
+  "before_restore_ms": 700,
+  "other_ms": 2556,
+  "time_to_first_prompt_ms": 10640
+ },
+ {
+  "project": "fastapi",
+  "stage": "warmstores",
+  "rep": 1,
+  "fetch_ms": 3547,
+  "reconstruct_ms": 205,
+  "materialize_ms": 436,
+  "lfs_ms": 0,
+  "verify_ms": 167,
+  "publish_ms": 4,
+  "restore_total_ms": 4359,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    575
+   ]
+  ],
+  "blueprint_total_ms": 580,
+  "before_restore_ms": 692,
+  "other_ms": 2245,
+  "time_to_first_prompt_ms": 7184
+ },
+ {
+  "project": "fastapi",
+  "stage": "warmstores",
+  "rep": 2,
+  "fetch_ms": 2960,
+  "reconstruct_ms": 33,
+  "materialize_ms": 384,
+  "lfs_ms": 0,
+  "verify_ms": 383,
+  "publish_ms": 4,
+  "restore_total_ms": 3765,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    554
+   ]
+  ],
+  "blueprint_total_ms": 559,
+  "before_restore_ms": 696,
+  "other_ms": 2277,
+  "time_to_first_prompt_ms": 6601
+ },
+ {
+  "project": "fastapi",
+  "stage": "warmlocal",
+  "rep": 1,
+  "fetch_ms": 8,
+  "reconstruct_ms": 9,
+  "materialize_ms": 386,
+  "lfs_ms": 0,
+  "verify_ms": 720,
+  "publish_ms": 30,
+  "restore_total_ms": 1152,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    860
+   ]
+  ],
+  "blueprint_total_ms": 865,
+  "before_restore_ms": 702,
+  "other_ms": 3637,
+  "time_to_first_prompt_ms": 5654
+ },
+ {
+  "project": "fastapi",
+  "stage": "warmlocal",
+  "rep": 2,
+  "fetch_ms": 8,
+  "reconstruct_ms": 8,
+  "materialize_ms": 387,
+  "lfs_ms": 0,
+  "verify_ms": 381,
+  "publish_ms": 4,
+  "restore_total_ms": 789,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    525
+   ]
+  ],
+  "blueprint_total_ms": 530,
+  "before_restore_ms": 706,
+  "other_ms": 2661,
+  "time_to_first_prompt_ms": 3980
+ },
+ {
+  "project": "atomic",
+  "stage": "cold",
+  "rep": 1,
+  "fetch_ms": 9912,
+  "reconstruct_ms": 1032,
+  "materialize_ms": 1373,
+  "lfs_ms": 6015,
+  "verify_ms": 195,
+  "publish_ms": 6,
+  "restore_total_ms": 18533,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    7
+   ],
+   [
+    "_-maintenance-2",
+    8645
+   ],
+   [
+    "_-maintenance-3",
+    33281
+   ]
+  ],
+  "blueprint_total_ms": 41933,
+  "before_restore_ms": 770,
+  "other_ms": 2344,
+  "time_to_first_prompt_ms": 62810
+ },
+ {
+  "project": "atomic",
+  "stage": "cold",
+  "rep": 2,
+  "fetch_ms": 8780,
+  "reconstruct_ms": 1036,
+  "materialize_ms": 1936,
+  "lfs_ms": 6111,
+  "verify_ms": 197,
+  "publish_ms": 6,
+  "restore_total_ms": 18066,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    8
+   ],
+   [
+    "_-maintenance-2",
+    8930
+   ],
+   [
+    "_-maintenance-3",
+    32757
+   ]
+  ],
+  "blueprint_total_ms": 41695,
+  "before_restore_ms": 784,
+  "other_ms": 2187,
+  "time_to_first_prompt_ms": 61948
+ },
+ {
+  "project": "atomic",
+  "stage": "warmstores",
+  "rep": 1,
+  "fetch_ms": 9214,
+  "reconstruct_ms": 1035,
+  "materialize_ms": 1381,
+  "lfs_ms": 6378,
+  "verify_ms": 195,
+  "publish_ms": 6,
+  "restore_total_ms": 18209,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    6824
+   ],
+   [
+    "_-maintenance-3",
+    28797
+   ]
+  ],
+  "blueprint_total_ms": 35627,
+  "before_restore_ms": 766,
+  "other_ms": 2579,
+  "time_to_first_prompt_ms": 56415
+ },
+ {
+  "project": "atomic",
+  "stage": "warmstores",
+  "rep": 2,
+  "fetch_ms": 9498,
+  "reconstruct_ms": 1036,
+  "materialize_ms": 1383,
+  "lfs_ms": 6037,
+  "verify_ms": 193,
+  "publish_ms": 6,
+  "restore_total_ms": 18154,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    7
+   ],
+   [
+    "_-maintenance-2",
+    6710
+   ],
+   [
+    "_-maintenance-3",
+    28512
+   ]
+  ],
+  "blueprint_total_ms": 35229,
+  "before_restore_ms": 767,
+  "other_ms": 2599,
+  "time_to_first_prompt_ms": 55982
+ },
+ {
+  "project": "atomic",
+  "stage": "warmlocal",
+  "rep": 1,
+  "fetch_ms": 12,
+  "reconstruct_ms": 11,
+  "materialize_ms": 1408,
+  "lfs_ms": 751,
+  "verify_ms": 206,
+  "publish_ms": 6,
+  "restore_total_ms": 2395,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    7
+   ],
+   [
+    "_-maintenance-2",
+    6553
+   ],
+   [
+    "_-maintenance-3",
+    28749
+   ]
+  ],
+  "blueprint_total_ms": 35309,
+  "before_restore_ms": 789,
+  "other_ms": 2716,
+  "time_to_first_prompt_ms": 40420
+ },
+ {
+  "project": "atomic",
+  "stage": "warmlocal",
+  "rep": 2,
+  "fetch_ms": 11,
+  "reconstruct_ms": 11,
+  "materialize_ms": 1388,
+  "lfs_ms": 746,
+  "verify_ms": 186,
+  "publish_ms": 6,
+  "restore_total_ms": 2348,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    7
+   ],
+   [
+    "_-maintenance-2",
+    6730
+   ],
+   [
+    "_-maintenance-3",
+    28895
+   ]
+  ],
+  "blueprint_total_ms": 35632,
+  "before_restore_ms": 764,
+  "other_ms": 2190,
+  "time_to_first_prompt_ms": 40170
+ }
+]

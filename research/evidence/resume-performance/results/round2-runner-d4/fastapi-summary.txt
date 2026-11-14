@@ -1,0 +1,24 @@
+machineA install exit=0 ms=4807
+machineA session start=1794642361459 end=1794642364491
+baseline no-session -p ms=2287
+session 01a1d905-4014-7b90-9df5-dca5fd72bee4
+pack stores bytes=259973404 tar_ms=2140 upload_ms=4205 paths=. 
+pack jiti bytes=1597577 tar_ms=49 upload_ms=114 paths=. 
+pack build bytes=10263 tar_ms=5 upload_ms=50 paths=.pdm-build 
+load 2.50 2.04 1.04 fastapi rep1
+runnercold start=1794642375791 firstRequest=1794642400414 end=1794642400676 ttfp_ms=24623  cache_download_ms=4
+runnerstores start=1794642409497 firstRequest=1794642419896 end=1794642420114 ttfp_ms=10399 stores_bytes=259973404 jiti_bytes=1597577 cache_download_ms=3321
+runnerfull start=1794642429288 firstRequest=1794642439933 end=1794642440153 ttfp_ms=10645 stores_bytes=259973404 jiti_bytes=1597577 build_bytes=10263 cache_download_ms=3495
+load 2.57 2.17 1.15 fastapi rep2
+runnercold start=1794642447540 firstRequest=1794642472555 end=1794642472813 ttfp_ms=25015  cache_download_ms=3
+runnerstores start=1794642482379 firstRequest=1794642492821 end=1794642493058 ttfp_ms=10442 stores_bytes=259973404 jiti_bytes=1597577 cache_download_ms=4199
+runnerfull start=1794642503889 firstRequest=1794642514973 end=1794642515212 ttfp_ms=11084 stores_bytes=259973404 jiti_bytes=1597577 build_bytes=10263 cache_download_ms=3374
+pack stores bytes=259962008 tar_ms=9086 upload_ms=3539 paths=.
+pack jiti bytes=1597577 tar_ms=176 upload_ms=89 paths=.
+pack build bytes=169880546 tar_ms=8182 upload_ms=2802 paths=.pdm-build .venv
+load 3.63 3.40 2.51 fastapi rerun rep1
+runnerstores start=1794643381752 firstRequest=1794643392644 end=1794643392882 ttfp_ms=10892 stores_bytes=259962008 jiti_bytes=1597577 cache_download_ms=3486
+runnerfull start=1794643403270 firstRequest=1794643416383 end=1794643416620 ttfp_ms=13113 stores_bytes=259962008 jiti_bytes=1597577 build_bytes=169880546 cache_download_ms=4786
+load 3.00 3.29 2.51 fastapi rerun rep2
+runnerstores start=1794643425723 firstRequest=1794643436602 end=1794643436843 ttfp_ms=10879 stores_bytes=259962008 jiti_bytes=1597577 cache_download_ms=3339
+runnerfull start=1794643447038 firstRequest=1794643460126 end=1794643460363 ttfp_ms=13088 stores_bytes=259962008 jiti_bytes=1597577 build_bytes=169880546 cache_download_ms=4718
