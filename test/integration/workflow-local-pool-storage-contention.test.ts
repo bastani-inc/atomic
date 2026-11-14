@@ -53,7 +53,10 @@ async function waitUntil(predicate: () => boolean, what: string, budget: AbortSi
 	}
 }
 
-/** `handedOn`: the fault hands each child to another attempt, so the attempt that finishes it need not have started it. */
+/**
+ * `handedOn`: the fault ends each child's first attempt, so the attempt that finishes it need not have started it, and
+ * the child took that many more attempts.
+ */
 async function runChildrenWhile(fault: () => void, handedOn = false): Promise<void> {
 	const directory = makeTempDirectory("pool-storage-contention-");
 	const path = join(directory, "journal.sqlite");
@@ -173,8 +176,8 @@ async function runChildrenWhile(fault: () => void, handedOn = false): Promise<vo
 		// Each child's work was claimed once: no refused write spent an attempt.
 		const items = await (await openSqlPoolQueue(journal)).inspect(runId);
 		assert.deepEqual(
-			items.map((item) => [item.state, item.generation - (item.handoffs ?? 0)]),
-			Array.from({ length: CHILDREN }, () => ["completed", 1]),
+			items.map((item) => [item.state, item.generation - (item.handoffs?.length ?? 0)]),
+			Array.from({ length: CHILDREN }, () => ["completed", handedOn ? 2 : 1]),
 		);
 	} finally {
 		vi.restoreAllMocks();
@@ -214,7 +217,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a child whose first host's commit the store can never take is handed to another attempt without spending one, and completes (#4768)",
+	"a child whose first commit the store can never take there is retried as a counted attempt, and completes (#4768)",
 	() =>
 		runChildrenWhile(() => {
 			// The store refuses each child's first commit outright, as sqld refuses a response past its size limit for a

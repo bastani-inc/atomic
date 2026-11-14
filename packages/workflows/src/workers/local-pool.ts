@@ -1606,6 +1606,8 @@ export class LocalWorkerPool {
 	private command(body: CoordinatorCommandBody): Promise<unknown> {
 		const coordinator = this.connect();
 		if (this.coordinatorLost !== undefined) return Promise.reject(this.coordinatorLost);
+		// A closed pool's coordinator may already be gone without telling: work sent to it now would wait forever (#4768).
+		if (this.closed && body.kind === "enqueue") return Promise.reject(this.closedError(this.root));
 		const id = ++this.commandSequence;
 		return new Promise((resolve, reject) => {
 			this.commands.set(id, { resolve, reject });

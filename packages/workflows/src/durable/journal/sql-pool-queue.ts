@@ -115,10 +115,11 @@ export interface PoolWork extends PoolWorkDescriptor {
 	readonly expiresAt: number;
 	readonly renewedAt: number;
 	/**
-	 * Of this work's attempts, how many a worker handed back because the shared store kept refusing them (#4768): they
-	 * count as none of the child's attempts. Read by {@link SqlPoolQueue.inspect}; absent elsewhere.
+	 * The generations of this work's attempts that a worker handed back because the shared store kept refusing them
+	 * (#4768): they count as none of the child's attempts. Read by {@link SqlPoolQueue.inspect}; absent elsewhere, and
+	 * when there are none.
 	 */
-	readonly handoffs?: number;
+	readonly handoffs?: readonly number[];
 }
 type WorkRow = SqliteRow & {
 	id: string;
@@ -1887,9 +1888,10 @@ export class SqlPoolQueue {
 	}
 	/**
 	 * Puts an exited attempt's work back for another attempt. `handoff`: the attempt was handed back because the shared
-	 * store kept refusing it (#4768); the work records that, and {@link inspect} reports it in `handoffs`.
+	 * store kept refusing it (#4768); the work records its generation, which {@link inspect} reports in `handoffs`, and
+	 * becomes claimable again only `handoff.delayMs` from now.
 	 */
-	async releaseExited(lease: Lease, token: WorkLease, handoff = false): Promise<boolean> {
+	async releaseExited(lease: Lease, token: WorkLease, handoff?: { readonly delayMs: number }): Promise<boolean> {
 		return this.settleExited(lease, token, "ready", 0, handoff);
 	}
 	/** Fails an exited attempt's work item for this root incarnation: no worker claims it again. */
@@ -1909,7 +1911,7 @@ export class SqlPoolQueue {
 		token: WorkLease,
 		state: "ready" | "failed",
 		rewind: 0 | 1 = 0,
-		handoff = false,
+		handoff?: { readonly delayMs: number },
 	): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };
@@ -1934,7 +1936,12 @@ export class SqlPoolQueue {
 				Number(row.generation) - rewind,
 				row.id,
 			);
-			if (handoff)
+			if (handoff !== undefined) {
+				await tx.run(
+					`UPDATE ${this.work} SET ready_at = ${STORE_NOW} + ? WHERE id = ?`,
+					Math.max(0, Math.round(handoff.delayMs)),
+					row.id,
+				);
 				await tx.run(
 					`INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) VALUES (?, ?, ?, ?, '{}')`,
 					row.id,
@@ -1942,6 +1949,7 @@ export class SqlPoolQueue {
 					HANDOFF_OPERATION,
 					HANDOFF_OPERATION,
 				);
+			}
 			return true;
 		});
 	}
@@ -2002,15 +2010,16 @@ export class SqlPoolQueue {
 	async inspect(root: string): Promise<readonly PoolWork[]> {
 		return this.storage.read(async (executor) =>
 			(
-				await executor.all<WorkRow & { handoffs: number }>(
-					`SELECT w.*, (SELECT COUNT(*) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
+				await executor.all<WorkRow & { handoffs: string | null }>(
+					`SELECT w.*, (SELECT json_group_array(o.generation) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
 					FROM ${this.work} w WHERE w.root = ? ORDER BY w.ready_at, w.rowid`,
 					HANDOFF_OPERATION,
 					root,
 				)
-			).map((row) =>
-				Number(row.handoffs) > 0 ? { ...fromRow(row), handoffs: Number(row.handoffs) } : fromRow(row),
-			),
+			).map((row) => {
+				const handoffs = JSON.parse(row.handoffs ?? "[]") as number[];
+				return handoffs.length > 0 ? { ...fromRow(row), handoffs } : fromRow(row);
+			}),
 		);
 	}
 }

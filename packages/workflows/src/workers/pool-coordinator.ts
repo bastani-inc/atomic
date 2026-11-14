@@ -50,7 +50,7 @@ import { workflowPendingStageRouteReady } from "../shared/pending-stage-route-re
 import { createStore, type Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot, WorkflowWorktreeRestoreOutcome } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
-import { isStaleWorkLeaseError, PoolNotInitializedError } from "../shared/worker-pool-errors.js";
+import { isStaleWorkLeaseError, PoolNotInitializedError, StaleWorkLeaseError } from "../shared/worker-pool-errors.js";
 import {
 	failedOnPoolFault,
 	infrastructureFaultOf,
@@ -200,6 +200,15 @@ const WORKER_EXIT_CONFIRMATION_MS = 5_000;
 const WORKER_EXIT_POLL_MS = 50;
 /** Attempts one child may lose in a root incarnation before only that child fails (#3979). */
 const MAX_CHILD_ATTEMPTS = 3;
+/**
+ * How many times one child's attempts may be handed on uncounted because the shared store kept refusing them (#4768).
+ * Past it, a handoff counts as an attempt, so a child whose writes no host gets through ends after its attempt limit
+ * instead of moving between hosts for good.
+ */
+const MAX_CHILD_HANDOFFS = 20;
+/** The wait before a handed-on child is claimable again: it doubles with each handoff, up to the cap below. */
+const HANDOFF_DELAY_BASE_MS = 500;
+const HANDOFF_DELAY_MAX_MS = 30_000;
 /** Ready work a worker host reads at once to choose from by workspace affinity (shared placement). */
 const PLACEMENT_CANDIDATES = 32;
 /** How long a worker host trusts its own answer to whether it has a binding's tree warm. */
@@ -2339,7 +2348,9 @@ export class PoolCoordinator {
 						// running. Its work item ends failed in the same transaction, so no worker claims it again. A worker
 						// host never fails a child: it releases it, and the root's own pool counts its attempts.
 						const exhausted =
-							this.satellite === undefined && work !== undefined && this.attempts(work) >= MAX_CHILD_ATTEMPTS;
+							this.satellite === undefined &&
+							work !== undefined &&
+							this.attempts(await this.counted(work)) >= MAX_CHILD_ATTEMPTS;
 						const queue = this.queue!;
 						const lease = this.lease!;
 						const attempt = work;
@@ -2457,14 +2468,14 @@ export class PoolCoordinator {
 						if (fenced && !(await this.superseded(fenced))) {
 							// Views of the attempt's stages end with it, so they reconnect to its replay.
 							this.fence(fenced);
-							// A handoff, which the store's refusals forced, goes back to the queue recorded as such: it counts as
-							// none of the child's attempts (#4768).
-							if (message.handoff === true) await leased(() => queue.releaseExited(lease, fenced, true));
+							const current = await this.counted(fenced);
+							const handoffs = this.handoffs(current);
+							// A handoff, which the store's refusals forced, goes back to the queue recorded as such, claimable
+							// after a growing wait: it counts as none of the child's attempts, up to MAX_CHILD_HANDOFFS (#4768).
+							if (message.handoff === true && handoffs < MAX_CHILD_HANDOFFS)
+								await leased(() => queue.releaseExited(lease, fenced, { delayMs: handoffDelayMs(handoffs) }));
 							// A worker host releases the attempt whatever its count: the root's own pool fails a child.
-							else if (
-								this.satellite !== undefined ||
-								this.attempts(await this.counted(fenced)) < MAX_CHILD_ATTEMPTS
-							)
+							else if (this.satellite !== undefined || this.attempts(current) < MAX_CHILD_ATTEMPTS)
 								await leased(() => queue.releaseExited(lease, fenced));
 							else if (await leased(() => queue.failExited(lease, fenced))) {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
@@ -2622,6 +2633,16 @@ export class PoolCoordinator {
 						}
 					}
 					if (message.kind === "commit") {
+						if (
+							message.attempt !== undefined &&
+							(message.attempt.id !== work.id || message.attempt.generation !== work.generation)
+						)
+							throw new StaleWorkLeaseError({
+								root,
+								workId: message.attempt.id,
+								generation: message.attempt.generation,
+								reason: "superseded",
+							});
 						const receipt = await leased(() => queue.commit(lease, work, message.operation, message.mutation));
 						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
 						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
@@ -2918,10 +2939,18 @@ export class PoolCoordinator {
 		}
 	}
 
-	/** Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979). */
-	/** The child's attempts in this root incarnation: handoffs the store forced count as none (#4768). */
+	/**
+	 * Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979), nor do its
+	 * attempts the shared store's refusals handed on (#4768). `work` as {@link counted} reads it carries those handoffs.
+	 */
 	private attempts(work: PoolWork): number {
-		return work.generation - (this.attemptBase.get(work.id) ?? 0) - (work.handoffs ?? 0);
+		return work.generation - (this.attemptBase.get(work.id) ?? 0) - this.handoffs(work);
+	}
+
+	/** The handoffs of `work` in this root incarnation: those of earlier generations than its base were theirs. */
+	private handoffs(work: PoolWork): number {
+		const base = this.attemptBase.get(work.id) ?? 0;
+		return (work.handoffs ?? []).filter((generation) => generation > base).length;
 	}
 
 	/** `work` as the queue holds it now, with its handoffs; `work` itself when the queue no longer has it. */
@@ -3314,4 +3343,9 @@ export function runPoolCoordinator(): PoolCoordinator {
 	// process ends at once, and its workers end when their own channels to it close.
 	port.onClose(() => process.exit(0));
 	return coordinator;
+}
+
+/** How long a child handed on for the `handoffs`-th time waits before it is claimable again: full jitter. */
+function handoffDelayMs(handoffs: number): number {
+	return Math.random() * Math.min(HANDOFF_DELAY_MAX_MS, HANDOFF_DELAY_BASE_MS * 2 ** Math.min(handoffs, 16));
 }

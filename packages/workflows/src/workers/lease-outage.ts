@@ -16,7 +16,7 @@ const PASSING_CODES = /^(SQLITE_(BUSY|LOCKED)|TRANSACTION_TIMEOUT|STREAM_EXPIRED
  * cause carries one of {@link PASSING_CODES}. Anything else the store refused (a value or a response too large, a
  * constraint, a full disk, a refusal that says nothing more) may fail again the same way, so it is not sent again.
  */
-function refusedForAWhile(error: unknown): boolean {
+export function refusedForAWhile(error: unknown): boolean {
 	if (infrastructureFaultOf(error) !== "storage_unavailable") return false;
 	for (let current = error, depth = 0; typeof current === "object" && current !== null && depth < 8; depth++) {
 		const { name, code, cause } = current as {
@@ -57,10 +57,12 @@ export async function retryWithinLease<T>(
 ): Promise<T> {
 	const started = performance.now();
 	let noticed = false;
+	let last: unknown;
 	for (let attempt = 0; ; attempt++) {
 		try {
 			return await send();
 		} catch (error) {
+			last = error;
 			if (!refusedForAWhile(error) || !leaseLeft() || performance.now() - started >= giveUpMs) throw error;
 			if (!noticed && performance.now() - started >= OUTAGE_NOTICE_MS) {
 				noticed = true;
@@ -70,5 +72,8 @@ export async function retryWithinLease<T>(
 			}
 		}
 		await delay(Math.random() * Math.min(OUTAGE_RETRY_MAX_MS, OUTAGE_RETRY_BASE_MS * 2 ** Math.min(attempt, 16)));
+		// What allowed another send may have ended during the wait, such as the pool closing or the attempt ending: the
+		// last refusal goes to the caller instead of a send nobody can answer.
+		if (!leaseLeft()) throw last;
 	}
 }

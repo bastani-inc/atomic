@@ -33,7 +33,8 @@ test("a request the storage refuses is sent again while the attempt's lease last
 		),
 		StorageUnavailableError,
 	);
-	assert.equal(sends, 3);
+	// The lease is asked after each refusal and again before the next send.
+	assert.equal(sends, 2);
 });
 
 test("a failure that is not the storage refusing goes to the caller at once (#4768)", async () => {
@@ -111,4 +112,20 @@ test("a response the server refuses as too large is not sent again, and a reques
 		StorageUnavailableError,
 	);
 	assert.ok(sends >= 2, `sent ${sends} times`);
+});
+
+test("a request is not sent again once what allowed it ended during the wait before the next send (#4768)", async () => {
+	let sends = 0;
+	const answers = [true, false];
+	await assert.rejects(
+		retryWithinLease(
+			async () => {
+				sends++;
+				throw refused();
+			},
+			() => answers.shift() ?? false,
+		),
+		StorageUnavailableError,
+	);
+	assert.equal(sends, 1);
 });

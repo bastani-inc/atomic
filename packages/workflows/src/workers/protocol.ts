@@ -144,7 +144,16 @@ export type WorkerRequest = { readonly id: number } & (
 			readonly sessionId?: string;
 	  }
 	| { readonly kind: "delivery-ack"; readonly deliveryId: string; readonly error?: SerializedError }
-	| { readonly kind: "commit"; readonly operation: string; readonly mutation: PoolMutation }
+	| {
+			readonly kind: "commit";
+			readonly operation: string;
+			readonly mutation: PoolMutation;
+			/**
+			 * The attempt that made the commit (#4768). The pool refuses it as stale once the worker's slot holds another
+			 * attempt, so a commit an ended attempt still resends never lands in its replay.
+			 */
+			readonly attempt?: { readonly id: string; readonly generation: number };
+	  }
 	| { readonly kind: "complete"; readonly result: PooledRunResult }
 	// One-way stage watch traffic (#3996); the coordinator does not reply to these.
 	| {
