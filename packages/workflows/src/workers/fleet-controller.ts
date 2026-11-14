@@ -324,9 +324,8 @@ export class FleetController implements WorkflowFleetController {
 	 * The last pass of a stopping root's controller: every idle host above the fleet's target, by the queues as they are
 	 * now, is asked to drain at once, whatever `idleDrainMs` says. Hosts that hold work are left serving.
 	 */
-	private async drainIdle(fence: FleetFence): Promise<void> {
+	private async drainIdle(fence: FleetFence, signal: AbortSignal): Promise<void> {
 		const store = this.store!;
-		const signal = AbortSignal.timeout(FINAL_PASS_TIMEOUT_MS);
 		const listed = await untilAborted(
 			Promise.resolve().then(() => this.options.provisioner.list(signal)),
 			signal,
@@ -339,7 +338,7 @@ export class FleetController implements WorkflowFleetController {
 			this.state,
 		);
 		for (const action of plan.actions)
-			if (action.kind === "mark-draining") await this.act(action, fence, plan, hosts, 0);
+			if (action.kind === "mark-draining" && !signal.aborted) await this.act(action, fence, plan, hosts, 0);
 	}
 
 	private async act(
@@ -394,8 +393,11 @@ export class FleetController implements WorkflowFleetController {
 			this.tickAbort.abort(new Error("The fleet controller stopped"));
 			await this.ticking;
 			const epoch = this.epoch;
-			if (this.options.drainIdleOnStop === true && this.store !== undefined && epoch !== undefined)
-				await this.drainIdle({ holder: this.holder, epoch }).catch(() => {});
+			if (this.options.drainIdleOnStop === true && this.store !== undefined && epoch !== undefined) {
+				// The whole pass, its journal reads and writes included, is bounded: a root's close never waits on it longer.
+				const deadline = AbortSignal.timeout(FINAL_PASS_TIMEOUT_MS);
+				await untilAborted(this.drainIdle({ holder: this.holder, epoch }, deadline), deadline).catch(() => {});
+			}
 			this.abort.abort(new Error("The fleet controller stopped"));
 			if (this.store !== undefined && epoch !== undefined)
 				await this.store.release({ holder: this.holder, epoch }).catch(() => {});

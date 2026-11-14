@@ -381,6 +381,28 @@ test.skipIf(process.platform === "win32")(
 	},
 );
 
+test.skipIf(process.platform === "win32")(
+	"a root's controller stops within its final-pass bound when the provider never answers (#4768)",
+	async () => {
+		let lists = 0;
+		const provisioner: WorkerHostProvisioner = {
+			kind: "hung",
+			// The first list answers; every later one never does.
+			list: () => (lists++ === 0 ? Promise.resolve([]) : new Promise<never>(() => {})),
+			async scaleTo() {},
+			async drain() {},
+		};
+		const journal = await openJournal();
+		const rootController = new FleetController(journal, { provisioner, tickMs: 60_000, drainIdleOnStop: true });
+		controllers.push(rootController);
+		await until("the first tick", () => lists === 1 && rootController.status().target !== undefined);
+		const started = Date.now();
+		await rootController.stop();
+		assert.ok(Date.now() - started < 15_000, `stop took ${Date.now() - started} ms`);
+		assert.equal(lists, 2);
+	},
+);
+
 test("startWorkflowFleetController refuses a provisioner without its methods, and a policy whose caps cannot hold (#4768)", async () => {
 	const refused = async (options: Parameters<typeof startWorkflowFleetController>[0], field: string) => {
 		await assert.rejects(startWorkflowFleetController(options), (error: Error) => {
