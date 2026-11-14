@@ -1,61 +1,64 @@
 /**
- * The options of the built-in worker host provisioners (#4768), with no runtime dependencies: the SDK's authoring
- * surface imports them. None of them holds a credential: each provisioner's CLI uses its own login or environment.
+ * The options of the command provisioner (#4768), with no runtime dependencies: the SDK's authoring surface imports
+ * them. None of them holds a credential: each command uses its own tool's login or environment.
  */
 
-interface ProvisionerCallOptions {
-	/** How long, in milliseconds, one CLI call may run before it is stopped and counted as a failure. */
+/** A host state, as `list` reports it. */
+export type CommandHostState = "pending" | "running" | "draining" | "stopped" | "failed";
+
+/** One command, an executable and its arguments, or several run in order. */
+export type CommandSteps = readonly string[] | readonly (readonly string[])[];
+
+/**
+ * How to read the JSON the `list` command prints. Paths are dot-separated property names and array indexes, such as
+ * `AutoScalingGroups.0.Instances` or `metadata.name`.
+ */
+export interface CommandListFormat {
+	/** Where the array of hosts is. Default: the whole output. */
+	readonly items?: string;
+	/** Each host's id, a string or a number. Default `id`. */
+	readonly id?: string;
+	/** Each host's state. Default `state`. */
+	readonly state?: string;
+	/** When the host entered its state: milliseconds or an ISO 8601 time. Default `since`. */
+	readonly since?: string;
+	/** The Atomic worker host id, when the provider knows it. Default `hostId`. */
+	readonly hostId?: string;
+	/**
+	 * The provider's states as host states. `null` leaves a host out of the list, for hosts the provider no longer
+	 * counts, such as one being deleted. `"*"` covers every other state. Without `states`, each host's state must
+	 * already be a host state.
+	 */
+	readonly states?: Readonly<Record<string, CommandHostState | null>>;
+}
+
+/**
+ * Three commands of your own, or a preset for a cloud's CLI, each run without a shell. Arguments may hold
+ * placeholders, which are also set as environment variables:
+ *
+ * - `up` adds hosts: `{target}` (`ATOMIC_TARGET`) is the count to reach, `{add}` (`ATOMIC_ADD`) how many that adds. It
+ *   runs only when `list` reports fewer than `target` hosts, and with `upEach`, once for each host to add.
+ * - `down` removes the host `{id}` (`ATOMIC_PROVIDER_ID`); `{remaining}` (`ATOMIC_REMAINING`) is the count `list`
+ *   reported, less one. It runs only for a host `list` reports and that is not draining already.
+ * - `list` prints the hosts as JSON, read as `listFormat` says.
+ *
+ * Default `timeoutMs`, for each command: 120000.
+ */
+export interface CommandProvisionerOptions {
+	readonly kind: "command";
+	readonly up: CommandSteps;
+	readonly upEach?: boolean;
+	readonly down: CommandSteps;
+	readonly list: readonly string[];
+	readonly listFormat?: CommandListFormat;
+	/** How long, in milliseconds, one command may run before it is stopped and counted as a failure. */
 	readonly timeoutMs?: number;
 }
 
-/**
- * An Azure Virtual Machine Scale Set whose instances start `atomic worker start`, driven through `az vmss`. A host's
- * provider id is its instance id. Default `timeoutMs`: 60000.
- */
-export interface AzureVmssProvisionerOptions extends ProvisionerCallOptions {
-	readonly kind: "azure-vmss";
-	readonly resourceGroup: string;
-	/** The scale set's name. */
-	readonly name: string;
-	/** The subscription's id or name. Default: the one `az account show` selects. */
-	readonly subscription?: string;
-}
+export type WorkerHostProvisionerConfig = CommandProvisionerOptions;
 
 /**
- * A Kubernetes Deployment or StatefulSet of `atomic worker start` pods, driven through `kubectl`. A host's provider id
- * is its pod name. Give exactly one of `deployment` and `statefulSet`. Default `timeoutMs`: 30000.
- */
-export interface KubernetesProvisionerOptions extends ProvisionerCallOptions {
-	readonly kind: "kubernetes";
-	readonly namespace: string;
-	readonly deployment?: string;
-	/** A StatefulSet removes only its highest-numbered pod, so only that pod is removed once it drained. */
-	readonly statefulSet?: string;
-	/** The label selector of the workload's pods, such as `app=atomic-worker`. */
-	readonly selector: string;
-	/** The kubeconfig context. Default: the current one. */
-	readonly context?: string;
-}
-
-/**
- * Three commands of your own, each an executable and its arguments, run without a shell. `up` makes the count of hosts
- * the value of `ATOMIC_TARGET`; `down` removes the host whose id is `ATOMIC_PROVIDER_ID`, and must succeed for an id
- * that is already gone; `list` prints a JSON array of `{ id, state, since?, hostId? }`. Default `timeoutMs`: 120000.
- */
-export interface CommandProvisionerOptions extends ProvisionerCallOptions {
-	readonly kind: "command";
-	readonly up: readonly string[];
-	readonly down: readonly string[];
-	readonly list: readonly string[];
-}
-
-export type WorkerHostProvisionerConfig =
-	| AzureVmssProvisionerOptions
-	| KubernetesProvisionerOptions
-	| CommandProvisionerOptions;
-
-/**
- * Why a provisioner's CLI call failed: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused),
- * `exit` (any other non-zero exit), `timeout`, or `malformed` (output that is not what the CLI documents).
+ * Why a provisioner's command failed: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused),
+ * `exit` (any other non-zero exit), `timeout`, or `malformed` (output that is not what was expected).
  */
 export type WorkerProvisionerErrorCode = "missing-cli" | "auth" | "exit" | "timeout" | "malformed";

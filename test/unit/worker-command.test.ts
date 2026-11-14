@@ -75,7 +75,11 @@ test("worker start parses every option into one host configuration (#4768)", () 
 		idleExitMs: 60_000,
 		json: true,
 	});
-	assert.deepEqual(parseWorkerCommand(["status", "--json"], { cwd: root }), { kind: "status", json: true });
+	assert.deepEqual(parseWorkerCommand(["status", "--json"], { cwd: root }), {
+		policy: {},
+		kind: "status",
+		json: true,
+	});
 	assert.deepEqual(parseWorkerCommand(["--help"], { cwd: root }), { kind: "help" });
 	assert.deepEqual(parseWorkerCommand([], { cwd: root }), { kind: "help" });
 });
@@ -306,7 +310,7 @@ test("worker help and refused command lines exit without loading the workflows p
 	});
 	const unknown = await run(["serve"], unloadable);
 	assert.deepEqual(unknown.err, [
-		'Invalid worker command: <command>. Use start, status or controller. Use "atomic worker --help" for usage.',
+		'Invalid worker command: <command>. Use start, status, controller or metrics. Use "atomic worker --help" for usage.',
 	]);
 	const broken = await run(["status"], unloadable);
 	assert.deepEqual(broken, { code: 1, out: [], err: ["Error: the workflows package did not load"] });
@@ -322,6 +326,7 @@ test("worker status refuses every start-only option, and labels may hold '=' or 
 	assert.deepEqual(parseWorkerCommand(["status", "--db", "file:///tmp/p.db", "--prefix", "p_"], { cwd: root }), {
 		kind: "status",
 		database: { url: "file:///tmp/p.db", prefix: "p_" },
+		policy: {},
 		json: false,
 	});
 });
@@ -358,10 +363,15 @@ test("worker status prints the fleet as the workflows package's lines, or as JSO
 			secrets: { authToken: { file: tokenFile } },
 		},
 		agentDir: join(root, "agent"),
+		policy: {},
 	});
 	const json = await run(["status", "--json"], module(FLEET));
 	assert.deepEqual(JSON.parse(json.out.join("\n")), FLEET);
-	assert.deepEqual(asked[1], { agentDir: join(root, "agent") }, "without --db, the journal this machine selects");
+	assert.deepEqual(
+		asked[1],
+		{ agentDir: join(root, "agent"), policy: {} },
+		"without --db, the journal this machine selects",
+	);
 	const unknown = { fleet: { store: { state: "unknown" as const, message: "refused" } } };
 	assert.deepEqual(await run(["status"], module(unknown)), {
 		code: 1,
@@ -531,7 +541,7 @@ test("worker controller parses its provisioner module and policy, and refuses op
 		/Pass the provisioner module, or the JSON configuration of a built-in one/,
 	);
 	assert.throws(
-		() => parseWorkerCommand(["status", "--min-hosts", "1"], { cwd: root }),
+		() => parseWorkerCommand(["status", "--idle-drain", "1"], { cwd: root }),
 		/"atomic worker status" does not take it/,
 	);
 	assert.throws(
@@ -721,6 +731,7 @@ test("worker controller builds a built-in provisioner from a JSON configuration,
 			loadModule: async () => ({
 				startWorkflowWorkerHost: () => assert.fail("no host"),
 				readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+				workflowWorkerFleetLines: () => [],
 				createWorkerHostProvisioner,
 				async startWorkflowFleetController(options) {
 					kinds.push(options.provisioner.kind);
@@ -738,9 +749,9 @@ test("worker controller builds a built-in provisioner from a JSON configuration,
 	};
 	const good = write(
 		"fleet.json",
-		JSON.stringify({ kind: "kubernetes", namespace: "atomic", deployment: "atomic-worker", selector: "app=w" }),
+		JSON.stringify({ kind: "command", up: ["scale-up"], down: ["remove", "{id}"], list: ["list-hosts"] }),
 	);
-	assert.deepEqual(await run(good), { code: 0, err: [], kinds: ["kubernetes"] });
+	assert.deepEqual(await run(good), { code: 0, err: [], kinds: ["command"] });
 	for (const [name, content, message] of [
 		[
 			"broken.json",
@@ -794,7 +805,12 @@ test(
 		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [libsqlPackage] }));
 		err.length = 0;
 		assert.equal(await runWorkerCommand(["status", "--db", db], options), 0, err.join("\n"));
-		assert.deepEqual(out, ["fleet: 0 roots · 0 ready · 0 leased", "Hosts: 0", "Roots: 0"]);
+		assert.deepEqual(out, [
+			"fleet: 0 roots · 0 ready · 0 leased",
+			"Hosts: 0",
+			"Roots: 0",
+			"Scaling: wants 0 hosts (0 workers) for 0 children, 0 queued; 0 hosts live, 0 busy and 0 idle slots",
+		]);
 	},
 	REAL_PACKAGE_TIMEOUT_MS,
 );

@@ -211,6 +211,7 @@ export type {
 	SharedPoolFailure,
 	SharedPoolFleet,
 	SharedPoolFleetController,
+	SharedPoolFleetScaling,
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolHostReport,
@@ -552,9 +553,10 @@ export {
 	WorkspaceRestoreUnavailableError,
 } from "./workers/placement-errors.js";
 export type {
-	AzureVmssProvisionerOptions,
+	CommandHostState,
+	CommandListFormat,
 	CommandProvisionerOptions,
-	KubernetesProvisionerOptions,
+	CommandSteps,
 	WorkerHostProvisionerConfig,
 	WorkerProvisionerErrorCode,
 } from "./workers/provisioners/index.js";

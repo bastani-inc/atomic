@@ -1,0 +1,43 @@
+# The worker pods. KEDA owns their replica count; each drains on SIGTERM within the grace period.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ .Release.Name }}"
+  labels:
+    app: "{{ .Release.Name }}"
+spec:
+  selector:
+    matchLabels:
+      app: "{{ .Release.Name }}"
+  template:
+    metadata:
+      labels:
+        app: "{{ .Release.Name }}"
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.drainSeconds }}
+      automountServiceAccountToken: false
+      containers:
+        - name: worker
+          image: "{{ .Values.image }}"
+          args: ["--slots", "{{ .Values.workersPerHost }}"]
+          env:
+            - name: ATOMIC_DB
+              value: "{{ .Values.database }}"
+            - name: ATOMIC_WORKER_PROVIDER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              cpu: "{{ .Values.resources.requests.cpu }}"
+              memory: "{{ .Values.resources.requests.memory }}"
+          volumeMounts:
+            - name: token
+              mountPath: /run/secrets/atomic-db-token
+              subPath: token
+              readOnly: true
+      volumes:
+        - name: token
+          secret:
+            secretName: "{{ .Values.tokenSecret }}"
+            defaultMode: 0400

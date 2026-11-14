@@ -1,0 +1,15 @@
+# The worker image built from ../../Dockerfile.
+image: registry.example.com/atomic-worker:latest
+# The shared libSQL / Turso database.
+database: libsql://pool.example.turso.io
+# A Secret holding the database token under the key `token`, created outside this chart.
+tokenSecret: atomic-db-token
+# Children each worker pod runs at once; the scaling signal assumes the same number.
+workersPerHost: 4
+maxHosts: 20
+# How long a scaled-in pod may take to finish its children: your longest child step.
+drainSeconds: 900
+# How long the fleet stays above what it needs before KEDA scales in (the controller's idleDrainMs).
+scaleDownStabilizationSeconds: 300
+resources:
+  requests: { cpu: "2", memory: 4Gi }

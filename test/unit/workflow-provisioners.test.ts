@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
 import { redactSecrets } from "../../packages/workflows/src/workers/provisioners/cli.js";
 import {
+	type CommandProvisionerOptions,
 	createWorkerHostProvisioner,
 	WorkerProvisionerError,
 } from "../../packages/workflows/src/workers/provisioners/index.js";
-import { FakeCloud, runProvisionerConformance } from "../helpers/provisioner-conformance.js";
+import { FakeCloud, type FakeCloudKind, runProvisionerConformance } from "../helpers/provisioner-conformance.js";
 
-const fakeCommand = fileURLToPath(new URL("../fixtures/fake-provision-command.mjs", import.meta.url));
-const AZURE_SECRET = "Az-Cl1ent~Secret.9f3c2b7e1d";
-const KUBE_TOKEN = "kube-token-4f1d9e8c7b6a5d4c3b2a";
-const COMMAND_TOKEN = "cmd-tok-0a9b8c7d6e5f4a3b";
 const never = () => new AbortController().signal;
 const posixOnly = test.skipIf(process.platform === "win32");
+const SECRET = "Cl1ent~Secret.9f3c2b7e1d-4a5b";
 
 /** Environment variables a test set, restored after it. */
 const savedEnv = new Map<string, string | undefined>();
@@ -32,78 +30,40 @@ afterEach(() => {
 	savedEnv.clear();
 });
 
-const VMSS = { resourceGroup: "atomic-rg", name: "atomic-workers", subscription: "sub-1" };
+/** The presets shipped in the coding-agent package's examples, each with the CLI it drives and the cloud it models. */
+const PRESETS: readonly { readonly file: string; readonly cli: string; readonly kind: FakeCloudKind }[] = [
+	{ file: "azure-vmss.json", cli: "az", kind: "vmss" },
+	{ file: "aws-asg.json", cli: "aws", kind: "asg" },
+	{ file: "gcp-mig.json", cli: "gcloud", kind: "mig" },
+	{ file: "kubernetes.json", cli: "kubectl", kind: "deployment" },
+	{ file: "github-actions.json", cli: "gh", kind: "gh" },
+];
 
-function azureCloud(): FakeCloud {
-	const cloud = FakeCloud.create("vmss", VMSS);
-	cloud.installCli("az", "fake-az.mjs");
-	setEnv("AZURE_CLIENT_SECRET", AZURE_SECRET);
+function preset(file: string): CommandProvisionerOptions {
+	const path = fileURLToPath(
+		new URL(`../../packages/coding-agent/examples/worker-fleet/presets/${file}`, import.meta.url),
+	);
+	return JSON.parse(readFileSync(path, "utf8")) as CommandProvisionerOptions;
+}
+
+/** A fake cloud of `kind` with its fake CLI on `PATH`, and the secret the CLI prints when it refuses credentials. */
+function fakeCloud(cli: string, kind: FakeCloudKind): FakeCloud {
+	const cloud = FakeCloud.create(kind);
+	cloud.installCli(cli);
+	setEnv("FAKE_SECRET", SECRET);
 	return cloud;
 }
 
-function kubeCloud(kind: "deployment" | "statefulset", context?: string): FakeCloud {
-	const cloud = FakeCloud.create(kind, {
-		namespace: "atomic",
-		workload: "atomic-worker",
-		selector: "app=atomic-worker",
-		context,
+for (const { file, cli, kind } of PRESETS)
+	runProvisionerConformance(`${file} preset`, () => {
+		const cloud = fakeCloud(cli, kind);
+		return {
+			cloud,
+			secret: SECRET,
+			provisioner: (options) => createWorkerHostProvisioner({ ...preset(file), ...options }),
+			dispose: () => cloud.dispose(),
+		};
 	});
-	cloud.installCli("kubectl", "fake-kubectl.mjs");
-	setEnv("KUBE_TOKEN", KUBE_TOKEN);
-	return cloud;
-}
-
-function commandCloud(): FakeCloud {
-	return FakeCloud.create("command");
-}
-
-function commandArgs(cloud: FakeCloud, action: string): string[] {
-	return [process.execPath, fakeCommand, cloud.dir, `--token=${COMMAND_TOKEN}`, action];
-}
-
-runProvisionerConformance("azure-vmss", () => {
-	const cloud = azureCloud();
-	return {
-		cloud,
-		secret: AZURE_SECRET,
-		provisioner: (options) => createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS, ...options }),
-		dispose: () => cloud.dispose(),
-	};
-});
-
-runProvisionerConformance("kubernetes", () => {
-	const cloud = kubeCloud("deployment");
-	return {
-		cloud,
-		secret: KUBE_TOKEN,
-		provisioner: (options) =>
-			createWorkerHostProvisioner({
-				kind: "kubernetes",
-				namespace: "atomic",
-				deployment: "atomic-worker",
-				selector: "app=atomic-worker",
-				...options,
-			}),
-		dispose: () => cloud.dispose(),
-	};
-});
-
-runProvisionerConformance("command", () => {
-	const cloud = commandCloud();
-	return {
-		cloud,
-		secret: COMMAND_TOKEN,
-		provisioner: (options) =>
-			createWorkerHostProvisioner({
-				kind: "command",
-				up: commandArgs(cloud, "up"),
-				down: commandArgs(cloud, "down"),
-				list: commandArgs(cloud, "list"),
-				...options,
-			}),
-		dispose: () => cloud.dispose(),
-	};
-});
 
 async function rejection(promise: Promise<unknown>): Promise<WorkerProvisionerError> {
 	try {
@@ -115,47 +75,57 @@ async function rejection(promise: Promise<unknown>): Promise<WorkerProvisionerEr
 	assert.fail("expected a rejection");
 }
 
-describe("azure-vmss provisioner (#4768)", () => {
-	posixOnly("drives az vmss with argument arrays, --no-wait and the subscription (#4768)", async () => {
-		const cloud = azureCloud();
-		try {
-			const fleet = createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS });
-			await fleet.scaleTo(2, never());
-			await fleet.list(never());
-			await fleet.drain("1", never());
-			const scope = ["--resource-group", "atomic-rg", "--name", "atomic-workers", "--subscription", "sub-1"];
-			assert.deepEqual(cloud.calls(), [
-				["vmss", "scale", ...scope, "--new-capacity", "2", "--no-wait", "--output", "none"],
-				["vmss", "list-instances", ...scope, "--output", "json"],
-				["vmss", "list-instances", ...scope, "--output", "json"],
-				["vmss", "delete-instances", ...scope, "--instance-ids", "1", "--no-wait", "--output", "none"],
-			]);
-		} finally {
-			cloud.dispose();
+describe("command provisioner presets (#4768)", () => {
+	/** Each preset's commands for scaleTo(2) from nothing, a list, and a drain of the first host, as the CLI gets them. */
+	posixOnly("each preset passes its CLI the commands it documents, with placeholders filled (#4768)", async () => {
+		for (const { file, cli, kind } of PRESETS) {
+			const cloud = fakeCloud(cli, kind);
+			try {
+				const config = preset(file);
+				const fleet = createWorkerHostProvisioner(config);
+				await fleet.scaleTo(2, never());
+				const hosts = await fleet.list(never());
+				const id = hosts[0]!.id;
+				await fleet.drain(id, never());
+				const fill = (args: readonly string[], values: Record<string, string>) =>
+					args.slice(1).map((arg) => arg.replace(/\{(\w+)\}/g, (_, name: string) => values[name]!));
+				const ups = (Array.isArray(config.up[0]) ? config.up : [config.up]) as string[][];
+				const downs = (Array.isArray(config.down[0]) ? config.down : [config.down]) as string[][];
+				const upCalls = config.upEach === true ? [0, 1].map(() => ups[0]!) : ups;
+				assert.deepEqual(
+					cloud.calls(),
+					[
+						config.list.slice(1),
+						...upCalls.map((up) => fill(up, { target: "2", add: config.upEach === true ? "1" : "2" })),
+						config.list.slice(1),
+						config.list.slice(1),
+						...downs.map((down) => fill(down, { id, remaining: "1" })),
+					],
+					file,
+				);
+				assert.equal(hosts.length, 2, file);
+				assert.ok(!cloud.activeIds().includes(id), file);
+				assert.equal(cloud.activeIds().length, 1, file);
+			} finally {
+				cloud.dispose();
+			}
 		}
 	});
 
-	posixOnly("maps provisioning states and leaves out instances being deleted (#4768)", async () => {
-		const cloud = azureCloud();
+	posixOnly("the Kubernetes preset leaves terminating and ended pods out (#4768)", async () => {
+		const cloud = fakeCloud("kubectl", "deployment");
 		try {
-			for (const [id, state] of [
-				["10", "Creating"],
-				["11", "Succeeded"],
-				["12", "Updating"],
-				["13", "Failed"],
-				["14", "Canceled"],
-				["15", "Deleting"],
-			] as const)
-				cloud.addHost({ id, phase: "running", state });
-			const hosts = await createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS }).list(never());
+			cloud.addHost({ id: "atomic-worker-evicted", phase: "running", podPhase: "Failed" });
+			cloud.addHost({ id: "atomic-worker-done", phase: "running", podPhase: "Succeeded" });
+			cloud.addHost({ id: "atomic-worker-going", phase: "deleting", seen: false });
+			cloud.addHost({ id: "atomic-worker-lost", phase: "running", podPhase: "Unknown" });
+			cloud.addHost({ id: "atomic-worker-up", phase: "running" });
+			const hosts = await createWorkerHostProvisioner(preset("kubernetes.json")).list(never());
 			assert.deepEqual(
 				hosts.map((host) => [host.id, host.state]),
 				[
-					["10", "pending"],
-					["11", "running"],
-					["12", "running"],
-					["13", "failed"],
-					["14", "failed"],
+					["atomic-worker-lost", "pending"],
+					["atomic-worker-up", "running"],
 				],
 			);
 		} finally {
@@ -163,400 +133,13 @@ describe("azure-vmss provisioner (#4768)", () => {
 		}
 	});
 
-	posixOnly("leaves --subscription out when none is given (#4768)", async () => {
-		const cloud = FakeCloud.create("vmss", { ...VMSS, subscription: undefined });
-		cloud.installCli("az", "fake-az.mjs");
-		try {
-			await createWorkerHostProvisioner({
-				kind: "azure-vmss",
-				resourceGroup: "atomic-rg",
-				name: "atomic-workers",
-			}).list(never());
-			assert.deepEqual(cloud.calls(), [
-				["vmss", "list-instances", "--resource-group", "atomic-rg", "--name", "atomic-workers", "--output", "json"],
-			]);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("reads each instance's creation time, or uses now without one (#4768)", async () => {
-		const cloud = azureCloud();
-		try {
-			cloud.printRaw(
-				JSON.stringify([
-					{ instanceId: "1", provisioningState: "Succeeded", timeCreated: "2026-11-14T08:00:00Z" },
-					{ instanceId: "2", provisioningState: "Creating" },
-					{ instanceId: "3", provisioningState: "Creating", timeCreated: "not a time" },
-				]),
-			);
-			const before = Date.now();
-			const hosts = await createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS }).list(never());
-			assert.equal(hosts[0]!.since, Date.parse("2026-11-14T08:00:00Z"));
-			for (const host of hosts.slice(1)) assert.ok(host.since >= before && host.since <= Date.now());
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("rejects instance lists it cannot read, without quoting them (#4768)", async () => {
-		const cloud = azureCloud();
-		try {
-			const fleet = createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS });
-			for (const raw of [
-				'{"value": []}',
-				"[null]",
-				'["1"]',
-				'[{"provisioningState":"Succeeded"}]',
-				'[{"instanceId":"","provisioningState":"Succeeded"}]',
-				'[{"instanceId":1,"provisioningState":"Succeeded"}]',
-				'[{"instanceId":"1"}]',
-				'[{"instanceId":"1","provisioningState":"Succeeded","timeCreated":5}]',
-			]) {
-				cloud.printRaw(raw);
-				const error = await rejection(fleet.list(never()));
-				assert.equal(error.code, "malformed", raw);
-				assert.equal(
-					error.message,
-					"az vmss list-instances printed JSON that is not a list of scale set instances.",
-					raw,
-				);
-			}
-			cloud.printRaw("Succeeded");
-			assert.equal(
-				(await rejection(fleet.list(never()))).message,
-				"az vmss list-instances printed output that is not JSON.",
-			);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("passes option values literally, never through a shell (#4768)", async () => {
-		const hostile = "rg; touch pwned $(id) `id`";
-		const cloud = FakeCloud.create("vmss", { ...VMSS, resourceGroup: hostile });
-		cloud.installCli("az", "fake-az.mjs");
-		try {
-			await createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS, resourceGroup: hostile }).scaleTo(1, never());
-			assert.equal(cloud.calls()[0]![3], hostile);
-			assert.equal(cloud.activeIds().length, 1);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("a scale set that is not found rejects with the CLI's exit code and its message (#4768)", async () => {
-		const cloud = azureCloud();
-		try {
-			const error = await rejection(
-				createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS, name: "other" }).list(never()),
-			);
-			assert.equal(error.code, "exit");
-			assert.equal(error.exitCode, 3);
-			assert.match(error.message, /^az vmss list-instances exited with code 3: .*ResourceNotFound/);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	test("an az that is not installed rejects as missing (#4768)", async () => {
+	posixOnly("a preset whose CLI is not installed rejects as missing (#4768)", async () => {
 		setEnv("PATH", "/nonexistent-atomic-bin");
-		const error = await rejection(createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS }).list(never()));
+		const error = await rejection(createWorkerHostProvisioner(preset("aws-asg.json")).list(never()));
 		assert.equal(error.code, "missing-cli");
-		assert.match(error.message, /az was not found/);
-	});
-});
-
-describe("kubernetes provisioner (#4768)", () => {
-	const deployment = {
-		kind: "kubernetes",
-		namespace: "atomic",
-		deployment: "atomic-worker",
-		selector: "app=atomic-worker",
-	} as const;
-
-	posixOnly(
-		"drains a Deployment's pod by deleting it, then scaling down by one from the count it read (#4768)",
-		async () => {
-			const cloud = kubeCloud("deployment", "prod");
-			try {
-				const fleet = createWorkerHostProvisioner({ ...deployment, context: "prod" });
-				await fleet.scaleTo(2, never());
-				const [pod] = cloud.activeIds();
-				await fleet.drain(pod!, never());
-				const scope = ["--namespace", "atomic", "--context", "prod"];
-				assert.deepEqual(cloud.calls(), [
-					[...scope, "scale", "deployment/atomic-worker", "--replicas=2"],
-					[
-						...scope,
-						"get",
-						"pods",
-						"--selector",
-						"app=atomic-worker",
-						"--field-selector",
-						`metadata.name=${pod}`,
-						"--output",
-						"json",
-					],
-					[...scope, "get", "deployment", "atomic-worker", "--output", "json"],
-					[...scope, "delete", "pod", pod!, "--wait=false", "--ignore-not-found"],
-					[...scope, "scale", "deployment/atomic-worker", "--replicas=1", "--current-replicas=2"],
-				]);
-				assert.equal(cloud.activeIds().length, 1);
-				assert.ok(!cloud.activeIds().includes(pod!));
-			} finally {
-				cloud.dispose();
-			}
-		},
-	);
-
-	posixOnly(
-		"reports pod phases, leaves out terminating pods, and deletes an ended pod without scaling (#4768)",
-		async () => {
-			const cloud = kubeCloud("deployment");
-			try {
-				const fleet = createWorkerHostProvisioner(deployment);
-				await fleet.scaleTo(1, never());
-				cloud.addHost({ id: "atomic-worker-evicted", phase: "running", podPhase: "Failed" });
-				cloud.addHost({ id: "atomic-worker-done", phase: "running", podPhase: "Succeeded" });
-				cloud.addHost({ id: "atomic-worker-lost", phase: "running", podPhase: "Unknown" });
-				cloud.addHost({ id: "atomic-worker-old", phase: "deleting" });
-				const states = Object.fromEntries((await fleet.list(never())).map((host) => [host.id, host.state]));
-				assert.deepEqual(states, {
-					[cloud.activeIds().find((id) => id.startsWith("atomic-worker-7d9c"))!]: "pending",
-					"atomic-worker-evicted": "failed",
-					"atomic-worker-done": "stopped",
-					"atomic-worker-lost": "pending",
-				});
-				const before = cloud.calls().length;
-				await fleet.drain("atomic-worker-evicted", never());
-				const calls = cloud.calls().slice(before);
-				assert.deepEqual(calls, [
-					[
-						"--namespace",
-						"atomic",
-						"get",
-						"pods",
-						"--selector",
-						"app=atomic-worker",
-						"--field-selector",
-						"metadata.name=atomic-worker-evicted",
-						"--output",
-						"json",
-					],
-					[
-						"--namespace",
-						"atomic",
-						"delete",
-						"pod",
-						"atomic-worker-evicted",
-						"--wait=false",
-						"--ignore-not-found",
-					],
-				]);
-				await fleet.drain("atomic-worker-done", never());
-				assert.deepEqual(
-					cloud
-						.calls()
-						.slice(before + 2)
-						.map((call) => call[2]),
-					["get", "delete"],
-				);
-			} finally {
-				cloud.dispose();
-			}
-		},
-	);
-
-	posixOnly("a StatefulSet drains only its highest ordinal, by scaling down (#4768)", async () => {
-		const cloud = kubeCloud("statefulset");
-		try {
-			const fleet = createWorkerHostProvisioner({
-				kind: "kubernetes",
-				namespace: "atomic",
-				statefulSet: "atomic-worker",
-				selector: "app=atomic-worker",
-			});
-			await fleet.scaleTo(3, never());
-			assert.deepEqual(cloud.activeIds(), ["atomic-worker-0", "atomic-worker-1", "atomic-worker-2"]);
-			await fleet.drain("atomic-worker-1", never());
-			assert.deepEqual(cloud.activeIds(), ["atomic-worker-0", "atomic-worker-1", "atomic-worker-2"]);
-			assert.ok(!cloud.calls().some((call) => call.includes("delete")));
-			await fleet.drain("atomic-worker-2", never());
-			assert.deepEqual(cloud.activeIds(), ["atomic-worker-0", "atomic-worker-1"]);
-			assert.deepEqual(cloud.calls().at(-1), [
-				"--namespace",
-				"atomic",
-				"scale",
-				"statefulset/atomic-worker",
-				"--replicas=2",
-				"--current-replicas=3",
-			]);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly(
-		"a scale-down that lost a race with another change rejects, and removes nothing more (#4768)",
-		async () => {
-			const cloud = kubeCloud("deployment");
-			try {
-				const fleet = createWorkerHostProvisioner(deployment);
-				await fleet.scaleTo(2, never());
-				const [pod] = cloud.activeIds();
-				// Another writer changed the replicas between the drain's read and its scale-down.
-				cloud.write({ ...cloud.read(), reportReplicas: 3 });
-				const error = await rejection(fleet.drain(pod!, never()));
-				assert.equal(error.code, "exit");
-				assert.match(error.message, /^kubectl scale exited with code 1: error: Expected replicas to be 3, was 2/);
-				assert.equal(cloud.activeIds().length, 2);
-			} finally {
-				cloud.dispose();
-			}
-		},
-	);
-
-	posixOnly("reads each pod's start or creation time, or uses now without one (#4768)", async () => {
-		const cloud = kubeCloud("deployment");
-		try {
-			cloud.printRaw(
-				JSON.stringify({
-					items: [
-						{
-							metadata: { name: "a", creationTimestamp: "2026-11-14T08:00:00Z" },
-							status: { phase: "Running", startTime: "2026-11-14T08:01:00Z" },
-						},
-						{ metadata: { name: "b", creationTimestamp: "2026-11-14T08:00:00Z" }, status: { phase: "Pending" } },
-						{ metadata: { name: "c", creationTimestamp: "2026-11-14T08:00:00Z" }, status: { phase: "Running" } },
-						{ metadata: { name: "d" } },
-						{ metadata: { name: "e", creationTimestamp: "nope" }, status: { phase: "Failed" } },
-					],
-				}),
-			);
-			const before = Date.now();
-			const hosts = await createWorkerHostProvisioner(deployment).list(never());
-			assert.deepEqual(
-				hosts.slice(0, 3).map((host) => [host.id, host.state, host.since]),
-				[
-					["a", "running", Date.parse("2026-11-14T08:01:00Z")],
-					["b", "pending", Date.parse("2026-11-14T08:00:00Z")],
-					["c", "running", Date.parse("2026-11-14T08:00:00Z")],
-				],
-			);
-			assert.deepEqual(
-				hosts.slice(3).map((host) => [host.id, host.state]),
-				[
-					["d", "pending"],
-					["e", "failed"],
-				],
-			);
-			for (const host of hosts.slice(3)) assert.ok(host.since >= before && host.since <= Date.now());
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("rejects pod lists and replica counts it cannot read (#4768)", async () => {
-		const cloud = kubeCloud("deployment");
-		try {
-			const fleet = createWorkerHostProvisioner(deployment);
-			for (const raw of [
-				"null",
-				"[]",
-				'{"items": {}}',
-				'{"items": [null]}',
-				'{"items": [{"metadata": {}}]}',
-				'{"items": [{}]}',
-				'{"items": [{"metadata": {"name": ""}}]}',
-			]) {
-				cloud.printRaw(raw);
-				const error = await rejection(fleet.list(never()));
-				assert.equal(error.code, "malformed", raw);
-				assert.equal(error.message, "kubectl get pods printed JSON that is not a list of pods.", raw);
-			}
-			cloud.setMode("ok");
-			await fleet.scaleTo(1, never());
-			const [pod] = cloud.activeIds();
-			for (const raw of [
-				"null",
-				"{}",
-				'{"spec": {}}',
-				'{"spec": {"replicas": "1"}}',
-				'{"spec": {"replicas": 1.5}}',
-				'{"spec": {"replicas": -1}}',
-			]) {
-				cloud.write({ ...cloud.read(), rawWorkload: raw });
-				const error = await rejection(fleet.drain(pod!, never()));
-				assert.equal(error.code, "malformed", raw);
-				assert.equal(error.message, "kubectl get deployment printed no replica count.", raw);
-			}
-			assert.deepEqual(cloud.activeIds(), [pod!]);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("drain leaves a terminating pod, and a workload already at zero, alone (#4768)", async () => {
-		const cloud = kubeCloud("deployment");
-		try {
-			const fleet = createWorkerHostProvisioner(deployment);
-			cloud.addHost({ id: "atomic-worker-going", phase: "deleting", seen: false });
-			await fleet.drain("atomic-worker-going", never());
-			assert.deepEqual(
-				cloud.calls().map((call) => call[2]),
-				["get"],
-			);
-			cloud.addHost({ id: "atomic-worker-stray", phase: "running" });
-			cloud.write({ ...cloud.read(), reportReplicas: 0 });
-			await fleet.drain("atomic-worker-stray", never());
-			assert.deepEqual(
-				cloud.calls().map((call) => call.slice(2, 4)),
-				[
-					["get", "pods"],
-					["get", "pods"],
-					["get", "deployment"],
-				],
-			);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	posixOnly("Forbidden is an auth error (#4768)", async () => {
-		const cloud = kubeCloud("deployment");
-		try {
-			const error = await rejection(
-				createWorkerHostProvisioner({ ...deployment, namespace: "elsewhere" }).list(never()),
-			);
-			assert.equal(error.code, "auth");
-			assert.equal(error.exitCode, 1);
-			assert.match(error.message, /^kubectl get pods exited with code 1: .*Forbidden/);
-		} finally {
-			cloud.dispose();
-		}
-	});
-
-	test("requires exactly one of deployment and statefulSet (#4768)", () => {
-		assert.throws(
-			() =>
-				createWorkerHostProvisioner({
-					kind: "kubernetes",
-					namespace: "atomic",
-					selector: "app=a",
-				} as Parameters<typeof createWorkerHostProvisioner>[0]),
-			/exactly one of deployment and statefulSet/,
-		);
-		assert.throws(
-			() =>
-				createWorkerHostProvisioner({
-					kind: "kubernetes",
-					namespace: "atomic",
-					selector: "app=a",
-					deployment: "a",
-					statefulSet: "b",
-				} as Parameters<typeof createWorkerHostProvisioner>[0]),
-			/exactly one of deployment and statefulSet/,
+		assert.equal(
+			error.message,
+			"the list command failed: aws was not found. Install it on this machine, or put it on PATH.",
 		);
 	});
 });
@@ -566,21 +149,157 @@ describe("command provisioner (#4768)", () => {
 		return [process.execPath, "-e", source];
 	}
 
-	test("passes the target and the provider id in the environment (#4768)", async () => {
-		const record = script(
-			"const e = process.env; process.stdout.write(JSON.stringify([{id: 't' + (e.ATOMIC_TARGET ?? '') + 'p' + (e.ATOMIC_PROVIDER_ID ?? ''), state: 'running', since: 1}]))",
-		);
-		const seen: string[] = [];
-		const fleet = createWorkerHostProvisioner({
-			kind: "command",
-			up: script("if (process.env.ATOMIC_TARGET !== '3') process.exit(4)"),
-			down: script("if (process.env.ATOMIC_PROVIDER_ID !== 'host-7') process.exit(5)"),
-			list: record,
-		});
-		await fleet.scaleTo(3, never());
-		await fleet.drain("host-7", never());
-		for (const host of await fleet.list(never())) seen.push(host.id);
-		assert.deepEqual(seen, ["tp"]);
+	/** A list command that prints `hosts`, and an up and a down command that record their environment in `log`. */
+	function recorded(log: string, hosts: string) {
+		const record = (name: string) =>
+			script(
+				`require('fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify([${JSON.stringify(name)}, process.argv.slice(1), process.env.ATOMIC_TARGET, process.env.ATOMIC_ADD, process.env.ATOMIC_PROVIDER_ID, process.env.ATOMIC_REMAINING]) + '\\n')`,
+			);
+		return {
+			up: [
+				[...record("up-1"), "--", "--size={target}", "add={add}"],
+				[...record("up-2"), "--", "{unknown}"],
+			],
+			down: [...record("down"), "--", "--instance={id}", "--count={remaining}"],
+			list: script(`process.stdout.write(${JSON.stringify(hosts)})`),
+		};
+	}
+
+	function calls(log: string): string[][] {
+		return readFileSync(log, "utf8")
+			.split("\n")
+			.filter((line) => line !== "")
+			.map((line) => JSON.parse(line) as string[]);
+	}
+
+	test("fills placeholders and the environment, runs steps in order, and adds only what list lacks (#4768)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-command-steps-"));
+		const log = join(dir, "log");
+		try {
+			const two = '[{"id":"a","state":"running"},{"id":"b","state":"pending"}]';
+			const fleet = createWorkerHostProvisioner({ kind: "command", ...recorded(log, two) });
+			await fleet.scaleTo(5, never());
+			await fleet.scaleTo(2, never());
+			await fleet.scaleTo(1, never());
+			await fleet.drain("b", never());
+			await fleet.drain("missing", never());
+			assert.deepEqual(calls(log), [
+				["up-1", ["--size=5", "add=3"], "5", "3", null, null],
+				["up-2", ["{unknown}"], "5", "3", null, null],
+				["down", ["--instance=b", "--count=1"], null, null, "b", "1"],
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("with upEach, runs up once for each host to add (#4768)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-command-each-"));
+		const log = join(dir, "log");
+		try {
+			const commands = recorded(log, '[{"id":"a","state":"running"}]');
+			const fleet = createWorkerHostProvisioner({ kind: "command", ...commands, up: commands.up[0]!, upEach: true });
+			await fleet.scaleTo(4, never());
+			assert.deepEqual(
+				calls(log).map((call) => [call[1], call[3]]),
+				[
+					[["--size=4", "add=1"], "1"],
+					[["--size=4", "add=1"], "1"],
+					[["--size=4", "add=1"], "1"],
+				],
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("does not remove a host the list reports draining, and runs changes one at a time (#4768)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-command-serial-"));
+		const log = join(dir, "log");
+		try {
+			const fleet = createWorkerHostProvisioner({
+				kind: "command",
+				...recorded(log, '[{"id":"a","state":"draining"},{"id":"b","state":"failed"}]'),
+			});
+			await Promise.all([fleet.drain("a", never()), fleet.drain("b", never()), fleet.scaleTo(3, never())]);
+			assert.deepEqual(
+				calls(log).map((call) => call[0]),
+				["down", "up-1", "up-2"],
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("reads hosts through listFormat: a path to the items, ids, states, times and host ids (#4768)", async () => {
+		const list = (output: object, listFormat: object) =>
+			createWorkerHostProvisioner({
+				kind: "command",
+				up: script("0"),
+				down: script("0"),
+				list: script(`process.stdout.write(${JSON.stringify(JSON.stringify(output))})`),
+				listFormat,
+			}).list(never());
+		const output = {
+			Groups: [
+				{
+					Instances: [
+						{ Id: 7, Life: "InService", At: "2026-11-14T08:00:00Z", Meta: { host: "h7" } },
+						{ Id: "i-2", Life: "Pending", At: 1234 },
+						{ Id: "i-3", Life: "Terminating", At: 1 },
+						{ Id: "i-4", Life: "Warmed:Pending", At: null },
+					],
+				},
+			],
+		};
+		const format = {
+			items: "Groups.0.Instances",
+			id: "Id",
+			state: "Life",
+			since: "At",
+			hostId: "Meta.host",
+			states: { InService: "running", Pending: "pending", Terminating: null, "*": "stopped" },
+		};
+		const before = Date.now();
+		const hosts = await list(output, format);
+		assert.deepEqual(hosts.slice(0, 2), [
+			{ id: "7", hostId: "h7", state: "running", since: Date.parse("2026-11-14T08:00:00Z") },
+			{ id: "i-2", state: "pending", since: 1234 },
+		]);
+		assert.equal(hosts.length, 3);
+		assert.deepEqual([hosts[2]!.id, hosts[2]!.state], ["i-4", "stopped"]);
+		assert.ok(hosts[2]!.since >= before);
+		const { "*": _, ...strict } = format.states;
+		for (const [bad, listFormat] of [
+			[output, { ...format, states: strict }],
+			[output, { ...format, items: "Groups.1.Instances" }],
+			[output, { ...format, items: "Groups.0" }],
+			[{ Groups: [{ Instances: [{ Id: true, Life: "InService" }] }] }, format],
+			[{ Groups: [{ Instances: [{ Id: "", Life: "InService" }] }] }, format],
+			[{ Groups: [{ Instances: [{ Id: "x", Life: 3 }] }] }, format],
+			[{ Groups: [{ Instances: [{ Id: "x", Life: "InService", At: "soon" }] }] }, format],
+			[{ Groups: [{ Instances: [{ Id: "x", Life: "InService", Meta: { host: 5 } }] }] }, format],
+			[
+				{
+					Groups: [
+						{
+							Instances: [
+								{ Id: "x", Life: "InService" },
+								{ Id: "x", Life: "Pending" },
+							],
+						},
+					],
+				},
+				format,
+			],
+		] as const) {
+			const error = await rejection(list(bad, listFormat));
+			assert.equal(error.code, "malformed", JSON.stringify(bad));
+			assert.equal(
+				error.message,
+				"the list command printed JSON that its listFormat does not match: an array of hosts with distinct ids and states it maps.",
+			);
+		}
 	});
 
 	test("list accepts ISO times and a hostId, and rejects hosts it cannot read (#4768)", async () => {
@@ -619,7 +338,6 @@ describe("command provisioner (#4768)", () => {
 			"null",
 			"[null]",
 			"[5]",
-			'[{"id":"a","state":"running","since":null}]',
 			'[{"id":"a","state":"running","since":true}]',
 			'{"id":"a"}',
 			'[{"state":"running","since":1}]',
@@ -692,7 +410,7 @@ describe("command provisioner (#4768)", () => {
 				"hunter2-secret",
 			],
 			down: script("0"),
-			list: script("0"),
+			list: script("process.stdout.write('[]')"),
 		});
 		const error = await rejection(fleet.scaleTo(1, never()));
 		assert.equal(error.code, "exit");
@@ -708,7 +426,7 @@ describe("command provisioner (#4768)", () => {
 					kind: "command",
 					up: [...script(source), ...extra],
 					down: script("0"),
-					list: script("0"),
+					list: script("process.stdout.write('[]')"),
 				}).scaleTo(1, never()),
 			);
 		const joined = await failing("process.stderr.write('  first  \\r\\n\\r\\n  second\\n'); process.exit(2)");
@@ -745,7 +463,7 @@ describe("command provisioner (#4768)", () => {
 				kind: "command",
 				up: script("process.kill(process.pid, 'SIGTERM'); setInterval(() => {}, 1000)"),
 				down: script("0"),
-				list: script("0"),
+				list: script("process.stdout.write('[]')"),
 			}).scaleTo(1, never()),
 		);
 		assert.equal(killed.code, "exit");
@@ -759,10 +477,12 @@ describe("command provisioner (#4768)", () => {
 		writeFileSync(file, "#!/bin/sh\nexit 0\n");
 		try {
 			const error = await rejection(
-				createWorkerHostProvisioner({ kind: "command", up: [file], down: [file], list: [file] }).scaleTo(
-					1,
-					never(),
-				),
+				createWorkerHostProvisioner({
+					kind: "command",
+					up: [file],
+					down: [file],
+					list: [process.execPath, "-e", "process.stdout.write('[]')"],
+				}).scaleTo(1, never()),
 			);
 			assert.equal(error.code, "exit");
 			assert.equal(error.message, "the up command could not start (EACCES).");
@@ -808,7 +528,7 @@ describe("command provisioner (#4768)", () => {
 				createWorkerHostProvisioner({ kind: "elsewhere" } as unknown as Parameters<
 					typeof createWorkerHostProvisioner
 				>[0]),
-			/kind must be "azure-vmss", "kubernetes" or "command"/,
+			/Invalid provisioner options: kind must be "command", not "elsewhere"\./,
 		);
 		assert.equal(createWorkerHostProvisioner(ok).kind, "command");
 		assert.throws(
@@ -825,37 +545,51 @@ describe("command provisioner (#4768)", () => {
 				() => createWorkerHostProvisioner({ ...ok, timeoutMs: timeoutMs as number }),
 				/Invalid command provisioner options: timeoutMs must be a positive integer/,
 			);
-	});
-});
-
-describe("provisioner options (#4768)", () => {
-	const vmss = { kind: "azure-vmss", resourceGroup: "rg", name: "set" } as const;
-	const kube = { kind: "kubernetes", namespace: "ns", selector: "app=w", deployment: "w" } as const;
-	type Config = Parameters<typeof createWorkerHostProvisioner>[0];
-
-	test("require their names to be non-empty strings, and optional ones to be when given (#4768)", () => {
-		assert.equal(createWorkerHostProvisioner(vmss).kind, "azure-vmss");
-		assert.equal(createWorkerHostProvisioner(kube).kind, "kubernetes");
-		const cases: [Config, RegExp][] = [
+		assert.equal(createWorkerHostProvisioner({ ...ok, up: [["a"], ["b", "c"]], down: [["d"]] }).kind, "command");
+		assert.throws(
+			() => createWorkerHostProvisioner({ ...ok, up: [["a"], []] }),
+			/up must be a non-empty array of strings: an executable and its arguments, or a non-empty array of such commands, run in order\./,
+		);
+		assert.throws(
+			() => createWorkerHostProvisioner({ ...ok, list: [["a"]] as unknown as string[] }),
+			/list must be a non-empty array of strings: an executable and its arguments\.$/,
+		);
+		assert.throws(() => createWorkerHostProvisioner({ ...ok, up: [[]] }), /up must be a non-empty array/);
+		assert.throws(
+			() => createWorkerHostProvisioner({ ...ok, upEach: "yes" as unknown as boolean }),
+			/upEach must be true or false when given\./,
+		);
+		assert.equal(createWorkerHostProvisioner({ ...ok, upEach: false }).kind, "command");
+		type Format = NonNullable<Parameters<typeof createWorkerHostProvisioner>[0]["listFormat"]>;
+		for (const [listFormat, message] of [
+			[[], /listFormat must be an object\./],
+			[null, /listFormat must be an object\./],
+			["id", /listFormat must be an object\./],
+			[{ items: "" }, /listFormat\.items must be a non-empty path when given\./],
+			[{ id: 5 }, /listFormat\.id must be a non-empty path when given\./],
+			[{ state: "" }, /listFormat\.state must be/],
+			[{ since: "" }, /listFormat\.since must be/],
+			[{ hostId: "" }, /listFormat\.hostId must be/],
 			[
-				{ ...vmss, resourceGroup: "" },
-				/Invalid azure-vmss provisioner options: resourceGroup must be a non-empty string\./,
+				{ states: { a: "up" } },
+				/listFormat\.states must map each provider state to pending, running, draining, stopped, failed or null\./,
 			],
-			[
-				{ ...vmss, name: 5 as unknown as string },
-				/azure-vmss provisioner options: name must be a non-empty string\./,
-			],
-			[{ ...vmss, subscription: "" }, /subscription must be a non-empty string when given\./],
-			[{ ...vmss, subscription: 5 as unknown as string }, /subscription must be a non-empty string when given\./],
-			[{ ...vmss, timeoutMs: 0 }, /Invalid azure-vmss provisioner options: timeoutMs must be a positive integer\./],
-			[{ ...kube, namespace: "" }, /Invalid kubernetes provisioner options: namespace must be a non-empty string\./],
-			[{ ...kube, selector: undefined as unknown as string }, /selector must be a non-empty string\./],
-			[{ ...kube, context: "" }, /context must be a non-empty string when given\./],
-			[{ ...kube, deployment: "" }, /deployment must be a non-empty string when given\./],
-			[{ ...kube, deployment: undefined, statefulSet: "" }, /statefulSet must be a non-empty string when given\./],
-			[{ ...kube, timeoutMs: -5 }, /Invalid kubernetes provisioner options: timeoutMs must be a positive integer\./],
-		];
-		for (const [config, message] of cases) assert.throws(() => createWorkerHostProvisioner(config), message);
+			[{ states: [] }, /listFormat\.states must map/],
+			[{ states: null }, /listFormat\.states must map/],
+			[{ states: "running" }, /listFormat\.states must map/],
+		] as const)
+			assert.throws(
+				() => createWorkerHostProvisioner({ ...ok, listFormat: listFormat as unknown as Format }),
+				message,
+				JSON.stringify(listFormat),
+			);
+		assert.equal(
+			createWorkerHostProvisioner({
+				...ok,
+				listFormat: { items: "a", id: "b", state: "c", since: "d", hostId: "e", states: { x: null, y: "failed" } },
+			}).kind,
+			"command",
+		);
 	});
 });
 

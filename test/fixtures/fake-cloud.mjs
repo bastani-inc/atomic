@@ -73,31 +73,31 @@ export function active(state) {
 	);
 }
 
-/** A host's id: a scale set's instance id, a ReplicaSet pod's name, a StatefulSet pod's ordinal name, or a script's id. */
+/** A host's id, as each provider names its hosts. */
 function nameOf(state, n) {
 	if (state.kind === "vmss") return String(n);
+	if (state.kind === "asg") return `i-0${(n * 7919 + 4096).toString(16).padStart(16, "0")}`;
+	if (state.kind === "mig") return `atomic-workers-${(n * 7919).toString(36).padStart(4, "z")}`;
 	if (state.kind === "deployment") return `atomic-worker-7d9c-${(n * 7919).toString(36).padStart(5, "q")}`;
-	if (state.kind === "statefulset") return `atomic-worker-${n}`;
+	if (state.kind === "gh") return 19_000_000 + n;
 	return `host-${n}`;
 }
 
-/** Adds one host: a StatefulSet takes the lowest free ordinal, anything else the next number. */
+/** Adds one host with the next number. */
 export function create(state) {
-	const taken = new Set(active(state).map((host) => host.n));
-	let n = state.nextId++;
-	if (state.kind === "statefulset") for (n = 0; taken.has(n); n++);
+	const n = state.nextId++;
 	state.hosts.push({ id: nameOf(state, n), n, phase: "creating", seen: false, created: Date.now() });
 }
 
 /**
  * Sets the count of hosts that are not deleting to `target`. Scaling in removes what the real controller would: a
- * ReplicaSet its pending pods first, then the newest; a StatefulSet or a scale set its highest-numbered hosts.
+ * ReplicaSet its pending pods first, then the lowest pod-deletion-cost, then the newest; any other its newest hosts.
  */
 export function scale(state, target) {
 	for (let count = active(state).length; count < target; count++) create(state);
 	const order =
 		state.kind === "deployment"
-			? (a, b) => (b.phase === "creating") - (a.phase === "creating") || b.n - a.n
+			? (a, b) => (b.phase === "creating") - (a.phase === "creating") || (a.cost ?? 0) - (b.cost ?? 0) || b.n - a.n
 			: (a, b) => b.n - a.n;
 	const current = active(state).toSorted(order);
 	for (const host of current.slice(0, Math.max(0, current.length - target))) host.phase = "deleting";

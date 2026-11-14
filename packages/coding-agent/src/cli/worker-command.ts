@@ -1,5 +1,5 @@
 /**
- * `atomic worker start|status|controller` (#4768): one command joins this machine to a shared workflow database as a
+ * `atomic worker start|status|controller|metrics` (#4768): one command joins this machine to a shared workflow database as a
  * worker host, over the workflows package's `startWorkflowWorkerHost`, and drains on SIGTERM or SIGINT; another runs a
  * fleet controller that adds and removes hosts through a provisioner module.
  */
@@ -12,6 +12,7 @@ import { APP_NAME } from "../config.js";
 import { getBuiltinPackageLocations } from "../core/builtin-packages.ts";
 import { isTeamProfileConfigError } from "../core/storage/errors.js";
 import { checkTeamPrefix, checkTeamUrl, LIBSQL_ADAPTER_PACKAGE } from "../core/storage/selection.js";
+import { serveWorkerMetrics, type WorkerFleetScaling, type WorkerMetricsServer } from "./worker-metrics.js";
 
 /** Most worker slots the default gives a host: past 16, a host's own checkpoint rate stops growing (#4768). */
 const MAX_DEFAULT_SLOTS = 16;
@@ -24,7 +25,10 @@ export function defaultWorkerSlots(cpus: number = availableParallelism()): numbe
 const HELP = `Usage:
   ${APP_NAME} worker start [--db <url>] [--token-file <path>] [--prefix <prefix>] [--slots <n>]
                       [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
-  ${APP_NAME} worker status [--db <url>] [--token-file <path>] [--prefix <prefix>] [--json]
+  ${APP_NAME} worker status [--db <url>] [--token-file <path>] [--prefix <prefix>]
+                      [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--json]
+  ${APP_NAME} worker metrics [--listen <host:port>] [--db <url>] [--token-file <path>] [--prefix <prefix>]
+                      [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--json]
   ${APP_NAME} worker controller --provisioner <module|file.json> [--db <url>] [--token-file <path>] [--prefix <prefix>]
                       [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--scale-up-queue-depth <n>]
                       [--scale-up-delay <ms>] [--idle-drain <ms>] [--boot-timeout <ms>] [--json]
@@ -37,7 +41,11 @@ Commands:
            setup is incomplete (every missing piece is listed) or the host fails.
   status   List the worker hosts registered in the database, each busy, idle, draining, degraded or stale,
            the fleet's queue, and the queue of each root they serve. Exits 1 when the database cannot be
-           read or does not answer within 5 seconds, and says why.
+           read or does not answer within 5 seconds, and says why. With --json it also prints the fleet's
+           scaling signal: the hosts its autoscaling policy wants, the queue, and busy and idle slots.
+  metrics  Serve the scaling signal over HTTP for any autoscaler: /metrics in Prometheus text, /scaling as
+           JSON for a KEDA metrics-api trigger (valueLocation desiredHosts). Counts only; it reads the
+           database at most every 5 seconds and writes nothing. SIGTERM or SIGINT stops it (exit 0).
   controller
            Add worker hosts through a provisioner as the database's shared queues grow, and drain and remove
            hosts that sat idle. Several controllers may run; one is active at a time and another takes over
@@ -61,15 +69,18 @@ Options:
 Controller options:
   --provisioner <module|file.json>
                                  A JavaScript module whose default export is a worker host provisioner, or a
-                                 function that returns one; or a JSON file configuring a built-in one, whose
-                                 "kind" is azure-vmss, kubernetes or command
-  --min-hosts <n>                Hosts kept however idle. Default 0
-  --max-hosts <n>                Hosts never exceeded. Default 10
-  --workers-per-host <n>         The --slots the hosts start with. Default 4
+                                 function that returns one; or the JSON configuration of a command
+                                 provisioner, such as one of the presets for az, aws, gcloud, kubectl or gh
+  --min-hosts <n>                Hosts kept however idle. Default 0 (status and metrics too)
+  --max-hosts <n>                Hosts never exceeded. Default 10 (status and metrics too)
+  --workers-per-host <n>         The --slots the hosts start with. Default 4 (status and metrics too)
   --scale-up-queue-depth <n>     Ready children tolerated before hosts are added. Default: --workers-per-host
   --scale-up-delay <ms>          How long the queue stays that deep first. Default 20000
   --idle-drain <ms>              How long a host holds no child before it is drained and removed. Default 300000
   --boot-timeout <ms>            How long a new host may take to register. Default 600000
+
+Metrics options:
+  --listen <host:port>           Where to serve. Default 127.0.0.1:9464; use 0.0.0.0:9464 in a container
 
 A host a provisioner starts reports the provider's id for it from ATOMIC_WORKER_PROVIDER_ID.`;
 
@@ -106,7 +117,19 @@ export type WorkerCommand =
 			readonly idleExitMs?: number;
 			readonly json: boolean;
 	  }
-	| { readonly kind: "status"; readonly database?: WorkerDatabase; readonly json: boolean }
+	| {
+			readonly kind: "status";
+			readonly database?: WorkerDatabase;
+			readonly policy: WorkerFleetPolicy;
+			readonly json: boolean;
+	  }
+	| {
+			readonly kind: "metrics";
+			readonly database?: WorkerDatabase;
+			readonly policy: WorkerFleetPolicy;
+			readonly listen: { readonly host: string; readonly port: number };
+			readonly json: boolean;
+	  }
 	| {
 			readonly kind: "controller";
 			readonly database?: WorkerDatabase;
@@ -147,10 +170,35 @@ const VALUE_OPTIONS = new Set([
 	"--host-id",
 	"--idle-exit",
 	"--provisioner",
+	"--listen",
 	...Object.keys(POLICY_OPTIONS),
 ]);
-const START_ONLY = new Set(["--slots", "--label", "--host-id", "--idle-exit", "--no-restore"]);
-const CONTROLLER_ONLY = new Set(["--provisioner", ...Object.keys(POLICY_OPTIONS)]);
+/** The policy options that shape the scaling signal, which status and metrics report too. */
+const SIGNAL_OPTIONS = new Set(["--min-hosts", "--max-hosts", "--workers-per-host"]);
+/** Each option and the commands that take it; any other option every command takes. */
+const OPTION_COMMANDS: Readonly<Record<string, readonly string[]>> = {
+	...Object.fromEntries(
+		["--slots", "--label", "--host-id", "--idle-exit", "--no-restore"].map((option) => [option, ["start"]]),
+	),
+	...Object.fromEntries(
+		Object.keys(POLICY_OPTIONS).map((option) => [
+			option,
+			SIGNAL_OPTIONS.has(option) ? ["controller", "status", "metrics"] : ["controller"],
+		]),
+	),
+	"--provisioner": ["controller"],
+	"--listen": ["metrics"],
+};
+
+/** Where `--listen` says to serve: `host:port`, `[ipv6]:port`, `:port` or `port`. */
+function listenAddress(value: string): { readonly host: string; readonly port: number } {
+	const match = /^(?:(\[[0-9a-fA-F:.]+\]|[^:[\]]*):)?([0-9]{1,5})$/.exec(value);
+	const port = Number(match?.[2]);
+	if (match === null || port > 65_535)
+		throw new WorkerCommandError("--listen", "Pass host:port, such as 127.0.0.1:9464 or 0.0.0.0:9464.");
+	const host = match[1] === undefined || match[1] === "" ? "127.0.0.1" : match[1].replace(/^\[|\]$/g, "");
+	return { host, port };
+}
 
 function positiveInteger(field: string, value: string): number {
 	const parsed = /^[1-9][0-9]*$/.test(value) ? Number(value) : Number.NaN;
@@ -195,8 +243,8 @@ export function parseWorkerCommand(
 	const [command, ...rest] = args;
 	if (command === undefined || command === "help" || args.includes("--help") || args.includes("-h"))
 		return { kind: "help" };
-	if (command !== "start" && command !== "status" && command !== "controller")
-		throw new WorkerCommandError("<command>", `Use start, status or controller. ${HELP_HINT}`);
+	if (command !== "start" && command !== "status" && command !== "controller" && command !== "metrics")
+		throw new WorkerCommandError("<command>", `Use start, status, controller or metrics. ${HELP_HINT}`);
 	const values = new Map<string, string>();
 	const labels: Record<string, string> = {};
 	let json = false;
@@ -204,7 +252,7 @@ export function parseWorkerCommand(
 	for (let index = 0; index < rest.length; index++) {
 		const arg = rest[index]!;
 		const option = arg.split("=")[0]!;
-		if ((command !== "start" && START_ONLY.has(option)) || (command !== "controller" && CONTROLLER_ONLY.has(option)))
+		if (OPTION_COMMANDS[option] !== undefined && !OPTION_COMMANDS[option].includes(command))
 			throw new WorkerCommandError(option, `"${APP_NAME} worker ${command}" does not take it. ${HELP_HINT}`);
 		if (arg === "--json") json = true;
 		else if (arg === "--no-restore") restore = false;
@@ -222,7 +270,22 @@ export function parseWorkerCommand(
 			throw new WorkerCommandError("arguments", `"${APP_NAME} worker ${command}" takes options only. ${HELP_HINT}`);
 	}
 	const selected = database(values, options.cwd);
-	if (command === "status") return { kind: "status", ...(selected === undefined ? {} : { database: selected }), json };
+	const policy: Record<string, number> = {};
+	for (const [option, { field, zero }] of Object.entries(POLICY_OPTIONS)) {
+		const value = values.get(option);
+		if (value !== undefined)
+			policy[field] = zero ? nonNegativeInteger(option, value) : positiveInteger(option, value);
+	}
+	const chosen = selected === undefined ? {} : { database: selected };
+	if (command === "status") return { kind: "status", ...chosen, policy, json };
+	if (command === "metrics")
+		return {
+			kind: "metrics",
+			...chosen,
+			policy,
+			listen: listenAddress(values.get("--listen") ?? "127.0.0.1:9464"),
+			json,
+		};
 	if (command === "controller") {
 		const provisioner = values.get("--provisioner");
 		if (provisioner === undefined)
@@ -230,12 +293,6 @@ export function parseWorkerCommand(
 				"--provisioner",
 				"Pass the provisioner module, or the JSON configuration of a built-in one, that the controller drives.",
 			);
-		const policy: Record<string, number> = {};
-		for (const [option, { field, zero }] of Object.entries(POLICY_OPTIONS)) {
-			const value = values.get(option);
-			if (value !== undefined)
-				policy[field] = zero ? nonNegativeInteger(option, value) : positiveInteger(option, value);
-		}
 		return {
 			kind: "controller",
 			...(selected === undefined ? {} : { database: selected }),
@@ -334,6 +391,7 @@ export interface WorkerHostOptions {
 /** A shared journal's fleet as the workflows package reads it; output prints it whole. */
 export interface WorkerFleet {
 	readonly fleet: { readonly store: { readonly state: "ok" | "degraded" | "unknown" }; readonly queue?: object };
+	readonly scaling?: WorkerFleetScaling;
 }
 
 /** A worker host provisioner, as the workflows package's `WorkerHostProvisioner`; the module supplies it. */
@@ -383,6 +441,8 @@ export interface WorkerHostModule {
 	readWorkflowWorkerFleet(options: {
 		readonly journal?: WorkerJournalSelection;
 		readonly agentDir: string;
+		readonly policy?: WorkerFleetPolicy;
+		readonly probeWrites?: boolean;
 	}): Promise<WorkerFleet>;
 	/** The fleet as status lines, the same lines `/workflow status` shows of it. */
 	workflowWorkerFleetLines(fleet: WorkerFleet): string[];
@@ -657,6 +717,56 @@ async function controller(
 	return 0;
 }
 
+/** The scaling signal as one status line. */
+function scalingLine(scaling: WorkerFleetScaling): string {
+	return `Scaling: wants ${scaling.desiredHosts} hosts (${scaling.desiredWorkers} workers) for ${scaling.demand} children, ${scaling.queueDepth} queued; ${scaling.hosts} hosts live, ${scaling.busySlots} busy and ${scaling.idleSlots} idle slots`;
+}
+
+async function metrics(
+	command: Extract<WorkerCommand, { kind: "metrics" }>,
+	options: WorkerCommandOptions,
+	module: WorkerHostModule,
+	log: (line: string) => void,
+	error: (line: string) => void,
+): Promise<number> {
+	const line = formatter(command.json);
+	const warning = tokenFileWarning(command.database);
+	if (warning !== undefined) error(command.json ? line("warning", { message: warning }) : `Warning: ${warning}`);
+	const read = () =>
+		module.readWorkflowWorkerFleet({
+			...(command.database === undefined ? {} : { journal: workerJournalSelection(command.database) }),
+			agentDir: options.agentDir,
+			policy: command.policy,
+			// A scrape only reads: it never takes the store's write lock.
+			probeWrites: false,
+		});
+	let server: WorkerMetricsServer;
+	try {
+		// The first read checks the setup, and fails the command when it is incomplete.
+		await read();
+		server = await serveWorkerMetrics({ ...command.listen, read });
+	} catch (caught) {
+		for (const text of setupLines(caught as Error))
+			error(command.json ? line("setup-failed", { message: text }) : text);
+		return 1;
+	}
+	log(line("listening", { address: server.address, journal: databaseLabel(command.database) }));
+	const signals = options.signals ?? process;
+	const stopped = Promise.withResolvers<NodeJS.Signals>();
+	const onSignal = (signal: NodeJS.Signals) => stopped.resolve(signal);
+	signals.on("SIGTERM", onSignal);
+	signals.on("SIGINT", onSignal);
+	try {
+		log(line("stopping", { signal: await stopped.promise }));
+		await server.close();
+	} finally {
+		signals.off("SIGTERM", onSignal);
+		signals.off("SIGINT", onSignal);
+	}
+	log(line("stopped"));
+	return 0;
+}
+
 /** Run `atomic worker <args>` and return the exit code. */
 export async function runWorkerCommand(args: readonly string[], options: WorkerCommandOptions): Promise<number> {
 	const log = options.log ?? ((line: string) => console.log(line));
@@ -682,13 +792,18 @@ export async function runWorkerCommand(args: readonly string[], options: WorkerC
 	}
 	if (command.kind === "start") return start(command, options, module, log, error);
 	if (command.kind === "controller") return controller(command, options, module, log, error);
+	if (command.kind === "metrics") return metrics(command, options, module, log, error);
 	try {
 		const fleet = await module.readWorkflowWorkerFleet({
 			...(command.database === undefined ? {} : { journal: workerJournalSelection(command.database) }),
 			agentDir: options.agentDir,
+			policy: command.policy,
 		});
 		if (command.json) log(JSON.stringify(fleet, null, 2));
-		else for (const text of module.workflowWorkerFleetLines(fleet)) log(text);
+		else {
+			for (const text of module.workflowWorkerFleetLines(fleet)) log(text);
+			if (fleet.scaling !== undefined) log(scalingLine(fleet.scaling));
+		}
 		// A store that could not be read, unknown or degraded without a queue, is a failed status, though it printed why.
 		return fleet.fleet.store.state === "ok" || fleet.fleet.queue !== undefined ? 0 : 1;
 	} catch (caught) {

@@ -1,0 +1,28 @@
+{
+	"kind": "command",
+	"up": [
+		"gh", "workflow", "run", "atomic-workers.yml", "--repo", "acme/flows", "--ref", "main",
+		"--field", "workers=1"
+	],
+	"upEach": true,
+	"down": ["gh", "run", "cancel", "{id}", "--repo", "acme/flows"],
+	"list": [
+		"gh", "run", "list", "--repo", "acme/flows", "--workflow", "atomic-workers.yml",
+		"--json", "databaseId,status,createdAt", "--limit", "100"
+	],
+	"listFormat": {
+		"id": "databaseId",
+		"state": "status",
+		"since": "createdAt",
+		"states": {
+			"requested": "pending",
+			"queued": "pending",
+			"pending": "pending",
+			"waiting": "pending",
+			"in_progress": "running",
+			"completed": null,
+			"*": "pending"
+		}
+	},
+	"timeoutMs": 60000
+}

@@ -1,0 +1,66 @@
+# `atomic worker metrics`: the scaling signal for KEDA and Prometheus. It reads the database and writes nothing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ .Release.Name }}-metrics"
+  labels:
+    app: "{{ .Release.Name }}-metrics"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: "{{ .Release.Name }}-metrics"
+  template:
+    metadata:
+      labels:
+        app: "{{ .Release.Name }}-metrics"
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: metrics
+          image: "{{ .Values.image }}"
+          command: ["atomic", "worker", "metrics"]
+          args:
+            - --listen
+            - 0.0.0.0:9464
+            - --db
+            - "{{ .Values.database }}"
+            - --token-file
+            - /run/secrets/atomic-db-token
+            - --workers-per-host
+            - "{{ .Values.workersPerHost }}"
+            - --max-hosts
+            - "{{ .Values.maxHosts }}"
+          ports:
+            - name: metrics
+              containerPort: 9464
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+          volumeMounts:
+            - name: token
+              mountPath: /run/secrets/atomic-db-token
+              subPath: token
+              readOnly: true
+      volumes:
+        - name: token
+          secret:
+            secretName: "{{ .Values.tokenSecret }}"
+            defaultMode: 0400
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ .Release.Name }}-metrics"
+spec:
+  selector:
+    app: "{{ .Release.Name }}-metrics"
+  ports:
+    - name: metrics
+      port: 9464
+      targetPort: metrics

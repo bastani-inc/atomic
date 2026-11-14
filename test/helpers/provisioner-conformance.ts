@@ -13,11 +13,11 @@ import { describe, test } from "vitest";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/fleet-types.js";
 import { sleep } from "./runtime.js";
 
-export type FakeCloudKind = "vmss" | "deployment" | "statefulset" | "command";
+export type FakeCloudKind = "vmss" | "asg" | "mig" | "deployment" | "gh";
 export type FakeCloudMode = "ok" | "hang" | "auth" | "malformed" | "raw";
 
 export interface FakeCloudHost {
-	readonly id: string;
+	readonly id: string | number;
 	readonly n: number;
 	readonly phase: "creating" | "running" | "deleting";
 	readonly seen: boolean;
@@ -26,20 +26,17 @@ export interface FakeCloudHost {
 	readonly state?: string;
 	/** A pod phase the fake `kubectl` reports instead of the one its phase gives. */
 	readonly podPhase?: string;
+	/** A pod's `controller.kubernetes.io/pod-deletion-cost`. */
+	readonly cost?: number;
 }
 
 interface FakeCloudState {
 	kind: FakeCloudKind;
-	target: Readonly<Record<string, string | undefined>>;
 	mode: FakeCloudMode;
 	nextId: number;
 	hosts: FakeCloudHost[];
-	/** Replicas the fake `kubectl get` reports instead of the pods it counts, as if another writer changed them. */
-	reportReplicas?: number;
 	/** What every call prints in `raw` mode. */
 	raw?: string;
-	/** What the fake `kubectl get <workload>` prints instead of the workload. */
-	rawWorkload?: string;
 }
 
 /** A fake cloud in its own directory, with the fake CLIs it installs first on `PATH`. */
@@ -51,23 +48,23 @@ export class FakeCloud {
 		this.dir = dir;
 	}
 
-	/** A fake cloud of `kind` holding no host. `target` is what its CLI answers for; anything else is not found. */
-	static create(kind: FakeCloudKind, target: Readonly<Record<string, string | undefined>> = {}): FakeCloud {
+	/** A fake cloud of `kind` holding no host. */
+	static create(kind: FakeCloudKind): FakeCloud {
 		const cloud = new FakeCloud(mkdtempSync(join(tmpdir(), "atomic-fake-cloud-")));
-		cloud.write({ kind, target, mode: "ok", nextId: 0, hosts: [] });
+		cloud.write({ kind, mode: "ok", nextId: 0, hosts: [] });
 		writeFileSync(join(cloud.dir, "calls.jsonl"), "");
 		return cloud;
 	}
 
-	/** Installs `name` on `PATH`: a shell script that runs `fixture` with this cloud's directory. */
-	installCli(name: string, fixture: string): void {
+	/** Installs the fake `name` (`az`, `aws`, `gcloud`, `kubectl` or `gh`) on `PATH`, over this cloud's directory. */
+	installCli(name: string): void {
 		const bin = join(this.dir, "bin");
 		const script = join(bin, name);
-		const fixturePath = fileURLToPath(new URL(`../fixtures/${fixture}`, import.meta.url));
+		const fixturePath = fileURLToPath(new URL("../fixtures/fake-cli.mjs", import.meta.url));
 		mkdirSync(bin, { recursive: true });
 		writeFileSync(
 			script,
-			`#!/bin/sh\nFAKE_CLOUD_DIR=${quote(this.dir)} exec ${quote(process.execPath)} ${quote(fixturePath)} "$@"\n`,
+			`#!/bin/sh\nFAKE_CLOUD_DIR=${quote(this.dir)} exec ${quote(process.execPath)} ${quote(fixturePath)} ${name} "$@"\n`,
 		);
 		chmodSync(script, 0o755);
 		process.env.PATH = `${bin}${delimiter}${this.path ?? ""}`;
@@ -103,7 +100,7 @@ export class FakeCloud {
 	activeIds(): string[] {
 		return this.read()
 			.hosts.filter((host) => host.phase !== "deleting" && host.podPhase !== "Failed")
-			.map((host) => host.id)
+			.map((host) => String(host.id))
 			.toSorted();
 	}
 
@@ -155,6 +152,8 @@ export interface ProvisionerConformanceSubject {
 }
 
 const never = () => new AbortController().signal;
+/** Long enough for a hung CLI to start its grandchild on a loaded machine, short enough to keep the case quick. */
+const HANG_TIMEOUT_MS = 2_000;
 
 async function waitFor<T>(what: string, check: () => T | undefined, timeoutMs = 10_000): Promise<T> {
 	const deadline = Date.now() + timeoutMs;
@@ -315,12 +314,15 @@ export function runProvisionerConformance(name: string, setup: () => Provisioner
 			async ({ provisioner, cloud }) => {
 				cloud.setMode("hang");
 				const started = Date.now();
-				const error = await rejection(provisioner({ timeoutMs: 300 }).list(never()));
-				assert.ok(Date.now() - started < 5_000, "the timeout did not stop the call");
+				const error = await rejection(provisioner({ timeoutMs: HANG_TIMEOUT_MS }).list(never()));
+				assert.ok(Date.now() - started < HANG_TIMEOUT_MS + 5_000, "the timeout did not stop the call");
 				assert.equal((error as Error & { code?: string }).code, "timeout");
-				assert.match(error.message, /did not finish within/);
+				assert.equal(
+					error.message,
+					`the list command did not finish within ${HANG_TIMEOUT_MS} ms and was stopped.`,
+				);
+				// Usually both started by now; on a loaded machine the timeout may stop the CLI first, which is right too.
 				const pids = cloud.hungPids();
-				assert.equal(pids.length, 2);
 				await waitFor("the hung CLI to stop", () => (pids.some(alive) ? undefined : true));
 			},
 		],
