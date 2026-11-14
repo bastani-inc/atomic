@@ -1,4 +1,5 @@
 import {
+	dialectOf,
 	JOURNAL_COPIED_ALL_MARKER,
 	renderStorageIdentifiers,
 	type SqliteDatabase,
@@ -65,16 +66,19 @@ async function hasLegacyTable(tx: SqliteExecutor, table: keyof typeof JOURNAL_TA
  * modified; deleting a legacy run records its ID so it is not listed again.
  */
 export class LegacyJournalRuns {
-	/** Present only for the unprefixed journal in a database that still has version-1 legacy tables. */
+	/**
+	 * Present only for the unprefixed journal in a database that still has version-1 legacy tables. Only SQLite
+	 * journals written before 0.9.38 have them, so their columns are read from SQLite's catalog once all three exist.
+	 */
 	static async open(database: SqliteDatabase): Promise<LegacyJournalRuns | undefined> {
+		const dialect = dialectOf(database);
+		const exists = async (executor: SqliteExecutor, table: string) => {
+			const probe = dialect.tableExists(table);
+			return (await executor.get(probe.sql, ...probe.params)) !== undefined;
+		};
 		try {
-			const legacyTables = await database.all(
-				"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
-				JOURNAL_TABLES.meta,
-				JOURNAL_TABLES.runs,
-				JOURNAL_TABLES.events,
-			);
-			if (legacyTables.length < 3) return undefined;
+			for (const table of [JOURNAL_TABLES.meta, JOURNAL_TABLES.runs, JOURNAL_TABLES.events])
+				if (!(await exists(database, table))) return undefined;
 			return await database.transaction(async (tx) => {
 				for (const table of ["meta", "runs", "events"] as const) {
 					if (!(await hasLegacyTable(tx, table))) return undefined;
@@ -85,15 +89,12 @@ export class LegacyJournalRuns {
 				if (versions.length !== 1 || Number(versions[0]![c.schemaVersion]) !== JOURNAL_SCHEMA_VERSION)
 					return undefined;
 				const copiedAll =
-					(await tx.get(
-						`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
-						CURRENT.migrations,
-					)) !== undefined &&
+					(await exists(tx, CURRENT.migrations)) &&
 					(await tx.get(`SELECT name FROM ${CURRENT.migrations} WHERE name = ?`, JOURNAL_COPIED_ALL_MARKER)) !==
 						undefined;
 				if (copiedAll) return undefined;
 				await tx.exec(
-					`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)`,
+					`CREATE TABLE IF NOT EXISTS ${CURRENT.legacyDeleted}(${c.runId} TEXT PRIMARY KEY, deleted_at ${dialect.types.int} NOT NULL)`,
 				);
 				return new LegacyJournalRuns();
 			}, JOURNAL_TRANSACTION);
@@ -143,12 +144,12 @@ export class LegacyJournalRuns {
 		if ((await this.find(tx, runId)) === undefined) return false;
 		const eventColumns = LEGACY_COLUMNS.events.join(", ");
 		await tx.run(
-			`INSERT OR IGNORE INTO ${CURRENT.events}(${eventColumns}) SELECT ${eventColumns} FROM ${JOURNAL_TABLES.events} WHERE ${c.runId} = ?`,
+			`INSERT INTO ${CURRENT.events}(${eventColumns}) SELECT ${eventColumns} FROM ${JOURNAL_TABLES.events} WHERE ${c.runId} = ? ON CONFLICT DO NOTHING`,
 			runId,
 		);
 		if (await hasLegacyTable(tx, "leases")) {
 			await tx.run(
-				`INSERT OR IGNORE INTO ${CURRENT.leases}(${c.runId}, ${c.holderId}, ${c.epoch}, ${c.renewedAt}) SELECT ${c.runId}, NULL, ${c.epoch}, ${c.renewedAt} FROM ${JOURNAL_TABLES.leases} WHERE ${c.runId} = ?`,
+				`INSERT INTO ${CURRENT.leases}(${c.runId}, ${c.holderId}, ${c.epoch}, ${c.renewedAt}) SELECT ${c.runId}, NULL, ${c.epoch}, ${c.renewedAt} FROM ${JOURNAL_TABLES.leases} WHERE ${c.runId} = ? ON CONFLICT DO NOTHING`,
 				runId,
 			);
 		}
@@ -163,6 +164,6 @@ export class LegacyJournalRuns {
 	async markDeleted(tx: SqliteExecutor, runId: string): Promise<void> {
 		if ((await tx.get(`SELECT ${c.runId} FROM ${JOURNAL_TABLES.runs} WHERE ${c.runId} = ?`, runId)) === undefined)
 			return;
-		await tx.run(`INSERT OR IGNORE INTO ${CURRENT.legacyDeleted} VALUES (?, ?)`, runId, Date.now());
+		await tx.run(`INSERT INTO ${CURRENT.legacyDeleted} VALUES (?, ?) ON CONFLICT DO NOTHING`, runId, Date.now());
 	}
 }
