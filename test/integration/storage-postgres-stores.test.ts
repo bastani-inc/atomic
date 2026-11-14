@@ -158,6 +158,8 @@ describe.skipIf(postgresSkipReason !== undefined)("sessions and workflow runs on
 				const exported = join(directory, "first");
 				assert.deepEqual((await exportWorkflowRuns(storage("source_"), exported)).written, ["moved"]);
 
+				// Into a journal that exists already, as on a database this machine joined, but lacks the run.
+				await (await SqlRunJournal.open(await scope.open(), { prefix: "copy_" })).close();
 				assert.deepEqual(await importWorkflowRuns(storage("copy_"), exported), {
 					added: ["moved"],
 					updated: [],
