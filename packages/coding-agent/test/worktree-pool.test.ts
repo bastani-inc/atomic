@@ -743,7 +743,10 @@ describe("worktree pool records and leases (#4748)", () => {
 			await admitPooledWorktree(admission(remotes), owner),
 			await admitPooledWorktree(admission(remotes), owner),
 		];
-		for (const lease of leases) await releaseRestoredWorktree(lease);
+		for (const lease of leases) {
+			await releaseRestoredWorktree(lease);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
 		const stale = join(storeDir(), "pool", repository, "1.json.1-dead.lease.lock");
 		mkdirSync(stale);
 		const past = new Date(Date.now() - 120_000);
