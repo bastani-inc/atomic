@@ -60,9 +60,15 @@ async function withDatabase<T>(
 /** One write from a fresh client, as a host joining the fleet would make it; its time, or the timeout it ran into. */
 async function probeWrite(url: string, table: string): Promise<number> {
 	const started = performance.now();
+	// One batch that waits out a busy lock, as Atomic's own writes do, for as long as the probe allows.
 	const write = withDatabase(url, async (database) => {
-		await database.exec(`CREATE TABLE IF NOT EXISTS ${table}(at INTEGER NOT NULL)`);
-		await database.run(`INSERT INTO ${table} VALUES (?)`, Date.now());
+		await database.batch!(
+			[
+				{ sql: `CREATE TABLE IF NOT EXISTS ${table}(at INTEGER NOT NULL)`, params: [] },
+				{ sql: `INSERT INTO ${table} VALUES (?)`, params: [Date.now()] },
+			],
+			{ lockWaitMs: WRITE_PROBE_TIMEOUT_MS },
+		);
 	});
 	const timedOut = Symbol("timed out");
 	const result = await Promise.race([write.then(() => undefined), sleep(WRITE_PROBE_TIMEOUT_MS).then(() => timedOut)]);
