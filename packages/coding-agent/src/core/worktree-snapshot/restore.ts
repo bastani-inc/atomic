@@ -4,7 +4,6 @@ import { lstat, mkdir, open, readdir, readFile, realpath, rm, rmdir, stat, write
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
-import { getAgentDir } from "../../config.js";
 import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
@@ -34,6 +33,7 @@ import {
 	runGit,
 	withWorktreeSnapshotGit,
 } from "./git.ts";
+import { defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
 import {
@@ -83,9 +83,7 @@ export function snapshotRestoreWarnings(snapshot: WorktreeSnapshot): WorktreeRes
 	];
 }
 
-export function defaultWorktreeSnapshotStoreDir(): string {
-	return join(getAgentDir(), "worktree-snapshots");
-}
+export { defaultWorktreeSnapshotStoreDir };
 
 function isBinding(value: unknown): value is WorkspaceBinding {
 	if (typeof value !== "object" || value === null) return false;

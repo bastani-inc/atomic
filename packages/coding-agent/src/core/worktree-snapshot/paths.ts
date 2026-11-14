@@ -1,6 +1,20 @@
 import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { getAgentDir } from "../../config.js";
+import { sha256Hex } from "./env-hash.ts";
 import { unreadablePathError } from "./errors.ts";
+
+export function defaultWorktreeSnapshotStoreDir(): string {
+	return join(getAgentDir(), "worktree-snapshots");
+}
+
+/**
+ * The private index captures of one checkout keep between turns, under the restore store and never inside the
+ * repository: one file per Git directory and work tree root, so a moved checkout gets a new one.
+ */
+export function captureIndexPath(storeDir: string, gitDir: string, root: string): string {
+	return join(storeDir, "capture-index", sha256Hex(`${gitDir}\0${root}`).slice(0, 24));
+}
 
 /**
  * `path` with every symbolic link in its existing part resolved: the real path of its deepest existing ancestor, with
