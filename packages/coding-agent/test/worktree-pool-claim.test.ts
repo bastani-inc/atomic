@@ -421,6 +421,7 @@ describe("claim candidates and failures (#4748)", () => {
 		await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
 		const { clone } = await sandbox.remoteWithClone("repo", {
 			".gitattributes": "*.bin filter=lfs -text\n",
+			".gitignore": "node_modules/\n",
 			"data.bin": "LFS-CONTENT-1\n",
 			"model.bin": "LFS-MODEL-1\n",
 		});
@@ -437,7 +438,7 @@ describe("claim candidates and failures (#4748)", () => {
 
 		const claim = await claimIdleWorktree(b, claimOptions());
 
-		assert.equal(claim.claimed, true);
+		assert.equal(claim.claimed, true, JSON.stringify(claim));
 		if (!claim.claimed) return;
 		await releaseRestoredWorktree(claim.lease);
 		assert.deepEqual(
