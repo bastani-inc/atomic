@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
@@ -12,7 +13,8 @@ import type { WorktreeSnapshotSettings } from "./types.ts";
 /**
  * The per-machine pool of restored worktrees (#4748). A session resume restores into a slot at a stable path,
  * `<storeDir>/worktrees/<repositoryId>-<n>`, described by one record, `<storeDir>/pool/<repositoryId>/<n>.json`, and
- * leased by a lock on that record while a session works in it. Only session resumes admit slots: worktrees restored
+ * leased while a session works in it: each process that holds a slot has a lease lock of its own next to the record,
+ * and a lock on the record itself serializes changes to the slot. Only session resumes admit slots: worktrees restored
  * for workflow runs, by the SDK into a chosen directory, or by earlier versions have no record and are never pooled.
  *
  * A slot's owner is the holder that last took it, whether it still holds the lease or released it when it closed;
@@ -107,12 +109,15 @@ interface HeldSlot {
 	readonly owner: PoolOwner;
 	references: number;
 	record: PoolSlotRecord;
-	readonly unlock: () => Promise<void>;
+	/** Releases this process's lease of the slot. */
+	readonly unlease: () => Promise<void>;
 }
 
-/** The slots this process holds, by record file. A second hold of a slot by its owner shares the lock. */
+/** The slots this process holds, by record file. A second hold of a slot by its owner shares the lease. */
 const heldSlots = new Map<string, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
+/** Names this process's leases; the pid alone could be reused by a later process. */
+const PROCESS_LEASE = `${process.pid}-${randomUUID().slice(0, 8)}`;
 
 function sameOwner(a: PoolOwner | null, b: PoolOwner): boolean {
 	return a !== null && a.kind === b.kind && a.id === b.id;
@@ -128,29 +133,67 @@ async function exists(path: string): Promise<boolean> {
 	}
 }
 
-function lockSlot(file: string): Promise<() => Promise<void>> {
-	return lockfile.lock(file, {
+/**
+ * Locks `path` with the restore-record constants: a stopped process loses the lock after 30 seconds. `wait` retries a
+ * lock another process holds for a while, as when a slot's record is briefly being written.
+ */
+function lockPath(path: string, wait: boolean): Promise<() => Promise<void>> {
+	return lockfile.lock(path, {
 		realpath: false,
 		stale: LEASE_STALE_MS,
 		update: LEASE_UPDATE_MS,
-		retries: 0,
-		// A lost lease only lets another process take the slot later; it never ends this process.
+		retries: wait ? { retries: 60, minTimeout: 20, maxTimeout: 500 } : 0,
+		// A lost lock only lets another process take the slot later; it never ends this process.
 		onCompromised: (error) =>
-			reportDebug("storage", "worktree-pool-lease-lost", { file, ...failureDebugFields(error) }),
+			reportDebug("storage", "worktree-pool-lock-lost", { path, ...failureDebugFields(error) }),
 	});
 }
 
 /**
- * Whether a live process holds the slot whose record is `file`: this one, or another whose lock is not stale. A lock
- * that cannot be read counts as held.
+ * Runs `action` holding the slot's record lock, which serializes changes to one slot across processes: leases are
+ * taken and released, and slots evicted, only under it. Without `wait`, a busy slot rejects with `ELOCKED`.
  */
+async function withSlotLock<T>(file: string, wait: boolean, action: () => Promise<T>): Promise<T> {
+	const unlock = await lockPath(file, wait);
+	try {
+		return await action();
+	} finally {
+		await unlock().catch(() => {});
+	}
+}
+
+/** Takes this process's lease of the slot whose record is `file`: a lock of its own, so other processes can share it. */
+function leaseSlot(file: string): Promise<() => Promise<void>> {
+	return lockPath(`${file}.${PROCESS_LEASE}.lease`, false);
+}
+
+/**
+ * The leases other processes hold on the slot whose record is `file`, removing those of processes that stopped. A
+ * lease that cannot be read counts as held.
+ */
+async function otherLeases(file: string): Promise<number> {
+	const prefix = `${basename(file)}.`;
+	const own = `${basename(file)}.${PROCESS_LEASE}.lease`;
+	let live = 0;
+	for (const name of await readdir(dirname(file))) {
+		if (!name.startsWith(prefix) || !name.endsWith(".lease.lock")) continue;
+		const lease = join(dirname(file), name.slice(0, -".lock".length));
+		if (basename(lease) === own) continue;
+		const held = await lockfile.check(lease, { realpath: false, stale: LEASE_STALE_MS }).catch(() => true);
+		if (held) live++;
+		else await rm(`${lease}.lock`, { recursive: true, force: true }).catch(() => {});
+	}
+	return live;
+}
+
+/** Whether a live process holds the slot whose record is `file`: this one, or another whose lease is not stale. */
 async function isHeld(file: string): Promise<boolean> {
 	if (heldSlots.has(file)) return true;
-	return lockfile.check(file, { realpath: false, stale: LEASE_STALE_MS }).catch(() => true);
+	return (await otherLeases(file).catch(() => 1)) > 0;
 }
 
 async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> {
-	const temporary = `${file}.${process.pid}.tmp`;
+	const temporary = `${file}.${PROCESS_LEASE}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	await rename(temporary, file);
 }
@@ -198,8 +241,9 @@ function newLease(record: PoolSlotRecord, storeDir: string, owner: PoolOwner): W
 
 /**
  * Takes the lowest free slot of the repository `admission.remotes` name and holds it for `owner`, before the restore
- * publishes into its path. A slot is free when it has neither a record nor a directory. Choosing and taking a slot run
- * under a per-repository lock, so concurrent restores, in this process or others, get different slots.
+ * publishes into its path. A slot is free when it has neither a record nor a directory, and no other process is
+ * changing it. Choosing and taking a slot run under a per-repository lock, so concurrent restores, in this process or
+ * others, get different slots.
  */
 export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolOwner): Promise<WorktreeLease> {
 	const storeDir = resolve(admission.storeDir);
@@ -218,13 +262,6 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 			const file = recordFile(storeDir, repository, slot);
 			const path = pooledWorktreePath(storeDir, repository, slot);
 			if (heldSlots.has(file) || (await exists(file)) || (await exists(path))) continue;
-			let unlock: () => Promise<void>;
-			try {
-				unlock = await lockSlot(file);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ELOCKED") continue;
-				throw error;
-			}
 			const record: PoolSlotRecord = {
 				version: 1,
 				repository,
@@ -236,13 +273,23 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 				blueprintDigest: null,
 				releasedAt: null,
 			};
+			let unlease: () => Promise<void>;
 			try {
-				await writeRecord(file, record);
+				unlease = await withSlotLock(file, false, async () => {
+					const lease = await leaseSlot(file);
+					try {
+						await writeRecord(file, record);
+					} catch (error) {
+						await lease().catch(() => {});
+						throw error;
+					}
+					return lease;
+				});
 			} catch (error) {
-				await unlock().catch(() => {});
+				if ((error as NodeJS.ErrnoException).code === "ELOCKED") continue;
 				throw error;
 			}
-			heldSlots.set(file, { owner, references: 1, record, unlock });
+			heldSlots.set(file, { owner, references: 1, record, unlease });
 			return newLease(record, storeDir, owner);
 		}
 	} finally {
@@ -280,8 +327,8 @@ export async function pooledWorktreeHolder(storeDir: string, root: string): Prom
 
 /**
  * Holds the existing pooled slot at `root` for `owner`, who must own it, as when a session continues in its worktree.
- * Undefined when `root` is not pooled, another holder owns it, or a live process of another holder has it leased; a
- * live process of the same owner keeps its lease and this one holds none.
+ * Processes of the same owner share the slot, each with a lease of its own, so it stays held until the last one
+ * releases it or stops. Undefined when `root` is not pooled or another holder owns it.
  */
 export async function holdRestoredWorktree(
 	storeDir: string,
@@ -297,34 +344,29 @@ export async function holdRestoredWorktree(
 		shared.references++;
 		return newLease(shared.record, storeDir, owner);
 	}
-	let unlock: () => Promise<void>;
-	try {
-		unlock = await lockSlot(file);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ELOCKED") return undefined;
-		throw error;
-	}
-	try {
+	const taken = await withSlotLock(file, true, async () => {
 		const record = await readRecord(file, storeDir, slot.repository, slot.slot).catch(() => undefined);
-		if (record === undefined || !sameOwner(record.holder, owner)) {
-			await unlock();
-			return undefined;
+		if (record === undefined || !sameOwner(record.holder, owner)) return undefined;
+		const held: PoolSlotRecord = { ...record, releasedAt: null };
+		const unlease = await leaseSlot(file);
+		try {
+			await writeRecord(file, held);
+		} catch (error) {
+			await unlease().catch(() => {});
+			throw error;
 		}
-		const held: PoolSlotRecord = { ...record, holder: owner, releasedAt: null };
-		await writeRecord(file, held);
-		const again = heldSlots.get(file);
-		if (again !== undefined) {
-			// Another hold in this process took the slot while this one read it: share that lock.
-			await unlock();
-			again.references++;
-			return newLease(again.record, storeDir, owner);
-		}
-		heldSlots.set(file, { owner, references: 1, record: held, unlock });
-		return newLease(held, storeDir, owner);
-	} catch (error) {
-		await unlock().catch(() => {});
-		throw error;
+		return { record: held, unlease };
+	});
+	if (taken === undefined) return undefined;
+	const again = heldSlots.get(file);
+	if (again !== undefined) {
+		// Another hold in this process took the slot meanwhile: share its lease.
+		await taken.unlease().catch(() => {});
+		again.references++;
+		return newLease(again.record, storeDir, owner);
 	}
+	heldSlots.set(file, { owner, references: 1, record: taken.record, unlease: taken.unlease });
+	return newLease(taken.record, storeDir, owner);
 }
 
 /** Records the state a degraded restore published into a held slot, which differs from the admitted one. */
@@ -333,13 +375,15 @@ export async function recordPooledWorktreeState(lease: WorktreeLease, state: Poo
 	const held = heldSlots.get(file);
 	if (held === undefined || released.has(lease)) return;
 	held.record = { ...held.record, lastState: state };
-	await writeRecord(file, held.record);
+	const record = held.record;
+	await withSlotLock(file, true, () => writeRecord(file, record));
 }
 
 /**
- * Releases `lease`. When it was this process's last hold of the slot, the slot becomes idle with `last` as its known
- * state, kept from the record when `last` is the snapshot the slot was restored or recorded with. A write failure keeps
- * the record's earlier state, which only makes the slot look changed, and the lock is released all the same.
+ * Releases `lease`. When it was this process's last hold of the slot, this process's lease ends, and the record takes
+ * `last` as the slot's known state, kept from the record when `last` is the snapshot the slot was restored or recorded
+ * with. The slot becomes idle once no other process holds it either. A write failure keeps the record's earlier state,
+ * which only makes the slot look changed, and the lease ends all the same.
  */
 export async function releaseRestoredWorktree(lease: WorktreeLease, last?: PoolLastState): Promise<void> {
 	if (released.has(lease)) return;
@@ -353,11 +397,14 @@ export async function releaseRestoredWorktree(lease: WorktreeLease, last?: PoolL
 	if (--held.references > 0) return;
 	heldSlots.delete(file);
 	try {
-		await writeRecord(file, { ...held.record, releasedAt: new Date().toISOString() });
+		await withSlotLock(file, true, async () => {
+			const idle = (await otherLeases(file)) === 0;
+			await writeRecord(file, { ...held.record, releasedAt: idle ? new Date().toISOString() : null });
+		});
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-release-failed", { file, ...failureDebugFields(error) });
 	}
-	await held.unlock().catch(() => {});
+	await held.unlease().catch(() => {});
 }
 
 /**
@@ -371,9 +418,9 @@ export async function discardPooledWorktree(lease: WorktreeLease): Promise<void>
 	if (held === undefined) return;
 	heldSlots.delete(file);
 	try {
-		await rm(file, { force: true });
+		await withSlotLock(file, true, () => rm(file, { force: true }));
 	} finally {
-		await held.unlock().catch(() => {});
+		await held.unlease().catch(() => {});
 	}
 }
 
@@ -386,7 +433,8 @@ export interface EvictIdleWorktreesOptions {
 }
 
 /**
- * Removes the oldest idle slots of `repository` beyond `maxIdle`, each after taking its lease: a slot whose directory
+ * Removes the oldest idle slots of `repository` beyond `maxIdle`, each under its record lock and only while no process
+ * leases it: a slot whose directory
  * is gone loses its record, and a slot still exactly in its last state loses its worktree and record. A slot that
  * changed since, which may hold work no snapshot recorded, is kept. Resolves to the paths it removed; a failure keeps
  * that slot and never throws.
@@ -428,31 +476,25 @@ export async function evictIdleWorktrees(
 async function evictSlot(storeDir: string, record: PoolSlotRecord, options: EvictIdleWorktreesOptions) {
 	const file = recordFile(storeDir, record.repository, record.slot);
 	if (heldSlots.has(file)) return false;
-	let unlock: () => Promise<void>;
 	try {
-		unlock = await lockSlot(file);
-	} catch {
-		return false;
-	}
-	try {
-		const current = await readRecord(file, storeDir, record.repository, record.slot);
-		if (current === undefined) return false;
-		if (await exists(current.path)) {
-			const { head, tree } = current.lastState;
-			await verifyWorktree({ remotes: [], head, tree, envHash: current.envHash }, current.path, {
-				settings: options.settings,
-				signal: options.signal,
-			});
-			if (await holdsUnrecordedFiles(current.path, tree, options.signal)) return false;
-			await removeRestoredWorktree(current.path, { storeDir, signal: options.signal, onWarning: () => {} });
-		}
-		await rm(file, { force: true });
-		return true;
+		return await withSlotLock(file, false, async () => {
+			const current = await readRecord(file, storeDir, record.repository, record.slot);
+			if (current === undefined || (await otherLeases(file)) > 0) return false;
+			if (await exists(current.path)) {
+				const { head, tree } = current.lastState;
+				await verifyWorktree({ remotes: [], head, tree, envHash: current.envHash }, current.path, {
+					settings: options.settings,
+					signal: options.signal,
+				});
+				if (await holdsUnrecordedFiles(current.path, tree, options.signal)) return false;
+				await removeRestoredWorktree(current.path, { storeDir, signal: options.signal, onWarning: () => {} });
+			}
+			await rm(file, { force: true });
+			return true;
+		});
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-evict-kept", { path: record.path, ...failureDebugFields(error) });
 		return false;
-	} finally {
-		await unlock().catch(() => {});
 	}
 }
 

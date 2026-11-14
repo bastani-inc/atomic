@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
@@ -210,16 +210,32 @@ setInterval(() => {}, 1000);
 				});
 				assert.equal(line, "held");
 				assert.deepEqual(await pooledWorktreeHolder(storeDir(), root), { owner, held: true });
-				assert.equal(await holdRestoredWorktree(storeDir(), root, owner), undefined);
+				// A second process of the same session shares the slot with a lease of its own (Greptile P1 on #4781).
+				const shared = await holdRestoredWorktree(storeDir(), root, owner);
+				assert.ok(shared);
+				await releaseRestoredWorktree(shared);
+				assert.deepEqual(await pooledWorktreeHolder(storeDir(), root), { owner, held: true });
+				assert.equal(recordOf(snapshot, 0).releasedAt, null);
+				assert.deepEqual(
+					await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 0, settings }),
+					[],
+				);
+				assert.equal(existsSync(root), true);
 			} finally {
 				child.kill("SIGKILL");
 				await exited;
 			}
-			// Nothing refreshes the killed process's lock: once older than the stale time, the slot is idle.
-			const lock = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes), "0.json.lock");
+			// Nothing refreshes the killed process's lease: once older than the stale time, the slot is idle.
+			const pool = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes));
+			const leases = readdirSync(pool).filter((name) => name.endsWith(".lease.lock"));
+			assert.equal(leases.length, 1);
 			const past = new Date(Date.now() - 120_000);
-			utimesSync(lock, past, past);
+			utimesSync(join(pool, leases[0]!), past, past);
 			assert.deepEqual(await pooledWorktreeHolder(storeDir(), root), { owner, held: false });
+			assert.deepEqual(
+				readdirSync(pool).filter((name) => name.endsWith(".lease.lock")),
+				[],
+			);
 
 			const lease = await holdRestoredWorktree(storeDir(), root, owner);
 			assert.ok(lease);

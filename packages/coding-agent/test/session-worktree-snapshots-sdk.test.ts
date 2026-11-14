@@ -207,6 +207,41 @@ describe("resuming through the SDK (#4245)", () => {
 	});
 });
 
+describe("resuming through the SDK, failures (#4748)", () => {
+	test("a session whose creation fails after its resume releases the pooled worktree it held (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const first = await fauxSession({ cwd: clone, settings: { snapshots: { enabled: true } } });
+		await writeTurn(first, join(clone, "a.txt"), "recorded\n");
+		const sessionId = first.session.sessionManager.getSessionId();
+		await first.session.dispose();
+		renameSync(clone, sandbox.path("moved-away"));
+		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+		const store = await SqlSessionStore.open(database);
+		cleanups.push(async () => {
+			await store.close();
+			await database.close();
+		});
+		const agentDir = sandbox.path("agent");
+		await assert.rejects(
+			createAgentSession({
+				agentDir,
+				settingsManager: SettingsManager.inMemory(),
+				sessionManager: await SessionManager.open(store, sessionId),
+				builtins: NO_BUILTINS,
+				tools: ["read", "+bash"],
+			}),
+			/Invalid tools option/,
+		);
+		const storeDir = join(agentDir, "worktree-snapshots");
+		const [slot] = readdirSync(join(storeDir, "worktrees")).filter((name) => /^[0-9a-f]{24}-0$/.test(name));
+		assert.ok(slot);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir, join(storeDir, "worktrees", slot)), {
+			owner: { kind: "session", id: sessionId },
+			held: false,
+		});
+	});
+});
+
 describe("turn boundaries", () => {
 	test("a call to a tool that is not registered does not break the turn or its recording", async () => {
 		const { clone } = await sandbox.remoteWithClone();

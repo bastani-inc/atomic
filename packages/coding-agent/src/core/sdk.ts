@@ -61,6 +61,7 @@ import {
 import { SessionManager } from "./session-manager.ts";
 import { registerStartupRollback, rollbackStartup } from "./session-startup-rollback.ts";
 import { resolveSessionStore } from "./session-storage.js";
+import { releaseSessionWorktrees } from "./session-worktree-snapshots.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { applyToolModifiers, getToolListError, isToolModifier } from "./settings-merge.js";
 import { ownedSettingsManagers } from "./settings-write-ownership.ts";
@@ -196,7 +197,7 @@ function createScopedSession(
 		const result = await factoryAcquisitions.run(
 			{ pending: new Map(), replacement: context.replacement },
 			async () => {
-				const acquisition: { store?: SessionStore; release?: () => Promise<void> } = {
+				const acquisition: SessionAcquisition = {
 					store: options.sessionManager ? ownedSessionManagerStores.get(options.sessionManager) : undefined,
 				};
 				if (options.sessionManager) ownedSessionManagerStores.delete(options.sessionManager);
@@ -217,6 +218,8 @@ function createScopedSession(
 						acquisition,
 					);
 				} catch (error) {
+					// The resumed session never opened: nothing else releases the pooled worktrees it holds (#4748).
+					if (acquisition.resumed) await releaseSessionWorktrees(acquisition.resumed);
 					const failures = await rollbackFactoryAcquisitions();
 					if (acquisition.store) {
 						try {
@@ -283,11 +286,19 @@ async function sessionResumedOnThisNode(
 	return prepared.status === "ready" ? prepared.sessionManager : sessionManager;
 }
 
+/** What creating a session acquired, released when creation fails. */
+interface SessionAcquisition {
+	store?: SessionStore;
+	release?: () => Promise<void>;
+	/** The supplied session as its resume opened it, holding the pooled worktrees it continues in (#4748). */
+	resumed?: SessionManager;
+}
+
 async function constructAgentSession(
 	options: CreateAgentSessionOptions,
 	deferStart: boolean,
 	persistInitialState: boolean,
-	acquisition: { store?: SessionStore; release?: () => Promise<void> },
+	acquisition: SessionAcquisition,
 ): Promise<CreateAgentSessionResult> {
 	resolveWorktreeSnapshotSettings(options.snapshots, "sdk", "snapshots");
 	const workspace =
@@ -306,6 +317,7 @@ async function constructAgentSession(
 		options.cwd === undefined && workspace === undefined
 			? await sessionResumedOnThisNode(options.sessionManager, agentDir, options.settingsManager, options.snapshots)
 			: options.sessionManager;
+	acquisition.resumed = suppliedSession;
 	const cwd =
 		workspace === undefined
 			? resolvePath(options.cwd ?? suppliedSession?.getCwd() ?? process.cwd())
