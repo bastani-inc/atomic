@@ -22,7 +22,7 @@ export async function sharedPoolStatus(
 		const { message, hint } = unknownSharedStore(error);
 		return {
 			sharedPoolUnavailable: {
-				name: error instanceof Error ? error.name : "Error",
+				name: (error as Error).name,
 				message,
 				hint,
 			},

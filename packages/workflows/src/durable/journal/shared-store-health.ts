@@ -19,26 +19,17 @@ export class SharedStoreStatusTimeoutError extends Error {
 	}
 }
 
-let stalled: string | undefined;
-let watching = false;
-
 /** `text` without the query, fragment or user info of any URL in it, where a credential could sit. */
 export function withoutUrlCredentials(text: string): string {
 	return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s?#]*)(?:[?#][^\s]*)?/gi, "$1$2");
 }
 
-/**
- * Follows this process's libSQL write-stall warnings from now on, once: status reports the store `degraded` from a
- * stall warning until the warning that the server answers writes again.
- */
-export function watchSharedStoreWarnings(): void {
-	if (watching) return;
-	watching = true;
-	process.on("warning", (warning: Error & { readonly code?: string }) => {
-		if (warning.code === WRITES_STALLED) stalled = withoutUrlCredentials(warning.message);
-		else if (warning.code === WRITES_RECOVERED) stalled = undefined;
-	});
-}
+/** The libSQL adapter's last write-stall warning in this process, until the warning that writes get through again. */
+let stalled: string | undefined;
+process.on("warning", (warning: Error & { readonly code?: string }) => {
+	if (warning.code === WRITES_STALLED) stalled = withoutUrlCredentials(warning.message);
+	else if (warning.code === WRITES_RECOVERED) stalled = undefined;
+});
 
 /** The shared store as this process last saw it answer: `degraded` after a stall warning, else `ok`. */
 export function sharedStoreHealth(): SharedStoreHealth {
@@ -51,8 +42,7 @@ export function unknownSharedStore(error: unknown): SharedStoreHealth & {
 	readonly message: string;
 	readonly hint: string;
 } {
-	const message = error instanceof Error ? error.message : String(error);
-	return { state: "unknown", message: withoutUrlCredentials(message), hint: SHARED_STORE_HINT };
+	return { state: "unknown", message: withoutUrlCredentials((error as Error).message), hint: SHARED_STORE_HINT };
 }
 
 /**
@@ -66,9 +56,7 @@ export async function withinStatusBudget<T>(read: Promise<T>): Promise<T> {
 			() => reject(new SharedStoreStatusTimeoutError(STATUS_READ_TIMEOUT_MS)),
 			STATUS_READ_TIMEOUT_MS,
 		);
-		timer.unref();
 	});
-	read.catch(() => {});
 	try {
 		return await Promise.race([read, timeout]);
 	} finally {

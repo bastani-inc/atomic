@@ -15,6 +15,7 @@ import type {
 import {
 	SHARED_STORE_HINT,
 	STATUS_READ_TIMEOUT_MS,
+	withoutUrlCredentials,
 } from "../../packages/workflows/src/durable/journal/shared-store-health.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -359,11 +360,24 @@ test("fleet status lines show each host's state, the fleet's queue, and every la
 		["Shared pool stats unavailable: gone", "restart it"],
 	);
 	const { leased: _, ...older } = STATS.hosts[2]!;
-	assert.deepEqual(workflowWorkerFleetLines({ hosts: [older], roots: [STATS], fleet: { store: { state: "ok" } } }), [
-		"Hosts: 1",
-		"  host h-older: stale, 1 of 2 workers, git system, seen 20.0s ago",
-		"Roots: 1",
-		"  root root: 2 ready · 1 leased · 3 completed · 0 failed · 1 stage input waiting, on h-busy(1)",
+	assert.deepEqual(
+		workflowWorkerFleetLines({
+			hosts: [{ ...older, labels: { zone: "east", rack: "2" } }],
+			roots: [STATS, { ...STATS, root: "idle-root", hosts: [] }],
+			fleet: { store: { state: "ok" } },
+		}),
+		[
+			"Hosts: 1",
+			"  host h-older: stale, 1 of 2 workers, git system, labels zone=east,rack=2, seen 20.0s ago",
+			"Roots: 2",
+			"  root root: 2 ready · 1 leased · 3 completed · 0 failed · 1 stage input waiting, on h-busy(1)",
+			"  root idle-root: 2 ready · 1 leased · 3 completed · 0 failed · 1 stage input waiting",
+		],
+	);
+	assert.deepEqual(workflowWorkerFleetLines({ hosts: [], roots: [], fleet: { store: { state: "degraded" } } }), [
+		"shared store degraded",
+		"Hosts: 0",
+		"Roots: 0",
 	]);
 	assert.deepEqual(
 		workflowWorkerFleetLines({
@@ -373,6 +387,16 @@ test("fleet status lines show each host's state, the fleet's queue, and every la
 		}),
 		["shared store unknown: refused", SHARED_STORE_HINT],
 	);
+});
+
+test("fleet status strips the query, fragment and user info of every URL in a message it shows (#4768)", () => {
+	assert.equal(
+		withoutUrlCredentials(
+			"at libsql://me:pw@db.example/x?authToken=s3cret and https://h.example/p#token=t, then wss://q.example.",
+		),
+		"at libsql://db.example/x and https://h.example/p then wss://q.example.",
+	);
+	assert.equal(withoutUrlCredentials("no url: a?b#c @d"), "no url: a?b#c @d");
 });
 
 test("fleet status follows the libSQL adapter's write-stall warnings: degraded with its redacted message, ok once writes recover (#4768)", async () => {
@@ -391,6 +415,9 @@ test("fleet status follows the libSQL adapter's write-stall warnings: degraded w
 			sharedPoolStatusLines({ sharedPool: stalled })[1],
 			"shared store degraded: The libSQL server at libsql://db.example/x left 3 write requests…",
 		);
+		process.emitWarning("something else", { code: "SOME_OTHER_WARNING" });
+		await sleep(0);
+		assert.equal((await readSharedPoolStats(f.journal, "root"))?.fleet.store.state, "degraded");
 		process.emitWarning("taking writes again", { code: "ATOMIC_LIBSQL_WRITES_RECOVERED" });
 		await sleep(0);
 		assert.deepEqual((await readSharedPoolStats(f.journal, "root"))?.fleet.store, { state: "ok" });

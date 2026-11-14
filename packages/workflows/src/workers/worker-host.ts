@@ -735,7 +735,8 @@ export async function readWorkflowWorkerFleet(
 			agentDir,
 		);
 		try {
-			return (await readSharedPoolFleet(journal)) ?? emptyFleet();
+			// An adapter's journal is a SQL journal, which holds a fleet.
+			return (await readSharedPoolFleet(journal))!;
 		} finally {
 			await journal.close();
 		}
@@ -746,8 +747,4 @@ export async function readWorkflowWorkerFleet(
 		// A store that cannot be read, or does not answer in time, reads as unknown rather than failing the status.
 		return { hosts: [], roots: [], fleet: { store: unknownSharedStore(error) } };
 	}
-}
-
-function emptyFleet(): SharedPoolFleet {
-	return { hosts: [], roots: [], fleet: { store: { state: "ok" }, queue: { roots: 0, ready: 0, leased: 0 } } };
 }
