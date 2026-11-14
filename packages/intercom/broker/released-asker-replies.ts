@@ -70,6 +70,18 @@ export class ReleasedAskerReplies {
 		let kept = 0;
 		for (const question of questions) {
 			if (question.senderSessionId !== asker.sessionId) continue;
+			// #4765: an ask kept both live and for an away recipient, or kept again, has one route.
+			const existing = [...(this.byQuestion.get(question.messageId) ?? [])].find(
+				(entry) =>
+					entry.askerSessionId === question.senderSessionId && entry.replierSessionId === question.targetSessionId,
+			);
+			if (existing !== undefined) {
+				if (existing.ownerSessionId === undefined && ownerSessionId !== undefined) {
+					existing.ownerSessionId = ownerSessionId;
+					addTo(this.byOwner, ownerSessionId, existing);
+				}
+				continue;
+			}
 			if (this.entries.size >= this.maxRoutes) {
 				this.recordOverflow();
 				continue;
@@ -128,6 +140,17 @@ export class ReleasedAskerReplies {
 			return route;
 		}
 		return undefined;
+	}
+
+	/** #4765: whether an owner holds the route for this question, so the owner is handed its reply or failure. */
+	hasOwnedRoute(question: PendingQuestion): boolean {
+		this.expire();
+		return [...(this.byQuestion.get(question.messageId) ?? [])].some(
+			(entry) =>
+				entry.ownerSessionId !== undefined &&
+				entry.askerSessionId === question.senderSessionId &&
+				entry.replierSessionId === question.targetSessionId,
+		);
 	}
 
 	/** A definitely refused handoff may be tried again; it keeps its original deadline. */

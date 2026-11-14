@@ -36,9 +36,14 @@ export class PendingQuestionIndex {
     this.away?.markAsker(senderSessionId, senderReturnAddress);
   }
 
-  /** A released subagent asker: its questions kept for an away recipient move to its owner's route (#4765). */
-  takeDormantForReleasedAsker(senderSessionId: string): PendingQuestion[] {
-    return this.away?.takeForReleasedAsker(senderSessionId) ?? [];
+  /** A released subagent asker's questions kept for an away recipient: its owner's route waits on them too (#4765). */
+  dormantForReleasedAsker(senderSessionId: string): PendingQuestion[] {
+    return this.away?.forReleasedAsker(senderSessionId) ?? [];
+  }
+
+  /** A kept question answered through its released asker's owner no longer waits for its peers (#4765). */
+  forgetDormant(question: PendingQuestion): void {
+    this.away?.forget(question);
   }
 
   /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
@@ -70,7 +75,14 @@ export class PendingQuestionIndex {
    * message held until it is back (#4751).
    */
   failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string): void {
-    this.awayAsks().failForTarget(target, reason, idPrefix);
+    this.awayAsks().failForTarget(target, reason, idPrefix, this.failsThroughOwner);
+  }
+
+  private failsThroughOwner: (question: PendingQuestion) => boolean = () => false;
+
+  /** #4765: kept questions a released subagent's owner fails on its own route are not also held for the subagent. */
+  failThroughOwnerWhen(check: (question: PendingQuestion) => boolean): void {
+    this.failsThroughOwner = check;
   }
 
   /** The session ended for good: nothing waits for it any more. */
@@ -190,6 +202,8 @@ export class PendingQuestionIndex {
     if (!routes || index < 0) return false;
     routes.splice(index, 1);
     if (routes.length === 0) this.questions.delete(replyTo);
+    // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
+    this.away?.forget({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId });
     return true;
   }
 

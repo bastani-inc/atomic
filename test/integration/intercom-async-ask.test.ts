@@ -1206,3 +1206,174 @@ test("a workflow stage released between turns whose recipient went away first st
 	);
 	assert.match(pendingAfterReopen, /No unresolved/);
 });
+
+test("a subagent whose connection drops without a release keeps its ask to an away recipient when it is back (#4765)", async () => {
+	const childName = "subagent-asker-drops-4765";
+	const owner = new IntercomClient(randomUUID());
+	await owner.connect(
+		{
+			name: "owner-asker-drops-4765",
+			model: "m",
+			cwd: repoRoot,
+			pid: process.pid,
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+		},
+		undefined,
+		randomUUID(),
+	);
+	cleanups.push(() => owner.disconnect().catch(() => undefined));
+	const policy = (supervisor: { capability: string; supervisorSessionId: string }) => ({
+		intercom: {
+			orchestratorTarget: "owner-asker-drops-4765",
+			runId: "asker-drops-run-4765",
+			agent: "worker",
+			index: 0,
+			sessionName: childName,
+			supervisor,
+		},
+	});
+	const recipientFirst = await started({ name: "recipient-away-before-drop-4765" });
+	const first = session({ name: childName, subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)) });
+	await first.start();
+	cleanups.push(() => first.shutdown());
+	const asked = await first.call({
+		action: "ask",
+		to: "recipient-away-before-drop-4765",
+		message: "will you end after I am back?",
+		wait: { kind: "background" },
+	});
+	assert.equal(asked.isError, false, asked.content[0]?.text);
+	const askId = String(asked.details.askId);
+	await questionArrives(recipientFirst, "will you end after I am back\\?");
+
+	// The recipient disconnects, then the child's connection drops with no release reservation.
+	await recipientFirst.shutdown();
+	await first.shutdown();
+	const recipientBack = session({
+		name: "recipient-away-before-drop-4765",
+		sessionId: recipientFirst.sessionId,
+		entries: recipientFirst.entries,
+		saved: false,
+	});
+	await recipientBack.start("resume");
+	cleanups.push(() => recipientBack.shutdown());
+	assert.equal((await recipientBack.call({ action: "status" })).isError, false);
+	// The child is back under its own id while its recipient is still there, and the recipient then ends.
+	const resumed = session({
+		name: childName,
+		sessionId: first.sessionId,
+		entries: first.entries,
+		subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)),
+	});
+	await resumed.start("resume");
+	cleanups.push(() => resumed.shutdown());
+	assert.equal((await resumed.call({ action: "status" })).isError, false);
+	await recipientBack.shutdown();
+
+	await until(() => resumed.cards(/^Your ask .* failed/).length > 0, "the child learns its recipient ended");
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, SHORT_BUDGET_MS));
+	const failures = first.entries.filter(
+		(entry) => entry.type === "custom_message" && /^Your ask .* failed/.test(String(entry.content)),
+	);
+	assert.equal(failures.length, 1);
+	assert.ok(String(failures[0]?.content).startsWith(`Your ask ${askId} to recipient-away-before-drop-4765 failed`));
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});
+
+test("a released subagent woken and released again while its recipient is away fails its ask once (#4765)", async () => {
+	const childName = "subagent-asker-released-twice-4765";
+	const owner = new IntercomClient(randomUUID());
+	await owner.connect(
+		{
+			name: "owner-released-twice-4765",
+			model: "m",
+			cwd: repoRoot,
+			pid: process.pid,
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+		},
+		undefined,
+		randomUUID(),
+	);
+	cleanups.push(() => owner.disconnect().catch(() => undefined));
+	const policy = (supervisor: { capability: string; supervisorSessionId: string }) => ({
+		intercom: {
+			orchestratorTarget: "owner-released-twice-4765",
+			runId: "released-twice-run-4765",
+			agent: "worker",
+			index: 0,
+			sessionName: childName,
+			supervisor,
+		},
+	});
+	const recipientFirst = await started({ name: "recipient-away-released-twice-4765" });
+	const first = session({ name: childName, subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)) });
+	await first.start();
+	cleanups.push(() => first.shutdown());
+	const asked = await first.call({
+		action: "ask",
+		to: "recipient-away-released-twice-4765",
+		message: "will you end after my second release?",
+		wait: { kind: "background" },
+	});
+	assert.equal(asked.isError, false, asked.content[0]?.text);
+	const askId = String(asked.details.askId);
+	await questionArrives(recipientFirst, "will you end after my second release\\?");
+
+	// The recipient disconnects, then the child is released, then the recipient returns and ends.
+	await recipientFirst.shutdown();
+	await owner.reserveReleasedChildren([{ childName, wake: true }]);
+	await first.shutdown();
+	// The child is woken while its recipient is still away, and released again.
+	const between = session({
+		name: childName,
+		sessionId: first.sessionId,
+		entries: first.entries,
+		subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)),
+	});
+	await between.start("resume");
+	cleanups.push(() => between.shutdown());
+	assert.equal((await between.call({ action: "status" })).isError, false);
+	await owner.reserveReleasedChildren([{ childName, wake: true }]);
+	await between.shutdown();
+	// No call of the child waits for the failure, so its owner lets it through to the child itself.
+	owner.on("released_child_reply", (notice: ReleasedChildReply) =>
+		owner.acknowledgeReleasedChildReply(notice, false, true),
+	);
+	let woken: Session | undefined;
+	owner.on("restoring_recipient_wake", () => {
+		void (async () => {
+			const resumed = session({
+				name: childName,
+				sessionId: first.sessionId,
+				entries: first.entries,
+				subagentPolicy: policy(await owner.authorizeSupervisorChild(childName)),
+			});
+			cleanups.push(() => resumed.shutdown());
+			await resumed.start("resume");
+			woken = resumed;
+		})();
+	});
+	// A session that is not saved cannot be resumed, so ending this one ends the ask.
+	const recipientBack = session({
+		name: "recipient-away-released-twice-4765",
+		sessionId: recipientFirst.sessionId,
+		entries: recipientFirst.entries,
+		saved: false,
+	});
+	await recipientBack.start("resume");
+	cleanups.push(() => recipientBack.shutdown());
+	assert.equal((await recipientBack.call({ action: "status" })).isError, false);
+	await recipientBack.shutdown();
+
+	const resumed = await until(() => woken, "the owner wakes the child for its failed ask");
+	await until(() => resumed.cards(/^Your ask .* failed/).length > 0, "the woken child learns its recipient ended");
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, SHORT_BUDGET_MS));
+	const failures = first.entries.filter(
+		(entry) => entry.type === "custom_message" && /^Your ask .* failed/.test(String(entry.content)),
+	);
+	assert.equal(failures.length, 1);
+	assert.ok(String(failures[0]?.content).startsWith(`Your ask ${askId} to recipient-away-released-twice-4765 failed`));
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});

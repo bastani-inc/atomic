@@ -111,21 +111,26 @@ export class AwayAsks {
 	}
 
 	/**
-	 * #4765: the released subagent `senderSessionId` is away now too. Its questions kept while only their recipient was
-	 * away, which have no asker identity, leave this table: they wait for a reply or a failure on its owner's route.
+	 * #4765: the questions the released subagent `senderSessionId` asked that are kept while their recipient is away. They
+	 * stay here too, so the ask survives a broker restart and a subagent back under its own id.
 	 */
-	takeForReleasedAsker(senderSessionId: string): PendingQuestion[] {
-		const rows = this.statement(
-			"SELECT message_id, target_session_id FROM away_questions WHERE sender_session_id = ? AND sender_return_address = '' ORDER BY kept_at",
-		).all(senderSessionId);
-		this.statement("DELETE FROM away_questions WHERE sender_session_id = ? AND sender_return_address = ''").run(
-			senderSessionId,
-		);
-		return rows.map((row) => ({
-			messageId: String(row.message_id),
-			senderSessionId,
-			targetSessionId: String(row.target_session_id),
-		}));
+	forReleasedAsker(senderSessionId: string): PendingQuestion[] {
+		return this.statement(
+			"SELECT message_id, target_session_id FROM away_questions WHERE sender_session_id = ? ORDER BY kept_at",
+		)
+			.all(senderSessionId)
+			.map((row) => ({
+				messageId: String(row.message_id),
+				senderSessionId,
+				targetSessionId: String(row.target_session_id),
+			}));
+	}
+
+	/** The kept question was answered some other way: it no longer waits here. */
+	forget(question: PendingQuestion): void {
+		this.statement(
+			"DELETE FROM away_questions WHERE message_id = ? AND sender_session_id = ? AND target_session_id = ?",
+		).run(question.messageId, question.senderSessionId, question.targetSessionId);
 	}
 
 	/** The kept question `questionId` that `replierSessionId` answers, if its asker is away. */
@@ -181,7 +186,12 @@ export class AwayAsks {
 	 * The recipient `target` ended, or can no longer answer: each kept question to it becomes a failed-ask message held
 	 * for its away asker. Returns the questions failed.
 	 */
-	failForTarget(target: SessionInfo, reason: string, idPrefix: string): PendingQuestion[] {
+	failForTarget(
+		target: SessionInfo,
+		reason: string,
+		idPrefix: string,
+		failedElsewhere: (question: PendingQuestion) => boolean = () => false,
+	): PendingQuestion[] {
 		const rows = this.statement(
 			"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",
 		).all(target.id);
@@ -195,6 +205,8 @@ export class AwayAsks {
 			const returnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
 			// A recipient's own asks to an away session keep no asker identity: only an away asker learns of the end.
 			if (returnAddress === "") continue;
+			// #4765: a released subagent's owner is handed this failure on its own route, which wakes the subagent.
+			if (failedElsewhere(question)) continue;
 			failed.push(question);
 			this.hold({ ...question, senderReturnAddress: returnAddress }, target, {
 				// Unguessable, so no other session can name it.

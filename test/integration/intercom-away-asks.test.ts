@@ -62,7 +62,12 @@ async function restartBroker(): Promise<void> {
 /** A real client that records what arrives and confirms each save, as a session does. */
 async function connect(
 	name: string,
-	options: { returnAddress?: string; preferredSessionId?: string } = {},
+	options: {
+		returnAddress?: string;
+		preferredSessionId?: string;
+		ownerToken?: string;
+		supervisor?: { capability: string; supervisorSessionId: string };
+	} = {},
 ): Promise<{ client: Client; received: Message[] }> {
 	const client = new IntercomClient(options.returnAddress ?? randomUUID(), {
 		acknowledgesReceipt: true,
@@ -74,15 +79,19 @@ async function connect(
 		client.acknowledgeReceived(message.id);
 	});
 	client.on("error", () => {});
-	await client.connect({
-		name,
-		model: "test-model",
-		cwd: repoRoot,
-		pid: process.pid,
-		status: "idle",
-		startedAt: Date.now(),
-		lastActivity: Date.now(),
-	});
+	await client.connect(
+		{
+			name,
+			model: "test-model",
+			cwd: repoRoot,
+			pid: process.pid,
+			status: "idle",
+			startedAt: Date.now(),
+			lastActivity: Date.now(),
+		},
+		options.supervisor,
+		options.ownerToken,
+	);
 	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	return { client, received };
 }
@@ -177,6 +186,66 @@ test(
 			[{ id: held.replyId, failed: false }],
 			"the resumed asker gets only the answer",
 		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a released subagent's ask to a recipient that went away first fails once after a broker restart (#4765)",
+	async () => {
+		const childName = "subagent-asker-restart-4765";
+		const owner = { returnAddress: randomUUID(), ownerToken: randomUUID() };
+		const ownerFirst = await connect("owner-restart-4765", owner);
+		const childReturnAddress = randomUUID();
+		const childFirst = await connect(childName, {
+			returnAddress: childReturnAddress,
+			supervisor: await ownerFirst.client.authorizeSupervisorChild(childName),
+		});
+		const childId = idOf(childFirst.client);
+		const recipientReturnAddress = randomUUID();
+		const recipientFirst = await connect("recipient-restart-4765", { returnAddress: recipientReturnAddress });
+		const recipientId = idOf(recipientFirst.client);
+		const questionId = randomUUID();
+		const asked = await childFirst.client.send("recipient-restart-4765", {
+			messageId: questionId,
+			text: "will you end while the broker restarts?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
+
+		// The recipient goes away, then the child is released, then the broker restarts while both are away.
+		await recipientFirst.client.disconnect({ resumable: true });
+		await ownerFirst.client.reserveReleasedChildren([{ childName, wake: true }]);
+		await childFirst.client.disconnect({ resumable: true });
+		await restartBroker();
+
+		// The recipient comes back under its id and ends.
+		const recipientBack = await connect("recipient-restart-4765", {
+			returnAddress: recipientReturnAddress,
+			preferredSessionId: recipientId,
+		});
+		assert.equal(idOf(recipientBack.client), recipientId);
+		await recipientBack.client.disconnect();
+
+		// The child's own session is back under its owner, and gets the failure once.
+		const ownerBack = await connect("owner-restart-4765", owner);
+		const childBack = await connect(childName, {
+			returnAddress: childReturnAddress,
+			preferredSessionId: childId,
+			supervisor: await ownerBack.client.authorizeSupervisorChild(childName),
+		});
+		await vi.waitFor(() => assert.equal(childBack.received.length, 1), WAIT);
+		assert.equal(childBack.received[0]?.replyTo, questionId);
+		assert.match(childBack.received[0]?.replyError ?? "", /ended before replying/);
+		await childBack.client.disconnect({ resumable: true });
+		const childAgain = await connect(childName, {
+			returnAddress: childReturnAddress,
+			preferredSessionId: childId,
+			supervisor: await ownerBack.client.authorizeSupervisorChild(childName),
+		});
+		await sleep(SETTLE_MS);
+		assert.deepEqual(childAgain.received, [], "a saved failure is delivered once");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
