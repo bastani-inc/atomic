@@ -428,6 +428,12 @@ export async function main(argv: string[], options?: MainOptions) {
 		await exitAfterCommand();
 		return;
 	}
+	if (args[0] === "blueprint") {
+		const { runBlueprintCommand } = await import("./cli/blueprint-command.js");
+		process.exitCode = await runBlueprintCommand(args.slice(1), { cwd, agentDir });
+		await exitAfterCommand();
+		return;
+	}
 	if (args[0] === "team") {
 		const { runTeamCommand } = await import("./cli/team-command.js");
 		process.exitCode = await runTeamCommand(args.slice(1), { cwd, agentDir });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Blueprints accept an optional `cache:` section that lists package stores (`kind: store`) and build output (`kind: build`) worth keeping between CI runs, and `atomic blueprint cache-key [dir] [--format text|json|github-output]` prints a key, a restore prefix and the paths of each cache entry, plus Atomic's Git object store and extension transpile cache, for `actions/cache`. Paths that could hold credentials are left out with a warning, an invalid `cache:` entry never fails a blueprint or a resume, and older Atomic versions ignore the key ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

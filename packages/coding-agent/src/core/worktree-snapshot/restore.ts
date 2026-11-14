@@ -448,7 +448,7 @@ async function withRestoreRecord(
 }
 
 /** The shared object store of the repository that `remotes` name, under `storeDir`. */
-function objectStorePath(storeDir: string, remotes: readonly string[]): string {
+export function objectStorePath(storeDir: string, remotes: readonly string[]): string {
 	return join(storeDir, "repositories", `${sha256Hex(remotes.join("\n")).slice(0, 24)}.git`);
 }
 

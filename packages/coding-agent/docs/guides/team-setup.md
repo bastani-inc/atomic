@@ -120,6 +120,60 @@ Do not put the token in the frontmatter `env:` or `steps:`: gh-aw makes those vi
 
 Keep the token in an encrypted secret, give it only to the step that needs it, and remember that every tool the agent runs in that step inherits it.
 
+### Caching between runs
+
+A hosted runner starts every job with an empty home directory. List the package stores worth keeping in the `cache:` section of `.atomic/blueprint.yaml` (see [Caches for runners](/guides/resume-on-any-machine#caches-for-runners)), and let `atomic blueprint cache-key` name the cache entries. Save them only from a trusted job on the default branch (`push`, `schedule` or `workflow_dispatch`), and restore them in agent jobs with `actions/cache/restore`, which cannot save:
+
+```yaml
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  warm-cache:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: npm install -g @bastani/atomic
+      - id: keys
+        run: atomic blueprint cache-key --format github-output >> "$GITHUB_OUTPUT"
+      - run: npm ci                 # fills the stores the blueprint declares
+      - run: atomic --list-models   # fills Atomic's extension transpile cache
+      - uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.keys.outputs.stores-key }}
+          path: ${{ steps.keys.outputs.stores-paths }}
+      - uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.keys.outputs.atomic-key }}
+          path: ${{ steps.keys.outputs.atomic-paths }}
+```
+
+In the agent job, before Atomic starts:
+
+```yaml
+      - uses: actions/checkout@v5
+      - run: npm install -g @bastani/atomic
+      - id: keys
+        run: atomic blueprint cache-key --format github-output >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.keys.outputs.stores-key }}
+          restore-keys: ${{ steps.keys.outputs.stores-restore-prefix }}
+          path: ${{ steps.keys.outputs.stores-paths }}
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.keys.outputs.atomic-key }}
+          restore-keys: ${{ steps.keys.outputs.atomic-restore-prefix }}
+          path: ${{ steps.keys.outputs.atomic-paths }}
+      - run: atomic -p "Fix the failing test in the checkout"
+```
+
+Restore `git-*` the same way when your jobs resume sessions of the repository: a trusted job that resumed one can save Atomic's Git object store, and later resumes then fetch only new commits. In a gh-aw workflow, put the same steps in the custom job that runs Atomic. Do not use gh-aw's frontmatter `cache:` for these entries: it runs `actions/cache`, which also saves from the agent job.
+
+The key changes when a key file, the declared entries, the OS, the architecture or the Atomic version change, so a restore by exact key never gets stale content; the restore prefix falls back to the newest older entry, which package managers bring up to date. `cache-key` leaves out paths that could hold credentials and prints a warning on stderr, which does not reach `$GITHUB_OUTPUT`. An entry it leaves out has no outputs, and a cache step with an empty `path` fails, so restore only entries your blueprint declares.
+
 ### From the SDK
 
 `@bastani/atomic/storage` exposes the same operations as the commands: `joinTeam()`, `leaveTeam()`, and `getTeamProfile()`, which return promises, and `teamProfileSelection()`. `teamProfileSelection({ profile: "ci", url, token })` returns a selection you can pass as `createAgentSession({ storage })` and as `RunOpts.journal`, without touching settings. A literal `token` stays in memory: it serializes as `[redacted]` and is refused anywhere but the SDK. Pass `tokenFile` or `tokenEnv` instead to reference a file or an environment variable.
