@@ -139,8 +139,9 @@ export async function blueprintCacheKeys(
 	const addStore = (declared: string, member: Omit<CacheMember, "path">) => {
 		const refusal = refuseStore(declared, root, home, agentDir);
 		const path = storePath(declared, home);
+		// A path declared twice is listed once, and every declaration's key inputs still key the entry.
 		if (refusal !== undefined) warnings.push(`cache path '${declared}' is omitted: ${refusal}`);
-		else if (!stores.some((existing) => existing.path === path)) stores.push({ ...member, path });
+		else stores.push({ ...member, path });
 	};
 	for (const { manager, keyFiles, paths } of detected) {
 		for (const path of paths) addStore(path, { declaration: ["detected", manager], keyFiles });
@@ -175,7 +176,7 @@ export async function blueprintCacheKeys(
 		if (members.length === 0) continue;
 		const restorePrefix = prefix(name);
 		const key = `${restorePrefix}${await membersDigest(blueprint, members, inputs)}`;
-		entries.push({ name, key, restorePrefix, paths: members.map((member) => member.path) });
+		entries.push({ name, key, restorePrefix, paths: [...new Set(members.map((member) => member.path))] });
 	}
 	if (store !== undefined) {
 		// The store is append-only and portable across architectures: a new HEAD saves a new entry, and a restore takes
@@ -404,6 +405,10 @@ function comparable(path: string): string {
 
 /** Why the store path `declared` is refused, if it is. */
 function refuseStore(declared: string, root: string, home: string, agentDir: string): string | undefined {
+	// `resume.cache` paths were checked as they were read; a detected store comes from an environment variable.
+	if (CONTROL_CHARACTER.test(declared) || GLOB_CHARACTER.test(declared)) {
+		return "a cache path must be a plain single-line path, without glob characters or a leading '!'";
+	}
 	if (!expandsHome(declared) && !isAbsolute(declared)) {
 		return 'a store path must be outside the worktree (absolute or under ~); declare build output with "kind": "build"';
 	}

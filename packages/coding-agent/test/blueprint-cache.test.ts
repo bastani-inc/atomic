@@ -359,6 +359,17 @@ describe("store detection (#4748)", () => {
 		assert.equal(keys.warnings.filter((warning) => warning.startsWith("cache path")).length, 2);
 		assert.match(keys.warnings.join("\n"), /\.ssh.*credentials/);
 		assert.match(keys.warnings.join("\n"), /uv'.*outside the worktree/);
+		const patterns = await keysOf(at, {
+			env: {
+				npm_config_cache: join(at.home, ".ss[h]"),
+				CARGO_HOME: join(at.home, "cargo\nx"),
+				UV_CACHE_DIR: "/opt/uv",
+			},
+		});
+		assert.deepEqual(entry(patterns, "stores")?.paths, [resolve("/opt/uv")]);
+		const omitted = patterns.warnings.filter((warning) => warning.startsWith("cache path"));
+		assert.equal(omitted.length, 3, patterns.warnings.join("\n"));
+		for (const warning of omitted) assert.match(warning, /plain single-line path/);
 	});
 });
 
@@ -395,6 +406,16 @@ describe("resume.cache settings overrides (#4748)", () => {
 		assert.match(entry(mac, "git")?.key ?? "", /^atomic-git-v1-macos-/);
 		setCache(at.root, [{ paths: ["~/.npm", "~/.cache/custom", "~/.cache/other"] }]);
 		assert.notEqual(entry(await keysOf(at), "stores")?.key, stores?.key);
+	});
+
+	test("a path both detected and declared is listed once and keyed by every declaration's inputs (#4748)", async () => {
+		const at = fixture(undefined, { "Cargo.lock": "x\n", "rust-toolchain.toml": "1\n" }, [
+			{ paths: ["~/.cargo/registry"], keyFiles: ["Cargo.lock", "rust-toolchain.toml"] },
+		]);
+		const first = entry(await keysOf(at), "stores");
+		assert.deepEqual(first?.paths, [join(at.home, ".cargo", "registry"), join(at.home, ".cargo", "git")]);
+		write(at.root, "rust-toolchain.toml", "2\n");
+		assert.notEqual(entry(await keysOf(at), "stores")?.key, first?.key);
 	});
 
 	test("global settings declare resume.cache too, and the project's replaces it (#4748)", async () => {
