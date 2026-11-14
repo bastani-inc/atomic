@@ -140,8 +140,12 @@ test(
 			}
 		};
 		const callers = Array.from({ length: CALLERS }, caller);
+		// Observed from the start: a receipt that fails, or one the backend rejects once it closes after a timeout, fails
+		// this test instead of surfacing as an unhandled rejection.
+		const burst = Promise.all(callers);
+		const settled = Promise.allSettled(callers);
 		try {
-			await reachedMidBurst;
+			await Promise.race([reachedMidBurst, burst]);
 			const before = transactions;
 			assert.equal(await backend.persistPendingStageMessages("run", [sticky, message("pattern", 2)]), true);
 			const waitedBehind = transactions - before;
@@ -149,10 +153,10 @@ test(
 				waitedBehind <= QUEUED_PERSIST_TRANSACTION_BOUND,
 				`pending-stage message waited behind ${waitedBehind} journal transactions from ${CALLERS} receipt callers`,
 			);
-			await Promise.all(callers);
+			await burst;
 		} finally {
 			stopped = true;
-			await Promise.allSettled(callers);
+			await settled;
 		}
 		assert.equal(backend.getPendingStageMessageDeliveryCount("run", sticky.id, "run"), RECEIPTS);
 		assert.deepEqual(
