@@ -39,15 +39,15 @@ Errors are exported classes with typed fields. `StorageUnavailableError` provide
 
 String bindings containing U+0000 are rejected before SQL executes with `StorageInvalidTextError`. Its `parameterIndex` is zero-based and its `reason` is `"nul-character"`. This rule applies to database calls and transaction handles. Store JSON with `JSON.stringify`, which escapes NUL characters, or use `Uint8Array` for binary data containing zero bytes. This validation does not inspect SQL source or SQL-generated values.
 
-{/* What works on PostgreSQL in this release. Workflow runs (#4793 follow-up fix) and worker pools (#4793 P5) do not yet: when they land, update "What works on PostgreSQL", the decision table and the troubleshooting line marked "this release", and make guides/worker-hosts.md PostgreSQL-first. */}
+{/* What works on PostgreSQL in this release. Worker pools (#4793 P5) do not yet: when they land, update "What works on PostgreSQL" and the decision table, and make guides/worker-hosts.md PostgreSQL-first (the recipes with managed PostgreSQL are on branch wip/postgres-fleet-recipes-p5-4793). */}
 
 ## Which store to choose
 
 | Situation | Choose | Why |
 | --- | --- | --- |
 | One machine, one person | **Local SQLite** (the default) | Nothing to set up. Runs never wait for each other, because the [journal store](#the-workflow-journal-store) gives each root its own shard |
-| Sessions and Intercom shared across machines in a cloud deployment, or a team that already runs managed PostgreSQL | **[PostgreSQL](#postgresql)** | Many machines write at the same time. Managed services on Azure, AWS, Google Cloud, Neon or Supabase add high availability, backups and cloud identities. In this release it does not hold workflow runs or worker pools; see [What works on PostgreSQL](#what-works-on-postgresql) |
-| Workflow runs shared across machines, and [worker fleets](/guides/worker-hosts) | **[libSQL / Turso](#turso-and-libsql)** | One URL and a token. Self-hosted sqld needs `--checkpoint-interval-s 60`. PostgreSQL will take over this row once it holds workflow runs and worker pools |
+| Sessions, workflow runs and Intercom shared across machines in a cloud deployment, or a team that already runs managed PostgreSQL | **[PostgreSQL](#postgresql)** | Many machines write at the same time. Managed services on Azure, AWS, Google Cloud, Neon or Supabase add high availability, backups and cloud identities. In this release it does not hold worker pools; see [What works on PostgreSQL](#what-works-on-postgresql) |
+| [Worker fleets](/guides/worker-hosts): roots with shared placement and their worker hosts | **[libSQL / Turso](#turso-and-libsql)** | One URL and a token. Self-hosted sqld needs `--checkpoint-interval-s 60`. PostgreSQL will take over this row once it holds worker pools |
 | A few machines, a small team, CI caches | **libSQL / Turso** | Lightweight: one URL and a token. One writer at a time, so it suits a handful of machines writing at once |
 | Data that must stay on one machine | **Local SQLite** | Nothing leaves the machine |
 
@@ -55,22 +55,23 @@ To move existing runs and sessions to another store, see [Exporting and importin
 
 ## PostgreSQL
 
-`@bastani/atomic-storage-postgres` keeps Atomic's shared state in a PostgreSQL database. It needs PostgreSQL 14 or later, self-hosted or managed: Azure Database for PostgreSQL Flexible Server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL or AlloyDB, Neon, Supabase, and others.
+`@bastani/atomic-storage-postgres` keeps Atomic's shared state in a PostgreSQL database. It needs PostgreSQL 16 or later, self-hosted or managed: Azure Database for PostgreSQL Flexible Server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL or AlloyDB, Neon, Supabase, and others.
 
 ### What works on PostgreSQL
 
 In this release:
 
-- **Sessions** are stored in PostgreSQL. A session entry whose text contains a NUL character (U+0000) cannot be saved there yet: the session reports `could not persist` and stops that run.
+- **Sessions**, including entries whose text holds NUL characters or lone surrogates, such as some tool output.
+- **Workflow runs**: starting, running and resuming them, and the `/workflow resume` list, from any machine that selects the database.
 - **Intercom's multi-node routing**: sessions on different machines that select the same database message each other.
+- **Moving data in and out**: `atomic storage export` and `atomic storage import` with a PostgreSQL database, for sessions and workflow runs.
 - **Setup and checks**: `atomic storage join`, `atomic storage status`, password files, rotated token files, cloud identities, TLS and connection poolers, as described below.
 
 Not yet:
 
-- **Workflow runs.** A workflow journal on PostgreSQL fails to open. After you join, keep workflow runs on this machine's journal store with `"workflows": { "journal": {} }` in `~/.atomic/agent/settings.json`, or on a libSQL database with a `workflows.journal` adapter selection.
 - **Worker pools.** Roots with shared placement, `atomic worker start`, `status`, `metrics` and `controller` need libSQL or Turso. `atomic worker` accepts a `postgres://` URL, but its hosts cannot serve a pool there. See [Running workers on many machines](/guides/worker-hosts).
 
-Both are coming in a later release.
+Worker pools on PostgreSQL are coming in a later release. Until then, give roots shared placement only on a libSQL or Turso database.
 
 ### Set up the database
 
@@ -103,7 +104,7 @@ atomic storage status
 - `--token-file <path>` uses the file where it is, and reads it again for every new connection. Use it for a file that another process keeps fresh, such as a Vault agent or a secrets sidecar, so a rotated password takes effect without joining again.
 - `--auth azure`, `--auth aws`, or `--auth gcp` signs in with the machine's cloud identity instead of a password. See [Cloud identities](#cloud-identities).
 
-The command checks the connection with `SELECT 1` before it writes anything, then writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`. That key selects the database for sessions, workflow runs and Intercom, so in this release also keep workflow runs off it, as [What works on PostgreSQL](#what-works-on-postgresql) shows:
+The command checks the connection with `SELECT 1` before it writes anything, then writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`. That key selects the database for sessions, workflow runs and Intercom:
 
 ```json
 {
@@ -111,12 +112,11 @@ The command checks the connection with `SELECT 1` before it writes anything, the
     "adapter": "@bastani/atomic-storage-postgres",
     "options": { "url": "postgresql://atomic@db.example.com:5432/atomic" },
     "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
-  },
-  "workflows": { "journal": {} }
+  }
 }
 ```
 
-You can write the `storage` block by hand as well. `secrets.password` takes `{ "file": … }` or `{ "env": "<variable>" }`, and the adapter reads it again for every new connection. Other `options`:
+You can write this block by hand as well. `secrets.password` takes `{ "file": … }` or `{ "env": "<variable>" }`, and the adapter reads it again for every new connection. Other `options`:
 
 | Option | Default | |
 | --- | --- | --- |
@@ -161,14 +161,13 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 
 ### Troubleshooting PostgreSQL
 
-- **Workflow runs fail to start or resume with `StorageUnavailableError`** after joining: in this release workflow runs cannot use PostgreSQL. Add `"workflows": { "journal": {} }` to settings, as in [Join a machine](#join-a-machine).
 - **`credential-in-url`**: the URL holds a password. Remove it and pass `--password-file` or `--token-file`.
 - **`unsupported-url`** from `atomic team join`: team join is for libSQL. Use `atomic storage join`.
 - **`unsupported-option`**: `--password-file` or `--auth` was passed with a libSQL URL. libSQL takes `--token-file`.
 - **`unsupported-auth`**: `--auth` takes `azure`, `aws`, or `gcp`.
 - **`adapter-not-installed`** ("The storage adapter is not installed"): run `atomic install npm:@bastani/atomic-storage-postgres` as the user that runs Atomic.
 - **`auth-unavailable`**: install the cloud's SDK named in the message, and check that the machine has the identity.
-- **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`), the database does not exist (`3D000`), the role lacks a privilege it needs (`42501`), or the server is older than PostgreSQL 14.
+- **`StorageUnavailableError`** when the store opens: the server refused the password (`28P01`), the database does not exist (`3D000`), the role lacks a privilege it needs (`42501`), or the server is older than PostgreSQL 14. Atomic's tables need PostgreSQL 16: on 14 and 15 the adapter connects, but sessions and workflow runs fail to open.
 - **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
 - **`too many connections`** (`53300`): lower `maxConnections`, raise the server's `max_connections`, or put a [pooler](#connection-poolers) in front.
 - **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a transaction that waited too long for a lock or ran past `statementTimeoutMs`. Persistent ones point to an overloaded server.
@@ -176,7 +175,7 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 
 ## Turso and libSQL
 
-`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and in this release the store for shared workflow runs and [worker fleets](/guides/worker-hosts). See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and in this release the store for [worker fleets](/guides/worker-hosts). See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
@@ -362,13 +361,13 @@ Both commands follow `ATOMIC_CODING_AGENT_DIR` and the storage selection in effe
 
 A kind kept in a shared libSQL, Turso or PostgreSQL database is refused with a message, because every machine joined to it already reads it. Without `--sessions` or `--workflows`, the commands skip that kind with a note and handle the other one. Sessions kept only in memory are refused the same way.
 
-`--storage <json>` or `--storage-file <path>` names the storage to export from or import into instead, in the form of the `storage` setting: a `{ "path": "…" }` SQLite file, or an adapter with its options, secrets and prefix. A shared database named this way is used, not refused. To move runs and sessions from one store to another, for example sessions from libSQL to PostgreSQL (workflow runs cannot be imported into PostgreSQL in this release, so pass `--sessions`):
+`--storage <json>` or `--storage-file <path>` names the storage to export from or import into instead, in the form of the `storage` setting: a `{ "path": "…" }` SQLite file, or an adapter with its options, secrets and prefix. A shared database named this way is used, not refused. To move runs and sessions from one store to another, for example from libSQL to PostgreSQL:
 
 ```bash
-atomic storage export ~/moved --sessions --storage-file old-storage.json   # the old selection, e.g. copied from settings
+atomic storage export ~/moved --storage-file old-storage.json   # the old selection, e.g. copied from settings
 atomic storage join postgres://atomic@db.example.com/atomic --password-file ~/pg-password
 jq .storage ~/.atomic/agent/settings.json > new-storage.json     # the new, shared selection
-atomic storage import ~/moved --sessions --storage-file new-storage.json
+atomic storage import ~/moved --storage-file new-storage.json
 ```
 
 Stop or drain the runs on the old store first: an imported run that was running is interrupted, and resumes on the new store.
@@ -710,7 +709,7 @@ These options come from the process that starts Atomic, so they are not subject 
 
 ## Sharing storage across hosts
 
-By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same database on every host through an [adapter](#selecting-an-adapter): [Turso / libSQL](#turso-and-libsql), or [PostgreSQL](#postgresql) for sessions and Intercom in this release. See [Which store to choose](#which-store-to-choose). Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
+By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same database on every host through an [adapter](#selecting-an-adapter): [Turso / libSQL](#turso-and-libsql), or [PostgreSQL](#postgresql), which in this release holds everything but worker pools. See [Which store to choose](#which-store-to-choose). Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
 
 With a shared journal:
 
