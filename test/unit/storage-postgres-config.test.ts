@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { inspect } from "node:util";
 import { loadStorageAdapter, StorageConfigError, StorageUnavailableError } from "@bastani/atomic/storage";
 import { test } from "vitest";
-import adapter, { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
+import adapter, { numberPlaceholders, openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
 import { makeTempDirectory, moduleDir, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 /** Asserts that `open` fails with `StorageConfigError` for `field`/`reason`, and that no secret reaches the error. */
@@ -74,7 +74,8 @@ test("Postgres refuses AWS IAM auth for a URL without a user before connecting (
 });
 
 test("Postgres refuses connection limits that are not positive integers (#4793)", async () => {
-	for (const maxConnections of [0, -1, 1.5, Number.NaN])
+	// A count given as text, as settings could hold one, is refused too.
+	for (const maxConnections of [0, -1, 1.5, Number.NaN, "8" as unknown as number])
 		await assertRefused(
 			() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", maxConnections }),
 			"maxConnections",
@@ -136,16 +137,84 @@ test(
 			assert.ok(error instanceof StorageUnavailableError, inspect(error));
 			return error.location;
 		};
-		const [remote, lookalike, loopback, chosen] = await Promise.all([
-			location("postgres://atomic@db.invalid:1/atomic"),
-			location("postgres://atomic@127.db.invalid:1/atomic"),
-			location("postgres://atomic@127.0.0.1:1/atomic"),
-			location("postgres://atomic@db.invalid:1/atomic?sslmode=disable"),
+		const verified = [
+			"postgres://atomic@db.invalid:1/atomic",
+			"postgres://atomic@127.db.invalid:1/atomic",
+			"postgres://atomic@localhost.invalid:1/atomic",
+			"postgres://atomic@127.0.0.1:1/atomic?host=db.invalid",
+		];
+		const unchanged = [
+			"postgres://atomic@127.0.0.1:1/atomic",
+			"postgres://atomic@127.1.2.3:1/atomic",
+			"postgres://atomic@localhost:1/atomic",
+			"postgres://atomic@LOCALHOST:1/atomic",
+			"postgres://atomic@[::1]:1/atomic",
+			"postgres:///atomic?host=/nonexistent-socket-directory&port=1",
+			"postgres://atomic@db.invalid:1/atomic?sslmode=disable",
+			"postgres://atomic@db.invalid:1/atomic?SSLMODE=require",
+		];
+		const locations = await Promise.all([...verified, ...unchanged].map(location));
+		assert.deepEqual(locations, [
+			...verified.map((url) => {
+				const parsed = new URL(url);
+				parsed.searchParams.set("sslmode", "verify-full");
+				return parsed.href;
+			}),
+			...unchanged,
 		]);
-		assert.equal(remote, "postgres://atomic@db.invalid:1/atomic?sslmode=verify-full");
-		assert.equal(lookalike, "postgres://atomic@127.db.invalid:1/atomic?sslmode=verify-full");
-		assert.equal(loopback, "postgres://atomic@127.0.0.1:1/atomic");
-		assert.equal(chosen, "postgres://atomic@db.invalid:1/atomic?sslmode=disable");
 	},
 	FAILED_OPEN_TIMEOUT_MS,
 );
+
+test("numbers ? parameters only outside literals, quoted identifiers, dollar quotes and comments (#4793)", () => {
+	const cases: [string, string][] = [
+		["SELECT 1", "SELECT 1"],
+		["SELECT ?, ?", "SELECT $1, $2"],
+		["SELECT ?,?", "SELECT $1,$2"],
+		["SELECT '?', ?", "SELECT '?', $1"],
+		["SELECT 'it''s ?', ?", "SELECT 'it''s ?', $1"],
+		["SELECT 'a\\', ?", "SELECT 'a\\', $1"],
+		["SELECT E'\\' ?', ?", "SELECT E'\\' ?', $1"],
+		["SELECT e'can''t \\' ?', ?", "SELECT e'can''t \\' ?', $1"],
+		["SELECT somE'\\', ?", "SELECT somE'\\', $1"],
+		['SELECT "?" FROM "a""?", ?', 'SELECT "?" FROM "a""?", $1'],
+		["SELECT ? -- ?\n, ?", "SELECT $1 -- ?\n, $2"],
+		["SELECT ? -- ?", "SELECT $1 -- ?"],
+		["SELECT ? - ?", "SELECT $1 - $2"],
+		["SELECT ? / ?", "SELECT $1 / $2"],
+		["SELECT /* ? /* ? */ ? */ ?", "SELECT /* ? /* ? */ ? */ $1"],
+		["SELECT /* ? */ ? /* ? */ ?", "SELECT /* ? */ $1 /* ? */ $2"],
+		["SELECT /* ? /* ?", "SELECT /* ? /* ?"],
+		["SELECT $$?$$, ?", "SELECT $$?$$, $1"],
+		["SELECT $tag$ ? $$ ? $tag$, ?", "SELECT $tag$ ? $$ ? $tag$, $1"],
+		["SELECT $tag$ ?", "SELECT $tag$ ?"],
+		["SELECT a$b$c, ?, $1x$", "SELECT a$b$c, $1, $1x$"],
+		["SELECT 'open ?", "SELECT 'open ?"],
+		['SELECT "open ?', 'SELECT "open ?'],
+		["SELECT ?", "SELECT $1"],
+		["?", "$1"],
+	];
+	for (const [sql, numbered] of cases) assert.equal(numberPlaceholders(sql), numbered, sql);
+});
+
+test("the Postgres adapter checks the options settings give it before connecting (#4793)", async () => {
+	const context = { agentDir: "/nonexistent", domain: "journal" } as const;
+	const url = "postgres://atomic@127.0.0.1:1/atomic";
+	await assertRefused(
+		() => adapter.openDatabase({ url, maxConnections: 0 }, context),
+		"maxConnections",
+		"positive-integer-required",
+	);
+	await assertRefused(
+		() => adapter.openDatabase({ url, statementTimeoutMs: -1 }, context),
+		"statementTimeoutMs",
+		"positive-integer-required",
+	);
+	await assertRefused(() => adapter.openDatabase({ url, auth: "gcp-iam" }, context), "auth", "auth-unavailable");
+	await assertRefused(
+		() => adapter.openDatabase({ url: "postgres://atomic:fixture-secret@127.0.0.1:1/atomic" }, context),
+		"url",
+		"credential-in-url",
+		["fixture-secret"],
+	);
+});

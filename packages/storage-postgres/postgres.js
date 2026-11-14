@@ -409,17 +409,14 @@ export async function openPostgresDatabase(options) {
 	 * @template T
 	 * @param {PoolClient} client
 	 * @param {() => Promise<T>} query
-	 * @param {number} [timeoutMs]
+	 * @param {number} timeoutMs
 	 * @returns {Promise<T>}
 	 */
 	const watched = async (client, query, timeoutMs) => {
-		const timer =
-			timeoutMs === undefined
-				? undefined
-				: setTimeout(() => {
-						lost.add(client);
-						client.connection.stream.destroy();
-					}, timeoutMs);
+		const timer = setTimeout(() => {
+			lost.add(client);
+			client.connection.stream.destroy();
+		}, timeoutMs);
 		try {
 			return await query();
 		} catch (cause) {
@@ -438,7 +435,7 @@ export async function openPostgresDatabase(options) {
 	 * @param {PoolClient} client
 	 * @param {string} sql
 	 * @param {readonly SqliteValue[]} params
-	 * @param {number} [timeoutMs]
+	 * @param {number} timeoutMs
 	 * @returns {Promise<SqliteDriverResult>}
 	 */
 	const execute = async (client, sql, params, timeoutMs) => {
@@ -453,7 +450,7 @@ export async function openPostgresDatabase(options) {
 	/**
 	 * @param {PoolClient} client
 	 * @param {string} sql
-	 * @param {number} [timeoutMs]
+	 * @param {number} timeoutMs
 	 */
 	const executeMultiple = async (client, sql, timeoutMs) => {
 		if (isPragma(sql)) return;
@@ -488,9 +485,10 @@ export async function openPostgresDatabase(options) {
 		executeMultiple: (sql) => autocommit((client) => executeMultiple(client, sql, clientTimeoutMs)),
 		concurrentTransactions: true,
 		dialect: postgresDialect,
-		async beginTransaction(begin) {
-			const concurrency = begin?.concurrency ?? { kind: "serial" };
-			const lockWaitMs = positiveInteger("lockWaitMs", begin?.lockWaitMs, statementTimeoutMs);
+		// The facade always says how the transaction excludes other writers.
+		async beginTransaction(/** @type {import("@bastani/atomic/storage").SqliteDriverTransactionOptions} */ begin) {
+			const { concurrency } = begin;
+			const lockWaitMs = positiveInteger("lockWaitMs", begin.lockWaitMs, statementTimeoutMs);
 			// A serial transaction takes its domain's advisory lock, which makes it the only writer of that domain as
 			// `BEGIN IMMEDIATE` makes a SQLite transaction the only writer of its file; a fenced one locks its rows itself.
 			// The locks nest: one without a domain holds the whole database's lock, and one with a domain holds that lock
@@ -518,7 +516,6 @@ export async function openPostgresDatabase(options) {
 				client.release(true);
 				throw error;
 			}
-			let released = false;
 			return {
 				execute: (sql, params) => execute(client, sql, params, clientTimeoutMs),
 				executeMultiple: (sql) => executeMultiple(client, sql, clientTimeoutMs),
@@ -539,11 +536,8 @@ export async function openPostgresDatabase(options) {
 						throw error;
 					}
 				},
-				close() {
-					if (released) return;
-					released = true;
-					client.release(lost.has(client));
-				},
+				// The facade closes a transaction once, after its commit or rollback.
+				close: () => client.release(lost.has(client)),
 			};
 		},
 		close: () => pool.end(),
