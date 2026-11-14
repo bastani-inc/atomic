@@ -7,6 +7,10 @@
 - Added resume and capture timings ([#4748](https://github.com/bastani-inc/atomic/issues/4748)). `/session snapshot` now shows how long each checkout's last capture took and a **Last resume** block: each restored checkout with its restore phases (fetch, reconstruct, materialize, LFS, verify, publish), each blueprint step with its duration, and when the session was ready. `ATOMIC_TIMING=1` prints the same lines for `atomic --session`. Blueprint step logs record when each step started and finished and how long it ran. The session keeps the numbers in a `resume_timings` entry, readable from exports and through `latestResumeTimings()` and `formatResumeTimings()` in the SDK. A failure to record them never stops a resume.
 - Blueprints accept an optional `cache:` section that lists package stores (`kind: store`) and build output (`kind: build`) worth keeping between CI runs, and `atomic blueprint cache-key [dir] [--format text|json|github-output]` prints a key, a restore prefix and the paths of each cache entry, plus Atomic's Git object store and extension transpile cache, for `actions/cache`. Paths that could hold credentials are left out with a warning, an invalid `cache:` entry never fails a blueprint or a resume, and older Atomic versions ignore the key ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
 
+### Changed
+
+- A resume restore that needs a commit this machine lacks now fetches only that commit (`--depth=1`) instead of the repository's whole history, which roughly halves a cold restore of a long-lived repository; it fetches the full history when a remote refuses a shallow fetch or the restore needs older commits. Restored worktrees therefore start with a shallow history (`git fetch --unshallow origin` brings the rest). A session's other checkouts are now restored concurrently, up to four at a time, instead of one after another ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
