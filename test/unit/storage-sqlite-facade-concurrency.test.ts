@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import {
 	createSqliteDatabase,
 	type FencedPathId,
+	inMemorySecret,
 	postgresDialect,
+	resolveAdapterOptions,
 	type SqliteDriver,
 	type SqliteDriverTransactionOptions,
 	type SqliteTransactionOptions,
 	StorageConfigError,
 	sqliteDialect,
 } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import { test, vi } from "vitest";
 
 /** Stands in for `fencedPath(name)`, whose registry is empty until a path is audited. */
 const AUDITED = "test-path" as FencedPathId;
@@ -62,11 +64,13 @@ test("transactions tell the driver their concurrency and lock wait, serial by de
 	const database = createSqliteDatabase(driver);
 	await database.transaction(async () => {});
 	await database.transaction(async () => {}, { lockWaitMs: 1234 });
+	await database.transaction(async () => {}, { concurrency: { kind: "serial" } });
 	await database.transaction(async () => {}, { concurrency: { kind: "serial", domain: "team_sessions" } });
 	await database.transaction(async () => {}, { concurrency: { kind: "fenced", audit: AUDITED } });
 	assert.deepEqual(begun, [
 		{ concurrency: { kind: "serial" } },
 		{ concurrency: { kind: "serial" }, lockWaitMs: 1234 },
+		{ concurrency: { kind: "serial" } },
 		{ concurrency: { kind: "serial", domain: "team_sessions" } },
 		{ concurrency: { kind: "fenced", audit: "test-path" } },
 	]);
@@ -78,6 +82,7 @@ test("a malformed concurrency is refused before the transaction begins (#4793)",
 	const database = createSqliteDatabase(driver);
 	const malformed = [
 		{ kind: "parallel" },
+		{ kind: "parallel", audit: "test-path" },
 		{ kind: "serial", domain: 7 },
 		{ kind: "fenced" },
 		{ kind: "fenced", audit: "" },
@@ -87,7 +92,12 @@ test("a malformed concurrency is refused before the transaction begins (#4793)",
 		await assert.rejects(
 			database.transaction(async () => {}, { concurrency } as unknown as SqliteTransactionOptions),
 			(error: StorageConfigError) =>
-				error instanceof StorageConfigError && error.field === "concurrency" && error.reason === "kind-required",
+				error instanceof StorageConfigError &&
+				error.source === "sdk" &&
+				error.field === "concurrency" &&
+				error.reason === "kind-required" &&
+				error.hint ===
+					'Pass { kind: "serial" }, { kind: "serial", domain }, or { kind: "fenced", audit: fencedPath(name) }, or omit it',
 		);
 	}
 	assert.deepEqual(begun, []);
@@ -138,4 +148,49 @@ test("a concurrent driver runs fenced transactions beside queued calls, and clos
 	await Promise.all([serial, fenced, queuedSerial, closed]);
 	assert.equal(concurrent.events.at(-1), "close");
 	assert.equal(concurrent.events.filter((event) => event.startsWith("commit")).length, 3);
+});
+
+test("closing ends every concurrent transaction's retry wait at once (#4793)", async () => {
+	vi.useFakeTimers();
+	const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+	try {
+		const refused = new Error("connection refused");
+		const { driver } = gatedDriver({
+			concurrentTransactions: true,
+			beginTransaction: () => {
+				throw refused;
+			},
+			transientFailure: (failure) =>
+				failure === refused ? { code: "connection-refused", outcome: "not-applied" } : undefined,
+		});
+		const database = createSqliteDatabase(driver);
+		const fenced = { concurrency: { kind: "fenced", audit: AUDITED }, retryTransientFailures: true } as const;
+		const settled: string[] = [];
+		const transactions = [1, 2].map((index) =>
+			database.transaction(async () => {}, fenced).catch(() => void settled.push(`transaction ${index}`)),
+		);
+		await vi.advanceTimersByTimeAsync(0);
+		const closed = database.close().then(() => void settled.push("closed"));
+		await vi.advanceTimersByTimeAsync(0);
+		assert.deepEqual(settled.sort(), ["closed", "transaction 1", "transaction 2"]);
+		await Promise.all([...transactions, closed]);
+	} finally {
+		warn.mockRestore();
+		vi.useRealTimers();
+	}
+});
+
+test("a live secret's name is left out of options even when an option shares it (#4793)", async () => {
+	const selection = {
+		kind: "adapter",
+		module: "unused",
+		options: { password: "from-options", url: "postgres://example" },
+		secrets: { password: inMemorySecret("from-secret") },
+	} as const;
+	const context = { agentDir: "/unused", domain: "sessions" } as const;
+	assert.deepEqual(await resolveAdapterOptions(selection, context, ["password"]), { url: "postgres://example" });
+	assert.deepEqual(await resolveAdapterOptions(selection, context), {
+		password: "from-secret",
+		url: "postgres://example",
+	});
 });
