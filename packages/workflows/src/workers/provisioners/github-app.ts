@@ -237,10 +237,11 @@ export class GitHubAppCredentials {
 				"unavailable",
 				`the GitHub App token request to ${this.url} failed: ${detail(error.message)}`,
 			);
-		const message = typeof data === "object" && typeof data.message === "string" ? data.message : "";
+		// GitHub's own explanation, when its reply has one: shown, never inspected.
+		const said = typeof data === "object" && typeof data.message === "string" ? [data.message] : [];
 		return new WorkerProvisionerError(
 			REFUSED.has(error.status) ? "auth" : "unavailable",
-			`the GitHub App token request to ${this.url} failed: HTTP ${error.status}${message === "" ? "" : `: ${detail(message)}`}`,
+			[`the GitHub App token request to ${this.url} failed: HTTP ${error.status}`, ...said.map(detail)].join(": "),
 		);
 	}
 }
