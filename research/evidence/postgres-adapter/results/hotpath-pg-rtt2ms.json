@@ -1,0 +1,111 @@
+{
+  "backend": "pg",
+  "slots": 4,
+  "perSlot": 2,
+  "steps": 20,
+  "payload": 256,
+  "sqldArgs": null,
+  "machine": {
+    "cpus": 80
+  },
+  "trials": [
+    {
+      "backend": "pg",
+      "hosts": 8,
+      "slots": 4,
+      "oneWayLatencyMs": 1,
+      "children": 64,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 64
+      },
+      "invariants": {
+        "events": 1280,
+        "distinctKeys": 1280,
+        "maxSeq": 1280
+      },
+      "checkpoints": 1280,
+      "wallMs": 4141,
+      "activeMs": 3865,
+      "checkpointsPerSec": 331.2,
+      "latencyMs": {
+        "p50": 58.08,
+        "p90": 187.28,
+        "p99": 383.93,
+        "max": 670.97
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 11,
+      "errors": {}
+    },
+    {
+      "backend": "pg",
+      "hosts": 16,
+      "slots": 4,
+      "oneWayLatencyMs": 1,
+      "children": 128,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 128
+      },
+      "invariants": {
+        "events": 2560,
+        "distinctKeys": 2560,
+        "maxSeq": 2560
+      },
+      "checkpoints": 2560,
+      "wallMs": 8431,
+      "activeMs": 8150,
+      "checkpointsPerSec": 314.1,
+      "latencyMs": {
+        "p50": 87.75,
+        "p90": 479.39,
+        "p99": 1051.94,
+        "max": 2072.6
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 17,
+      "errors": {}
+    },
+    {
+      "backend": "pg",
+      "hosts": 32,
+      "slots": 4,
+      "oneWayLatencyMs": 1,
+      "children": 256,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 256
+      },
+      "invariants": {
+        "events": 5120,
+        "distinctKeys": 5120,
+        "maxSeq": 5120
+      },
+      "checkpoints": 5120,
+      "wallMs": 17735,
+      "activeMs": 17479,
+      "checkpointsPerSec": 292.9,
+      "latencyMs": {
+        "p50": 158.68,
+        "p90": 1058.87,
+        "p99": 2416.22,
+        "max": 5634.28
+      },
+      "commitsOver5s": 1,
+      "stallsOver5s": 0,
+      "maxGapMs": 21,
+      "errors": {
+        "stale: work": 1
+      }
+    }
+  ]
+}
