@@ -1,0 +1,27 @@
+{
+	"kind": "command",
+	"up": [
+		"az", "vmss", "scale", "--resource-group", "atomic-rg", "--name", "atomic-workers",
+		"--new-capacity", "{target}", "--no-wait", "--output", "none"
+	],
+	"down": [
+		"az", "vmss", "delete-instances", "--resource-group", "atomic-rg", "--name", "atomic-workers",
+		"--instance-ids", "{id}", "--no-wait", "--output", "none"
+	],
+	"list": [
+		"az", "vmss", "list-instances", "--resource-group", "atomic-rg", "--name", "atomic-workers",
+		"--query", "[].{id: instanceId, state: provisioningState, since: timeCreated}", "--output", "json"
+	],
+	"listFormat": {
+		"states": {
+			"Creating": "pending",
+			"Succeeded": "running",
+			"Updating": "running",
+			"Failed": "failed",
+			"Canceled": "failed",
+			"Deleting": null,
+			"*": "pending"
+		}
+	},
+	"timeoutMs": 90000
+}
