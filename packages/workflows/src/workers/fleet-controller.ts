@@ -56,6 +56,11 @@ function asFailure(error: unknown): WorkflowFleetFailure {
 	return { name, message: message.length > ERROR_TEXT_MAX ? `${message.slice(0, ERROR_TEXT_MAX)}…` : message };
 }
 
+/** A failure as a fleet event records it, for operators to read: `name: message`. */
+function eventErrorText(failure: WorkflowFleetFailure): string {
+	return `${failure.name}: ${failure.message}`;
+}
+
 /** `promise`, or `signal`'s reason once it aborts first: a provider that ignores its signal never holds the controller. */
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
@@ -253,7 +258,7 @@ export class FleetController implements WorkflowFleetController {
 					kind: "error",
 					...(this.plan === undefined ? {} : { target: this.plan.target, live: this.plan.live }),
 					reason: `${this.options.provisioner.kind} provisioner or journal call failed`,
-					error: `${failure.name}: ${failure.message}`,
+					error: eventErrorText(failure),
 				})
 				.catch(() => {});
 			this.fail(error);
