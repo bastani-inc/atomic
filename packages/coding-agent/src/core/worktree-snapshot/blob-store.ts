@@ -1,6 +1,8 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, StorageDescriptor } from "../storage/database.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "../storage/database.js";
+import { dialectOf, type StorageDialect, sqliteDialect } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
-import { renderStorageIdentifiers, validateStoragePrefix } from "../storage/prefix.js";
+import { applyStorageMigrations } from "../storage/migrations.js";
+import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -81,6 +83,9 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 		sources: `${p}snapshot_index_sources`,
 	});
 }
+
+/** The schema domain of the blob table and its reference index, in the prefix's migration ledger. */
+export const SNAPSHOT_BLOB_DOMAIN = "snapshot-blobs";
 
 export type SnapshotCollectionSkipReason = "disabled" | "unsupported" | "in-progress" | "not-due";
 
@@ -243,8 +248,8 @@ function collectableAge(graceSeconds: number): number {
 interface IndexSource {
 	readonly name: string;
 	readonly table: string;
-	readonly triggers: readonly string[];
-	readonly createTriggers: string;
+	/** The triggers that index the table's future rows, in the order they are created. */
+	readonly triggers: readonly SnapshotIndexTrigger[];
 	/** Each statement indexes the rows with `rowid > ? AND rowid <= ?`, bound in that order. */
 	readonly backfill: readonly string[];
 	/**
@@ -317,7 +322,31 @@ function retainedByStatus(payload: string): string {
 	END`;
 }
 
-function createTrigger(name: string, event: string, table: string, body: readonly string[], when?: string): string {
+/**
+ * One trigger of the reference index: after `event` on `table`, when `when` holds for the row, run `body` in order.
+ * Statements refer to the row as `NEW` and `OLD`.
+ */
+export interface SnapshotIndexTrigger {
+	readonly name: string;
+	/** `INSERT`, `DELETE`, or `UPDATE OF <column>`. */
+	readonly event: string;
+	readonly table: string;
+	readonly body: readonly string[];
+	readonly when?: string;
+}
+
+function createTrigger(
+	name: string,
+	event: string,
+	table: string,
+	body: readonly string[],
+	when?: string,
+): SnapshotIndexTrigger {
+	return when === undefined ? { name, event, table, body } : { name, event, table, body, when };
+}
+
+/** The SQLite `CREATE TRIGGER` statement of `trigger`, as every build has written it into `sqlite_schema`. */
+function createTriggerSql({ name, event, table, body, when }: SnapshotIndexTrigger): string {
 	return `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === undefined ? "" : ` WHEN ${when}`} BEGIN ${body.join("; ")}; END;`;
 }
 
@@ -360,7 +389,7 @@ function carriedSource(t: SnapshotIndexTables, carried: CarriedSnapshots): Index
 		);
 	const inserted = `(SELECT ${rowOf(newRow)})`;
 	const release = `DELETE FROM ${t.carriedRefs} WHERE owner = ${owner(oldRow)}`;
-	const triggers = {
+	const names = {
 		insert: `${table}_snapshot_carried_insert`,
 		update: `${table}_snapshot_carried_update`,
 		delete: `${table}_snapshot_carried_delete`,
@@ -368,18 +397,17 @@ function carriedSource(t: SnapshotIndexTables, carried: CarriedSnapshots): Index
 	return {
 		name: carried.name,
 		table,
-		triggers: Object.values(triggers),
-		createTriggers: [
-			createTrigger(triggers.insert, "INSERT", table, index(inserted), carries(newRow)),
+		triggers: [
+			createTrigger(names.insert, "INSERT", table, index(inserted), carries(newRow)),
 			createTrigger(
-				triggers.update,
+				names.update,
 				`UPDATE OF ${json}`,
 				table,
 				[release, ...index(inserted)],
 				marker === undefined ? undefined : `${carries(oldRow)} OR ${carries(newRow)}`,
 			),
-			createTrigger(triggers.delete, "DELETE", table, [release], carries(oldRow)),
-		].join("\n"),
+			createTrigger(names.delete, "DELETE", table, [release], carries(oldRow)),
+		],
 		backfill: index(storedRows(table, [rowOf(storedRow)], carries(storedRow) ?? "1")),
 		reset: [`DELETE FROM ${t.carriedRefs} WHERE owner LIKE '${carried.owner}:%'`],
 	};
@@ -439,8 +467,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 	const eventsSource = {
 		name: "journal-events",
 		table: events,
-		triggers: [`${events}_snapshot_refs`, `${events}_snapshot_state`],
-		createTriggers: [
+		triggers: [
 			createTrigger(
 				`${events}_snapshot_refs`,
 				"INSERT",
@@ -455,7 +482,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 				[runState(triggerRows(eventColumns))],
 				statusCondition(newRow),
 			),
-		].join("\n"),
+		],
 		backfill: [
 			...runRefs(storedRows(events, eventColumns, checkpointCondition(storedRow))),
 			runState(storedRows(events, eventColumns, statusCondition(storedRow))),
@@ -465,8 +492,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 	const runsSource = {
 		name: "journal-runs",
 		table: runs,
-		triggers: [`${runs}_snapshot_state_insert`, `${runs}_snapshot_state_status`, `${runs}_snapshot_refs_delete`],
-		createTriggers: [
+		triggers: [
 			createTrigger(`${runs}_snapshot_state_insert`, "INSERT", runs, [runHeader(triggerRows(headerColumns))]),
 			createTrigger(`${runs}_snapshot_state_status`, "UPDATE OF status", runs, [
 				`UPDATE ${t.runState} SET retained = NEW.status NOT IN (${RELEASED_STATUSES}) WHERE run_id = NEW.run_id AND seq = ${HEADER_SEQ}`,
@@ -475,7 +501,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 				`DELETE FROM ${t.runRefs} WHERE run_id = OLD.run_id`,
 				`DELETE FROM ${t.runState} WHERE run_id = OLD.run_id`,
 			]),
-		].join("\n"),
+		],
 		backfill: [runHeader(storedRows(runs, headerColumns, "1"))],
 	};
 	const entryColumns = ["session_id", "seq", "entry_id", "entry_json"];
@@ -489,12 +515,6 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 		name: "session-entries",
 		table: entries,
 		triggers: [
-			`${entries}_snapshot_links`,
-			`${entries}_snapshot_refs`,
-			`${entries}_snapshot_pending`,
-			`${entries}_snapshot_refs_delete`,
-		],
-		createTriggers: [
 			// While the rows that existed first are indexed, new rows wait for that pass, which keeps parents ahead of
 			// their children: the pass reaches them by extending its watermark. A row written at a rowid the pass has
 			// already gone by, which SQLite reuses once the newest rows are deleted, moves the pass back to it; indexing
@@ -523,7 +543,7 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 				`DELETE FROM ${t.sessionRefs} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 				`DELETE FROM ${t.sessionRecords} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 			]),
-		].join("\n"),
+		],
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
@@ -555,64 +575,78 @@ async function createSnapshotIndexTables(
 	transaction: SqliteExecutor,
 	t: SnapshotIndexTables,
 	prefix: string,
+	dialect: StorageDialect,
 ): Promise<void> {
+	const { int, text, blob } = dialect.types;
+	const strict = dialect.tableOptions;
+	const keyed = dialect.withoutRowidTableOptions;
 	await transaction.exec(
-		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
+		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash ${text} PRIMARY KEY, bytes ${int} NOT NULL, data ${blob} NOT NULL, created_at ${int} NOT NULL DEFAULT (${dialect.nowSeconds}))${strict}`,
 	);
-	const age = await transaction.get("SELECT dflt_value FROM pragma_table_info(?) WHERE name = 'created_at'", t.blobs);
+	const ageColumn = dialect.columnExists(t.blobs, "created_at");
+	const age = await transaction.get<SqliteRow & { default_value: SqliteValue }>(ageColumn.sql, ...ageColumn.params);
 	if (!age) {
 		// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
-		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`);
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at ${int} NOT NULL DEFAULT 0`);
 	}
 	// A constant zero default identifies an upgraded table. Its age index is also deferred to collection.
-	if (age && String(age.dflt_value) !== "0") {
+	if (age && String(age.default_value) !== "0") {
 		await transaction.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`);
 	}
 	await transaction.exec(`
-		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
-		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID;
-		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
-		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT;
+		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id ${text} PRIMARY KEY, retained ${int} NOT NULL, seq ${int} NOT NULL)${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, PRIMARY KEY (session_id, seq))${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL, parent_id ${text}, anchor_seq ${int}, children ${int} NOT NULL, broken ${int} NOT NULL, PRIMARY KEY (session_id, seq))${strict};
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
-		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id ${text} NOT NULL, seq ${int} NOT NULL, snapshot_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (session_id, seq, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
-		CREATE TABLE IF NOT EXISTS ${t.carriedRefs} (owner TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (owner, hash)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.carriedRefs} (owner ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (owner, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.carriedRefs}_hash ON ${t.carriedRefs} (hash);
-		CREATE TABLE IF NOT EXISTS ${t.collection} (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT;
-		INSERT OR IGNORE INTO ${t.collection} (id) VALUES (1);
-		CREATE TABLE IF NOT EXISTS ${t.sources} (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.collection} (id ${int} PRIMARY KEY CHECK (id = 1), claimed_at ${int}, holder ${text}, finished_at ${int}, deleted ${int}, error_code ${text})${strict};
+		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
+		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
 	`);
-	const columns = await transaction.all<{ name: string }>(`PRAGMA table_info(${t.sessionRefs})`);
 	let migrated = false;
 	for (const [name, type] of [
-		["prev_seq", "INTEGER"],
-		["restore_from", "TEXT"],
-		["restore_to", "TEXT"],
-	]) {
-		if (columns.some((column) => column.name === name)) continue;
+		["prev_seq", int],
+		["restore_from", text],
+		["restore_to", text],
+	] as const) {
+		const column = dialect.columnExists(t.sessionRefs, name);
+		if (await transaction.get(column.sql, ...column.params)) continue;
 		await transaction.exec(`ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${type}`);
 		migrated = true;
 	}
 	if (migrated) {
 		// Mark the tree-aware rebuild durably, but leave its old rows untouched until completeIndex runs.
 		const source = indexSources(prefix, t).find((source) => source.name === "session-entries")!;
-		for (const trigger of source.triggers) await transaction.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+		for (const trigger of source.triggers) await transaction.exec(`DROP TRIGGER IF EXISTS ${trigger.name}`);
 		await transaction.run(
-			`INSERT OR REPLACE INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1)`,
+			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1) ${REPLACE_PROGRESS}`,
 			source.name,
 		);
 	}
 }
 
+/** Replaces a source's progress row: `sources` has no triggers or references, so this upsert is what a REPLACE did. */
+const REPLACE_PROGRESS =
+	"ON CONFLICT (source) DO UPDATE SET watermark = excluded.watermark, backfilled_through = excluded.backfilled_through";
+
 /** Installs `source`'s index triggers and records that rows above its current last row are indexed by them. */
-async function installSource(transaction: SqliteExecutor, t: SnapshotIndexTables, source: IndexSource): Promise<void> {
+async function installSource(
+	transaction: SqliteExecutor,
+	dialect: StorageDialect,
+	t: SnapshotIndexTables,
+	source: IndexSource,
+): Promise<void> {
 	for (const sql of source.reset ?? []) await transaction.run(sql);
-	await transaction.exec(source.createTriggers);
+	await transaction.exec(source.triggers.map(createTriggerSql).join("\n"));
 	await transaction.run(
-		`INSERT OR REPLACE INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(rowid), 0), 0 FROM ${source.table}`,
+		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
 		source.name,
 	);
 }
@@ -623,7 +657,7 @@ async function readSourceStates(
 	t: SnapshotIndexTables,
 	sources: readonly IndexSource[],
 ): Promise<SourceState[]> {
-	const names = sources.flatMap((source) => [source.table, ...source.triggers]);
+	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
 	const present = new Set(
 		(
 			await executor.all<SqliteRow & { name: string }>(
@@ -646,7 +680,9 @@ async function readSourceStates(
 			return {
 				source,
 				installed:
-					row !== undefined && Number(row.watermark) >= 0 && source.triggers.every((name) => present.has(name)),
+					row !== undefined &&
+					Number(row.watermark) >= 0 &&
+					source.triggers.every((trigger) => present.has(trigger.name)),
 				backfilled:
 					row !== undefined &&
 					Number(row.watermark) >= 0 &&
@@ -661,10 +697,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: SnapshotIndexTables;
 	private readonly sources: readonly IndexSource[];
+	private readonly dialect: StorageDialect;
 	readonly table: string;
 
-	private constructor(database: SqliteDatabase, tables: SnapshotIndexTables, sources: readonly IndexSource[]) {
+	private constructor(
+		database: SqliteDatabase,
+		dialect: StorageDialect,
+		tables: SnapshotIndexTables,
+		sources: readonly IndexSource[],
+	) {
 		this.database = database;
+		this.dialect = dialect;
 		this.tables = tables;
 		this.sources = sources;
 		this.table = tables.blobs;
@@ -682,21 +725,23 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 */
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const t = snapshotIndexTables(prefix);
-		const tables = Object.values(t);
-		const present = await database.all(
-			`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
-			...tables,
-		);
-		const current =
-			present.length === tables.length &&
-			(await database.get(
-				`SELECT 1 AS current WHERE EXISTS (SELECT 1 FROM pragma_table_info(?) WHERE name = 'created_at')
-			AND (SELECT count(*) FROM pragma_table_info(?) WHERE name IN ('prev_seq', 'restore_from', 'restore_to')) = 3`,
-				t.blobs,
-				t.sessionRefs,
-			));
-		if (!current) await database.transaction((transaction) => createSnapshotIndexTables(transaction, t, prefix));
-		const store = new SqlSnapshotBlobStore(database, t, indexSources(prefix, t));
+		const dialect = dialectOf(database);
+		const probes = [
+			...Object.values(t).map((table) => dialect.tableExists(table)),
+			dialect.columnExists(t.blobs, "created_at"),
+			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
+		];
+		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		// A versioned database always checks its ledger, so a newer schema with the same tables is refused.
+		if (dialect.versionedMigrations || !found.every((row) => row !== undefined)) {
+			await applyStorageMigrations(
+				database,
+				SNAPSHOT_BLOB_DOMAIN,
+				[{ version: 1, up: (transaction, dialect) => createSnapshotIndexTables(transaction, t, prefix, dialect) }],
+				{ table: storageMigrationTable(prefix) },
+			);
+		}
+		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t));
 		await store.installIndex();
 		return store;
 	}
@@ -706,17 +751,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all
 	 * of them.
 	 */
-	static async initialize(transaction: SqliteExecutor, prefix = ""): Promise<void> {
+	static async initialize(transaction: SqliteExecutor, prefix = "", dialect = sqliteDialect): Promise<void> {
 		const t = snapshotIndexTables(prefix);
-		await createSnapshotIndexTables(transaction, t, prefix);
+		await createSnapshotIndexTables(transaction, t, prefix, dialect);
 		for (const { source, installed, deferred } of await readSourceStates(transaction, t, indexSources(prefix, t))) {
-			if (!installed && !deferred) await installSource(transaction, t, source);
+			if (!installed && !deferred) await installSource(transaction, dialect, t, source);
 		}
 	}
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
-		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, unixepoch()) ON CONFLICT(hash) DO UPDATE SET created_at = unixepoch()`;
+		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, ${this.dialect.nowSeconds}) ON CONFLICT(hash) DO UPDATE SET created_at = ${this.dialect.nowSeconds}`;
 		const statements = blobs.map((blob) => ({ sql, params: [blob.hash, blob.data.byteLength, blob.data] }));
 		if (this.database.batch) {
 			await this.database.batch(statements);
@@ -736,7 +781,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		if (unique.length === 0) return true;
 		const { changes } = await this.database.transaction((transaction) =>
 			transaction.run(
-				`UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN (SELECT value FROM json_each(?))`,
+				`UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
 				JSON.stringify(unique),
 			),
 		);
@@ -760,7 +805,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			await this.write(pace, async (transaction) => {
 				const [current] = await readSourceStates(transaction, this.tables, [source]);
 				if (current === undefined || current.installed || (current.deferred && !includeDeferred)) return;
-				await installSource(transaction, this.tables, source);
+				await installSource(transaction, this.dialect, this.tables, source);
 			});
 		}
 		return missing.length === 0 ? states : readSourceStates(this.database, this.tables, this.sources);
@@ -787,6 +832,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	/** Indexes the next rows of `source`, and resolves true once every row at or below its watermark is indexed. */
 	private backfillBatch(source: IndexSource, { holder, pace, signal }: SnapshotIndexOptions): Promise<boolean> {
 		const t = this.tables;
+		const row = this.dialect.rowOrder();
 		return this.write(pace, async (transaction) => {
 			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
@@ -794,7 +840,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			);
 			if (progress === undefined || progress.backfilled_through >= progress.watermark) return true;
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
-				`SELECT MAX(rowid) AS upper FROM (SELECT rowid FROM ${source.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?)`,
+				`SELECT MAX(${row}) AS upper FROM (SELECT ${row} FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row} LIMIT ?)`,
 				progress.backfilled_through,
 				progress.watermark,
 				SNAPSHOT_INDEX_BACKFILL_BATCH,
@@ -803,7 +849,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			for (const sql of source.backfill) await transaction.run(sql, progress.backfilled_through, upper);
 			if (source.rowwise !== undefined) {
 				const rows = await transaction.all<SqliteRow & { id: number }>(
-					`SELECT rowid AS id FROM ${source.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+					`SELECT ${row} AS id FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row}`,
 					progress.backfilled_through,
 					upper,
 				);
@@ -868,7 +914,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				const page = await this.page(transaction, minimumAge, unreferenced, after);
 				if (page.length === 0) return { page, deleted: [] };
 				const rows = await transaction.all<SqliteRow & { hash: string }>(
-					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM json_each(?)) AND created_at > 0 AND created_at <= unixepoch() - ? AND ${unreferenced} RETURNING hash`,
+					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} RETURNING hash`,
 					JSON.stringify(page.map((row) => row.hash)),
 					minimumAge,
 				);
@@ -899,7 +945,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			const stamped = await this.write(options.pace, async (transaction) => {
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 				const { changes } = await transaction.run(
-					`UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN
+					`UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE hash IN
 					(SELECT hash FROM ${this.table} WHERE created_at = 0 ORDER BY hash LIMIT ?) AND created_at = 0`,
 					SNAPSHOT_COLLECTION_BATCH,
 				);
@@ -963,12 +1009,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const t = this.tables;
 		return after === undefined
 			? transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= unixepoch() - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
 			: transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					after.created_at,
 					after.hash,
@@ -984,13 +1030,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * the lock, waiting for it on `pace` when one is given.
 	 */
 	async claimCollection(intervalSeconds: number, holder: string, pace?: BackgroundCollectionPace): Promise<boolean> {
-		const due = `id = 1 AND (claimed_at IS NULL OR (finished_at IS NULL AND claimed_at <= unixepoch() - ?) OR (finished_at IS NOT NULL AND finished_at <= unixepoch() - ?))`;
+		const due = `id = 1 AND (claimed_at IS NULL OR (finished_at IS NULL AND claimed_at <= ${this.dialect.nowSeconds} - ?) OR (finished_at IS NOT NULL AND finished_at <= ${this.dialect.nowSeconds} - ?))`;
 		const lease = SNAPSHOT_COLLECTION_LEASE_SECONDS;
 		if (!(await this.database.get(`SELECT id FROM ${this.tables.collection} WHERE ${due}`, lease, intervalSeconds)))
 			return false;
 		const { changes } = await this.write(pace, (transaction) =>
 			transaction.run(
-				`UPDATE ${this.tables.collection} SET claimed_at = unixepoch(), holder = ?, finished_at = NULL, deleted = NULL, error_code = NULL WHERE ${due}`,
+				`UPDATE ${this.tables.collection} SET claimed_at = ${this.dialect.nowSeconds}, holder = ?, finished_at = NULL, deleted = NULL, error_code = NULL WHERE ${due}`,
 				holder,
 				lease,
 				intervalSeconds,
@@ -1001,7 +1047,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	private renewClaim(transaction: SqliteExecutor, holder: string): Promise<unknown> {
 		return transaction.run(
-			`UPDATE ${this.tables.collection} SET claimed_at = unixepoch() WHERE id = 1 AND holder = ?`,
+			`UPDATE ${this.tables.collection} SET claimed_at = ${this.dialect.nowSeconds} WHERE id = 1 AND holder = ?`,
 			holder,
 		);
 	}
@@ -1017,7 +1063,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	): Promise<void> {
 		await this.write(pace, (transaction) =>
 			transaction.run(
-				`UPDATE ${this.tables.collection} SET finished_at = unixepoch(), deleted = ?, error_code = ? WHERE id = 1 AND holder = ?`,
+				`UPDATE ${this.tables.collection} SET finished_at = ${this.dialect.nowSeconds}, deleted = ?, error_code = ? WHERE id = 1 AND holder = ?`,
 				outcome.deleted,
 				outcome.errorCode,
 				holder,

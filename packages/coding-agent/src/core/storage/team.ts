@@ -25,6 +25,7 @@ import { SettingsManager } from "../settings-manager.ts";
 import { deepMergeSettings } from "../settings-merge.js";
 import type { Settings } from "../settings-schema.ts";
 import { FileSettingsStorage, writeSettingsFile } from "../settings-storage.ts";
+import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import {
 	describeStorageError,
 	StorageAdapterLoadError,
@@ -36,15 +37,20 @@ import { defaultJournalStoreDirectory } from "./journal-adoption.js";
 import { processSharedStorageSelection } from "./process-selection.js";
 import { loadStorageAdapter, type SecretRef, type StorageSelection, storageSelectionKey } from "./provider.js";
 import {
+	checkSharedDatabaseArguments,
 	checkTeamPrefix,
 	checkTeamUrl,
 	conflictingTeamToken,
 	emptyTeamToken,
 	environmentTeamProfile,
+	inMemorySecret,
 	isFileUrl,
+	isPostgresUrl,
 	LIBSQL_ADAPTER_PACKAGE,
 	LOCAL_SESSIONS_STORAGE,
 	missingTeamToken,
+	POSTGRES_ADAPTER_PACKAGE,
+	type PostgresAuth,
 	readTeamTokenFile,
 	STORAGE_TOKEN_FILE,
 	type StorageSettingsSelection,
@@ -81,6 +87,16 @@ export interface LeaveTeamOptions {
 	readonly onProgress?: (line: string) => void;
 }
 
+/** `atomic storage join`'s options: {@link JoinTeamOptions} plus the Postgres credential sources. */
+export interface SharedDatabaseJoinOptions extends JoinTeamOptions {
+	/** Also pin `sessions.storage` to the local default store, as `atomic team join` does; libSQL URLs only. */
+	readonly pinLocalSessions: boolean;
+	/** Postgres: a password file, copied to a private file in the agent directory. */
+	readonly passwordFile?: string;
+	/** Postgres: the platform credential the adapter obtains instead of a password. */
+	readonly auth?: PostgresAuth;
+}
+
 /** What the shared-database join wrote. */
 export interface SharedDatabaseJoin {
 	readonly settingsPath: string;
@@ -92,6 +108,8 @@ export interface SharedDatabaseJoin {
 	readonly tokenPath?: string;
 	/** `new`: written now; `reused`: the file the previous selection referenced already held this token. */
 	readonly token: "new" | "reused" | "none";
+	/** Postgres `--token-file`: the file the selection references in place, read again for every new connection. */
+	readonly referencedFile?: string;
 	/** The previous `storage` selection it replaced, described without its options or secrets. */
 	readonly replaced?: string;
 	/** The previous global `sessions.storage` the local pin replaced, when it was not already the local default store. */
@@ -207,11 +225,24 @@ function writePrivateFile(path: string, token: string): void {
 	}
 }
 
-async function checkConnection(url: string, token: string | undefined, agentDir: string): Promise<void> {
-	const context = { agentDir, domain: "sessions" } as const;
-	const adapter = await loadStorageAdapter(LIBSQL_ADAPTER_PACKAGE, context);
-	if (adapter.openDatabase === undefined) throw new Error(`${LIBSQL_ADAPTER_PACKAGE} has no openDatabase hook`);
-	const database = await adapter.openDatabase({ url, ...(token === undefined ? {} : { authToken: token }) }, context);
+/** What a join checks: the adapter, its options, and the secret it will reference, held in memory for the check. */
+interface JoinTarget {
+	readonly adapter: string;
+	readonly options: Readonly<Record<string, string>>;
+	readonly secretName: "authToken" | "password";
+	readonly secret?: string;
+}
+
+async function checkConnection(target: JoinTarget, agentDir: string): Promise<void> {
+	const database = await openAdapterSelectionDatabase(
+		{
+			kind: "adapter",
+			module: target.adapter,
+			options: target.options,
+			...(target.secret === undefined ? {} : { secrets: { [target.secretName]: inMemorySecret(target.secret) } }),
+		},
+		{ agentDir, domain: "sessions" },
+	);
 	try {
 		await database.get("SELECT 1 AS ok");
 	} finally {
@@ -228,14 +259,10 @@ export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
  * fails after the deadline is recorded as the timeout error's `cleanupCause`. `elapsedMs` is never below `timeoutMs`:
  * Node can fire a timer a millisecond before the wall clock shows its delay has passed.
  */
-async function checkConnectionWithin(
-	url: string,
-	token: string | undefined,
-	agentDir: string,
-	timeoutMs: number,
-): Promise<void> {
+async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeoutMs: number): Promise<void> {
+	const url = target.options.url as string;
 	const started = Date.now();
-	const check = checkConnection(url, token, agentDir).then(() => "answered" as const);
+	const check = checkConnection(target, agentDir).then(() => "answered" as const);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const deadline = new Promise<"timed-out">((resolveDeadline) => {
 		timer = setTimeout(() => resolveDeadline("timed-out"), timeoutMs);
@@ -278,13 +305,14 @@ function isJoinTokenFile(path: string, agentDir: string): boolean {
 	return dirname(path) === resolve(agentDir) && basename(path).startsWith(`${STORAGE_TOKEN_FILE}.`);
 }
 
-/** The join-created token file `storage` references, when it already holds `token`. */
+/** The join-created token file `storage` references as `secretName`, when it already holds `token`. */
 function reusableTokenFile(
 	storage: StorageSettingsSelection | undefined,
+	secretName: JoinTarget["secretName"],
 	token: string,
 	agentDir: string,
 ): string | undefined {
-	const path = secretFilePath(storage?.secrets?.authToken, agentDir);
+	const path = secretFilePath(storage?.secrets?.[secretName], agentDir);
 	if (path === undefined || !isJoinTokenFile(path, agentDir)) return undefined;
 	let stored: string;
 	try {
@@ -356,20 +384,30 @@ function cleanupAfter(primary: Error, cleanup: () => void): void {
 }
 
 /**
- * Point the global `storage` setting at a shared libSQL / Turso database, as `atomic storage join` and
- * `atomic team join` do. Every input and precondition is checked before the first write: the URL, the token, the
- * prefix, readable global settings, the installed adapter and a `SELECT 1` on the database. The token is stored in a
- * private file in the agent directory (mode 600), reusing the file the current selection references when it already
- * holds the same token, and settings are written in one update; with `pinLocalSessions`, that update also sets
- * `sessions.storage` to the local default store. On failure nothing is changed.
+ * What a join checks and writes: the adapter selection, the secret to copy into a private file (`copy`), or the
+ * absolute path of a file the selection references in place (`reference`). Every input is checked here, before
+ * anything is read from settings or the network.
  */
-export async function joinSharedDatabase(
-	options: JoinTeamOptions & { readonly pinLocalSessions: boolean },
-	source: Exclude<TeamInputSource, "env">,
-	connectionTimeoutMs: number = TEAM_CONNECTION_TIMEOUT_MS,
-): Promise<SharedDatabaseJoin> {
-	const agentDir = resolve(options.agentDir ?? getAgentDir());
-	const cwd = resolve(options.cwd ?? process.cwd());
+interface JoinPlan {
+	readonly target: JoinTarget;
+	readonly copy?: string;
+	readonly reference?: string;
+}
+
+function joinPlan(options: SharedDatabaseJoinOptions, source: Exclude<TeamInputSource, "env">, cwd: string): JoinPlan {
+	if (!options.pinLocalSessions && isPostgresUrl(options.url)) {
+		const checked = checkSharedDatabaseArguments(options);
+		const target = { adapter: POSTGRES_ADAPTER_PACKAGE, secretName: "password" } as const;
+		if (checked.auth !== undefined)
+			return { target: { ...target, options: { url: checked.url, auth: checked.auth } } };
+		if (checked.passwordFile !== undefined) {
+			const password = readTeamTokenFile(resolve(cwd, checked.passwordFile), source, "--password-file");
+			return { target: { ...target, options: { url: checked.url }, secret: password }, copy: password };
+		}
+		const reference = resolve(cwd, checked.tokenFile as string);
+		const password = readTeamTokenFile(reference, source, undefined, "as-connections-read");
+		return { target: { ...target, options: { url: checked.url }, secret: password }, reference };
+	}
 	const url = checkTeamUrl(options.url, source);
 	if (options.token !== undefined && options.tokenFile !== undefined) {
 		throw conflictingTeamToken(source, source === "cli" ? ["--token-file"] : ["token", "tokenFile"]);
@@ -380,23 +418,48 @@ export async function joinSharedDatabase(
 		token = options.token.trim();
 		if (token.length === 0) throw emptyTeamToken(source);
 	} else if (!isFileUrl(url)) throw missingTeamToken(url, source);
+	return {
+		target: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url }, secretName: "authToken", secret: token },
+		copy: token,
+	};
+}
+
+/**
+ * Point the global `storage` setting at a shared libSQL / Turso or PostgreSQL database, as `atomic storage join` and
+ * `atomic team join` do. Every input and precondition is checked before the first write: the URL, the token, the
+ * prefix, readable global settings, the installed adapter and a `SELECT 1` on the database. The token is stored in a
+ * private file in the agent directory (mode 600), reusing the file the current selection references when it already
+ * holds the same token, and settings are written in one update; with `pinLocalSessions`, that update also sets
+ * `sessions.storage` to the local default store. On failure nothing is changed.
+ */
+export async function joinSharedDatabase(
+	options: SharedDatabaseJoinOptions,
+	source: Exclude<TeamInputSource, "env">,
+	connectionTimeoutMs: number = TEAM_CONNECTION_TIMEOUT_MS,
+): Promise<SharedDatabaseJoin> {
+	const agentDir = resolve(options.agentDir ?? getAgentDir());
+	const cwd = resolve(options.cwd ?? process.cwd());
+	const plan = joinPlan(options, source, cwd);
+	const { target } = plan;
+	const token = plan.copy;
 	const prefix = checkTeamPrefix(options.prefix, source);
 
 	openGlobalSettings(cwd, agentDir);
 	const settingsPath = settingsPathOf(agentDir);
 	// An unreadable settings file looks like one with no packages installed, so it is reported first.
-	if ((await resolvePackageStorageAdapter(LIBSQL_ADAPTER_PACKAGE, agentDir)) === undefined) {
+	if ((await resolvePackageStorageAdapter(target.adapter, agentDir)) === undefined) {
 		throw new TeamProfileError("adapter-not-installed", {
-			subject: `${LIBSQL_ADAPTER_PACKAGE} for ${agentDir}`,
-			hint: `Install it, then run this command again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
+			subject: `${target.adapter} for ${agentDir}`,
+			hint: `Install it, then run this command again: atomic install npm:${target.adapter}`,
 		});
 	}
-	await checkConnectionWithin(url, token, agentDir, connectionTimeoutMs);
+	await checkConnectionWithin(target, agentDir, connectionTimeoutMs);
 
 	const unchanged = "Nothing was changed: the previous selection and its token are kept.";
 	const published = withGlobalSettings(agentDir, unchanged, (settings) => {
 		const previous = settings.storage;
-		const reused = token === undefined ? undefined : reusableTokenFile(previous, token, agentDir);
+		// Without a token there is nothing to compare, so no token file is read.
+		const reused = token === undefined ? undefined : reusableTokenFile(previous, target.secretName, token, agentDir);
 		const tokenPath =
 			token === undefined ? undefined : (reused ?? join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`));
 		const created = token !== undefined && tokenPath !== undefined && reused === undefined ? tokenPath : undefined;
@@ -412,12 +475,12 @@ export async function joinSharedDatabase(
 				});
 			}
 		}
+		const file =
+			tokenPath === undefined ? plan.reference : relative(dirname(agentDir), tokenPath).split(sep).join("/");
 		const storage: StorageSettingsSelection = {
-			adapter: LIBSQL_ADAPTER_PACKAGE,
-			options: { url },
-			...(tokenPath === undefined
-				? {}
-				: { secrets: { authToken: { file: relative(dirname(agentDir), tokenPath).split(sep).join("/") } } }),
+			adapter: target.adapter,
+			options: target.options,
+			...(file === undefined ? {} : { secrets: { [target.secretName]: { file } } }),
 			...(prefix === undefined ? {} : { prefix }),
 		};
 		const next: Settings = { ...settings, storage };
@@ -441,6 +504,7 @@ export async function joinSharedDatabase(
 		...(options.pinLocalSessions ? { sessionsStorage: LOCAL_SESSIONS_STORAGE } : {}),
 		...(tokenPath === undefined ? {} : { tokenPath }),
 		token: tokenPath === undefined ? "none" : reused === undefined ? "new" : "reused",
+		...(plan.reference === undefined ? {} : { referencedFile: plan.reference }),
 		...(previous === undefined || JSON.stringify(previous) === JSON.stringify(storage)
 			? {}
 			: { replaced: describePrevious(() => selectStorage(previous, "settings", "storage", "")) }),
