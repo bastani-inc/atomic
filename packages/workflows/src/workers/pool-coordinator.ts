@@ -1263,6 +1263,11 @@ export class PoolCoordinator {
 		return { workers: this.slots.size, busy: [...this.slots].filter(holding).length };
 	}
 
+	/** The work this coordinator's workers hold now. */
+	heldWork(): readonly PoolWork[] {
+		return [...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work]));
+	}
+
 	/**
 	 * The worker's attempt waits released and gives its place back. The place goes to a woken attempt that asked for one,
 	 * or to the next child; the pool starts a worker for each waiting attempt, at most its `count`, to run it, while the

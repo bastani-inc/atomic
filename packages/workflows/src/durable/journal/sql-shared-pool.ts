@@ -4,13 +4,13 @@ import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
-import type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
+import type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
 import { validateText } from "./values.js";
 
-export type { SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
+export type { SharedPoolFleet, SharedPoolHost, SharedPoolStats, WorkerHostGitSource } from "./shared-pool-types.js";
 export type { PooledStageInputKind } from "./stage-input-kinds.js";
 
 const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
@@ -856,4 +856,28 @@ export async function readSharedPoolStats(journal: RunJournal, root: string): Pr
 		),
 	);
 	return shared === undefined ? undefined : poolStats(storage, root);
+}
+
+/**
+ * The worker hosts and shared roots of `journal`, read without the write lock and without creating anything: empty
+ * when the journal never ran a shared pool, undefined when it is not a SQL journal (#4768).
+ */
+export async function readSharedPoolFleet(journal: RunJournal): Promise<SharedPoolFleet | undefined> {
+	const storage = sqlPoolStorage(journal);
+	if (storage === undefined) return undefined;
+	const runs = storage.tables.runs;
+	const shared = await storage.read((executor) =>
+		executor.get("SELECT 1 AS held FROM sqlite_master WHERE type = 'table' AND name = ?", `${runs}_pool_shared`),
+	);
+	if (shared === undefined) return { hosts: [], roots: [] };
+	const active = await storage.read((executor) =>
+		executor.all<SqliteRow & { root: string }>(
+			`SELECT s.root FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
+			WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
+		),
+	);
+	return {
+		hosts: await registeredHosts(storage),
+		roots: await Promise.all(active.map((row) => poolStats(storage, row.root))),
+	};
 }

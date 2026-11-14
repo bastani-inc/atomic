@@ -74,6 +74,8 @@ export interface DispatcherOpts {
 	localWorkers?: import("../workers/public-options.js").LocalWorkerOptions;
 	snapshots?: import("@bastani/atomic").WorktreeSnapshotSettingsInput;
 	admission?: import("../workers/public-options.js").WorkflowAdmissionOptions;
+	/** The host's `workflows.workers` settings: shared placement of the root's pooled children (#4768). */
+	workers?: import("../workers/public-options.js").WorkflowWorkerPlacementOptions;
 	/** Registry of compiled workflow definitions. */
 	registry: WorkflowRegistry;
 	/** Stage adapters forwarded to the executor (prompt/complete). */
@@ -244,6 +246,7 @@ export async function dispatch(args: WorkflowToolArgs, opts: DispatcherOpts): Pr
 				launch = launchDetachedUntilStartup(def, inputs, {
 					[hostWorkerBindings]: true,
 					localWorkers: opts.localWorkers,
+					workers: opts.workers,
 					admission: opts.admission,
 					snapshots: opts.snapshots,
 					registry: opts.registry,

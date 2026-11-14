@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `atomic worker start`, which joins a machine to a shared libSQL / Turso workflow database as a worker host in one command: `--db <url> --token-file <path>` select the database for that process only, `--slots` defaults to half the CPUs (1 to 16), `--label`, `--prefix`, `--host-id`, `--no-restore`, `--idle-exit <ms>` and `--json` (one JSON event per line) are optional. SIGTERM or SIGINT drains and exits 0, a second signal stops at once and exits 2, and incomplete setup lists every missing piece and exits 1. The token is never printed or logged. A host that loses the database keeps its running children, reports `degraded`, and retries with backoff. `atomic worker status` lists the registered hosts and each root's queue. The new [Running workers on many machines](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/docs/guides/worker-hosts.md) guide has a systemd unit, a cloud-init recipe and a container image ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Added the `workflows.workers` setting: `{ "placement": "shared" }` gives roots that `/workflow run` starts shared placement, so worker hosts on other machines run their pooled children without the SDK ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

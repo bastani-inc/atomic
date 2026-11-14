@@ -1000,9 +1000,17 @@ Pooled SDK runs reject process-bound adapter, UI, persistence and similar runtim
 
 ### Workers on other hosts
 
-A root can let workers on other machines run its pooled children when every machine opens the same shared journal, such as a libSQL or Turso database selected through the [libSQL adapter](/storage#selecting-an-adapter). This is opt-in, SDK-only, and changes nothing for roots that do not use it. The default local SQLite journal keeps its workers on its own machine.
+A root can let workers on other machines run its pooled children when every machine opens the same shared journal, such as a libSQL or Turso database selected through the [libSQL adapter](/storage#selecting-an-adapter). This is opt-in and changes nothing for roots that do not use it. The default local SQLite journal keeps its workers on its own machine.
 
-Start the root with `workers: { placement: "shared" }` beside `localWorkers`:
+The quickest way is from the command line. Start a worker host on each other machine with one command:
+
+```bash
+atomic worker start --db libsql://pool.example.com --token-file /etc/atomic/token
+```
+
+Then set `workflows.workers` to `{ "placement": "shared" }` beside `workflows.localWorkers` in settings on the machine that starts the runs, so roots that `/workflow run` starts use shared placement. [Running workers on many machines](/guides/worker-hosts) covers the command, draining, and running it as a systemd service, from cloud-init, or in a container.
+
+From the SDK, start the root with `workers: { placement: "shared" }` beside `localWorkers`:
 
 ```ts
 await run(root, {}, {
@@ -1014,7 +1022,7 @@ await run(root, {}, {
 });
 ```
 
-Then start a worker host on each other machine, with the same journal selection:
+Then start a worker host on each other machine with `atomic worker start`, or from code with the same journal selection:
 
 ```ts
 import { startWorkflowWorkerHost } from "@bastani/atomic/workflows";
@@ -1026,6 +1034,10 @@ const host = await startWorkflowWorkerHost({
 });
 // host.stats(), then host.drain() to finish running children, or host.stop() to stop now.
 ```
+
+`startWorkflowWorkerHost` also takes `idleExitMs`, which drains and stops the host once none of its workers ran a child for that long, and `onEvent`, which receives `claimed` and `released` as its workers take and let go of children, `degraded` and `recovered` while its polls of the journal fail and once they succeed again, and `idle-exit`. Without `journal`, it opens the journal this machine selects for workflow runs. `host.closed` settles once the host has stopped, whichever way it stopped. `readWorkflowWorkerFleet({ journal })` returns the registered hosts and the pool stats of each running root, as `atomic worker status` prints them.
+
+A host that cannot reach the journal keeps its running children. It polls again after 1 second, then twice as long after each further failure, up to 30 seconds, and `host.stats().degraded` says how many polls failed in a row and why.
 
 Worker hosts run on Linux or macOS, like local workers: on Windows, or where Atomic's native process identity does not load, `startWorkflowWorkerHost` fails with `SharedPoolSetupError` (code `process-containment-unavailable`) before it opens the journal.
 
