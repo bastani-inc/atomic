@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an Intercom ask between two connected sessions that could no longer be answered or failed after the broker restarted, whether through `atomic intercom restart`, a lost socket path, SIGTERM or a crash. The recipient's reply was refused with "Pending question route does not authorize this public reply", and if the recipient ended, the asker waited forever. The broker now writes each live ask to its durable away-ask file when the ask is recorded, including asks parked for a released subagent and failed-ask messages held for one, and removes it once the ask is answered, failed or taken up. The next broker keeps these asks as it keeps away asks. The reply is accepted, or the asker gets exactly one failure when the recipient ends. After a restart, only the session that proves it is the asker or the recipient by its return address takes the ask up, answers it or fails it. A released subagent's unanswered asks are kept the same way, so after a restart the subagent gets its reply, or one failure, when it is back ([#4829](https://github.com/bastani-inc/atomic/issues/4829), [#4852](https://github.com/bastani-inc/atomic/issues/4852))
+
 ## [0.9.87] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

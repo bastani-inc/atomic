@@ -30,6 +30,18 @@ interface Entry {
 	ownerSessionId: string | undefined;
 }
 
+/** #4829: what keeps a released asker's routes durably. */
+export interface ReleasedAskerReplyStore {
+	kept(question: PendingQuestion): void;
+	removed(question: PendingQuestion): void;
+}
+
+const questionOf = (entry: Entry): PendingQuestion => ({
+	messageId: entry.questionId,
+	senderSessionId: entry.askerSessionId,
+	targetSessionId: entry.replierSessionId,
+});
+
 const addTo = <Key>(index: Map<Key, Set<Entry>>, key: Key, entry: Entry): void => {
 	const members = index.get(key);
 	if (members === undefined) index.set(key, new Set([entry]));
@@ -50,6 +62,8 @@ export class ReleasedAskerReplies {
 	private readonly byQuestion = new Map<string, Set<Entry>>();
 	private readonly byChild = new Map<string, Set<Entry>>();
 	private readonly byOwner = new Map<string, Set<Entry>>();
+	/** #4829: where each route is written while it is kept, so it outlives this broker (see {@link persistWith}). */
+	private durable: ReleasedAskerReplyStore | undefined;
 	/** Routes refused because the broker's capacity was full, since this broker started. */
 	droppedRoutes = 0;
 
@@ -59,6 +73,14 @@ export class ReleasedAskerReplies {
 		private readonly maxRoutes: number = DEFAULT_MAX_ROUTES,
 		private readonly onFirstOverflow: () => void = () => {},
 	) {}
+
+	/**
+	 * #4829: write each route while it is kept, and forget it once it is taken or dropped, so a broker that shuts down or
+	 * crashes leaves its released subagents' asks behind for the next one. {@link clear} forgets nothing.
+	 */
+	persistWith(store: ReleasedAskerReplyStore): void {
+		this.durable = store;
+	}
 
 	keep(
 		asker: { readonly sessionId: string; readonly childName: string },
@@ -249,6 +271,7 @@ export class ReleasedAskerReplies {
 	}
 
 	private add(entry: Entry): void {
+		this.durable?.kept(questionOf(entry));
 		if (entry.expiresAt >= this.latestExpiresAt) {
 			this.entries.add(entry);
 			this.latestExpiresAt = entry.expiresAt;
@@ -269,6 +292,7 @@ export class ReleasedAskerReplies {
 	}
 
 	private remove(entry: Entry): void {
+		this.durable?.removed(questionOf(entry));
 		this.entries.delete(entry);
 		removeFrom(this.byQuestion, entry.questionId, entry);
 		removeFrom(this.byChild, entry.childKey, entry);
