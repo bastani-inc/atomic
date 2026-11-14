@@ -724,7 +724,10 @@ describe("cache-key formats and CLI (#4748)", () => {
 		assert.equal(code, 0);
 		const printed = out.join("");
 		assert.match(printed, /^stores-key=atomic-stores-v1-/m);
-		assert.ok(printed.split("\n").includes(`stores-paths=${join(at.home, ".npm")}`));
+		// The CLI keys this host's platform: npm keeps its store in %LOCALAPPDATA%\npm-cache on Windows, ~/.npm elsewhere.
+		const npmStore =
+			process.platform === "win32" ? join(at.home, "AppData", "Local", "npm-cache") : join(at.home, ".npm");
+		assert.ok(printed.split("\n").includes(`stores-paths=${npmStore}`), printed);
 		assert.match(
 			printed,
 			new RegExp(
