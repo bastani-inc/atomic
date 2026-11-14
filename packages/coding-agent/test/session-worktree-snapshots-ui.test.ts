@@ -105,6 +105,7 @@ describe("/session snapshot", () => {
 		assert.match(text, /delta chain 1 link\(s\)/);
 		assert.match(text, /no unpushed commits bundled/);
 		assert.match(text, /matches the current tree/);
+		assert.doesNotMatch(text, /last capture|undefined|Last resume/, "nothing recorded either (#4748)");
 	});
 
 	test("diffs the snapshot against a drifted tree", async () => {

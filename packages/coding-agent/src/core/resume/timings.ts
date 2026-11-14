@@ -174,26 +174,10 @@ export async function recordResumeTimings(
 	}
 }
 
+/** Whether `value` is timings this version writes: entries of another version are not read. */
 function isResumeTimings(value: unknown): value is ResumeTimings {
-	if (typeof value !== "object" || value === null) return false;
-	const timings = value as Partial<Record<keyof ResumeTimings, unknown>>;
-	return (
-		timings.version === 1 &&
-		typeof timings.startedAt === "string" &&
-		Array.isArray(timings.restores) &&
-		timings.restores.every(
-			(restore: Partial<CheckoutRestoreTimings> | null) =>
-				typeof restore?.root === "string" &&
-				typeof restore.ms === "number" &&
-				typeof restore.phases === "object" &&
-				restore.phases !== null,
-		) &&
-		Array.isArray(timings.blueprint) &&
-		timings.blueprint.every(
-			(step: Partial<BlueprintStepTiming> | null) => typeof step?.name === "string" && typeof step.ms === "number",
-		) &&
-		(timings.firstPromptReadyMs === null || typeof timings.firstPromptReadyMs === "number")
-	);
+	const timings = value as Partial<Record<keyof ResumeTimings, unknown>> | null | undefined;
+	return timings?.version === 1 && Array.isArray(timings.restores) && Array.isArray(timings.blueprint);
 }
 
 /** The timings of the latest resume recorded on the session's active branch, if any. */

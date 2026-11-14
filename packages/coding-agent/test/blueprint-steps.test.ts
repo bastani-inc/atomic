@@ -31,6 +31,7 @@ import {
 	type StepContext,
 } from "../src/core/resume/blueprint/steps.ts";
 import type { RunStep, UsesStep } from "../src/core/resume/blueprint/types.ts";
+import { ResumeTimingsRecorder } from "../src/core/resume/timings.ts";
 import type { ShellConfig } from "../src/utils/shell.ts";
 import { WORKING_DIRECTORY_COMMAND } from "./helpers/blueprint-fixtures.ts";
 import { shellPath } from "./helpers/hook-commands.ts";
@@ -145,7 +146,11 @@ function lowestFreeDescriptor(): number {
 describe("a section's steps and their logs (#4588)", () => {
 	test("every step gets its own log with the header, its output and its exit status (#4588)", async () => {
 		const steps = [run("echo hello", "Say hello"), run("echo second")];
+		const started = performance.now();
 		const result = await runSection("maintenance", steps, context());
+		const wallMs = performance.now() - started;
+		const duration = Number(/^# duration: (\d+) ms$/m.exec(readLog("maintenance", 1))?.[1]);
+		assert.ok(duration <= wallMs, `the step's ${duration} ms within the section's ${wallMs} ms`);
 		assert.deepEqual(result, { completed: 2 });
 		assert.equal(
 			timesOmitted(readLog("maintenance", 1)),
@@ -375,6 +380,29 @@ describe("cancelling a section (#4588)", () => {
 		assert.doesNotMatch(readLog("initialize", 1), /# (exit status|stopped by signal|failed|timed out|could not)/);
 		assert.deepEqual(lines(markers()), ["started"]);
 		assert.equal(existsSync(logPathOf("initialize", 2)), false);
+	});
+});
+
+describe("step timings (#4748)", () => {
+	test("each step reports its section, name, duration and how it ended to the resume it runs in (#4748)", async () => {
+		const recorder = new ResumeTimingsRecorder();
+		const started = performance.now();
+		await recorder.run(async () => {
+			await runSection("initialize", [run("echo ok", "Fine"), run("exit 3", "Broken")], context());
+			await runSection("post-build", [run("sleep 30", "Hang")], context({ timeoutMs: 400 }));
+		});
+		const wallMs = performance.now() - started;
+		const steps = recorder.finish().blueprint;
+		assert.deepEqual(
+			steps.map(({ section, name, exit }) => [section, name, exit]),
+			[
+				["initialize", "Fine", "ok"],
+				["initialize", "Broken", "failed"],
+				["post-build", "Hang", "timed-out"],
+			],
+		);
+		assert.ok(steps[2]!.ms >= 300, `the timed-out step ran ${steps[2]!.ms} ms`);
+		assert.ok(steps.reduce((sum, step) => sum + step.ms, 0) <= wallMs);
 	});
 });
 

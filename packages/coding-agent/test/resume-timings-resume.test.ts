@@ -4,16 +4,17 @@ import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
-import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import { latestResumeTimings, RESUME_TIMINGS_TYPE } from "../src/core/resume/timings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { describeLastCapture, SessionWorktreeSnapshotRecorder } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import type { SessionStore } from "../src/core/storage/session/types.ts";
+import type { SqlSnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.ts";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
-import { type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.ts";
+import { type PreparedSessionResume, type PrepareSessionResumeOptions, prepareSessionResume } from "../src/index.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 
 useTemporaryAgentDir();
@@ -41,9 +42,16 @@ async function sqlStore(): Promise<SessionStore> {
 	return store;
 }
 
-/** A clone with an uncommitted blueprint, recorded by a session and then gone, so a resume restores and builds it. */
-async function recordedProject(): Promise<SessionManager> {
-	const { clone } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+/**
+ * A clone with an uncommitted blueprint, recorded by a session and then gone, so a resume restores and builds it.
+ * `unpushed` commits a file first, so the snapshot bundles that commit; `keep` leaves the clone where it is.
+ */
+async function recordedProject(setup: { unpushed?: boolean; keep?: boolean } = {}) {
+	const { clone, remote } = await sandbox.remoteWithClone("repo", { "README.md": "hello\n" });
+	if (setup.unpushed) {
+		sandbox.write(join(clone, "committed.txt"), "unpushed\n");
+		await sandbox.commitAll(clone, "unpushed commit");
+	}
 	sandbox.write(
 		join(clone, ".atomic", "blueprint.yaml"),
 		forThisHost(["maintenance:", "  - name: Warm up", "    run: echo warm", ""].join("\n")),
@@ -54,13 +62,21 @@ async function recordedProject(): Promise<SessionManager> {
 	const capture = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
 	if (capture.status !== "captured") throw new Error(`capture ${capture.status}`);
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
-	renameSync(clone, sandbox.path("node-a-gone"));
-	return manager;
+	if (!setup.keep) renameSync(clone, sandbox.path("node-a-gone"));
+	return { manager, snapshot: capture.snapshot, remote, blobs: store.snapshotBlobs as SqlSnapshotBlobStore };
 }
 
-function options(): PrepareSessionResumeOptions {
+function ready(prepared: PreparedSessionResume): Extract<PreparedSessionResume, { status: "ready" }> {
+	assert.equal(prepared.status, "ready");
+	if (prepared.status !== "ready") throw new Error("unreachable");
+	return prepared;
+}
+
+function options(
+	entryPoint: PrepareSessionResumeOptions["entryPoint"] = "switch-session",
+): PrepareSessionResumeOptions {
 	return {
-		entryPoint: "switch-session",
+		entryPoint,
 		launchCwd: sandbox.root,
 		settings,
 		storeDir: sandbox.path("host"),
@@ -75,7 +91,7 @@ function options(): PrepareSessionResumeOptions {
 
 describe("resume timings of a real resume (#4748)", () => {
 	test("a resume that restores and builds a checkout records every phase, each step, within its wall time (#4748)", async () => {
-		const manager = await recordedProject();
+		const { manager } = await recordedProject();
 		const started = performance.now();
 		const prepared = await prepareSessionResume(manager, options());
 		const wallMs = performance.now() - started;
@@ -113,8 +129,56 @@ describe("resume timings of a real resume (#4748)", () => {
 		assert.match(log, /^# duration: \d+ ms$/m);
 	});
 
+	test("atomic --session counts from the launch of the process (#4748)", async () => {
+		const { manager } = await recordedProject();
+		const beforeResume = performance.now();
+		const timings = latestResumeTimings(ready(await prepareSessionResume(manager, options("cli"))).sessionManager);
+		assert.ok(timings);
+		assert.equal(timings.startedAt, new Date(performance.timeOrigin).toISOString());
+		assert.ok(timings.firstPromptReadyMs! >= Math.floor(beforeResume), "counted from the process launch");
+	});
+
+	test("a resume whose commit came from the snapshot's bundle says so (#4748)", async () => {
+		const { manager } = await recordedProject({ unpushed: true });
+		const timings = latestResumeTimings(ready(await prepareSessionResume(manager, options())).sessionManager);
+		assert.deepEqual(
+			timings?.restores.map((restore) => [restore.mode, restore.fetch]),
+			[["fresh", "bundle"]],
+		);
+	});
+
+	test("a degraded restore records its mode and the phases of both attempts (#4748)", async () => {
+		const { manager, snapshot, blobs } = await recordedProject();
+		await loseSnapshotBlobs(blobs, [snapshot.chain.at(-1)!.patch!]);
+		const prepared = ready(await prepareSessionResume(manager, options()));
+		const timings = latestResumeTimings(prepared.sessionManager);
+		assert.equal(timings?.restores.length, 1);
+		const [restore] = timings!.restores;
+		assert.equal(restore!.mode, "degraded");
+		for (const phase of ["fetch", "reconstruct", "materialize", "verify", "publish"] as const) {
+			assert.equal(typeof restore!.phases[phase], "number", `phase ${phase}`);
+		}
+	});
+
+	test("a checkout that could not be restored at all is not reported as restored (#4748)", async () => {
+		const { manager, remote, snapshot, blobs } = await recordedProject({ unpushed: true });
+		await loseSnapshotBlobs(blobs, [snapshot.bundle!.blob]);
+		renameSync(remote, `${remote}-gone`);
+		const prepared = ready(await prepareSessionResume(manager, options()));
+		assert.equal(prepared.sessionManager.getWorktreeRootMappings().length, 0, "nothing was restored");
+		assert.equal(latestResumeTimings(prepared.sessionManager), undefined);
+	});
+
+	test("a resume that restores and builds nothing records no timings (#4748)", async () => {
+		const { manager } = await recordedProject({ keep: true });
+		const prepared = ready(await prepareSessionResume(manager, options()));
+		assert.equal(prepared.sessionManager.getWorktreeRootMappings().length, 0);
+		assert.equal(latestResumeTimings(prepared.sessionManager), undefined);
+		assert.ok(!prepared.sessionManager.getBranch().some((entry) => entry.type === "custom"));
+	});
+
 	test("a resume whose timings cannot be written still resumes (#4748)", async () => {
-		const manager = await recordedProject();
+		const { manager } = await recordedProject();
 		const append = vi.spyOn(SessionManager.prototype, "appendCustomEntry");
 		append.mockImplementation(async (customType: string) => {
 			if (customType === RESUME_TIMINGS_TYPE) throw new Error("disk full");
