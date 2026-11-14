@@ -15,6 +15,7 @@ import type {
 } from "./shared-pool-types.js";
 import {
 	classifySharedStoreHealth,
+	probeSharedStoreWrite,
 	type SharedStoreWrites,
 	sharedStoreHealth,
 	withoutUrlCredentials,
@@ -995,7 +996,10 @@ export async function readSharedPoolStats(journal: RunJournal, root: string): Pr
  * The worker hosts and shared roots of `journal`, read without the write lock and without creating anything: empty
  * when the journal never ran a shared pool, undefined when it is not a SQL journal (#4768).
  */
-export async function readSharedPoolFleet(journal: RunJournal): Promise<SharedPoolFleet | undefined> {
+export async function readSharedPoolFleet(
+	journal: RunJournal,
+	options: { readonly probeWrites?: boolean } = {},
+): Promise<SharedPoolFleet | undefined> {
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return undefined;
 	const runs = storage.tables.runs;
@@ -1010,10 +1014,22 @@ export async function readSharedPoolFleet(journal: RunJournal): Promise<SharedPo
 			WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
 		),
 	);
-	const fleet = await fleetStatus(storage, sqlPoolWrites(journal));
-	return {
-		hosts: await registeredHosts(storage),
-		roots: await Promise.all(active.map((row) => poolStats(storage, row.root, async () => fleet))),
-		fleet,
+	const writes = sqlPoolWrites(journal);
+	const read = await fleetStatus(storage, writes);
+	const hosts = await registeredHosts(storage);
+	const roots = await Promise.all(active.map((row) => poolStats(storage, row.root, async () => read)));
+	if (options.probeWrites !== true) return { hosts, roots, fleet: read };
+	// Last, after every read: a probe the store leaves unanswered holds up the journal's calls after it.
+	const probe = await probeSharedStoreWrite(() =>
+		storage.transaction((tx) => tx.run(`UPDATE ${runs} SET run_id = run_id WHERE 0`)),
+	);
+	const fleet = {
+		...read,
+		store: classifySharedStoreHealth({
+			...(writes === undefined ? {} : { writes }),
+			hostsRegistered: hosts.length > 0,
+			probe,
+		}),
 	};
+	return { hosts, roots: roots.map((root) => ({ ...root, fleet })), fleet };
 }

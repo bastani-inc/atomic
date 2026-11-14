@@ -753,21 +753,25 @@ export async function readWorkflowWorkerFleet(
 			selection as Extract<StorageSelection, { kind: "adapter" }>,
 			agentDir,
 		);
+		let fleet: SharedPoolFleet | undefined;
 		try {
-			return (
-				(await readSharedPoolFleet(journal)) ?? {
-					hosts: [],
-					roots: [],
-					fleet: {
-						store: {
-							state: "unknown",
-							message: "The journal's storage adapter is not SQL, so it holds no shared pools.",
-						},
+			// This journal serves the read alone, so it probes the store with a write that changes nothing (#4768).
+			fleet = (await readSharedPoolFleet(journal, { probeWrites: true })) ?? {
+				hosts: [],
+				roots: [],
+				fleet: {
+					store: {
+						state: "unknown",
+						message: "The journal's storage adapter is not SQL, so it holds no shared pools.",
 					},
-				}
-			);
+				},
+			};
+			return fleet;
 		} finally {
-			await journal.close();
+			const closing = journal.close();
+			// Closing waits for a probe the store left unanswered; the status does not.
+			if (fleet?.fleet.store.state === "degraded") closing.catch(() => {});
+			else await closing;
 		}
 	};
 	try {

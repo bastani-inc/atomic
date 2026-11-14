@@ -62,7 +62,7 @@ A machine that dies, or is killed with SIGKILL, loses nothing that was committed
 - `stale`: it has not reported for 15 seconds. It may have died, or lost the database. Its children go to other hosts once their leases expire.
 - `live`: a host of an older Atomic version, which does not report whether it is busy.
 
-The command never waits on a database that stops answering: after 5 seconds it prints `shared store degraded`, why, and a hint, and exits `1`. A database it cannot reach at all prints `shared store unknown` the same way.
+The command never waits on a database that stops answering: after 5 seconds it prints `shared store degraded`, why, and a hint, and exits `1`. A database it cannot reach at all prints `shared store unknown` the same way. The command also tries one write that changes nothing, and prints `shared store degraded` with the hint when the database answers reads but does not commit that write within 2 seconds.
 
 ## Scale the fleet automatically
 

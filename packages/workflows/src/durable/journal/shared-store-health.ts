@@ -54,13 +54,39 @@ export const STORE_WRITE_FAILURES = 3;
 
 export { SharedStoreWrites } from "./internal.js";
 
+/** How long a status reader's write probe may wait for the store to commit it before status reports it degraded. */
+export const STORE_PROBE_TIMEOUT_MS = 2_000;
+
+/** How a write probe ended: committed, unanswered within {@link STORE_PROBE_TIMEOUT_MS}, or failed. */
+export type SharedStoreProbe = "committed" | "timed-out" | { readonly failure: Error };
+
+/**
+ * Runs `write`, a write that changes nothing, for at most {@link STORE_PROBE_TIMEOUT_MS} (#4768). Only a reader whose
+ * journal serves nothing else probes: a journal runs one call at a time, so a probe the store leaves unanswered holds
+ * up every call after it. A probe that settles after it timed out is dropped.
+ */
+export async function probeSharedStoreWrite(write: () => Promise<unknown>): Promise<SharedStoreProbe> {
+	let timer: NodeJS.Timeout | undefined;
+	const timedOut = new Promise<"timed-out">((resolve) => {
+		timer = setTimeout(() => resolve("timed-out"), STORE_PROBE_TIMEOUT_MS);
+	});
+	try {
+		return await Promise.race([write().then(() => "committed" as const), timedOut]);
+	} catch (error) {
+		return { failure: error as Error };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 /**
  * The shared store's health (#4768), the one detector of a store that stopped committing writes, from what this
  * process saw. First match wins:
- * - one of this process's writes waited {@link STORE_WRITE_STALL_MS}: `degraded`, as a wedged sqld leaves writes;
+ * - one of this process's writes waited {@link STORE_WRITE_STALL_MS}, or a write `probe` did not commit within
+ *   {@link STORE_PROBE_TIMEOUT_MS}: `degraded`, as a wedged sqld leaves writes;
  * - the status read, a bounded read probe, ran out of {@link STATUS_READ_TIMEOUT_MS}: `degraded`;
- * - the store failed {@link STORE_WRITE_FAILURES} writes in a row: `degraded` while hosts are registered, whose work it
- *   holds up, else `unknown`;
+ * - the write probe failed, or the store failed {@link STORE_WRITE_FAILURES} writes in a row: `degraded` while hosts
+ *   are registered, whose work it holds up, else `unknown`;
  * - the status read failed: `unknown`;
  * - else the libSQL adapter's own report, `degraded` after a stall it reported, or `ok`.
  * Every degraded or unknown store this function finds carries {@link SHARED_STORE_HINT}.
@@ -69,6 +95,7 @@ export function classifySharedStoreHealth(observed: {
 	readonly writes?: SharedStoreWrites;
 	readonly hostsRegistered: boolean;
 	readonly readFailure?: Error;
+	readonly probe?: SharedStoreProbe;
 }): SharedStoreHealth {
 	const found = (state: "degraded" | "unknown", message: string) => ({
 		state,
@@ -81,8 +108,16 @@ export function classifySharedStoreHealth(observed: {
 			"degraded",
 			`A write has waited more than ${STORE_WRITE_STALL_MS / 1000} s for the shared store to commit it.`,
 		);
+	const probe = observed.probe;
+	if (probe === "timed-out")
+		return found("degraded", `The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`);
 	if (observed.readFailure instanceof SharedStoreStatusTimeoutError)
 		return found("degraded", observed.readFailure.message);
+	if (probe !== undefined && probe !== "committed")
+		return found(
+			observed.hostsRegistered ? "degraded" : "unknown",
+			`The shared store refused a write: ${probe.failure.message}`,
+		);
 	const writes = observed.writes;
 	if (writes !== undefined && writes.failuresInRow >= STORE_WRITE_FAILURES)
 		return found(

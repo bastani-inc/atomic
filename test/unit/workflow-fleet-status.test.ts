@@ -18,6 +18,7 @@ import {
 	SharedStoreStatusTimeoutError,
 	SharedStoreWrites,
 	STATUS_READ_TIMEOUT_MS,
+	STORE_PROBE_TIMEOUT_MS,
 	STORE_WRITE_FAILURES,
 	STORE_WRITE_STALL_MS,
 	withoutUrlCredentials,
@@ -796,4 +797,46 @@ test(
 		}
 	},
 	STALLED_STORE_TIMEOUT_MS + STORE_WRITE_STALL_MS,
+);
+
+test(
+	"atomic worker status, in a process of its own, probes the store with a write and reads one that commits none as degraded (#4768)",
+	async () => {
+		const server = await startFakeLibsqlServer({ streamTtlMs: 60_000 });
+		const f = await sharedRoot(server.url, 1);
+		let release: () => void = () => {};
+		try {
+			await f.shared.reportHost(host("h-busy", { busy: 1 }));
+			const selection = { adapter: libsql, options: { url: server.url }, prefix: PREFIX };
+			const agentDir = join(directory, "reader");
+			assert.deepEqual((await readWorkflowWorkerFleet({ journal: selection, agentDir })).fleet.store, {
+				state: "ok",
+			});
+			// Every write transaction waits unanswered from now on, as a wedged sqld leaves them; reads still answer.
+			server.onOpenTransaction(() => new Promise<void>((resolve) => (release = resolve)));
+			const started = performance.now();
+			const fleet = await readWorkflowWorkerFleet({ journal: selection, agentDir });
+			assert.ok(performance.now() - started < STATUS_READ_TIMEOUT_MS, "the probe ends before the status budget");
+			assert.deepEqual(fleet.fleet, {
+				store: {
+					state: "degraded",
+					message: `The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`,
+					hint: SHARED_STORE_HINT,
+				},
+				queue: { roots: 1, ready: 1, leased: 0 },
+			});
+			assert.deepEqual(hostStates(fleet.hosts), [["h-busy", "busy", 1, undefined, 4, undefined]]);
+			assert.deepEqual(
+				fleet.roots.map((root) => [root.root, root.ready, root.fleet.store.state]),
+				[["root", 1, "degraded"]],
+			);
+			server.onOpenTransaction(undefined);
+			release();
+		} finally {
+			release();
+			await f.close();
+			await server.close();
+		}
+	},
+	STALLED_STORE_TIMEOUT_MS,
 );
