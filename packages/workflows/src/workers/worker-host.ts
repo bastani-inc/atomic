@@ -13,6 +13,7 @@ import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
 import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
+import { readFleetDemand } from "../durable/journal/sql-fleet.js";
 import { openSqlPoolQueue, type PoolWork } from "../durable/journal/sql-pool-queue.js";
 import {
 	readSharedPoolFleet,
@@ -21,8 +22,11 @@ import {
 	type WorkerHostGitSource,
 } from "../durable/journal/sql-shared-pool.js";
 import type { RunJournal } from "../durable/journal/types.js";
+import { resolveFleetPolicy } from "./autoscaler.js";
 import type { CoordinatorEvent, CoordinatorInbound, CoordinatorPort } from "./coordinator-protocol.js";
 import { definitionDigest, type WorkerDefinitionSource } from "./definitions.js";
+import { fleetScaling } from "./fleet-scaling.js";
+import type { WorkerFleetPolicyOptions } from "./fleet-types.js";
 import { HostPollBackoff } from "./host-poll-backoff.js";
 import { defaultWorkerEntry } from "./local-pool.js";
 import {
@@ -736,14 +740,22 @@ export async function startWorkflowWorkerHost(options: WorkflowWorkerHostOptions
 }
 
 /**
- * The worker hosts registered in a shared journal, as each last reported itself, and the pool stats of the running or
- * paused roots they serve (#4768). The journal's setup is checked as {@link startWorkflowWorkerHost} checks it, every
- * problem reported together, except process containment, which reading needs none of. A store that cannot be read, or
- * does not answer within the status budget, reads as `fleet.store.state` `"unknown"` with a hint instead of failing.
+ * The worker hosts registered in a shared journal, as each last reported itself, the pool stats of the running or
+ * paused roots they serve, and the fleet's scaling signal under `policy` (#4768). The journal's setup is checked as
+ * {@link startWorkflowWorkerHost} checks it, every problem reported together, except process containment, which reading
+ * needs none of. A store that cannot be read, or does not answer within the status budget, reads as
+ * `fleet.store.state` `"unknown"` with a hint, and no scaling signal, instead of failing. With `probeWrites: false` it
+ * only reads, and the store's health reflects only what this process saw of its writes.
  */
 export async function readWorkflowWorkerFleet(
-	options: { readonly journal?: SharedJournalSelection; readonly agentDir?: string } = {},
+	options: {
+		readonly journal?: SharedJournalSelection;
+		readonly agentDir?: string;
+		readonly policy?: WorkerFleetPolicyOptions;
+		readonly probeWrites?: boolean;
+	} = {},
 ): Promise<SharedPoolFleet> {
+	resolveFleetPolicy(options.policy ?? {});
 	const agentDir = options.agentDir ?? getAgentDir();
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
@@ -756,7 +768,10 @@ export async function readWorkflowWorkerFleet(
 		let fleet: SharedPoolFleet | undefined;
 		try {
 			// This journal serves the read alone, so it probes the store with a write that changes nothing (#4768).
-			fleet = (await readSharedPoolFleet(journal, { probeWrites: true })) ?? {
+			// Before the fleet's read, whose write probe, last, may hold up any call after it.
+			const demand = await readFleetDemand(journal);
+			const read = await readSharedPoolFleet(journal, { probeWrites: options.probeWrites ?? true });
+			fleet = (read && { ...read, scaling: fleetScaling(demand, read.hosts, options.policy) }) ?? {
 				hosts: [],
 				roots: [],
 				fleet: {
