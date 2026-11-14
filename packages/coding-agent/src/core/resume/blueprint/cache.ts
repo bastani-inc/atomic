@@ -101,9 +101,7 @@ export async function blueprintCacheKeys(
 	const declared = await declaredCache(root, os, warnings);
 	const remotes = await checkoutRemotes(root);
 	const store = remotes.length > 0 ? objectStorePath(storeDir, remotes) : undefined;
-	const repositoryId = store === undefined ? undefined : basename(store, ".git");
-	if (repositoryId === undefined)
-		warnings.push("the checkout has no Git remote; the git and build entries are omitted");
+	if (store === undefined) warnings.push("the checkout has no Git remote; the git and build entries are omitted");
 
 	const stores: { declared: BlueprintCacheEntry; path: string }[] = [];
 	const builds: { declared: BlueprintCacheEntry; path: string }[] = [];
@@ -113,26 +111,30 @@ export async function blueprintCacheKeys(
 			warnings.push(`cache path '${entry.path}' is omitted: ${refusal}`);
 		} else if (entry.kind === "store") {
 			stores.push({ declared: entry, path: storePath(entry.path, home) });
-		} else if (repositoryId !== undefined) {
-			builds.push({ declared: entry, path: join(storeDir, "seeds", repositoryId, ...buildSegments(entry.path)) });
+		} else if (store !== undefined) {
+			const seeds = join(storeDir, "seeds", basename(store, ".git"));
+			builds.push({ declared: entry, path: join(seeds, ...buildSegments(entry.path)) });
 		}
 	}
 
+	// The OS and architecture are in each prefix, and the paths, which name the repository for `build`, are part of a
+	// cache entry's version, so a digest covers only the declaration and the files that key it.
 	const entries: BlueprintCacheKeyEntry[] = [];
 	const inputs = new InputDigests(root);
 	const prefix = (name: BlueprintCacheName) => `atomic-${name}-${KEY_VERSION}-${os}-${arch}-`;
-	if (stores.length > 0) {
-		const digest = await groupDigest("stores", os, arch, stores, inputs);
-		entries.push(keyEntry("stores", prefix("stores"), digest, stores));
+	for (const [name, members] of [
+		["stores", stores],
+		["build", builds],
+	] as const) {
+		if (members.length === 0) continue;
+		const restorePrefix = prefix(name);
+		const key = `${restorePrefix}${await declarationDigest(members, inputs)}`;
+		entries.push({ name, key, restorePrefix, paths: members.map((member) => member.path) });
 	}
-	if (builds.length > 0 && repositoryId !== undefined) {
-		const digest = await groupDigest(`build\n${repositoryId}`, os, arch, builds, inputs);
-		entries.push(keyEntry("build", prefix("build"), digest, builds));
-	}
-	if (store !== undefined && repositoryId !== undefined) {
+	if (store !== undefined) {
 		// The store is append-only and portable across architectures: a new HEAD saves a new entry, and a restore takes
 		// the newest by prefix; fetches fill any gap and every restore verifies its tree.
-		const restorePrefix = `atomic-git-${KEY_VERSION}-${os}-${repositoryId}-`;
+		const restorePrefix = `atomic-git-${KEY_VERSION}-${os}-${basename(store, ".git")}-`;
 		entries.push({ name: "git", key: `${restorePrefix}${await headOf(root)}`, restorePrefix, paths: [store] });
 	}
 	const transpileCache = getExtensionTranspileCacheDir(agentDir);
@@ -174,15 +176,6 @@ export function formatBlueprintCacheKeys(keys: BlueprintCacheKeys, format: Bluep
 
 function hex16(text: string): string {
 	return sha256Hex(text).slice(0, 16);
-}
-
-function keyEntry(
-	name: BlueprintCacheName,
-	restorePrefix: string,
-	digest: string,
-	members: readonly { path: string }[],
-): BlueprintCacheKeyEntry {
-	return { name, key: `${restorePrefix}${digest}`, restorePrefix, paths: members.map((member) => member.path) };
 }
 
 /** The root blueprint's `cache:` entries for `os`; a missing, unreadable or invalid blueprint has none. */
@@ -251,15 +244,12 @@ class InputDigests {
 	}
 }
 
-/** A digest of the group's name, platform, architecture, declaration (as written) and each entry's key inputs. */
-async function groupDigest(
-	group: string,
-	os: string,
-	arch: string,
+/** A digest of the declared entries, as written, and of each entry's key inputs. */
+async function declarationDigest(
 	members: readonly { declared: BlueprintCacheEntry }[],
 	inputs: InputDigests,
 ): Promise<string> {
-	const lines = [`atomic-cache-${KEY_VERSION}`, group, os, arch];
+	const lines = [`atomic-cache-${KEY_VERSION}`];
 	for (const { declared } of members) {
 		lines.push(JSON.stringify([declared.path, declared.kind, declared.keyFiles ?? null]), await inputs.of(declared));
 	}

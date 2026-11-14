@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import { afterEach, describe, test } from "vitest";
 import { parseBlueprintCommand, runBlueprintCommand } from "../src/cli/blueprint-command.ts";
 import { getExtensionTranspileCacheDir } from "../src/config.ts";
@@ -332,5 +332,168 @@ describe("cache-key formats and CLI (#4748)", () => {
 			2,
 		);
 		assert.match(err.join(""), /--format/);
+	});
+});
+
+describe("blueprint cache: edge cases (#4748)", () => {
+	const location = { path: "/repo/.atomic/blueprint.yaml", scope: "repository" as const };
+
+	test("cache entries are trimmed and normalized, and each malformed field is named (#4748)", () => {
+		const document = parseBlueprint(
+			[
+				"cache:",
+				"  - '  ~/.npm  '",
+				"  - path: ~/.cache/uv",
+				"    kind: null",
+				"    key-files: 'locks\\uv.lock'",
+				'  - "a\\nb"',
+				"  - path: 5",
+				"  - kind: build",
+				"  - path: x",
+				"    key-files: []",
+				"  - path: x",
+				"    key-files: [/abs.lock]",
+				"  - path: x",
+				"    key-files: ['C:/x.lock']",
+				"  - path: x",
+				"    key-files: [5]",
+				"",
+			].join("\n"),
+			location,
+		).documents[0];
+		assert.deepEqual(document?.cache?.entries, [
+			{ path: "~/.npm", kind: "store", keyFiles: undefined },
+			{ path: "~/.cache/uv", kind: "store", keyFiles: ["locks/uv.lock"] },
+		]);
+		const ignored = document?.cache?.ignored ?? [];
+		assert.equal(ignored.length, 7);
+		for (const message of ignored.slice(0, 3)) assert.match(message, /'path'/);
+		for (const message of ignored.slice(3)) assert.match(message, /'key-files'/);
+		assert.ok(!("cache" in (parseBlueprint("maintenance: npm ci\n", location).documents[0] ?? {})));
+		assert.deepEqual(parseBlueprint("cache: []\n", location).documents[0]?.cache, { entries: [], ignored: [] });
+	});
+
+	test("kind: build paths must stay inside the worktree, outside .git, and off credential files (#4748)", async () => {
+		const at = fixture(
+			"cache:\n  - {path: /abs/out, kind: build}\n  - {path: ~/out, kind: build}\n  - {path: 'C:/out', kind: build}\n  - {path: ../out, kind: build}\n  - {path: .git/hooks, kind: build}\n  - {path: ., kind: build}\n  - {path: .npmrc, kind: build}\n  - {path: ./dist/, kind: build}\n",
+		);
+		const keys = await keysOf(at);
+		const seeds = join(at.storeDir, "seeds", basename(objectStorePath(at.storeDir, [REMOTE]), ".git"));
+		assert.deepEqual(entry(keys, "build")?.paths, [join(seeds, "dist")]);
+		assert.equal(keys.warnings.length, 7);
+		for (const warning of keys.warnings.slice(0, 3)) assert.match(warning, /relative to the repository root/);
+		for (const warning of keys.warnings.slice(3, 6)) assert.match(warning, /inside the worktree, outside \.git/);
+		assert.match(keys.warnings[6] ?? "", /'\.npmrc'.*credentials/);
+	});
+
+	test("kind: store paths expand ~ either way and refuse the worktree's ancestors and Atomic's credentials (#4748)", async () => {
+		const at = fixture("cache: []\n");
+		const outside = join(at.home, "..", "shared-cache");
+		write(
+			at.root,
+			".atomic/blueprint.yaml",
+			`cache:\n  - '~\\.npm'\n  - ${outside}\n  - /\n  - ${join(at.root, "..")}\n  - ~/.atomic\n`,
+		);
+		const keys = await keysOf(at);
+		assert.deepEqual(entry(keys, "stores")?.paths, [join(at.home, ".npm"), resolve(outside)]);
+		assert.equal(keys.warnings.length, 3);
+		assert.match(keys.warnings[0] ?? "", /'\/'.*outside the worktree/);
+		assert.match(keys.warnings[1] ?? "", /outside the worktree/);
+		assert.match(keys.warnings[2] ?? "", /'~\/\.atomic'.*credentials/);
+	});
+
+	test("an unreadable blueprint or an invalid entry only warns (#4748)", async () => {
+		const at = fixture("cache:\n  - path: ~/.npm\n    kind: artifact\n  - ~/.npm\n");
+		const keys = await keysOf(at);
+		assert.deepEqual(entry(keys, "stores")?.paths, [join(at.home, ".npm")]);
+		assert.deepEqual(keys.warnings, ["cache[0]: 'kind' must be 'store' or 'build'; entry ignored"]);
+		rmSync(join(at.root, ".atomic", "blueprint.yaml"));
+		mkdirSync(join(at.root, ".atomic", "blueprint.yaml"));
+		const unreadable = await keysOf(at);
+		assert.deepEqual(
+			unreadable.entries.map((candidate) => candidate.name),
+			["git", "atomic"],
+		);
+		assert.match(unreadable.warnings[0] ?? "", /could not be read/);
+	});
+
+	test("a missing or directory key file counts as absent, and keys are stable across releases (#4748)", async () => {
+		const at = fixture("cache:\n  - path: /opt/store\n    key-files: [deps.lock, deps]\n");
+		mkdirSync(join(at.root, "deps"));
+		const absent = entry(await keysOf(at), "stores")?.key;
+		assert.equal(absent, "atomic-stores-v1-linux-x64-d6cfbb79dbf8e538");
+		write(at.root, "deps.lock", "1\n");
+		assert.equal(entry(await keysOf(at), "stores")?.key, "atomic-stores-v1-linux-x64-8b01d1f8abd1edb3");
+	});
+
+	test("an unborn HEAD and a missing directory still give keys (#4748)", async () => {
+		const base = temporaryDirectory();
+		const root = join(base, "empty");
+		mkdirSync(root);
+		git(root, "init", "-q");
+		git(root, "remote", "add", "origin", REMOTE);
+		const options = { platform: "linux" as const, arch: "x64", home: base, agentDir: join(base, "agent") };
+		const unborn = await blueprintCacheKeys(root, options);
+		assert.match(entry(unborn, "git")?.key ?? "", /-unborn$/);
+		const missing = await blueprintCacheKeys(join(base, "missing"), options);
+		assert.deepEqual(
+			missing.entries.map((candidate) => candidate.name),
+			["atomic"],
+		);
+	});
+
+	test("text lists every path under its entry, and nothing prints for no entries (#4748)", () => {
+		const text = formatBlueprintCacheKeys(
+			{ entries: [{ name: "stores", key: "k", restorePrefix: "p", paths: ["/a", "/b"] }], warnings: [] },
+			"text",
+		);
+		assert.equal(
+			text,
+			"stores\n  key:            k\n  restore prefix: p\n  paths:          /a\n                  /b\n",
+		);
+		assert.equal(formatBlueprintCacheKeys({ entries: [], warnings: [] }, "github-output"), "");
+	});
+
+	test("the CLI prints help, usage errors, warnings, and failures on the right stream (#4748)", async () => {
+		const run = async (args: string[], cwd: string, home?: string) => {
+			const out: string[] = [];
+			const err: string[] = [];
+			const code = await runBlueprintCommand(args, {
+				cwd,
+				agentDir: join(cwd, "agent"),
+				...(home === undefined ? {} : { home }),
+				stdout: (text) => out.push(text),
+				stderr: (text) => err.push(text),
+			});
+			return { code, out: out.join(""), err: err.join("") };
+		};
+		const directory = temporaryDirectory();
+		for (const args of [[], ["help"], ["-h"], ["cache-key", "--help"]]) {
+			const help = await run(args, directory);
+			assert.equal(help.code, 0);
+			assert.match(help.out, /^Usage:\n {2}\S+ blueprint cache-key/);
+		}
+		const unknown = await run(["prebuild"], directory);
+		assert.deepEqual([unknown.code, unknown.out], [2, ""]);
+		assert.match(unknown.err, /^Error: Unknown command "prebuild"\. Use cache-key\. Use "\S+ blueprint --help"/);
+		assert.match((await run(["cache-key", "--json=1"], directory)).err, /Unknown option --json\./);
+		assert.match((await run(["cache-key", "--format"], directory)).err, /--format must be/);
+		assert.match((await run(["cache-key", "a", "b"], directory)).err, /at most one directory/);
+
+		write(directory, ".atomic/blueprint.yaml", "cache:\n  - ~/.npm\n  - ~/.ssh\n");
+		const plain = await run(["cache-key", "--format", "json"], directory, join(directory, "..", "home"));
+		assert.equal(plain.code, 0);
+		const printed = JSON.parse(plain.out) as BlueprintCacheKeys;
+		assert.deepEqual(entry(printed, "stores")?.paths, [resolve(directory, "..", "home", ".npm")]);
+		assert.equal(entry(printed, "git"), undefined);
+		assert.match(plain.err, /^Warning: cache path '~\/\.ssh' is omitted/m);
+		const defaultHome = await run(["cache-key", "--format", "json"], directory);
+		assert.deepEqual(entry(JSON.parse(defaultHome.out) as BlueprintCacheKeys, "stores")?.paths, [
+			join(homedir(), ".npm"),
+		]);
+
+		const failed = await run(["cache-key", "missing"], directory);
+		assert.deepEqual([failed.code, failed.out], [1, ""]);
+		assert.match(failed.err, /^Error: /);
 	});
 });
