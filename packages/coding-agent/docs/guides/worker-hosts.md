@@ -5,7 +5,11 @@ description: "Turn any Linux or macOS machine into a worker host for shared work
 
 # Running workers on many machines
 
+{/* Worker pools on PostgreSQL wait for #4793 P5. When they work, make this guide PostgreSQL-first: the recipes with managed PostgreSQL are on branch wip/postgres-fleet-recipes-p5-4793. */}
+
 A workflow root with shared placement keeps its work queue in a shared libSQL or Turso database. Any machine that has Atomic installed can run that root's pooled children: install Atomic, then run one command that names the database. The machines coordinate only through the database. There is no other service to run.
+
+Worker hosts need libSQL or Turso in this release. `atomic worker` accepts a `postgres://` URL, but the worker pool does not run on [PostgreSQL](/storage#postgresql) yet; support is coming in a later release. If you host the database yourself, run sqld with `--checkpoint-interval-s 60`, as [Scale the fleet automatically](#scale-the-fleet-automatically) explains.
 
 ## Join a machine
 
@@ -275,7 +279,7 @@ Every recipe uses the platform's own short-lived identity, and no recipe stores 
 | Cloud access from GitHub Actions | GitHub's OIDC token (`id-token: write`) with `azure/login`, `aws-actions/configure-aws-credentials` or `google-github-actions/auth` | GitHub Actions OpenID Connect |
 | The shared database token (`--token-file`) | Read from a secret manager at boot (Key Vault, Secrets Manager, Secret Manager), or mounted in Kubernetes from a Secret synced by the External Secrets Operator or the Secrets Store CSI driver, and copied to a mode 600 file. Never baked into an image | Secrets Store CSI driver, External Secrets Operator |
 
-The database token itself is long-lived. For PostgreSQL, the cloud IAM tokens of the PostgreSQL adapter ([#4804](https://github.com/bastani-inc/atomic/issues/4804)) replace it with short-lived tokens once that adapter ships.
+The database token itself is long-lived.
 
 ### Recipes
 
