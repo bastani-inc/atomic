@@ -208,7 +208,19 @@ test("leaves ? alone inside dollar quotes whose tags hold any non-ASCII characte
 	for (const [sql, numbered] of cases) assert.equal(numberPlaceholders(sql), numbered, sql);
 });
 
-test("a ? anywhere inside a dollar-quoted string never changes the parameter count (#4834)", () => {
+test("a ? right after an identifier becomes a parameter separate from it (#4834)", () => {
+	const cases: [string, string][] = [
+		["SELECT x?", "SELECT x $1"],
+		["SELECT col?, ?", "SELECT col $1, $2"],
+		["SELECT x·?, 😀?", "SELECT x· $1, 😀 $2"],
+		["SELECT 1 WHERE a.b=?", "SELECT 1 WHERE a.b=$1"],
+		["SELECT (?)+?", "SELECT ($1)+$2"],
+		["SELECT ? x", "SELECT $1 x"],
+	];
+	for (const [sql, numbered] of cases) assert.equal(numberPlaceholders(sql), numbered, sql);
+});
+
+test("a ? anywhere inside a dollar-quoted string never changes the parameter count, and a parameter after an identifier stays separate (#4834)", () => {
 	// mulberry32: a fixed seed makes every failure reproducible.
 	let state = 4834;
 	const random = () => {
@@ -222,6 +234,8 @@ test("a ? anywhere inside a dollar-quoted string never changes the parameter cou
 	const tagContinue = [...tagStart, "0", "9"];
 	const body = ["x", " ", "'", '"', "-", "/", "*", "$", "\\", "\n", "·", "😀", "?", "E", "1"];
 	const before = [" ", ",", "(", "\n", "="];
+	const word = ["x", "·", "😀", "1", "_"];
+	const lead = ["", " ", "(", "=", ...word];
 	let checked = 0;
 	while (checked < 2000) {
 		const length = Math.floor(random() * 4);
@@ -234,8 +248,10 @@ test("a ? anywhere inside a dollar-quoted string never changes the parameter cou
 		const quoted = `${tag}${inside}${tag}`;
 		// The body must not close the quote early.
 		if (quoted.indexOf(tag, tag.length) !== tag.length + inside.length) continue;
-		const sql = `SELECT${pick(before)}${quoted}, ?`;
-		assert.equal(numberPlaceholders(sql), `SELECT${sql.slice(6, -1)}$1`, sql);
+		const last = pick(lead);
+		const sql = `SELECT${pick(before)}${quoted}, ${last}?`;
+		const separator = word.includes(last) ? " " : "";
+		assert.equal(numberPlaceholders(sql), `${sql.slice(0, -1)}${separator}$1`, sql);
 		checked++;
 	}
 });

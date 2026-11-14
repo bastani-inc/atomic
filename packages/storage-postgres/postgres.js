@@ -129,7 +129,9 @@ export function numberPlaceholders(sql) {
 	while (index < sql.length) {
 		const character = sql[index];
 		if (character === "?") {
-			numbered += `${sql.slice(copied, index)}$${++count}`;
+			// After an identifier character `$1` would continue the identifier, so a space keeps the parameter apart.
+			const separator = isWordCharacter(sql[index - 1]) ? " " : "";
+			numbered += `${sql.slice(copied, index)}${separator}$${++count}`;
 			copied = ++index;
 		} else if (character === "'") {
 			const escapes = /[eE]/.test(sql[index - 1] ?? "") && !isWordCharacter(sql[index - 2]);
