@@ -1,0 +1,106 @@
+{
+  "backend": "pg-serial",
+  "slots": 4,
+  "perSlot": 2,
+  "steps": 20,
+  "payload": 256,
+  "sqldArgs": null,
+  "machine": {
+    "cpus": 80
+  },
+  "trials": [
+    {
+      "backend": "pg-serial",
+      "hosts": 8,
+      "slots": 4,
+      "children": 64,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 64
+      },
+      "invariants": {
+        "events": 1280,
+        "distinctKeys": 1280,
+        "maxSeq": 1280
+      },
+      "checkpoints": 1280,
+      "wallMs": 3245,
+      "activeMs": 2943,
+      "checkpointsPerSec": 434.9,
+      "latencyMs": {
+        "p50": 60.32,
+        "p90": 66.6,
+        "p99": 68.83,
+        "max": 108.77
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 34,
+      "errors": {}
+    },
+    {
+      "backend": "pg-serial",
+      "hosts": 16,
+      "slots": 4,
+      "children": 128,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 128
+      },
+      "invariants": {
+        "events": 2560,
+        "distinctKeys": 2560,
+        "maxSeq": 2560
+      },
+      "checkpoints": 2560,
+      "wallMs": 6828,
+      "activeMs": 6604,
+      "checkpointsPerSec": 387.6,
+      "latencyMs": {
+        "p50": 118.7,
+        "p90": 129.28,
+        "p99": 185.08,
+        "max": 186.88
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 79,
+      "errors": {}
+    },
+    {
+      "backend": "pg-serial",
+      "hosts": 32,
+      "slots": 4,
+      "children": 256,
+      "steps": 20,
+      "status": "completed",
+      "writeProbe": null,
+      "progress": {
+        "completed": 256
+      },
+      "invariants": {
+        "events": 5120,
+        "distinctKeys": 5120,
+        "maxSeq": 5120
+      },
+      "checkpoints": 5120,
+      "wallMs": 18012,
+      "activeMs": 17851,
+      "checkpointsPerSec": 286.8,
+      "latencyMs": {
+        "p50": 228.83,
+        "p90": 251.29,
+        "p99": 357.29,
+        "max": 411.19
+      },
+      "commitsOver5s": 0,
+      "stallsOver5s": 0,
+      "maxGapMs": 162,
+      "errors": {}
+    }
+  ]
+}

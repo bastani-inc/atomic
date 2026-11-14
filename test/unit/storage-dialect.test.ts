@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import {
 	dialectOf,
+	type FencedPathName,
+	fencedPath,
+	fencedPathAudit,
 	openNodeSqliteDatabase,
 	postgresDialect,
 	type SqliteDatabase,
@@ -177,6 +180,30 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"INSERT OR REPLACE INTO t (a, b, c) SELECT 1, 2, 3",
 		"INSERT INTO t (a, b, c) SELECT 1, 2, 3 ON CONFLICT (a) DO UPDATE SET b = excluded.b, c = excluded.c",
 	],
+	[
+		"tableExists",
+		(d) => JSON.stringify(d.tableExists("team_runs")),
+		JSON.stringify({
+			sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+			params: ["team_runs"],
+		}),
+		JSON.stringify({
+			sql: "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
+			params: ["team_runs"],
+		}),
+	],
+	[
+		"columnExists",
+		(d) => JSON.stringify(d.columnExists("team_runs", "created_at")),
+		JSON.stringify({
+			sql: "SELECT name, dflt_value AS default_value FROM pragma_table_info(?) WHERE name = ?",
+			params: ["team_runs", "created_at"],
+		}),
+		JSON.stringify({
+			sql: "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+			params: ["team_runs", "created_at"],
+		}),
+	],
 ];
 
 describe("storage dialects render each SQLite-specific construct (#4793)", () => {
@@ -190,8 +217,11 @@ describe("storage dialects render each SQLite-specific construct (#4793)", () =>
 
 test("JSON paths accept only identifier keys and at least one (#4793)", () => {
 	for (const dialect of [sqliteDialect, postgresDialect]) {
-		assert.throws(() => dialect.jsonText("c"), TypeError);
-		assert.throws(() => dialect.jsonText("c", "a'); DROP TABLE t; --"), TypeError);
+		assert.throws(() => dialect.jsonText("c"), { name: "TypeError", message: "A JSON path needs at least one key" });
+		assert.throws(() => dialect.jsonText("c", "a'); DROP TABLE t; --"), {
+			name: "TypeError",
+			message: "Invalid JSON path key: a'); DROP TABLE t; --",
+		});
 		assert.throws(() => dialect.jsonHasType("text", "c", "a.b"), TypeError);
 		assert.throws(() => dialect.jsonText("c", "1a"), TypeError);
 	}
@@ -203,6 +233,13 @@ test("a Postgres trigger function name longer than an identifier is refused, not
 	assert.throws(() => postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(61) }), TypeError);
 	assert.match(postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(60) }), /n{60}_fn\(\)/);
 	assert.match(sqliteDialect.renderTrigger({ ...trigger, name: "n".repeat(61) }), /n{61} AFTER/);
+});
+
+test("fencedPath mints the audited name itself (#4793)", () => {
+	// The registry is empty until a path is audited, so no name type-checks yet; the cast stands in for one.
+	const name = "pool.commit" as FencedPathName;
+	assert.equal(fencedPath(name), "pool.commit");
+	assert.equal(fencedPathAudit(name), undefined);
 });
 
 test("dialectOf names SQLite for a database without a dialect (#4793)", () => {

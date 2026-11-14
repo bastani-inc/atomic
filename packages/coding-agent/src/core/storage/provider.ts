@@ -327,7 +327,10 @@ export async function resolveAdapterOptions(
 ): Promise<AdapterOptions> {
 	const options = { ...selection.options };
 	for (const [name, ref] of Object.entries(selection.secrets ?? {})) {
-		if (liveSecrets.includes(name)) continue;
+		if (liveSecrets.includes(name)) {
+			delete options[name];
+			continue;
+		}
 		const value = await readSecret(selection, name, ref, context.agentDir);
 		Object.defineProperty(options, name, { value, enumerable: true, writable: true, configurable: true });
 	}

@@ -736,7 +736,7 @@ After native and smoke jobs pass, `build`:
    Musl payload assembly downloads pinned Alpine 3.22 `libgcc` and `libstdc++` packages, verifies their SHA256 hashes, copies only the matching runtime libraries under `atomic/lib`, and sets payload-local ELF search paths with `patchelf`.
 4. Validates package identity, versions, public/private metadata, binary entrypoint, workspace dependency ranges, build outputs, eight native modules, and eight exact-version native optional dependencies.
 5. Packs exactly twelve npm tarballs.
-6. Builds release notes from every `packages/*/CHANGELOG.md` with `scripts/build-release-notes.ts`. A version summary leads when present, with the merged `###` sections folded under "Full changelog".
+6. Builds release notes from every `packages/*/CHANGELOG.md` with `scripts/build-release-notes.ts`. A version summary leads when present, with the merged `###` sections folded under "Full changelog". Within the summary and within each section, bullets for one change are listed once: two bullets are the same change when they read the same, or when one cites every issue/PR link the other does and the smaller set has at least two links. The most complete bullet (most links, then longest) is kept where the change first appeared.
 7. Creates `SHA256SUMS` for the eight binary archives.
 8. Uploads the npm tarballs and GitHub Release assets as one same-run artifact.
 
