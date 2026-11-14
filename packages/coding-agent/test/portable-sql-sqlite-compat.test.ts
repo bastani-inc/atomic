@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager-types.ts";
 import type { SqliteDatabase, SqliteRow } from "../src/core/storage/database.ts";
+import { sqliteDialect } from "../src/core/storage/dialect.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { LegacySessionStore } from "../src/core/storage/session/legacy-session-store.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
 import { SESSION_FORMAT_VERSION } from "../src/core/storage/session/types.ts";
-import { snapshotIndexTables } from "../src/core/worktree-snapshot/blob-store.ts";
+import { SqlSnapshotBlobStore, snapshotIndexTables } from "../src/core/worktree-snapshot/blob-store.ts";
 
 /**
  * The SQLite schema and index rows the session store and the snapshot blob store wrote before their SQL went through
@@ -180,6 +181,12 @@ test("an upgraded database gets the same session and snapshot index schema (#479
 		CREATE TABLE snapshot_session_refs (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
 		INSERT INTO snapshot_blobs (hash, bytes, data) VALUES ('legacy', 1, X'61');
 	`);
+	// A trigger an earlier build installed is replaced by the tree-aware one when restore links are added.
+	const entries = (GOLDEN.upgradedSchema as SqliteRow[]).find((row) => row.name === "session_entries")!;
+	await database.exec(String(entries.sql));
+	await database.exec(
+		"CREATE TRIGGER session_entries_snapshot_links AFTER INSERT ON session_entries BEGIN SELECT 1; END",
+	);
 	await SqlSessionStore.open(database);
 	// An open that creates a missing table sees the upgraded age column by its zero default, and leaves its index to
 	// collection.
@@ -207,12 +214,15 @@ test("the reference index holds the same rows for backfilled and triggered write
 		message("dup", "s2"),
 		message("orphan", "missing"),
 	]);
-	// Rows already in the tables when the triggers come back are indexed by a backfill.
-	for (const trigger of await database.all<SqliteRow & { name: string }>(
-		"SELECT name FROM sqlite_schema WHERE type = 'trigger'",
-	))
-		await database.exec(`DROP TRIGGER ${trigger.name}`);
-	await database.run("DELETE FROM snapshot_index_sources");
+	// A table that lost any of its triggers is indexed again, its existing rows by a backfill.
+	for (const trigger of [
+		"wf_events_snapshot_refs",
+		"wf_runs_snapshot_state_status",
+		"session_entries_snapshot_links",
+		"wf_runs_work_snapshot_carried_update",
+		"wf_runs_pool_root_snapshot_snapshot_carried_delete",
+	])
+		await database.exec(`DROP TRIGGER ${trigger}`);
 	const store = await SqlSessionStore.open(database);
 	await store.snapshotBlobs.completeIndex();
 	await writeJournalRows(database, "after");
@@ -276,4 +286,69 @@ test("session rows, blobs and legacy deletions read and write as before (#4793)"
 		(await deletions.all("SELECT id FROM session_legacy_deleted")).map((row) => row.id),
 		["old"],
 	);
+});
+
+test("an index table without restore links gains them when every table exists (#4793)", async () => {
+	const database = await open("links.sqlite");
+	await SqlSessionStore.open(database);
+	await database.exec(`
+		DROP TABLE snapshot_session_refs;
+		CREATE TABLE snapshot_session_refs (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
+	`);
+	await SqlSessionStore.open(database);
+	const columns = await database.all<SqliteRow & { name: string }>(
+		"SELECT name FROM pragma_table_info('snapshot_session_refs')",
+	);
+	assert.deepEqual(
+		columns.map((column) => column.name),
+		["session_id", "seq", "root", "snapshot_id", "prev_seq", "restore_from", "restore_to"],
+	);
+});
+
+test("a journal's transaction creates the blob tables and indexes its tables, once (#4793)", async () => {
+	const database = await open("journal.sqlite");
+	await createJournalTables(database);
+	await writeJournalRows(database, "before");
+	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction));
+	// What a new database holds for the unprefixed journal, before any session store opens.
+	const journalOwned = (GOLDEN.freshSchema as SqliteRow[]).filter(
+		(row) => !String(row.name).startsWith("team_") && !String(row.name).startsWith("session_"),
+	);
+	assert.deepEqual(JSON.parse(JSON.stringify(await schemaOf(database))), journalOwned);
+	const progress = await database.all("SELECT * FROM snapshot_index_sources ORDER BY source");
+	await database.run("UPDATE snapshot_index_sources SET backfilled_through = watermark");
+	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction));
+	assert.deepEqual(
+		await database.all(
+			"SELECT source, watermark, backfilled_through - watermark AS behind FROM snapshot_index_sources ORDER BY source",
+		),
+		progress.map((row) => ({ source: row.source, watermark: row.watermark, behind: 0 })),
+	);
+});
+
+/** The database `inner` is, speaking a dialect that records migrations in a ledger as Postgres does. */
+function versioned(inner: SqliteDatabase): SqliteDatabase {
+	return {
+		descriptor: inner.descriptor,
+		dialect: { ...sqliteDialect, versionedMigrations: true },
+		exec: (sql) => inner.exec(sql),
+		run: (sql, ...params) => inner.run(sql, ...params),
+		get: (sql, ...params) => inner.get(sql, ...params),
+		all: (sql, ...params) => inner.all(sql, ...params),
+		transaction: (callback, options) => inner.transaction(callback, options),
+		close: () => inner.close(),
+	};
+}
+
+test("a store with a migration ledger records step 1 of the session and blob domains once (#4793)", async () => {
+	const database = versioned(await open("ledger.sqlite"));
+	await SqlSessionStore.open(database, { prefix: "team_" });
+	const store = await SqlSessionStore.open(database, { prefix: "team_" });
+	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain"), [
+		{ domain: "sessions", version: 1 },
+		{ domain: "snapshot-blobs", version: 1 },
+	]);
+	await store.create(header("a"), [message("a1", null)]);
+	const blob = await store.putBlob("a", new TextEncoder().encode("blob"));
+	assert.equal(new TextDecoder().decode(await store.getBlob("a", blob.hash)), "blob");
 });
