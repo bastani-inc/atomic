@@ -55,6 +55,11 @@ export interface TwoBrokerConnectOptions {
 	readonly acknowledgeReceipts?: boolean;
 	readonly supervisor?: SupervisorRegistration;
 	readonly supervisorOwnerToken?: string;
+	/**
+	 * Attach listeners before the client registers: a broker can write a frame right after `registered`, and a frame
+	 * read in the same chunk is emitted before `connect` resolves.
+	 */
+	readonly beforeConnect?: (client: TwoBrokerClient) => void;
 }
 
 /** A real Intercom client attached to one node's broker, recording every frame it receives. */
@@ -392,6 +397,7 @@ export class TwoBrokerHarness {
 			attached.disconnected = true;
 		});
 		state.clients.push(attached);
+		options.beforeConnect?.(attached);
 		const now = Date.now();
 		await client.connect(
 			{
