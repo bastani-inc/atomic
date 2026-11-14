@@ -637,8 +637,8 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const configured = settingsInternals(this).settings.snapshots?.pool?.maxIdlePerRepository;
 		return {
 			maxIdlePerRepository:
-				Number.isSafeInteger(configured) && configured !== undefined && configured >= 0
-					? configured
+				Number.isSafeInteger(configured) && (configured as number) >= 0
+					? (configured as number)
 					: SETTINGS_DEFAULTS.snapshots.pool.maxIdlePerRepository,
 		};
 	},

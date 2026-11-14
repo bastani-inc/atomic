@@ -199,23 +199,15 @@ async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> 
 }
 
 function isOwner(value: unknown): value is PoolOwner {
-	const owner = value as Partial<PoolOwner> | null;
-	return (
-		typeof owner === "object" &&
-		owner !== null &&
-		(owner.kind === "session" || owner.kind === "prebuild") &&
-		typeof owner.id === "string"
-	);
+	const owner = value as Partial<PoolOwner> | null | undefined;
+	return (owner?.kind === "session" || owner?.kind === "prebuild") && typeof owner.id === "string";
 }
 
 async function readRecord(file: string, storeDir: string, repository: RepositoryId, slot: SlotNumber) {
-	const value: unknown = JSON.parse(await readFile(file, "utf8"));
-	const record = value as Partial<PoolSlotRecord> | null;
+	const record = JSON.parse(await readFile(file, "utf8")) as Partial<PoolSlotRecord> | null;
 	const state = record?.lastState as Partial<PoolLastState> | undefined;
 	const valid =
-		typeof record === "object" &&
-		record !== null &&
-		record.version === 1 &&
+		record?.version === 1 &&
 		record.repository === repository &&
 		record.slot === slot &&
 		record.path === pooledWorktreePath(storeDir, repository, slot) &&
@@ -261,7 +253,7 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 			const slot = n as SlotNumber;
 			const file = recordFile(storeDir, repository, slot);
 			const path = pooledWorktreePath(storeDir, repository, slot);
-			if (heldSlots.has(file) || (await exists(file)) || (await exists(path))) continue;
+			if ((await exists(file)) || (await exists(path))) continue;
 			const record: PoolSlotRecord = {
 				version: 1,
 				repository,

@@ -7,7 +7,7 @@ import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
-import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { GitSandbox, loseSnapshotBlobs } from "../../../test/helpers/worktree-snapshot.js";
 import {
 	continueSessionWhereItWorked,
 	type PreparedSessionResume,
@@ -154,6 +154,28 @@ describe("worktree pool slots (#4748)", () => {
 		assert.equal(readFileSync(join(root, "file.txt"), "utf8"), "recorded\n");
 	});
 
+	test("a degraded restore lands in the slot too, which records the state it holds (#4748)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const patches = snapshot.chain.flatMap((link) => (link.patch === null ? [] : [link.patch]));
+		assert.ok(patches.length > 0);
+		await loseSnapshotBlobs(store.snapshotBlobs, patches);
+		const manager = await sessionOf(clone, snapshot);
+
+		const result = await resumeSessionWorktree(manager, pool());
+
+		assert.equal(result.status, "restored");
+		if (result.status !== "restored") return;
+		const [mapping] = result.mappings;
+		assert.equal(mapping?.to, slot(snapshot, 0));
+		assert.ok(mapping?.degraded);
+		assert.equal(existsSync(join(slot(snapshot, 0), "file.txt")), false);
+		assert.deepEqual(recordOf(snapshot, 0).lastState, {
+			snapshotId: snapshot.id,
+			head: mapping.degraded.head,
+			tree: mapping.degraded.tree,
+		});
+	});
+
 	test("two sessions restoring the same repository get different slots (#4748)", async () => {
 		const { snapshot, clone } = await recordedSnapshot();
 		const [first, second] = await Promise.all([sessionOf(clone, snapshot), sessionOf(clone, snapshot)]);
@@ -168,6 +190,8 @@ describe("worktree pool slots (#4748)", () => {
 		const owner = { kind: "session", id: manager.getSessionId() };
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), root), { owner, held: true });
 		assert.equal(recordOf(snapshot, 0).releasedAt, null);
+		const pool = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes));
+		assert.equal(readdirSync(pool).filter((name) => name.endsWith(".lease.lock")).length, 1);
 
 		const recorder = new SessionWorktreeSnapshotRecorder({
 			sessionManager: manager,
@@ -710,5 +734,23 @@ describe("worktree pool records and leases (#4748)", () => {
 			[],
 		);
 		await releaseRestoredWorktree(held);
+	});
+
+	test("a stale lease left by a stopped process neither keeps a slot nor counts it twice (#4748)", async () => {
+		const remotes = ["https://example.com/g.git"];
+		const repository = repositoryIdOf(remotes);
+		const leases = [
+			await admitPooledWorktree(admission(remotes), owner),
+			await admitPooledWorktree(admission(remotes), owner),
+		];
+		for (const lease of leases) await releaseRestoredWorktree(lease);
+		const stale = join(storeDir(), "pool", repository, "1.json.1-dead.lease.lock");
+		mkdirSync(stale);
+		const past = new Date(Date.now() - 120_000);
+		utimesSync(stale, past, past);
+
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 1, settings }), [leases[0]!.path]);
+		assert.equal(existsSync(join(storeDir(), "pool", repository, "1.json")), true);
+		assert.equal(existsSync(stale), false);
 	});
 });
