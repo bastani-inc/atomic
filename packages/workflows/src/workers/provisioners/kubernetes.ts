@@ -12,13 +12,14 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 /** What kubectl prints when its credentials are missing, expired or refused, or lack the Role. */
 const AUTH_FAILURE = /Unauthorized|Forbidden|must be logged in|provide credentials|token has expired|refresh token/i;
 
-/** A pod phase as a host state. A pod whose node stopped reporting (`Unknown`) may come back: it stays pending. */
+/**
+ * A pod phase as a host state; any other is pending, `Pending` and `Unknown` (a pod whose node stopped reporting, which
+ * may come back) included.
+ */
 const STATES: Readonly<Record<string, ProvisionedHost["state"]>> = {
-	Pending: "pending",
 	Running: "running",
 	Succeeded: "stopped",
 	Failed: "failed",
-	Unknown: "pending",
 };
 
 interface Pod {
@@ -102,7 +103,7 @@ export function createKubernetesProvisioner(options: KubernetesProvisionerOption
 			for (const pod of await pods(signal)) {
 				// A terminating pod already left the workload's replicas.
 				if (pod.metadata.deletionTimestamp !== undefined) continue;
-				const state = STATES[pod.status?.phase ?? "Pending"] ?? "pending";
+				const state = STATES[pod.status?.phase ?? ""] ?? "pending";
 				const since =
 					(state === "running" ? time(pod.status?.startTime) : undefined) ??
 					time(pod.metadata.creationTimestamp) ??

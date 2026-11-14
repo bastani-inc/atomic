@@ -465,7 +465,7 @@ function readProvisionerConfig(path: string): WorkerProvisionerConfig {
 			`${path} is not a provisioner configuration: ${code === undefined ? "it is not valid JSON" : `it cannot be read (${code})`}.`,
 		);
 	}
-	if (typeof config !== "object" || config === null || Array.isArray(config) || typeof config.kind !== "string")
+	if (typeof config?.kind !== "string")
 		throw new Error(`${path} is not a provisioner configuration: it must be a JSON object with a "kind".`);
 	return config as WorkerProvisionerConfig;
 }

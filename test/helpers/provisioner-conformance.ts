@@ -14,7 +14,7 @@ import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/work
 import { sleep } from "./runtime.js";
 
 export type FakeCloudKind = "vmss" | "deployment" | "statefulset" | "command";
-export type FakeCloudMode = "ok" | "hang" | "auth" | "malformed";
+export type FakeCloudMode = "ok" | "hang" | "auth" | "malformed" | "raw";
 
 export interface FakeCloudHost {
 	readonly id: string;
@@ -36,6 +36,10 @@ interface FakeCloudState {
 	hosts: FakeCloudHost[];
 	/** Replicas the fake `kubectl get` reports instead of the pods it counts, as if another writer changed them. */
 	reportReplicas?: number;
+	/** What every call prints in `raw` mode. */
+	raw?: string;
+	/** What the fake `kubectl get <workload>` prints instead of the workload. */
+	rawWorkload?: string;
 }
 
 /** A fake cloud in its own directory, with the fake CLIs it installs first on `PATH`. */
@@ -81,8 +85,13 @@ export class FakeCloud {
 		this.write({ ...this.read(), mode });
 	}
 
+	/** Makes every call print `raw` and exit 0. */
+	printRaw(raw: string): void {
+		this.write({ ...this.read(), mode: "raw", raw });
+	}
+
 	/** Adds a host as the cloud would report it, such as a pod that was evicted. */
-	addHost(host: Omit<FakeCloudHost, "n" | "seen" | "created">): void {
+	addHost(host: Omit<FakeCloudHost, "n" | "seen" | "created"> & { readonly seen?: boolean }): void {
 		const state = this.read();
 		this.write({
 			...state,

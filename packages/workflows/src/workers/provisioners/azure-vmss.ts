@@ -10,12 +10,13 @@ import type { AzureVmssProvisionerOptions } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** What `az` prints when it has no login, or its identity was refused or lacks the role. */
-const AUTH_FAILURE =
-	/az login|AADSTS\d+|AuthorizationFailed|AuthenticationFailed|InvalidAuthenticationToken|LinkedAuthorizationFailed|\b401\b|\b403\b/i;
+const AUTH_FAILURE = /az login|AADSTS|AuthorizationFailed|AuthenticationFailed|InvalidAuthenticationToken/i;
 
-/** A scale set instance's provisioning state as a host state; `Deleting` instances are not listed at all. */
+/**
+ * A scale set instance's provisioning state as a host state; any other (`Creating`) is pending, and `Deleting`
+ * instances are not listed at all.
+ */
 const STATES: Readonly<Record<string, ProvisionedHost["state"]>> = {
-	creating: "pending",
 	succeeded: "running",
 	updating: "running",
 	migrating: "running",

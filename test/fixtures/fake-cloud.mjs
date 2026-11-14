@@ -41,10 +41,14 @@ export function update(act) {
 	}
 }
 
-/** Records this call, then answers the modes every CLI shares: `hang`, `auth` and `malformed`. */
+/** Records this call, then answers the modes every CLI shares: `hang`, `auth`, `malformed` and `raw` (prints `raw`). */
 export function begin(args, authMessage) {
 	appendFileSync(join(dir, "calls.jsonl"), `${JSON.stringify(args)}\n`);
-	const { mode } = readState();
+	const { mode, raw } = readState();
+	if (mode === "raw") {
+		writeSync(1, raw);
+		process.exit(0);
+	}
 	if (mode === "hang") {
 		// A grandchild holds stdout open too, as a CLI's interpreter does: stopping the CLI must stop both.
 		const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });

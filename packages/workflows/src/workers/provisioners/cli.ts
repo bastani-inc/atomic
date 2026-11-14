@@ -30,11 +30,11 @@ const MIN_SECRET_LENGTH = 6;
 export class WorkerProvisionerError extends Error {
 	override readonly name = "WorkerProvisionerError";
 	readonly code: WorkerProvisionerErrorCode;
-	readonly exitCode?: number;
+	readonly exitCode: number | undefined;
 	constructor(code: WorkerProvisionerErrorCode, message: string, exitCode?: number) {
 		super(message);
 		this.code = code;
-		if (exitCode !== undefined) this.exitCode = exitCode;
+		this.exitCode = exitCode;
 	}
 }
 
@@ -47,7 +47,7 @@ export interface CliCall {
 	/** Variables added to this process's environment for the call. */
 	readonly env?: Readonly<Record<string, string>>;
 	/** Recognizes stderr that says the CLI's credentials were refused. */
-	readonly authFailure?: RegExp;
+	readonly authFailure: RegExp;
 }
 
 /** The values of `args` that follow, or are joined to, an option with a secret's name. */
@@ -77,7 +77,7 @@ export function redactSecrets(text: string, args: readonly string[], env: NodeJS
 	return redacted;
 }
 
-/** The useful end of a CLI's stderr: its lines joined, redacted, and cut to {@link MAX_DETAIL_CHARS}. */
+/** A CLI's stderr for an error message: its lines joined, redacted, and cut to {@link MAX_DETAIL_CHARS}. */
 function detail(stderr: string, call: CliCall, env: NodeJS.ProcessEnv): string {
 	const text = redactSecrets(
 		stderr
@@ -128,7 +128,6 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 		};
 		const child = spawn(call.file, call.args, {
 			env,
-			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 			detached: process.platform !== "win32",
@@ -166,11 +165,11 @@ export function runCli(call: CliCall, signal: AbortSignal): Promise<string> {
 				if (exitCode === 0) return resolve(Buffer.concat(stdout).toString("utf8"));
 				const errorText = Buffer.concat(stderr).toString("utf8");
 				const text = detail(errorText, call, env);
-				const auth = call.authFailure?.test(errorText) === true;
+				const auth = call.authFailure.test(errorText);
 				reject(
 					new WorkerProvisionerError(
 						auth ? "auth" : "exit",
-						`${call.label} ${exitCode === null ? `was stopped by ${exitSignal ?? "a signal"}` : `exited with code ${exitCode}`}${text === "" ? "" : `: ${text}`}`,
+						`${call.label} ${exitCode === null ? `was stopped by ${exitSignal}` : `exited with code ${exitCode}`}${text === "" ? "" : `: ${text}`}`,
 						exitCode ?? undefined,
 					),
 				);

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, test } from "vitest";
+import { redactSecrets } from "../../packages/workflows/src/workers/provisioners/cli.js";
 import {
 	createWorkerHostProvisioner,
 	WorkerProvisionerError,
@@ -159,6 +163,75 @@ describe("azure-vmss provisioner (#4768)", () => {
 		}
 	});
 
+	posixOnly("leaves --subscription out when none is given (#4768)", async () => {
+		const cloud = FakeCloud.create("vmss", { ...VMSS, subscription: undefined });
+		cloud.installCli("az", "fake-az.mjs");
+		try {
+			await createWorkerHostProvisioner({
+				kind: "azure-vmss",
+				resourceGroup: "atomic-rg",
+				name: "atomic-workers",
+			}).list(never());
+			assert.deepEqual(cloud.calls(), [
+				["vmss", "list-instances", "--resource-group", "atomic-rg", "--name", "atomic-workers", "--output", "json"],
+			]);
+		} finally {
+			cloud.dispose();
+		}
+	});
+
+	posixOnly("reads each instance's creation time, or uses now without one (#4768)", async () => {
+		const cloud = azureCloud();
+		try {
+			cloud.printRaw(
+				JSON.stringify([
+					{ instanceId: "1", provisioningState: "Succeeded", timeCreated: "2026-11-14T08:00:00Z" },
+					{ instanceId: "2", provisioningState: "Creating" },
+					{ instanceId: "3", provisioningState: "Creating", timeCreated: "not a time" },
+				]),
+			);
+			const before = Date.now();
+			const hosts = await createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS }).list(never());
+			assert.equal(hosts[0]!.since, Date.parse("2026-11-14T08:00:00Z"));
+			for (const host of hosts.slice(1)) assert.ok(host.since >= before && host.since <= Date.now());
+		} finally {
+			cloud.dispose();
+		}
+	});
+
+	posixOnly("rejects instance lists it cannot read, without quoting them (#4768)", async () => {
+		const cloud = azureCloud();
+		try {
+			const fleet = createWorkerHostProvisioner({ kind: "azure-vmss", ...VMSS });
+			for (const raw of [
+				'{"value": []}',
+				"[null]",
+				'["1"]',
+				'[{"provisioningState":"Succeeded"}]',
+				'[{"instanceId":"","provisioningState":"Succeeded"}]',
+				'[{"instanceId":1,"provisioningState":"Succeeded"}]',
+				'[{"instanceId":"1"}]',
+				'[{"instanceId":"1","provisioningState":"Succeeded","timeCreated":5}]',
+			]) {
+				cloud.printRaw(raw);
+				const error = await rejection(fleet.list(never()));
+				assert.equal(error.code, "malformed", raw);
+				assert.equal(
+					error.message,
+					"az vmss list-instances printed JSON that is not a list of scale set instances.",
+					raw,
+				);
+			}
+			cloud.printRaw("Succeeded");
+			assert.equal(
+				(await rejection(fleet.list(never()))).message,
+				"az vmss list-instances printed output that is not JSON.",
+			);
+		} finally {
+			cloud.dispose();
+		}
+	});
+
 	posixOnly("passes option values literally, never through a shell (#4768)", async () => {
 		const hostile = "rg; touch pwned $(id) `id`";
 		const cloud = FakeCloud.create("vmss", { ...VMSS, resourceGroup: hostile });
@@ -258,8 +331,35 @@ describe("kubernetes provisioner (#4768)", () => {
 				const before = cloud.calls().length;
 				await fleet.drain("atomic-worker-evicted", never());
 				const calls = cloud.calls().slice(before);
+				assert.deepEqual(calls, [
+					[
+						"--namespace",
+						"atomic",
+						"get",
+						"pods",
+						"--selector",
+						"app=atomic-worker",
+						"--field-selector",
+						"metadata.name=atomic-worker-evicted",
+						"--output",
+						"json",
+					],
+					[
+						"--namespace",
+						"atomic",
+						"delete",
+						"pod",
+						"atomic-worker-evicted",
+						"--wait=false",
+						"--ignore-not-found",
+					],
+				]);
+				await fleet.drain("atomic-worker-done", never());
 				assert.deepEqual(
-					calls.map((call) => call[2]),
+					cloud
+						.calls()
+						.slice(before + 2)
+						.map((call) => call[2]),
 					["get", "delete"],
 				);
 			} finally {
@@ -316,6 +416,112 @@ describe("kubernetes provisioner (#4768)", () => {
 			}
 		},
 	);
+
+	posixOnly("reads each pod's start or creation time, or uses now without one (#4768)", async () => {
+		const cloud = kubeCloud("deployment");
+		try {
+			cloud.printRaw(
+				JSON.stringify({
+					items: [
+						{
+							metadata: { name: "a", creationTimestamp: "2026-11-14T08:00:00Z" },
+							status: { phase: "Running", startTime: "2026-11-14T08:01:00Z" },
+						},
+						{ metadata: { name: "b", creationTimestamp: "2026-11-14T08:00:00Z" }, status: { phase: "Pending" } },
+						{ metadata: { name: "c", creationTimestamp: "2026-11-14T08:00:00Z" }, status: { phase: "Running" } },
+						{ metadata: { name: "d" } },
+						{ metadata: { name: "e", creationTimestamp: "nope" }, status: { phase: "Failed" } },
+					],
+				}),
+			);
+			const before = Date.now();
+			const hosts = await createWorkerHostProvisioner(deployment).list(never());
+			assert.deepEqual(
+				hosts.slice(0, 3).map((host) => [host.id, host.state, host.since]),
+				[
+					["a", "running", Date.parse("2026-11-14T08:01:00Z")],
+					["b", "pending", Date.parse("2026-11-14T08:00:00Z")],
+					["c", "running", Date.parse("2026-11-14T08:00:00Z")],
+				],
+			);
+			assert.deepEqual(
+				hosts.slice(3).map((host) => [host.id, host.state]),
+				[
+					["d", "pending"],
+					["e", "failed"],
+				],
+			);
+			for (const host of hosts.slice(3)) assert.ok(host.since >= before && host.since <= Date.now());
+		} finally {
+			cloud.dispose();
+		}
+	});
+
+	posixOnly("rejects pod lists and replica counts it cannot read (#4768)", async () => {
+		const cloud = kubeCloud("deployment");
+		try {
+			const fleet = createWorkerHostProvisioner(deployment);
+			for (const raw of [
+				"null",
+				"[]",
+				'{"items": {}}',
+				'{"items": [null]}',
+				'{"items": [{"metadata": {}}]}',
+				'{"items": [{}]}',
+				'{"items": [{"metadata": {"name": ""}}]}',
+			]) {
+				cloud.printRaw(raw);
+				const error = await rejection(fleet.list(never()));
+				assert.equal(error.code, "malformed", raw);
+				assert.equal(error.message, "kubectl get pods printed JSON that is not a list of pods.", raw);
+			}
+			cloud.setMode("ok");
+			await fleet.scaleTo(1, never());
+			const [pod] = cloud.activeIds();
+			for (const raw of [
+				"null",
+				"{}",
+				'{"spec": {}}',
+				'{"spec": {"replicas": "1"}}',
+				'{"spec": {"replicas": 1.5}}',
+				'{"spec": {"replicas": -1}}',
+			]) {
+				cloud.write({ ...cloud.read(), rawWorkload: raw });
+				const error = await rejection(fleet.drain(pod!, never()));
+				assert.equal(error.code, "malformed", raw);
+				assert.equal(error.message, "kubectl get deployment printed no replica count.", raw);
+			}
+			assert.deepEqual(cloud.activeIds(), [pod!]);
+		} finally {
+			cloud.dispose();
+		}
+	});
+
+	posixOnly("drain leaves a terminating pod, and a workload already at zero, alone (#4768)", async () => {
+		const cloud = kubeCloud("deployment");
+		try {
+			const fleet = createWorkerHostProvisioner(deployment);
+			cloud.addHost({ id: "atomic-worker-going", phase: "deleting", seen: false });
+			await fleet.drain("atomic-worker-going", never());
+			assert.deepEqual(
+				cloud.calls().map((call) => call[2]),
+				["get"],
+			);
+			cloud.addHost({ id: "atomic-worker-stray", phase: "running" });
+			cloud.write({ ...cloud.read(), reportReplicas: 0 });
+			await fleet.drain("atomic-worker-stray", never());
+			assert.deepEqual(
+				cloud.calls().map((call) => call.slice(2, 4)),
+				[
+					["get", "pods"],
+					["get", "pods"],
+					["get", "deployment"],
+				],
+			);
+		} finally {
+			cloud.dispose();
+		}
+	});
 
 	posixOnly("Forbidden is an auth error (#4768)", async () => {
 		const cloud = kubeCloud("deployment");
@@ -388,7 +594,33 @@ describe("command provisioner (#4768)", () => {
 		assert.deepEqual(await list('[{"id":"a","hostId":"h1","state":"draining","since":"2026-11-14T00:00:00.000Z"}]'), [
 			{ id: "a", hostId: "h1", state: "draining", since: Date.parse("2026-11-14T00:00:00.000Z") },
 		]);
+		assert.deepEqual(
+			(
+				await list(
+					JSON.stringify(
+						["pending", "running", "draining", "stopped", "failed"].map((state, index) => ({
+							id: state,
+							state,
+							since: index + 1,
+						})),
+					),
+				)
+			).map((host) => [host.id, host.state, host.since, "hostId" in host]),
+			[
+				["pending", "pending", 1, false],
+				["running", "running", 2, false],
+				["draining", "draining", 3, false],
+				["stopped", "stopped", 4, false],
+				["failed", "failed", 5, false],
+			],
+		);
+		assert.equal((await rejection(list("nope"))).message, "the list command printed output that is not JSON.");
 		for (const bad of [
+			"null",
+			"[null]",
+			"[5]",
+			'[{"id":"a","state":"running","since":null}]',
+			'[{"id":"a","state":"running","since":true}]',
 			'{"id":"a"}',
 			'[{"state":"running","since":1}]',
 			'[{"id":"","state":"running","since":1}]',
@@ -416,6 +648,40 @@ describe("command provisioner (#4768)", () => {
 		assert.equal(second!.since, first!.since);
 	});
 
+	test("a list host without a time gets a new one when its state changes or it comes back (#4768)", async () => {
+		// Each call prints the next answer of a sequence kept in an environment-named file.
+		const sequence = [
+			'[{"id":"a","state":"pending"}]',
+			'[{"id":"a","state":"running"}]',
+			'[{"id":"a","state":"running"}]',
+			"[]",
+			'[{"id":"a","state":"running"}]',
+		];
+		const counter = join(mkdtempSync(join(tmpdir(), "atomic-command-list-")), "n");
+		const fleet = createWorkerHostProvisioner({
+			kind: "command",
+			up: script("0"),
+			down: script("0"),
+			list: [
+				...script(
+					"const fs = require('fs'); const [file, ...answers] = process.argv.slice(1); const n = fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0; fs.writeFileSync(file, String(n + 1)); process.stdout.write(answers[n]);",
+				),
+				counter,
+				...sequence,
+			],
+		});
+		const times: number[] = [];
+		for (let index = 0; index < sequence.length; index++) {
+			times.push((await fleet.list(never()))[0]?.since ?? -1);
+			await new Promise((resolve) => setTimeout(resolve, 15));
+		}
+		assert.ok(times[1]! > times[0]!, "a new state keeps the old time");
+		assert.equal(times[2], times[1]);
+		assert.equal(times[3], -1);
+		assert.ok(times[4]! > times[2]!, "a host that came back keeps the time from before it left");
+		rmSync(dirname(counter), { recursive: true, force: true });
+	});
+
 	test("a failing command reports its exit code and stderr, never its arguments (#4768)", async () => {
 		const fleet = createWorkerHostProvisioner({
 			kind: "command",
@@ -435,6 +701,90 @@ describe("command provisioner (#4768)", () => {
 		assert.doesNotMatch(JSON.stringify(error), /hunter2/);
 	});
 
+	test("a failing command's stderr is joined, trimmed and cut, and a signal or an unrunnable file is named (#4768)", async () => {
+		const failing = (source: string, extra: readonly string[] = []) =>
+			rejection(
+				createWorkerHostProvisioner({
+					kind: "command",
+					up: [...script(source), ...extra],
+					down: script("0"),
+					list: script("0"),
+				}).scaleTo(1, never()),
+			);
+		const joined = await failing("process.stderr.write('  first  \\r\\n\\r\\n  second\\n'); process.exit(2)");
+		assert.equal(joined.message, "the up command exited with code 2: first second");
+		assert.equal(joined.name, "WorkerProvisionerError");
+		const long = await failing("process.stderr.write('x'.repeat(5000)); process.exit(3)");
+		assert.equal(long.message, `the up command exited with code 3: ${"x".repeat(600)}…`);
+		const fits = await failing("process.stderr.write('y'.repeat(600)); process.exit(3)");
+		assert.equal(fits.message, `the up command exited with code 3: ${"y".repeat(600)}`);
+		const silent = await failing("process.exit(4)");
+		assert.equal(silent.message, "the up command exited with code 4");
+		const killed = await failing("process.kill(process.pid, 'SIGTERM'); setInterval(() => {}, 1000)");
+		assert.equal(killed.code, "exit");
+		assert.equal(killed.exitCode, undefined);
+		assert.equal(killed.message, "the up command was stopped by SIGTERM");
+		for (const [stderr, code] of [
+			["Unauthorized", "auth"],
+			["request unauthorised", "auth"],
+			["403 Forbidden", "auth"],
+			["Authentication failed", "auth"],
+			["authentication required", "auth"],
+			["authentication error: expired", "auth"],
+			["You are not logged in", "auth"],
+			["login required", "auth"],
+			["Access denied", "auth"],
+			["invalid credentials", "auth"],
+			["quota exceeded", "exit"],
+			["authorization pending", "exit"],
+		] as const) {
+			const error = await failing(`process.stderr.write(${JSON.stringify(stderr)}); process.exit(1)`);
+			assert.equal(error.code, code, stderr);
+		}
+	});
+
+	posixOnly("a file that cannot be run is reported as such (#4768)", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-command-noexec-"));
+		const file = join(dir, "scale-to");
+		writeFileSync(file, "#!/bin/sh\nexit 0\n");
+		try {
+			const error = await rejection(
+				createWorkerHostProvisioner({ kind: "command", up: [file], down: [file], list: [file] }).scaleTo(
+					1,
+					never(),
+				),
+			);
+			assert.equal(error.code, "exit");
+			assert.equal(error.message, "the up command could not start (EACCES).");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("output past 64 MiB is refused (#4768)", async () => {
+		const error = await rejection(
+			createWorkerHostProvisioner({
+				kind: "command",
+				up: script("0"),
+				down: script("0"),
+				list: script(
+					"const chunk = Buffer.alloc(1024 * 1024, 32); for (let i = 0; i < 65; i++) process.stdout.write(chunk);",
+				),
+			}).list(never()),
+		);
+		assert.equal(error.code, "malformed");
+		assert.equal(error.message, "the list command printed more than 67108864 bytes.");
+		const fits = await createWorkerHostProvisioner({
+			kind: "command",
+			up: script("0"),
+			down: script("0"),
+			list: script(
+				"const chunk = Buffer.alloc(1024 * 1024, 32); for (let i = 0; i < 63; i++) process.stdout.write(chunk); process.stdout.write('[]');",
+			),
+		}).list(never());
+		assert.deepEqual(fits, []);
+	});
+
 	test("checks its options (#4768)", () => {
 		const ok = { kind: "command", up: ["a"], down: ["b"], list: ["c"] } as const;
 		assert.throws(() => createWorkerHostProvisioner({ ...ok, up: [] }), /up must be a non-empty array of strings/);
@@ -451,5 +801,91 @@ describe("command provisioner (#4768)", () => {
 			/kind must be "azure-vmss", "kubernetes" or "command"/,
 		);
 		assert.equal(createWorkerHostProvisioner(ok).kind, "command");
+		assert.throws(
+			() => createWorkerHostProvisioner({ ...ok, down: ["a", ""] }),
+			/down must be a non-empty array of strings/,
+		);
+		assert.throws(
+			() => createWorkerHostProvisioner({ ...ok, up: "a" as unknown as string[] }),
+			/up must be a non-empty array of strings/,
+		);
+		assert.equal(createWorkerHostProvisioner({ ...ok, timeoutMs: 1 }).kind, "command");
+		for (const timeoutMs of [1.5, -1, "5"])
+			assert.throws(
+				() => createWorkerHostProvisioner({ ...ok, timeoutMs: timeoutMs as number }),
+				/Invalid command provisioner options: timeoutMs must be a positive integer/,
+			);
+	});
+});
+
+describe("provisioner options (#4768)", () => {
+	const vmss = { kind: "azure-vmss", resourceGroup: "rg", name: "set" } as const;
+	const kube = { kind: "kubernetes", namespace: "ns", selector: "app=w", deployment: "w" } as const;
+	type Config = Parameters<typeof createWorkerHostProvisioner>[0];
+
+	test("require their names to be non-empty strings, and optional ones to be when given (#4768)", () => {
+		assert.equal(createWorkerHostProvisioner(vmss).kind, "azure-vmss");
+		assert.equal(createWorkerHostProvisioner(kube).kind, "kubernetes");
+		const cases: [Config, RegExp][] = [
+			[
+				{ ...vmss, resourceGroup: "" },
+				/Invalid azure-vmss provisioner options: resourceGroup must be a non-empty string\./,
+			],
+			[
+				{ ...vmss, name: 5 as unknown as string },
+				/azure-vmss provisioner options: name must be a non-empty string\./,
+			],
+			[{ ...vmss, subscription: "" }, /subscription must be a non-empty string when given\./],
+			[{ ...vmss, subscription: 5 as unknown as string }, /subscription must be a non-empty string when given\./],
+			[{ ...vmss, timeoutMs: 0 }, /Invalid azure-vmss provisioner options: timeoutMs must be a positive integer\./],
+			[{ ...kube, namespace: "" }, /Invalid kubernetes provisioner options: namespace must be a non-empty string\./],
+			[{ ...kube, selector: undefined as unknown as string }, /selector must be a non-empty string\./],
+			[{ ...kube, context: "" }, /context must be a non-empty string when given\./],
+			[{ ...kube, deployment: "" }, /deployment must be a non-empty string when given\./],
+			[{ ...kube, deployment: undefined, statefulSet: "" }, /statefulSet must be a non-empty string when given\./],
+			[{ ...kube, timeoutMs: -5 }, /Invalid kubernetes provisioner options: timeoutMs must be a positive integer\./],
+		];
+		for (const [config, message] of cases) assert.throws(() => createWorkerHostProvisioner(config), message);
+	});
+});
+
+describe("secret redaction (#4768)", () => {
+	test("redacts secret-named arguments and environment values, longest first (#4768)", () => {
+		const env = { AZURE_CLIENT_SECRET: "abcdef", MY_TOKEN: "abcdefgh", PATH: "/usr/local/bin", API_KEY: "short" };
+		assert.equal(
+			redactSecrets("token abcdefgh, secret abcdef, path /usr/local/bin, key short", [], env),
+			"token [redacted], secret [redacted], path /usr/local/bin, key short",
+		);
+		assert.equal(
+			redactSecrets(
+				"saw hunter22 and s3cr3tvalue and visible-value and plain-arg",
+				["--client-secret=s3cr3tvalue", "-password", "hunter22", "token", "visible-value", "--name", "plain-arg"],
+				{},
+			),
+			"saw [redacted] and [redacted] and visible-value and plain-arg",
+		);
+		assert.equal(redactSecrets("ends with --token", ["--token"], {}), "ends with --token");
+		assert.equal(redactSecrets("a=b x--token=abcdefg", ["x--token=abcdefg"], {}), "a=b x--token=[redacted]");
+	});
+
+	test("redacts tokens a CLI prints (#4768)", () => {
+		const cases: [string, string][] = [
+			["Authorization: Bearer abc.def-ghi, next", "Authorization: Bearer [redacted], next"],
+			["got eyJhbGciOi.eyJzdWIi.c2ln and eyJhbGciOi.eyJzdWIi done", "got [redacted] and [redacted] done"],
+			[
+				"password=hunter2 pwd: 'x1' passwd=y apikey=z api_key=z api-key=z",
+				"password=[redacted] pwd: '[redacted]' passwd=[redacted] apikey=[redacted] api_key=[redacted] api-key=[redacted]",
+			],
+			[
+				"client_secret: abc; access_key=k&sig=s signature=t",
+				"client_secret: [redacted]; access_key=[redacted]&sig=[redacted] signature=[redacted]",
+			],
+			[
+				"accesskey=k access-key=k credential=c token:t",
+				"accesskey=[redacted] access-key=[redacted] credential=[redacted] token:[redacted]",
+			],
+			["status=500 name=atomic", "status=500 name=atomic"],
+		];
+		for (const [text, redacted] of cases) assert.equal(redactSecrets(text, [], {}), redacted, text);
 	});
 });

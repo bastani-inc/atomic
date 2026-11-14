@@ -47,6 +47,10 @@ if (
 	} else if (verb === "get" && resource === workload) {
 		if (name !== target.workload) fail(`Error from server (NotFound): ${workload}s.apps "${name}" not found`);
 		const state = readState();
+		if (state.rawWorkload !== undefined) {
+			process.stdout.write(state.rawWorkload);
+			process.exit(0);
+		}
 		const replicas = state.reportReplicas ?? active(state).length;
 		json({ kind: kind === "statefulset" ? "StatefulSet" : "Deployment", metadata: { name }, spec: { replicas } });
 	} else if (verb === "scale" && resource === `${workload}/${target.workload}`) {

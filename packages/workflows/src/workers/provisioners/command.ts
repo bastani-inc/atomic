@@ -11,7 +11,7 @@ import type { CommandProvisionerOptions } from "./types.js";
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** What a script's stderr commonly says when its credentials were refused. */
 const AUTH_FAILURE =
-	/unauthori[sz]ed|forbidden|authenticat\w* (?:failed|required|error)|not logged in|log ?in required|access denied|permission denied|invalid credential/i;
+	/unauthori[sz]ed|forbidden|authentication (?:failed|required|error)|not logged in|login required|access denied|invalid credential/i;
 const HOST_STATES = new Set<string>(["pending", "running", "draining", "stopped", "failed"]);
 
 interface ListedHost {
@@ -29,10 +29,9 @@ function isListedHost(value: unknown): value is ListedHost {
 		typeof host.id === "string" &&
 		host.id !== "" &&
 		(host.hostId === undefined || typeof host.hostId === "string") &&
-		typeof host.state === "string" &&
-		HOST_STATES.has(host.state) &&
+		HOST_STATES.has(host.state as string) &&
 		(host.since === undefined ||
-			(typeof host.since === "number" && Number.isFinite(host.since)) ||
+			Number.isFinite(host.since) ||
 			(typeof host.since === "string" && Number.isFinite(Date.parse(host.since))))
 	);
 }
