@@ -15,6 +15,7 @@ import {
 	captureWorktreeSnapshot,
 	type WorktreeSnapshotCapture,
 } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
+import { runGit } from "../../packages/coding-agent/src/core/worktree-snapshot/git.ts";
 import {
 	captureIndexPath,
 	defaultWorktreeSnapshotStoreDir,
@@ -30,10 +31,29 @@ beforeEach(() => {
 });
 afterEach(() => sandbox.dispose());
 
-async function treeOf(dir: string): Promise<string> {
-	const result: WorktreeSnapshotCapture = await captureWorktreeSnapshot(dir);
+async function captureOf(dir: string, maxFileBytes?: number) {
+	const result: WorktreeSnapshotCapture = await captureWorktreeSnapshot(dir, { settings: { maxFileBytes } });
 	if (result.status !== "captured") throw new Error(`unexpected ${result.status}`);
-	return result.snapshot.tree;
+	return result.snapshot;
+}
+
+async function treeOf(dir: string): Promise<string> {
+	return (await captureOf(dir)).tree;
+}
+
+/** Asserts the last capture of `clone` went through its private index: one that cannot be used is removed. */
+async function assertUsedPrivateIndex(clone: string): Promise<void> {
+	const index = await privateIndexOf(clone);
+	assert.ok(existsSync(index), "the capture kept its private index");
+	const listed = await runGit(["ls-files"], { cwd: clone, env: { GIT_INDEX_FILE: index }, allowExitCodes: [128] });
+	assert.equal(listed.exitCode, 0, "the private index is a readable Git index");
+}
+
+/** The tree a capture records through the private index. */
+async function treeThroughPrivateIndex(clone: string): Promise<string> {
+	const tree = await treeOf(clone);
+	await assertUsedPrivateIndex(clone);
+	return tree;
 }
 
 async function privateIndexOf(clone: string): Promise<string> {
@@ -57,9 +77,8 @@ describe("capture keeps a persistent private index (#4748)", () => {
 		const userIndex = join(clone, ".git", "index");
 		const before = { bytes: readFileSync(userIndex), mtimeMs: statSync(userIndex).mtimeMs };
 
-		await treeOf(clone);
+		await treeThroughPrivateIndex(clone);
 
-		assert.ok(existsSync(await privateIndexOf(clone)), "the capture kept its index for the next one");
 		assert.deepEqual(readFileSync(userIndex), before.bytes);
 		assert.equal(statSync(userIndex).mtimeMs, before.mtimeMs);
 		assert.deepEqual(
@@ -95,7 +114,7 @@ describe("capture keeps a persistent private index (#4748)", () => {
 
 		writeFileSync(file, "bbbb\n");
 		utimesSync(file, racy, racy);
-		const tree = await treeOf(clone);
+		const tree = await treeThroughPrivateIndex(clone);
 
 		assert.equal(await treeFile(clone, tree, "a.txt"), "bbbb");
 		assert.equal(await treeWithoutPrivateIndex(clone), tree);
@@ -103,14 +122,15 @@ describe("capture keeps a persistent private index (#4748)", () => {
 
 	test("a file force-added despite an ignore rule is recorded, and an ignored unstaged one is not (#4748)", async () => {
 		const { clone } = await sandbox.remoteWithClone("repo", { ".gitignore": "build/\n*.log\n", "a.txt": "a\n" });
-		await treeOf(clone);
+		sandbox.write(join(clone, "staged.txt"), "staged\n");
+		await sandbox.git(clone, "add", "staged.txt");
+		await treeThroughPrivateIndex(clone);
 		sandbox.write(join(clone, "build", "kept.txt"), "kept\n");
 		sandbox.write(join(clone, "forced.log"), "forced\n");
 		sandbox.write(join(clone, "left.log"), "left\n");
-		sandbox.write(join(clone, "staged.txt"), "staged\n");
-		await sandbox.git(clone, "add", "-f", "build/kept.txt", "forced.log", "staged.txt");
+		await sandbox.git(clone, "add", "-f", "build/kept.txt", "forced.log");
 
-		const tree = await treeOf(clone);
+		const tree = await treeThroughPrivateIndex(clone);
 
 		const paths = (await sandbox.git(clone, "ls-tree", "-r", "--name-only", tree)).split("\n");
 		assert.deepEqual(paths, [".gitignore", "a.txt", "build/kept.txt", "forced.log", "staged.txt"]);
@@ -125,7 +145,7 @@ describe("capture keeps a persistent private index (#4748)", () => {
 		await sandbox.git(clone, "checkout", "-q", "-b", "side", "HEAD~1");
 		sandbox.write(join(clone, "b.txt"), "side\n");
 
-		const tree = await treeOf(clone);
+		const tree = await treeThroughPrivateIndex(clone);
 
 		assert.equal(await treeFile(clone, tree, "a.txt"), "one");
 		assert.equal(await treeFile(clone, tree, "b.txt"), "side");
@@ -141,10 +161,52 @@ describe("capture keeps a persistent private index (#4748)", () => {
 			utimesSync(join(clone, path), later, later);
 		}
 
-		const tree = await treeOf(clone);
+		const tree = await treeThroughPrivateIndex(clone);
 
 		assert.equal(tree, await sandbox.git(clone, "rev-parse", "HEAD^{tree}"));
 		assert.equal(await treeWithoutPrivateIndex(clone), tree);
+	});
+
+	test("each checkout gets a private index of its own, named from its Git directory and root (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("one");
+		const { clone: other } = await sandbox.remoteWithClone("two");
+		await treeThroughPrivateIndex(clone);
+		await treeThroughPrivateIndex(other);
+
+		const names = [await privateIndexOf(clone), await privateIndexOf(other)].map((path) => path.split(/[\\/]/).pop());
+		assert.notEqual(names[0], names[1]);
+		for (const name of names) assert.match(name!, /^[0-9a-f]{24}$/);
+	});
+
+	test("a checkout without an index of its own is captured through the private index (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+		rmSync(join(clone, ".git", "index"));
+
+		const tree = await treeThroughPrivateIndex(clone);
+
+		assert.equal(tree, await sandbox.git(clone, "rev-parse", "HEAD^{tree}"));
+	});
+
+	test("a private index removed behind its record is rebuilt by the next capture (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+		sandbox.write(join(clone, "a.txt"), "changed\n");
+		const expected = await treeThroughPrivateIndex(clone);
+		rmSync(await privateIndexOf(clone));
+
+		assert.equal(await treeThroughPrivateIndex(clone), expected);
+	});
+
+	test("an unchanged tracked file over the size cap whose times changed is not reported as left out (#4748)", async () => {
+		const { clone } = await sandbox.remoteWithClone("repo", { "big.txt": "0123456789\n" });
+		const file = join(clone, "big.txt");
+		const later = Math.floor(Date.now() / 1000) - 5;
+		writeFileSync(file, readFileSync(file));
+		utimesSync(file, later, later);
+
+		const snapshot = await captureOf(clone, 4);
+
+		assert.deepEqual(snapshot.omitted, []);
+		assert.equal(snapshot.tree, await sandbox.git(clone, "rev-parse", "HEAD^{tree}"));
 	});
 });
 
@@ -158,28 +220,37 @@ describe("a private index that cannot be used falls back to today's capture (#47
 			const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n", "b.txt": "b\n" });
 			sandbox.write(join(clone, "a.txt"), "changed\n");
 			sandbox.write(join(clone, "new.txt"), "new\n");
-			const expected = await treeOf(clone);
+			const expected = await treeThroughPrivateIndex(clone);
 			const index = await privateIndexOf(clone);
 			damage(index);
 
 			assert.equal(await treeOf(clone), expected);
-			assert.equal(await treeOf(clone), expected);
-			assert.ok(existsSync(index), "the next capture writes a usable private index again");
+			assert.equal(
+				await treeThroughPrivateIndex(clone),
+				expected,
+				"the next capture writes a usable private index again",
+			);
+			assert.ok(!existsSync(`${index}.${process.pid}.tmp.lock`));
 			const user = await sandbox.git(clone, "status", "--porcelain");
 			assert.equal(user, " M a.txt\n?? new.txt", "the user's index is left as it was");
 		});
 	}
 
-	test("an index of another version is reseeded from the user's index and records the same tree (#4748)", async () => {
-		const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
-		sandbox.write(join(clone, "a.txt"), "changed\n");
-		const expected = await treeOf(clone);
-		const index = await privateIndexOf(clone);
-		writeFileSync(`${index}.json`, JSON.stringify({ version: 0 }));
+	for (const [name, record] of [
+		["of another version", JSON.stringify({ version: 0 })],
+		["with an unreadable record", "not json"],
+	] as const) {
+		test(`an index ${name} is reseeded from the user's index and records the same tree (#4748)`, async () => {
+			const { clone } = await sandbox.remoteWithClone("repo", { "a.txt": "a\n" });
+			sandbox.write(join(clone, "a.txt"), "changed\n");
+			const expected = await treeThroughPrivateIndex(clone);
+			const index = await privateIndexOf(clone);
+			writeFileSync(`${index}.json`, record);
 
-		assert.equal(await treeOf(clone), expected);
-		assert.equal(JSON.parse(readFileSync(`${index}.json`, "utf8")).version, 1);
-	});
+			assert.equal(await treeThroughPrivateIndex(clone), expected);
+			assert.equal(JSON.parse(readFileSync(`${index}.json`, "utf8")).version, 1);
+		});
+	}
 });
 
 describe("capture cost with a persistent private index (#4748)", () => {
