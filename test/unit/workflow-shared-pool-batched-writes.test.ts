@@ -37,8 +37,8 @@ function countingDriver(path: string) {
 	const requests: Request[] = [];
 	/** Whether each batch asked for the priority lane, in order. */
 	const priorities: boolean[] = [];
-	/** The longest text value any statement returned. */
-	const largest = { bytes: 0 };
+	/** The longest text value any statement returned, and the most text one statement returned in all. */
+	const largest = { bytes: 0, response: 0 };
 	const hooks: { beforeBatch?: (connection: DatabaseSync) => void; afterCommit?: () => void } = {};
 	const execute = (sql: string, params: readonly unknown[]): SqliteDriverResult => {
 		const statement = connection.prepare(sql);
@@ -47,8 +47,14 @@ function countingDriver(path: string) {
 		if (columns.length === 0)
 			return { columns, rows: [], changes: Number(statement.run(...(params as never[])).changes) };
 		const rows = statement.all(...(params as never[])).map((row) => columns.map((name) => row[name]!));
+		let response = 0;
 		for (const row of rows)
-			for (const value of row) if (typeof value === "string") largest.bytes = Math.max(largest.bytes, value.length);
+			for (const value of row)
+				if (typeof value === "string") {
+					largest.bytes = Math.max(largest.bytes, value.length);
+					response += value.length;
+				}
+		largest.response = Math.max(largest.response, response);
 		return { columns, rows, changes: 0 };
 	};
 	const outside: SqliteDriverExecutor = {
@@ -761,13 +767,13 @@ test("a replay on another host commits its next checkpoint after an earlier atte
 	}
 });
 
-test("a host that has not read the root yet commits without asking for all of the root's checkpoints in one value (#4768)", async () => {
+test("a host that has not read the root yet commits without asking for all of the root's checkpoints in one value or one response (#4768)", async () => {
 	const f = await fixture();
 	try {
 		const first = await f.pool.claim(f.lease, "h1/w1", [work], 60_000);
 		assert.ok(first);
 		// Many large checkpoints, as a long fan-out leaves in the root's journal.
-		const big = "x".repeat(16 * 1024);
+		const big = "x".repeat(80 * 1024);
 		for (let index = 1; index <= 40; index++)
 			await f.pool.commit(f.lease, first, `op-${index}`, {
 				kind: "checkpoint",
@@ -778,10 +784,12 @@ test("a host that has not read the root yet commits without asking for all of th
 		const replay = await other.claim(f.lease, "h2/w1", [work], 60_000);
 		assert.ok(replay);
 		f.largest.bytes = 0;
+		f.largest.response = 0;
 		const receipt = await other.commit(f.lease, replay, "op-41", { kind: "checkpoint", checkpoint: tool(41) });
 		assert.equal(typeof receipt.seq, "number");
-		// No value larger than the root's checkpoints together: the commit read them as they are, not in one value.
+		// The root's 3.2 MB of checkpoints came in pages, none of them in one value or one response.
 		assert.ok(f.largest.bytes < 300 * 1024, `largest value read: ${f.largest.bytes} bytes`);
+		assert.ok(f.largest.response < 2.5 * 1024 * 1024, `largest response: ${f.largest.response} bytes`);
 	} finally {
 		await f.close();
 	}

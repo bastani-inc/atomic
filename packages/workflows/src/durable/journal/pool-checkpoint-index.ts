@@ -151,6 +151,44 @@ export class PoolCheckpointRead implements PoolCheckpointSource {
 	}
 }
 
+/**
+ * How many bytes of checkpoint payloads one page of {@link readCheckpointPages} asks for: well under what a database
+ * server returns in one response (sqld refuses one past 10 MB).
+ */
+const CHECKPOINT_PAGE_BYTES = 2 * 1024 * 1024;
+
+/**
+ * The root's checkpoints after `from` up to `to`, in pages of about {@link CHECKPOINT_PAGE_BYTES}: a host that has
+ * not read the root yet, as one that took over a child, reads them all, which in one response a server refuses
+ * (#4768). Each page holds at least one checkpoint, however large.
+ */
+async function readCheckpointPages(
+	tx: SqliteExecutor,
+	events: string,
+	root: string,
+	from: number,
+	to: number,
+): Promise<(SqliteRow & { seq: number; key: string | null; payload: string })[]> {
+	const rows: (SqliteRow & { seq: number; key: string | null; payload: string })[] = [];
+	for (let after = from; after < to; ) {
+		const page = await tx.all<SqliteRow & { seq: number; key: string | null; payload: string }>(
+			`SELECT seq, key, payload FROM (
+				SELECT seq, key, payload, SUM(length(payload)) OVER (ORDER BY seq) - length(payload) AS before
+				FROM ${events} WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ?
+			) WHERE before < ? ORDER BY seq`,
+			root,
+			after,
+			to,
+			RUN_EVENT_TYPES.checkpointRecorded,
+			CHECKPOINT_PAGE_BYTES,
+		);
+		if (page.length === 0) break;
+		rows.push(...page);
+		after = Number(page.at(-1)!.seq);
+	}
+	return rows;
+}
+
 /** The most checkpoints, and bytes of their payloads, a commit's read carries for the checkpoint index. */
 const PREFETCH_MAX_CHECKPOINTS = 64;
 const PREFETCH_MAX_BYTES = 256 * 1024;
@@ -266,13 +304,7 @@ export class PoolCheckpointIndex {
 					? (JSON.parse(usable.added ?? "[]") as [number, string | null, string][])
 							.filter(([seq]) => seq <= to)
 							.map(([seq, key, payload]) => ({ seq, key, payload }))
-					: await tx.all<SqliteRow & { seq: number; key: string | null; payload: string }>(
-							`SELECT seq, key, payload FROM ${events} WHERE run_id = ? AND seq > ? AND seq <= ? AND type = ? ORDER BY seq`,
-							root,
-							from,
-							to,
-							RUN_EVENT_TYPES.checkpointRecorded,
-						);
+					: await readCheckpointPages(tx, events, root, from, to);
 			for (const row of rows) {
 				const checkpoint = JSON.parse(String(row.payload)) as DurableCheckpoint;
 				if (checkpoint.kind === "ui") continue;

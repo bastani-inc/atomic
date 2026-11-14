@@ -6,22 +6,30 @@ const OUTAGE_RETRY_BASE_MS = 50;
 /** The largest bound on that wait. */
 const OUTAGE_RETRY_MAX_MS = 1_000;
 /**
- * SQLite result codes of a statement the database could not run because another writer held its lock: anything else
- * coded `SQLITE_*` (a value too big, a constraint, a corrupt file) fails again the same way, so it is not sent again.
+ * Codes, from SQLite, a database server or the network, of a request the store refused only for a while: its lock
+ * was busy, it ended the request's stream or transaction, or it could not be reached. Any other such code (a value or
+ * a response too large, a constraint, a corrupt file) fails again the same way, so its request is not sent again.
  */
-const LOCK_CODES = /^SQLITE_(BUSY|LOCKED)/;
+const PASSING_CODES = /^(SQLITE_(BUSY|LOCKED)|TRANSACTION_TIMEOUT|STREAM_EXPIRED|E[A-Z]+$|UND_ERR_)/;
+/** A code as SQLite, a database server or Node writes one, as opposed to Atomic's own lower-case codes. */
+const SYSTEM_CODE = /^[A-Z][A-Z0-9_]+$/;
 
 /** Whether `error` is the store refusing for a while (unreachable, or its lock busy), not a statement it cannot run. */
 function refusedForAWhile(error: unknown): boolean {
 	if (infrastructureFaultOf(error) !== "storage_unavailable") return false;
 	for (let current = error, depth = 0; typeof current === "object" && current !== null && depth < 8; depth++) {
 		const { code, cause } = current as { readonly code?: unknown; readonly cause?: unknown };
-		if (typeof code === "string" && code.startsWith("SQLITE_") && !LOCK_CODES.test(code)) return false;
+		if (typeof code === "string" && SYSTEM_CODE.test(code) && !PASSING_CODES.test(code)) return false;
 		current = cause;
 	}
 	return true;
 }
 
+/**
+ * How long a request is sent again before the attempt gives up and hands its child to another host (#4768): a lease
+ * that stays live while its attempt makes no progress would hold the child forever.
+ */
+export const OUTAGE_HANDOFF_MS = 120_000;
 /** How long a request is sent again before the process says so once, on stderr, with the store's last refusal. */
 const OUTAGE_NOTICE_MS = 30_000;
 
@@ -38,6 +46,8 @@ export async function retryWithinLease<T>(
 	leaseLeft: () => boolean,
 	/** What `send` sends, as a notice names it. */
 	what = "a request",
+	/** How long to keep sending; past it the last refusal goes to the caller. */
+	giveUpMs = Number.POSITIVE_INFINITY,
 ): Promise<T> {
 	const started = performance.now();
 	let noticed = false;
@@ -45,7 +55,7 @@ export async function retryWithinLease<T>(
 		try {
 			return await send();
 		} catch (error) {
-			if (!refusedForAWhile(error) || !leaseLeft()) throw error;
+			if (!refusedForAWhile(error) || !leaseLeft() || performance.now() - started >= giveUpMs) throw error;
 			if (!noticed && performance.now() - started >= OUTAGE_NOTICE_MS) {
 				noticed = true;
 				process.stderr.write(

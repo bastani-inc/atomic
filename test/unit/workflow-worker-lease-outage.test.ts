@@ -80,3 +80,35 @@ test("a statement the database cannot run is not sent again, even after crossing
 	);
 	assert.equal(sends, 3);
 });
+
+test("a response the server refuses as too large is not sent again, and a request refused past the handoff bound goes to the caller (#4768)", async () => {
+	const tooLarge = new StorageUnavailableError(
+		{ adapter: "libsql", location: "http://127.0.0.1:1" },
+		Object.assign(new Error("RESPONSE_TOO_LARGE: Response is too large"), { code: "RESPONSE_TOO_LARGE" }),
+	);
+	let sends = 0;
+	await assert.rejects(
+		retryWithinLease(
+			async () => {
+				sends++;
+				throw rehydrateError(serializeError(tooLarge));
+			},
+			() => true,
+		),
+	);
+	assert.equal(sends, 1);
+	sends = 0;
+	await assert.rejects(
+		retryWithinLease(
+			async () => {
+				sends++;
+				throw refused();
+			},
+			() => true,
+			"a commit request",
+			300,
+		),
+		StorageUnavailableError,
+	);
+	assert.ok(sends >= 2, `sent ${sends} times`);
+});

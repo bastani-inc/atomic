@@ -41,7 +41,7 @@ import { admittedSessionAdapter } from "./admission-binding.js";
 import { AttemptFence, endedAttemptRefusal } from "./attempt-fence.js";
 import { POOL_COORDINATOR_ROLE, type PoolCoordinatorStart } from "./coordinator-protocol.js";
 import { loadWorkerDefinition } from "./definitions.js";
-import { retryWithinLease } from "./lease-outage.js";
+import { OUTAGE_HANDOFF_MS, retryWithinLease } from "./lease-outage.js";
 import { poolWorkerCommit } from "./pool-commit.js";
 import { POOLED_CUSTOM_PROMPT_UNAVAILABLE } from "./pooled-prompt-limits.js";
 import { completedAttemptResult, remoteStageInbox, workerStageAdapter } from "./pooled-stage-delivery.js";
@@ -371,6 +371,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	// The root holds the checkpoints of every child of the pool; the worker keeps only those of the child it runs.
 	await reader.retainCheckpoints(start.root, NO_CHECKPOINTS);
 	configurePooledWatchTrace(start.journalPath ?? join(process.cwd(), "shared-pool"), `worker:${process.pid}`);
+	/** Set when the held attempt ends because the store kept refusing it: the pool hands its child on, uncounted. */
+	let handoff = false;
 	/** When the held attempt's lease was last renewed, by `performance.now()`: at its claim, then by each heartbeat. */
 	let leaseRenewedAt = 0;
 	const leaseLeft = () => start.leaseMs !== undefined && performance.now() - leaseRenewedAt < start.leaseMs;
@@ -381,10 +383,18 @@ async function runWorker(start: WorkerStart): Promise<void> {
 	const attemptRequest = async (message: Request): Promise<WorkerReply["value"]> => {
 		const held = heldAttempt;
 		try {
-			return await retryWithinLease(() => request(message, undefined, true), leaseLeft, `a ${message.kind} request`);
+			return await retryWithinLease(
+				() => request(message, undefined, true),
+				leaseLeft,
+				`a ${message.kind} request`,
+				OUTAGE_HANDOFF_MS,
+			);
 		} catch (error) {
 			if (infrastructureFaultOf(error) !== "storage_unavailable") throw error;
 			replies.attemptFenced = true;
+			// Within the lease, the store kept refusing it, or refused a statement it cannot run here: the child goes to
+			// another host without spending one of its attempts (#4768). Past the lease it may already have one.
+			if (leaseLeft()) handoff = true;
 			throw workerRefusal(
 				error as Error,
 				held === undefined ? undefined : { workId: held.id, generation: held.generation },
@@ -535,6 +545,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				continue;
 			}
 			replies.attemptFenced = false;
+			handoff = false;
 			leaseRenewedAt = performance.now();
 			if (!work) {
 				if (replies.retired) break;
@@ -777,7 +788,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				// their session permits go back before this worker serves the replay, instead of when the worker exits.
 				await closeAttemptStages(stageControls, store, closingHeartbeat, start.heartbeatMs);
 				writable = false;
-				await request(fence.request());
+				await request({ ...fence.request(), ...(handoff ? { handoff: true as const } : {}) });
 			}
 			attemptAdmission.release();
 			// The attempt's prompt reservations end with it: a replay asks its pending prompts again (#3996), and the

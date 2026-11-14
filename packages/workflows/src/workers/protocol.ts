@@ -104,7 +104,15 @@ export type WorkerRequest = { readonly id: number } & (
 	 * The worker ended its attempt because a reply refused it as stale, or because its run failed on a fault of the pool
 	 * (`fault` is that fault); neither is a worker fault, and the child replays within its attempt limit.
 	 */
-	| { readonly kind: "fenced"; readonly fault?: SerializedError }
+	| {
+			readonly kind: "fenced";
+			readonly fault?: SerializedError;
+			/**
+			 * The worker gave its attempt up because the shared store kept refusing one of its requests (#4768): the store's
+			 * fault, not the child's, so the child goes back to the queue for another host without counting as an attempt.
+			 */
+			readonly handoff?: true;
+	  }
 	/**
 	 * The worker holds no attempt and is about to exit because its resident set size, `rssBytes`, passed its
 	 * `maxRssBytes`, after running `attempts` attempts: a planned exit, not a crash, so the pool starts a replacement

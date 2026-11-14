@@ -2457,8 +2457,14 @@ export class PoolCoordinator {
 						if (fenced && !(await this.superseded(fenced))) {
 							// Views of the attempt's stages end with it, so they reconnect to its replay.
 							this.fence(fenced);
+							// A handoff, which the store's refusals forced, goes back to the queue recorded as such: it counts as
+							// none of the child's attempts (#4768).
+							if (message.handoff === true) await leased(() => queue.releaseExited(lease, fenced, true));
 							// A worker host releases the attempt whatever its count: the root's own pool fails a child.
-							if (this.satellite !== undefined || this.attempts(fenced) < MAX_CHILD_ATTEMPTS)
+							else if (
+								this.satellite !== undefined ||
+								this.attempts(await this.counted(fenced)) < MAX_CHILD_ATTEMPTS
+							)
 								await leased(() => queue.releaseExited(lease, fenced));
 							else if (await leased(() => queue.failExited(lease, fenced))) {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
@@ -2913,8 +2919,14 @@ export class PoolCoordinator {
 	}
 
 	/** Attempts of a work item in this root incarnation; earlier incarnations' attempts do not count (#3979). */
+	/** The child's attempts in this root incarnation: handoffs the store forced count as none (#4768). */
 	private attempts(work: PoolWork): number {
-		return work.generation - (this.attemptBase.get(work.id) ?? 0);
+		return work.generation - (this.attemptBase.get(work.id) ?? 0) - (work.handoffs ?? 0);
+	}
+
+	/** `work` as the queue holds it now, with its handoffs; `work` itself when the queue no longer has it. */
+	private async counted(work: PoolWork): Promise<PoolWork> {
+		return (await this.queue!.inspect(this.root!)).find((candidate) => candidate.id === work.id) ?? work;
 	}
 
 	/** Whether a newer attempt, or completion, replaced this one. */

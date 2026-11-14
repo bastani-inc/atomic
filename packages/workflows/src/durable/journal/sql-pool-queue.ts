@@ -114,6 +114,11 @@ export interface PoolWork extends PoolWorkDescriptor {
 	readonly epoch: number;
 	readonly expiresAt: number;
 	readonly renewedAt: number;
+	/**
+	 * Of this work's attempts, how many a worker handed back because the shared store kept refusing them (#4768): they
+	 * count as none of the child's attempts. Read by {@link SqlPoolQueue.inspect}; absent elsewhere.
+	 */
+	readonly handoffs?: number;
 }
 type WorkRow = SqliteRow & {
 	id: string;
@@ -209,6 +214,8 @@ export interface PoolCommitReceipt {
 	readonly at: number;
 	readonly lastSeq?: number;
 }
+/** The operation a handed-back attempt records for its work (see {@link PoolWork.handoffs}). */
+const HANDOFF_OPERATION = "pool-handoff";
 function fromRow(row: WorkRow): PoolWork {
 	return {
 		...JSON.parse(row.descriptor),
@@ -1878,8 +1885,12 @@ export class SqlPoolQueue {
 		await tx.run(`UPDATE ${this.work} SET expires_at = ?, renewed_at = ? WHERE id = ?`, expiresAt, now, row.id);
 		return { ...fromRow(row), expiresAt, renewedAt: now };
 	}
-	async releaseExited(lease: Lease, token: WorkLease): Promise<boolean> {
-		return this.settleExited(lease, token, "ready");
+	/**
+	 * Puts an exited attempt's work back for another attempt. `handoff`: the attempt was handed back because the shared
+	 * store kept refusing it (#4768); the work records that, and {@link inspect} reports it in `handoffs`.
+	 */
+	async releaseExited(lease: Lease, token: WorkLease, handoff = false): Promise<boolean> {
+		return this.settleExited(lease, token, "ready", 0, handoff);
 	}
 	/** Fails an exited attempt's work item for this root incarnation: no worker claims it again. */
 	async failExited(lease: Lease, token: WorkLease): Promise<boolean> {
@@ -1898,6 +1909,7 @@ export class SqlPoolQueue {
 		token: WorkLease,
 		state: "ready" | "failed",
 		rewind: 0 | 1 = 0,
+		handoff = false,
 	): Promise<boolean> {
 		lease = snapshotLease(lease);
 		token = { ...token };
@@ -1922,6 +1934,14 @@ export class SqlPoolQueue {
 				Number(row.generation) - rewind,
 				row.id,
 			);
+			if (handoff)
+				await tx.run(
+					`INSERT OR IGNORE INTO ${this.operations}(work, generation, operation, request, receipt) VALUES (?, ?, ?, ?, '{}')`,
+					row.id,
+					Number(row.generation),
+					HANDOFF_OPERATION,
+					HANDOFF_OPERATION,
+				);
 			return true;
 		});
 	}
@@ -1981,9 +2001,14 @@ export class SqlPoolQueue {
 	/** Every work item of `root`. A read: each coordinator's recovery asks every half second. */
 	async inspect(root: string): Promise<readonly PoolWork[]> {
 		return this.storage.read(async (executor) =>
-			(await executor.all<WorkRow>(`SELECT * FROM ${this.work} WHERE root = ? ORDER BY ready_at, rowid`, root)).map(
-				fromRow,
-			),
+			(
+				await executor.all<WorkRow & { handoffs: number }>(
+					`SELECT w.*, (SELECT COUNT(*) FROM ${this.operations} o WHERE o.work = w.id AND o.operation = ?) AS handoffs
+					FROM ${this.work} w WHERE w.root = ? ORDER BY w.ready_at, w.rowid`,
+					HANDOFF_OPERATION,
+					root,
+				)
+			).map((row) => ({ ...fromRow(row), handoffs: Number(row.handoffs) })),
 		);
 	}
 }
