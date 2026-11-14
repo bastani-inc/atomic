@@ -246,7 +246,11 @@ describe("multi-node wake of a released session (#4329)", () => {
 			);
 			assert.ok(["catalog-timeout", "catalog-unavailable"].includes(partitioned.output?.error?.code ?? ""));
 			assert.equal(partitioned.output?.error?.retryable, true);
-			assert.equal(existsSync(join(root, "node-b", "agent", "worktree-snapshots", "worktrees")), false, "nothing was restored");
+			assert.equal(
+				existsSync(join(root, "node-b", "agent", "worktree-snapshots", "worktrees")),
+				false,
+				"nothing was restored",
+			);
 			proxy.heal();
 			await proxy.close();
 			rmSync(wakeArgs.goFile);
