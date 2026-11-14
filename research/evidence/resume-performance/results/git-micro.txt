@@ -1,0 +1,34 @@
+Git-level measurements behind the capture findings (git 2.53.0, XFS, 80-core shared host).
+
+1. Racily clean index entries. capture.ts copies the user's index and restores its mtime, then runs
+   `read-tree --reset HEAD` on the copy. When files are as new as the index (a fresh clone, actions/checkout,
+   or a worktree Atomic just restored), Git re-hashes every racily clean entry while writing the private index.
+   src/atomic (7645 tracked files), fresh clone:
+     cp .git/index /tmp/idx        -> read-tree --reset HEAD  0.010 s  ("write index" 0.002 s)
+     cp -p .git/index /tmp/idx     -> read-tree --reset HEAD  0.153 s  ("write index" 0.143 s)   (GIT_TRACE_PERFORMANCE)
+   Whole capture (capture-bench.mjs, median of 5): fresh clone 1446/1500/1350 ms (full/unchanged/incremental),
+   after one `git status` 253/185/245 ms. Atomic runs Git with GIT_OPTIONAL_LOCKS=0, so it never refreshes
+   the user's index itself; the state persists until the user (or the agent's bash tool) runs a Git command
+   that rewrites the index.
+
+2. Stat-dirty index. A checkout copied with `cp -a` keeps file contents but changes inode/ctime, so
+   `diff-files` (no refresh in capture) reports every tracked file as changed. Capture then lstat()s and
+   hashes them, admits files until maxSnapshotBytes, and records the rest as `over-snapshot-cap` omissions:
+   atomic work.away: 1643 ms, 5191 over-snapshot-cap omissions; in-session capture on machine A 4810 ms
+   (update-index 1143 ms, diff-tree 949 ms).
+
+3. Duplicate ignored-file listing. `ls-files --cached --ignored --exclude-standard` runs once on the user's
+   index and again on the private index whenever the repository tracks a file an ignore rule matches.
+   torvalds/linux (97371 files, depth-1 clone): capture median 1182/1121/1203 ms fresh, 977/918/967 ms after
+   `git status`. Per command: read-tree --reset 122 ms, diff-files 19 ms, ls-files --cached --ignored 312 ms
+   + 318 ms, ls-files --others 106 ms, update-index 31 ms, write-tree 33 ms.
+   Alternative inputs: `git diff-index --cached --name-only --diff-filter=A HEAD` 18 ms (staged additions,
+   the only candidates for force-added ignored files).
+
+4. Untracked cache and fsmonitor. `ls-files --others` does not use the untracked cache (104 ms with and
+   without core.untrackedCache); `status --porcelain -uall` with it 122 ms. The built-in fsmonitor daemon is
+   unavailable on Linux ("fsmonitor--daemon not supported on this platform"); capture also forces
+   core.fsmonitor=false. Neither is a Linux win today.
+
+5. Per-process overhead. A capture spawns 16-17 Git processes. In-session on ripgrep the capture spanned
+   285 ms while the Git commands themselves took about 40 ms; consecutive commands start about 10 ms apart.

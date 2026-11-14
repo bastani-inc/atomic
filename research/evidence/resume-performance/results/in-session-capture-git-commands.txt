@@ -1,0 +1,85 @@
+## ripgrep machine A, one turn: offset_ms duration_ms git command
+        0       0  --version
+       10       0  rev-parse --show-toplevel
+       21       3  rev-parse -q --verify HEAD^{commit}
+       36       0  rev-parse --show-toplevel
+       47       1  rev-parse -q --verify HEAD^{commit}
+      145       0  rev-parse --git-path index
+      157       5  read-tree --reset 178cc027e283fd965cb72d0a7395b219eada170c
+      173       1  diff-files -z --name-only --no-renames
+      184       1  ls-files -z --cached --ignored --exclude-standard
+      195       1  ls-files -z --others --exclude-standard
+      215      21  update-index -z --add --remove --replace --stdin
+      245       2  write-tree
+      257       1  config -z --get-regexp ^(remote\..+\.url|core\.autocrlf|core\.eol)$
+      267       1  symbolic-ref -q --short HEAD
+      277       1  commit-tree --no-gpg-sign -p 178cc027e283fd965cb72d0a7395b219eada170c -m Atomic worktree snapshot 5aa6e24a3b39b420a86530
+      287       1  rev-parse 178cc027e283fd965cb72d0a7395b219eada170c^{tree}
+      297       1  diff-tree -p --binary --full-index --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -r c7f1bd0da7cc0b31
+      308       1  rev-list 178cc027e283fd965cb72d0a7395b219eada170c --not --remotes
+      320       1  ls-files -z -- .gitattributes :(glob)**/.gitattributes
+capture span: [(285, 16)] (ms, git processes)
+## t3turbo machine A, one turn: offset_ms duration_ms git command
+        0       0  --version
+       10       1  rev-parse --show-toplevel
+       23       2  rev-parse -q --verify HEAD^{commit}
+       35       0  rev-parse --show-toplevel
+       46       1  rev-parse -q --verify HEAD^{commit}
+       57       0  rev-parse --git-path index
+       67       3  read-tree --reset 8f945b7bb3bfb3ca8358d48b1ff0214079bc11ee
+      164       1  diff-files -z --name-only --no-renames
+      174       1  ls-files -z --cached --ignored --exclude-standard
+      185       1  ls-files -z --others --exclude-standard
+      204      14  update-index -z --add --remove --replace --stdin
+      228       1  write-tree
+      240       1  config -z --get-regexp ^(remote\..+\.url|core\.autocrlf|core\.eol)$
+      250       0  symbolic-ref -q --short HEAD
+      259       1  commit-tree --no-gpg-sign -p 8f945b7bb3bfb3ca8358d48b1ff0214079bc11ee -m Atomic worktree snapshot 380eee05f81be6d39cde63
+      271       1  rev-parse 8f945b7bb3bfb3ca8358d48b1ff0214079bc11ee^{tree}
+      282       1  diff-tree -p --binary --full-index --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -r 7c1b9be7b78d474d
+      294       2  rev-list 8f945b7bb3bfb3ca8358d48b1ff0214079bc11ee --not --remotes
+      309       1  ls-files -z -- .gitattributes :(glob)**/.gitattributes
+capture span: [(275, 16)] (ms, git processes)
+## fastapi machine A, one turn: offset_ms duration_ms git command
+        0       0  --version
+       10       1  rev-parse --show-toplevel
+       20       4  rev-parse -q --verify HEAD^{commit}
+      117       0  rev-parse --show-toplevel
+      128       1  rev-parse -q --verify HEAD^{commit}
+      139       0  rev-parse --git-path index
+      147      25  read-tree --reset 7030191986461b9e5192d29489a05f15f7f79707
+      182       9  diff-files -z --name-only --no-renames
+      201       3  ls-files -z --cached --ignored --exclude-standard
+      213       4  ls-files -z --others --exclude-standard
+      328     319  update-index -z --add --remove --replace --stdin
+      657       4  write-tree
+      671       1  config -z --get-regexp ^(remote\..+\.url|core\.autocrlf|core\.eol)$
+      679       0  symbolic-ref -q --short HEAD
+      688       1  commit-tree --no-gpg-sign -p 7030191986461b9e5192d29489a05f15f7f79707 -m Atomic worktree snapshot ad54a4cefca569cff3b71b
+      698       1  rev-parse 7030191986461b9e5192d29489a05f15f7f79707^{tree}
+      707       2  diff-tree -p --binary --full-index --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -r 19a93a1b6b42e6cc
+      718       2  rev-list 7030191986461b9e5192d29489a05f15f7f79707 --not --remotes
+      732       1  ls-files -z -- .gitattributes :(glob)**/.gitattributes
+capture span: [(615, 16)] (ms, git processes)
+## atomic machine A, one turn: offset_ms duration_ms git command
+        0       0  --version
+       13       1  rev-parse --show-toplevel
+       34      17  rev-parse -q --verify HEAD^{commit}
+       75       1  rev-parse --show-toplevel
+       93       1  rev-parse -q --verify HEAD^{commit}
+      110       1  rev-parse --git-path index
+      131      47  read-tree --reset fb5c99df54f4be15b796ca046623fff3591eccf8
+      626      29  diff-files -z --name-only --no-renames
+      674      36  ls-files -z --cached --ignored --exclude-standard
+      734      41  ls-files -z --cached --ignored --exclude-standard
+      794      11  ls-files -z --others --exclude-standard
+     2536    1143  update-index -z --add --remove --replace --stdin
+     3691       9  write-tree
+     3714       1  config -z --get-regexp ^(remote\..+\.url|core\.autocrlf|core\.eol)$
+     3730       2  symbolic-ref -q --short HEAD
+     3746       1  commit-tree --no-gpg-sign -p fb5c99df54f4be15b796ca046623fff3591eccf8 -m Atomic worktree snapshot 5f134325f1a60fdc5a945b
+     3766       1  rev-parse fb5c99df54f4be15b796ca046623fff3591eccf8^{tree}
+     3782     949  diff-tree -p --binary --full-index --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -r 734d8b92f2d01a56
+     4810      10  rev-list fb5c99df54f4be15b796ca046623fff3591eccf8 --not --remotes
+     4883       2  ls-files -z -- .gitattributes :(glob)**/.gitattributes
+capture span: [(4810, 17)] (ms, git processes)

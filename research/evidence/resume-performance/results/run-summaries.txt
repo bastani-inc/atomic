@@ -1,0 +1,44 @@
+## ripgrep
+machineA install exit=0 ms=8294
+machineA session start=1794585629731 end=1794585631758
+baseline no-session -p ms=1728
+session 01a1d5a3-962d-7b7b-a2cd-a7cb05d86d2b
+cold start=1794585720780 firstRequest=1794585732632 end=1794585732870 ttfp_ms=11852
+warmstores start=1794585743446 firstRequest=1794585754097 end=1794585754339 ttfp_ms=10651
+warmlocal start=1794585754523 firstRequest=1794585768528 end=1794585768901 ttfp_ms=14005
+cold start=1794586527352 firstRequest=1794586539658 end=1794586539851 ttfp_ms=12306
+warmstores start=1794586540147 firstRequest=1794586549582 end=1794586549767 ttfp_ms=9435
+warmlocal start=1794586549908 firstRequest=1794586558616 end=1794586558791 ttfp_ms=8708
+## t3turbo
+machineA install exit=0 ms=11460
+machineA session start=1794585645984 end=1794585648997
+baseline no-session -p ms=1794
+session 01a1d5a3-d5ac-7457-a078-23ad77e518ea
+cold start=1794585769195 firstRequest=1794585802876 end=1794585803929 ttfp_ms=33681
+warmstores start=1794585803458 firstRequest=1794585822926 end=1794585823201 ttfp_ms=19468
+warmlocal start=1794585827838 firstRequest=1794585834740 end=1794585834922 ttfp_ms=6902
+cold start=1794586565490 firstRequest=1794586577769 end=1794586577972 ttfp_ms=12279
+warmstores start=1794586582624 firstRequest=1794586590975 end=1794586591157 ttfp_ms=8351
+warmlocal start=1794586595379 firstRequest=1794586602260 end=1794586602438 ttfp_ms=6881
+## fastapi
+machineA install exit=0 ms=5620
+machineA session start=1794585655939 end=1794585658336
+baseline no-session -p ms=1539
+session 01a1d5a3-fc7a-790d-b8f0-a95f0fa41b33
+cold start=1794585835646 firstRequest=1794585844826 end=1794585845926 ttfp_ms=9180
+warmstores start=1794585845138 firstRequest=1794585851571 end=1794585851754 ttfp_ms=6433
+warmlocal start=1794585853167 firstRequest=1794585856445 end=1794585856624 ttfp_ms=3278
+cold start=1794586605270 firstRequest=1794586614280 end=1794586614466 ttfp_ms=9010
+warmstores start=1794586616216 firstRequest=1794586621831 end=1794586622134 ttfp_ms=5615
+warmlocal start=1794586623487 firstRequest=1794586626999 end=1794586627170 ttfp_ms=3512
+## atomic
+machineA install exit=1 ms=30371
+machineA session start=1794585690993 end=1794585699612
+baseline no-session -p ms=1782
+session 01a1d5a4-86aa-7c01-9920-4c59b57f9930
+cold start=1794585856757 firstRequest=1794585942223 end=1794585942475 ttfp_ms=85466
+warmstores start=1794585943145 firstRequest=1794586002939 end=1794586003129 ttfp_ms=59794
+warmlocal start=1794586004626 firstRequest=1794586045093 end=1794586045321 ttfp_ms=40467
+cold start=1794586629578 firstRequest=1794586688980 end=1794586689190 ttfp_ms=59402
+warmstores start=1794586690987 firstRequest=1794586758102 end=1794586758279 ttfp_ms=67115
+warmlocal start=1794586760599 firstRequest=1794586807587 end=1794586807783 ttfp_ms=46988

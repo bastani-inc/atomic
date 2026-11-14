@@ -1,0 +1,56 @@
+        0       0  --version
+        6       0  --version
+       13       0  rev-parse --show-toplevel
+       84       2  init -q --bare /fast/tmp/resume-perf/runs/atomic/homeB/.atomic/agent/worktree-snapshots/repositories/de473c7ff0eb33c4cbc
+       96       0  cat-file -e fb5c99df54f4be15b796ca046623fff3591eccf8^{commit}
+      105       0  cat-file -e fb5c99df54f4be15b796ca046623fff3591eccf8^{commit}
+      113       0  config --get core.sshCommand
+      121    8446  fetch -q --no-tags --no-write-fetch-head -- https://github.com/bastani-inc/atomic.git fb5c99df54f4be15b796ca046623fff359
+     8576       1  cat-file -e fb5c99df54f4be15b796ca046623fff3591eccf8^{commit}
+     8587       1  cat-file -e fb5c99df54f4be15b796ca046623fff3591eccf8^{commit}
+     8597       1  update-ref refs/atomic/heads/fb5c99df54f4be15b796ca046623fff3591eccf8 fb5c99df54f4be15b796ca046623fff3591eccf8
+     8607       1  cat-file -e 5f134325f1a60fdc5a945b8c0460b8ee715438c7^{tree}
+     8617       0  cat-file --batch-check=%(objectname) %(objecttype)
+     8626       8  read-tree fb5c99df54f4be15b796ca046623fff3591eccf8
+     8650     621  apply --cached --binary --whitespace=nowarn --no-ignore-whitespace --no-3way /fast/tmp/atomic-snapshot-jTLAQB/delta-0.pa
+     9284       5  write-tree
+     9298       1  worktree add -q --detach --no-checkout /fast/tmp/resume-perf/runs/atomic/homeB/.atomic/agent/worktree-snapshots/worktree
+     9307     664  read-tree --reset -u 5f134325f1a60fdc5a945b8c0460b8ee715438c7
+     9991       8  read-tree fb5c99df54f4be15b796ca046623fff3591eccf8
+    10009     324  update-index -q --refresh
+    10344       1  commit-tree --no-gpg-sign -p fb5c99df54f4be15b796ca046623fff3591eccf8 -m Atomic worktree snapshot 5f134325f1a60fdc5a945b
+    10355       1  update-ref --no-deref HEAD 0db0e63a855cf2dbe8069b5bc77a3a21e4f954d6
+    10364       8  read-tree 0db0e63a855cf2dbe8069b5bc77a3a21e4f954d6
+    10383       2  ls-files -z
+    10394      18  check-attr --stdin -z filter
+    10427       0  config --get core.sshCommand
+    10436    5605  lfs pull -- https://github.com/bastani-inc/atomic.git
+    16053       1  update-ref --no-deref HEAD fb5c99df54f4be15b796ca046623fff3591eccf8
+    16065      11  read-tree fb5c99df54f4be15b796ca046623fff3591eccf8
+    16091     339  update-index -q --refresh
+    16442       0  rev-parse --show-toplevel
+    16453       1  rev-parse -q --verify HEAD^{commit}
+    16463       0  rev-parse --git-path index
+    16474      11  read-tree --reset 5f134325f1a60fdc5a945b8c0460b8ee715438c7
+    16494      41  update-index -q --refresh
+    16545       4  diff-files -z --name-only --no-renames
+    16560      20  ls-files -z --cached --ignored --exclude-standard
+    16591      20  ls-files -z --cached --ignored --exclude-standard
+    16621       6  ls-files -z --others --exclude-standard
+    16637       3  write-tree
+    16651       2  worktree move /fast/tmp/resume-perf/runs/atomic/homeB/.atomic/agent/worktree-snapshots/worktrees/.staging-92e2b1e5-7517-
+    16662       0  worktree list --porcelain -z
+{
+ "restores": [
+  {
+   "fetch_ms": 8514,
+   "fetch_git_ms": 8446,
+   "reconstruct_ms": 700,
+   "materialize_ms": 1035,
+   "lfs_ms": 6097,
+   "verify_ms": 221,
+   "publish_ms": 11,
+   "restore_total_ms": 16578
+  }
+ ]
+}

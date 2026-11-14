@@ -1,0 +1,32 @@
+## ripgrep
+dependency dirs: target 
+size:  target=388M
+files: 1699
+none copy_ms=8 maintenance_ms=6690 total_ms=6698 exit=0
+cp copy_ms=192 maintenance_ms=2747 total_ms=2939 exit=0
+reflink copy_ms=129 maintenance_ms=2905 total_ms=3034 exit=0
+hardlink copy_ms=34 maintenance_ms=2860 total_ms=2894 exit=0
+## t3turbo
+dependency dirs: apps/expo/node_modules apps/nextjs/node_modules apps/tanstack-start/node_modules node_modules packages/api/node_modules packages/auth/node_modules packages/db/node_modules packages/ui/node_modules packages/validators/node_modules tooling/eslint/node_modules tooling/prettier/node_modules tooling/tailwind/node_modules 
+size:  apps/expo/node_modules=21K apps/nextjs/node_modules=14K apps/tanstack-start/node_modules=16K node_modules=1.2G packages/api/node_modules=7.6K packages/auth/node_modules=11K packages/db/node_modules=9.3K packages/ui/node_modules=8.1K packages/validators/node_modules=7.4K tooling/eslint/node_modules=8.4K tooling/prettier/node_modules=5.9K tooling/tailwind/node_modules=7.6K
+files: 118857
+none copy_ms=547 maintenance_ms=5199 total_ms=5746 exit=0
+cp copy_ms=14815 maintenance_ms=1722 total_ms=16537 exit=0
+reflink copy_ms=8634 maintenance_ms=1640 total_ms=10274 exit=0
+hardlink copy_ms=3175 maintenance_ms=896 total_ms=4071 exit=0
+## fastapi
+dependency dirs: .pdm-build .pdm-build/fastapi-0.162.6.dist-info .venv .venv/bin .venv/include .venv/lib 
+size:  .pdm-build=29K .venv=487M
+files: 56751
+none copy_ms=31 maintenance_ms=1560 total_ms=1591 exit=0
+cp copy_ms=4424 maintenance_ms=809 total_ms=5233 exit=0
+reflink copy_ms=4304 maintenance_ms=303 total_ms=4607 exit=0
+hardlink copy_ms=1044 maintenance_ms=286 total_ms=1330 exit=0
+## atomic
+dependency dirs: node_modules packages/ai/dist packages/ai/node_modules packages/ai/src/providers/data packages/coding-agent/dist packages/coding-agent/node_modules target 
+size:  node_modules=479M packages/ai/dist=5.1M packages/ai/node_modules=13M packages/ai/src/providers/data=1.1M packages/coding-agent/dist=58M packages/coding-agent/node_modules=1.6M target=359M
+files: 39635
+none copy_ms=40 maintenance_ms=37985 total_ms=38025 exit=0
+cp copy_ms=2473 maintenance_ms=21166 total_ms=23639 exit=0
+reflink copy_ms=4950 maintenance_ms=23533 total_ms=28483 exit=0
+hardlink copy_ms=601 maintenance_ms=18808 total_ms=19409 exit=0

@@ -1,0 +1,16 @@
+machineA install exit=0 ms=4604
+machineA session start=1794642260390 end=1794642263144
+baseline no-session -p ms=2026
+session 01a1d903-b51e-7308-9864-f1331ee84bf1
+load 3.79 2.64 1.26 fastapi rep1
+cold start=1794642265264 firstRequest=1794642275712 end=1794642275916 ttfp_ms=10448
+warmstores start=1794642276002 firstRequest=1794642283186 end=1794642283398 ttfp_ms=7184
+reuse reset_ms=131 maintenance_ms=88 exit=0
+reuse back=20 reset_ms=47 maintenance_ms=551 exit=0
+warmlocal start=1794642284552 firstRequest=1794642290206 end=1794642290657 ttfp_ms=5654
+load 3.35 2.62 1.29 fastapi rep2
+cold start=1794642292096 firstRequest=1794642302736 end=1794642302942 ttfp_ms=10640
+warmstores start=1794642303342 firstRequest=1794642309943 end=1794642310154 ttfp_ms=6601
+reuse reset_ms=131 maintenance_ms=88 exit=0
+reuse back=20 reset_ms=47 maintenance_ms=518 exit=0
+warmlocal start=1794642311275 firstRequest=1794642315255 end=1794642315461 ttfp_ms=3980

@@ -1,0 +1,644 @@
+[
+ {
+  "project": "ripgrep",
+  "stage": "runnercold",
+  "rep": "rep1",
+  "fetch_ms": 906,
+  "reconstruct_ms": 23,
+  "materialize_ms": 43,
+  "lfs_ms": 0,
+  "verify_ms": 47,
+  "publish_ms": 4,
+  "restore_total_ms": 1023,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    1073
+   ],
+   [
+    "_-maintenance-3",
+    13186
+   ]
+  ],
+  "blueprint_total_ms": 14264,
+  "before_restore_ms": 1991,
+  "other_ms": 13455,
+  "time_to_first_prompt_ms": 28742,
+  "cache_download_ms": "3"
+ },
+ {
+  "project": "ripgrep",
+  "stage": "runnercold",
+  "rep": "rep2",
+  "fetch_ms": 997,
+  "reconstruct_ms": 24,
+  "materialize_ms": 44,
+  "lfs_ms": 0,
+  "verify_ms": 69,
+  "publish_ms": 4,
+  "restore_total_ms": 1138,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    1170
+   ],
+   [
+    "_-maintenance-3",
+    12946
+   ]
+  ],
+  "blueprint_total_ms": 14121,
+  "before_restore_ms": 2183,
+  "other_ms": 13744,
+  "time_to_first_prompt_ms": 29003,
+  "cache_download_ms": "3"
+ },
+ {
+  "project": "ripgrep",
+  "stage": "runnerstores",
+  "rep": "rerun1",
+  "fetch_ms": 890,
+  "reconstruct_ms": 29,
+  "materialize_ms": 57,
+  "lfs_ms": 0,
+  "verify_ms": 69,
+  "publish_ms": 4,
+  "restore_total_ms": 1049,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    617
+   ],
+   [
+    "_-maintenance-3",
+    14319
+   ]
+  ],
+  "blueprint_total_ms": 14941,
+  "before_restore_ms": 3597,
+  "other_ms": 5462,
+  "time_to_first_prompt_ms": 21452,
+  "stores_bytes": "20202344",
+  "cache_download_ms": "704"
+ },
+ {
+  "project": "ripgrep",
+  "stage": "runnerstores",
+  "rep": "rerun2",
+  "fetch_ms": 906,
+  "reconstruct_ms": 26,
+  "materialize_ms": 47,
+  "lfs_ms": 0,
+  "verify_ms": 51,
+  "publish_ms": 4,
+  "restore_total_ms": 1033,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    8
+   ],
+   [
+    "_-maintenance-2",
+    616
+   ],
+   [
+    "_-maintenance-3",
+    16310
+   ]
+  ],
+  "blueprint_total_ms": 16934,
+  "before_restore_ms": 3567,
+  "other_ms": 5486,
+  "time_to_first_prompt_ms": 23453,
+  "stores_bytes": "20202344",
+  "cache_download_ms": "766"
+ },
+ {
+  "project": "ripgrep",
+  "stage": "runnerfull",
+  "rep": "rerun1",
+  "fetch_ms": 836,
+  "reconstruct_ms": 26,
+  "materialize_ms": 55,
+  "lfs_ms": 0,
+  "verify_ms": 84,
+  "publish_ms": 4,
+  "restore_total_ms": 1005,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    605
+   ],
+   [
+    "_-maintenance-2",
+    295
+   ],
+   [
+    "_-maintenance-3",
+    6683
+   ]
+  ],
+  "blueprint_total_ms": 7583,
+  "before_restore_ms": 2663,
+  "other_ms": 4695,
+  "time_to_first_prompt_ms": 13283,
+  "stores_bytes": "20202344",
+  "build_bytes": "104081678",
+  "cache_download_ms": "1462"
+ },
+ {
+  "project": "ripgrep",
+  "stage": "runnerfull",
+  "rep": "rerun2",
+  "fetch_ms": 869,
+  "reconstruct_ms": 30,
+  "materialize_ms": 54,
+  "lfs_ms": 0,
+  "verify_ms": 79,
+  "publish_ms": 5,
+  "restore_total_ms": 1037,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    592
+   ],
+   [
+    "_-maintenance-2",
+    324
+   ],
+   [
+    "_-maintenance-3",
+    6129
+   ]
+  ],
+  "blueprint_total_ms": 7045,
+  "before_restore_ms": 2426,
+  "other_ms": 4312,
+  "time_to_first_prompt_ms": 12394,
+  "stores_bytes": "20202344",
+  "build_bytes": "104081678",
+  "cache_download_ms": "1434"
+ },
+ {
+  "project": "fastapi",
+  "stage": "runnercold",
+  "rep": "rep1",
+  "fetch_ms": 5197,
+  "reconstruct_ms": 35,
+  "materialize_ms": 388,
+  "lfs_ms": 0,
+  "verify_ms": 387,
+  "publish_ms": 4,
+  "restore_total_ms": 6011,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    3
+   ],
+   [
+    "_-maintenance-2",
+    4733
+   ]
+  ],
+  "blueprint_total_ms": 4736,
+  "before_restore_ms": 2150,
+  "other_ms": 13876,
+  "time_to_first_prompt_ms": 24623,
+  "cache_download_ms": "4"
+ },
+ {
+  "project": "fastapi",
+  "stage": "runnercold",
+  "rep": "rep2",
+  "fetch_ms": 5229,
+  "reconstruct_ms": 39,
+  "materialize_ms": 390,
+  "lfs_ms": 0,
+  "verify_ms": 389,
+  "publish_ms": 4,
+  "restore_total_ms": 6050,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    4762
+   ]
+  ],
+  "blueprint_total_ms": 4768,
+  "before_restore_ms": 2544,
+  "other_ms": 14197,
+  "time_to_first_prompt_ms": 25015,
+  "cache_download_ms": "3"
+ },
+ {
+  "project": "fastapi",
+  "stage": "runnerstores",
+  "rep": "rerun1",
+  "fetch_ms": 5123,
+  "reconstruct_ms": 38,
+  "materialize_ms": 412,
+  "lfs_ms": 0,
+  "verify_ms": 388,
+  "publish_ms": 5,
+  "restore_total_ms": 5966,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    5
+   ],
+   [
+    "_-maintenance-2",
+    843
+   ]
+  ],
+  "blueprint_total_ms": 848,
+  "before_restore_ms": 2082,
+  "other_ms": 4078,
+  "time_to_first_prompt_ms": 10892,
+  "stores_bytes": "259962008",
+  "cache_download_ms": "3486"
+ },
+ {
+  "project": "fastapi",
+  "stage": "runnerstores",
+  "rep": "rerun2",
+  "fetch_ms": 5083,
+  "reconstruct_ms": 39,
+  "materialize_ms": 402,
+  "lfs_ms": 0,
+  "verify_ms": 391,
+  "publish_ms": 5,
+  "restore_total_ms": 5920,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    816
+   ]
+  ],
+  "blueprint_total_ms": 822,
+  "before_restore_ms": 2176,
+  "other_ms": 4137,
+  "time_to_first_prompt_ms": 10879,
+  "stores_bytes": "259962008",
+  "cache_download_ms": "3339"
+ },
+ {
+  "project": "fastapi",
+  "stage": "runnerfull",
+  "rep": "rerun1",
+  "fetch_ms": 5168,
+  "reconstruct_ms": 38,
+  "materialize_ms": 408,
+  "lfs_ms": 0,
+  "verify_ms": 174,
+  "publish_ms": 5,
+  "restore_total_ms": 5793,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    1366
+   ],
+   [
+    "_-maintenance-2",
+    1408
+   ]
+  ],
+  "blueprint_total_ms": 2774,
+  "before_restore_ms": 2048,
+  "other_ms": 4546,
+  "time_to_first_prompt_ms": 13113,
+  "stores_bytes": "259962008",
+  "build_bytes": "169880546",
+  "cache_download_ms": "4786"
+ },
+ {
+  "project": "fastapi",
+  "stage": "runnerfull",
+  "rep": "rerun2",
+  "fetch_ms": 5115,
+  "reconstruct_ms": 37,
+  "materialize_ms": 446,
+  "lfs_ms": 0,
+  "verify_ms": 171,
+  "publish_ms": 5,
+  "restore_total_ms": 5773,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    1227
+   ],
+   [
+    "_-maintenance-2",
+    1106
+   ]
+  ],
+  "blueprint_total_ms": 2333,
+  "before_restore_ms": 2344,
+  "other_ms": 4982,
+  "time_to_first_prompt_ms": 13088,
+  "stores_bytes": "259962008",
+  "build_bytes": "169880546",
+  "cache_download_ms": "4718"
+ },
+ {
+  "project": "atomic",
+  "stage": "runnercold",
+  "rep": "rep1",
+  "fetch_ms": 14226,
+  "reconstruct_ms": 1044,
+  "materialize_ms": 1390,
+  "lfs_ms": 6641,
+  "verify_ms": 200,
+  "publish_ms": 6,
+  "restore_total_ms": 23508,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    8
+   ],
+   [
+    "_-maintenance-2",
+    10731
+   ],
+   [
+    "_-maintenance-3",
+    71005
+   ]
+  ],
+  "blueprint_total_ms": 81744,
+  "before_restore_ms": 3306,
+  "other_ms": 15110,
+  "time_to_first_prompt_ms": 120362,
+  "cache_download_ms": "4"
+ },
+ {
+  "project": "atomic",
+  "stage": "runnercold",
+  "rep": "rep2",
+  "fetch_ms": 14273,
+  "reconstruct_ms": 1049,
+  "materialize_ms": 1414,
+  "lfs_ms": 6587,
+  "verify_ms": 206,
+  "publish_ms": 6,
+  "restore_total_ms": 23535,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    7
+   ],
+   [
+    "_-maintenance-2",
+    11124
+   ],
+   [
+    "_-maintenance-3",
+    71394
+   ]
+  ],
+  "blueprint_total_ms": 82525,
+  "before_restore_ms": 2549,
+  "other_ms": 14432,
+  "time_to_first_prompt_ms": 120492,
+  "cache_download_ms": "3"
+ },
+ {
+  "project": "atomic",
+  "stage": "runnerstores",
+  "rep": "rep1",
+  "fetch_ms": 14124,
+  "reconstruct_ms": 1034,
+  "materialize_ms": 1386,
+  "lfs_ms": 6009,
+  "verify_ms": 194,
+  "publish_ms": 6,
+  "restore_total_ms": 22753,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    8763
+   ],
+   [
+    "_-maintenance-3",
+    70229
+   ]
+  ],
+  "blueprint_total_ms": 78998,
+  "before_restore_ms": 6197,
+  "other_ms": 8132,
+  "time_to_first_prompt_ms": 109883,
+  "stores_bytes": "227295181",
+  "cache_download_ms": "2273"
+ },
+ {
+  "project": "atomic",
+  "stage": "runnerstores",
+  "rep": "rep2",
+  "fetch_ms": 14262,
+  "reconstruct_ms": 1036,
+  "materialize_ms": 1388,
+  "lfs_ms": 6730,
+  "verify_ms": 196,
+  "publish_ms": 6,
+  "restore_total_ms": 23617,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    8652
+   ],
+   [
+    "_-maintenance-3",
+    68744
+   ]
+  ],
+  "blueprint_total_ms": 77402,
+  "before_restore_ms": 4535,
+  "other_ms": 6604,
+  "time_to_first_prompt_ms": 107623,
+  "stores_bytes": "227295181",
+  "cache_download_ms": "2703"
+ },
+ {
+  "project": "atomic",
+  "stage": "runnerfull",
+  "rep": "rep1",
+  "fetch_ms": 14076,
+  "reconstruct_ms": 1054,
+  "materialize_ms": 1397,
+  "lfs_ms": 5873,
+  "verify_ms": 217,
+  "publish_ms": 7,
+  "restore_total_ms": 22624,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    1830
+   ],
+   [
+    "_-maintenance-2",
+    4494
+   ],
+   [
+    "_-maintenance-3",
+    30658
+   ]
+  ],
+  "blueprint_total_ms": 36982,
+  "before_restore_ms": 2303,
+  "other_ms": 4449,
+  "time_to_first_prompt_ms": 64055,
+  "stores_bytes": "227295181",
+  "build_bytes": "244892928",
+  "cache_download_ms": "4345"
+ },
+ {
+  "project": "atomic",
+  "stage": "runnerfull",
+  "rep": "rep2",
+  "fetch_ms": 15728,
+  "reconstruct_ms": 1150,
+  "materialize_ms": 1523,
+  "lfs_ms": 7295,
+  "verify_ms": 211,
+  "publish_ms": 6,
+  "restore_total_ms": 25914,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    2125
+   ],
+   [
+    "_-maintenance-2",
+    3058
+   ],
+   [
+    "_-maintenance-3",
+    28543
+   ]
+  ],
+  "blueprint_total_ms": 33726,
+  "before_restore_ms": 5565,
+  "other_ms": 7550,
+  "time_to_first_prompt_ms": 67190,
+  "stores_bytes": "227295181",
+  "build_bytes": "244892928",
+  "cache_download_ms": "3988"
+ },
+ {
+  "project": "atomic",
+  "stage": "cold",
+  "rep": "warm",
+  "fetch_ms": 14612,
+  "reconstruct_ms": 1031,
+  "materialize_ms": 1416,
+  "lfs_ms": 6062,
+  "verify_ms": 192,
+  "publish_ms": 6,
+  "restore_total_ms": 23320,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    11081
+   ],
+   [
+    "_-maintenance-3",
+    73055
+   ]
+  ],
+  "blueprint_total_ms": 84142,
+  "before_restore_ms": 835,
+  "other_ms": 2341,
+  "time_to_first_prompt_ms": 109803
+ },
+ {
+  "project": "atomic",
+  "stage": "warmstores",
+  "rep": "warm",
+  "fetch_ms": 13848,
+  "reconstruct_ms": 1028,
+  "materialize_ms": 1471,
+  "lfs_ms": 5921,
+  "verify_ms": 197,
+  "publish_ms": 6,
+  "restore_total_ms": 22471,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    6
+   ],
+   [
+    "_-maintenance-2",
+    7817
+   ],
+   [
+    "_-maintenance-3",
+    66679
+   ]
+  ],
+  "blueprint_total_ms": 74502,
+  "before_restore_ms": 813,
+  "other_ms": 2312,
+  "time_to_first_prompt_ms": 99285
+ },
+ {
+  "project": "atomic",
+  "stage": "warmlocal",
+  "rep": "warm",
+  "fetch_ms": 15,
+  "reconstruct_ms": 13,
+  "materialize_ms": 1561,
+  "lfs_ms": 790,
+  "verify_ms": 214,
+  "publish_ms": 7,
+  "restore_total_ms": 2601,
+  "blueprint_steps": [
+   [
+    "_-maintenance-1",
+    8
+   ],
+   [
+    "_-maintenance-2",
+    7883
+   ],
+   [
+    "_-maintenance-3",
+    67735
+   ]
+  ],
+  "blueprint_total_ms": 75626,
+  "before_restore_ms": 850,
+  "other_ms": 2368,
+  "time_to_first_prompt_ms": 80595
+ }
+]
