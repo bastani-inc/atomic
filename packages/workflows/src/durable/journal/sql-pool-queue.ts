@@ -2008,7 +2008,9 @@ export class SqlPoolQueue {
 					HANDOFF_OPERATION,
 					root,
 				)
-			).map((row) => ({ ...fromRow(row), handoffs: Number(row.handoffs) })),
+			).map((row) =>
+				Number(row.handoffs) > 0 ? { ...fromRow(row), handoffs: Number(row.handoffs) } : fromRow(row),
+			),
 		);
 	}
 }
