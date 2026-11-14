@@ -17,8 +17,8 @@ import {
 } from "../src/core/resume/blueprint/barrier.ts";
 import type { BlueprintBuildOutcome } from "../src/core/resume/blueprint/build.ts";
 import { BLUEPRINT_BUILDING_CONTEXT, blueprintBuildReport } from "../src/core/resume/blueprint/resume.ts";
-import { sessionResumeOptions } from "../src/core/resume/session-resume.ts";
-import { latestResumeTimings } from "../src/core/resume/timings.ts";
+import { resumeStoreDir, sessionResumeOptions } from "../src/core/resume/session-resume.ts";
+import { latestResumeTimings, type ResumeTimings } from "../src/core/resume/timings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -54,6 +54,8 @@ afterEach(async () => {
 const markers = () => sandbox.path("markers.txt");
 /** The file the build's step waits for, so a test decides when the build ends. */
 const gate = () => sandbox.path("gate");
+/** What the agent's `bash` call saw of the variable the build's step writes to `$ENVRC`. */
+const environment = () => sandbox.path("environment.txt");
 const shellPath = (path: string) => path.replaceAll("\\", "/");
 const ran = () => (existsSync(markers()) ? readFileSync(markers(), "utf8").trim().split("\n") : []);
 
@@ -85,6 +87,7 @@ async function recordedProject(afterGate = "", gone = true, name = "repo"): Prom
 		`      echo started >> "${shellPath(markers())}"`,
 		`      while [ ! -f "${shellPath(gate())}" ]; do sleep 0.05; done`,
 		`      echo built >> "${shellPath(markers())}"`,
+		'      echo "S9_BUILT_BY=blueprint" >> "$ENVRC"',
 		...(afterGate === "" ? [] : [`      ${afterGate}`]),
 		"",
 	].join("\n");
@@ -104,7 +107,7 @@ function options(waitForBlueprint?: "prompt" | "tools"): PrepareSessionResumeOpt
 		entryPoint: "cli",
 		launchCwd: sandbox.root,
 		settings,
-		storeDir: sandbox.path("host"),
+		storeDir: resumeStoreDir(sandbox.path("agent")),
 		blueprint: {
 			agentDir: sandbox.path("agent"),
 			trusted: () => true,
@@ -134,11 +137,23 @@ function contexts(manager: SessionManager): string[] {
 
 /** An agent session on the resumed session whose model calls `bash` once and then answers. */
 async function agentCallingBash(manager: SessionManager): Promise<Harness> {
-	const harness = await createHarness({ sessionManager: manager, cwd: manager.getCwd() });
+	const harness = await createHarness({
+		sessionManager: manager,
+		cwd: manager.getCwd(),
+		storageAgentDir: sandbox.path("agent"),
+	});
 	cleanups.push(() => harness.cleanup());
 	harness.setResponses([
 		fauxAssistantMessage(
-			[fauxToolCall("bash", { command: `echo ran >> "${shellPath(markers())}"` }, { id: "b-1" })],
+			[
+				fauxToolCall(
+					"bash",
+					{
+						command: `echo ran >> "${shellPath(markers())}"; echo "$S9_BUILT_BY" > "${shellPath(environment())}"`,
+					},
+					{ id: "b-1" },
+				),
+			],
 			{
 				stopReason: "toolUse",
 			},
@@ -147,6 +162,16 @@ async function agentCallingBash(manager: SessionManager): Promise<Harness> {
 	]);
 	return harness;
 }
+
+/** The timings the host process of {@link hostSharingBuild} hands over with its settled build. */
+const HANDED_OVER_TIMINGS: ResumeTimings = {
+	version: 1,
+	startedAt: "2026-11-14T00:00:00.000Z",
+	restores: [],
+	blueprint: [{ section: "maintenance", name: "Install dependencies", ms: 900, exit: "ok" }],
+	firstPromptReadyMs: 100,
+	blueprintReadyMs: 1000,
+};
 
 /**
  * A separate process that, like the interactive host, runs a build for `sessionId` and shares it under the test's
@@ -160,7 +185,10 @@ async function hostSharingBuild(sessionId: string): Promise<ChildProcessWithoutN
 		barrier.holdToolsUntilBuilt(${JSON.stringify(sessionId)}, build.promise);
 		await barrier.shareBlueprintBuild(${JSON.stringify(sandbox.path("host"))}, ${JSON.stringify(sessionId)});
 		process.stdin.setEncoding("utf8");
-		process.stdin.once("data", (line) => build.resolve(line.trim()));
+		process.stdin.once("data", (line) => {
+			barrier.handOverBuildTimings(${JSON.stringify(sessionId)}, ${JSON.stringify(HANDED_OVER_TIMINGS)});
+			build.resolve(line.trim());
+		});
 		process.stdout.write("shared\\n");
 	`;
 	const host = spawn(process.execPath, [
@@ -234,6 +262,7 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		writeFileSync(gate(), "");
 		await run;
 		assert.deepEqual(ran(), ["started", "built", "ran"]);
+		assert.equal(readFileSync(environment(), "utf8").trim(), "blueprint", "bash sees the build's $ENVRC");
 		const report = toolResultText(harness, "b-1");
 		assert.match(report, /^<blueprint_build_finished>\nThe environment build of this resumed session has finished\./);
 		assert.match(report, /Install dependencies/);
@@ -379,7 +408,10 @@ describe("the blueprint barrier (#4748)", () => {
 
 	test("the isolated engine waits for the build its host process shares, and reads its report (#4748)", async () => {
 		const host = await hostSharingBuild("shared-session");
-		holdToolsUntilOwnerBuilt(sandbox.path("host"), host.pid!, "shared-session");
+		const recorded: ResumeTimings[] = [];
+		holdToolsUntilOwnerBuilt(sandbox.path("host"), host.pid!, "shared-session", async (timings) => {
+			recorded.push(timings);
+		});
 		let report: string | undefined | null = null;
 		const waiting = awaitBlueprintReady("shared-session").then((value) => {
 			report = value;
@@ -389,6 +421,16 @@ describe("the blueprint barrier (#4748)", () => {
 		host.stdin.write("host built\n");
 		await waiting;
 		assert.equal(report, "host built");
+		assert.deepEqual(recorded, [HANDED_OVER_TIMINGS], "the engine records the timings the host handed over");
+	});
+
+	test("an engine that starts after its host's build settled still gets the report (#4748)", async () => {
+		const host = await hostSharingBuild("settled-session");
+		host.stdin.write("built before the engine\n");
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		holdToolsUntilOwnerBuilt(sandbox.path("host"), host.pid!, "settled-session");
+		assert.equal(blueprintBuildPending("settled-session"), true);
+		assert.equal(await awaitBlueprintReady("settled-session"), "built before the engine");
 	});
 
 	test("the engine's tools are released without a report when its host exits during the build (#4748)", async () => {

@@ -35,7 +35,7 @@ import type {
 	WorktreeSnapshotSettings,
 	WorktreeUnrestored,
 } from "../worktree-snapshot/types.ts";
-import { holdToolsUntilBuilt } from "./blueprint/barrier.ts";
+import { blueprintBuildShared, handOverBuildTimings, holdToolsUntilBuilt } from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
 import {
 	BLUEPRINT_BUILDING_CONTEXT,
@@ -345,8 +345,10 @@ export async function prepareSessionResume(
 		if (atReady === undefined) return;
 		const { blueprint, blueprintReadyMs } = timings.finish();
 		const recorded = { ...atReady, blueprint, blueprintReadyMs };
-		await recordResumeTimings(session, recorded);
 		recordTimingLines(formatResumeTimings(recorded), "resume");
+		// The isolated engine has the session open by now, so it records them.
+		if (blueprintBuildShared(session.getSessionId())) handOverBuildTimings(session.getSessionId(), recorded);
+		else await recordResumeTimings(session, recorded);
 	};
 	const prepared = await timings.run(() => prepareResume(sessionManager, options, buildSettled));
 	if (prepared.status === "ready" && timings.recordedWork) {

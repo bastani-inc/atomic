@@ -338,8 +338,8 @@ export interface BashToolOptions {
 	taskOwner?: SupervisedCommandOwner;
 	/** Expose the execution-time Atomic session snapshot and PI compatibility aliases. Default: true. */
 	exposeSessionEnvironment?: boolean;
-	/** Prefix prepended to every shell command before execution. */
-	commandPrefix?: string;
+	/** Prefix prepended to every shell command before execution; read again for each command. */
+	readonly commandPrefix?: string;
 	/** Override shell executable resolution for local bash operations. */
 	shellPath?: string;
 	/** Dialect for generated internal-URL path literals. Defaults to POSIX; does not select the executable. */
@@ -435,8 +435,7 @@ export function createBashToolDefinition(
 	const defaultOps =
 		options?.operations ??
 		createLocalBashOperations({ shellPath: options?.shellPath, taskOwner: options?.taskOwner });
-	const commandPrefix = options?.commandPrefix,
-		exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
+	const exposeSessionEnvironment = options?.exposeSessionEnvironment ?? true;
 	const spawnHook = options?.spawnHook;
 	const sessionTempDirOption = options?.sessionTempDir;
 	const resolveSessionTempDir = (): string | undefined =>
@@ -502,6 +501,8 @@ export function createBashToolDefinition(
 			const strippedExpandedContext = hasExplicitCwd
 				? undefined
 				: stripLeadingCdCommand(expandedCommand, requestedCwd);
+			// Read per command: a blueprint build that ran behind the first turn writes its `$ENVRC` after the tool exists.
+			const commandPrefix = options?.commandPrefix;
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${expandedCommand}` : expandedCommand;
 			const spawnContext = resolveSpawnContext(resolvedCommand, requestedCwd, sessionEnvironment, spawnHook);
 			const strippedCdContext = strippedExpandedContext

@@ -65,11 +65,7 @@ export function _installAgentToolHooks(this: AgentSession): void {
 		// A detached call's placeholder is no result: resumeDetachedTurn finalizes its real result when it arrives.
 		if (isDetachedToolCall(this, toolCall.id)) return undefined;
 		const parentToolCallId = getParentToolCallId();
-		const replacement = withBlueprintReport(
-			toolCall.id,
-			result,
-			await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId }),
-		);
+		const replacement = await finalizeToolResult(this, { toolCall, args, result, isError, parentToolCallId });
 		if (parentToolCallId) return replacement;
 		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
 		else this._terminatingToolCallIds.delete(toolCall.id);
@@ -135,10 +131,19 @@ export interface ToolResultToFinalize {
 
 /**
  * What a tool result becomes before it enters history, whether its call ran inline or detached: extension
- * `tool_result` handlers, image normalization, then the oversized-output spill. Returns the replacement for the
- * result, or `undefined` when it enters history as reported.
+ * `tool_result` handlers, image normalization, then the oversized-output spill, with the report of a blueprint build
+ * the call waited for in front. Returns the replacement for the result, or `undefined` when it enters history as
+ * reported.
  */
 export async function finalizeToolResult(
+	session: AgentSession,
+	toFinalize: ToolResultToFinalize,
+): Promise<AfterToolCallResult | undefined> {
+	const replacement = await finalizeReportedResult(session, toFinalize);
+	return withBlueprintReport(toFinalize.toolCall.id, toFinalize.result, replacement);
+}
+
+async function finalizeReportedResult(
 	session: AgentSession,
 	{ toolCall, args, result, isError, parentToolCallId, releasedStage }: ToolResultToFinalize,
 ): Promise<AfterToolCallResult | undefined> {

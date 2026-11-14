@@ -64,6 +64,7 @@ import { formatBorrowedExtensionSourceTrustPrompt, resolveProjectTrusted } from 
 import { holdToolsUntilOwnerBuilt, shareBlueprintBuild } from "./core/resume/blueprint/barrier.ts";
 import { resumeFailureMessage } from "./core/resume/failure.ts";
 import { type ResumeNotice, resumeStoreDir } from "./core/resume/session-resume.ts";
+import { recordResumeTimings } from "./core/resume/timings.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
@@ -668,7 +669,13 @@ export async function main(argv: string[], options?: MainOptions) {
 		worktreeRestoreDiagnostics = opened.notices;
 		// The host that started this engine may still be building the resumed session's blueprints.
 		if (engineEnv.child === "1" && engineEnv.hostPid !== undefined) {
-			holdToolsUntilOwnerBuilt(resumeStoreDir(agentDir), Number(engineEnv.hostPid), sessionManager.getSessionId());
+			const resumed = sessionManager;
+			holdToolsUntilOwnerBuilt(
+				resumeStoreDir(agentDir),
+				Number(engineEnv.hostPid),
+				resumed.getSessionId(),
+				(timings) => recordResumeTimings(resumed, timings),
+			);
 		}
 	} catch (error) {
 		const message = resumeFailureMessage(error);
