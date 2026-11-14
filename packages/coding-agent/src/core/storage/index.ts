@@ -2,6 +2,7 @@ export type { SnapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotIndexTables } from "../worktree-snapshot/blob-store.ts";
 export type { SnapshotBlob, SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 export type {
+	FencedPathId,
 	SqliteBatchOptions,
 	SqliteDatabase,
 	SqliteExecutor,
@@ -11,10 +12,14 @@ export type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	TransactionConcurrency,
 } from "./database.js";
+export * from "./dialect.js";
 export * from "./errors.js";
+export * from "./fenced-paths.js";
 export * from "./journal-adoption.js";
 export * from "./journal-catalog.js";
+export * from "./migrations.js";
 export {
 	DEFAULT_GROUP_COMMIT_HOLD_MS,
 	getWriterQueueDegradation,

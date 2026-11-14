@@ -69,10 +69,13 @@ interface Stream {
  * fails with `STREAM_EXPIRED` and the stream's open transaction rolls back. `result-error`: each of its requests
  * answers this error, and the stream's open transaction rolls back, as sqld rolls back a transaction it times out.
  * `reset-before` / `reset-after`: the connection is reset before the request runs, or after it ran and committed.
- * `closed-before`: the connection is closed without an answer before the request runs.
+ * `closed-before`: the connection is closed without an answer before the request runs. `busy`: the request's first
+ * statement fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
+ * a batch runs as its conditions say.
  */
 export type FakeLibsqlFault =
 	| { readonly kind: "expired" }
+	| { readonly kind: "busy" }
 	| { readonly kind: "result-error"; readonly code: string }
 	| { readonly kind: "reset-before" }
 	| { readonly kind: "reset-after" }
@@ -185,7 +188,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		for (const stream of streams.values()) if (now - stream.lastActive > ttlMs) expire(stream);
 	};
 
+	let busy = false;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
+		if (busy) {
+			busy = false;
+			throw Object.assign(new Error("database is locked"), { errstr: "busy" });
+		}
 		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
 		if (sql === undefined) throw Object.assign(new Error("SQL text not found"), { errstr: "error" });
 		const statement = database.prepare(sql);
@@ -252,6 +260,10 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 				return { type: "batch", result: { step_results: results, step_errors: errors } };
 			}
 			case "sequence":
+				if (busy) {
+					busy = false;
+					throw Object.assign(new Error("database is locked"), { errstr: "busy" });
+				}
 				database.exec(request.sql ?? stream.sqls.get(request.sql_id ?? -1) ?? "");
 				return { type: "sequence" };
 			case "store_sql":
@@ -316,6 +328,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 				? { message: `Transaction failed (${fault.code})`, code: fault.code }
 				: undefined;
 		if (timedOut !== undefined) rollBack(stream);
+		busy = fault?.kind === "busy";
 		const results = body.requests.map((each) => {
 			if (timedOut !== undefined && each.type === "batch") {
 				// As sqld answers a batch whose first step failed: the steps conditioned on it never ran.

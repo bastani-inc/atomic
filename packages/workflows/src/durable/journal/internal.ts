@@ -45,7 +45,8 @@ export const NON_SNAPSHOT_EVENT_TYPES = [
 
 /** Lets a durable backend re-read only the runs that changed. */
 export interface RunJournalVersions {
-	changeToken(): Promise<string>;
+	/** Undefined when the journal cannot tell that nothing changed; every run's version is then compared. */
+	changeToken(): Promise<string | undefined>;
 	runVersions(): Promise<ReadonlyMap<string, RunVersion>>;
 	snapshotTail(runId: string): Promise<RunSnapshotTail | undefined>;
 }

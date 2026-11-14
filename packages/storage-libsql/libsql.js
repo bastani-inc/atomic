@@ -128,6 +128,40 @@ function driverResult(result) {
 const FILE_BUSY_TIMEOUT_MS = 5000;
 
 /**
+ * How long a call to a libSQL server runs again while the server answers it `SQLITE_BUSY`. sqld answers a writer that
+ * meets its checkpoint `SQLITE_BUSY` at once, without waiting and without running any of the call, and leaves the
+ * waiting to the client; its own checkpoint waits this long for the lock.
+ */
+const SERVER_BUSY_TIMEOUT_MS = 5000;
+/** The first wait before a call a libSQL server answered busy runs again; each later wait doubles, up to the last. */
+const SERVER_BUSY_FIRST_WAIT_MS = 10;
+const SERVER_BUSY_LAST_WAIT_MS = 200;
+
+/**
+ * Runs `operation` again, with growing waits, while it fails with `SQLITE_BUSY` and `ranNothing` says the failed run
+ * ran nothing, until `SERVER_BUSY_TIMEOUT_MS` has passed; then it fails with the last run's failure. `prepare` runs
+ * before each run after the first.
+ * @template T
+ * @param {() => Promise<T>} operation
+ * @param {() => boolean} ranNothing
+ * @param {() => Promise<void>} [prepare]
+ * @returns {Promise<T>}
+ */
+async function whileServerBusy(operation, ranNothing, prepare) {
+	const deadline = performance.now() + SERVER_BUSY_TIMEOUT_MS;
+	for (let wait = SERVER_BUSY_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, SERVER_BUSY_LAST_WAIT_MS)) {
+		try {
+			return await operation();
+		} catch (error) {
+			const left = deadline - performance.now();
+			if (!isBusy(error) || !ranNothing() || left <= 0) throw error;
+			await new Promise((resolve) => setTimeout(resolve, Math.min(wait, left)));
+			await prepare?.();
+		}
+	}
+}
+
+/**
  * Whether a driver call failed because another connection held a lock past the busy timeout.
  * @param {unknown} error
  */
@@ -194,10 +228,6 @@ async function collectAndFinalize() {
  */
 const MAX_IN_FLIGHT_WRITES = 4;
 
-/** The first bound on the wait before a server transaction whose lock was busy begins again; each later one doubles. */
-const BEGIN_RETRY_BASE_MS = 20;
-/** The largest bound on that wait. */
-const BEGIN_RETRY_MAX_MS = 1000;
 /** Write batches in a row a server left unanswered, after which its writes count as stalled. */
 const STALLED_WRITES_WARNING_AFTER = 3;
 /**
@@ -413,6 +443,8 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 	};
 	/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
 	const waitForLock = async (operation) => {
+		// A server answers busy before it runs anything of one statement or a batch.
+		if (!local) return whileServerBusy(() => watch(operation), () => true);
 		/** @type {bigint | number | undefined} */
 		let version;
 		for (;;) {
@@ -478,39 +510,23 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 				);
 			return options?.priority === true ? sent() : limitedWrite(sent);
 		},
-		async beginTransaction(options) {
-			let transaction = await waitForLock(async () => (await connection()).transaction("write"));
-			if (local)
-				return {
-					...statements(async () => transaction, watch),
-					commit: () => watch(() => transaction.commit()),
-					rollback: () => watch(() => transaction.rollback()),
-					close: () => transaction.close(),
-				};
-			// A server's transaction takes the write lock with its first statement (`BEGIN IMMEDIATE` goes with it). One
-			// that found the lock busy wrote nothing and ran nothing of the caller's, so it begins again and sends that
-			// statement again, after a random wait, for up to the caller's `lockWaitMs` (#4768): the caller only waits.
-			let begun = false;
-			const deadline = Date.now() + (options?.lockWaitMs ?? 0);
+		async beginTransaction() {
+			const begin = async () => (await connection()).transaction("write");
+			let transaction = await waitForLock(begin);
+			// A server's transaction sends its `BEGIN IMMEDIATE` with its first statement. A server that answers that busy
+			// fails the statement and the client closes the transaction, having run nothing of it, so the statement runs
+			// again in a new transaction. A busy answer after the transaction began leaves it open and is not run again.
 			/** @type {<T>(operation: () => Promise<T>) => Promise<T>} */
-			const first = async (operation) => {
-				if (begun) return watch(operation);
-				for (let attempt = 0; ; attempt++) {
-					try {
-						const result = await watch(operation);
-						begun = true;
-						return result;
-					} catch (error) {
-						if (!isLockBusy(error) || Date.now() >= deadline) throw error;
-					}
-					transaction.close();
-					const bound = Math.min(BEGIN_RETRY_MAX_MS, BEGIN_RETRY_BASE_MS * 2 ** Math.min(attempt, 16));
-					await new Promise((resolve) => setTimeout(resolve, Math.random() * bound));
-					transaction = await (await connection()).transaction("write");
-				}
-			};
+			const inTransaction = (operation) =>
+				whileServerBusy(
+					() => watch(operation),
+					() => transaction.closed,
+					async () => {
+						transaction = await watch(begin);
+					},
+				);
 			return {
-				...statements(async () => transaction, first),
+				...statements(async () => transaction, inTransaction, inTransaction),
 				commit: () => watch(() => transaction.commit()),
 				rollback: () => watch(() => transaction.rollback()),
 				close: () => transaction.close(),
