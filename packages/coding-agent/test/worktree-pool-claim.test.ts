@@ -187,11 +187,11 @@ describe("claiming an idle pooled worktree on resume (#4748)", () => {
 		assert.equal(record.releasedAt, null);
 		assert.equal(record.resetting, undefined);
 		assert.equal(existsSync(slot(b, 1)), false);
-		const timings = latestResumeTimings(prepared.sessionManager);
-		assert.deepEqual(
-			timings?.restores.map((restore) => restore.mode),
-			["claimed"],
-		);
+		const [restore] = latestResumeTimings(prepared.sessionManager)?.restores ?? [];
+		assert.equal(restore?.mode, "claimed");
+		assert.deepEqual(Object.keys(restore?.phases ?? {}).sort(), ["fetch", "materialize", "reconstruct", "verify"]);
+		// The slot keeps the remotes its restore configured, so `git fetch` and `git push` still work there.
+		assert.equal(await sandbox.git(root, "remote", "get-url", "origin"), sandbox.path("repo.git"));
 	});
 
 	test("the previous owner of a claimed slot restores fresh on its next resume and loses nothing (#4748)", async () => {
@@ -417,6 +417,38 @@ describe("claim candidates and failures (#4748)", () => {
 		assert.equal(readFileSync(join(slot(a, 2), "file.txt"), "utf8"), "A\n");
 	});
 
+	test("a claim of a snapshot with Git LFS files downloads what it can and reports what it cannot (#4748)", async () => {
+		await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
+		const { clone } = await sandbox.remoteWithClone("repo", {
+			".gitattributes": "*.bin filter=lfs -text\n",
+			"data.bin": "LFS-CONTENT-1\n",
+			"model.bin": "LFS-MODEL-1\n",
+		});
+		await sandbox.git(clone, "lfs", "push", "--all", "origin");
+		sandbox.write(join(clone, "file.txt"), "A\n");
+		const a = await capture(clone);
+		// B also changes model.bin, whose new content was never pushed.
+		sandbox.write(join(clone, "file.txt"), "B\n");
+		sandbox.write(join(clone, "model.bin"), "LFS-MODEL-2\n");
+		const b = await capture(clone);
+		renameSync(clone, sandbox.path("repo-away"));
+		await idleSlotOfX(a, clone);
+		assert.equal(readFileSync(join(slot(a, 0), "data.bin"), "utf8"), "LFS-CONTENT-1\n");
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+
+		assert.equal(claim.claimed, true);
+		if (!claim.claimed) return;
+		await releaseRestoredWorktree(claim.lease);
+		assert.deepEqual(
+			claim.warnings.map((warning) => warning.code),
+			["lfs-objects-unavailable", "filters"],
+		);
+		assert.deepEqual(claim.warnings[0], { code: "lfs-objects-unavailable", paths: ["model.bin"] });
+		assert.equal(readFileSync(join(slot(a, 0), "data.bin"), "utf8"), "LFS-CONTENT-1\n");
+		assert.equal(readFileSync(join(slot(a, 0), "file.txt"), "utf8"), "B\n");
+	});
+
 	test("a slot another process leases is busy (#4748)", async () => {
 		const { a, b, clone } = await twoSnapshots();
 		await idleSlotOfX(a, clone);
@@ -571,6 +603,7 @@ describe("pooled resume edges (#4748)", () => {
 		await releaseSessionWorktrees(x);
 		// An unpooled resume, as for workflow runs, compares the slot without holding it.
 		assert.equal((await resumeSessionWorktree(x, { settings, storeDir: storeDir() })).status, "verified");
+		opened.push((await openSessionInWorktree(x, { settings, storeDir: storeDir() })).sessionManager);
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(a, 0)), {
 			owner: { kind: "session", id: x.getSessionId() },
 			held: false,
