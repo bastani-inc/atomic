@@ -23,6 +23,7 @@ import {
 	SqlSharedPool,
 	STAGE_INPUT_PROMPT_ANSWER,
 	type StageInputLease,
+	WORKER_HOST_TTL_MS,
 } from "../durable/journal/sql-shared-pool.js";
 import {
 	type IntercomMessageInput,
@@ -221,8 +222,6 @@ export const STAGE_INPUT_RECEIPT_TIMEOUT_MS = 60_000;
  * the wait doubles from {@link SHARED_POLL_MS} up to this, so a stage that starts slowly costs few journal writes.
  */
 export const STAGE_INPUT_RETRY_MAX_MS = 4_000;
-/** A registered worker host counts as live this long after its last report. */
-export const WORKER_HOST_TTL_MS = 15_000;
 /** Workers that may crash without work, in a row, before the pool fails. */
 const MAX_WORKER_REPLACEMENTS = 3;
 /**

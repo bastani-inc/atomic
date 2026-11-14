@@ -31,6 +31,7 @@ test("a shared pool's status reads as lines of queue depth, hosts and leases (#4
 			completed: 3,
 			failed: 0,
 			pendingStageInputs: 1,
+			fleet: { store: { state: "ok" } },
 			hosts: [
 				{
 					host: "host-b",
@@ -41,6 +42,7 @@ test("a shared pool's status reads as lines of queue depth, hosts and leases (#4
 					maxWorkers: 4,
 					roots: ["root"],
 					heartbeatAgoMs: 300,
+					state: "live",
 					leased: 1,
 				},
 				{
@@ -52,6 +54,7 @@ test("a shared pool's status reads as lines of queue depth, hosts and leases (#4
 					maxWorkers: 1,
 					roots: ["root"],
 					heartbeatAgoMs: 1_250,
+					state: "live",
 					leased: 0,
 				},
 			],
@@ -79,8 +82,8 @@ test("a shared pool's status reads as lines of queue depth, hosts and leases (#4
 	});
 	assert.deepEqual(lines, [
 		"2 ready · 1 leased · 3 completed · 0 failed · 1 stage input waiting",
-		"host host-b: 2 of 4 workers, 1 lease, git system, restores, seen 0.3s ago",
-		"host host-c: 1 of 1 workers, 0 leases, git unavailable, seen 1.3s ago",
+		"host host-b: live, 2 of 4 workers, 1 lease, git system, restores, seen 0.3s ago",
+		"host host-c: live, 1 of 1 workers, 0 leases, git unavailable, seen 1.3s ago",
 		"child child-1 on host host-b: renewed 0.4s ago, expires in 29.6s",
 		"child child-2 on the root's host: renewed 0.0s ago, expires in 1.0s",
 	]);
@@ -95,6 +98,7 @@ test("a shared pool's status reads as lines of queue depth, hosts and leases (#4
 			completed: 0,
 			failed: 0,
 			pendingStageInputs: 2,
+			fleet: { store: { state: "ok" } },
 			hosts: [],
 			leases: [],
 		},
@@ -172,6 +176,7 @@ test("workflow status shows a shared root's pool under its run detail, and nothi
 		completed: 1,
 		failed: 2,
 		pendingStageInputs: 0,
+		fleet: { store: { state: "ok" } },
 		hosts: [],
 		leases: [
 			{

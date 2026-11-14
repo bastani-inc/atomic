@@ -1,11 +1,15 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { sqlPoolWrites } from "../durable/journal/internal.js";
 import { JournalDurableBackend } from "../durable/journal/journal-backend.js";
+import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
 import { readSharedPoolStats } from "../durable/journal/sql-shared-pool.js";
 import type { SharedPoolStatus } from "./shared-pool-status-lines.js";
 
 /**
  * The shared pool of root `runId` as workflow status shows it, when the root runs its pool on a shared journal; nothing
- * for any other run. A pool whose tables cannot be read is reported with the error that stopped the read.
+ * for any other run. A pool whose tables cannot be read, or that does not answer within the status budget, is reported
+ * with the store's state (degraded when the read ran out of time or one of this process's writes waits too long),
+ * what stopped the read, and a hint for a store that stopped taking writes: status never waits on it.
  */
 export async function sharedPoolStatus(
 	backend: DurableWorkflowBackend | undefined,
@@ -14,10 +18,21 @@ export async function sharedPoolStatus(
 	if (!(backend instanceof JournalDurableBackend)) return undefined;
 	if (backend.getWorkflow(runId)?.resources?.workers?.placement !== "shared") return undefined;
 	try {
-		const stats = await readSharedPoolStats(backend.journal, runId);
+		const stats = await withinStatusBudget(readSharedPoolStats(backend.journal, runId));
 		return stats === undefined ? undefined : { sharedPool: stats };
 	} catch (error) {
-		const failure = error instanceof Error ? error : new Error(String(error));
-		return { sharedPoolUnavailable: { name: failure.name, message: failure.message } };
+		const store = classifySharedStoreHealth({
+			...(sqlPoolWrites(backend.journal) === undefined ? {} : { writes: sqlPoolWrites(backend.journal) }),
+			hostsRegistered: false,
+			readFailure: error as Error,
+		});
+		return {
+			sharedPoolUnavailable: {
+				name: (error as Error).name,
+				state: store.state,
+				message: store.message!,
+				...(store.hint === undefined ? {} : { hint: store.hint }),
+			},
+		};
 	}
 }

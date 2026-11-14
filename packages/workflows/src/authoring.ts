@@ -636,9 +636,17 @@ export {
 export declare function loadWorkerWorkflow(path: string, exportName?: string): Promise<AnyWorkflowDefinition>;
 export * from "./durable/fork-errors.js";
 export type {
+	SharedPoolFailure,
 	SharedPoolFleet,
+	SharedPoolFleetController,
+	SharedPoolFleetStatus,
 	SharedPoolHost,
+	SharedPoolHostReport,
+	SharedPoolHostState,
+	SharedPoolRateLimit,
+	SharedPoolScaleEvent,
 	SharedPoolStats,
+	SharedStoreHealth,
 	WorkerHostGitSource,
 } from "./durable/journal/shared-pool-types.js";
 export {
@@ -733,13 +741,22 @@ export declare function startWorkflowWorkerHost(
 	options: import("./workers/worker-host-types.js").WorkflowWorkerHostOptions,
 ): Promise<import("./workers/worker-host-types.js").WorkflowWorkerHost>;
 /**
- * The worker hosts registered in a shared journal and the pool stats of the running or paused roots they serve
- * (#4768). Default journal: the one this machine selects for workflow runs.
+ * The worker hosts registered in a shared journal and the pool stats of the running or paused roots they serve, with the
+ * fleet's queue and the shared store's state (#4768). Default journal: the one this machine selects for workflow runs.
+ * Setup problems reject; a store that cannot be read, or does not answer within 5 s, resolves with `fleet.store.state`
+ * `"unknown"` instead.
  */
 export declare function readWorkflowWorkerFleet(options?: {
 	readonly journal?: import("./workers/worker-host-types.js").SharedJournalSelection;
 	readonly agentDir?: string;
 }): Promise<import("./durable/journal/shared-pool-types.js").SharedPoolFleet>;
+/**
+ * A fleet that {@link readWorkflowWorkerFleet} read, as `atomic worker status` prints it (#4768): the shared store when
+ * it is not ok, with a hint to recover it, the fleet's queue, each host with its state, and each root's queue.
+ */
+export declare function workflowWorkerFleetLines(
+	fleet: import("./durable/journal/shared-pool-types.js").SharedPoolFleet,
+): string[];
 export type {
 	ProvisionedHost,
 	WorkerFleetPolicyOptions,

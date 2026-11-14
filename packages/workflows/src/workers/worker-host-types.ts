@@ -104,7 +104,12 @@ export interface WorkflowWorkerHostStats {
 	/** Workers this host runs now, and how many of them run a child. */
 	readonly workers: number;
 	readonly busy: number;
-	/** Queue depth, per-host workers and lease ages of each root this host serves. */
+	/** Whether the host takes no more work and stops once its running children finish (#4768). */
+	readonly draining: boolean;
+	/**
+	 * Queue depth, per-host workers and lease ages of each root this host serves, with the fleet's state: every
+	 * registered host's slots, busy workers, draining, heartbeat and state, the fleet's queue and the shared store's.
+	 */
 	readonly roots: readonly SharedPoolStats[];
 	/** The last placement failure (a `prefer` or `restore` that failed), and why this host last stopped serving a root. */
 	readonly lastPlacementFailure?: WorkerHostFailure;
