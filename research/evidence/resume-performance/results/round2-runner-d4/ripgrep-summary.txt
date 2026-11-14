@@ -1,0 +1,21 @@
+machineA install exit=0 ms=13916
+machineA session start=1794642186401 end=1794642189040
+baseline no-session -p ms=2245
+session 01a1d902-93d3-709d-8b83-3406a05353a4
+pack stores bytes=20202344 tar_ms=181 upload_ms=367 paths=. 
+pack jiti bytes=1597577 tar_ms=47 upload_ms=93 paths=. 
+pack build bytes=104081678 tar_ms=881 upload_ms=2048 paths=target 
+load 2.26 1.47 0.66 ripgrep rep1
+runnercold start=1794642199024 firstRequest=1794642227766 end=1794642228023 ttfp_ms=28742  cache_download_ms=3
+runnerstores start=1794642231829 firstRequest=1794642250645 end=1794642250866 ttfp_ms=18816 stores_bytes=20202344 jiti_bytes=1597577 cache_download_ms=570
+runnerfull start=1794642255310 firstRequest=1794642274378 end=1794642274601 ttfp_ms=19068 stores_bytes=20202344 jiti_bytes=1597577 build_bytes=104081678 cache_download_ms=1174
+load 2.76 1.80 0.85 ripgrep rep2
+runnercold start=1794642278267 firstRequest=1794642307270 end=1794642307525 ttfp_ms=29003  cache_download_ms=3
+runnerstores start=1794642311731 firstRequest=1794642330715 end=1794642330953 ttfp_ms=18984 stores_bytes=20202344 jiti_bytes=1597577 cache_download_ms=575
+runnerfull start=1794642336053 firstRequest=1794642355081 end=1794642355328 ttfp_ms=19028 stores_bytes=20202344 jiti_bytes=1597577 build_bytes=104081678 cache_download_ms=1481
+load 3.26 3.25 2.37 ripgrep rerun rep1
+runnerstores start=1794643288157 firstRequest=1794643309609 end=1794643309859 ttfp_ms=21452 stores_bytes=20202344 jiti_bytes=1597577 cache_download_ms=704
+runnerfull start=1794643315038 firstRequest=1794643328321 end=1794643328585 ttfp_ms=13283 stores_bytes=20202344 jiti_bytes=1597577 build_bytes=104081678 cache_download_ms=1462
+load 3.87 3.40 2.46 ripgrep rerun rep2
+runnerstores start=1794643332433 firstRequest=1794643355886 end=1794643356137 ttfp_ms=23453 stores_bytes=20202344 jiti_bytes=1597577 cache_download_ms=766
+runnerfull start=1794643359957 firstRequest=1794643372351 end=1794643372603 ttfp_ms=12394 stores_bytes=20202344 jiti_bytes=1597577 build_bytes=104081678 cache_download_ms=1434

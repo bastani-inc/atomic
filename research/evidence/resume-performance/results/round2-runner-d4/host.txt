@@ -1,0 +1,7 @@
+CPU(s):                                  4
+Model name:                              INTEL(R) XEON(R) PLATINUM 8573C
+CPU(s) scaling MHz:                      134%
+Mem:              15           0           8           0           6          14
+ext4   /dev/sda1
+git version 2.56.1
+b2b49c6bb6457cd636ba175023c466bf321b5d1e

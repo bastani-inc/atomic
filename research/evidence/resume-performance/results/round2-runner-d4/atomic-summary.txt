@@ -1,0 +1,21 @@
+machineA install exit=0 ms=86368
+machineA session start=1794642605218 end=1794642611055
+baseline no-session -p ms=2272
+session 01a1d908-f7c0-7e4f-b738-6121d5b5a9ee
+pack stores bytes=227295181 tar_ms=752 upload_ms=3150 paths=.
+pack jiti bytes=1597577 tar_ms=50 upload_ms=110 paths=.
+pack build bytes=244892928 tar_ms=2216 upload_ms=3534 paths=node_modules packages/ai/dist packages/ai/node_modules packages/ai/src/providers/data packages/coding-agent/dist packages/coding-agent/node_modules target
+load 2.32 2.22 1.35 atomic rep1
+runnercold start=1794642625364 firstRequest=1794642745726 end=1794642746146 ttfp_ms=120362  cache_download_ms=4
+runnerstores start=1794642750391 firstRequest=1794642860274 end=1794642860534 ttfp_ms=109883 stores_bytes=227295181 jiti_bytes=1597577 cache_download_ms=2273
+runnerfull start=1794642867261 firstRequest=1794642931316 end=1794642931591 ttfp_ms=64055 stores_bytes=227295181 jiti_bytes=1597577 build_bytes=244892928 cache_download_ms=4345
+load 4.85 3.11 1.94 atomic rep2
+runnercold start=1794642935052 firstRequest=1794643055544 end=1794643055976 ttfp_ms=120492  cache_download_ms=3
+runnerstores start=1794643062273 firstRequest=1794643169896 end=1794643170143 ttfp_ms=107623 stores_bytes=227295181 jiti_bytes=1597577 cache_download_ms=2703
+runnerfull start=1794643178082 firstRequest=1794643245272 end=1794643245539 ttfp_ms=67190 stores_bytes=227295181 jiti_bytes=1597577 build_bytes=244892928 cache_download_ms=3988
+load 2.64 3.16 2.50 atomic warm vm
+cold start=1794643460798 firstRequest=1794643570601 end=1794643570708 ttfp_ms=109803
+warmstores start=1794643570818 firstRequest=1794643670103 end=1794643670355 ttfp_ms=99285
+reuse reset_ms=115 maintenance_ms=26027 exit=0
+reuse back=20 reset_ms=207 maintenance_ms=13754 exit=0
+warmlocal start=1794643711677 firstRequest=1794643792272 end=1794643792507 ttfp_ms=80595

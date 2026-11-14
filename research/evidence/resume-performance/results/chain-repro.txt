@@ -1,0 +1,32 @@
+Restored worktrees have no remotes (filed as bastani-inc/atomic#4732; being fixed separately)
+
+Capture (SDK captureWorktreeSnapshot, no blob store) in the worktree that the cold resume restored,
+compared with the original checkout on machine A:
+
+ripgrep restored: 2304 commits look unpushed (`git rev-list HEAD --not --remotes`)
+{"ms":422,"status":"captured","remotes":[],"bundle":{"bytes":5723095,"commits":2304},"omitted":[]}
+ripgrep original:
+{"ms":176,"status":"captured","remotes":["https://github.com/BurntSushi/ripgrep.git"],"bundle":null,"omitted":[]}
+fastapi restored: 8065 commits look unpushed
+{"ms":668,"status":"captured","remotes":[],"bundle":null,"omitted":[["unpushed-history-denied",1]]}
+fastapi original:
+{"ms":830,"status":"captured","remotes":["https://github.com/fastapi/fastapi.git"],"bundle":null,"omitted":[]}
+atomic restored: 8953 commits look unpushed
+{"ms":3517,"status":"captured","remotes":[],"bundle":null,"omitted":[["bundle-over-cap",1]]}
+
+(The "atomic original" capture of work.away listed 5191 over-snapshot-cap omissions because that checkout was made with
+`cp -a`: every tracked file is stat-dirty in the copied index; see git-micro.txt.)
+
+Session entries on machine B after one more turn there (ripgrep):
+9  worktree_snapshot root=.../runs/ripgrep/work remotes=['https://github.com/BurntSushi/ripgrep.git'] bundle=None
+22 worktree_snapshot root=.../worktree-snapshots/worktrees/60770e2a77cb-71c0add5 remotes=[] bundle=5723095 bytes
+
+Third machine (fastapi), B's worktree moved out of the way:
+Error: Worktree drifted from its recorded snapshot: .../homeB/.atomic/agent/worktree-snapshots/worktrees/6f63236ca789-666a5ead
+has tree none at no HEAD, expected ae5ac3c5f15d133453dc7a91a2892d642628fb39 at 7030191986461b9e5192d29489a05f15f7f79707,
+and the automatic restore failed: Cannot restore snapshot ba7a4247daaa94411f205d8d71adc605: commit
+7030191986461b9e5192d29489a05f15f7f79707 is not on no recorded remote and its unpushed history touches denied paths .env
+(tree-drift). Push commit 7030191986461b9e5192d29489a05f15f7f79707 (with its history) to a recorded remote, then retry.
+Commits 618be44023388e85843c0cf09656cea0141e301c add or change denied paths .env, so pushing publishes those files.
+
+The commit is on github.com/fastapi/fastapi (a public, fully pushed repository).

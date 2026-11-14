@@ -1,0 +1,16 @@
+machineA install exit=0 ms=7385
+machineA session start=1794642177166 end=1794642179457
+baseline no-session -p ms=1976
+session 01a1d902-6f48-7846-93c2-9f7699a96a51
+load 2.72 2.19 0.99 ripgrep rep1
+cold start=1794642181528 firstRequest=1794642191579 end=1794642191781 ttfp_ms=10051
+warmstores start=1794642191870 firstRequest=1794642201144 end=1794642201401 ttfp_ms=9274
+reuse reset_ms=37 maintenance_ms=550 exit=0
+reuse back=20 reset_ms=200 maintenance_ms=7022 exit=0
+warmlocal start=1794642209615 firstRequest=1794642218565 end=1794642218773 ttfp_ms=8950
+load 3.22 2.39 1.11 ripgrep rep2
+cold start=1794642219000 firstRequest=1794642229146 end=1794642229360 ttfp_ms=10146
+warmstores start=1794642229513 firstRequest=1794642239186 end=1794642239395 ttfp_ms=9673
+reuse reset_ms=17 maintenance_ms=511 exit=0
+reuse back=20 reset_ms=19 maintenance_ms=6471 exit=0
+warmlocal start=1794642246629 firstRequest=1794642255414 end=1794642255624 ttfp_ms=8785

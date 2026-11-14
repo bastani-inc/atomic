@@ -1,0 +1,8 @@
+# A worktree over a depth-1 store (fastapi 7030191, pushed ref refs/remotes/atomic/pushed/<head> as a restore records it),
+# one new commit on top, then what a later capture and a later restore do with it. Idle D16ds_v5, Git 2.56.1.
+unpushed: 1                                      # rev-list HEAD --not --remotes: only the new commit
+bundle ok 288                                    # bundle create HEAD --not --remotes: 288 bytes, prerequisite = pushed head
+import into another shallow store ok             # fetch of that bundle into a second depth-1 store of the same commit
+ancestry ok                                      # merge-base --is-ancestor <pushed head> <new head> inside the shallow history
+# An ancestry question that crosses the shallow boundary (an older recorded HEAD) is not answerable without
+# `fetch --unshallow` / `--deepen`: the shallow fetch slice keeps the full fetch as its fallback for exactly that.

@@ -1,0 +1,15 @@
+atomic tracked=7676
+today      492
+persistent first=449 then 35
++untracked first=744 then 36
+today after git status 64
+fastapi tracked=3242
+today      107
+persistent first=147 then 22
++untracked first=131 then 21
+today after git status 24
+ripgrep tracked=226
+today      29
+persistent first=39 then 38
++untracked first=19 then 9
+today after git status 10

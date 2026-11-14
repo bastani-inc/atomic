@@ -1,0 +1,12 @@
+ripgrep dirs: target archive=104079199
+ripgrep none extract_ms=2 maintenance_ms=6855 exit=0
+ripgrep same extract_ms=485 maintenance_ms=745 exit=0
+ripgrep other extract_ms=482 maintenance_ms=3309 exit=0
+fastapi dirs: .pdm-build .venv archive=169877434
+fastapi none extract_ms=2 maintenance_ms=673 exit=0
+fastapi same extract_ms=1396 maintenance_ms=365 exit=0
+fastapi other extract_ms=961 maintenance_ms=364 exit=0
+atomic dirs: node_modules packages/ai/dist packages/ai/node_modules packages/ai/src/providers/data packages/coding-agent/dist packages/coding-agent/node_modules target archive=244762727
+atomic none extract_ms=1 maintenance_ms=36354 exit=0
+atomic same extract_ms=1603 maintenance_ms=17207 exit=0
+atomic other extract_ms=1577 maintenance_ms=16494 exit=0

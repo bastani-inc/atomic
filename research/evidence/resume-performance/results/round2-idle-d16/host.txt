@@ -1,0 +1,11 @@
+CPU(s):                                  16
+Model name:                              INTEL(R) XEON(R) PLATINUM 8573C
+CPU(s) scaling MHz:                      59%
+Mem:              62           1          43           0          18          61
+ext4   /dev/sda1
+PRETTY_NAME="Ubuntu 24.04.5 LTS"
+7.0.0-1017-azure
+git version 2.56.1
+v24.22.0
+11.19.1
+b2b49c6bb6457cd636ba175023c466bf321b5d1e
