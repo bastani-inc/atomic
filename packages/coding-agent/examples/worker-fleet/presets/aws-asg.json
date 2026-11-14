@@ -1,0 +1,32 @@
+{
+	"kind": "command",
+	"up": [
+		"aws", "autoscaling", "set-desired-capacity", "--auto-scaling-group-name", "atomic-workers",
+		"--desired-capacity", "{target}"
+	],
+	"down": [
+		"aws", "autoscaling", "terminate-instance-in-auto-scaling-group", "--instance-id", "{id}",
+		"--should-decrement-desired-capacity", "--output", "json"
+	],
+	"list": [
+		"aws", "autoscaling", "describe-auto-scaling-groups", "--auto-scaling-group-names", "atomic-workers",
+		"--query", "AutoScalingGroups[0].Instances[].{id: InstanceId, state: LifecycleState}", "--output", "json"
+	],
+	"listFormat": {
+		"states": {
+			"Pending": "pending",
+			"Pending:Wait": "pending",
+			"Pending:Proceed": "pending",
+			"InService": "running",
+			"Terminating": null,
+			"Terminating:Wait": null,
+			"Terminating:Proceed": null,
+			"Terminated": null,
+			"Detaching": null,
+			"Detached": null,
+			"Standby": null,
+			"*": "pending"
+		}
+	},
+	"timeoutMs": 60000
+}
