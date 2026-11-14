@@ -28,6 +28,11 @@ export interface StorageDialectTypes {
 export interface StorageDialect {
 	readonly name: StorageDialectName;
 	readonly types: StorageDialectTypes;
+	/**
+	 * Appended after a text column's type so it compares and sorts in UTF-8 byte order, whatever the database's
+	 * collation: `""` on SQLite, whose default `BINARY` collation already does; `' COLLATE "C"'` on Postgres.
+	 */
+	readonly byteOrderCollation: string;
 	/** Appended after a `CREATE TABLE`'s closing parenthesis: `" STRICT"` on SQLite, `""` on Postgres. */
 	readonly tableOptions: string;
 	/** Like `tableOptions`, for a table keyed only by its primary key: `" STRICT, WITHOUT ROWID"` on SQLite. */
@@ -109,6 +114,7 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 		blob: "BLOB",
 		serialKey: "INTEGER PRIMARY KEY AUTOINCREMENT",
 	}),
+	byteOrderCollation: "",
 	tableOptions: " STRICT",
 	withoutRowidTableOptions: " STRICT, WITHOUT ROWID",
 	nowMs: "CAST(unixepoch('subsec') * 1000 AS INTEGER)",
@@ -174,6 +180,7 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		blob: "BYTEA",
 		serialKey: "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
 	}),
+	byteOrderCollation: ' COLLATE "C"',
 	tableOptions: "",
 	withoutRowidTableOptions: "",
 	nowMs: "(floor(extract(epoch from clock_timestamp()) * 1000))::bigint",
