@@ -45,7 +45,7 @@ jobs:
           ATOMIC_DB: ${{ vars.ATOMIC_DB }}
           ATOMIC_DB_TOKEN: ${{ secrets.ATOMIC_DB_TOKEN }}
           # One run per host when the preset dispatches it; the controller matches the host by its run id.
-          ATOMIC_WORKER_PROVIDER_ID: ${{ inputs.workers == 1 && github.run_id || format('{0}-{1}', github.run_id, matrix.host) }}
+          ATOMIC_PROVIDER_ID: ${{ inputs.workers == 1 && github.run_id || format('{0}-{1}', github.run_id, matrix.host) }}
           IDLE_EXIT_MS: ${{ inputs.idle-exit-ms }}
         run: |
           umask 077

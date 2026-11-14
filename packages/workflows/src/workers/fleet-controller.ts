@@ -261,6 +261,10 @@ export class FleetController implements WorkflowFleetController {
 		try {
 			const listed = await this.call((signal) => this.options.provisioner.list(signal));
 			const snapshot = await store.snapshot();
+			// A drain lasts as long as its instance (#4803): once the provider no longer lists it, a new one may reuse its id.
+			for (const drain of snapshot.drains)
+				if (drain.providerId !== undefined && !listed.some((provided) => provided.id === drain.providerId))
+					await store.clearDrain(fence, drain.host);
 			const hosts = joinHosts(listed, snapshot);
 			const now = Date.now();
 			const plan = planFleet(
@@ -419,14 +423,19 @@ export interface JoinedHost {
 
 /**
  * The provider's hosts joined with the journal's registry: a registered host matches the provider host whose id it
- * reports (`ATOMIC_WORKER_PROVIDER_ID`), or whose `hostId` the provider gives.
+ * reports (`ATOMIC_PROVIDER_ID`), or whose `hostId` the provider gives. A worker that restarted on the same instance
+ * registered again under a new host id (#4803): the live one is its host, and the instance holds the children of all.
  */
 export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSnapshot): JoinedHost[] {
 	return listed.map((provided) => {
-		const registered = snapshot.hosts.find(
+		const matching = snapshot.hosts.filter(
 			(host) => host.providerId === provided.id || (provided.hostId !== undefined && host.host === provided.hostId),
 		);
+		const registered = matching.find((host) => host.live) ?? matching[0];
 		const hostId = registered?.host ?? provided.hostId;
+		const holders = new Set(matching.map((host) => host.host));
+		if (hostId !== undefined) holders.add(hostId);
+		const leased = [...holders].reduce((total, host) => total + (snapshot.leased.get(host) ?? 0), 0);
 		const drainHosts = snapshot.drains
 			.filter((drain) => drain.providerId === provided.id || (hostId !== undefined && drain.host === hostId))
 			.map((drain) => drain.host);
@@ -436,7 +445,7 @@ export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSna
 				state: provided.state,
 				since: provided.since,
 				registered: registered?.live === true,
-				leased: hostId === undefined ? 0 : (snapshot.leased.get(hostId) ?? 0),
+				leased,
 				draining: drainHosts.length > 0,
 			},
 			...(hostId === undefined ? {} : { hostId }),

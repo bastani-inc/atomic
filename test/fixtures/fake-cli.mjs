@@ -94,14 +94,15 @@ function kubectl() {
 				state: pod.phase === "deleting" ? "Terminating" : (pod.podPhase ?? (pod.phase === "creating" ? "Pending" : "Running")),
 			})),
 		);
-	} else if (rest[0] === "annotate" && rest[1] === "pod") {
+	} else if (rest[0] === "delete" && rest[1] === "pod") {
+		if (!rest.includes("--ignore-not-found")) fail("expected --ignore-not-found", 1);
+		// A deleted pod terminates and leaves the ReplicaSet's count; the scale-down that follows keeps it from replacing it.
 		const found = update((state) => {
 			const pod = active(state).find((entry) => entry.id === rest[2]);
-			if (pod !== undefined && rest[3] === "controller.kubernetes.io/pod-deletion-cost=-1000") pod.cost = -1000;
+			if (pod !== undefined) remove(state, pod.id);
 			return pod !== undefined;
 		});
-		if (!found) fail(`Error from server (NotFound): pods "${rest[2]}" not found`);
-		process.stdout.write(`pod/${rest[2]} annotated\n`);
+		if (found) process.stdout.write(`pod "${rest[2]}" deleted\n`);
 	} else fail(`error: unknown command "${rest.join(" ")}" for "kubectl"`);
 }
 
