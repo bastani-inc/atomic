@@ -944,6 +944,7 @@ test("an ask whose recipient goes away before its asker closes still fails once 
 		saved: false,
 	});
 	await recipientBack.start("resume");
+	cleanups.push(() => recipientBack.shutdown());
 	assert.equal((await recipientBack.call({ action: "status" })).isError, false);
 	await recipientBack.shutdown();
 
@@ -976,6 +977,7 @@ test("an ask whose recipient goes away fails once even when its asker resumes an
 	// The asker resumes while its recipient is still away, and closes again.
 	const between = session({ name: "asker-closes-twice", sessionId: first.sessionId, entries: first.entries });
 	await between.start("resume");
+	cleanups.push(() => between.shutdown());
 	assert.equal((await between.call({ action: "status" })).isError, false);
 	assert.match((await between.call({ action: "pending" })).content[0]?.text ?? "", new RegExp(askId));
 	await between.shutdown();
@@ -986,6 +988,7 @@ test("an ask whose recipient goes away fails once even when its asker resumes an
 		saved: false,
 	});
 	await recipientBack.start("resume");
+	cleanups.push(() => recipientBack.shutdown());
 	assert.equal((await recipientBack.call({ action: "status" })).isError, false);
 	await recipientBack.shutdown();
 
