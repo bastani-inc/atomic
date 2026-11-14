@@ -65,7 +65,10 @@ import { startWorkerHeartbeat, tolerantHeartbeat } from "./worker-heartbeat.js";
 import { workerRefusal } from "./worker-refusal.js";
 import { type PendingWorkerRequest, receiveWorkerReply, type WorkerReplyState } from "./worker-replies.js";
 
-/** How long an idle worker waits before it asks for work again after the journal was unreachable (#4768). */
+/**
+ * How long a worker waits before it asks for work, or publishes its child's activity, again after the journal was
+ * unreachable (#4768).
+ */
 const IDLE_OUTAGE_RETRY_MS = 1_000;
 
 /** Stamps each published stage with its handle's queued message count, for the root's graph. */
@@ -544,7 +547,16 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						activityDirty = false;
 						const runs = withQueuedCounts(structuredClone(store.runs()), stageControls);
 						place.observe(attemptWaitsReleased(runs));
-						await request({ kind: "activity", runs });
+						try {
+							await request({ kind: "activity", runs }, undefined, true);
+						} catch (error) {
+							// The journal is unreachable: the latest activity goes out once it answers, while the heartbeat
+							// keeps the attempt within its lease (#4768).
+							if (infrastructureFaultOf(error) !== "storage_unavailable" || controller.signal.aborted)
+								throw error;
+							activityDirty = true;
+							await delay(IDLE_OUTAGE_RETRY_MS);
+						}
 					}
 				})();
 				publication = current;

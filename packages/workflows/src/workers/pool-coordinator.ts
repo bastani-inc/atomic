@@ -52,6 +52,7 @@ import type { WorkflowSerializableObject } from "../shared/types.js";
 import { isStaleWorkLeaseError, PoolNotInitializedError } from "../shared/worker-pool-errors.js";
 import {
 	failedOnPoolFault,
+	infrastructureFaultOf,
 	WorkerCleanupUnconfirmedError,
 	WorkerLostError,
 	WorkerRetryLimitError,
@@ -1157,6 +1158,8 @@ export class PoolCoordinator {
 				// A late root renewal stops nothing: the next recovery runs once it lands.
 				if (this.queue && isStaleLeaseError(error) && (await this.rootRenewal(this.queue).catch(() => false)))
 					return;
+				// Nor does a journal that is unreachable for now: the next recovery tries again (#4768).
+				if (infrastructureFaultOf(error) === "storage_unavailable") return;
 				this.fail(error);
 			});
 		}, RECOVERY_INTERVAL_MS).unref();
@@ -1336,6 +1339,9 @@ export class PoolCoordinator {
 						}
 						return;
 					}
+					// The journal is unreachable for now: the next pass tries again, and the workers keep their children
+					// while their leases last (#4768).
+					if (infrastructureFaultOf(error) === "storage_unavailable") return;
 					this.fail(error);
 				})
 				.finally(() => {
@@ -1367,10 +1373,17 @@ export class PoolCoordinator {
 		if (this.relayPending.size === 0) return;
 		const entries = [...this.relayPending.values()];
 		this.relayPending.clear();
-		await shared.relayActivity(
-			lease,
-			entries.map((entry) => ({ work: entry.work, runs: JSON.stringify(entry.runs) })),
-		);
+		try {
+			await shared.relayActivity(
+				lease,
+				entries.map((entry) => ({ work: entry.work, runs: JSON.stringify(entry.runs) })),
+			);
+		} catch (error) {
+			// What did not reach the journal goes with the next pass, unless newer activity of the same work replaced it.
+			for (const entry of entries)
+				if (!this.relayPending.has(entry.work.id)) this.relayPending.set(entry.work.id, entry);
+			throw error;
+		}
 	}
 
 	/** Passes activity other hosts relayed to the root, as this coordinator's own workers' activity reaches it. */
@@ -1420,6 +1433,8 @@ export class PoolCoordinator {
 					this.inputScheduler.finish(stage, performance.now());
 					// The attempt was replaced while it held the input: the replacement takes it, and nothing here was written.
 					if (isStaleStageLeaseError(error) || isStaleLeaseError(error)) return;
+					// An unreachable journal leaves the input where it was, for a later pass (#4768).
+					if (infrastructureFaultOf(error) === "storage_unavailable") return;
 					this.fail(error);
 				},
 			);

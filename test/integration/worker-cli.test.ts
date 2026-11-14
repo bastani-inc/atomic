@@ -284,10 +284,17 @@ test.skipIf(process.platform === "win32")(
 		let root: BudgetedProcess | undefined;
 		try {
 			// Only node B reaches the database through the proxy; the root reaches it directly.
-			node = startNode(s, "B", 2, {}, proxy.url);
+			node = startNode(s, "B", 2, { SHARED_POOL_WORK_MARKERS: s.directory }, proxy.url);
 			await until("node B to be ready", s, () => node!.stdout.length > 0, [node.process]);
 			root = startRoot(s, 2, OUTAGE_WORK_MS, {}, database.url);
-			await until("node B to run a child", s, () => claimed(node!).length > 0, [node.process, root]);
+			// The outage starts once node B's child is in its long step, between checkpoints: a checkpoint written while the
+			// database is unreachable replays its child, which this test does not cover.
+			await until(
+				"node B's child to start its long step",
+				s,
+				() => readdirSync(s.directory).some((name) => name.startsWith("working-B-")),
+				[node.process, root],
+			);
 			proxy.cut();
 			await until(
 				"node B to report two failed polls",
