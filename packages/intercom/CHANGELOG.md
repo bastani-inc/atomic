@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an Intercom ask that stayed pending forever, with no failed-ask message, when its recipient went away before its asker closed and then came back and ended while the asker was still closed. The broker now keeps the asker's return address on that ask when the asker closes, so the resumed asker gets one "Your ask <id> to <name> failed" message and `pending` no longer lists it, also when the asker resumed and closed again before the recipient ended ([#4761](https://github.com/bastani-inc/atomic/issues/4761))
+
 ## [0.9.86-alpha.1] - 2026-11-14
 
 Intercom asks stop blocking, and one send can reach many sessions.

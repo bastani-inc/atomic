@@ -3239,6 +3239,7 @@ class IntercomBroker {
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
+      this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
