@@ -28,6 +28,11 @@ export interface StorageDialectTypes {
 export interface StorageDialect {
 	readonly name: StorageDialectName;
 	readonly types: StorageDialectTypes;
+	/**
+	 * Appended after a text column's type so it compares and sorts in UTF-8 byte order, whatever the database's
+	 * collation: `""` on SQLite, whose default `BINARY` collation already does; `' COLLATE "C"'` on Postgres.
+	 */
+	readonly byteOrderCollation: string;
 	/** Appended after a `CREATE TABLE`'s closing parenthesis: `" STRICT"` on SQLite, `""` on Postgres. */
 	readonly tableOptions: string;
 	/** Like `tableOptions`, for a table keyed only by its primary key: `" STRICT, WITHOUT ROWID"` on SQLite. */
@@ -36,6 +41,12 @@ export interface StorageDialect {
 	readonly nowMs: string;
 	/** An expression: whole seconds since the epoch on the database's clock, rounded down. */
 	readonly nowSeconds: string;
+	/**
+	 * Select-list items whose values change whenever any connection commits a write to the database, and the `FROM`
+	 * clause they need (with a leading space; `""` when none). A change token built from them may change without a
+	 * write, never the reverse: `SELECT ${columns}, (SELECT count(*) FROM t) AS rows${from}`.
+	 */
+	readonly changeMarkers: { readonly columns: string; readonly from: string };
 	/** Whether `applyStorageMigrations` records applied versions in a ledger table (else steps are idempotent). */
 	readonly versionedMigrations: boolean;
 	/** The text at `path` (object keys) inside the JSON text in `column`; SQL `NULL` when absent. */
@@ -55,11 +66,24 @@ export interface StorageDialect {
 	least(a: string, b: string): string;
 	/** Appended to a `SELECT` in a `fenced` transaction: `""` on SQLite, whose transactions already serialize. */
 	lockClause(kind: StorageLockKind): string;
-	/** The column that orders a table's rows by insertion: `rowid` on SQLite, an identity column `seq` on Postgres. */
+	/**
+	 * The column that orders a table's rows by insertion: `rowid` on SQLite, the identity column `row_order` on
+	 * Postgres, which a table declares with `rowOrderColumn`.
+	 */
 	rowOrder(alias?: string): string;
+	/**
+	 * Appended to the column list of a `CREATE TABLE` whose rows a store orders by `rowOrder()`: `""` on SQLite, where
+	 * `rowid` is implicit; `", row_order BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE"` on Postgres.
+	 */
+	readonly rowOrderColumn: string;
 	/** A query that returns one row when `table` exists in the current database (or schema). */
 	tableExists(table: string): SqliteStatement;
-	/** A query that returns one row when `table` has `column`. */
+	/**
+	 * An aggregate: the values of `expression` joined by `separator` (SQL text), in `orderBy` order. SQLite's
+	 * `group_concat` takes the order of its input, so callers also feed it rows already ordered by `orderBy`.
+	 */
+	orderedConcat(expression: string, separator: string, orderBy: string): string;
+	/** A query that returns one row `{ name, default_value }` when `table` has `column`. */
 	columnExists(table: string, column: string): SqliteStatement;
 }
 
@@ -90,10 +114,15 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 		blob: "BLOB",
 		serialKey: "INTEGER PRIMARY KEY AUTOINCREMENT",
 	}),
+	byteOrderCollation: "",
 	tableOptions: " STRICT",
 	withoutRowidTableOptions: " STRICT, WITHOUT ROWID",
 	nowMs: "CAST(unixepoch('subsec') * 1000 AS INTEGER)",
 	nowSeconds: "unixepoch()",
+	changeMarkers: Object.freeze({
+		columns: "data_version, total_changes() AS changes",
+		from: " FROM pragma_data_version",
+	}),
 	versionedMigrations: false,
 	jsonText: (column: string, ...path: readonly string[]) => `json_extract(${column}, ${sqlitePath(path)})`,
 	jsonHasType: (type: StorageJsonType, column: string, ...path: readonly string[]) =>
@@ -104,12 +133,15 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 	least: (a: string, b: string) => `MIN(${a}, ${b})`,
 	lockClause: (_kind: StorageLockKind) => "",
 	rowOrder: (alias?: string) => qualified("rowid", alias),
+	rowOrderColumn: "",
 	tableExists: (table: string) => ({
 		sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
 		params: [table],
 	}),
+	orderedConcat: (expression: string, separator: string, _orderBy: string) =>
+		`group_concat(${expression}, ${separator})`,
 	columnExists: (table: string, column: string) => ({
-		sql: "SELECT name FROM pragma_table_info(?) WHERE name = ?",
+		sql: "SELECT name, dflt_value AS default_value FROM pragma_table_info(?) WHERE name = ?",
 		params: [table, column],
 	}),
 });
@@ -136,8 +168,8 @@ function postgresJson(column: string, path: readonly string[], text: boolean): s
 }
 
 /**
- * PostgreSQL (14 and later; `jsonValid` needs 16). Tables a store orders by `rowOrder()` carry an explicit
- * `seq BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE` column.
+ * PostgreSQL (14 and later; `jsonValid` needs 16). Tables a store orders by `rowOrder()` carry an explicit identity
+ * column, `row_order` (not `seq`, which several tables already use for their own sequence numbers).
  */
 export const postgresDialect: StorageDialect = Object.freeze({
 	name: "postgres",
@@ -148,10 +180,12 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		blob: "BYTEA",
 		serialKey: "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
 	}),
+	byteOrderCollation: ' COLLATE "C"',
 	tableOptions: "",
 	withoutRowidTableOptions: "",
 	nowMs: "(floor(extract(epoch from clock_timestamp()) * 1000))::bigint",
 	nowSeconds: "(floor(extract(epoch from clock_timestamp())))::bigint",
+	changeMarkers: Object.freeze({ columns: "pg_current_snapshot()::text AS snapshot", from: "" }),
 	versionedMigrations: true,
 	jsonText: (column: string, ...path: readonly string[]) => postgresJson(column, path, true),
 	jsonHasType: (type: StorageJsonType, column: string, ...path: readonly string[]) =>
@@ -161,13 +195,16 @@ export const postgresDialect: StorageDialect = Object.freeze({
 	greatest: (a: string, b: string) => `GREATEST(${a}, ${b})`,
 	least: (a: string, b: string) => `LEAST(${a}, ${b})`,
 	lockClause: (kind: StorageLockKind) => POSTGRES_LOCKS[kind],
-	rowOrder: (alias?: string) => qualified("seq", alias),
+	rowOrder: (alias?: string) => qualified("row_order", alias),
+	rowOrderColumn: ", row_order BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE",
 	tableExists: (table: string) => ({
 		sql: "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
 		params: [table],
 	}),
+	orderedConcat: (expression: string, separator: string, orderBy: string) =>
+		`string_agg(${expression}, ${separator} ORDER BY ${orderBy})`,
 	columnExists: (table: string, column: string) => ({
-		sql: "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+		sql: "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
 		params: [table, column],
 	}),
 });
