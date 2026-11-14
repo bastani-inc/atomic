@@ -295,6 +295,49 @@ test("redactSecrets removes encoded forms and longer secrets first (#3856)", () 
 	assert.equal(redact("nothing secret"), "nothing secret");
 });
 
+const REDACTED = "[redacted]";
+
+/** Every secret is gone from the text between the markers, and redacting again changes nothing. */
+function assertRedacted(secrets: readonly string[], text: string): void {
+	const redact = redactSecrets(secrets);
+	const once = redact(text);
+	assert.equal(redact(once), once, `not idempotent: ${JSON.stringify({ secrets, text, once })}`);
+	for (const piece of once.split(REDACTED)) {
+		for (const secret of secrets) {
+			assert.equal(piece.includes(secret), false, `${JSON.stringify(secret)} left in ${JSON.stringify(once)}`);
+		}
+	}
+}
+
+test("redactSecrets handles secrets inside or overlapping its marker (#4833)", () => {
+	assert.equal(redactSecrets(["a", "]q"])("a]q and aq"), `${REDACTED}${REDACTED} [redacted]nd ${REDACTED}q`);
+	assert.equal(redactSecrets(["e", "d]"])("x d] y"), `x ${REDACTED} y`);
+	assert.equal(redactSecrets(["a"])(REDACTED), REDACTED);
+	assertRedacted(["a", "]q"], "a]q and aq");
+	assertRedacted(["e", "d]"], "x d] y");
+	assertRedacted(["a", "q[r"], "qa");
+});
+
+test("redactSecrets is idempotent and leaves no secret for random marker-like secrets (#4833)", () => {
+	let state = 4833;
+	const random = (limit: number): number => {
+		state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+		return (state >>> 8) % limit;
+	};
+	const alphabet = "[redact]qx";
+	const randomText = (maxLength: number): string => {
+		let text = "";
+		const length = 1 + random(maxLength);
+		for (let index = 0; index < length; index++) text += alphabet[random(alphabet.length)];
+		return text;
+	};
+	for (let round = 0; round < 2_000; round++) {
+		const secrets = Array.from({ length: 1 + random(3) }, () => randomText(4));
+		const text = Array.from({ length: 1 + random(4) }, () => (random(3) === 0 ? REDACTED : randomText(8))).join("");
+		assertRedacted(secrets, text);
+	}
+});
+
 /** The node:sqlite driver with a `batch` that runs every statement in one immediate transaction. */
 function batchingDriver(path: string): SqliteDriver & { batches: number } {
 	const driver = nodeSqliteDriver(path);
