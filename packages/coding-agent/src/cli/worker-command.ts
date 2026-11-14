@@ -11,7 +11,14 @@ import { pathToFileURL } from "node:url";
 import { APP_NAME } from "../config.js";
 import { getBuiltinPackageLocations } from "../core/builtin-packages.ts";
 import { isTeamProfileConfigError } from "../core/storage/errors.js";
-import { checkTeamPrefix, checkTeamUrl, LIBSQL_ADAPTER_PACKAGE } from "../core/storage/selection.js";
+import {
+	checkSharedDatabaseArguments,
+	checkTeamPrefix,
+	isPostgresUrl,
+	LIBSQL_ADAPTER_PACKAGE,
+	POSTGRES_ADAPTER_PACKAGE,
+	type PostgresAuth,
+} from "../core/storage/selection.js";
 
 /** Most worker slots the default gives a host: past 16, a host's own checkpoint rate stops growing (#4768). */
 const MAX_DEFAULT_SLOTS = 16;
@@ -22,12 +29,15 @@ export function defaultWorkerSlots(cpus: number = availableParallelism()): numbe
 }
 
 const HELP = `Usage:
-  ${APP_NAME} worker start [--db <url>] [--token-file <path>] [--prefix <prefix>] [--slots <n>]
+  ${APP_NAME} worker start [--db <url>] [<credential>] [--prefix <prefix>] [--slots <n>]
                       [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
-  ${APP_NAME} worker status [--db <url>] [--token-file <path>] [--prefix <prefix>] [--json]
-  ${APP_NAME} worker controller --provisioner <module> [--db <url>] [--token-file <path>] [--prefix <prefix>]
+  ${APP_NAME} worker status [--db <url>] [<credential>] [--prefix <prefix>] [--json]
+  ${APP_NAME} worker controller --provisioner <module> [--db <url>] [<credential>] [--prefix <prefix>]
                       [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--scale-up-queue-depth <n>]
                       [--scale-up-delay <ms>] [--idle-drain <ms>] [--boot-timeout <ms>] [--json]
+
+  <credential> is --token-file <path> for libSQL; --password-file <path>, --token-file <path> or
+  --auth azure|aws|gcp for PostgreSQL.
 
 Commands:
   start    Run this machine as a worker host of a shared workflow database: it runs the pooled children of
@@ -45,11 +55,18 @@ Commands:
            SIGINT stops it (exit 0).
 
 Options:
-  --db <url>            The shared libSQL / Turso database (libsql://, https://, wss:// or file:), for this
-                        process only; nothing is written to settings. Default: the journal this machine
-                        selects, for example after \`${APP_NAME} team join\`
-  --token-file <path>   File holding the database token (mode 600). Only its path is passed on; the token is
+  --db <url>            The shared database, for this process only; nothing is written to settings: a
+                        libSQL / Turso database (libsql://, https://, wss:// or file:) or a PostgreSQL
+                        database (postgres:// or postgresql://, never with a password in it). Default: the
+                        journal this machine selects, for example after \`${APP_NAME} storage join\`
+  --token-file <path>   File holding the database token or, for PostgreSQL, a password another process keeps
+                        fresh (mode 600). Only its path is passed on; it is read for every new connection, and
                         never printed, logged or put in a command line
+  --password-file <path>
+                        PostgreSQL: file holding the database password (mode 600), passed on by path like
+                        --token-file
+  --auth azure|aws|gcp  PostgreSQL: use the platform's identity instead of a password. A PostgreSQL --db takes
+                        exactly one of --password-file, --token-file and --auth
   --prefix <prefix>     Table prefix of the shared database
   --slots <n>           Most children this host runs at once. Default: half the CPUs, from 1 to 16 (here ${defaultWorkerSlots()})
   --label <key=value>   A label this host reports in status; repeat for more
@@ -88,7 +105,12 @@ export class WorkerCommandError extends Error {
 /** The shared database a command names, or none for the journal this machine selects. */
 export interface WorkerDatabase {
 	readonly url: string;
+	/** Absolute. */
 	readonly tokenFile?: string;
+	/** Postgres only; absolute. */
+	readonly passwordFile?: string;
+	/** Postgres only. */
+	readonly auth?: PostgresAuth;
 	readonly prefix?: string;
 }
 
@@ -139,6 +161,8 @@ const POLICY_OPTIONS: Readonly<Record<string, { readonly field: keyof WorkerFlee
 const VALUE_OPTIONS = new Set([
 	"--db",
 	"--token-file",
+	"--password-file",
+	"--auth",
 	"--prefix",
 	"--slots",
 	"--label",
@@ -165,18 +189,29 @@ function nonNegativeInteger(field: string, value: string): number {
 function database(values: ReadonlyMap<string, string>, cwd: string): WorkerDatabase | undefined {
 	const url = values.get("--db");
 	if (url === undefined) {
-		for (const option of ["--token-file", "--prefix"])
+		for (const option of ["--token-file", "--password-file", "--auth", "--prefix"])
 			if (values.has(option))
 				throw new WorkerCommandError(option, "It qualifies --db; pass the database URL with --db too.");
 		return undefined;
 	}
 	const tokenFile = values.get("--token-file");
+	const passwordFile = values.get("--password-file");
+	const auth = values.get("--auth");
 	try {
-		checkTeamUrl(url, "cli");
+		// A libSQL --db without a token keeps its old meaning: the host reports the missing token with its setup.
+		const checked = checkSharedDatabaseArguments({
+			url,
+			...(tokenFile === undefined && !isPostgresUrl(url) ? { tokenFile: "" } : {}),
+			...(tokenFile === undefined ? {} : { tokenFile }),
+			...(passwordFile === undefined ? {} : { passwordFile }),
+			...(auth === undefined ? {} : { auth }),
+		});
 		const prefix = checkTeamPrefix(values.get("--prefix"), "cli");
 		return {
 			url,
 			...(tokenFile === undefined ? {} : { tokenFile: resolve(cwd, tokenFile) }),
+			...(checked.passwordFile === undefined ? {} : { passwordFile: resolve(cwd, checked.passwordFile) }),
+			...(checked.auth === undefined ? {} : { auth: checked.auth }),
 			...(prefix === undefined ? {} : { prefix }),
 		};
 	} catch (error) {
@@ -258,6 +293,15 @@ export function parseWorkerCommand(
 
 /** The journal selection a worker host opens for `database`: the token by file reference, never its value. */
 export function workerJournalSelection(database: WorkerDatabase): WorkerJournalSelection {
+	if (isPostgresUrl(database.url)) {
+		const passwordFile = database.passwordFile ?? database.tokenFile;
+		return {
+			adapter: POSTGRES_ADAPTER_PACKAGE,
+			options: { url: database.url, ...(database.auth === undefined ? {} : { auth: database.auth }) },
+			...(passwordFile === undefined ? {} : { secrets: { password: { file: passwordFile } } }),
+			...(database.prefix === undefined ? {} : { prefix: database.prefix }),
+		};
+	}
 	return {
 		adapter: LIBSQL_ADAPTER_PACKAGE,
 		options: { url: database.url },
@@ -266,10 +310,11 @@ export function workerJournalSelection(database: WorkerDatabase): WorkerJournalS
 	};
 }
 
-/** The database as output names it: the URL without query or fragment, where a credential could sit. */
+/** The database as output names it: the URL without user name, query or fragment, where a credential could sit. */
 function databaseLabel(database: WorkerDatabase | undefined): string {
 	if (database === undefined) return "selected";
 	const url = new URL(database.url);
+	url.username = "";
 	url.search = "";
 	url.hash = "";
 	return `${url.href}${database.prefix === undefined ? "" : ` prefix=${database.prefix}`}`;
@@ -280,8 +325,8 @@ function databaseLabel(database: WorkerDatabase | undefined): string {
 
 export interface WorkerJournalSelection {
 	readonly adapter: string;
-	readonly options: { readonly url: string };
-	readonly secrets?: { readonly authToken: { readonly file: string } };
+	readonly options: { readonly url: string; readonly auth?: PostgresAuth };
+	readonly secrets?: Readonly<Partial<Record<"authToken" | "password", { readonly file: string }>>>;
 	readonly prefix?: string;
 }
 
@@ -453,14 +498,15 @@ function setupLines(error: Error): string[] {
 
 /** Warns when the token file is readable by other users of this machine. */
 function tokenFileWarning(database: WorkerDatabase | undefined): string | undefined {
-	if (database?.tokenFile === undefined || process.platform === "win32") return undefined;
+	const file = database?.passwordFile ?? database?.tokenFile;
+	if (file === undefined || process.platform === "win32") return undefined;
 	try {
-		if ((statSync(database.tokenFile).mode & 0o077) === 0) return undefined;
+		if ((statSync(file).mode & 0o077) === 0) return undefined;
 	} catch {
 		// A missing file is a setup problem the host reports with the rest.
 		return undefined;
 	}
-	return `The token file ${database.tokenFile} is readable by other users; restrict it with chmod 600.`;
+	return `The ${database?.passwordFile === undefined ? "token" : "password"} file ${file} is readable by other users; restrict it with chmod 600.`;
 }
 
 async function start(

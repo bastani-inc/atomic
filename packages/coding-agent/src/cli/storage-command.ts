@@ -1,7 +1,8 @@
 /**
  * `atomic storage status` shows which storage each domain (sessions, workflow runs, Intercom) selects, where the
  * selection comes from, whether its adapter loads and its database answers, and what the running Intercom broker
- * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso database.
+ * uses. `atomic storage join` points this machine's global `storage` setting at a shared libSQL / Turso or
+ * PostgreSQL database.
  * `atomic storage adopt` registers existing journal files in the journal store in place, and `atomic storage
  * consolidate` moves their finished runs into the store's own shards. `atomic storage export` and `atomic storage
  * import` move sessions and workflow runs between their storage and JSONL files (#4716, #4720).
@@ -26,10 +27,10 @@ import {
 	type WorkflowRunTransferStorage,
 } from "../core/storage/journal-transfer.js";
 import {
-	checkTeamUrl,
-	isFileUrl,
+	checkSharedDatabaseArguments,
 	LIBSQL_ADAPTER_PACKAGE,
-	missingTeamToken,
+	POSTGRES_ADAPTER_PACKAGE,
+	type PostgresAuth,
 	STORAGE_TOKEN_FILE,
 } from "../core/storage/selection.js";
 import type { SessionStore } from "../core/storage/session/types.js";
@@ -53,9 +54,12 @@ import { importStorage, sessionsTransferDirectory, workflowsTransferDirectory } 
 
 export { LIBSQL_ADAPTER_PACKAGE, STORAGE_TOKEN_FILE };
 
+const JOIN_USAGE = `${APP_NAME} storage join <url> [--token-file <path> | --password-file <path> | --auth azure|aws|gcp]
+                            [--prefix <prefix>]`;
+
 const HELP = `Usage:
   ${APP_NAME} storage status [--json]
-  ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]
+  ${JOIN_USAGE}
   ${APP_NAME} storage adopt <path>... [--no-discover]
   ${APP_NAME} storage consolidate
   ${APP_NAME} storage export <dir> [--sessions] [--workflows] [--run <id>]... [--unfinished]
@@ -68,10 +72,15 @@ Commands:
            whether its adapter loads, whether its database answers a SELECT 1, and what the running
            Intercom broker uses. Exits 1 when a selection is invalid, an adapter cannot load, or a
            database does not answer. Nothing is created or changed.
-  join     Use a shared libSQL / Turso database on this machine: check the token and the connection
-           with ${LIBSQL_ADAPTER_PACKAGE}, store the token in the agent directory (mode 600), and
-           write only the global \`storage\` setting. Reports environment variables and settings that
-           override it. Creates no tables; Atomic creates them on first use.
+  join     Use a shared database on this machine: a libSQL / Turso database (libsql://, https://,
+           wss:// or file:) through ${LIBSQL_ADAPTER_PACKAGE}, or a PostgreSQL database
+           (postgres:// or postgresql://) through ${POSTGRES_ADAPTER_PACKAGE}. Checks the credential
+           and the connection (SELECT 1, within 15 seconds), then writes only the global \`storage\`
+           setting; nothing is written when a check fails. A token or --password-file is stored in
+           the agent directory (mode 600); --token-file is referenced where it is, and read again
+           for every new connection. Settings hold a file reference, never a password or token.
+           Reports environment variables and settings that override it. Creates no tables; Atomic
+           creates them on first use.
   adopt    Register existing workflow journal files in the journal store in place, without copying,
            so their runs resolve by ID for status, resume, attach, fork and history://. Each <path>
            is a journal .sqlite file or a directory holding journal.sqlite. Every path is checked
@@ -97,8 +106,17 @@ Commands:
 
 Options:
   --json                Print the status as JSON
-  --token-file <path>   File holding the database token, for example from \`turso db tokens create\`;
-                        surrounding whitespace is removed. Required except for file: URLs
+  --token-file <path>   libSQL: file holding the database token, for example from \`turso db tokens create\`;
+                        surrounding whitespace is removed. Required except for file: URLs.
+                        PostgreSQL: a password or token file another process keeps fresh (a Vault agent,
+                        a workload-identity sidecar); its path is saved and it is read for every new connection
+  --password-file <path>
+                        PostgreSQL: file holding the database password; it is copied to the agent directory
+                        (mode 600)
+  --auth azure|aws|gcp  PostgreSQL: use the platform's identity (Microsoft Entra ID, AWS IAM, Google Cloud
+                        IAM) instead of a password
+                        PostgreSQL URLs take exactly one of --password-file, --token-file and --auth, and
+                        never a password in the URL
   --prefix <prefix>     Table prefix, to share one database between projects or teams
   --no-discover         adopt: register only the given paths
   --sessions            export, import: sessions only (with --workflows too: both)
@@ -115,7 +133,16 @@ const HELP_HINT = `Use "${APP_NAME} storage --help" for usage.`;
 export type StorageCommand =
 	| { readonly kind: "help" }
 	| { readonly kind: "status"; readonly json: boolean }
-	| { readonly kind: "join"; readonly url: string; readonly tokenFile?: string; readonly prefix?: string }
+	| {
+			readonly kind: "join";
+			readonly url: string;
+			readonly tokenFile?: string;
+			/** Postgres only. */
+			readonly passwordFile?: string;
+			/** Postgres only. */
+			readonly auth?: PostgresAuth;
+			readonly prefix?: string;
+	  }
 	| { readonly kind: "adopt"; readonly paths: readonly string[]; readonly discover: boolean }
 	| { readonly kind: "consolidate" }
 	| {
@@ -180,7 +207,8 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 			continue;
 		}
 		if (
-			(command === "join" && (arg === "--token-file" || arg === "--prefix")) ||
+			(command === "join" &&
+				(arg === "--token-file" || arg === "--password-file" || arg === "--auth" || arg === "--prefix")) ||
 			(command === "export" && (arg === "--limit" || arg === "--since"))
 		) {
 			const value = rest[++index];
@@ -198,21 +226,18 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	}
 	if (command === "join") {
 		const [url, ...extra] = positional;
-		if (url === undefined || extra.length > 0) {
-			throw new StorageCommandError(
-				`Usage: ${APP_NAME} storage join <url> [--token-file <path>] [--prefix <prefix>]`,
-			);
-		}
-		checkTeamUrl(url, "cli");
+		if (url === undefined || extra.length > 0) throw new StorageCommandError(`Usage: ${JOIN_USAGE}`);
+		const passwordFile = values.get("--password-file");
 		const tokenFile = values.get("--token-file");
-		if (tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
-		const prefix = values.get("--prefix");
-		return {
-			kind: "join",
+		const auth = values.get("--auth");
+		const checked = checkSharedDatabaseArguments({
 			url,
 			...(tokenFile === undefined ? {} : { tokenFile }),
-			...(prefix === undefined ? {} : { prefix }),
-		};
+			...(passwordFile === undefined ? {} : { passwordFile }),
+			...(auth === undefined ? {} : { auth }),
+		});
+		const prefix = values.get("--prefix");
+		return { kind: "join", ...checked, ...(prefix === undefined ? {} : { prefix }) };
 	}
 	if (command === "adopt") {
 		if (positional.length === 0)
@@ -400,13 +425,17 @@ async function joinStorage(
 	const { agentDir, cwd } = options;
 	const joined = await joinSharedDatabase({ ...command, agentDir, cwd, pinLocalSessions: false }, "cli");
 	log(`Connected to ${command.url}.`);
+	const secret = command.passwordFile === undefined ? "token" : "password";
 	if (joined.tokenPath !== undefined) {
 		log(
 			joined.token === "reused"
-				? `Kept the token in ${joined.tokenPath}; it already holds this token.`
-				: `Stored the token in ${joined.tokenPath} (mode 600).`,
+				? `Kept the ${secret} in ${joined.tokenPath}; it already holds this ${secret}.`
+				: `Stored the ${secret} in ${joined.tokenPath} (mode 600).`,
 		);
 	}
+	if (joined.referencedFile !== undefined)
+		log(`The password stays in ${joined.referencedFile} and is read again for every new connection.`);
+	if (command.auth !== undefined) log(`The adapter obtains a ${command.auth} credential for every new connection.`);
 	log(`Set \`storage\` in ${join(agentDir, "settings.json")}; other settings are unchanged.`);
 	if (joined.replaced !== undefined) log(`It replaces the previous selection: ${joined.replaced}.`);
 

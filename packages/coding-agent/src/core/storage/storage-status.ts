@@ -8,6 +8,7 @@ import { selectSessionStorage } from "../session-storage.js";
 import { SettingsManager } from "../settings-manager.ts";
 import type { Settings } from "../settings-schema.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "../trust-manager.ts";
+import { openAdapterSelectionDatabase } from "./adapter-open.js";
 import type { SqliteDatabase, SqliteRow } from "./database.js";
 import {
 	describeStorageError,
@@ -35,6 +36,7 @@ import {
 	storageSelectionKey,
 } from "./provider.js";
 import {
+	POSTGRES_ADAPTER_PACKAGE,
 	type StorageSettingsSelection,
 	selectStorage,
 	selectsDefaultJournalStore,
@@ -191,6 +193,8 @@ export interface StorageStatusOptions {
 	readonly agentDir: string;
 	/** Load adapters and run a `SELECT 1` on each selected database. */
 	readonly probe: boolean;
+	/** How long each step of one check may take. Default {@link STORAGE_PROBE_TIMEOUT_MS}. */
+	readonly probeTimeoutMs?: number;
 	/** Ask the running Intercom broker about itself; needs `probe`-independent access to the bundled Intercom package. */
 	readonly control?: IntercomBrokerControl;
 }
@@ -223,22 +227,30 @@ export function describeStorageSelection(selection: StorageSelection): string {
 			return `SQLite ${selection.path}${prefixSuffix(selection.prefix)}`;
 		case "database":
 			return `database ${selection.database.descriptor.adapter}${prefixSuffix(selection.prefix)}`;
-		case "adapter":
+		case "adapter": {
+			const url = selection.options?.url;
+			if (selection.module === POSTGRES_ADAPTER_PACKAGE && typeof url === "string" && URL.canParse(url)) {
+				// The server only: a user name, the query and the fragment are left out.
+				const server = new URL(url);
+				server.username = "";
+				server.password = "";
+				server.search = "";
+				server.hash = "";
+				return `PostgreSQL ${server.href} via ${selection.module}${prefixSuffix(selection.prefix)}`;
+			}
 			return `adapter ${selection.module}${prefixSuffix(selection.prefix)}`;
+		}
 		case "sharded":
 			return `journal store ${selection.dir}`;
 	}
 }
 
-function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
+function withTimeout<T>(operation: Promise<T>, label: string, timeoutMs: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	return Promise.race([
 		operation,
 		new Promise<never>((_, reject) => {
-			timer = setTimeout(
-				() => reject(new Error(`${label} did not answer within ${STORAGE_PROBE_TIMEOUT_MS / 1000} s`)),
-				STORAGE_PROBE_TIMEOUT_MS,
-			);
+			timer = setTimeout(() => reject(new Error(`${label} did not answer within ${timeoutMs / 1000} s`)), timeoutMs);
 			timer.unref?.();
 		}),
 	]).finally(() => clearTimeout(timer));
@@ -251,7 +263,8 @@ function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
 async function probeSelection(
 	selection: StorageSelection,
 	context: StorageOpenContext,
-	inspect?: (database: SqliteDatabase) => Promise<void>,
+	inspect: ((database: SqliteDatabase) => Promise<void>) | undefined,
+	timeoutMs: number,
 ): Promise<StorageProbe> {
 	if (selection.kind === "memory") return { connection: { status: "skipped", detail: "in memory; nothing to open" } };
 	if (selection.kind === "jsonl") {
@@ -273,7 +286,7 @@ async function probeSelection(
 				},
 			};
 		}
-		return probeSelection({ kind: "sqlite", path: catalog }, context, inspect);
+		return probeSelection({ kind: "sqlite", path: catalog }, context, inspect, timeoutMs);
 	}
 	if (selection.kind === "sqlite") {
 		if (selection.path === "" || selection.path === ":memory:") {
@@ -288,13 +301,14 @@ async function probeSelection(
 				() => openNodeSqliteDatabase(selection.path, { readOnly: true }),
 				"SQLite file",
 				inspect,
+				timeoutMs,
 			),
 		};
 	}
 	const module = selection.module;
 	let adapter: Awaited<ReturnType<typeof loadStorageAdapter>>;
 	try {
-		adapter = await withTimeout(loadStorageAdapter(module, context), "Loading the adapter");
+		adapter = await withTimeout(loadStorageAdapter(module, context), "Loading the adapter", timeoutMs);
 	} catch (error) {
 		return {
 			adapter: { module, loaded: false, detail: errorText(error as Error) },
@@ -311,7 +325,6 @@ async function probeSelection(
 			connection: { status: "skipped", detail: "the adapter has no openDatabase hook; its stores were not opened" },
 		};
 	}
-	const hook = adapter.openDatabase.bind(adapter);
 	let options: Awaited<ReturnType<typeof resolveAdapterOptions>>;
 	try {
 		options = await resolveAdapterOptions(selection, context);
@@ -334,37 +347,60 @@ async function probeSelection(
 					connection: { status: "skipped", detail: "file not found; Atomic creates it on first use" },
 				};
 			}
-			const local = await probeSelection({ kind: "sqlite", path }, context, inspect);
+			const local = await probeSelection({ kind: "sqlite", path }, context, inspect, timeoutMs);
 			return { adapter: loaded, connection: local.connection };
 		} catch (error) {
 			return { adapter: loaded, connection: { status: "failed", detail: errorText(error as Error) } };
 		}
 	}
-	return { adapter: loaded, connection: await roundTrip(() => hook(options, context), "The database", inspect) };
+	return {
+		adapter: loaded,
+		connection: await roundTrip(
+			() => openAdapterSelectionDatabase(selection, context, adapter),
+			"The database",
+			inspect,
+			timeoutMs,
+			module === POSTGRES_ADAPTER_PACKAGE ? postgresServerVersion : undefined,
+		),
+	};
+}
+
+/** The server version a Postgres database reports, as status shows it after the `SELECT 1` answer. */
+async function postgresServerVersion(database: SqliteDatabase): Promise<string> {
+	const row = await database.get<SqliteRow & { version: string }>(
+		"SELECT current_setting('server_version') AS version",
+	);
+	return `PostgreSQL ${row?.version ?? "of an unknown version"}`;
 }
 
 async function roundTrip(
 	open: () => Promise<SqliteDatabase>,
 	label: string,
-	inspect?: (database: SqliteDatabase) => Promise<void>,
+	inspect: ((database: SqliteDatabase) => Promise<void>) | undefined,
+	timeoutMs: number,
+	describeServer?: (database: SqliteDatabase) => Promise<string>,
 ): Promise<StorageProbe["connection"]> {
 	const started = Date.now();
 	let database: SqliteDatabase | undefined;
 	try {
-		database = await withTimeout(open(), label);
+		database = await withTimeout(open(), label, timeoutMs);
 		const opened = database;
-		await withTimeout(opened.get("SELECT 1 AS ok"), label);
+		await withTimeout(opened.get("SELECT 1 AS ok"), label, timeoutMs);
 		const elapsed = Date.now() - started;
-		// What `inspect` reads is extra detail; the database already answered.
-		if (inspect) await withTimeout(inspect(opened), "Inspecting the database").catch(() => {});
+		// What `inspect` and `describeServer` read is extra detail; the database already answered.
+		if (inspect) await withTimeout(inspect(opened), "Inspecting the database", timeoutMs).catch(() => {});
+		const server =
+			describeServer === undefined
+				? undefined
+				: await withTimeout(describeServer(opened), "Reading the server version", timeoutMs).catch(() => undefined);
 		return {
 			status: "ok",
-			detail: `${opened.descriptor.adapter} ${opened.descriptor.location} answered in ${elapsed} ms`,
+			detail: `${opened.descriptor.adapter} ${opened.descriptor.location} answered in ${elapsed} ms${server === undefined ? "" : `, ${server}`}`,
 		};
 	} catch (error) {
 		return { status: "failed", detail: errorText(error as Error) };
 	} finally {
-		if (database) await withTimeout(database.close(), "Closing the database").catch(() => {});
+		if (database) await withTimeout(database.close(), "Closing the database", timeoutMs).catch(() => {});
 	}
 }
 
@@ -535,7 +571,12 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 		const key = storageSelectionKey(selection, agentDir);
 		const earlier = checked.get(key);
 		if (earlier !== undefined && inspect === undefined) return { ...earlier.probe, sameAs: earlier.domain };
-		const probe = await probeSelection(selection, { agentDir, domain }, inspect);
+		const probe = await probeSelection(
+			selection,
+			{ agentDir, domain },
+			inspect,
+			options.probeTimeoutMs ?? STORAGE_PROBE_TIMEOUT_MS,
+		);
 		if (earlier === undefined) checked.set(key, { domain, probe });
 		return probe;
 	};
