@@ -335,6 +335,21 @@ test("worker help and refused command lines exit without loading the workflows p
 	assert.deepEqual(broken, { code: 1, out: [], err: ["Error: the workflows package did not load"] });
 });
 
+test("worker start passes --provider-id on to the host, refuses an empty one, and leaves the default to the host (#4803)", async () => {
+	const fake = fakeModule();
+	const host = await started(["start", "--provider-id", "pod-7"], fake);
+	assert.equal(fake.given[0]?.providerId, "pod-7");
+	host.signals.emit("SIGTERM", "SIGTERM");
+	assert.equal(await host.exit, 0);
+	const plain = fakeModule();
+	const unset = await started(["start"], plain);
+	assert.equal(plain.given[0]?.providerId, undefined);
+	unset.signals.emit("SIGTERM", "SIGTERM");
+	assert.equal(await unset.exit, 0);
+	refused(["start", "--provider-id", ""], "--provider-id");
+	refused(["status", "--provider-id", "x"], "--provider-id");
+});
+
 test("worker status refuses every start-only option, and labels may hold '=' or nothing (#4768)", () => {
 	for (const option of ["--label", "--host-id", "--idle-exit", "--slots"]) refused(["status", option, "x"], option);
 	refused(["status", "--no-restore"], "--no-restore");

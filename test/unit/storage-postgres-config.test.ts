@@ -197,6 +197,65 @@ test("numbers ? parameters only outside literals, quoted identifiers, dollar quo
 	for (const [sql, numbered] of cases) assert.equal(numberPlaceholders(sql), numbered, sql);
 });
 
+test("leaves ? alone inside dollar quotes whose tags hold any non-ASCII character (#4834)", () => {
+	const cases: [string, string][] = [
+		["SELECT $😀$ a ? b $😀$, ?", "SELECT $😀$ a ? b $😀$, $1"],
+		["SELECT $·$?$·$, ?", "SELECT $·$?$·$, $1"],
+		["SELECT $a·1$?$a·1$, ?", "SELECT $a·1$?$a·1$, $1"],
+		["SELECT x·$a$ + ? FROM (SELECT ?::int AS x·$a$) s", "SELECT x·$a$ + $1 FROM (SELECT $2::int AS x·$a$) s"],
+		["SELECT 😀E'\\', ?", "SELECT 😀E'\\', $1"],
+	];
+	for (const [sql, numbered] of cases) assert.equal(numberPlaceholders(sql), numbered, sql);
+});
+
+test("a ? right after an identifier becomes a parameter separate from it (#4834)", () => {
+	const cases: [string, string][] = [
+		["SELECT x?", "SELECT x $1"],
+		["SELECT col?, ?", "SELECT col $1, $2"],
+		["SELECT x·?, 😀?", "SELECT x· $1, 😀 $2"],
+		["SELECT 1 WHERE a.b=?", "SELECT 1 WHERE a.b=$1"],
+		["SELECT (?)+?", "SELECT ($1)+$2"],
+		["SELECT ? x", "SELECT $1 x"],
+	];
+	for (const [sql, numbered] of cases) assert.equal(numberPlaceholders(sql), numbered, sql);
+});
+
+test("a ? anywhere inside a dollar-quoted string never changes the parameter count, and a parameter after an identifier stays separate (#4834)", () => {
+	// mulberry32: a fixed seed makes every failure reproducible.
+	let state = 4834;
+	const random = () => {
+		state = (state + 0x6d2b79f5) | 0;
+		let t = Math.imul(state ^ (state >>> 15), 1 | state);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+	const pick = (choices: string[]) => choices[Math.floor(random() * choices.length)] as string;
+	const tagStart = ["a", "Z", "_", "é", "·", "😀", "中", "٣", "\u00a0", "\u2028", "€"];
+	const tagContinue = [...tagStart, "0", "9"];
+	const body = ["x", " ", "'", '"', "-", "/", "*", "$", "\\", "\n", "·", "😀", "?", "E", "1"];
+	const before = [" ", ",", "(", "\n", "="];
+	const word = ["x", "·", "😀", "1", "_"];
+	const lead = ["", " ", "(", "=", ...word];
+	let checked = 0;
+	while (checked < 2000) {
+		const length = Math.floor(random() * 4);
+		let name = length === 0 ? "" : pick(tagStart);
+		for (let i = 1; i < length; i++) name += pick(tagContinue);
+		const tag = `$${name}$`;
+		const text = Array.from({ length: Math.floor(random() * 12) }, () => pick(body));
+		const at = Math.floor(random() * (text.length + 1));
+		const inside = [...text.slice(0, at), "?", ...text.slice(at)].join("");
+		const quoted = `${tag}${inside}${tag}`;
+		// The body must not close the quote early.
+		if (quoted.indexOf(tag, tag.length) !== tag.length + inside.length) continue;
+		const last = pick(lead);
+		const sql = `SELECT${pick(before)}${quoted}, ${last}?`;
+		const separator = word.includes(last) ? " " : "";
+		assert.equal(numberPlaceholders(sql), `${sql.slice(0, -1)}${separator}$1`, sql);
+		checked++;
+	}
+});
+
 test("the Postgres adapter checks the options settings give it before connecting (#4793)", async () => {
 	const context = { agentDir: "/nonexistent", domain: "journal" } as const;
 	const url = "postgres://atomic@127.0.0.1:1/atomic";
