@@ -87,6 +87,8 @@ test("a malformed concurrency is refused before the transaction begins (#4793)",
 		{ kind: "fenced" },
 		{ kind: "fenced", audit: "" },
 		{ kind: "fenced", audit: 1 },
+		null,
+		"serial",
 	];
 	for (const concurrency of malformed) {
 		await assert.rejects(
