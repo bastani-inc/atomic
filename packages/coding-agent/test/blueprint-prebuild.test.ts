@@ -51,6 +51,7 @@ import {
 } from "../src/core/worktree-snapshot/seeds.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
+import { forThisHost } from "./helpers/blueprint-fixtures.js";
 
 useTemporaryAgentDir();
 
@@ -96,7 +97,7 @@ async function checkout(
 	return sandbox.remoteWithClone("repo", {
 		".gitignore": "node_modules/\nbuild/\n.env\nid_rsa\n",
 		"README.md": "hello\n",
-		".atomic/blueprint.yaml": blueprint,
+		".atomic/blueprint.yaml": forThisHost(blueprint),
 	});
 }
 
@@ -204,7 +205,7 @@ describe("atomic blueprint prebuild (#4748)", () => {
 			assert.equal(first.status, "built");
 			const manifest = readFileSync(seedManifestPath(storeDir(), repositoryIdOf([remote])), "utf8");
 
-			sandbox.write(join(clone, ".atomic", "blueprint.yaml"), "maintenance: exit 3\n");
+			sandbox.write(join(clone, ".atomic", "blueprint.yaml"), forThisHost("maintenance: exit 3\n"));
 			await sandbox.commitAll(clone, "break the build");
 			const failed = await prebuild(clone, true);
 
