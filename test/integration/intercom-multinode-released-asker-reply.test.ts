@@ -99,19 +99,25 @@ function replyTo(released: ReleasedAsker, text: string, messageId?: string) {
 	});
 }
 
-/** Restart node A's broker in an orderly way, and reconnect the owner as the same host session. */
+/**
+ * Restart node A's broker in an orderly way, and reconnect the owner as the same host session. The owner records
+ * handoffs from before it registers: the new broker hands a pending reply over right after `registered`.
+ */
 async function restartOwnerBroker(
 	released: ReleasedAsker,
 	answer: Answer,
 ): Promise<{ owner: TwoBrokerClient; handoffs: ReleasedChildReply[] }> {
 	await harness.shutdownBroker("a");
 	await harness.startBroker("a");
+	let handoffs: ReleasedChildReply[] = [];
 	const owner = await harness.connect("a", released.owner.name, {
 		returnAddress: released.owner.returnAddress,
 		preferredSessionId: released.ownerSessionId,
 		supervisorOwnerToken: released.ownerToken,
+		beforeConnect: (client) => {
+			handoffs = recordHandoffs(client, answer);
+		},
 	});
-	const handoffs = recordHandoffs(owner, answer);
 	await owner.client.reserveReleasedChildren([{ childName: released.childName, wake: true }]);
 	return { owner, handoffs };
 }
