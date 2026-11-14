@@ -108,7 +108,7 @@ Protection includes the tags and survives repeated compaction, even if the plann
 - Tags in tool results have no effect. Restate important file or fetched content in your own message.
 - Protected content counts toward the keep target. Tag constraints, not material: protecting more leaves less room for surrounding context.
 
-Protection is best effort within a budget. Compaction always succeeds and never grows because of `keepContext`: tags change which lines survive, not whether compaction fits. Protected spans may fill at most `compaction.keepContextShare` (default `0.5`) of the keep target, in both lines and characters. Past that, compaction releases whole spans until the rest fit, in this order:
+Protection is best effort within a budget. Compaction always succeeds and never grows because of `keepContext`: tags change which lines survive, not whether compaction fits. Protected spans may fill at most `compaction.keepContextShare` (default `0.5`) of the keep target, in both lines and characters. When compaction has to start a fresh context window, protection is also capped at that share of the model's context window. Past that, compaction releases whole spans until the rest fit, in this order:
 
 1. Older copies of a span repeated later, compared after whitespace normalization. Restating a constraint does not add protection.
 2. The oldest spans.

@@ -45,26 +45,38 @@ function lineChars(lines: readonly string[], lineNumber: number): number {
  * normalization), then the oldest spans, then the {@link KEEP_CONTEXT_RECENT_SPANS} most recent
  * spans, then spans in the region's latest user message. A released span becomes ordinary content
  * for the planner to rank; this step never unprotects part of one.
+ *
+ * `maxProtectedChars` tightens the character budget further, for a caller that must fit a model
+ * window. Spans released by an earlier call stay released and keep their reported reason.
  */
-export function releaseKeepContextSpans(region: NumberedRegion, keepTarget: number, share: number): NumberedRegion {
+export function releaseKeepContextSpans(
+	region: NumberedRegion,
+	keepTarget: number,
+	share: number,
+	maxProtectedChars = Number.POSITIVE_INFINITY,
+): NumberedRegion {
 	const { lines } = region;
 	const protectedLines = new Set(region.protectedLineNumbers ?? []);
 	const lineBudget = Math.floor(keepTarget * share);
 	const totalChars = lines.reduce((sum, line) => sum + line.length + 1, 0);
-	const charBudget = lines.length === 0 ? 0 : Math.floor((totalChars * keepTarget * share) / lines.length);
+	const charBudget = Math.min(
+		maxProtectedChars,
+		lines.length === 0 ? 0 : Math.floor((totalChars * keepTarget * share) / lines.length),
+	);
 	let protectedChars = 0;
 	for (const line of protectedLines) protectedChars += lineChars(lines, line);
 	const fits = (): boolean => protectedLines.size <= lineBudget && protectedChars <= charBudget;
 	if (fits()) return region;
 
-	const spans = keepContextSpans(lines);
+	// A span an earlier call released is no longer protected and is not released again.
+	const spans = keepContextSpans(lines).filter((span) => protectedLines.has(span.start));
 	const latestUser = latestUserHeaderLine(lines);
 	const firstRecent = spans.length - KEEP_CONTEXT_RECENT_SPANS;
 	/** 0: older spans, 1: the most recent spans, 2: spans in the latest user message. */
 	const tier = (span: KeepContextSpan, index: number): number =>
 		latestUser !== undefined && span.messageHeaderLine === latestUser ? 2 : index >= firstRecent ? 1 : 0;
 
-	const released: ReleasedRange[] = [];
+	const released: ReleasedRange[] = [...(region.releasedRanges ?? [])];
 	const release = (span: KeepContextSpan, reason: ReleasedRange["reason"]): void => {
 		for (let line = span.start; line <= span.end; line++) {
 			if (protectedLines.delete(line)) protectedChars -= lineChars(lines, line);
@@ -88,7 +100,7 @@ export function releaseKeepContextSpans(region: NumberedRegion, keepTarget: numb
 		}
 	}
 
-	if (released.length === 0) return region;
+	if (released.length === (region.releasedRanges?.length ?? 0)) return region;
 	released.sort((left, right) => left.start - right.start);
 	return {
 		...region,

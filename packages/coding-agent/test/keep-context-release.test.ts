@@ -359,3 +359,24 @@ test("a session whose keepContext spans alone exceed the context window still co
 	assert.ok(result.releasedRanges.length > 0);
 	assert.ok(result.text.includes("latest constraint line 0"));
 });
+
+test("the fresh rung caps protection at the window, not only the transcript (#4794)", async () => {
+	const contextWindow = 4_000;
+	// Nine distinct spans of about 3,000 tokens each: a quarter of the transcript is still above the window.
+	const big = (label: string) =>
+		span(...Array.from({ length: 100 }, (_, line) => `${label} constraint ${line} ${"x".repeat(110)}`));
+	const messages = Array.from({ length: 9 }, (_, index) => (index % 2 === 0 ? user : assistant)(big(`span ${index}`)));
+	const prepared = prepareCompactionBoundary(entries(messages), DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 });
+	assert.ok(prepared);
+	const stillProtected = textChars(prepared.region.lines, prepared.region.protectedLineNumbers ?? []);
+	assert.ok(stillProtected / 4 > contextWindow, "the transcript budget alone leaves more than the window protected");
+
+	const result = await runVerbatimCompaction(
+		prepared,
+		{ ...model, contextWindow },
+		run({ streamFn: createFauxStreamFn([{ error: "provider unavailable" }]).streamFn, urgency: "load_bearing" }),
+	);
+	assert.equal(result.rung, "fresh");
+	assert.ok(result.stats.tokensAfter <= contextWindow / 2, `kept ${result.stats.tokensAfter} tokens`);
+	assert.ok(result.releasedRanges.length > (prepared.region.releasedRanges?.length ?? 0));
+});
