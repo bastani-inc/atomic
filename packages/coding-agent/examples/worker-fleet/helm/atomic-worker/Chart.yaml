@@ -1,0 +1,5 @@
+apiVersion: v2
+name: atomic-worker
+description: Atomic worker hosts for a shared workflow database, scaled from zero by KEDA on Atomic's scaling signal.
+type: application
+version: 0.1.0

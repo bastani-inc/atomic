@@ -639,6 +639,7 @@ export type {
 	SharedPoolFailure,
 	SharedPoolFleet,
 	SharedPoolFleetController,
+	SharedPoolFleetScaling,
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolHostReport,
@@ -744,11 +745,14 @@ export declare function startWorkflowWorkerHost(
  * The worker hosts registered in a shared journal and the pool stats of the running or paused roots they serve, with the
  * fleet's queue and the shared store's state (#4768). Default journal: the one this machine selects for workflow runs.
  * Setup problems reject; a store that cannot be read, or does not answer within 5 s, resolves with `fleet.store.state`
- * `"unknown"` instead.
+ * `"unknown"` instead. `scaling` is the fleet's scaling signal under `policy` (the fleet controller's defaults): the hosts
+ * its policy wants, and the queue and slots behind it. `probeWrites: false` only reads.
  */
 export declare function readWorkflowWorkerFleet(options?: {
 	readonly journal?: import("./workers/worker-host-types.js").SharedJournalSelection;
 	readonly agentDir?: string;
+	readonly policy?: import("./workers/fleet-types.js").WorkerFleetPolicyOptions;
+	readonly probeWrites?: boolean;
 }): Promise<import("./durable/journal/shared-pool-types.js").SharedPoolFleet>;
 /**
  * A fleet that {@link readWorkflowWorkerFleet} read, as `atomic worker status` prints it (#4768): the shared store when
@@ -776,6 +780,29 @@ export type {
 export declare function startWorkflowFleetController(
 	options: import("./workers/fleet-types.js").WorkflowFleetControllerOptions,
 ): Promise<import("./workers/fleet-types.js").WorkflowFleetController>;
+export type {
+	CommandHostState,
+	CommandListFormat,
+	CommandProvisionerOptions,
+	CommandSteps,
+	WorkerHostProvisionerConfig,
+	WorkerProvisionerErrorCode,
+} from "./workers/provisioners/types.js";
+/**
+ * The command worker host provisioner (#4768), after checking its options: your own up, down and list commands, or a
+ * preset for `az`, `aws`, `gcloud`, `kubectl` or `gh`, run without a shell with the tool's own credentials. A failed call
+ * rejects with a {@link WorkerProvisionerError}; bad options throw a `TypeError` naming the option.
+ */
+export declare function createWorkerHostProvisioner(
+	config: import("./workers/provisioners/types.js").WorkerHostProvisionerConfig,
+): import("./workers/fleet-types.js").WorkerHostProvisioner;
+/** A command provisioner's call that failed (#4768). Its message never carries the CLI's arguments or secrets. */
+export declare class WorkerProvisionerError extends Error {
+	readonly name: "WorkerProvisionerError";
+	readonly code: import("./workers/provisioners/types.js").WorkerProvisionerErrorCode;
+	/** The CLI's exit code, when it exited. */
+	readonly exitCode?: number;
+}
 export type {
 	RestoredWorkspace,
 	WorkspaceHookOptions,
