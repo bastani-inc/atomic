@@ -1,6 +1,19 @@
-import { copyFile, lstat, mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
+import {
+	copyFile,
+	type FileHandle,
+	lstat,
+	mkdir,
+	mkdtemp,
+	open,
+	readFile,
+	rename,
+	rm,
+	stat,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { snapshotBlobHashes } from "./blob-store.ts";
 import { computeEnvironmentHash, sha256Hex, snapshotBlob } from "./env-hash.ts";
 import {
@@ -19,7 +32,7 @@ import {
 	redactUrlCredentials,
 	runGit,
 } from "./git.ts";
-import { canonicalizeWorktreePath } from "./paths.ts";
+import { canonicalizeWorktreePath, captureIndexPath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { isDeniedSnapshotPath, loadSnapshotPathPolicy, type SnapshotPathPolicy } from "./policy.ts";
 import { resolveWorktreeSnapshotSettings, type WorktreeSnapshotSettingsInput } from "./settings.ts";
 import type {
@@ -144,6 +157,33 @@ export interface WorkingTreeState {
 	readonly omitted: readonly WorktreeSnapshotOmission[];
 }
 
+interface WorkingTreeOptions {
+	readonly signal?: AbortSignal;
+	readonly neutral?: boolean;
+	readonly seedTree?: string;
+	readonly attributesFile?: string;
+}
+
+async function userIndexPathOf(root: string, signal?: AbortSignal): Promise<string> {
+	const userIndex = await gitText(["rev-parse", "--git-path", "index"], { cwd: root, signal });
+	return isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
+}
+
+/**
+ * Copies the user's index to `index`, keeping its time: Git trusts a cached entry only when it is older than the index
+ * file, so an entry written in the same instant as a later edit is still read from the file, not taken as unchanged.
+ * A checkout without an index leaves `index` absent.
+ */
+async function seedFromUserIndex(userIndexPath: string, index: string): Promise<void> {
+	try {
+		await copyFile(userIndexPath, index);
+		const { atime, mtimeMs } = await stat(userIndexPath);
+		await utimes(index, atime, new Date(mtimeMs));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+	}
+}
+
 /**
  * Writes the policy-filtered working tree through a private index seeded from `seedTree` (HEAD by default), leaving
  * the user's index, refs and files untouched. A path the policy, settings or caps leave out keeps HEAD's content, or
@@ -156,40 +196,175 @@ export async function writeWorkingTree(
 	settings: WorktreeSnapshotSettings,
 	policy: SnapshotPathPolicy,
 	scratch: string,
-	options: {
-		readonly signal?: AbortSignal;
-		readonly neutral?: boolean;
-		readonly seedTree?: string;
-		readonly attributesFile?: string;
-	},
+	options: WorkingTreeOptions,
+): Promise<WorkingTreeState> {
+	const index = join(scratch, "index");
+	await seedFromUserIndex(await userIndexPathOf(checkout.root, options.signal), index);
+	return writeTreeThrough(index, checkout, settings, policy, options, {
+		refresh: options.seedTree !== undefined,
+		forceAdded: (git) => ignoredStagedOutsideSeed(checkout.root, git, options),
+	});
+}
+
+/** What a persistent capture index was seeded from: the user's index as it was then. */
+interface IndexSeed {
+	readonly size: number;
+	readonly mtimeMs: number;
+	/** The index's last bytes, which end with its checksum. */
+	readonly tail: string;
+}
+
+const CAPTURE_INDEX_VERSION = 1;
+
+/** The user's index as a seed, or null when the checkout has none. */
+async function indexSeedOf(userIndexPath: string): Promise<IndexSeed | null> {
+	let file: FileHandle;
+	try {
+		file = await open(userIndexPath, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw unreadablePathError(userIndexPath, error);
+	}
+	try {
+		const { size, mtimeMs } = await file.stat();
+		const tail = Buffer.alloc(Math.min(size, 32));
+		await file.read(tail, 0, tail.byteLength, size - tail.byteLength);
+		return { size, mtimeMs, tail: tail.toString("hex") };
+	} finally {
+		await file.close();
+	}
+}
+
+/** The seed recorded next to `index`, when it is of this version; anything else reads as none. */
+async function recordedSeedOf(index: string): Promise<IndexSeed | null | undefined> {
+	try {
+		const record = JSON.parse(await readFile(`${index}.json`, "utf8")) as {
+			readonly version?: number;
+			readonly seed?: IndexSeed | null;
+		};
+		return record.version === CAPTURE_INDEX_VERSION ? record.seed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function sameSeed(left: IndexSeed | null, right: IndexSeed | null | undefined): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Captures of one checkout in this process, chained so they take turns with its persistent index. */
+const captureIndexTurns = new Map<string, Promise<void>>();
+
+async function inTurn<T>(key: string, action: () => Promise<T>): Promise<T> {
+	const run = (captureIndexTurns.get(key) ?? Promise.resolve()).then(action);
+	const turn = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	captureIndexTurns.set(key, turn);
+	try {
+		return await run;
+	} finally {
+		if (captureIndexTurns.get(key) === turn) captureIndexTurns.delete(key);
+	}
+}
+
+/**
+ * {@link writeWorkingTree} for a capture, through a private index kept between captures under `storeDir`. Its entries
+ * keep the file times of the last capture's refresh, so unchanged files are not read again; it is reseeded from the
+ * user's index whenever that changed. Any failure with it, such as a corrupt or truncated file, removes it and
+ * captures as {@link writeWorkingTree} does: the tree is always computed from the working files.
+ */
+async function writeCapturedTree(
+	checkout: Checkout,
+	settings: WorktreeSnapshotSettings,
+	policy: SnapshotPathPolicy,
+	scratch: string,
+	storeDir: string,
+	signal?: AbortSignal,
 ): Promise<WorkingTreeState> {
 	const { root } = checkout;
-	const index = join(scratch, "index");
-	const git: GitRunOptions = {
-		cwd: root,
-		env: { GIT_INDEX_FILE: index },
-		signal: options.signal,
-		neutral: options.neutral,
-	};
-	const userIndex = await gitText(["rev-parse", "--git-path", "index"], { cwd: root, signal: options.signal });
+	const [gitDir = "", userIndex = ""] = (
+		await gitText(["rev-parse", "--absolute-git-dir", "--git-path", "index"], { cwd: root, signal })
+	).split("\n");
 	const userIndexPath = isAbsolute(userIndex) ? userIndex : resolve(root, userIndex);
+	const index = captureIndexPath(storeDir, gitDir, root);
+	if (!usableOutside(root, index)) return writeWorkingTree(checkout, settings, policy, scratch, { signal });
+	return inTurn(index, async () => {
+		const working = `${index}.${process.pid}.tmp`;
+		try {
+			const seed = await indexSeedOf(userIndexPath);
+			await mkdir(dirname(index), { recursive: true });
+			const reseed = !sameSeed(seed, await recordedSeedOf(index)) || !(await copyKeepingTime(index, working));
+			if (reseed) {
+				await rm(working, { force: true });
+				await seedFromUserIndex(userIndexPath, working);
+			}
+			const state = await writeTreeThrough(
+				working,
+				checkout,
+				settings,
+				policy,
+				{ signal },
+				{
+					refresh: true,
+					forceAdded: () => ignoredAdditionsToHead(checkout, signal),
+				},
+			);
+			if (reseed) await writeAtomically(`${index}.json`, JSON.stringify({ version: CAPTURE_INDEX_VERSION, seed }));
+			await rename(working, index);
+			return state;
+		} catch {
+			const remove = (files: readonly string[]) =>
+				Promise.all(files.map((file) => rm(file, { force: true }))).catch(() => undefined);
+			await remove([working, `${working}.lock`]);
+			signal?.throwIfAborted();
+			await remove([index, `${index}.json`]);
+			return writeWorkingTree(checkout, settings, policy, scratch, { signal });
+		}
+	});
+}
+
+/**
+ * Whether a private index at `index` may be used for the checkout at `root`: its path resolves, and it is outside the
+ * checkout, which would otherwise capture the index's own files.
+ */
+function usableOutside(root: string, index: string): boolean {
+	let real: string;
 	try {
-		await copyFile(userIndexPath, index);
-		// Git trusts a cached entry only when it is older than the index file. The copy keeps the original's time, so an
-		// entry written in the same instant as a later edit is still read from the file, not taken as unchanged.
-		const { atime, mtimeMs } = await stat(userIndexPath);
-		await utimes(index, atime, new Date(mtimeMs));
+		real = canonicalizeWorktreePath(index);
+	} catch {
+		return false;
+	}
+	const fromRoot = relative(root, real);
+	return fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot);
+}
+
+/** Copies `from` to `to` with `from`'s modification time; false when `from` does not exist. */
+async function copyKeepingTime(from: string, to: string): Promise<boolean> {
+	try {
+		await copyFile(from, to);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unreadablePathError(userIndexPath, error);
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
 	}
-	const config = options.attributesFile === undefined ? [] : ["-c", `core.attributesFile=${options.attributesFile}`];
-	await runGit([...config, "read-tree", "--reset", options.seedTree ?? checkout.head], git);
-	if (options.seedTree !== undefined) {
-		await runGit([...config, "update-index", "-q", "--refresh"], { ...git, allowExitCodes: [1] });
-	}
-	const changed = nulFields(
-		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
-	);
+	const { atime, mtime } = await stat(from);
+	await utimes(to, atime, mtime);
+	return true;
+}
+
+async function writeAtomically(file: string, data: string): Promise<void> {
+	const temporary = `${file}.${process.pid}.tmp`;
+	await writeFile(temporary, data);
+	await rename(temporary, file);
+}
+
+/** Files staged in the user's index that an ignore rule matches and the private index, read from the seed, lacks. */
+async function ignoredStagedOutsideSeed(
+	root: string,
+	git: GitRunOptions,
+	options: WorkingTreeOptions,
+): Promise<string[]> {
 	const ignoredInIndex = ["ls-files", "-z", "--cached", "--ignored", "--exclude-standard"];
 	const stagedIgnored = nulFields(
 		(await runGit(ignoredInIndex, { cwd: root, signal: options.signal, neutral: options.neutral })).stdout,
@@ -197,7 +372,57 @@ export async function writeWorkingTree(
 	const seededIgnored = new Set(
 		stagedIgnored.length === 0 ? [] : nulFields((await runGit(ignoredInIndex, git)).stdout),
 	);
-	const forceAdded = stagedIgnored.filter((path) => !seededIgnored.has(path));
+	return stagedIgnored.filter((path) => !seededIgnored.has(path));
+}
+
+/**
+ * Files staged in the user's index as additions to HEAD that an ignore rule matches (`git add -f`): one listing of the
+ * staged additions, then the ignore rules on those paths alone.
+ */
+async function ignoredAdditionsToHead(checkout: Checkout, signal?: AbortSignal): Promise<string[]> {
+	const { root, head } = checkout;
+	const added = nulFields(
+		(
+			await runGit(["diff-index", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", head], {
+				cwd: root,
+				signal,
+			})
+		).stdout,
+	);
+	if (added.length === 0) return [];
+	const ignored = await runGit(["check-ignore", "--no-index", "--stdin", "-z"], {
+		cwd: root,
+		signal,
+		input: `${added.join("\0")}\0`,
+		allowExitCodes: [1],
+	});
+	return nulFields(ignored.stdout);
+}
+
+async function writeTreeThrough(
+	index: string,
+	checkout: Checkout,
+	settings: WorktreeSnapshotSettings,
+	policy: SnapshotPathPolicy,
+	options: WorkingTreeOptions,
+	how: { readonly refresh: boolean; readonly forceAdded: (git: GitRunOptions) => Promise<string[]> },
+): Promise<WorkingTreeState> {
+	const { root } = checkout;
+	const git: GitRunOptions = {
+		cwd: root,
+		env: { GIT_INDEX_FILE: index },
+		signal: options.signal,
+		neutral: options.neutral,
+	};
+	const config = options.attributesFile === undefined ? [] : ["-c", `core.attributesFile=${options.attributesFile}`];
+	await runGit([...config, "read-tree", "--reset", options.seedTree ?? checkout.head], git);
+	if (how.refresh) {
+		await runGit([...config, "update-index", "-q", "--refresh"], { ...git, allowExitCodes: [1] });
+	}
+	const changed = nulFields(
+		(await runGit([...config, "diff-files", "-z", "--name-only", "--no-renames"], git)).stdout,
+	);
+	const forceAdded = await how.forceAdded(git);
 	const untracked = [
 		...nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout).filter(
 			(path) => !path.endsWith("/"),
@@ -453,7 +678,14 @@ async function captureCheckout(
 			: candidate;
 	return withScratchDirectory(async (scratch) => {
 		const policy = await loadSnapshotPathPolicy(root);
-		const state = await writeWorkingTree(checkout, settings, policy, scratch, { signal });
+		const state = await writeCapturedTree(
+			checkout,
+			settings,
+			policy,
+			scratch,
+			resolve(defaultWorktreeSnapshotStoreDir()),
+			signal,
+		);
 		const omissions = pathOmissionKeys(state.omitted);
 		if (
 			previous &&

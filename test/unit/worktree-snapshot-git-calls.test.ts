@@ -92,6 +92,8 @@ const count = (name: string) =>
 		const [first, second] = rest.filter((arg) => !arg.startsWith("-"));
 		return name.includes(" ") ? `${first} ${second}` === name : first === name;
 	}).length;
+/** Invocations of `update-index` that stage files, not the refresh every capture runs on its private index. */
+const admissions = () => invocations().filter((rest) => rest[0] === "update-index" && rest.includes("--add")).length;
 const reset = () => {
 	recorded.spawns.length = 0;
 };
@@ -102,15 +104,15 @@ function captured(result: WorktreeSnapshotCapture): WorktreeSnapshot {
 }
 
 describe("capture operation counts", () => {
-	test("a tree with nothing to admit never runs update-index", async () => {
+	test("a tree with nothing to admit never stages files with update-index", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		reset();
 		captured(await captureWorktreeSnapshot(clone));
-		assert.equal(count("update-index"), 0);
+		assert.equal(admissions(), 0);
 		sandbox.write(join(clone, "x.txt"), "x\n");
 		reset();
 		captured(await captureWorktreeSnapshot(clone));
-		assert.equal(count("update-index"), 1);
+		assert.equal(admissions(), 1);
 	});
 
 	test("a capture that leaves files out resets nothing: its index already holds HEAD's content (#4245)", async () => {
@@ -120,7 +122,7 @@ describe("capture operation counts", () => {
 		const result = captured(await captureWorktreeSnapshot(clone));
 		assert.deepEqual(result.omitted, [{ reason: "denied", path: ".env.local" }]);
 		assert.equal(count("reset"), 0);
-		assert.equal(count("update-index"), 0);
+		assert.equal(admissions(), 0);
 	});
 
 	test("a new capture with unchanged unpushed history reuses the bundle without creating another (#4245)", async () => {

@@ -553,7 +553,7 @@ interface BlueprintCacheKeys {
 | `stores` | declared `kind: store` paths | `envHash` + OS + arch + declaration digest | package managers verify their stores |
 | `build` | `<storeDir>/seeds/<repositoryId>/<declared kind: build path>` | same inputs + `build` | stable path; trusted writer only |
 | `git` | `<storeDir>/repositories/<repositoryId>.git` | repository id + OS, prefix restore | append-only; fetch fills gaps; restore verifies trees |
-| `atomic` | the extension transpile cache dir | Atomic version + OS + arch | 10–12 s per new `HOME` (§4.2) when S7's seed does not cover a user extension |
+| `atomic` | the extension transpile cache dir | Atomic version + OS + arch | 10–12 s per new `HOME` (§4.2) for user extensions and source checkouts; installed packages import builtins natively |
 
 `atomic blueprint cache-key [dir] [--format text|json|github-output]` prints them; `github-output` writes
 `<name>-key`, `<name>-restore-prefix`, `<name>-paths` for `$GITHUB_OUTPUT`.
