@@ -25,6 +25,7 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"INTEGER PRIMARY KEY AUTOINCREMENT",
 		"BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
 	],
+	["byteOrderCollation", (d) => d.byteOrderCollation, "", ' COLLATE "C"'],
 	["tableOptions", (d) => d.tableOptions, " STRICT", ""],
 	["withoutRowidTableOptions", (d) => d.withoutRowidTableOptions, " STRICT, WITHOUT ROWID", ""],
 	[
