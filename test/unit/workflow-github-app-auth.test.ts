@@ -388,7 +388,7 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 		const privateKeyFile = "auth.githubApp.privateKeyFile must be a non-empty string.";
 		const repository = "auth.githubApp.repository must be owner/name.";
 		const host = "auth.githubApp.host must be a host name, such as github.com.";
-		const apiUrl = "auth.githubApp.apiUrl must be an http or https URL.";
+		const apiUrl = "auth.githubApp.apiUrl must be an https URL, or http on localhost.";
 		const cases: [object, string][] = [
 			[{ auth: "app" }, "auth must be an object with githubApp."],
 			[{ auth: null }, "auth must be an object with githubApp."],
@@ -417,6 +417,8 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 			[app({ host: 5 }), host],
 			[app({ apiUrl: "ftp://x" }), apiUrl],
 			[app({ apiUrl: "see https://x" }), apiUrl],
+			[app({ apiUrl: "http://ghe.acme.test/api/v3" }), apiUrl],
+			[app({ apiUrl: "http://127.0.0.1.evil.test" }), apiUrl],
 		];
 		for (const [options, message] of cases)
 			assert.throws(
@@ -428,6 +430,12 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 		createWorkerHostProvisioner({
 			...GH_PRESET,
 			...app({ appId: 1, installationId: 1, repository: "a/b", host: "ghe.acme.test:8443" }),
+		});
+		createWorkerHostProvisioner({ ...GH_PRESET, ...app({ apiUrl: "http://localhost:8080" }) });
+		createWorkerHostProvisioner({ ...GH_PRESET, ...app({ apiUrl: "http://[::1]/api/v3" }) });
+		createWorkerHostProvisioner({
+			...GH_PRESET,
+			...app({ apiUrl: "https://ghe.acme.test/api/v3" }),
 		});
 	});
 });

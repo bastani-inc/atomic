@@ -88,8 +88,12 @@ export function resolveGitHubApp(options: GitHubAppAuthOptions): GitHubAppSettin
 	if (typeof host !== "string" || !/^[A-Za-z0-9.-]+(?::\d+)?$/.test(host))
 		throw invalid("host must be a host name, such as github.com.");
 	const apiUrl = value("apiUrl") ?? defaultApiUrl(host);
-	if (typeof apiUrl !== "string" || !/^https?:\/\/[^/]/.test(apiUrl))
-		throw invalid("apiUrl must be an http or https URL.");
+	// The app's JWT and its tokens cross this connection: plain HTTP only to this machine.
+	if (
+		typeof apiUrl !== "string" ||
+		!/^(?:https:\/\/[^/]|http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?:[:/]|$))/.test(apiUrl)
+	)
+		throw invalid("apiUrl must be an https URL, or http on localhost.");
 	return {
 		appId: String(appId),
 		installationId: installation,

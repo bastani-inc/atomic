@@ -18,8 +18,10 @@ serviceAccount:
   annotations: {}
 # Labels for the worker and metrics pods, such as azure.workload.identity/use: "true" for AKS Workload Identity.
 podLabels: {}
-# A ServiceAccount, Role and RoleBinding for `atomic worker controller` with presets/kubernetes.json, instead of KEDA:
-# run the controller in a pod with serviceAccountName <release>-controller, and kubectl uses its in-cluster token.
+# Scale with `atomic worker controller` and presets/kubernetes.json instead of KEDA: the chart leaves out the
+# ScaledObject and adds a ServiceAccount, Role and RoleBinding. Run the controller in a pod with serviceAccountName
+# <release>-controller, and kubectl uses its in-cluster token. Install the release in its own namespace: a Role cannot
+# limit `patch` on pods to this Deployment's pods, since their names are not known in advance.
 controllerRbac: false
 # Children each worker pod runs at once; the scaling signal assumes the same number.
 workersPerHost: 4
