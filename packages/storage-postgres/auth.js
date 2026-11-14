@@ -15,7 +15,7 @@ import { StorageConfigError } from "@bastani/atomic/storage";
 const REFRESH_MARGIN_MS = 5 * 60_000;
 /** `gcloud auth print-access-token` prints no expiry; it never prints a token with under ~4 minutes left. */
 const GCLOUD_CACHE_MS = 60_000;
-/** An RDS IAM token's lifetime when its own `X-Amz-Expires` cannot be read. */
+/** An RDS IAM token's lifetime from when the CLI signs it. */
 const AWS_TOKEN_LIFETIME_MS = 15 * 60_000;
 const DEFAULT_TIMEOUTS = /** @type {Timeouts} */ ({ metadata: 5_000, cli: 30_000 });
 /** The longest single line of a CLI's or endpoint's failure text an error carries. */
@@ -28,13 +28,11 @@ const AZURE_RESOURCE = "https://ossrdbms-aad.database.windows.net";
  */
 const SAFE_ARGUMENT = /^[A-Za-z0-9_.@+:=/][A-Za-z0-9_.@+:=/-]*$/;
 
-/** Bearer tokens, SigV4 signatures and long opaque strings a CLI might echo in a failure. */
-const CREDENTIAL_SHAPES = [
-	/eyJ[\w-]*(?:\.[\w-]*)*/g,
-	/ya29\.[\w.-]+/g,
-	/X-Amz-(?:Signature|Credential|Security-Token)=[^&\s]+/g,
-	/[A-Za-z0-9+/_=-]{40,}/g,
-];
+/**
+ * A run of text long enough to be a bearer token, SigV4 signature or assertion a CLI might echo in a failure. Words,
+ * error codes and short identifiers are shorter.
+ */
+const CREDENTIAL_SHAPE = /[^\s'"`]{32,}/g;
 
 /**
  * @param {string} reason
@@ -52,12 +50,12 @@ function detail(/** @type {string} */ text) {
 		.find(Boolean);
 	if (line === undefined) return "no output";
 	const bounded = line.length > DETAIL_LIMIT ? `${line.slice(0, DETAIL_LIMIT)}…` : line;
-	return CREDENTIAL_SHAPES.reduce((value, shape) => value.replace(shape, "[redacted]"), bounded);
+	return bounded.replace(CREDENTIAL_SHAPE, "[redacted]");
 }
 
 /** A non-empty string token, or a failure that does not repeat the output it came from. */
 function requireToken(/** @type {string | undefined} */ token, /** @type {string} */ what) {
-	if (typeof token !== "string" || token.trim() === "") throw new Error(`returned no ${what}`);
+	if (typeof token !== "string" || !token.trim()) throw new Error(`returned no ${what}`);
 	return token.trim();
 }
 
@@ -82,9 +80,9 @@ function refreshBefore(expiresAt) {
 /** An absolute expiry from `expires_on` (epoch seconds) or `expires_in` (seconds from now). */
 function expiryOf(/** @type {Record<string, string | number | undefined>} */ body) {
 	const on = Number(body.expires_on);
-	if (Number.isFinite(on) && on > 0) return on * 1000;
+	if (on > 0) return on * 1000;
 	const inSeconds = Number(body.expires_in);
-	if (Number.isFinite(inSeconds) && inSeconds > 0) return Date.now() + inSeconds * 1000;
+	if (inSeconds > 0) return Date.now() + inSeconds * 1000;
 	throw new Error("returned a token without an expiry");
 }
 
@@ -102,7 +100,7 @@ async function requestToken(url, init, timeoutMs) {
 		text = await response.text();
 	} catch (error) {
 		const name = /** @type {Error} */ (error).name;
-		if (name === "TimeoutError" || name === "AbortError") throw new Error(`timed out after ${timeoutMs} ms`);
+		if (name === "TimeoutError") throw new Error(`timed out after ${timeoutMs} ms`);
 		const cause = /** @type {{ cause?: { code?: string } }} */ (error).cause;
 		throw new Error(`unreachable (${cause?.code ?? name})`);
 	}
@@ -220,25 +218,12 @@ function azureSources() {
 			const token = requireToken(/** @type {string | undefined} */ (body.accessToken), "accessToken");
 			// `expires_on` (epoch seconds) since az 2.54; older versions print only a local-time `expiresOn`.
 			const on = Number(body.expires_on);
-			const expiresAt = Number.isFinite(on) && on > 0 ? on * 1000 : Date.parse(String(body.expiresOn).replace(" ", "T"));
+			const expiresAt = on > 0 ? on * 1000 : Date.parse(String(body.expiresOn).replace(" ", "T"));
 			if (!Number.isFinite(expiresAt)) throw new Error("returned a token without an expiry");
 			return { token, refreshAt: refreshBefore(expiresAt) };
 		},
 	});
 	return sources;
-}
-
-/**
- * The expiry an RDS IAM token states: its `X-Amz-Date` plus `X-Amz-Expires`, else 15 minutes from now.
- * @param {string} token
- */
-function awsTokenExpiry(token) {
-	const query = new URLSearchParams(token.slice(token.indexOf("?") + 1));
-	const date = query.get("X-Amz-Date")?.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/);
-	const seconds = Number(query.get("X-Amz-Expires"));
-	if (!date || !(seconds > 0)) return Date.now() + AWS_TOKEN_LIFETIME_MS;
-	const [, year, month, day, hour, minute, second] = date.map(Number);
-	return Date.UTC(year, month - 1, day, hour, minute, second) + seconds * 1000;
 }
 
 /**
@@ -257,7 +242,7 @@ function awsSources(host, port, user) {
 			name: "aws CLI",
 			async fetch(timeouts) {
 				const token = requireToken((await runCli("aws", args, timeouts.cli)).split(/\r?\n/)[0], "token");
-				return { token, refreshAt: refreshBefore(awsTokenExpiry(token)) };
+				return { token, refreshAt: refreshBefore(Date.now() + AWS_TOKEN_LIFETIME_MS) };
 			},
 		},
 	];
@@ -330,7 +315,7 @@ export function createCloudPasswordProvider(options) {
 		for (const source of sources) {
 			try {
 				const issued = await source.fetch(timeouts);
-				cached = issued.refreshAt > Date.now() ? issued : undefined;
+				cached = issued;
 				return issued.token;
 			} catch (error) {
 				failures.push(`${source.name}: ${/** @type {Error} */ (error).message}`);

@@ -21,6 +21,8 @@ interface FakeCli {
 	readonly dir: string;
 	/** The argument lists of every invocation, in order. */
 	calls(): string[][];
+	/** How many invocations ran to completion. */
+	finished(): number;
 }
 
 /**
@@ -45,6 +47,7 @@ setTimeout(() => {
 	if (behaviour.stdout) process.stdout.write(behaviour.stdout);
 	if (behaviour.stderr) process.stderr.write(behaviour.stderr);
 	process.exitCode = behaviour.exitCode ?? 0;
+	appendFileSync(${JSON.stringify(log)}, JSON.stringify(["finished"]) + "\\n");
 }, behaviour.delayMs ?? 0);
 `,
 		);
@@ -56,13 +59,15 @@ setTimeout(() => {
 		}
 	}
 	vi.stubEnv("PATH", dir);
+	const entries = () =>
+		readFileSync(log, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as string[]);
 	return {
 		dir,
-		calls: () =>
-			readFileSync(log, "utf8")
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => JSON.parse(line) as string[]),
+		calls: () => entries().filter((entry) => entry[0] !== "finished"),
+		finished: () => entries().filter((entry) => entry[0] === "finished").length,
 	};
 }
 
@@ -175,6 +180,7 @@ test("Azure Entra takes the managed identity token from IMDS and caches it until
 	assert.equal(url.pathname, "/metadata/identity/oauth2/token");
 	assert.equal(url.searchParams.get("resource"), "https://ossrdbms-aad.database.windows.net");
 	assert.equal(url.searchParams.get("client_id"), "user-assigned-id");
+	assert.equal(url.searchParams.get("api-version"), "2018-02-01");
 	assert.equal(imds.requests[0].headers.metadata, "true");
 });
 
@@ -216,7 +222,7 @@ test("Azure Entra exchanges an AKS workload identity token for a database token 
 	);
 	const dir = mkdtempSync(join(tmpdir(), "atomic-pg-federated-"));
 	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-	writeFileSync(join(dir, "token"), "federated-assertion");
+	writeFileSync(join(dir, "token"), "federated-assertion\n");
 	vi.stubEnv("AZURE_FEDERATED_TOKEN_FILE", join(dir, "token"));
 	vi.stubEnv("AZURE_CLIENT_ID", "client-1");
 	vi.stubEnv("AZURE_TENANT_ID", "tenant-1");
@@ -231,6 +237,8 @@ test("Azure Entra exchanges an AKS workload identity token for a database token 
 	assert.equal(form.get("client_id"), "client-1");
 	assert.equal(form.get("scope"), "https://ossrdbms-aad.database.windows.net/.default");
 	assert.equal(form.get("grant_type"), "client_credentials");
+	assert.equal(form.get("client_assertion_type"), "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+	assert.equal(request.headers["content-type"], "application/x-www-form-urlencoded");
 });
 
 test("Azure Entra uses the App Service and Container Apps identity endpoint when one is set (#4793)", async () => {
@@ -248,6 +256,8 @@ test("Azure Entra uses the App Service and Container Apps identity endpoint when
 	const url = new URL(endpoint.requests[0].url, endpoint.origin);
 	assert.equal(url.pathname, "/msi/token");
 	assert.equal(url.searchParams.get("resource"), "https://ossrdbms-aad.database.windows.net");
+	assert.equal(url.searchParams.get("api-version"), "2019-08-01");
+	assert.equal(url.searchParams.get("client_id"), null);
 	assert.equal(endpoint.requests[0].headers["x-identity-header"], "identity-header-secret");
 });
 
@@ -442,4 +452,231 @@ test("a host or user name a CLI could misread is refused before anything runs (#
 		);
 	}
 	assert.equal(cli.calls().length, 0);
+});
+
+/** The hint of the error a provider's reader rejects with. */
+async function failureHint(password: () => Promise<string>): Promise<string> {
+	const error = await password().then(
+		() => assert.fail("expected the reader to reject"),
+		(rejection: Error) => rejection,
+	);
+	rejectsWithoutSecrets(error, []);
+	return (error as StorageConfigError).hint ?? "";
+}
+
+test("each cloud's failure names every source tried, its reason, and what to do (#4793)", async () => {
+	await noAmbientCloud();
+	fakeCli({ az: { exitCode: 2 }, gcloud: { stdout: "  \n" } });
+	assert.equal(
+		await failureHint(createCloudPasswordProvider({ ...options, auth: "azure-entra" })),
+		"azure-entra found no token (managed identity (IMDS): unreachable (ECONNREFUSED); az CLI: exited with code 2: no output). " +
+			"Run on an Azure host with a managed identity or AKS workload identity, or sign in with `az login`, and grant that principal a database role",
+	);
+	const metadata = await fakeServer((_request, response) => {
+		response.writeHead(503);
+		response.end("unavailable <html>");
+	});
+	vi.stubEnv("GCE_METADATA_HOST", metadata.host);
+	assert.equal(
+		await failureHint(createCloudPasswordProvider({ ...options, auth: "gcp-iam" })),
+		"gcp-iam found no token (metadata server: HTTP 503; gcloud CLI: returned no token). " +
+			"Run on Google Cloud with a service account that is a Cloud SQL IAM user, or sign in with `gcloud auth login`",
+	);
+	assert.equal(
+		await failureHint(createCloudPasswordProvider({ ...options, auth: "aws-iam" })),
+		"aws-iam found no token (aws CLI: `aws` was not found on PATH). " +
+			"Install the AWS CLI v2 and give it credentials (instance profile, IRSA, AWS_* variables or a profile) allowed `rds-db:connect` for this user",
+	);
+});
+
+test("a CLI failure carries its first stderr line, bounded, with long opaque runs redacted (#4793)", async () => {
+	await noAmbientCloud();
+	const opaque = "Zm9vYmFyYmF6cXV4cXV1eHF1dXhxdXV4cXV1eA";
+	const nearlyOpaque = "a".repeat(31);
+	const long = "word ".repeat(60).trim();
+	fakeCli({
+		az: { stderr: `\n  ERROR: rejected '${opaque}' near ${nearlyOpaque}\nsecond line\n`, exitCode: 1 },
+		gcloud: { stderr: `${long}\n`, exitCode: 1 },
+	});
+	const azure = await failureHint(createCloudPasswordProvider({ ...options, auth: "azure-entra" }));
+	assert.match(
+		azure,
+		new RegExp(`az CLI: exited with code 1: ERROR: rejected '\\[redacted\\]' near ${nearlyOpaque}\\)`),
+	);
+	const gcp = await failureHint(createCloudPasswordProvider({ ...options, auth: "gcp-iam" }));
+	assert.ok(gcp.includes(`gcloud CLI: exited with code 1: ${long.slice(0, 200)}…)`), gcp);
+});
+
+test("output without a usable token or expiry is refused by name (#4793)", async () => {
+	await noAmbientCloud();
+	const cases: [string, string][] = [
+		["null", "returned output that is not a JSON object"],
+		["[1]", "returned output that is not a JSON object"],
+		[JSON.stringify({ accessToken: 42, expires_on: 2_000_000_000 }), "returned no accessToken"],
+		[JSON.stringify({ accessToken: "   ", expires_on: 2_000_000_000 }), "returned no accessToken"],
+		[JSON.stringify({ accessToken: "az-token" }), "returned a token without an expiry"],
+	];
+	for (const [stdout, reason] of cases) {
+		fakeCli({ az: { stdout } });
+		const hint = await failureHint(createCloudPasswordProvider({ ...options, auth: "azure-entra" }));
+		assert.ok(hint.includes(`az CLI: ${reason})`), `${stdout} → ${hint}`);
+	}
+	const imds = await fakeServer((request, response) =>
+		json(
+			response,
+			200,
+			request.url?.includes("client_id") ? { access_token: "t" } : { access_token: "t", expires_on: "0" },
+		),
+	);
+	vi.stubEnv("AZURE_POD_IDENTITY_AUTHORITY_HOST", imds.origin);
+	vi.stubEnv("PATH", "");
+	vi.stubEnv("AZURE_CLIENT_ID", "missing-expiry");
+	assert.match(
+		await failureHint(createCloudPasswordProvider({ ...options, auth: "azure-entra" })),
+		/managed identity \(IMDS\): returned a token without an expiry;/,
+	);
+});
+
+test("tokens are trimmed, and the AWS token is its first output line (#4793)", async () => {
+	await noAmbientCloud();
+	fakeCli({ gcloud: { stdout: "  ya29.padded  \n" }, aws: { stdout: "host:5432/?X-Amz-Signature=1\nnotice\n" } });
+	assert.equal(await createCloudPasswordProvider({ ...options, auth: "gcp-iam" })(), "ya29.padded");
+	assert.equal(await createCloudPasswordProvider({ ...options, auth: "aws-iam" })(), "host:5432/?X-Amz-Signature=1");
+	const imds = await fakeServer((_request, response) =>
+		json(response, 200, { access_token: " padded ", expires_in: 3600 }),
+	);
+	vi.stubEnv("AZURE_POD_IDENTITY_AUTHORITY_HOST", `${imds.origin}//`);
+	assert.equal(await createCloudPasswordProvider({ ...options, auth: "azure-entra" })(), "padded");
+	assert.equal(new URL(imds.requests[0].url, imds.origin).pathname, "/metadata/identity/oauth2/token");
+});
+
+test("older az versions are read from their local-time expiresOn (#4793)", async () => {
+	await noAmbientCloud();
+	const cli = fakeCli({
+		az: {
+			stdout: JSON.stringify({ accessToken: "old-az", expiresOn: "2026-11-14 12:20:00.000000", expires_on: "" }),
+		},
+	});
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(new Date(2026, 10, 14, 12));
+	const password = createCloudPasswordProvider({ ...options, auth: "azure-entra" });
+	await password();
+	vi.setSystemTime(new Date(2026, 10, 14, 12, 14));
+	await password();
+	assert.equal(cli.calls().length, 1);
+	vi.setSystemTime(new Date(2026, 10, 14, 12, 16));
+	await password();
+	assert.equal(cli.calls().length, 2);
+});
+
+test("a token with 5 minutes or less to live is used once and not cached; the cache ends exactly at its refresh time (#4793)", async () => {
+	await noAmbientCloud();
+	let lifetimeSeconds = 5 * 60;
+	const metadata = await fakeServer((_request, response) =>
+		json(response, 200, { access_token: "ya29.short", expires_in: lifetimeSeconds }),
+	);
+	vi.stubEnv("GCE_METADATA_HOST", metadata.host);
+	const advance = useClock(Date.UTC(2026, 10, 14, 12));
+	const password = createCloudPasswordProvider({ ...options, auth: "gcp-iam" });
+	await password();
+	await password();
+	assert.equal(metadata.requests.length, 2);
+	lifetimeSeconds = 10 * 60;
+	await password();
+	advance(5 * MINUTE - 1);
+	await password();
+	assert.equal(metadata.requests.length, 3);
+	advance(1);
+	await password();
+	assert.equal(metadata.requests.length, 4);
+});
+
+test("an endpoint error without a description reports its error code (#4793)", async () => {
+	await noAmbientCloud();
+	const metadata = await fakeServer((_request, response) => json(response, 403, { error: "access_denied" }));
+	vi.stubEnv("GCE_METADATA_HOST", metadata.host);
+	assert.match(
+		await failureHint(createCloudPasswordProvider({ ...options, auth: "gcp-iam" })),
+		/metadata server: HTTP 403: access_denied;/,
+	);
+});
+
+test("Azure uses workload identity only with all three variables, and the identity endpoint only with its header (#4793)", async () => {
+	await noAmbientCloud();
+	const imds = await fakeServer((_request, response) =>
+		json(response, 200, { access_token: "imds", expires_in: 3600 }),
+	);
+	vi.stubEnv("AZURE_POD_IDENTITY_AUTHORITY_HOST", imds.origin);
+	vi.stubEnv("AZURE_FEDERATED_TOKEN_FILE", "/nonexistent/token");
+	vi.stubEnv("AZURE_CLIENT_ID", "client-1");
+	vi.stubEnv("IDENTITY_ENDPOINT", "http://127.0.0.1:9/msi/token");
+	assert.equal(await createCloudPasswordProvider({ ...options, auth: "azure-entra" })(), "imds");
+	vi.stubEnv("AZURE_FEDERATED_TOKEN_FILE", undefined);
+	vi.stubEnv("AZURE_TENANT_ID", "tenant-1");
+	assert.equal(await createCloudPasswordProvider({ ...options, auth: "azure-entra" })(), "imds");
+	assert.equal(imds.requests.length, 2);
+});
+
+test("Azure passes a user-assigned identity to the App Service endpoint and the authority host without its trailing slashes (#4793)", async () => {
+	await noAmbientCloud();
+	const endpoint = await fakeServer((_request, response) =>
+		json(response, 200, { access_token: "app", expires_in: 3600 }),
+	);
+	vi.stubEnv("IDENTITY_ENDPOINT", `${endpoint.origin}/msi/token`);
+	vi.stubEnv("IDENTITY_HEADER", "header");
+	vi.stubEnv("AZURE_CLIENT_ID", "user-assigned");
+	await createCloudPasswordProvider({ ...options, auth: "azure-entra" })();
+	assert.equal(new URL(endpoint.requests[0].url, endpoint.origin).searchParams.get("client_id"), "user-assigned");
+
+	const dir = mkdtempSync(join(tmpdir(), "atomic-pg-federated-"));
+	cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+	writeFileSync(join(dir, "token"), "assertion");
+	vi.stubEnv("AZURE_FEDERATED_TOKEN_FILE", join(dir, "token"));
+	vi.stubEnv("AZURE_TENANT_ID", "tenant/2");
+	vi.stubEnv("AZURE_AUTHORITY_HOST", `${endpoint.origin}//`);
+	await createCloudPasswordProvider({ ...options, auth: "azure-entra" })();
+	assert.equal(endpoint.requests[1].url, "/tenant%2F2/oauth2/v2.0/token");
+});
+
+test("AWS takes the region from commercial, GovCloud and China RDS host names only (#4793)", async () => {
+	await noAmbientCloud();
+	const cli = fakeCli({ aws: { stdout: "token\n" } });
+	const hosts: [string, string | undefined][] = [
+		["db.abc.us-gov-west-1.rds.amazonaws.com", "us-gov-west-1"],
+		["db.abc.cn-north-1.rds.amazonaws.com.cn", "cn-north-1"],
+		["db.abc.ap-southeast-12.rds.amazonaws.com", "ap-southeast-12"],
+		["db.abc.us-east-1.rds.amazonaws.com.example.org", undefined],
+	];
+	for (const [host] of hosts)
+		await createCloudPasswordProvider({ host, port: 5432, user: "atomic", auth: "aws-iam" })();
+	assert.deepEqual(
+		cli.calls().map((args) => (args.at(-2) === "--region" ? args.at(-1) : undefined)),
+		hosts.map(([, region]) => region),
+	);
+});
+
+test("a timed-out CLI is stopped, not left running (#4793)", async () => {
+	await noAmbientCloud();
+	const cli = fakeCli({ gcloud: { stdout: "ya29.late\n", delayMs: 1_500 } });
+	await assert.rejects(
+		createCloudPasswordProvider({ ...options, auth: "gcp-iam", timeoutMs: 300 })(),
+		StorageConfigError,
+	);
+	await new Promise((resolve) => setTimeout(resolve, 2_000));
+	assert.equal(cli.calls().length, 1);
+	assert.equal(cli.finished(), 0);
+});
+
+test("a refused host or user says what is allowed (#4793)", async () => {
+	await noAmbientCloud();
+	assert.throws(
+		() => createCloudPasswordProvider({ host: "db.example.com", port: 5432, user: "a b", auth: "gcp-iam" }),
+		(error: StorageConfigError) => {
+			assert.equal(
+				error.hint,
+				'The gcp-iam token needs a user without spaces, quotes or shell metacharacters, not starting with "-"',
+			);
+			return true;
+		},
+	);
 });
