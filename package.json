@@ -63,7 +63,8 @@
     "hono": "4.13.16",
     "ip-address": "10.7.4",
     "@napi-rs/cli": {
-      "semver": "7.8.5"
+      "semver": "7.8.5",
+      "@octokit/types": "18.0.0"
     },
     "@hono/node-server": "2.1.8"
   }
