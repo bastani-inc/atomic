@@ -6,6 +6,7 @@ import type { AgentSession } from "../src/core/agent-session.js";
 import type { ToolDefinition } from "../src/core/extensions/index.js";
 import type { OperationId, TaskId } from "../src/core/tasks/contracts.js";
 import type { BashToolDetails } from "../src/core/tools/bash.js";
+import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
 const MINUTE = 60_000;
@@ -105,6 +106,12 @@ async function interrupt(harness: Harness, where: "text" | "tool"): Promise<void
 	await active;
 	assert.equal(harness.session.isStreaming, false);
 	assert.equal(harness.getPendingResponseCount(), 0);
+}
+
+const WAKE = { triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true, wakeIdleSession: true } as const;
+
+function probe(id: number) {
+	return { customType: "probe-heartbeat", content: `${HEARTBEAT} probe ${id}`, display: true, details: { id } };
 }
 
 function turnStarts(harness: Harness): number {
@@ -335,11 +342,8 @@ test("text typed while the interrupt is still stopping the response keeps a hear
 	await started.promise;
 	session.pauseQueuedMessages();
 	const stopping = session.abort();
-	const heartbeat = session.sendCustomMessage(
-		{ customType: "probe-heartbeat", content: `${HEARTBEAT} probe`, display: true, details: {} },
-		{ triggerTurn: true, deliverAs: "steer", persistWhenStreaming: true, wakeIdleSession: true },
-	);
-	await session.steer("typed while it stopped");
+	const heartbeat = session.sendCustomMessage(probe(1), WAKE);
+	await session.followUp("typed while it stopped");
 	await stopping;
 	await active;
 	await heartbeat;
@@ -350,7 +354,116 @@ test("text typed while the interrupt is still stopping the response keeps a hear
 	assert.equal(turnStarts(harness), before, "no turn sends the typed text");
 	assert.equal(seen.length, 0);
 	assert.equal(session.queuedMessagesPaused, true);
-	assert.deepEqual(session.getSteeringMessages(), ["typed while it stopped"]);
+	assert.deepEqual(session.getFollowUpMessages(), ["typed while it stopped"]);
+});
+
+test("a heartbeat that arrives while the interrupt is still stopping the response starts one turn once it stops (#4795)", async () => {
+	const harness = await sessionHarness();
+	const { session } = harness;
+	const started = Promise.withResolvers<void>();
+	const seen: Context[] = [];
+	harness.setResponses([
+		async (_context, options) => {
+			started.resolve();
+			await new Promise<void>((resolve) => {
+				if (options?.signal?.aborted) resolve();
+				else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+			});
+			return fauxAssistantMessage("partial answer");
+		},
+		(context) => {
+			seen.push(context);
+			return fauxAssistantMessage("Heartbeat handled.");
+		},
+	]);
+	const active = session.prompt("Start the long job.");
+	await started.promise;
+	session.pauseQueuedMessages();
+	const stopping = session.abort();
+	const heartbeat = session.sendCustomMessage(probe(1), WAKE);
+	await stopping;
+	await active;
+	await heartbeat;
+	await vi.waitFor(() => assert.equal(seen.length, 1), { timeout: 5000 });
+	await vi.waitFor(() => assert.equal(session.isStreaming, false), { timeout: 5000 });
+
+	assert.equal(turnStarts(harness), 2, "the interrupted turn, then one heartbeat turn");
+	assert.match(lastMessageText(seen[0]!), /probe 1/);
+});
+
+test("other incoming messages do not wake an interrupted chat on their own (#4795)", async () => {
+	const harness = await sessionHarness();
+	const { session } = harness;
+	await interrupt(harness, "text");
+	const before = turnStarts(harness);
+	const seen = answerHeartbeats(harness, 1);
+
+	await session.sendCustomMessage(probe(1), { triggerTurn: true, persistWhenStreaming: true });
+	await session.sendCustomMessage(probe(2));
+	await session.sendCustomMessage(probe(3), { wakeIdleSession: true });
+	await vi.advanceTimersByTimeAsync(1000);
+
+	assert.equal(turnStarts(harness), before);
+	assert.equal(seen.length, 0);
+	assert.equal(session.queuedMessagesPaused, true);
+});
+
+test("a heartbeat during a paused but still running turn stays in the pause (#4795)", async () => {
+	const harness = await sessionHarness();
+	const { session } = harness;
+	const started = Promise.withResolvers<void>();
+	const finish = Promise.withResolvers<void>();
+	harness.setResponses([
+		async () => {
+			started.resolve();
+			await finish.promise;
+			return fauxAssistantMessage("finished on its own");
+		},
+	]);
+	const active = session.prompt("Start the long job.");
+	await started.promise;
+	// A client pause with no abort: the turn keeps running.
+	session.pauseQueuedMessages();
+	await session.sendCustomMessage(probe(1), WAKE);
+	finish.resolve();
+	await active;
+	const seen = answerHeartbeats(harness, 1);
+	await vi.advanceTimersByTimeAsync(1000);
+
+	assert.equal(turnStarts(harness), 1, "the heartbeat neither joined the running turn nor started one");
+	assert.equal(seen.length, 0);
+	assert.equal(session.queuedMessagesPaused, true);
+});
+
+test("a heartbeat wakes an idle paused main chat but not a workflow stage or subagent chat (#4795)", async () => {
+	const policy = {
+		managementActions: "restricted",
+		fanoutAuthorized: false,
+		inheritProjectContext: false,
+		inheritSkills: false,
+	} as const;
+	const kinds = {
+		main: undefined,
+		stage: undefined,
+		child: { ...policy, depth: 1 },
+		ending: { ...policy, executionEnded: new AbortController().signal },
+	} as const;
+	const woke: Record<string, boolean> = {};
+	for (const [kind, subagentPolicy] of Object.entries(kinds)) {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+		const harness = await createHarness({ ...(subagentPolicy ? { subagentPolicy } : {}) });
+		harnesses.push(harness);
+		const session = harness.session as AgentSession & { _workflowStageAdmission?: WorkflowStageAdmissionBoundary };
+		if (kind === "stage") session._workflowStageAdmission = new WorkflowStageAdmissionBoundary();
+		const seen = answerHeartbeats(harness, 1);
+		session.pauseQueuedMessages();
+		await session.sendCustomMessage(probe(1), WAKE);
+		await vi.waitFor(() => assert.equal(session.isStreaming, false), { timeout: 5000 });
+		await vi.advanceTimersByTimeAsync(1000);
+		woke[kind] = seen.length === 1;
+		assert.equal(session.queuedMessagesPaused, !woke[kind]);
+	}
+	assert.deepEqual(woke, { main: true, stage: false, child: false, ending: false });
 });
 
 test.runIf(process.platform !== "win32")(

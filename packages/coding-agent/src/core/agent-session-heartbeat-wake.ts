@@ -1,11 +1,9 @@
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SendMessageOptions } from "./extensions/index.js";
 
-/** Text the user typed but has not sent, still waiting in the queue or in an interrupt's hold. */
+/** Text the user typed but has not sent, queued or held while the session compacts. */
 function holdsTypedInput(session: AgentSession): boolean {
-	if (session.getSteeringMessages().length > 0 || session.getFollowUpMessages().length > 0) return true;
-	const hold = session._activeInterruptQueueHold;
-	return hold !== undefined && [...hold.steering, ...hold.followUp].some((message) => message.role === "user");
+	return session.getSteeringMessages().length > 0 || session.getFollowUpMessages().length > 0;
 }
 
 /**
@@ -30,7 +28,7 @@ export function wakeIdleSessionForHeartbeat(
 	if (!session.settingsManager.getTaskHeartbeatWakesIdleSession()) return;
 	// A chat paused by an interrupt whose abort is still settling is idle once that abort settles; resuming waits for it.
 	const interrupted = session._queuedMessagesPauseAbortBoundary !== undefined;
-	if (!interrupted && (session.isStreaming || session._isPreparingRun || session._activePromptCount > 0)) return;
+	if (!interrupted && (session.isStreaming || session._activePromptCount > 0)) return;
 	if (holdsTypedInput(session)) return;
 	// Resuming first waits for the interrupt to settle; text typed meanwhile still keeps the chat paused.
 	return session
