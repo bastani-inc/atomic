@@ -458,6 +458,9 @@ export async function exportWorkflowRuns(
 						storage.kind === "database" ? storage.open : undefined,
 					);
 					if ("database" in opened) single = opened;
+					// A named database that cannot be read fails the export: an empty export would pass for a backup.
+					else if (storage.kind === "database" && !opened.oldFormat)
+						throw new StorageTransferError({ path: opened.path, reason: opened.reason });
 					else skipped.push({ path: opened.path, reason: opened.reason });
 				}
 				for (const run of single?.runs ?? []) listed.set(run.run_id, { source: single!, run });
@@ -501,11 +504,24 @@ export async function exportWorkflowRuns(
 			await mkdir(directory, { recursive: true });
 			const written: string[] = [];
 			const unchanged: string[] = [];
-			for (const { source, run } of selected) {
-				const events = await source.database.all<JournalEventTableRow>(
-					`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
-					run.run_id,
-				);
+			for (const { source, run: listedRun } of selected) {
+				const readEvents = (executor: SqliteExecutor) =>
+					executor.all<JournalEventTableRow>(
+						`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
+						listedRun.run_id,
+					);
+				// A source without a read snapshot reads each run's row and events together, in one transaction, so a
+				// run that finishes meanwhile is exported with the status its events reach.
+				const { run, events } = source.snapshot
+					? { run: listedRun, events: await readEvents(source.database) }
+					: await source.database.transaction(async (tx) => ({
+							run:
+								(await tx.get<JournalRunTableRow>(
+									`SELECT * FROM ${t.runs} WHERE run_id = ?`,
+									listedRun.run_id,
+								)) ?? listedRun,
+							events: await readEvents(tx),
+						}));
 				const outcome = await writeLinesAtomically(
 					transferFile(directory, run.run_id),
 					exportLines(run, events, source.path),

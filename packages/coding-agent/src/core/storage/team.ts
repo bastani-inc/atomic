@@ -309,7 +309,7 @@ function isJoinTokenFile(path: string, agentDir: string): boolean {
 function reusableTokenFile(
 	storage: StorageSettingsSelection | undefined,
 	secretName: JoinTarget["secretName"],
-	token: string | undefined,
+	token: string,
 	agentDir: string,
 ): string | undefined {
 	const path = secretFilePath(storage?.secrets?.[secretName], agentDir);
@@ -405,7 +405,7 @@ function joinPlan(options: SharedDatabaseJoinOptions, source: Exclude<TeamInputS
 			return { target: { ...target, options: { url: checked.url }, secret: password }, copy: password };
 		}
 		const reference = resolve(cwd, checked.tokenFile as string);
-		const password = readTeamTokenFile(reference, source);
+		const password = readTeamTokenFile(reference, source, undefined, "as-connections-read");
 		return { target: { ...target, options: { url: checked.url }, secret: password }, reference };
 	}
 	const url = checkTeamUrl(options.url, source);
@@ -458,7 +458,8 @@ export async function joinSharedDatabase(
 	const unchanged = "Nothing was changed: the previous selection and its token are kept.";
 	const published = withGlobalSettings(agentDir, unchanged, (settings) => {
 		const previous = settings.storage;
-		const reused = reusableTokenFile(previous, target.secretName, token, agentDir);
+		// Without a token there is nothing to compare, so no token file is read.
+		const reused = token === undefined ? undefined : reusableTokenFile(previous, target.secretName, token, agentDir);
 		const tokenPath =
 			token === undefined ? undefined : (reused ?? join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`));
 		const created = token !== undefined && tokenPath !== undefined && reused === undefined ? tokenPath : undefined;

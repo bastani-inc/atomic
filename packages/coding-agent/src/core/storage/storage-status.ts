@@ -228,21 +228,26 @@ export function describeStorageSelection(selection: StorageSelection): string {
 		case "database":
 			return `database ${selection.database.descriptor.adapter}${prefixSuffix(selection.prefix)}`;
 		case "adapter": {
-			const url = selection.options?.url;
-			if (selection.module === POSTGRES_ADAPTER_PACKAGE && typeof url === "string" && URL.canParse(url)) {
-				// The server only: a user name, the query and the fragment are left out.
-				const server = new URL(url);
-				server.username = "";
-				server.password = "";
-				server.search = "";
-				server.hash = "";
-				return `PostgreSQL ${server.href} via ${selection.module}${prefixSuffix(selection.prefix)}`;
-			}
+			const server = postgresServer(selection);
+			if (server !== undefined)
+				return `PostgreSQL ${server} via ${selection.module}${prefixSuffix(selection.prefix)}`;
 			return `adapter ${selection.module}${prefixSuffix(selection.prefix)}`;
 		}
 		case "sharded":
 			return `journal store ${selection.dir}`;
 	}
+}
+
+/** A Postgres selection's server, without the user name, the query and the fragment; undefined for other selections. */
+function postgresServer(selection: Extract<StorageSelection, { kind: "adapter" }>): string | undefined {
+	const url = selection.options?.url;
+	if (selection.module !== POSTGRES_ADAPTER_PACKAGE || typeof url !== "string" || !URL.canParse(url)) return undefined;
+	const server = new URL(url);
+	server.username = "";
+	server.password = "";
+	server.search = "";
+	server.hash = "";
+	return server.href;
 }
 
 function withTimeout<T>(operation: Promise<T>, label: string, timeoutMs: number): Promise<T> {
@@ -360,7 +365,7 @@ async function probeSelection(
 			"The database",
 			inspect,
 			timeoutMs,
-			module === POSTGRES_ADAPTER_PACKAGE ? postgresServerVersion : undefined,
+			postgresServer(selection),
 		),
 	};
 }
@@ -378,7 +383,7 @@ async function roundTrip(
 	label: string,
 	inspect: ((database: SqliteDatabase) => Promise<void>) | undefined,
 	timeoutMs: number,
-	describeServer?: (database: SqliteDatabase) => Promise<string>,
+	postgres?: string,
 ): Promise<StorageProbe["connection"]> {
 	const started = Date.now();
 	let database: SqliteDatabase | undefined;
@@ -387,15 +392,23 @@ async function roundTrip(
 		const opened = database;
 		await withTimeout(opened.get("SELECT 1 AS ok"), label, timeoutMs);
 		const elapsed = Date.now() - started;
-		// What `inspect` and `describeServer` read is extra detail; the database already answered.
+		// What `inspect` and the server version read is extra detail; the database already answered.
 		if (inspect) await withTimeout(inspect(opened), "Inspecting the database", timeoutMs).catch(() => {});
-		const server =
-			describeServer === undefined
-				? undefined
-				: await withTimeout(describeServer(opened), "Reading the server version", timeoutMs).catch(() => undefined);
+		if (postgres !== undefined) {
+			// The adapter's own location holds the whole URL; status names the server only.
+			const version = await withTimeout(
+				postgresServerVersion(opened),
+				"Reading the server version",
+				timeoutMs,
+			).catch(() => undefined);
+			return {
+				status: "ok",
+				detail: `postgres ${postgres} answered in ${elapsed} ms${version === undefined ? "" : `, ${version}`}`,
+			};
+		}
 		return {
 			status: "ok",
-			detail: `${opened.descriptor.adapter} ${opened.descriptor.location} answered in ${elapsed} ms${server === undefined ? "" : `, ${server}`}`,
+			detail: `${opened.descriptor.adapter} ${opened.descriptor.location} answered in ${elapsed} ms`,
 		};
 	} catch (error) {
 		return { status: "failed", detail: errorText(error as Error) };

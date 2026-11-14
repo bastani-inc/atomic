@@ -321,6 +321,14 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 		assert.ok(!readFileSync(join(agentDir, "settings.json"), "utf8").includes(PASSWORD));
 	});
 
+	test("--token-file is checked as connections read it, dropping only one final line ending (#4793)", async () => {
+		const fake = installFakePostgres();
+		writeFileSync(passwordFile, `${PASSWORD}\n\n`);
+		const result = await storage(["join", URL_, "--token-file", passwordFile]);
+		assert.equal(result.code, 0, result.err);
+		assert.equal(fake.opens()[0]?.password, `${PASSWORD}\n`);
+	});
+
 	test("--token-file is referenced in place, never copied (#4793)", async () => {
 		const fake = installFakePostgres();
 		const result = await storage(["join", "postgresql://atomic@db.internal/atomic", "--token-file", passwordFile]);
@@ -425,7 +433,10 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		);
 		assert.equal(journal?.probe?.adapter?.loaded, true);
 		assert.equal(journal?.probe?.connection.status, "ok");
-		assert.match(journal?.probe?.connection.detail ?? "", /answered in \d+ ms, PostgreSQL 16\.4$/);
+		assert.match(
+			journal?.probe?.connection.detail ?? "",
+			/^postgres postgres:\/\/db\.example\.com:5432\/atomic answered in \d+ ms, PostgreSQL 16\.4$/,
+		);
 		assert.equal(fake.opens()[0]?.password, PASSWORD);
 		assert.ok(!JSON.stringify(status).includes(PASSWORD));
 		const result = await storage(["status"]);
@@ -464,6 +475,22 @@ describe("Postgres selections in team join and export (#4793)", () => {
 			refused.err,
 			/atomic storage export works with local session storage, but sessions here use PostgreSQL/,
 		);
+	});
+
+	test("a named database that cannot be read fails the export instead of exporting nothing (#4793)", async () => {
+		installFakePostgres();
+		const named = JSON.stringify({
+			adapter: POSTGRES_ADAPTER_PACKAGE,
+			options: { url: "postgres://atomic@refused/atomic" },
+		});
+		const result = await storage(["export", join(root, "out"), "--workflows", "--storage", named]);
+		assert.equal(result.code, 1);
+		assert.match(result.err, /cannot be opened: connect ECONNREFUSED/);
+		mkdirSync(join(root, "in"));
+		const memory = await storage(["import", join(root, "in"), "--storage", '{"path":":memory:"}']);
+		assert.equal(memory.code, 1);
+		assert.match(memory.err, /keeps nothing/);
+		assert.equal(existsSync(join(project, ":memory:")), false);
 	});
 
 	test("a named Postgres selection is read without a client-side transaction (#4793)", async () => {

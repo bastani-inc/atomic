@@ -232,7 +232,8 @@ A kind kept in a shared libSQL, Turso or PostgreSQL database is refused with a m
 ```bash
 atomic storage export ~/moved --storage-file old-storage.json   # the old selection, e.g. copied from settings
 atomic storage join postgres://atomic@db.example.com/atomic --password-file ~/pg-password
-atomic storage import ~/moved
+jq .storage ~/.atomic/agent/settings.json > new-storage.json     # the new, shared selection
+atomic storage import ~/moved --storage-file new-storage.json
 ```
 
 Stop or drain the runs on the old store first: an imported run that was running is interrupted, and resumes on the new store.

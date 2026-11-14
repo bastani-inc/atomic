@@ -415,11 +415,15 @@ export function checkTeamPrefix(prefix: string | undefined, source: TeamInputSou
 	return prefix;
 }
 
-/** Read a token file and remove surrounding whitespace; an unreadable or empty file is an invalid input. */
+/**
+ * Read a token file and remove surrounding whitespace, or with `as-connections-read` only one final line ending, as
+ * a file a selection references is read for every connection; an unreadable or empty file is an invalid input.
+ */
 export function readTeamTokenFile(
 	path: string,
 	source: TeamInputSource,
 	field: string = FIELDS[source].tokenFile,
+	read: "trimmed" | "as-connections-read" = "trimmed",
 ): string {
 	let text: string;
 	try {
@@ -430,7 +434,15 @@ export function readTeamTokenFile(
 			cause: error as Error,
 		});
 	}
-	const token = text.trim();
+	// A file referenced in place is read again by every new connection, which drops only one final line ending.
+	const token =
+		read === "trimmed"
+			? text.trim()
+			: text.endsWith("\r\n")
+				? text.slice(0, -2)
+				: text.endsWith("\n")
+					? text.slice(0, -1)
+					: text;
 	if (token.length === 0) {
 		throw invalid(
 			"empty-token",

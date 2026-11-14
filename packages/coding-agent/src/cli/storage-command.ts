@@ -360,6 +360,7 @@ function namedSelection(command: NamedStorage, cwd: string): StorageSelection | 
 	if (value === undefined) return undefined;
 	const selection = selectStorage(value, "cli", field, "");
 	if (selection.kind !== "sqlite") return selection;
+	if (selection.path === ":memory:") return { kind: "memory" };
 	if (selection.path === "")
 		throw new StorageCommandError(`${field} names no storage: give a "path" or an "adapter" with its options.`);
 	return { ...selection, path: resolve(cwd, selection.path) };
