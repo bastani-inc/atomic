@@ -1,0 +1,79 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 4,
+  "children": 128,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "killedHostAtMs": null,
+      "trace": null,
+      "sqldQueryCount": 98489,
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 519,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 521,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 1159,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 16,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 1529,
+      "status": "completed",
+      "children": 128,
+      "completed": 126,
+      "failed": 2,
+      "failureSamples": [
+        "StorageUnavailableError: Storage unavailable: libsql at http://127.0.0.1:39249",
+        "WorkflowInfrastructureError: Storage unavailable: the workflow run (storage_unavailable). The workflow journal could not be reached; check the storage it names, then retry or resume."
+      ],
+      "checkpoints": 2520,
+      "wallMs": 138193,
+      "activeMs": 123340,
+      "checkpointsPerSec": 20.4,
+      "latencyMs": {
+        "p50": 1802.4,
+        "p90": 2536.79,
+        "p99": 3423.3,
+        "max": 4644.74
+      },
+      "stageMs": null,
+      "perHost": {
+        "h5": 8,
+        "root": 6,
+        "h9": 9,
+        "h13": 9,
+        "h4": 8,
+        "h11": 7,
+        "h7": 6,
+        "h12": 8,
+        "h15": 7,
+        "h8": 8,
+        "h2": 6,
+        "h14": 7,
+        "h6": 7,
+        "h10": 7,
+        "h3": 9,
+        "h0": 7,
+        "h1": 7
+      }
+    }
+  ]
+}
