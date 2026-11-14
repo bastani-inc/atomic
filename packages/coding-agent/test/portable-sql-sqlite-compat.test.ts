@@ -310,7 +310,7 @@ test("a journal's transaction creates the blob tables and indexes its tables, on
 	const database = await open("journal.sqlite");
 	await createJournalTables(database);
 	await writeJournalRows(database, "before");
-	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction));
+	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction, "", sqliteDialect));
 	// What a new database holds for the unprefixed journal, before any session store opens.
 	const journalOwned = (GOLDEN.freshSchema as SqliteRow[]).filter(
 		(row) => !String(row.name).startsWith("team_") && !String(row.name).startsWith("session_"),
@@ -318,7 +318,7 @@ test("a journal's transaction creates the blob tables and indexes its tables, on
 	assert.deepEqual(JSON.parse(JSON.stringify(await schemaOf(database))), journalOwned);
 	const progress = await database.all("SELECT * FROM snapshot_index_sources ORDER BY source");
 	await database.run("UPDATE snapshot_index_sources SET backfilled_through = watermark");
-	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction));
+	await database.transaction((transaction) => SqlSnapshotBlobStore.initialize(transaction, "", sqliteDialect));
 	assert.deepEqual(
 		await database.all(
 			"SELECT source, watermark, backfilled_through - watermark AS behind FROM snapshot_index_sources ORDER BY source",

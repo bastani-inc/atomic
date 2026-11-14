@@ -214,7 +214,7 @@ export class SqlRunJournal implements RunJournal {
 			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
 			await tx.exec(runJournalTableDefinitions(prefix, dialect));
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
-			await SqlSnapshotBlobStore.initialize(tx, prefix);
+			await SqlSnapshotBlobStore.initialize(tx, prefix, dialect);
 		}, JOURNAL_WRITE_TRANSACTION);
 	}
 

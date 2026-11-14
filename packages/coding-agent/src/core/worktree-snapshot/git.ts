@@ -6,6 +6,7 @@ import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
 import { isGitProvisionError } from "../../utils/git-errors.ts";
+import { killProcessTree } from "../../utils/shell.ts";
 import { redactUrlCredentials } from "../error-contract.ts";
 import {
 	GitUnavailableError,
@@ -162,7 +163,16 @@ async function configuresSshCommand(options: GitRunOptions): Promise<boolean> {
 }
 
 /** Kills `child`, and with it the ssh or helper processes it started when it leads its own session. */
+/** How long an aborted Git command is waited for after it was killed, before its abort is reported anyway. */
+const ABORTED_GIT_EXIT_WAIT_MS = 10_000;
+
 function killChild(child: ChildProcessWithoutNullStreams, detached: boolean): void {
+	// Git starts helpers of its own, such as a fetch's `upload-pack` in the source repository and `index-pack` in the
+	// target: on Windows, killing `git.exe` alone leaves them running and holding both directories (#4748).
+	if (process.platform === "win32" && child.pid !== undefined) {
+		killProcessTree(child.pid);
+		return;
+	}
 	if (detached && child.pid !== undefined) {
 		try {
 			process.kill(-child.pid, "SIGKILL");
@@ -269,8 +279,15 @@ export async function runGit(args: readonly string[], options: GitRunOptions): P
 		const onAbort = () => {
 			if (settled) return;
 			settled = true;
+			// Rejects once the process has ended, so nothing it started still works in its directories.
+			const ended = () => {
+				clearTimeout(bound);
+				reject(options.signal?.reason);
+			};
+			const bound = setTimeout(ended, ABORTED_GIT_EXIT_WAIT_MS);
+			child.once("close", ended);
+			child.once("error", ended);
 			killChild(child, detached);
-			reject(options.signal?.reason);
 		};
 		options.signal?.addEventListener("abort", onAbort, { once: true });
 		const finish = (action: () => void) => {

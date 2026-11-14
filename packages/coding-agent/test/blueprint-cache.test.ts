@@ -200,7 +200,10 @@ describe("blueprintCacheKeys (#4748)", () => {
 		const repositoryId = basename(objectStorePath(at.storeDir, [REMOTE]), ".git");
 		assert.match(build?.key ?? "", /^atomic-build-v1-linux-x64-[0-9a-f]{16}$/);
 		assert.notEqual(build?.key.slice(-16), entry(first, "stores")?.key.slice(-16));
-		assert.deepEqual(build?.paths, [join(at.storeDir, "seeds", repositoryId, "target")]);
+		assert.deepEqual(build?.paths, [
+			join(at.storeDir, "seeds", repositoryId, "target"),
+			join(at.storeDir, "seeds", `${repositoryId}.json`),
+		]);
 	});
 
 	test("a kind: store path inside the worktree is refused with a warning (#4748)", async () => {
@@ -222,7 +225,7 @@ describe("blueprintCacheKeys (#4748)", () => {
 		);
 		const keys = await keysOf(at);
 		assert.deepEqual(entry(keys, "stores")?.paths, [join(at.home, ".cargo", "registry")]);
-		assert.equal(entry(keys, "build")?.paths.length, 1);
+		assert.equal(entry(keys, "build")?.paths.length, 2, "target and the seed manifest");
 		assert.equal(keys.warnings.length, 6);
 		for (const warning of keys.warnings) assert.match(warning, /credentials/, keys.warnings.join("\n"));
 	});
@@ -297,7 +300,21 @@ describe("cache-key formats and CLI (#4748)", () => {
 		assert.deepEqual(parseBlueprintCommand(["--help"]), { kind: "help" });
 		assert.equal(parseBlueprintCommand(["cache-key", "--format", "yaml"]).kind, "error");
 		assert.equal(parseBlueprintCommand(["cache-key", "a", "b"]).kind, "error");
-		assert.equal(parseBlueprintCommand(["prebuild"]).kind, "error");
+		assert.equal(parseBlueprintCommand(["prebuilt"]).kind, "error");
+		assert.equal(parseBlueprintCommand(["cache-key", "--park"]).kind, "error");
+		assert.equal(parseBlueprintCommand(["prebuild", "--format=json"]).kind, "error");
+		assert.deepEqual(parseBlueprintCommand(["prebuild", "dir", "--park", "-a"]), {
+			kind: "prebuild",
+			dir: "dir",
+			park: true,
+			approve: true,
+		});
+		assert.deepEqual(parseBlueprintCommand(["prebuild", "--approve"]), {
+			kind: "prebuild",
+			dir: undefined,
+			park: false,
+			approve: true,
+		});
 	});
 
 	test("atomic blueprint cache-key prints github-output for a subdirectory of a checkout (#4748)", async () => {
@@ -390,7 +407,7 @@ describe("blueprint cache: edge cases (#4748)", () => {
 		);
 		const keys = await keysOf(at);
 		const seeds = join(at.storeDir, "seeds", basename(objectStorePath(at.storeDir, [REMOTE]), ".git"));
-		assert.deepEqual(entry(keys, "build")?.paths, [join(seeds, "dist")]);
+		assert.deepEqual(entry(keys, "build")?.paths, [join(seeds, "dist"), `${seeds}.json`]);
 		assert.equal(keys.warnings.length, 7);
 		for (const warning of keys.warnings.slice(0, 3)) assert.match(warning, /relative to the repository root/);
 		for (const warning of keys.warnings.slice(3, 6)) assert.match(warning, /inside the worktree, outside \.git/);
@@ -502,9 +519,12 @@ describe("blueprint cache: edge cases (#4748)", () => {
 			assert.equal(help.code, 0);
 			assert.match(help.out, /^Usage:\n {2}\S+ blueprint cache-key/);
 		}
-		const unknown = await run(["prebuild"], directory);
+		const unknown = await run(["prebuilt"], directory);
 		assert.deepEqual([unknown.code, unknown.out], [2, ""]);
-		assert.match(unknown.err, /^Error: Unknown command "prebuild"\. Use cache-key\. Use "\S+ blueprint --help"/);
+		assert.match(
+			unknown.err,
+			/^Error: Unknown command "prebuilt"\. Use cache-key or prebuild\. Use "\S+ blueprint --help"/,
+		);
 		assert.match((await run(["cache-key", "--json=1"], directory)).err, /Unknown option --json\./);
 		assert.match((await run(["cache-key", "--format"], directory)).err, /--format must be/);
 		assert.match((await run(["cache-key", "a", "b"], directory)).err, /at most one directory/);

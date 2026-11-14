@@ -14,7 +14,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { closeEach, withCleanup } from "./cleanup.js";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue } from "./database.js";
-import { dialectOf } from "./dialect.js";
+import { dialectOf, type StorageDialect } from "./dialect.js";
 import type { StorageFailureCause } from "./errors.js";
 import {
 	discoverLegacyJournal,
@@ -136,7 +136,6 @@ export interface WorkflowRunImportReport {
 	readonly unchanged: readonly string[];
 }
 
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const TRANSFER_TRANSACTION = { lockWaitMs: 10 * 60_000 } as const;
 const EVENT_TYPES: ReadonlySet<string> = new Set(Object.values(RUN_EVENT_TYPES));
 const HEADER_FIELDS = ["type", "version", "runId", "name", "cwd", "createdAt", "status", "events", "header"] as const;
@@ -205,18 +204,14 @@ function exportLines(run: JournalRunTableRow, events: readonly JournalEventTable
 	return lines;
 }
 
-async function hasTables(executor: SqliteExecutor, t: Tables): Promise<boolean> {
-	const rows = await executor.all<SqliteRow & { name: string }>(
-		"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
-		t.meta,
-		t.runs,
-		t.events,
-	);
-	return rows.length === 3;
+async function hasTables(executor: SqliteExecutor, t: Tables, dialect: StorageDialect): Promise<boolean> {
+	for (const table of [t.meta, t.runs, t.events]) if (!(await hasTable(executor, table, dialect))) return false;
+	return true;
 }
 
-async function hasTable(executor: SqliteExecutor, name: string): Promise<boolean> {
-	return (await executor.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", name)) !== undefined;
+async function hasTable(executor: SqliteExecutor, name: string, dialect: StorageDialect): Promise<boolean> {
+	const exists = dialect.tableExists(name);
+	return (await executor.get(exists.sql, ...exists.params)) !== undefined;
 }
 
 async function schemaVersion(executor: SqliteExecutor, t: Tables): Promise<SqliteValue | undefined> {
@@ -262,7 +257,7 @@ async function openExportSource(
 	}
 	try {
 		if (open === undefined) await database.exec("BEGIN");
-		if (!(await hasTables(database, t))) {
+		if (!(await hasTables(database, t, dialectOf(database)))) {
 			await closeExportSource({ database, snapshot: open === undefined });
 			return { path, reason: "it has no workflow runs in the current journal format", oldFormat: true };
 		}
@@ -418,7 +413,7 @@ async function missingRunReason(
 		return { path, runId: run.runId, reason: `the catalog names shard ${run.shard} for it, which it does not list` };
 	}
 	if (
-		(await hasTable(source.database, LEGACY_RUNS_TABLE)) &&
+		(await hasTable(source.database, LEGACY_RUNS_TABLE, dialectOf(source.database))) &&
 		(await source.database.get(`SELECT 1 AS found FROM ${LEGACY_RUNS_TABLE} WHERE run_id = ?`, run.runId))
 	)
 		return { path: source.path, runId: run.runId, reason: OLD_FORMAT_REASON };
@@ -700,17 +695,22 @@ interface StoredRun {
 	readonly lease?: JournalLeaseTableRow & { readonly age_ms: number };
 }
 
-async function readStoredRun(executor: SqliteExecutor, t: Tables, runId: string): Promise<StoredRun | undefined> {
-	if (!(await hasTables(executor, t))) return undefined;
+async function readStoredRun(
+	executor: SqliteExecutor,
+	t: Tables,
+	runId: string,
+	dialect: StorageDialect,
+): Promise<StoredRun | undefined> {
+	if (!(await hasTables(executor, t, dialect))) return undefined;
 	const run = await executor.get<JournalRunTableRow>(`SELECT * FROM ${t.runs} WHERE run_id = ?`, runId);
 	if (run === undefined) return undefined;
 	const events = await executor.all<JournalEventTableRow>(
 		`SELECT * FROM ${t.events} WHERE run_id = ? ORDER BY seq`,
 		runId,
 	);
-	const lease = (await hasTable(executor, t.leases))
+	const lease = (await hasTable(executor, t.leases, dialect))
 		? await executor.get<JournalLeaseTableRow & { age_ms: number }>(
-				`SELECT *, MAX(0, ${STORE_NOW} - renewed_at) AS age_ms FROM ${t.leases} WHERE run_id = ?`,
+				`SELECT *, ${dialect.greatest("0", `${dialect.nowMs} - renewed_at`)} AS age_ms FROM ${t.leases} WHERE run_id = ?`,
 				runId,
 			)
 		: undefined;
@@ -781,6 +781,7 @@ async function writeImport(
 	t: Tables,
 	parsed: ParsedWorkflowRun,
 	stored: StoredRun | undefined,
+	dialect: StorageDialect,
 ): Promise<void> {
 	const { header, events } = parsed;
 	if (stored === undefined)
@@ -807,9 +808,9 @@ async function writeImport(
 		);
 	const epoch = events.reduce((highest, event) => Math.max(highest, event.epoch), 0);
 	await tx.run(
-		`INSERT INTO ${t.leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, NULL, ?, ${STORE_NOW})
+		`INSERT INTO ${t.leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, NULL, ?, ${dialect.nowMs})
 		ON CONFLICT(run_id) DO UPDATE SET holder_id = NULL, renewed_at = excluded.renewed_at,
-			epoch = MAX(excluded.epoch, ${t.leases}.epoch + (CASE WHEN ${t.leases}.holder_id IS NULL THEN 0 ELSE 1 END))`,
+			epoch = ${dialect.greatest("excluded.epoch", `${t.leases}.epoch + (CASE WHEN ${t.leases}.holder_id IS NULL THEN 0 ELSE 1 END)`)}`,
 		header.runId,
 		epoch,
 	);
@@ -870,7 +871,10 @@ async function storedShard(
 		if (!existsSync(shard.path)) continue;
 		try {
 			const database = await files.read(shard.path);
-			if ((await hasTables(database, t)) && (await database.get(`SELECT 1 FROM ${t.runs} WHERE run_id = ?`, runId)))
+			if (
+				(await hasTables(database, t, dialectOf(database))) &&
+				(await database.get(`SELECT 1 FROM ${t.runs} WHERE run_id = ?`, runId))
+			)
 				return { shard, catalogued: false };
 		} catch {}
 	}
@@ -927,7 +931,8 @@ export async function planWorkflowRunImport(
 						let stored: StoredRun | undefined;
 						if (path !== undefined && (storage.kind === "database" || existsSync(path))) {
 							try {
-								stored = await readStoredRun(await files.read(path), t, run.header.runId);
+								const database = await files.read(path);
+								stored = await readStoredRun(database, t, run.header.runId, dialectOf(database));
 							} catch (error) {
 								throw unreadableShard(run, path, error as Error);
 							}
@@ -1007,7 +1012,7 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 			if (index === ordered.length) {
 				for (const group of ordered)
 					for (const run of group.runs) {
-						const now = await readStoredRun(group.tx!, t, run.run.header.runId);
+						const now = await readStoredRun(group.tx!, t, run.run.header.runId, dialectOf(group.database!));
 						if (fingerprint(now) !== fingerprint(run.stored))
 							throw new StorageTransferError({
 								path: run.run.file,
@@ -1019,7 +1024,8 @@ export async function applyWorkflowRunImport(plan: WorkflowRunImportPlan): Promi
 					}
 				for (const group of ordered) {
 					await ensureRunJournalSchema(group.tx!, prefix, dialectOf(group.database!));
-					for (const run of group.runs) await writeImport(group.tx!, t, run.run, run.stored);
+					for (const run of group.runs)
+						await writeImport(group.tx!, t, run.run, run.stored, dialectOf(group.database!));
 				}
 				return;
 			}

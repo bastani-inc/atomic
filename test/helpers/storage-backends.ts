@@ -34,11 +34,6 @@ export interface StorageBackend {
 	readonly name: string;
 	/** Why this backend's rows do not run here, or undefined when they do. */
 	readonly skipReason: string | undefined;
-	/**
-	 * Why the stores' suites (sessions, the run journal, Intercom routing) do not run on this backend yet, while the
-	 * database facade's suite does; undefined when they run.
-	 */
-	readonly storesSkipReason?: string;
 	openScope(): Promise<StorageBackendScope>;
 	/** Runs `operation` while every rollback this backend's driver sends fails with `cause`. */
 	withRollbackFailure(cause: Error, operation: () => Promise<void>): Promise<void>;
@@ -203,7 +198,6 @@ function postgresBackend(): StorageBackend {
 	return {
 		name: "Postgres",
 		skipReason: "skipReason" in server ? server.skipReason : undefined,
-		storesSkipReason: "the stores' SQL becomes portable in P3–P5 of #4793",
 		async openScope() {
 			if (!("url" in server)) throw new Error("the Postgres backend is skipped here");
 			// A database of its own per scope, so the facade suite's fixed table names never collide.

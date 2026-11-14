@@ -122,7 +122,9 @@ Keep the token in an encrypted secret, give it only to the step that needs it, a
 
 ### Caching between runs
 
-A hosted runner starts every job with an empty home directory. List the package stores worth keeping in the `cache:` section of `.atomic/blueprint.yaml` (see [Caches for runners](/guides/resume-on-any-machine#caches-for-runners)), and let `atomic blueprint cache-key` name the cache entries. Save them only from a trusted job on the default branch (`push`, `schedule` or `workflow_dispatch`), and restore them in agent jobs with `actions/cache/restore`, which cannot save:
+A hosted runner starts every job with an empty home directory. List the package stores and build output worth keeping in the `cache:` section of `.atomic/blueprint.yaml` (see [Caches for runners](/guides/resume-on-any-machine#caches-for-runners)), and let `atomic blueprint cache-key` name the cache entries. Save them only from a trusted job on the default branch (`push`, `schedule` or `workflow_dispatch`), and restore them in agent jobs with `actions/cache/restore`, which cannot save.
+
+The trusted job runs [`atomic blueprint prebuild --park`](/guides/resume-on-any-machine#prebuilt-worktrees): it restores the commit into a worktree, builds it with the blueprints, which fills the package stores, puts the commit into Atomic's Git object store, and parks the `kind: build` output where the `build` entry saves it from:
 
 ```yaml
 on:
@@ -130,7 +132,7 @@ on:
     branches: [main]
   workflow_dispatch:
 jobs:
-  warm-cache:
+  prebuild:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     steps:
@@ -138,19 +140,28 @@ jobs:
       - run: npm install -g @bastani/atomic
       - id: keys
         run: atomic blueprint cache-key --format github-output >> "$GITHUB_OUTPUT"
-      - run: npm ci                 # fills the stores the blueprint declares
+      - run: atomic blueprint prebuild --park --approve   # runs the blueprint: trust only your default branch
       - run: atomic --list-models   # transpiles your installed extensions into Atomic's cache
       - uses: actions/cache/save@v4
         with:
           key: ${{ steps.keys.outputs.stores-key }}
           path: ${{ steps.keys.outputs.stores-paths }}
       - uses: actions/cache/save@v4
+        if: steps.keys.outputs.build-key != ''
+        with:
+          key: ${{ steps.keys.outputs.build-key }}
+          path: ${{ steps.keys.outputs.build-paths }}
+      - uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.keys.outputs.git-key }}
+          path: ${{ steps.keys.outputs.git-paths }}
+      - uses: actions/cache/save@v4
         with:
           key: ${{ steps.keys.outputs.atomic-key }}
           path: ${{ steps.keys.outputs.atomic-paths }}
 ```
 
-In the agent job, before Atomic starts:
+In the agent job, before Atomic starts, restore the same entries:
 
 ```yaml
       - uses: actions/checkout@v5
@@ -163,14 +174,25 @@ In the agent job, before Atomic starts:
           restore-keys: ${{ steps.keys.outputs.stores-restore-prefix }}
           path: ${{ steps.keys.outputs.stores-paths }}
       - uses: actions/cache/restore@v4
+        if: steps.keys.outputs.build-key != ''
+        with:
+          key: ${{ steps.keys.outputs.build-key }}
+          restore-keys: ${{ steps.keys.outputs.build-restore-prefix }}
+          path: ${{ steps.keys.outputs.build-paths }}
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.keys.outputs.git-key }}
+          restore-keys: ${{ steps.keys.outputs.git-restore-prefix }}
+          path: ${{ steps.keys.outputs.git-paths }}
+      - uses: actions/cache/restore@v4
         with:
           key: ${{ steps.keys.outputs.atomic-key }}
           restore-keys: ${{ steps.keys.outputs.atomic-restore-prefix }}
           path: ${{ steps.keys.outputs.atomic-paths }}
-      - run: atomic -p "Fix the failing test in the checkout"
+      - run: atomic --session "$SESSION_ID" -p "Continue"
 ```
 
-Restore `git-*` the same way when your jobs resume sessions of the repository: a trusted job that resumed one can save Atomic's Git object store, and later resumes then fetch only new commits. In a gh-aw workflow, put the same steps in the custom job that runs Atomic. Do not use gh-aw's frontmatter `cache:` for these entries: it runs `actions/cache`, which also saves from the agent job.
+A resume in the agent job then fetches only the commits the Git store lacks, and adopts the parked build output into a worktree at the path where the prebuild built it, so path-sensitive output such as Cargo's `target` stays valid. Without a `kind: build` entry, skip the `build` steps. Keep `kind: build` off for repositories that build code from outside contributors on the default branch: whatever the trusted job builds, every agent job reuses. In a gh-aw workflow, put the same steps in the custom job that runs Atomic. Do not use gh-aw's frontmatter `cache:` for these entries: it runs `actions/cache`, which also saves from the agent job.
 
 The key changes when a key file, the declared entries, the OS, the architecture or the Atomic version change, so a restore by exact key never gets stale content; the restore prefix falls back to the newest older entry, which package managers bring up to date. `cache-key` leaves out paths that could hold credentials and prints a warning on stderr, which does not reach `$GITHUB_OUTPUT`. An entry it leaves out has no outputs, and a cache step with an empty `path` fails, so restore only entries your blueprint declares.
 
