@@ -1,0 +1,203 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 4,
+  "children": 64,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 27,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 30,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 38,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 1,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 805,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 56313,
+      "activeMs": 53071,
+      "checkpointsPerSec": 24.1,
+      "latencyMs": {
+        "p50": 191.39,
+        "p90": 212.19,
+        "p99": 238.54,
+        "max": 316.26
+      },
+      "perHost": {
+        "h0": 51,
+        "root": 13
+      }
+    },
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 74,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 75,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 89,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 2,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 805,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 39726,
+      "activeMs": 36091,
+      "checkpointsPerSec": 35.5,
+      "latencyMs": {
+        "p50": 218.84,
+        "p90": 271.62,
+        "p99": 319.96,
+        "max": 361.44
+      },
+      "perHost": {
+        "h0": 28,
+        "h1": 28,
+        "root": 8
+      }
+    },
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 125,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 127,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 129,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 4,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 910,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 37387,
+      "activeMs": 32892,
+      "checkpointsPerSec": 38.9,
+      "latencyMs": {
+        "p50": 342.22,
+        "p90": 474.46,
+        "p99": 572.29,
+        "max": 647.67
+      },
+      "perHost": {
+        "h2": 15,
+        "root": 5,
+        "h3": 15,
+        "h1": 15,
+        "h0": 14
+      }
+    },
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 229,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 232,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 236,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 8,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 1019,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 44041,
+      "activeMs": 40565,
+      "checkpointsPerSec": 31.6,
+      "latencyMs": {
+        "p50": 750.24,
+        "p90": 1016.54,
+        "p99": 1216.68,
+        "max": 1463.63
+      },
+      "perHost": {
+        "h4": 8,
+        "root": 3,
+        "h7": 8,
+        "h3": 8,
+        "h1": 8,
+        "h6": 7,
+        "h5": 6,
+        "h2": 8,
+        "h0": 8
+      }
+    }
+  ]
+}

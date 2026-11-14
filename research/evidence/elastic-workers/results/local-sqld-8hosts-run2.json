@@ -1,0 +1,104 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 4,
+  "children": 64,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "hosts": 8,
+      "slots": 4,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 1015,
+      "status": "stalled",
+      "runTimeoutMs": 180000,
+      "progress": {
+        "work": [
+          {
+            "state": "completed",
+            "n": 37
+          },
+          {
+            "state": "leased",
+            "n": 27
+          }
+        ],
+        "events": [
+          {
+            "n": 1245
+          }
+        ]
+      },
+      "writeProbe": {
+        "timedOut": 15000
+      },
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 10043,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10050,
+          "query": "COMMIT",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10053,
+          "query": "COMMIT",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10056,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10059,
+          "query": "COMMIT",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10107,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10119,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10120,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 10131,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 15009,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "sqldLogTail": "           _     _ \n ___  __ _| | __| |\n/ __|/ _` | |/ _` |\n\\__ \\ (_| | | (_| |\n|___/\\__, |_|\\__,_|\n        |_|        \n\nWelcome to sqld!\n\nversion: 0.24.33\ncommit SHA: 40a151bdb2b8c78109e90e8d92f0dba9b47d38e3\nbuild date: 2025-12-19\n\nThis software is in BETA version.\nIf you encounter any bug, please open an issue at https://github.com/tursodatabase/libsql/issues\n\nconfig:\n\t- mode: primary (127.0.0.1:43311)\n\t- database path: <path>\n\t- extensions path: <disabled>\n\t- listening for HTTP requests on: 127.0.0.1:38205\n\t- grpc_tls: no\n",
+      "logTail": "host h3 ready in 312 ms\nhost h0 ready in 317 ms\nhost h1 ready in 319 ms\nhost h2 ready in 322 ms\nhost h6 ready in 234 ms\nhost h4 ready in 330 ms\nhost h7 ready in 333 ms\nhost h5 ready in 334 ms\n"
+    }
+  ]
+}

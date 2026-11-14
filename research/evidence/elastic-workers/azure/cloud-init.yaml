@@ -1,0 +1,29 @@
+#cloud-config
+# Every VM of the #4768 experiment: Node 22 and the published Atomic SDK, plus the worker-host unit that stands in for
+# the proposed `atomic worker start --db <url> --token-file <file>`. The unit starts only once its env file exists.
+package_update: false
+write_files:
+  - path: /etc/systemd/system/atomic-worker.service
+    content: |
+      [Unit]
+      Description=Atomic workflow worker host (joins the shared journal named in /etc/atomic-worker.env)
+      After=network-online.target
+      Wants=network-online.target
+      ConditionPathExists=/etc/atomic-worker.env
+      [Service]
+      User=azureuser
+      EnvironmentFile=/etc/atomic-worker.env
+      WorkingDirectory=/opt/elastic-bench
+      ExecStart=/usr/local/bin/node /opt/elastic-bench/bench-host.mjs
+      # SIGTERM drains: running children finish, no new work is claimed.
+      KillSignal=SIGTERM
+      TimeoutStopSec=900
+      Restart=on-failure
+      RestartSec=5
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [bash, -c, "curl -fsSL https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.xz | tar -xJ -C /usr/local --strip-components=1"]
+  - [bash, -c, "mkdir -p /opt/elastic-bench && chown azureuser:azureuser /opt/elastic-bench"]
+  - [bash, -c, "cd /opt/elastic-bench && sudo -u azureuser bash -c 'echo {\\\"type\\\":\\\"module\\\",\\\"private\\\":true} > package.json && /usr/local/bin/npm install --no-audit --no-fund @bastani/atomic@0.9.86 @bastani/atomic-storage-libsql@0.9.86 typebox@1.3.27 > npm-install.log 2>&1'"]
+  - [bash, -c, "touch /opt/elastic-bench/.provisioned"]
