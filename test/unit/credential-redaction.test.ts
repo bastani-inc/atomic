@@ -49,6 +49,7 @@ describe("URL credential redaction (#4833)", () => {
 			assert.equal(redact("https://FAKE@TOKEN@example.invalid"), "https://example.invalid");
 		}
 		assert.equal(redactCredentials("ssh://git:pa@ss@example.invalid/r.git"), "ssh://git@example.invalid/r.git");
+		assert.equal(redactCredentials("ssh://:pa@ss@example.invalid/r.git"), "ssh://example.invalid/r.git");
 	});
 
 	test("removes '@'-bearing credentials from git stderr text (#4833)", () => {
@@ -56,6 +57,7 @@ describe("URL credential redaction (#4833)", () => {
 			"Cloning into 'repo'...",
 			"fatal: unable to access 'https://alice:s3cr@tPass@github.com/org/repo.git/': Could not resolve host",
 			"remote: see https://bob:FAKE@TOKEN@example.invalid/help and mail ops@example.invalid",
+			"fatal: could not read from https://example.invalid and ops@example.invalid",
 		].join("\n");
 		const redacted = redactCredentials(stderr);
 		assert.equal(
@@ -64,6 +66,7 @@ describe("URL credential redaction (#4833)", () => {
 				"Cloning into 'repo'...",
 				"fatal: unable to access 'https://github.com/org/repo.git/': Could not resolve host",
 				"remote: see https://example.invalid/help and mail ops@example.invalid",
+				"fatal: could not read from https://example.invalid and ops@example.invalid",
 			].join("\n"),
 		);
 		for (const fragment of ["s3cr", "tPass", "FAKE", "TOKEN", "alice", "bob"]) {
@@ -175,6 +178,8 @@ describe("credential shape redaction (#4833)", () => {
 				'{"db_password":"FAKE-db"}',
 				"password=FAKE-env DB_PASSWORD=FAKE-db GITHUB_TOKEN=FAKE-gh",
 				"pwd: FAKE-yaml",
+				'DB_PASSWORD="FAKE spaced value" next',
+				"TOKEN='FAKE spaced' next",
 			]) {
 				assert.equal(redact(input).includes("FAKE"), false, `${redact.name}: ${redact(input)}`);
 			}

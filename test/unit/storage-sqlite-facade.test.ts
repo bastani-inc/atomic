@@ -313,6 +313,7 @@ test("redactSecrets handles secrets inside or overlapping its marker (#4833)", (
 	assert.equal(redactSecrets(["a", "]q"])("a]q and aq"), `${REDACTED}${REDACTED} [redacted]nd ${REDACTED}q`);
 	assert.equal(redactSecrets(["e", "d]"])("x d] y"), `x ${REDACTED} y`);
 	assert.equal(redactSecrets(["a"])(REDACTED), REDACTED);
+	assert.equal(redactSecrets(["", ""])("no secret here"), "no secret here");
 	assertRedacted(["a", "]q"], "a]q and aq");
 	assertRedacted(["e", "d]"], "x d] y");
 	assertRedacted(["a", "q[r"], "qa");
