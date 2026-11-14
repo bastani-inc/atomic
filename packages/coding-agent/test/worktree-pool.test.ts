@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
@@ -513,8 +522,9 @@ describe("worktree pool eviction (#4748)", () => {
 		for (const session of sessions) await releaseSessionWorktrees(session);
 		sandbox.write(join(slot(snapshot, 0), ".env"), "TOKEN=secret\n");
 
-		await restoredRoot(await sessionOf(clone, snapshot), 0);
+		const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 0, settings });
 
+		assert.deepEqual(removed, [slot(snapshot, 1)]);
 		assert.equal(readFileSync(join(slot(snapshot, 0), ".env"), "utf8"), "TOKEN=secret\n");
 		assert.equal(existsSync(slot(snapshot, 1)), false);
 	});
@@ -529,7 +539,9 @@ describe("worktree pool eviction (#4748)", () => {
 		await sandbox.git(staged, "add", "README.md");
 		sandbox.write(join(staged, "README.md"), "hello\n");
 
-		await restoredRoot(await sessionOf(clone, snapshot), 0);
+		const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 0, settings });
+
+		assert.deepEqual(removed, [slot(snapshot, 1)]);
 
 		assert.equal(await sandbox.git(staged, "show", ":README.md"), "staged only");
 		assert.equal(existsSync(slot(snapshot, 1)), false);
@@ -537,7 +549,7 @@ describe("worktree pool eviction (#4748)", () => {
 
 	test("an ignored .env keeps an idle slot, while ignored build output does not (#4748)", async () => {
 		const { clone } = await sandbox.remoteWithClone("ignoring", {
-			".gitignore": ".env\nnode_modules/\n",
+			".gitignore": ".env\nnode_modules/\n*.log\n",
 			"README.md": "hi\n",
 		});
 		sandbox.write(join(clone, "file.txt"), "recorded\n");
@@ -551,8 +563,11 @@ describe("worktree pool eviction (#4748)", () => {
 		for (const session of sessions.slice(0, 2)) await releaseSessionWorktrees(session);
 		sandbox.write(join(slot(snapshot, 0), ".env"), "TOKEN=secret\n");
 		sandbox.write(join(slot(snapshot, 1), "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+		sandbox.write(join(slot(snapshot, 1), "debug.log"), "build output\n");
 
-		await restoredRoot(sessions[2]!, 0);
+		const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(snapshot.remotes), { maxIdle: 0, settings });
+
+		assert.deepEqual(removed, [slot(snapshot, 1)]);
 
 		assert.equal(readFileSync(join(slot(snapshot, 0), ".env"), "utf8"), "TOKEN=secret\n");
 		assert.equal(existsSync(slot(snapshot, 1)), false);
@@ -640,6 +655,8 @@ describe("worktree pool records and leases (#4748)", () => {
 			assert.equal(second.slot, 3);
 			await discardPooledWorktree(lease);
 			assert.equal(existsSync(join(storeDir(), "pool", repository, "2.json")), false);
+			assert.equal(await holdRestoredWorktree(storeDir(), lease.path, owner), undefined);
+			await releaseRestoredWorktree(lease);
 			await discardPooledWorktree(lease);
 			assert.equal((await admitPooledWorktree(admission(remotes), owner)).slot, 2);
 		} finally {
@@ -681,10 +698,12 @@ describe("worktree pool records and leases (#4748)", () => {
 		}
 		writeFileSync(file, "{ not json");
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: null, held: false });
-		for (const prebuild of [{ ...valid, holder: { kind: "prebuild", id: "session-x" } }]) {
-			writeFileSync(file, JSON.stringify(prebuild));
-			assert.equal(await pooledWorktreeOwnedElsewhere(storeDir(), lease.path, "session-x"), true);
-		}
+		writeFileSync(file, JSON.stringify({ ...valid, holder: { kind: "prebuild", id: "session-x" } }));
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), {
+			owner: { kind: "prebuild", id: "session-x" },
+			held: false,
+		});
+		assert.equal(await pooledWorktreeOwnedElsewhere(storeDir(), lease.path, "session-x"), true);
 		writeFileSync(
 			file,
 			JSON.stringify({ ...valid, blueprintDigest: "d", lastState: { ...valid.lastState, snapshotId: null } }),
@@ -756,4 +775,73 @@ describe("worktree pool records and leases (#4748)", () => {
 		assert.equal(existsSync(join(storeDir(), "pool", repository, "1.json")), true);
 		assert.equal(existsSync(stale), false);
 	});
+});
+
+describe("worktree pool lease edges (#4748)", () => {
+	const owner = { kind: "session" as const, id: "session-x" };
+	const admission = (remotes: readonly string[]) => ({
+		storeDir: storeDir(),
+		remotes,
+		lastState: { snapshotId: "a1", head: "1".repeat(40), tree: "2".repeat(40) },
+		envHash: "env",
+	});
+
+	test("a released lease changes nothing while another hold of the slot remains (#4748)", async () => {
+		const remotes = ["https://example.com/h.git"];
+		const repository = repositoryIdOf(remotes);
+		const first = await admitPooledWorktree(admission(remotes), owner);
+		const second = await holdRestoredWorktree(storeDir(), first.path, owner);
+		assert.ok(second);
+		await releaseRestoredWorktree(first);
+		await releaseRestoredWorktree(first);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), first.path), { owner, held: true });
+		await recordPooledWorktreeState(first, { snapshotId: "z9", head: "9".repeat(40), tree: "8".repeat(40) });
+		assert.equal(recordOfFile(repository, 0).lastState.snapshotId, "a1");
+		await releaseRestoredWorktree(second);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), first.path), { owner, held: false });
+	});
+
+	test("releasing a discarded slot's lease does nothing (#4748)", async () => {
+		const lease = await admitPooledWorktree(admission(["https://example.com/i.git"]), owner);
+		await discardPooledWorktree(lease);
+		await releaseRestoredWorktree(lease);
+		await recordPooledWorktreeState(lease, { snapshotId: "z9", head: "9".repeat(40), tree: "8".repeat(40) });
+		assert.equal(await pooledWorktreeHolder(storeDir(), lease.path), "unpooled");
+	});
+
+	test("eviction counts only readable idle records, and a holder that stopped without releasing counts as the oldest (#4748)", async () => {
+		const remotes = ["https://example.com/j.git"];
+		const repository = repositoryIdOf(remotes);
+		const leases = [];
+		for (let n = 0; n < 3; n++) leases.push(await admitPooledWorktree(admission(remotes), owner));
+		for (const lease of leases) {
+			await releaseRestoredWorktree(lease);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		// Slot 2's holder stopped without releasing it; slot 0's record cannot be read.
+		writeFileSync(
+			join(storeDir(), "pool", repository, "2.json"),
+			JSON.stringify({ ...recordOfFile(repository, 2), releasedAt: null }),
+		);
+		writeFileSync(join(storeDir(), "pool", repository, "0.json"), "{ not json");
+
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repository, { maxIdle: 1, settings }), [leases[2]!.path]);
+		assert.equal(existsSync(join(storeDir(), "pool", repository, "1.json")), true);
+		assert.equal(existsSync(join(storeDir(), "pool", repository, "0.json")), true);
+	});
+
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"admission fails, instead of looping, when the pool cannot be written (#4748)",
+		async () => {
+			const remotes = ["https://example.com/k.git"];
+			const directory = join(storeDir(), "pool", repositoryIdOf(remotes));
+			mkdirSync(directory, { recursive: true });
+			chmodSync(directory, 0o555);
+			try {
+				await assert.rejects(admitPooledWorktree(admission(remotes), owner), { code: "EACCES" });
+			} finally {
+				chmodSync(directory, 0o755);
+			}
+		},
+	);
 });

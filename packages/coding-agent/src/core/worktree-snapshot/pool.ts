@@ -119,8 +119,8 @@ const released = new WeakSet<WorktreeLease>();
 /** Names this process's leases; the pid alone could be reused by a later process. */
 const PROCESS_LEASE = `${process.pid}-${randomUUID().slice(0, 8)}`;
 
-function sameOwner(a: PoolOwner | null, b: PoolOwner): boolean {
-	return a !== null && a.kind === b.kind && a.id === b.id;
+function sameOwner(a: PoolOwner, b: PoolOwner): boolean {
+	return a.kind === b.kind && a.id === b.id;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -480,7 +480,6 @@ export async function evictIdleWorktrees(
 
 async function evictSlot(storeDir: string, record: PoolSlotRecord, options: EvictIdleWorktreesOptions) {
 	const file = recordFile(storeDir, record.repository, record.slot);
-	if (heldSlots.has(file)) return false;
 	try {
 		return await withSlotLock(file, false, async () => {
 			if (heldSlots.has(file)) return false;
