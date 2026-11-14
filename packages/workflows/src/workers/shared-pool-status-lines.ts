@@ -3,14 +3,21 @@ import type {
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolStats,
+	SharedStoreHealth,
 } from "../durable/journal/shared-pool-types.js";
+
+/** Why a shared root's pool stats could not be read, and the shared store's state then: `degraded` or `unknown`. */
+export interface SharedPoolStatusUnavailable {
+	readonly name: string;
+	readonly state?: SharedStoreHealth["state"];
+	readonly message: string;
+	readonly hint?: string;
+}
 
 /** What workflow status shows of a root's shared pool (#4310): its stats, or why they could not be read. */
 export type SharedPoolStatus =
 	| { readonly sharedPool: SharedPoolStats }
-	| {
-			readonly sharedPoolUnavailable: { readonly name: string; readonly message: string; readonly hint?: string };
-	  };
+	| { readonly sharedPoolUnavailable: SharedPoolStatusUnavailable };
 
 function seconds(ms: number): string {
 	return `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
@@ -78,8 +85,11 @@ export function sharedFleetLines(fleet: SharedPoolFleetStatus): string[] {
 /** A shared pool's status as lines of text: queue depth, then the fleet, then each host, then each lease. */
 export function sharedPoolStatusLines(status: SharedPoolStatus): string[] {
 	if ("sharedPoolUnavailable" in status) {
-		const { message, hint } = status.sharedPoolUnavailable;
-		return [`Shared pool stats unavailable: ${message}`, ...(hint === undefined ? [] : [hint])];
+		const { state, message, hint } = status.sharedPoolUnavailable;
+		return [
+			`Shared pool stats unavailable${state === undefined ? "" : `, shared store ${state}`}: ${message}`,
+			...(hint === undefined ? [] : [hint]),
+		];
 	}
 	const stats = status.sharedPool;
 	return [
@@ -100,7 +110,7 @@ export function sharedPoolStatusLines(status: SharedPoolStatus): string[] {
  */
 export function workflowWorkerFleetLines(fleet: SharedPoolFleet): string[] {
 	const lines = sharedFleetLines(fleet.fleet);
-	if (fleet.fleet.store.state === "unknown") return lines;
+	if (!fleetRead(fleet)) return lines;
 	lines.push(`Hosts: ${fleet.hosts.length}`, ...fleet.hosts.map((host) => `  ${hostLine(host)}`));
 	lines.push(`Roots: ${fleet.roots.length}`);
 	for (const root of fleet.roots) {
@@ -108,4 +118,9 @@ export function workflowWorkerFleetLines(fleet: SharedPoolFleet): string[] {
 		lines.push(`  root ${root.root}: ${queueLine(root)}${holders.length === 0 ? "" : `, on ${holders.join(", ")}`}`);
 	}
 	return lines;
+}
+
+/** Whether the fleet's store could be read: one that could not is `unknown`, or `degraded` without a queue (#4768). */
+export function fleetRead(fleet: SharedPoolFleet): boolean {
+	return fleet.fleet.store.state === "ok" || fleet.fleet.queue !== undefined;
 }

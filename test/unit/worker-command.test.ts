@@ -362,8 +362,10 @@ test("worker status prints the fleet as the workflows package's lines, or as JSO
 		out: [`lines of ${JSON.stringify(unknown)}`],
 		err: [],
 	});
-	const degraded = { fleet: { store: { state: "degraded" as const, message: "stalled" } } };
-	assert.equal((await run(["status", "--json"], module(degraded))).code, 0, "a store that answers reads reads");
+	const degraded = { fleet: { store: { state: "degraded" as const, message: "stalled" }, queue: {} } };
+	assert.equal((await run(["status", "--json"], module(degraded))).code, 0, "a store that answered reads was read");
+	const unread = { fleet: { store: { state: "degraded" as const, message: "no answer" } } };
+	assert.equal((await run(["status", "--json"], module(unread))).code, 1, "a store that did not answer was not");
 	const setup = Object.assign(new Error("incomplete"), {
 		name: "SharedPoolSetupError",
 		problems: [{ subject: "a shared journal", code: "shared-journal-required", hint: "Pass --db." }],

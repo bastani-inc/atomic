@@ -12,7 +12,7 @@ import {
 import type { StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
-import { unknownSharedStore, withinStatusBudget } from "../durable/journal/shared-store-health.js";
+import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
 import { openSqlPoolQueue, type PoolWork } from "../durable/journal/sql-pool-queue.js";
 import {
 	readSharedPoolFleet,
@@ -755,6 +755,10 @@ export async function readWorkflowWorkerFleet(
 		return await withinStatusBudget(read());
 	} catch (error) {
 		// A store that cannot be read, or does not answer in time, reads as unknown rather than failing the status.
-		return { hosts: [], roots: [], fleet: { store: unknownSharedStore(error) } };
+		return {
+			hosts: [],
+			roots: [],
+			fleet: { store: classifySharedStoreHealth({ hostsRegistered: false, readFailure: error as Error }) },
+		};
 	}
 }

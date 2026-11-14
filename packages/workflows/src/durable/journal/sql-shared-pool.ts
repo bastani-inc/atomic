@@ -3,7 +3,7 @@ import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
-import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
+import { type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
 import type {
 	SharedPoolFleet,
 	SharedPoolFleetStatus,
@@ -13,7 +13,12 @@ import type {
 	SharedPoolStats,
 	WorkerHostGitSource,
 } from "./shared-pool-types.js";
-import { classifySharedStoreHealth, sharedStoreHealth, withoutUrlCredentials } from "./shared-store-health.js";
+import {
+	classifySharedStoreHealth,
+	type SharedStoreWrites,
+	sharedStoreHealth,
+	withoutUrlCredentials,
+} from "./shared-store-health.js";
 import type { PoolWork, SqlPoolQueue } from "./sql-pool-queue.js";
 import { type PooledStageInputKind, validateStageInput } from "./stage-input-kinds.js";
 import { type Lease, RUN_EVENT_TYPES, type RunJournal } from "./types.js";
@@ -144,6 +149,7 @@ export class SqlSharedPool {
 	private constructor(
 		private readonly storage: SqlPoolStorage,
 		private readonly queue: SqlPoolQueue,
+		private readonly writes: SharedStoreWrites | undefined,
 	) {
 		const runs = storage.tables.runs;
 		this.shared = `${runs}_pool_shared`;
@@ -160,7 +166,7 @@ export class SqlSharedPool {
 	static async open(journal: RunJournal, queue: SqlPoolQueue): Promise<SqlSharedPool> {
 		const storage = sqlPoolStorage(journal);
 		if (!storage) throw new Error("Shared worker placement requires a SQL run journal");
-		const pool = new SqlSharedPool(storage, queue);
+		const pool = new SqlSharedPool(storage, queue, sqlPoolWrites(journal));
 		const runs = storage.tables.runs;
 		await storage.transaction(async (tx) => {
 			await tx.exec(`
@@ -709,7 +715,7 @@ export class SqlSharedPool {
 
 	/** Queue depth, per-host workers and lease ages of `root`'s shared pool. Read without the write lock. */
 	stats(root: string): Promise<SharedPoolStats> {
-		return poolStats(this.storage, root);
+		return poolStats(this.storage, root, () => fleetStatus(this.storage, this.writes));
 	}
 
 	private stageLease(tx: SqliteExecutor, root: string, runId: string, stageId: string) {
@@ -857,10 +863,13 @@ async function registeredHosts(storage: SqlPoolStorage): Promise<readonly Shared
 }
 
 /**
- * The shared store's health, from a write probe that changes nothing, and the queue of every running or paused shared
- * root (#4768).
+ * The shared store's health, from this process's writes to it (#4768), and the queue of every running or paused shared
+ * root.
  */
-async function fleetStatus(storage: SqlPoolStorage): Promise<SharedPoolFleetStatus> {
+async function fleetStatus(
+	storage: SqlPoolStorage,
+	writes: SharedStoreWrites | undefined,
+): Promise<SharedPoolFleetStatus> {
 	const runs = storage.tables.runs;
 	// An aggregate without GROUP BY gives one row, also when no root matches.
 	const row = (await storage.read((executor) =>
@@ -872,13 +881,11 @@ async function fleetStatus(storage: SqlPoolStorage): Promise<SharedPoolFleetStat
 			WHERE r.status IN ('running', 'paused')`,
 		),
 	))!;
-	// The probe takes the write lock and commits nothing: a store that wedged leaves it unanswered.
-	const store = await classifySharedStoreHealth(
-		() => storage.transaction((tx) => tx.run(`UPDATE ${runs}_pool_hosts SET host = host WHERE 0`)),
-		{ hostsRegistered: Number(row.hosts) > 0 },
-	);
 	return {
-		store,
+		store: classifySharedStoreHealth({
+			...(writes === undefined ? {} : { writes }),
+			hostsRegistered: Number(row.hosts) > 0,
+		}),
 		queue: { roots: Number(row.roots), ready: Number(row.ready), leased: Number(row.leased) },
 	};
 }
@@ -887,7 +894,7 @@ async function fleetStatus(storage: SqlPoolStorage): Promise<SharedPoolFleetStat
 async function poolStats(
 	storage: SqlPoolStorage,
 	root: string,
-	fleet?: SharedPoolFleetStatus,
+	fleet: () => Promise<SharedPoolFleetStatus>,
 ): Promise<SharedPoolStats> {
 	const [counts, leases, pending, hosts, fleetNow] = await Promise.all([
 		storage.read((executor) =>
@@ -920,7 +927,7 @@ async function poolStats(
 			),
 		),
 		registeredHosts(storage),
-		fleet ?? fleetStatus(storage),
+		fleet(),
 	]);
 	const count = (state: string) => Number(counts.find((row) => row.state === state)?.count ?? 0);
 	const leaseList = leases.map((row) => ({
@@ -961,7 +968,9 @@ export async function readSharedPoolStats(journal: RunJournal, root: string): Pr
 			`${storage.tables.runs}_stage_inputs`,
 		),
 	);
-	return shared === undefined ? undefined : poolStats(storage, root);
+	return shared === undefined
+		? undefined
+		: poolStats(storage, root, () => fleetStatus(storage, sqlPoolWrites(journal)));
 }
 
 /**
@@ -983,10 +992,10 @@ export async function readSharedPoolFleet(journal: RunJournal): Promise<SharedPo
 			WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
 		),
 	);
-	const fleet = await fleetStatus(storage);
+	const fleet = await fleetStatus(storage, sqlPoolWrites(journal));
 	return {
 		hosts: await registeredHosts(storage),
-		roots: await Promise.all(active.map((row) => poolStats(storage, row.root, fleet))),
+		roots: await Promise.all(active.map((row) => poolStats(storage, row.root, async () => fleet))),
 		fleet,
 	};
 }

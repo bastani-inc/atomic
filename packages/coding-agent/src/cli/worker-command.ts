@@ -240,7 +240,7 @@ export interface WorkerHostOptions {
 
 /** A shared journal's fleet as the workflows package reads it; output prints it whole. */
 export interface WorkerFleet {
-	readonly fleet: { readonly store: { readonly state: "ok" | "degraded" | "unknown" } };
+	readonly fleet: { readonly store: { readonly state: "ok" | "degraded" | "unknown" }; readonly queue?: object };
 }
 
 export interface WorkerHostModule {
@@ -442,8 +442,8 @@ export async function runWorkerCommand(args: readonly string[], options: WorkerC
 		});
 		if (command.json) log(JSON.stringify(fleet, null, 2));
 		else for (const text of module.workflowWorkerFleetLines(fleet)) log(text);
-		// A store that could not be read is a failed status, though it printed why.
-		return fleet.fleet.store.state === "unknown" ? 1 : 0;
+		// A store that could not be read, unknown or degraded without a queue, is a failed status, though it printed why.
+		return fleet.fleet.store.state === "ok" || fleet.fleet.queue !== undefined ? 0 : 1;
 	} catch (caught) {
 		for (const text of setupLines(caught as Error)) error(text);
 		return 1;

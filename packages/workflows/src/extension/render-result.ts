@@ -36,7 +36,7 @@ import { renderRunDetail } from "../tui/run-detail.js";
 import { renderStatusList } from "../tui/status-list.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
-import { sharedPoolStatusLines } from "../workers/shared-pool-status-lines.js";
+import { type SharedPoolStatusUnavailable, sharedPoolStatusLines } from "../workers/shared-pool-status-lines.js";
 import type { WorkflowControlFailedRun, WorkflowControlFailureCode } from "./workflow-control-failure.js";
 import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import type { WorkflowRunStatusDigest } from "./workflow-status-digest.js";
@@ -96,7 +96,7 @@ type StatusDetailResult =
 			/** A root whose pool runs on a shared journal (#4310): its queue depth, hosts and leases. */
 			sharedPool?: SharedPoolStats;
 			/** Why a shared root's pool stats could not be read, and how to recover a store that stopped taking writes. */
-			sharedPoolUnavailable?: { readonly name: string; readonly message: string; readonly hint?: string };
+			sharedPoolUnavailable?: SharedPoolStatusUnavailable;
 	  }
 	| {
 			action: "statusDetail";

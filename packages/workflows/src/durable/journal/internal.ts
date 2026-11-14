@@ -1,4 +1,5 @@
 import type { SqliteExecutor, SqliteTransactionOptions } from "@bastani/atomic/storage";
+import { SharedStoreWrites } from "./shared-store-health.js";
 import {
 	type AppendOutcome,
 	type JournalEntry,
@@ -92,9 +93,18 @@ export interface SqlPoolStorage {
 }
 
 const poolStorage = new WeakMap<RunJournal, SqlPoolStorage>();
+const poolWrites = new WeakMap<RunJournal, SharedStoreWrites>();
 
+/** Registers `journal`'s pool storage, whose writes status watches to tell a store that stopped committing (#4768). */
 export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStorage): void {
-	poolStorage.set(journal, storage);
+	const writes = new SharedStoreWrites();
+	poolWrites.set(journal, writes);
+	poolStorage.set(journal, { ...storage, transaction: (body) => writes.watch(() => storage.transaction(body)) });
+}
+
+/** This process's writes to `journal`'s pool tables, for status; undefined for a journal that is not SQL. */
+export function sqlPoolWrites(journal: RunJournal): SharedStoreWrites | undefined {
+	return poolWrites.get(journal);
 }
 
 export function sqlPoolStorage(journal: RunJournal): SqlPoolStorage | undefined {

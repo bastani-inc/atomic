@@ -46,59 +46,87 @@ export function sharedStoreHealth(): SharedStoreHealth {
 	return stalled === undefined ? { state: "ok" } : { state: "degraded", message: stalled };
 }
 
-/** The store a status read could not read, with why and how to recover from a store that stopped taking writes. */
-export function unknownSharedStore(error: unknown): SharedStoreHealth & {
-	readonly state: "unknown";
-	readonly message: string;
-	readonly hint: string;
-} {
-	return { state: "unknown", message: withoutUrlCredentials((error as Error).message), hint: SHARED_STORE_HINT };
-}
+/** How long one of this process's writes may wait for the shared store before status reports it degraded (#4768). */
+export const STORE_WRITE_STALL_MS = 10_000;
+/** How many of this process's writes in a row the shared store may refuse before status reports it degraded. */
+export const STORE_WRITE_FAILURES = 3;
 
-/** How long a status read waits for its write probe to commit before it reports the store degraded (#4768). */
-export const STORE_PROBE_TIMEOUT_MS = 2_000;
-/** How many write probes in a row a status read tries before it reports a store that refuses them. */
-export const STORE_PROBE_ATTEMPTS = 3;
+/** The storage errors that say the store did not take a write, rather than that the write itself was refused. */
+const STORE_FAILURES = new Set(["StorageUnavailableError", "StorageTransientError", "StorageOutcomeUnknownError"]);
 
 /**
- * The shared store's health from a bounded write `probe` (#4768), the one detector of a store that stopped committing
- * writes. A probe that does not settle within {@link STORE_PROBE_TIMEOUT_MS} reads `degraded`, as a wedged sqld leaves
- * writes unanswered. {@link STORE_PROBE_ATTEMPTS} failed probes in a row read `degraded` while hosts are registered,
- * whose work the store holds up, and `unknown` otherwise. A probe that commits leaves the libSQL adapter's own report.
- * Every degraded or unknown store carries {@link SHARED_STORE_HINT}.
+ * This process's writes to one journal's pool tables (#4768): when the oldest still waiting started, by
+ * `performance.now()`, and how many in a row the store failed. Status reads it rather than writing to probe the store,
+ * since a journal runs one call at a time and a probe the store left unanswered would hold up the run's own calls.
  */
-export async function classifySharedStoreHealth(
-	probe: () => Promise<unknown>,
-	options: { readonly hostsRegistered: boolean },
-): Promise<SharedStoreHealth> {
-	let failure: Error | undefined;
-	for (let attempt = 0; attempt < STORE_PROBE_ATTEMPTS; attempt += 1) {
-		let timer: NodeJS.Timeout | undefined;
-		const timedOut = new Promise<"timed-out">((resolve) => {
-			timer = setTimeout(() => resolve("timed-out"), STORE_PROBE_TIMEOUT_MS);
-		});
-		const write = probe();
-		// A probe that commits after it timed out is dropped.
-		write.catch(() => {});
+export class SharedStoreWrites {
+	private readonly waiting = new Map<number, number>();
+	private next = 0;
+	failuresInRow = 0;
+	lastFailure?: Error;
+
+	async watch<T>(write: () => Promise<T>): Promise<T> {
+		const id = this.next++;
+		this.waiting.set(id, performance.now());
 		try {
-			if ((await Promise.race([write, timedOut])) === "timed-out")
-				return {
-					state: "degraded",
-					message: `The shared store did not commit a write within ${STORE_PROBE_TIMEOUT_MS / 1000} s.`,
-					hint: SHARED_STORE_HINT,
-				};
-			return sharedStoreHealth();
+			const result = await write();
+			this.failuresInRow = 0;
+			return result;
 		} catch (error) {
-			failure = error as Error;
+			if (STORE_FAILURES.has((error as Error).name)) {
+				this.failuresInRow += 1;
+				this.lastFailure = error as Error;
+			}
+			throw error;
 		} finally {
-			clearTimeout(timer);
+			this.waiting.delete(id);
 		}
 	}
-	return {
-		state: options.hostsRegistered ? "degraded" : "unknown",
-		message: `The shared store refused ${STORE_PROBE_ATTEMPTS} writes in a row: ${withoutUrlCredentials(failure!.message)}`,
+
+	/** How long the oldest write still waiting has waited; undefined when none waits. */
+	oldestWaitingMs(): number | undefined {
+		if (this.waiting.size === 0) return undefined;
+		return performance.now() - Math.min(...this.waiting.values());
+	}
+}
+
+/**
+ * The shared store's health (#4768), the one detector of a store that stopped committing writes, from what this
+ * process saw. First match wins:
+ * - one of this process's writes waited {@link STORE_WRITE_STALL_MS}: `degraded`, as a wedged sqld leaves writes;
+ * - the status read, a bounded read probe, ran out of {@link STATUS_READ_TIMEOUT_MS}: `degraded`;
+ * - the store failed {@link STORE_WRITE_FAILURES} writes in a row: `degraded` while hosts are registered, whose work it
+ *   holds up, else `unknown`;
+ * - the status read failed: `unknown`;
+ * - else the libSQL adapter's own report, `degraded` after a stall it reported, or `ok`.
+ * Every degraded or unknown store this function finds carries {@link SHARED_STORE_HINT}.
+ */
+export function classifySharedStoreHealth(observed: {
+	readonly writes?: SharedStoreWrites;
+	readonly hostsRegistered: boolean;
+	readonly readFailure?: Error;
+}): SharedStoreHealth {
+	const found = (state: "degraded" | "unknown", message: string) => ({
+		state,
+		message: withoutUrlCredentials(message),
 		hint: SHARED_STORE_HINT,
-	};
+	});
+	const waitedMs = observed.writes?.oldestWaitingMs();
+	if (waitedMs !== undefined && waitedMs >= STORE_WRITE_STALL_MS)
+		return found(
+			"degraded",
+			`A write has waited more than ${STORE_WRITE_STALL_MS / 1000} s for the shared store to commit it.`,
+		);
+	if (observed.readFailure instanceof SharedStoreStatusTimeoutError)
+		return found("degraded", observed.readFailure.message);
+	const writes = observed.writes;
+	if (writes !== undefined && writes.failuresInRow >= STORE_WRITE_FAILURES)
+		return found(
+			observed.hostsRegistered ? "degraded" : "unknown",
+			`The shared store failed ${writes.failuresInRow} writes in a row: ${writes.lastFailure!.message}`,
+		);
+	if (observed.readFailure !== undefined) return found("unknown", observed.readFailure.message);
+	return sharedStoreHealth();
 }
 
 /**
