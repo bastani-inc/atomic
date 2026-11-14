@@ -43,9 +43,12 @@ import type {
 	WorktreeSnapshotSettings,
 	WorktreeUnrestored,
 } from "../worktree-snapshot/types.ts";
+import { blueprintBuildShared, handOverBuildTimings, holdToolsUntilBuilt } from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
 import {
+	BLUEPRINT_BUILDING_CONTEXT,
 	type BlueprintCheckout,
+	blueprintBuildReport,
 	checkoutsNeedingRebuild,
 	enclosingRepositoryRoot,
 	inheritedRemotes,
@@ -57,7 +60,7 @@ import { isResumePreconditionError, type ResumeEntryPoint } from "./errors.ts";
 import { isResumeFailure } from "./failure.ts";
 import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, type ResumePreflightIo } from "./preflight.ts";
-import { formatResumeTimings, ResumeTimingsRecorder, recordResumeTimings } from "./timings.ts";
+import { formatResumeTimings, type ResumeTimings, ResumeTimingsRecorder, recordResumeTimings } from "./timings.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
 export type DirtyCheckoutChoice = "restore" | "use" | "cancel";
@@ -113,6 +116,13 @@ export interface PrepareSessionResumeOptions {
 	 * `maxIdlePerRepository` idle slots per repository. Default: `snapshots.pool` defaults.
 	 */
 	readonly pool?: WorktreePoolSettings;
+	/**
+	 * `"prompt"` (default): the resume returns once the blueprints of the worktrees it restored are built. `"tools"`: it
+	 * returns once they are restored and the build goes on behind the session's first turn; the session's tools that run
+	 * project code or read the worktree wait for it (`awaitBlueprintReady`), and the first of them reports how it
+	 * went. The build's warnings then reach the agent and the user with that tool's result, not `notices`.
+	 */
+	readonly waitForBlueprint?: "prompt" | "tools";
 }
 
 export type PreparedSessionResume =
@@ -345,9 +355,24 @@ export async function prepareSessionResume(
 	await holdSessionWorktrees(sessionManager, sessionManager, storeDir);
 	// `atomic --session` counts from the launch of the process, which is 0 on the clock the recorder uses.
 	const timings = new ResumeTimingsRecorder(options.entryPoint === "cli" ? 0 : undefined);
+	let firstRecorded!: (recorded: ResumeTimings | undefined) => void;
+	const recordedAtReady = new Promise<ResumeTimings | undefined>((resolve) => {
+		firstRecorded = resolve;
+	});
+	// A build behind the first turn (`waitForBlueprint: "tools"`) adds its steps to the timings once it settles.
+	const buildSettled = async (session: SessionManager): Promise<void> => {
+		const atReady = await recordedAtReady;
+		if (atReady === undefined) return;
+		const { blueprint, blueprintReadyMs } = timings.finish();
+		const recorded = { ...atReady, blueprint, blueprintReadyMs };
+		recordTimingLines(formatResumeTimings(recorded), "resume");
+		// The isolated engine has the session open by now, so it records them.
+		if (blueprintBuildShared(session.getSessionId())) handOverBuildTimings(session.getSessionId(), recorded);
+		else await recordResumeTimings(session, recorded);
+	};
 	let prepared: PreparedSessionResume;
 	try {
-		prepared = await timings.run(() => prepareResume(sessionManager, options));
+		prepared = await timings.run(() => prepareResume(sessionManager, options, buildSettled));
 	} catch (error) {
 		await releaseSessionWorktrees(sessionManager);
 		throw error;
@@ -358,6 +383,9 @@ export async function prepareSessionResume(
 		const recorded = timings.finish();
 		await recordResumeTimings(prepared.sessionManager, recorded);
 		recordTimingLines(formatResumeTimings(recorded), "resume");
+		firstRecorded(recorded);
+	} else {
+		firstRecorded(undefined);
 	}
 	return prepared;
 }
@@ -365,6 +393,7 @@ export async function prepareSessionResume(
 async function prepareResume(
 	sessionManager: SessionManager,
 	options: PrepareSessionResumeOptions,
+	buildSettled: (session: SessionManager) => Promise<void>,
 ): Promise<PreparedSessionResume> {
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
@@ -483,6 +512,23 @@ async function prepareResume(
 			.map((mapping) => resolve(mapping.to))
 			.filter((root) => isInside(storeDir, root)),
 	);
+	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
+		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
+		const report = building.then(async (blueprints) => {
+			await buildSettled(opened.sessionManager);
+			return blueprintBuildReport(blueprints);
+		});
+		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), report);
+		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
+		return {
+			status: "ready",
+			sessionManager: opened.sessionManager,
+			notices,
+			blueprintNotices: [],
+			missingRecordNotices: resumed.missingNotices,
+			blueprintContext: BLUEPRINT_BUILDING_CONTEXT,
+		};
+	}
 	if (restoredNow.size > 0 && options.blueprints !== "skip") {
 		options.onProgress?.("Setting up the blueprints of restored worktrees");
 	}
@@ -1177,7 +1223,7 @@ export function sessionResumeOptions(
 	agentDir: string,
 	settingsManager: Pick<
 		SettingsManager,
-		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand"
+		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand" | "getResumeWaitForBlueprint"
 	>,
 	trusted: (worktree: string) => boolean,
 ): PrepareSessionResumeOptions {
@@ -1188,5 +1234,6 @@ export function sessionResumeOptions(
 		pool: settingsManager.getWorktreePoolSettings(),
 		blueprint: { agentDir, setupCommand: settingsManager.getResumeSetupCommand(), trusted },
 		storeDir: resumeStoreDir(agentDir),
+		waitForBlueprint: settingsManager.getResumeWaitForBlueprint(),
 	};
 }

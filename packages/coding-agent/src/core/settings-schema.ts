@@ -191,6 +191,12 @@ const ResumeSettingsSchema = Type.Object({
 			deprecated: true,
 		}),
 	),
+	waitForBlueprint: Type.Optional(
+		Type.Union([Type.Literal("prompt"), Type.Literal("tools")], {
+			description:
+				'When a resume restores a worktree, what waits for its blueprint build. "prompt" (default): the session opens once the build has finished. "tools": the session opens and the first request goes out while the build runs; tools that run project code or read the worktree wait for it.',
+		}),
+	),
 });
 
 const ProviderRetrySettingsSchema = Type.Object({
