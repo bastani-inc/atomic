@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed worktree cleanup leaving a setup hook's synthetic link whose name starts with two dots (for example `..cache`) in place before removing the worktree. On older Git for Windows, removal could then delete the main checkout's copy through the link ([#4836](https://github.com/bastani-inc/atomic/issues/4836))
+
 ## [0.9.86] - 2026-11-14
 
 Subagents are easier to reach and to talk to.
