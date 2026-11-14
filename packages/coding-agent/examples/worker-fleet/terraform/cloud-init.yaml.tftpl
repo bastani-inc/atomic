@@ -1,0 +1,31 @@
+#cloud-config
+# Boots a VM into `atomic worker start` (#4768). The template fills ${database}; the provider id comes from the cloud's
+# metadata service (provider_id_command), and the token from your secret store (token_command), never from user data.
+users:
+  - name: atomic
+    shell: /bin/bash
+write_files:
+  - path: /etc/systemd/system/atomic-worker.service
+    content: |
+      [Unit]
+      Description=Atomic worker host
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      User=atomic
+      EnvironmentFile=/etc/atomic/worker.env
+      ExecStart=/usr/bin/env atomic worker start --db ${database} --token-file /etc/atomic/token --slots ${slots}
+      KillSignal=SIGTERM
+      TimeoutStopSec=900
+      Restart=on-failure
+      [Install]
+      WantedBy=multi-user.target
+# Block scalars hold the commands' own quotes as they are; cloud-init runs each string with sh.
+runcmd:
+  - |
+    mkdir -p /etc/atomic && echo "ATOMIC_WORKER_PROVIDER_ID=$(${provider_id_command})" > /etc/atomic/worker.env
+  - |
+    umask 077 && ${token_command} > /etc/atomic/token && chown atomic:atomic /etc/atomic/token
+  - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]
+  - [sh, -c, "npm install -g @bastani/atomic && sudo -iu atomic atomic install npm:@bastani/atomic-storage-libsql"]
+  - [systemctl, enable, --now, atomic-worker]

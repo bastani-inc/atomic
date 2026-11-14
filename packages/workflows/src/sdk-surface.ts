@@ -211,6 +211,7 @@ export type {
 	SharedPoolFailure,
 	SharedPoolFleet,
 	SharedPoolFleetController,
+	SharedPoolFleetScaling,
 	SharedPoolFleetStatus,
 	SharedPoolHost,
 	SharedPoolHostReport,
@@ -551,6 +552,15 @@ export {
 	WorkerPlacementError,
 	WorkspaceRestoreUnavailableError,
 } from "./workers/placement-errors.js";
+export type {
+	CommandHostState,
+	CommandListFormat,
+	CommandProvisionerOptions,
+	CommandSteps,
+	WorkerHostProvisionerConfig,
+	WorkerProvisionerErrorCode,
+} from "./workers/provisioners/index.js";
+export { createWorkerHostProvisioner, WorkerProvisionerError } from "./workers/provisioners/index.js";
 export type {
 	LocalWorkerOptions,
 	WorkflowAdmissionOptions,

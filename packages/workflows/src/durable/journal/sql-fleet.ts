@@ -75,6 +75,46 @@ async function tableExists(executor: SqliteExecutor, name: string): Promise<bool
 	);
 }
 
+/** The queue of each running or paused shared root, as the fleet's policy counts it. */
+async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Promise<FleetRootRow[]> {
+	const runs = storage.tables.runs;
+	const rows = await executor.all<
+		SqliteRow & { root: string; config: string; blocked: number; ready: number; leased: number }
+	>(
+		`SELECT s.root, s.config,
+		(s.budget_blocked = 1 OR r.status != 'running' OR ${STORE_NOW} - l.renewed_at > p.timeout) AS blocked,
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'ready') AS ready,
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased') AS leased
+		FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
+		JOIN ${storage.tables.leases} l ON l.run_id = s.root AND l.epoch = s.epoch
+		JOIN ${runs}_pool p ON p.root = s.root
+		WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
+	);
+	return rows.map((row) => {
+		const session = (JSON.parse(row.config) as { admission?: { limits?: { session?: number } } }).admission?.limits
+			?.session;
+		return {
+			root: row.root,
+			ready: Number(row.ready),
+			leased: Number(row.leased),
+			...(session === undefined ? {} : { sessionLimit: session }),
+			blocked: Number(row.blocked) === 1,
+		};
+	});
+}
+
+/**
+ * The queue of each running or paused shared root of `journal`, as the fleet's policy counts it, read without the write
+ * lock and without creating any table (#4768). Empty for a journal that never ran a shared pool, or is not SQL.
+ */
+export async function readFleetDemand(journal: RunJournal): Promise<FleetRootRow[]> {
+	const storage = sqlPoolStorage(journal);
+	if (storage === undefined) return [];
+	return storage.read(async (executor) =>
+		(await tableExists(executor, `${storage.tables.runs}_pool_shared`)) ? rootDemand(executor, storage) : [],
+	);
+}
+
 export class SqlFleetStore {
 	private readonly lease: string;
 	private readonly events: string;
@@ -255,18 +295,7 @@ export class SqlFleetStore {
 			).map((row) => ({ host: row.host, ...(row.provider_id === null ? {} : { providerId: row.provider_id }) }));
 			if (!(await tableExists(executor, `${runs}_pool_shared`)))
 				return { roots: [], hosts: [], drains, leased: new Map() };
-			const roots = await executor.all<
-				SqliteRow & { root: string; config: string; blocked: number; ready: number; leased: number }
-			>(
-				`SELECT s.root, s.config,
-				(s.budget_blocked = 1 OR r.status != 'running' OR ${STORE_NOW} - l.renewed_at > p.timeout) AS blocked,
-				(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'ready') AS ready,
-				(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased') AS leased
-				FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
-				JOIN ${this.storage.tables.leases} l ON l.run_id = s.root AND l.epoch = s.epoch
-				JOIN ${runs}_pool p ON p.root = s.root
-				WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
-			);
+			const roots = await rootDemand(executor, this.storage);
 			const leases = await executor.all<SqliteRow & { worker: string; count: number }>(
 				`SELECT worker, COUNT(*) AS count FROM ${runs}_work WHERE state = 'leased' GROUP BY worker`,
 			);
@@ -279,17 +308,7 @@ export class SqlFleetStore {
 				`SELECT *, ${STORE_NOW} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`,
 			);
 			return {
-				roots: roots.map((row) => {
-					const session = (JSON.parse(row.config) as { admission?: { limits?: { session?: number } } }).admission
-						?.limits?.session;
-					return {
-						root: row.root,
-						ready: Number(row.ready),
-						leased: Number(row.leased),
-						...(session === undefined ? {} : { sessionLimit: session }),
-						blocked: Number(row.blocked) === 1,
-					};
-				}),
+				roots,
 				hosts: registered.map((row) => ({
 					host: row.host,
 					...(row.provider_id === undefined || row.provider_id === null ? {} : { providerId: row.provider_id }),

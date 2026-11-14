@@ -1,0 +1,34 @@
+{
+	"kind": "command",
+	"up": [
+		"gcloud", "compute", "instance-groups", "managed", "resize", "atomic-workers",
+		"--zone=us-central1-a", "--size={target}", "--quiet"
+	],
+	"down": [
+		"gcloud", "compute", "instance-groups", "managed", "delete-instances", "atomic-workers",
+		"--zone=us-central1-a", "--instances={id}", "--quiet"
+	],
+	"list": [
+		"gcloud", "compute", "instance-groups", "managed", "list-instances", "atomic-workers",
+		"--zone=us-central1-a", "--format=json(name,currentAction)"
+	],
+	"listFormat": {
+		"id": "name",
+		"state": "currentAction",
+		"states": {
+			"NONE": "running",
+			"CREATING": "pending",
+			"CREATING_WITHOUT_RETRIES": "pending",
+			"VERIFYING": "pending",
+			"RECREATING": "pending",
+			"STARTING": "pending",
+			"RESTARTING": "pending",
+			"RESUMING": "pending",
+			"REFRESHING": "running",
+			"DELETING": null,
+			"ABANDONING": null,
+			"*": "pending"
+		}
+	},
+	"timeoutMs": 90000
+}

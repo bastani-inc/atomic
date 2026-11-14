@@ -66,7 +66,76 @@ The command never waits on a database that stops answering: after 5 seconds it p
 
 ## Scale the fleet automatically
 
-A fleet controller adds worker hosts when the queues of the database's shared roots grow, and drains and removes hosts that sat idle. It drives a provisioner: a JavaScript module that starts and removes machines in your cloud or cluster. The provisioner has three methods:
+Every worker host is the same portable process, `atomic worker start`, wherever it runs: a VM, a container, a pod or a CI job. It drains on SIGTERM and can exit on its own once idle (`--idle-exit`), so any platform's own scaling can add and remove hosts safely. Atomic gives that scaling two things:
+
+- **A scaling signal.** `atomic worker metrics` serves how many hosts the fleet wants, with the queue and slots behind it, for KEDA, Prometheus or any autoscaler to act on. Nothing of Atomic runs in your scaling group.
+- **A fleet controller.** `atomic worker controller` decides when to add and remove hosts itself, and drives your platform through a provisioner: a [command provisioner](#command-provisioners-and-presets) configured for your platform's CLI (presets for Azure, AWS, Google Cloud, Kubernetes and GitHub Actions come with Atomic), or a JavaScript module of your own.
+
+Both use the same policy and the same defaults, so they want the same number of hosts. Ready-made [recipes](#recipes) cover a container image, a Helm chart with KEDA, Terraform for each cloud's scaling group, and a GitHub Actions workflow.
+
+If you host the shared database yourself with sqld, start sqld with `--checkpoint-interval-s 60` before you let the fleet grow, as [Turso and libSQL](/storage#turso-and-libsql) explains: many hosts writing at once can otherwise stop sqld taking writes.
+
+### The scaling signal
+
+The policy wants `ceil(demand / workersPerHost)` hosts, kept between `minHosts` and `maxHosts`. Demand is the ready and running children of every running root, each root capped by its `admission.limits.session`. A root whose budget is spent, or that is paused, counts only its running children.
+
+`atomic worker status --json` prints it as `scaling`, and `atomic worker metrics` serves it over HTTP:
+
+```bash
+atomic worker metrics --listen 0.0.0.0:9464 --db libsql://pool.example.turso.io \
+  --token-file /etc/atomic/token --workers-per-host 8 --max-hosts 20
+```
+
+- `GET /scaling` returns the signal as JSON, the shape a KEDA [`metrics-api`](https://keda.sh/docs/latest/scalers/metrics-api/) trigger reads. It answers `503` while the database cannot be read.
+- `GET /metrics` returns the same counts in Prometheus text: `atomic_fleet_desired_hosts`, `atomic_fleet_desired_workers`, `atomic_fleet_demand`, `atomic_fleet_queue_depth`, `atomic_fleet_running`, `atomic_fleet_hosts`, `atomic_fleet_slots{state="busy"|"idle"}`, the policy's `atomic_fleet_min_hosts`, `atomic_fleet_max_hosts` and `atomic_fleet_workers_per_host`, and `atomic_fleet_store_up`.
+
+| Field | Meaning |
+| --- | --- |
+| `desiredHosts` | Hosts the policy wants |
+| `desiredWorkers` | `desiredHosts × workersPerHost` |
+| `demand` | Children the roots can run at once |
+| `queueDepth` | Ready children of roots that can start them now |
+| `running` | Children running on hosts |
+| `hosts` | Hosts that reported within 15 seconds |
+| `busySlots`, `idleSlots` | Their slots running a child, and free on hosts that are not draining |
+| `minHosts`, `maxHosts`, `workersPerHost` | The policy it was computed with (`--min-hosts`, `--max-hosts`, `--workers-per-host`) |
+
+The endpoints serve counts only: no host, root, URL or token. They read the database at most once every 5 seconds however often they are scraped, never write to it, and cut off a client that takes longer than 10 seconds. The default address is `127.0.0.1:9464`; listen on `0.0.0.0` only inside a container or a private network.
+
+A KEDA `ScaledObject` that scales a Deployment of worker pods to `desiredHosts`, down to zero:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata: { name: atomic-worker, namespace: atomic }
+spec:
+  scaleTargetRef: { name: atomic-worker }
+  minReplicaCount: 0
+  maxReplicaCount: 20
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior: { scaleDown: { stabilizationWindowSeconds: 300 } }
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: "http://atomic-worker-metrics.atomic.svc:9464/scaling"
+        valueLocation: desiredHosts
+        targetValue: "1"
+        activationTargetValue: "0"
+```
+
+When KEDA scales in, Kubernetes sends SIGTERM to pods it picks, which may be busy: each drains and finishes its children within `terminationGracePeriodSeconds`, and a child still running after that is replayed on another host from its last checkpoint. Set the grace period to your longest child step.
+
+### The fleet controller
+
+A fleet controller adds worker hosts when the queues grow, and drains and removes only hosts that sat idle, so it never removes a busy host. Run it on any machine that opens the database:
+
+```bash
+atomic worker controller --provisioner ./fleet.json --db libsql://pool.example.turso.io \
+  --token-file /etc/atomic/token --max-hosts 20 --workers-per-host 8
+```
+
+`--provisioner` takes the JSON configuration of a [command provisioner](#command-provisioners-and-presets), or a JavaScript module whose default export is a provisioner with three methods:
 
 ```js
 // provisioner.mjs
@@ -81,18 +150,13 @@ export default {
 };
 ```
 
-Start each host it creates with `atomic worker start` and the environment variable `ATOMIC_WORKER_PROVIDER_ID` set to the host's provider id, so the controller can match the two. Then run the controller on any machine that opens the database:
+Start each host it creates with `atomic worker start` and the environment variable `ATOMIC_WORKER_PROVIDER_ID` set to the host's provider id, so the controller can match the two.
 
-```bash
-atomic worker controller --provisioner ./provisioner.mjs --db libsql://pool.example.turso.io \
-  --token-file /etc/atomic/token --max-hosts 20 --workers-per-host 8
-```
-
-SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, or call `startWorkflowFleetController({ provisioner, … })`. When such a root ends, its controller asks the idle hosts above the target to drain at once, but nothing removes them from your provider afterwards unless another controller runs. Have your provisioner reap hosts that exited, or run `atomic worker controller` for a fleet that serves many roots.
+SDK roots can run it themselves while they run: pass `workers: { placement: "shared", provisioner: { provisioner, maxHosts: 20, workersPerHost: 8 } }`, where `provisioner` is a module's provisioner or `createWorkerHostProvisioner(config)`, or call `startWorkflowFleetController({ provisioner, … })`. When such a root ends, its controller asks the idle hosts above the target to drain at once, but nothing removes them from your provider afterwards unless another controller runs. Have your provisioner reap hosts that exited, or run `atomic worker controller` for a fleet that serves many roots.
 
 Every 10 seconds the controller:
 
-- computes a target of `ceil(demand / workersPerHost)` hosts, kept between `minHosts` and `maxHosts`. Demand is the ready and running children of every running root, each root capped by its `admission.limits.session`. A root whose budget is spent, or that is paused, counts only its running children.
+- computes the [scaling signal's](#the-scaling-signal) target.
 - adds hosts with `scaleTo` when more than `scaleUpQueueDepth` children have been waiting for `scaleUpDelayMs`, or when children wait and no host runs at all. Hosts below `minHosts` are added at once.
 - asks a host to drain once it has held no child for `idleDrainMs` and the fleet is above its target. The host takes no more children and exits as on SIGTERM; the controller then calls `drain`. A host that holds a child is never drained or removed.
 - removes a host that has not registered `bootTimeoutMs` after it started, or that the provider reports failed, and replaces it once. Further failures in a row wait 30 seconds, then twice as long each time, up to 10 minutes.
@@ -109,7 +173,56 @@ Every 10 seconds the controller:
 
 You can run several controllers, such as one per root machine. One is active at a time through a lease in the database; another takes over within 30 seconds when it stops or dies. A provisioner that fails (a missing CLI, refused credentials, a quota) never fails, pauses or blocks a run: the controller prints `degraded`, keeps the hosts the fleet has, and tries again after 10 seconds, then twice as long after each further failure, up to 10 minutes. Every decision and failure is recorded in the database's last 1000 fleet events.
 
-The provisioner runs in the controller's process with that machine's credentials. Nothing it is given or returns goes to the database except host ids, states and error messages, so keep secrets out of its error messages.
+### Command provisioners and presets
+
+A command provisioner runs three commands of yours, each an executable and its arguments, never through a shell, with the controller's environment:
+
+```json
+{
+  "kind": "command",
+  "up": ["/opt/fleet/scale-to", "--count", "{target}"],
+  "down": ["/opt/fleet/remove", "{id}"],
+  "list": ["/opt/fleet/list", "--json"]
+}
+```
+
+- `up` adds hosts. `{target}` (also `ATOMIC_TARGET`) is the count to reach and `{add}` (`ATOMIC_ADD`) how many that adds. It runs only when `list` reports fewer than `target` hosts. With `"upEach": true` it runs once for each host to add, with `{add}` 1.
+- `down` removes the host `{id}` (`ATOMIC_PROVIDER_ID`), which drained already or never started, and lowers the count by one. `{remaining}` (`ATOMIC_REMAINING`) is the count `list` reported, less one. It runs only for a host that `list` reports and that is not `draining` already, so removing a host twice, or one already gone, does nothing.
+- `list` prints the hosts as JSON: by default an array of `{ "id": "vm-3", "state": "running", "since": "2026-11-14T09:30:00Z" }`, where `state` is `pending`, `running`, `draining`, `stopped` or `failed`, and `since` (milliseconds or ISO 8601) and `hostId` (the Atomic host id, when you know it) are optional. `listFormat` reads other JSON: `items` is the path to the array (such as `AutoScalingGroups.0.Instances`), `id`, `state`, `since` and `hostId` are paths in each item, and `states` maps your platform's states to host states. A state mapped to `null` leaves the host out, for hosts your platform no longer counts, such as one being deleted; `"*"` maps any state not listed.
+
+`up` and `down` may each be several commands run in order, as `[["first", "…"], ["second", "…"]]`. So may `list`: its commands report their hosts together, and a host two of them report counts once. Changes run one at a time. `timeoutMs` (default 120000) bounds each command; a command still running then, or when the controller gives up on the call, is stopped together with every process it started.
+
+Credentials come only from each tool's own login or environment; nothing in the configuration is a credential, and none of it is written to the database. A command that fails reports its exit code and its error output, with tokens, passwords and the values of secret-named environment variables replaced by `[redacted]`; its arguments are never reported. The error's `code` says what went wrong: `missing-cli` (not installed or not on `PATH`), `auth` (credentials refused), `exit`, `timeout` or `malformed` (output the list format does not match).
+
+Atomic ships presets in its package's `examples/worker-fleet/presets` directory. Copy one, replace the names in it (resource group, scale set, group, zone, namespace, repository) with yours, and pass it to `--provisioner`:
+
+| Preset | Drives | Host id | Least privilege for the controller |
+| --- | --- | --- | --- |
+| `azure-vmss.json` | `az vmss scale`, `list-instances`, `delete-instances` | Instance id | A custom role on that one scale set: `Microsoft.Compute/virtualMachineScaleSets/{read,write,delete/action}` and `…/virtualMachines/{read,delete}` |
+| `aws-asg.json` | `aws autoscaling set-desired-capacity`, `describe-auto-scaling-groups`, `terminate-instance-in-auto-scaling-group` | Instance id | `autoscaling:SetDesiredCapacity` and `autoscaling:TerminateInstanceInAutoScalingGroup` on that group's ARN, and `autoscaling:DescribeAutoScalingGroups`, which AWS does not scope to a resource |
+| `gcp-mig.json` | `gcloud compute instance-groups managed resize`, `list-instances`, `delete-instances` | Instance name | A custom role with `compute.instanceGroupManagers.get`, `compute.instanceGroupManagers.update` and `compute.instances.delete` |
+| `kubernetes.json` | `kubectl scale` on a Deployment, `get pods`, and for removal `annotate` with `controller.kubernetes.io/pod-deletion-cost` then a scale-down by one | Pod name | A Role in the namespace with `get`, `list` and `patch` on `pods`, and `get` on `deployments` and `get`, `patch` and `update` on `deployments/scale`, both limited to that Deployment by `resourceNames` |
+| `github-actions.json` | `gh workflow run` once per host, `gh run list` for queued, running and waiting runs, `gh run cancel` | Run id | A fine-grained token for that one repository with **Actions: read and write**, as `GH_TOKEN` |
+
+How each preset removes a host:
+
+- The Azure, AWS and Google Cloud presets delete the named instance and lower the group's size in one call, so the platform never picks a victim.
+- The Kubernetes preset marks the drained pod with the lowest deletion cost, then scales the Deployment down by one. The ReplicaSet removes pending pods first, then the marked pod, never a busy one. If a pod was still pending, it goes instead, and the drained pod is drained again later. For scaling to zero on Kubernetes, prefer KEDA on [the scaling signal](#the-scaling-signal).
+- The GitHub Actions preset starts one workflow run per host, each running `atomic worker start --idle-exit`, and cancels a run only if it never registered. A drained host's run ends by itself.
+
+Give each host its provider id: the instance id from the cloud's metadata service, the pod name from the downward API, or `${{ github.run_id }}` in Actions. The recipes below do this.
+
+### Recipes
+
+The package's `examples/worker-fleet` directory has a starting point for each platform:
+
+- `Dockerfile`: the worker image. It runs `atomic worker start` as PID 1 so SIGTERM drains it.
+- `helm/atomic-worker`: a Helm chart sketch with the worker Deployment, an `atomic worker metrics` Deployment and Service, and a KEDA `ScaledObject` that scales the workers from zero. An init container copies the token from its Secret into memory, readable only by the container's user.
+- `terraform/azure-vmss`, `terraform/aws-asg`, `terraform/gcp-mig`: a scaling group of spot or preemptible VMs that boot into `atomic worker start` with their provider id, at size 0, and the least-privilege role for the controller's preset.
+- `github-actions/atomic-workers.yml`: a workflow whose `workflow_dispatch` input `workers` fans out that many jobs, each running `atomic worker start --idle-exit`. Run it by hand for a burst, or let the `github-actions.json` preset dispatch it.
+- `presets/`: the command provisioner presets above.
+
+Spot and preemptible machines are safe: a host told to stop gets SIGTERM and drains, and a child cut off before it finishes is replayed on another host from its last checkpoint.
 
 ## Run it as a systemd service
 

@@ -126,6 +126,32 @@ export interface SharedPoolStats {
 }
 
 /**
+ * The fleet's scaling signal (#4768): what its autoscaling policy wants, and the queue and slots it decides from, for
+ * any autoscaler to act on (KEDA, a cloud's own scaling group, a script). Counts only; it names no host or root.
+ */
+export interface SharedPoolFleetScaling {
+	/** Serving hosts the policy wants: `clamp(minHosts, maxHosts, ceil(demand / workersPerHost))`. */
+	readonly desiredHosts: number;
+	/** `desiredHosts × workersPerHost`. */
+	readonly desiredWorkers: number;
+	/** Children the shared roots can run at once: ready and running, each root capped by its session limit. */
+	readonly demand: number;
+	/** Ready children of roots that can start them now. */
+	readonly queueDepth: number;
+	/** Children running on any host. */
+	readonly running: number;
+	/** Registered hosts that reported within 15 s. */
+	readonly hosts: number;
+	/** Slots of those hosts running a child, and free on hosts that are not draining. */
+	readonly busySlots: number;
+	readonly idleSlots: number;
+	/** The policy the signal was computed with. */
+	readonly minHosts: number;
+	readonly maxHosts: number;
+	readonly workersPerHost: number;
+}
+
+/**
  * Every worker host registered in a journal, the pool stats of each running or paused root they serve, and the state of
  * the fleet (#4768). A store that could not be read gives no hosts and no roots, and says why in `fleet.store`.
  */
@@ -133,4 +159,6 @@ export interface SharedPoolFleet {
 	readonly hosts: readonly SharedPoolHost[];
 	readonly roots: readonly SharedPoolStats[];
 	readonly fleet: SharedPoolFleetStatus;
+	/** The scaling signal, once the store was read. */
+	readonly scaling?: SharedPoolFleetScaling;
 }
