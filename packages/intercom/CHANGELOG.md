@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Fixed an Intercom ask that stayed pending forever, with no failed-ask message, when its recipient went away before its asker closed and then came back and ended while the asker was still closed. The broker now keeps the asker's return address on that ask when the asker closes, so the resumed asker gets one "Your ask <id> to <name> failed" message and `pending` no longer lists it, also when the asker resumed and closed again before the recipient ended ([#4761](https://github.com/bastani-inc/atomic/issues/4761))
+- Fixed the same lost failed-ask message for a released subagent: when its recipient went away before the subagent was released, then came back and ended, the ask was dropped and the subagent was never woken. The broker now moves that ask onto the owner's route for the released subagent, so its owner wakes it with one "Your ask <id> to <name> failed" message and `pending` no longer lists it. A workflow stage released between turns already got its failure, and a test now covers it ([#4765](https://github.com/bastani-inc/atomic/issues/4765))
 
 ## [0.9.86-alpha.1] - 2026-11-14
 
