@@ -18,6 +18,7 @@ import type {
 	TransportSetting,
 } from "./settings-types.ts";
 import { CACHE_WARMING_MODES, type CacheWarmingMode } from "./settings-types.ts";
+import type { WorktreePoolSettings } from "./worktree-snapshot/pool.ts";
 import { resolveWorktreeSnapshotSettings } from "./worktree-snapshot/settings.ts";
 import type { WorktreeSnapshotSettings } from "./worktree-snapshot/types.ts";
 
@@ -159,6 +160,8 @@ interface SettingsManagerBasicAccessors {
 	getSessionSummarySettings(): { enabled: boolean };
 	/** Merged `snapshots.*` settings; throws WorkspaceConfigError (source "settings") for an invalid value. */
 	getWorktreeSnapshotSettings(): WorktreeSnapshotSettings;
+	/** `snapshots.pool.*` settings; an invalid value falls back to its default, so a resume is never refused for it. */
+	getWorktreePoolSettings(): WorktreePoolSettings;
 	/**
 	 * Deprecated `resume.setupCommand` from the global settings, trimmed; undefined when unset or blank. It runs as one
 	 * global maintenance step of the blueprint build. A project's own value is ignored: it would run a
@@ -628,6 +631,16 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 
 	getWorktreeSnapshotSettings() {
 		return resolveWorktreeSnapshotSettings(settingsInternals(this).settings.snapshots, "settings", "snapshots");
+	},
+
+	getWorktreePoolSettings() {
+		const configured = settingsInternals(this).settings.snapshots?.pool?.maxIdlePerRepository;
+		return {
+			maxIdlePerRepository:
+				Number.isSafeInteger(configured) && (configured as number) >= 0
+					? (configured as number)
+					: SETTINGS_DEFAULTS.snapshots.pool.maxIdlePerRepository,
+		};
 	},
 
 	getResumeSetupCommand() {
