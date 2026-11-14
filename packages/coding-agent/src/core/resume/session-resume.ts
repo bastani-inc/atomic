@@ -14,6 +14,7 @@ import {
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
+import { recordTimingLines } from "../timings.ts";
 import { ProjectTrustStore } from "../trust-manager.ts";
 import { locateCheckout, readRepositoryConfig } from "../worktree-snapshot/capture.ts";
 import {
@@ -51,6 +52,7 @@ import { isResumePreconditionError, type ResumeEntryPoint } from "./errors.ts";
 import { isResumeFailure } from "./failure.ts";
 import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, type ResumePreflightIo } from "./preflight.ts";
+import { formatResumeTimings, type ResumeTimings, ResumeTimingsRecorder, recordResumeTimings } from "./timings.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
 export type DirtyCheckoutChoice = "restore" | "use" | "cancel";
@@ -323,11 +325,45 @@ async function hasLocalChanges(root: string, signal: AbortSignal | undefined): P
  * cannot be (Git is unavailable, or its restore fails) is left out with a warning that names its path and why. Each
  * worktree Atomic restored then gets its blueprints built (#4588): a failing step is a warning in `notices` and never
  * stops the resume. The agent gets the blueprints' maintenance and knowledge in the session's next turn. The session's
- * tools resolve paths under every root it recorded into the place that root was restored.
+ * tools resolve paths under every root it recorded into the place that root was restored. A resume that restored a
+ * checkout or ran a blueprint step records where its time went in the session it returns (#4748); a failure to record
+ * that never stops the resume.
  */
 export async function prepareSessionResume(
 	sessionManager: SessionManager,
 	options: PrepareSessionResumeOptions,
+): Promise<PreparedSessionResume> {
+	// `atomic --session` counts from the launch of the process, which is 0 on the clock the recorder uses.
+	const timings = new ResumeTimingsRecorder(options.entryPoint === "cli" ? 0 : undefined);
+	let firstRecorded!: (recorded: ResumeTimings | undefined) => void;
+	const recordedAtReady = new Promise<ResumeTimings | undefined>((resolve) => {
+		firstRecorded = resolve;
+	});
+	// A build behind the first turn (`waitForBlueprint: "tools"`) adds its steps to the timings once it settles.
+	const buildSettled = async (session: SessionManager): Promise<void> => {
+		const atReady = await recordedAtReady;
+		if (atReady === undefined) return;
+		const { blueprint, blueprintReadyMs } = timings.finish();
+		const recorded = { ...atReady, blueprint, blueprintReadyMs };
+		await recordResumeTimings(session, recorded);
+		recordTimingLines(formatResumeTimings(recorded), "resume");
+	};
+	const prepared = await timings.run(() => prepareResume(sessionManager, options, buildSettled));
+	if (prepared.status === "ready" && timings.recordedWork) {
+		const recorded = timings.finish();
+		await recordResumeTimings(prepared.sessionManager, recorded);
+		recordTimingLines(formatResumeTimings(recorded), "resume");
+		firstRecorded(recorded);
+	} else {
+		firstRecorded(undefined);
+	}
+	return prepared;
+}
+
+async function prepareResume(
+	sessionManager: SessionManager,
+	options: PrepareSessionResumeOptions,
+	buildSettled: (session: SessionManager) => Promise<void>,
 ): Promise<PreparedSessionResume> {
 	const io = options.io ?? defaultResumePreflightIo;
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
@@ -436,7 +472,11 @@ export async function prepareSessionResume(
 	);
 	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
 		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
-		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), building.then(blueprintBuildReport));
+		const report = building.then(async (blueprints) => {
+			await buildSettled(opened.sessionManager);
+			return blueprintBuildReport(blueprints);
+		});
+		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), report);
 		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
 		return {
 			status: "ready",

@@ -18,6 +18,7 @@ import {
 import type { BlueprintBuildOutcome } from "../src/core/resume/blueprint/build.ts";
 import { BLUEPRINT_BUILDING_CONTEXT, blueprintBuildReport } from "../src/core/resume/blueprint/resume.ts";
 import { sessionResumeOptions } from "../src/core/resume/session-resume.ts";
+import { latestResumeTimings } from "../src/core/resume/timings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -204,6 +205,12 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		assert.equal(blueprintBuildPending(prepared.sessionManager.getSessionId()), false);
 		assert.notEqual(prepared.blueprintContext, BLUEPRINT_BUILDING_CONTEXT);
 		assert.match(prepared.blueprintContext ?? "", /Install dependencies/);
+		const timings = latestResumeTimings(prepared.sessionManager);
+		assert.deepEqual(
+			timings?.blueprint.map((step) => step.name),
+			["Install dependencies"],
+		);
+		assert.ok((timings?.blueprintReadyMs ?? Number.NaN) <= (timings?.firstPromptReadyMs ?? Number.NaN));
 	});
 
 	test('with "tools" the first request precedes the build end and a bash call waits for the build (#4748)', async () => {
@@ -231,6 +238,16 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		assert.match(report, /^<blueprint_build_finished>\nThe environment build of this resumed session has finished\./);
 		assert.match(report, /Install dependencies/);
 		assert.equal(blueprintBuildPending(prepared.sessionManager.getSessionId()), false);
+		const timings = latestResumeTimings(prepared.sessionManager);
+		assert.deepEqual(
+			timings?.blueprint.map((step) => step.name),
+			["Install dependencies"],
+			"the build's steps are recorded once it settled",
+		);
+		assert.ok(
+			(timings?.firstPromptReadyMs ?? Number.NaN) < (timings?.blueprintReadyMs ?? Number.NaN),
+			"the session was ready before the build settled",
+		);
 	});
 
 	test("a blueprint that fails during the overlapped turn releases the waiting tool with the notice (#4748)", async () => {

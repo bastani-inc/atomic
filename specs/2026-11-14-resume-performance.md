@@ -134,7 +134,7 @@ against a built worktree; today TTFT = TTFP.
 | T4 | Per-turn capture Git work, fresh clone (workstation, Atomic 7,676 files) | 397–492 ms | **≤ 100 ms** steady state; first capture ≤ today | persistent private index (S2) |
 | T5 | `captureWorktreeSnapshot` end to end, fresh clone (Atomic) | 374–397 ms (430–486 ms on the loaded host) | **≤ 200 ms** (and ≤ 300 ms on the loaded host) | S2 |
 | T6 | Cold restore fetch, no store (workstation, Atomic) | 8.8–9.9 s | **≤ 5 s** | depth-1 fetch (S3) |
-| T7 | First start in an empty `HOME` (runner) | 12.5 s (2.3 s warm) | **≤ 3.5 s** | seeded extension cache (S7) |
+| T7 | First start in an empty `HOME` (runner) | 12.5 s (2.3 s warm), source checkout only | **≤ 3.5 s** | met by the installed package and the binaries (§7.6); S7 adds a regression test |
 | T8 | Cold cloud start with caches restored (runner, Atomic): TTFT, cache download included | 120.4–120.5 s, no cache; 68–71 s with stores and build output | **≤ 50 s** (≤ 40 s once Atomic's native build is incremental) | cache contract incl. the Git store (S6) + prebuild and seeds (S8) + S7 |
 | T9 | Cold cloud start with caches (runner, fastapi / ripgrep): TTFT, download included | 24.6–25.0 s / 28.7–29.0 s | **≤ 11 s / ≤ 12 s** | S6 + S7 (+ S8 at a stable slot for ripgrep) |
 | T10 | Cold cloud start (runner, Atomic): TTFP with overlap, download included | 120.4–120.5 s | **≤ 20 s** | T8 + S9 |
@@ -152,7 +152,7 @@ How each target is reached, from measured parts (§4):
 | T3 | startup 2.0–2.2 + claim ≈ 0.5 + maintenance 0.09 (fastapi) / 0.5 (ripgrep) ≈ 3 s |
 | T4 | persistent private index: 35 ms (Atomic), 22 ms (fastapi) of Git work after the first capture |
 | T6 | depth-1 fetch + checkout 4.8 s (Atomic) |
-| T7 | warm start 2.0–2.3 s; a seeded cache removes the 8.6–10.2 s transpile |
+| T7 | the installed npm layout already starts in 1.7–2.4 s in a new `HOME` (1.9–2.0 s warm); the 8.6–10.2 s transpile only happens when Atomic runs from a source checkout (§7.6) |
 | T8 | download stores 2.3–2.7 + build seeds 4.0–4.3 + Git store (177 MB) ≈ 2 s; startup 2.4–4.4; restore with a warm store 2.6 (runner `warmlocal`); seeds extract 1.8–2.1; maintenance 31.6–35.2 (runner `full`) ≈ 46–53 s |
 | T9 | fastapi: download 3.3–3.5 + Git store ≈ 0.7; startup ≈ 4; restore ≈ 0.8; `uv sync` 0.8 ≈ 10 s. ripgrep: download 0.7 + seeds 1.4 + Git store 0.1; startup ≈ 4; restore ≈ 0.2; seeded build at the same path ≈ 2–3 (workstation 1.2) ≈ 9–10 s |
 | T10 | T8's downloads ≈ 9 + startup ≈ 4 + restore 2.6 ≈ 16 s; the build overlaps the first request |
@@ -164,7 +164,7 @@ How each target is reached, from measured parts (§4):
 - [ ] One printable cache contract (`atomic blueprint cache-key`) for runners, plus a trusted `prebuild`.
 - [ ] Make per-turn capture cheap in fresh clones without changing what it records.
 - [ ] Shorten cold restores of long histories (depth-1 fetch) and run optional restores concurrently.
-- [ ] Remove Atomic's own cold-start cost in a new `HOME`.
+- [x] Remove Atomic's own cold-start cost in a new `HOME` (already absent from the installed package and binaries; §7.6).
 - [ ] Let the first model turn overlap the blueprint build when the user opts in.
 
 ### 3.4 Non-goals
@@ -217,7 +217,9 @@ one `curl` stream. Hosted runners download `actions/cache` entries from the same
 **Blueprint share of TTFP:** ripgrep 70–77 %, fastapi 8–40 % (uv is fast; fastapi's restore is 40 %), Atomic 63–88 %.
 Atomic's restore is still 18 s cold: full-history fetch 8.8–9.9 s and LFS 6.0–6.4 s. An empty `HOME` adds 8.6 s on
 the workstation (first start 10.6 s, then 2.0 s) and 10.2 s on the runner (12.5 s, then 2.3 s)
-(`cold-home-startup.txt`), every seeded `HOME` above excludes it.
+(`cold-home-startup.txt`), every seeded `HOME` above excludes it. The harness runs Atomic from a source checkout
+(`node packages/coding-agent/dist/cli.js`), which loads the builtins from `packages/<name>` as TypeScript; the
+installed package and the binaries do not pay this cost (§7.6).
 
 Compared with round 1 on the loaded host, the idle numbers are lower but the shares hold: Atomic warm local
 40.5–47.0 s then, 40.2–40.4 s now; ripgrep 8.7–14.0 s then, 8.8–8.9 s now.
@@ -371,7 +373,7 @@ correctness of the tracked tree.
 | `src/core/resume/blueprint/cache.ts` | add | `blueprintCacheKeys`, `adoptSeededBuildOutput`, path refusals |
 | `src/core/resume/blueprint/prebuild.ts` | add | `prebuildRepository` |
 | `src/cli/blueprint-command.ts`, `src/main.ts` | add / change | `atomic blueprint cache-key`, `atomic blueprint prebuild` (dispatched like `atomic storage`) |
-| `src/core/extensions/loader-virtual-modules.ts`, `src/config.ts`, build scripts | change | read-only seeded transpile cache shipped in the package |
+| `test/integration/installed-package-node-extensions.test.ts` | change | installed layout starts in a new `HOME` without transpiling builtins (S7, §7.6) |
 | `src/modes/interactive/interactive-slash-commands.ts` | change | "Last resume" block in `/session snapshot` |
 | `src/core/settings-manager.ts` (and settings schema) | change | `snapshots.pool.maxIdlePerRepository`, `resume.waitForBlueprint` |
 | `docs/worktree-snapshots.md`, `docs/guides/resume-on-any-machine.md`, `docs/guides/team-setup.md`, `docs/settings.md`, `docs/environment-variables.md`, `CHANGELOG.md` | change | user guidance per slice |
@@ -582,12 +584,28 @@ the caches, and its resume restores into the same slot 0 path and adopts the see
 
 ### 7.6 Seeded extension cache (S7)
 
-At package build, load every builtin extension once with the transpile cache pointed at
-`dist/builtin-cache/<VERSION>+<format>`; at runtime, `resolveTranspileCacheDir` uses the user's cache as today and
-falls back to the read-only seeded directory for an entry it lacks. Entries are keyed by source content (existing
-manifest), so a stale or foreign entry is a miss; a corrupt one is a transform. If the jiti cache keys turn out to
-depend on absolute install paths, the slice instead copies the seeded directory into the user's cache on first use
-(still no transpile), with the same fallback.
+**Dropped; T7 is met by the shipped artifacts.** Implementing S7 showed that the 10.6–12.5 s first start of §4.2 is
+a source-checkout effect. With `isSourceCheckout` (`src/main.ts` beside the package), builtins load from
+`packages/<name>` as TypeScript and jiti transpiles every file. The npm package ships each builtin prebundled
+(`index.bundle.mjs`), which Node imports natively, and the compiled binaries import their builtins natively too
+(`loadNativeBuiltinExtensionModule`). Measured on `main` at `46717ede4` (80-vCPU host, load 60–75, mock provider,
+`-p hi --no-session`, new `HOME` then the same `HOME` twice):
+
+| Layout | Start 1 (new `HOME`) | Starts 2, 3 | Transpile cache after start 1 |
+|---|---:|---:|---|
+| Source checkout | 12.5 s | 2.7 s, 1.6 s | 720 entries, 7.5 MB |
+| Installed npm layout (`dist` + `package.json`, no `src/`) | 1.7–2.4 s | 1.9–2.0 s | empty |
+
+Every builtin tool (`workflow`, `subagent`, `web_search`, `fetch_content`, `intercom`) was registered in the
+installed layout. A seed built into the package would therefore be empty and change no number. It would not help
+other machines' source checkouts either: the transform cache key includes the absolute file name, so a seed is valid
+only at the path it was built at, and a seed built by `npm run build` in the same checkout would only move the same
+transpile from the first start into the build.
+
+S7 instead adds a regression test: an installed layout started in a new `HOME` registers every builtin tool and
+leaves the transpile cache empty. `test/ci/extension-host-module-bridge-boundary.test.ts` already proves the
+compiled loader imports a trusted builtin natively without jiti reading its source. Where T8 and T9 list S7, the
+runner is assumed to run the installed Atomic, which needs no seed.
 
 ### 7.7 Overlapping the first turn with the build (S9)
 
@@ -644,7 +662,7 @@ A failed build resolves the barrier with the same notice as today; an aborted tu
 | Pool claim (S4, S5) | none, busy, dirty, reset or verify fails, kill mid-reset | fresh restore into a new slot | concurrent claims; dirty tracked and untracked files; SIGKILL between reset and verify; claimed-by-other ownership |
 | Seeds (S8) | missing, foreign repository, non-empty target, rename fails | worktree as restored; maintenance builds | seeds of another repository id; read-only seeds dir |
 | Prebuild (S8) | step fails | previous slot and seeds stay | failing maintenance step |
-| Seeded transpile cache (S7) | missing, corrupt, foreign version | transpile as today | truncate a seeded entry; extension still loads |
+| Seeded transpile cache (S7) | dropped (§7.6): no seed ships | — | — |
 | Overlap (S9) | build fails or is aborted | tools run after the barrier with today's notice | failing blueprint; abort during the wait |
 
 ## 11. Slice Plan
@@ -660,7 +678,7 @@ updates its user docs and changelog entry. S1 lands first; the others stack on i
 | S4 | Worktree pool: stable slots, leases, ownership | S1 | B (parallel) | Make restored worktrees owned and leased at stable paths; no reuse yet | `worktree-snapshot/pool.ts`, `restore.ts`, `session-resume.ts`, `session-worktree-snapshots.ts`, settings, docs | slot path stable across a remove/restore; lease held while open, stale after kill; ownership: session X does not continue in a slot held by Y; unpooled and workflow worktrees unaffected; eviction keeps `maxIdlePerRepository` | enabler for T1–T3 |
 | S5 | Claim an idle pooled worktree on resume | S4 | C (stacked) | Reset an idle slot to the snapshot and keep its ignored directories | `pool.ts`, `session-resume.ts`, `restore.ts`, docs | a marker in `node_modules` survives a claim; dirty tracked/untracked → fresh; busy → fresh; SIGKILL mid-reset → next claim skips it; verify failure → fresh; benchmark: a fixture whose maintenance does a 2 s "install" only when its marker is absent completes the resume ≥ 1.5 s faster with a claim | T1, T2, T3 |
 | S6 | Blueprint `cache:` and `atomic blueprint cache-key` | S1 | B (parallel) | One printable cache contract for runners | `blueprint/schema.ts`, `types.ts`, `blueprint/cache.ts`, `cli/blueprint-command.ts`, `main.ts`, docs (`team-setup.md` Actions/gh-aw sample) | key determinism and change per input; `kind: store` inside the worktree refused; secret paths omitted; `github-output` format; blueprint without `cache:` prints stores-free `git` and `atomic` entries; parser keeps ignoring unknown keys | T8, T9 (with S8) |
-| S7 | Seeded extension transpile cache in the package | S1 | B (parallel) | First start in a new `HOME` without transpiling builtins | `loader-virtual-modules.ts`, `config.ts`, coding-agent build script, docs | new `HOME` loads builtins with zero transforms; corrupt or foreign seeded entry → transform; user cache still written; benchmark: first start in a new `HOME` ≤ 1.5× the warm start (measured 5.4×) | T7 |
+| S7 | Installed layout starts without transpiling builtins (seed dropped, §7.6) | S1 | B (parallel) | Guard that a first start in a new `HOME` transpiles no builtins | `test/integration/installed-package-node-extensions.test.ts`, this spec | installed npm layout in a new `HOME` registers every builtin tool with an empty transpile cache | T7 |
 | S8 | `atomic blueprint prebuild` and seed adoption | S5, S6 | D (stacked) | Build ahead of time locally and in a trusted CI job; adopt parked output on restore | `blueprint/prebuild.ts`, `blueprint/cache.ts`, `cli/blueprint-command.ts`, `session-resume.ts`, docs (gh-aw and Actions recipes) | prebuild leaves an idle slot a later resume claims; `--park` moves declared build paths to seeds; resume into slot 0 adopts seeds; foreign or non-empty → skipped; failed prebuild keeps the previous slot and seeds | T8, T9 |
 | S9 | First turn overlaps the blueprint build (opt-in) | S1 | B (parallel) | Send the first model request while maintenance runs; gate tools on the build | `session-resume.ts`, `blueprint/build.ts`, tool execution hook, settings, docs | default `"prompt"` unchanged; with `"tools"` the first request precedes build end and a `bash` call waits for it; failed build releases the barrier with the notice; abort during wait | T1, T10 |
 
@@ -676,8 +694,8 @@ with each other on top of S1; C and D are stacked.
   type tests that `ClaimedWorktree` and `PooledSlot` cannot be constructed outside `pool.ts`.
 - **Integration (real Git, temp `HOME`s, `file://` remotes):** every row of §10; identical trees with and without the
   persistent index; claims under concurrency (two processes, one wins, the other restores fresh).
-- **Benchmarks in tests:** only ratios against a baseline measured in the same test, with generous bounds (S2, S5,
-  S7), never absolute times.
+- **Benchmarks in tests:** only ratios against a baseline measured in the same test, with generous bounds (S2, S5),
+  never absolute times.
 - **Field verification:** `scripts/run-project.sh` and `scripts/vm/*.sh` against a branch build; `/session snapshot`
   numbers match the harness within 10 %.
 - **Interactive verification:**

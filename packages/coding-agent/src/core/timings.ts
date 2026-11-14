@@ -9,11 +9,13 @@ const ENABLED = getEnvValue(ENV_TIMING) === "1";
 
 interface TimingNamespace {
 	timings: Array<{ label: string; ms: number }>;
+	/** Lines printed as they are, after the timings. */
+	lines: string[];
 	lastTime: number;
 	resetTime: number;
 }
 
-export type TimingLabel = "main" | "extensions";
+export type TimingLabel = "main" | "extensions" | "resume";
 
 const timingNamespaces = new Map<TimingLabel, TimingNamespace>();
 
@@ -31,7 +33,7 @@ function ensureNamespace(namespace: TimingLabel): TimingNamespace {
 	let entry = timingNamespaces.get(namespace);
 	if (!entry) {
 		const now = Date.now();
-		entry = { timings: [], lastTime: now, resetTime: now };
+		entry = { timings: [], lines: [], lastTime: now, resetTime: now };
 		timingNamespaces.set(namespace, entry);
 	}
 	return entry;
@@ -40,7 +42,7 @@ function ensureNamespace(namespace: TimingLabel): TimingNamespace {
 export function resetTimings(namespace: TimingLabel = "main"): void {
 	if (!ENABLED) return;
 	const now = Date.now();
-	timingNamespaces.set(namespace, { timings: [], lastTime: now, resetTime: now });
+	timingNamespaces.set(namespace, { timings: [], lines: [], lastTime: now, resetTime: now });
 }
 
 export function time(label: string, namespace: TimingLabel = "main"): void {
@@ -70,6 +72,12 @@ export function recordTiming(label: string, ms: number, namespace: TimingLabel =
 	timingNamespace.timings.push({ label, ms });
 }
 
+/** Records lines that are already formatted, such as where a resume's time went. */
+export function recordTimingLines(lines: readonly string[], namespace: TimingLabel): void {
+	if (!ENABLED) return;
+	ensureNamespace(namespace).lines.push(...lines);
+}
+
 export function recordTimeSinceReset(label: string, namespace: TimingLabel = "main"): void {
 	if (!ENABLED) return;
 	const timingNamespace = ensureNamespace(namespace);
@@ -78,12 +86,13 @@ export function recordTimeSinceReset(label: string, namespace: TimingLabel = "ma
 
 function printTimingGroup(title: string, namespace: TimingNamespace): void {
 	const printableTimings = namespace.timings.filter((timing) => timing.ms >= 0);
-	if (printableTimings.length === 0) return;
+	if (printableTimings.length === 0 && namespace.lines.length === 0) return;
 	console.error(`\n--- ${title} ---`);
 	for (const t of printableTimings) {
 		console.error(`  ${t.label}: ${t.ms}ms`);
 	}
-	console.error(`  TOTAL initialization time: ${Date.now() - namespace.resetTime}ms`);
+	for (const line of namespace.lines) console.error(`  ${line}`);
+	if (printableTimings.length > 0) console.error(`  TOTAL initialization time: ${Date.now() - namespace.resetTime}ms`);
 	console.error(`${"-".repeat(title.length + 8)}\n`);
 }
 

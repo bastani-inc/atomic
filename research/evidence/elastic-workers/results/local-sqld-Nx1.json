@@ -1,0 +1,114 @@
+{
+  "machine": {
+    "cpus": 80
+  },
+  "slots": 1,
+  "children": 32,
+  "steps": 20,
+  "payload": 256,
+  "proxyOneWayMs": 0,
+  "trials": [
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 87,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 88,
+          "query": "COMMIT",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 123,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 6,
+      "slots": 1,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 911,
+      "status": "completed",
+      "children": 32,
+      "completed": 32,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 640,
+      "wallMs": 26497,
+      "activeMs": 23598,
+      "checkpointsPerSec": 27.1,
+      "latencyMs": {
+        "p50": 208.06,
+        "p90": 266.99,
+        "p99": 330.36,
+        "max": 390.86
+      },
+      "perHost": {
+        "root": 5,
+        "h1": 5,
+        "h4": 4,
+        "h2": 5,
+        "h5": 4,
+        "h0": 4,
+        "h3": 5
+      }
+    },
+    {
+      "sqldSlowest": [
+        {
+          "elapsed_ms": 136,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 137,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        },
+        {
+          "elapsed_ms": 138,
+          "query": "BEGIN IMMEDIATE",
+          "rows_written": 0,
+          "rows_read": 1
+        }
+      ],
+      "hosts": 8,
+      "slots": 1,
+      "proxyOneWayMs": 0,
+      "hostsReadyMs": 1020,
+      "status": "completed",
+      "children": 32,
+      "completed": 32,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 640,
+      "wallMs": 24376,
+      "activeMs": 21700,
+      "checkpointsPerSec": 29.5,
+      "latencyMs": {
+        "p50": 239.04,
+        "p90": 295.01,
+        "p99": 378.75,
+        "max": 439.2
+      },
+      "perHost": {
+        "h0": 3,
+        "h4": 4,
+        "root": 4,
+        "h1": 3,
+        "h2": 3,
+        "h6": 4,
+        "h7": 4,
+        "h3": 4,
+        "h5": 3
+      }
+    }
+  ]
+}

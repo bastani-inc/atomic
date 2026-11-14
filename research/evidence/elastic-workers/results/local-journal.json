@@ -1,0 +1,67 @@
+{
+  "trials": [
+    {
+      "workers": 4,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 48849,
+      "activeMs": 47278,
+      "checkpointsPerSec": 27.1,
+      "latencyMs": {
+        "p50": 145.53,
+        "p90": 151.76,
+        "p99": 164.93,
+        "max": 226.98
+      },
+      "perHost": {
+        "devbox": 64
+      }
+    },
+    {
+      "workers": 8,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 26341,
+      "activeMs": 24695,
+      "checkpointsPerSec": 51.8,
+      "latencyMs": {
+        "p50": 151,
+        "p90": 158.69,
+        "p99": 193.97,
+        "max": 245.8
+      },
+      "perHost": {
+        "devbox": 64
+      }
+    },
+    {
+      "workers": 16,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 1280,
+      "wallMs": 14789,
+      "activeMs": 13073,
+      "checkpointsPerSec": 97.9,
+      "latencyMs": {
+        "p50": 158.6,
+        "p90": 167.38,
+        "p99": 239.25,
+        "max": 250.47
+      },
+      "perHost": {
+        "devbox": 64
+      }
+    }
+  ]
+}
