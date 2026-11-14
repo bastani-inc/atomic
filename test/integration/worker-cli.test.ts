@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { createServer, type Server, Socket } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "vitest";
 import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "../helpers/budgeted-process.js";
 import { startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
+import { startOutageProxy } from "../helpers/outage-proxy.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { bunExecutable, makeTempDirectory, readJson, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
@@ -143,48 +143,6 @@ async function until(what: string, s: Scenario, check: () => boolean, watched: r
 		if (Date.now() >= s.deadline) assert.fail(`timed out waiting for ${what}`);
 		await sleep(50);
 	}
-}
-
-/** A TCP proxy to `target` that can cut every connection and refuse new ones, as a database a network away goes away. */
-async function startOutageProxy(target: URL): Promise<{
-	readonly url: string;
-	cut(): void;
-	restore(): void;
-	close(): Promise<void>;
-}> {
-	const sockets = new Set<Socket>();
-	let down = false;
-	const server: Server = createServer((client) => {
-		if (down) return void client.resetAndDestroy();
-		const upstream = new Socket();
-		sockets.add(client).add(upstream);
-		upstream.connect(Number(target.port), target.hostname);
-		client.pipe(upstream).pipe(client);
-		for (const socket of [client, upstream]) {
-			socket.on("error", () => {
-				client.destroy();
-				upstream.destroy();
-			});
-			socket.on("close", () => sockets.delete(socket));
-		}
-	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	if (address === null || typeof address === "string") throw new Error("Outage proxy has no port");
-	return {
-		url: `http://127.0.0.1:${address.port}`,
-		cut() {
-			down = true;
-			for (const socket of sockets) socket.resetAndDestroy();
-		},
-		restore() {
-			down = false;
-		},
-		async close() {
-			for (const socket of sockets) socket.destroy();
-			await new Promise<void>((resolve) => server.close(() => resolve()));
-		},
-	};
 }
 
 function claimed(node: Node): string[] {
