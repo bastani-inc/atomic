@@ -202,6 +202,14 @@ SIGTERM or SIGINT drains the host: it takes no more children, lets the running o
 
 `atomic worker controller` runs a fleet controller on the database: it adds worker hosts through the provisioner that `--provisioner` names when the queues of the database's shared roots grow, and drains and removes hosts that held no child for `--idle-drain` milliseconds. The module's default export is a provisioner, or a function that returns one. A path ending in `.json` instead configures a command provisioner (`"kind": "command"`), such as one of the presets for `az`, `aws`, `gcloud`, `kubectl` or `gh`. See [Command provisioners and presets](/guides/worker-hosts#command-provisioners-and-presets). The policy options default to 0 minimum hosts, 10 maximum hosts, 4 workers per host, a queue depth of `--workers-per-host`, a 20000 ms scale-up delay, a 300000 ms idle drain, and a 600000 ms boot timeout. Several controllers can run on one database; one is active at a time and another takes over within 30 seconds when it stops. It prints `controller holder=… journal=…` and then `active`, `standby`, `scale-up target=… desired=… live=…`, `drain-requested id=… host=…`, `removed id=… reason=…`, `degraded …` and `recovered …` lines. SIGTERM or SIGINT stops it and exits `0`; a setup error exits `1`. See [Scale the fleet automatically](/guides/worker-hosts#scale-the-fleet-automatically).
 
+## Blueprint Commands
+
+```bash
+atomic blueprint cache-key [dir] [--format text|json|github-output]  # Cache keys and paths for a runner's cache action
+```
+
+`atomic blueprint cache-key` prints the cache entries of the repository at `dir` (default: the current directory): `stores` for the package stores detected from its lockfiles (npm, pnpm, Yarn, Bun, Cargo, uv, pip, Poetry, Go, Gradle, Maven) plus the store paths of the [`resume.cache`](/settings#resume) setting, `build` for the setting's `"build"` paths, `git` for Atomic's Git object store of the repository, and `atomic` for the extension transpile cache. Each has a key, a restore prefix and its paths. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines for `$GITHUB_OUTPUT`. Paths that could hold credentials are left out with a warning on stderr. See [Caches for runners](/guides/resume-on-any-machine#caches-for-runners).
+
 ## Modes
 
 | Flag | Description |

@@ -288,7 +288,7 @@ the same commit at X again (same) or at Y (other), extract, run maintenance. Sam
 
 Cargo output is path-sensitive: it is three times faster at the path it was built at. Atomic's is not (its slow
 step does not use the cache). Seeding a `.venv` loses to `uv sync` from a warm store. So: stable worktree paths,
-and seeds only for paths a blueprint declares as `kind: build`.
+and seeds only for paths `resume.cache` declares as `"kind": "build"`.
 
 ### 4.6 Restore fetch strategies (workstation, from GitHub, cold store; fetch + checkout, two runs)
 
@@ -325,10 +325,10 @@ first refresh; the untracked cache adds nothing beyond it, and Git's built-in fs
 | Where does the record of reusable worktrees live? (#4748; default: per machine under the agent dir, keyed by repository identity plus envHash) | **Per machine, under the restore store**: `<storeDir>/pool/<repositoryId>/<slot>.json`, where `storeDir` defaults to `<agentDir>/worktree-snapshots` (so `~/.atomic/agent/worktree-snapshots/pool/`). **Partitioned by repository identity** (the same `sha24(remotes)` that names the shared object store), **ranked by `envHash` and blueprint digest**, not partitioned by them | The default's intent holds. Two refinements: (1) the index sits next to the worktrees and object stores it describes, so a custom `storeDir` (SDK, tests, workflows) stays self-contained, and `isRestoreRecord`/`removeRestoredWorktree` already validate against `storeDir`. (2) `envHash` changes about twice a day on Atomic's `main` (§4.4), and reuse with a changed lockfile still beats a fresh worktree because `maintenance` always runs; actions/cache's `restore-keys` prefix fallback is the same idea |
 | May one session reuse another session's worktree? (#4748; default: yes, same user and machine, only while idle, verified by lease) | **Yes**, exactly as the default: any session of the same user (same `storeDir`) on the same machine, only while no live session or run holds the slot's lease. The tracked tree is reset to the new snapshot and verified; ignored directories stay. **Added refusal:** ownership moves with the claim, and a session whose slot was claimed by another restores fresh instead of continuing in it | §2.1 hazard in `checkoutsWorkedHere`; §4.4 gains |
 | Persistent private index location (old §11.1) | Under the restore store, keyed by the checkout's Git dir and root: `<storeDir>/capture-index/<sha24(gitdir + root)>`. Never inside the user's `.git` | A moved checkout gets a new key and pays one refresh |
-| Devin format divergence for `cache:` (old §11.3) | In the blueprint, an Atomic-only optional key that older Atomic ignores (`readDocument` reads only known keys) | It describes the environment, like `maintenance` |
+| Devin format divergence for `cache:` (old §11.3) | **Not in the blueprint** (revised after S6, #4748): `.atomic/blueprint.yaml` stays in Devin's format with no Atomic-only keys. `cache-key` detects package stores from the root lockfiles, as `actions/setup-node`/`setup-python` do; extra store and build paths go in the `resume.cache` setting. A blueprint `cache:` key is ignored with a one-line hint | The user direction on #4748; a blueprint Devin reads must not carry keys Devin does not define |
 | LFS laziness (old §11.4) | Not now. Cloud: the shared object store, LFS objects included, becomes a cache entry (S6), which turns 6 s into the warm-local 0.75 s. Local: unchanged | §4.2 warm local LFS 0.75 s |
 | `--timings` flag (old §11.5) | No flag. `/session snapshot`, `ATOMIC_TIMING=1`, and the `resume_timings` session entry (readable from exports and the SDK) | — |
-| Cache key scope (old §11.6) | `envHash` (or declared `key-files`) + OS + architecture + a digest of the `cache:` declaration; not the maintenance digest | The ledger already re-runs maintenance |
+| Cache key scope (old §11.6) | The detected lockfiles (or `resume.cache` `keyFiles`, else `envHash`) + the repository blueprint's content hash + OS + architecture + a digest of the detected and declared paths | Lockfiles decide store contents; the blueprint's steps decide what is installed into them |
 | Cloud reuse of the job's own checkout (old §11.7) | No. Seeds through the cache contract | §4.5: copies rarely pay; paths matter |
 
 ## 6. Proposed Solution (High-Level Design)
@@ -341,7 +341,7 @@ flowchart TB
       Plan[restore plan] --> Claim{"idle pooled slot<br/>of this repository?"}
       Claim -- "claimed (lease taken)" --> Reset["reset tracked tree to snapshot<br/>keep ignored dirs · verify"]
       Claim -- "none / busy / dirty / fails" --> Fresh["fresh restore into a stable slot path<br/>depth-1 fetch → full fetch fallback"]
-      Fresh --> Seeds["adoptSeededBuildOutput<br/>(declared kind: build paths; miss = no-op)"]
+      Fresh --> Seeds["adoptSeededBuildOutput<br/>(resume.cache build paths; miss = no-op)"]
       Reset --> Build
       Seeds --> Build["blueprint build<br/>(optionally overlapping the first turn)"]
       Build --> Hold["slot held by this session<br/>released when it closes"]
@@ -369,7 +369,8 @@ correctness of the tracked tree.
 | `src/core/resume/session-resume.ts` | change | timings; claim before fresh restore; ownership rule in `checkoutsWorkedHere`; concurrent optional restores; overlap barrier |
 | `src/core/session-worktree-snapshots.ts` | change | capture duration in timings; release on close |
 | `src/core/resume/blueprint/steps.ts`, `build.ts` | change | step start/end/duration in logs and outcome; barrier for S9 |
-| `src/core/resume/blueprint/schema.ts`, `types.ts` | change | optional `cache:` key |
+| `src/core/resume/blueprint/schema.ts`, `types.ts` | change | no `cache:` key; a `cache:` key earns a `cache-ignored` warning |
+| `src/core/resume/blueprint/cache-stores.ts`, `src/core/settings-schema.ts` | add / change | package-manager store detection; the `resume.cache` setting |
 | `src/core/resume/blueprint/cache.ts` | add | `blueprintCacheKeys`, `adoptSeededBuildOutput`, path refusals |
 | `src/core/resume/blueprint/prebuild.ts` | add | `prebuildRepository` |
 | `src/cli/blueprint-command.ts`, `src/main.ts` | add / change | `atomic blueprint cache-key`, `atomic blueprint prebuild` (dispatched like `atomic storage`) |
@@ -526,17 +527,34 @@ claimed by Y sees `pooledWorktreeHolder` = Y and restores fresh, as if its workt
 
 ### 7.4 Cache contract and seeds (S6, S8)
 
-```yaml
-cache:
-  - path: ~/.npm                          # kind: store (default): outside the worktree, a package manager's store
-  - path: ~/.cargo/registry
-  - path: target                          # relative = inside the worktree
-    kind: build                           # opt-in build output, parked in seeds/ by prebuild, adopted on restore
-    key-files: [Cargo.lock, rust-toolchain.toml]   # optional; default: the envHash inputs
+`.atomic/blueprint.yaml` stays in Devin's format (#4748): it declares no caches. `blueprintCacheKeys` detects the
+package stores the root lockfiles name, at each tool's default location or where its environment variable moves it:
+
+| Lockfile or build file | Stores (Linux) |
+|---|---|
+| `package-lock.json`, `npm-shrinkwrap.json` | `~/.npm` |
+| `pnpm-lock.yaml` | `~/.local/share/pnpm/store` |
+| `yarn.lock` | `~/.cache/yarn`; with `.yarnrc.yml`, `~/.yarn/berry/cache` |
+| `bun.lock`, `bun.lockb` | `~/.bun/install/cache` |
+| `Cargo.lock` | `~/.cargo/registry`, `~/.cargo/git` |
+| `uv.lock` | `~/.cache/uv` |
+| `requirements.txt`, `Pipfile.lock` | `~/.cache/pip` |
+| `poetry.lock` | `~/.cache/pypoetry` |
+| `go.sum` | `~/go/pkg/mod`, `~/.cache/go-build` |
+| Gradle build files, wrapper or lockfile | `~/.gradle/caches`, `~/.gradle/wrapper` |
+| `pom.xml` | `~/.m2/repository` |
+
+Extra paths come from the `resume.cache` setting (project `.atomic/settings.json`, else global), with S6's rules:
+
+```json
+{ "resume": { "cache": [
+	{ "paths": ["/opt/tool-cache"] },
+	{ "paths": ["target"], "kind": "build", "keyFiles": ["Cargo.lock", "rust-toolchain.toml"] }
+] } }
 ```
 
 ```ts
-blueprintCacheKeys(root: string, options?: { platform?: NodeJS.Platform; arch?: string }): Promise<BlueprintCacheKeys>
+blueprintCacheKeys(root: string, options?: { platform?: NodeJS.Platform; arch?: string; home?: string; env?: Env }): Promise<BlueprintCacheKeys>
 interface BlueprintCacheKeys {
 	readonly entries: readonly {
 		readonly name: "stores" | "build" | "git" | "atomic";
@@ -550,8 +568,8 @@ interface BlueprintCacheKeys {
 
 | Entry | Paths | Key | Why |
 |---|---|---|---|
-| `stores` | declared `kind: store` paths | `envHash` + OS + arch + declaration digest | package managers verify their stores |
-| `build` | `<storeDir>/seeds/<repositoryId>/<declared kind: build path>` | same inputs + `build` | stable path; trusted writer only |
+| `stores` | detected stores, then `resume.cache` `"store"` paths | detected lockfiles (or `keyFiles`, else `envHash`) + blueprint hash + OS + arch + path digest | package managers verify their stores |
+| `build` | `<storeDir>/seeds/<repositoryId>/<resume.cache "build" path>` | same inputs + `build` | stable path; trusted writer only |
 | `git` | `<storeDir>/repositories/<repositoryId>.git` | repository id + OS, prefix restore | append-only; fetch fills gaps; restore verifies trees |
 | `atomic` | the extension transpile cache dir | Atomic version + OS + arch | 10–12 s per new `HOME` (§4.2) for user extensions and source checkouts; installed packages import builtins natively |
 
@@ -677,7 +695,7 @@ updates its user docs and changelog entry. S1 lands first; the others stack on i
 | S3 | Depth-1 fetch and concurrent optional restores | S1 | B (parallel) | Halve cold fetches of long histories; overlap optional restores | `worktree-snapshot/restore.ts`, `session-resume.ts`, docs | store is shallow after a cold restore from a 300-commit `file://` remote and holds one commit; refused depth → full fetch; bundle below the boundary → unshallow; degraded restore of an older candidate still works; two optional restores run concurrently (both start before either ends) | T6 |
 | S4 | Worktree pool: stable slots, leases, ownership | S1 | B (parallel) | Make restored worktrees owned and leased at stable paths; no reuse yet | `worktree-snapshot/pool.ts`, `restore.ts`, `session-resume.ts`, `session-worktree-snapshots.ts`, settings, docs | slot path stable across a remove/restore; lease held while open, stale after kill; ownership: session X does not continue in a slot held by Y; unpooled and workflow worktrees unaffected; eviction keeps `maxIdlePerRepository` | enabler for T1–T3 |
 | S5 | Claim an idle pooled worktree on resume | S4 | C (stacked) | Reset an idle slot to the snapshot and keep its ignored directories | `pool.ts`, `session-resume.ts`, `restore.ts`, docs | a marker in `node_modules` survives a claim; dirty tracked/untracked → fresh; busy → fresh; SIGKILL mid-reset → next claim skips it; verify failure → fresh; benchmark: a fixture whose maintenance does a 2 s "install" only when its marker is absent completes the resume ≥ 1.5 s faster with a claim | T1, T2, T3 |
-| S6 | Blueprint `cache:` and `atomic blueprint cache-key` | S1 | B (parallel) | One printable cache contract for runners | `blueprint/schema.ts`, `types.ts`, `blueprint/cache.ts`, `cli/blueprint-command.ts`, `main.ts`, docs (`team-setup.md` Actions/gh-aw sample) | key determinism and change per input; `kind: store` inside the worktree refused; secret paths omitted; `github-output` format; blueprint without `cache:` prints stores-free `git` and `atomic` entries; parser keeps ignoring unknown keys | T8, T9 (with S8) |
+| S6 | `atomic blueprint cache-key` (revised: detected stores and the `resume.cache` setting, not a blueprint `cache:` key) | S1 | B (parallel) | One printable cache contract for runners | `blueprint/schema.ts`, `types.ts`, `blueprint/cache.ts`, `cli/blueprint-command.ts`, `main.ts`, docs (`team-setup.md` Actions/gh-aw sample) | key determinism and change per input; `kind: store` inside the worktree refused; secret paths omitted; `github-output` format; blueprint without `cache:` prints stores-free `git` and `atomic` entries; parser keeps ignoring unknown keys | T8, T9 (with S8) |
 | S7 | Installed layout starts without transpiling builtins (seed dropped, §7.6) | S1 | B (parallel) | Guard that a first start in a new `HOME` transpiles no builtins | `test/integration/installed-package-node-extensions.test.ts`, this spec | installed npm layout in a new `HOME` registers every builtin tool with an empty transpile cache | T7 |
 | S8 | `atomic blueprint prebuild` and seed adoption | S5, S6 | D (stacked) | Build ahead of time locally and in a trusted CI job; adopt parked output on restore | `blueprint/prebuild.ts`, `blueprint/cache.ts`, `cli/blueprint-command.ts`, `session-resume.ts`, docs (gh-aw and Actions recipes) | prebuild leaves an idle slot a later resume claims; `--park` moves declared build paths to seeds; resume into slot 0 adopts seeds; foreign or non-empty → skipped; failed prebuild keeps the previous slot and seeds | T8, T9 |
 | S9 | First turn overlaps the blueprint build (opt-in) | S1 | B (parallel) | Send the first model request while maintenance runs; gate tools on the build | `session-resume.ts`, `blueprint/build.ts`, tool execution hook, settings, docs | default `"prompt"` unchanged; with `"tools"` the first request precedes build end and a `bash` call waits for it; failed build releases the barrier with the notice; abort during wait | T1, T10 |
@@ -704,7 +722,8 @@ with each other on top of S1; C and D are stacked.
   2. Close it, resume another session of the same repository → notice "reused idle worktree …", `node_modules` kept,
      maintenance shorter in the timings.
   3. Resume the first session → it restores fresh (its slot is held by the second).
-  4. `atomic blueprint cache-key --format github-output` in a repository with `cache:` → `stores-key=…`, `git-paths=…`.
+  4. `atomic blueprint cache-key --format github-output` in a repository with a `package-lock.json` → `stores-key=…`,
+     `stores-paths=~/.npm`, `git-paths=…`.
   5. `ATOMIC_CODING_AGENT_DIR=$(mktemp -d) atomic -p hi --no-session` → first start within 1.5x of the second.
 
 ## 13. Open Questions
@@ -730,5 +749,5 @@ with each other on top of S1; C and D are stacked.
 - Snapshot records, bindings and `envHash` are unchanged. Pool records, the persistent index and seeds are host-local.
 - `restoreWorktree` keeps its contract; slot paths are used only by session resumes, never for an explicit `into`.
 - Worktrees restored by earlier versions have no pool record: never claimed, ownership rule as today.
-- `cache:` is optional and ignored by older Atomic; `resume_timings` is a custom entry, which older Atomic ignores.
+- `.atomic/blueprint.yaml` gains no keys; `resume.cache` is an optional setting; `resume_timings` is a custom entry, which older Atomic ignores.
 - New settings default to today's behavior (`resume.waitForBlueprint: "prompt"`).

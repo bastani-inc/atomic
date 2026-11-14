@@ -101,7 +101,7 @@ A section is either a string, which is one `run` step, or a list of steps. A lis
 - **Platforms.** `runs-on` is a string or a list, default `default`. `default` and `linux` are the same platform; `macos` and `windows` are always explicit. A file can hold several `---` documents, each a mapping, and two documents cannot resolve to the same platform. A machine uses only the document for its own platform; when none matches, nothing runs and nothing is shown.
 - **Includes.** The repository blueprint may list workspace directories in `includes`. An entry is a directory, or the full path of its blueprint file (`<dir>/.atomic/blueprint.yaml`; no other file name is read), without `..`, and each workspace appears once. Includes are not allowed in a workspace blueprint. A missing workspace blueprint, or a missing workspace directory, means that workspace is removed. `includes` is ignored in the global blueprint, and `post-build` is allowed only there.
 - **Clone.** `clone` is accepted and ignored, with a warning: a restore recreates the recorded tree instead of cloning.
-- **Cache.** `cache:` is an Atomic-only key that names what a CI runner should cache between jobs. Builds never read it, an invalid entry is ignored and never fails the blueprint, and Devin and older Atomic versions ignore it. See [Caches for runners](#caches-for-runners).
+- **Other keys.** Keys the format does not define are ignored. A `cache:` key earns a one-line warning: list extra cache paths in the `resume.cache` setting instead (see [Caches for runners](#caches-for-runners)).
 
 ### Builds
 
@@ -135,31 +135,53 @@ The first turn of a resumed session carries each applicable blueprint's `mainten
 
 ### Caches for runners
 
-On an ephemeral runner, such as a GitHub-hosted one, every resume starts with an empty home directory: dependencies download again, the repository is fetched in full, and Atomic transpiles your extensions again. The `cache:` section of the repository blueprint lists what is worth keeping, and `atomic blueprint cache-key` prints a key, a restore prefix and the paths of each entry for a cache action such as `actions/cache`. Atomic never uploads or downloads caches itself.
-
-```yaml
-cache:
-  - path: ~/.npm                  # kind: store (the default): a package manager's store outside the worktree
-  - path: ~/.cargo/registry
-  - path: target                  # relative paths are inside the worktree
-    kind: build                   # build output, opt-in
-    key-files: [Cargo.lock, rust-toolchain.toml]
-```
-
-An entry is a path or `{ path, kind, key-files }`. A `kind: store` path is absolute or starts with `~/`, and lies outside the worktree. A `kind: build` path is relative to the repository root; it names build output that a trusted job parks under `~/.atomic/agent/worktree-snapshots/seeds/` for a later restore. `key-files` lists root-relative files whose content keys the entry; without it, an entry is keyed by the dependency files that decide a snapshot's environment (lockfiles and toolchain files). Paths are plain paths: an entry with glob characters (`*`, `?`, `[`, `]`, `{`, `}`) or a leading `!` is ignored, since a cache action would read it as a pattern. Quote a bare `~` (`"~"`): YAML reads it as empty. Atomic reads `cache:` from the repository blueprint's document for the runner's platform only.
+On an ephemeral runner, such as a GitHub-hosted one, every resume starts with an empty home directory: dependencies download again, the repository is fetched in full, and Atomic transpiles your extensions again. `atomic blueprint cache-key` prints a key, a restore prefix and the paths of each cache entry worth keeping, for a cache action such as `actions/cache`. Atomic never uploads or downloads caches itself.
 
 ```sh
 atomic blueprint cache-key [dir] [--format text|json|github-output]
 ```
 
+Like `actions/setup-node` and `actions/setup-python`, it finds package stores from the lockfiles at the repository root, so most repositories need no configuration:
+
+| Files at the root | Stores (Linux default) |
+|---|---|
+| `package-lock.json`, `npm-shrinkwrap.json` | `~/.npm` (`npm_config_cache`) |
+| `pnpm-lock.yaml` | `~/.local/share/pnpm/store` (`npm_config_store_dir`, `PNPM_HOME`, `XDG_DATA_HOME`) |
+| `yarn.lock` | `~/.cache/yarn` (`YARN_CACHE_FOLDER`); with `.yarnrc.yml`, `~/.yarn/berry/cache` (`YARN_GLOBAL_FOLDER`) |
+| `bun.lock`, `bun.lockb` | `~/.bun/install/cache` (`BUN_INSTALL_CACHE_DIR`, `BUN_INSTALL`) |
+| `Cargo.lock` | `~/.cargo/registry`, `~/.cargo/git` (`CARGO_HOME`) |
+| `uv.lock` | `~/.cache/uv` (`UV_CACHE_DIR`) |
+| `requirements.txt`, `Pipfile.lock` | `~/.cache/pip` (`PIP_CACHE_DIR`) |
+| `poetry.lock` | `~/.cache/pypoetry` (`POETRY_CACHE_DIR`) |
+| `go.sum` | `~/go/pkg/mod`, `~/.cache/go-build` (`GOMODCACHE`, `GOPATH`, `GOCACHE`) |
+| `build.gradle(.kts)`, `settings.gradle(.kts)`, `gradle.lockfile`, the Gradle wrapper | `~/.gradle/caches`, `~/.gradle/wrapper` (`GRADLE_USER_HOME`) |
+| `pom.xml` | `~/.m2/repository` |
+
+The variables in parentheses move a store, as they do for the tool; `XDG_CACHE_HOME` moves the Linux `~/.cache` locations. macOS uses `~/Library/Caches` (pnpm `~/Library/pnpm/store`; npm, uv, Bun, Cargo, Go modules, Gradle and Maven as on Linux), and Windows uses `%LOCALAPPDATA%` (for example `npm-cache`, `pnpm\store`, `Yarn\Cache`, `uv\cache`, `pip\Cache`). Lockfiles below the root, as in a monorepo's packages, are not searched.
+
+To cache more, such as a store in another location or build output, add `resume.cache` to the project's `.atomic/settings.json` (or your global settings; a project's list replaces the global one). The blueprint keeps Devin's format and declares no caches.
+
+```json
+{
+  "resume": {
+    "cache": [
+      { "paths": ["/opt/tool-cache"] },
+      { "paths": ["target"], "kind": "build", "keyFiles": ["Cargo.lock", "rust-toolchain.toml"] }
+    ]
+  }
+}
+```
+
+Each entry lists `paths`, an optional `kind`, and optional `keyFiles`. A `"store"` path (the default) is absolute or starts with `~/`, and lies outside the worktree; it joins the detected stores. A `"build"` path is relative to the repository root; it names build output that a trusted job parks under `~/.atomic/agent/worktree-snapshots/seeds/` for a later restore. `keyFiles` lists root-relative files whose content keys the paths; without it, they are keyed by the files that decide a snapshot's environment (lockfiles and toolchain files). Paths are plain paths: one with glob characters (`*`, `?`, `[`, `]`, `{`, `}`) or a leading `!` is ignored, since a cache action would read it as a pattern. An invalid entry is left out with a warning.
+
 | Entry | Paths | Key changes when |
 |---|---|---|
-| `stores` | the `kind: store` paths | their key files, the declared entries, the OS or the architecture change |
-| `build` | the parked `kind: build` paths | the same inputs |
+| `stores` | the detected stores, then the `"store"` paths of `resume.cache` | the detected lockfiles, the key files, `resume.cache`, the repository blueprint, the OS or the architecture change |
+| `build` | the parked `"build"` paths | the same inputs |
 | `git` | Atomic's Git object store of the repository | the checkout's HEAD changes; restore the newest entry by its prefix |
 | `atomic` | Atomic's extension transpile cache | the Atomic version, the OS or the architecture change |
 
-An entry with no paths is left out. The `git` and `build` entries need a Git remote, since the object store is named after the checkout's remote URLs, and match a session only when the checkout spells its remotes as the session recorded them. Paths that could hold credentials (`~/.ssh`, `~/.cargo` with its `credentials.toml`, `~/.config/gh`, `.npmrc`, `.env*` and the [snapshot deny list](/worktree-snapshots#what-is-left-out)), `kind: store` paths inside the worktree and invalid entries are left out with a warning on stderr. The credential checks ignore letter case and follow symbolic links, so `~/.SSH` and a link to `~/.ssh` are refused too. They look at the declared paths, not at the files inside them, which may not exist yet when the keys are printed: declare only directories that hold packages and build output, never one where a tool keeps tokens or keys. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines to append to `$GITHUB_OUTPUT`; see [Caching between runs](/guides/team-setup#caching-between-runs) for a workflow.
+An entry with no paths is left out. The `git` and `build` entries need a Git remote, since the object store is named after the checkout's remote URLs, and match a session only when the checkout spells its remotes as the session recorded them. Paths that could hold credentials (`~/.ssh`, `~/.cargo` with its `credentials.toml`, `~/.config/gh`, `.npmrc`, `.env*` and the [snapshot deny list](/worktree-snapshots#what-is-left-out)), store paths inside the worktree, whether detected or declared, and invalid entries are left out with a warning on stderr. The credential checks ignore letter case and follow symbolic links, so `~/.SSH` and a link to `~/.ssh` are refused too. They look at the paths, not at the files inside them, which may not exist yet when the keys are printed: declare only directories that hold packages and build output, never one where a tool keeps tokens or keys. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines to append to `$GITHUB_OUTPUT`; see [Caching between runs](/guides/team-setup#caching-between-runs) for a workflow.
 
 ### `resume.setupCommand` and `.atomic/setup`
 
