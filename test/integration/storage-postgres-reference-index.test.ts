@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
-import type { SqliteDatabase, SqliteValue } from "../../packages/coding-agent/src/core/storage/database.ts";
+import type {
+	SqliteDatabase,
+	SqliteExecutor,
+	SqliteTransactionOptions,
+	SqliteValue,
+} from "../../packages/coding-agent/src/core/storage/database.ts";
 import { dialectOf, postgresDialect } from "../../packages/coding-agent/src/core/storage/dialect.ts";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import {
@@ -221,6 +226,38 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 		await withPostgresDatabase(async (scope) => {
 			const database = await scope.open();
 			assert.deepEqual(await indexAfter(database, true), expected);
+		});
+	});
+
+	test("the triggers are installed by the migration, under its lock (#4793)", async () => {
+		await withPostgresDatabase(async (scope) => {
+			const database = await scope.open();
+			await createReferencingTables(database);
+			const installs: (string | undefined)[] = [];
+			const recording: SqliteDatabase = Object.create(database, {
+				transaction: {
+					value: <T>(callback: (transaction: SqliteExecutor) => Promise<T>, options?: SqliteTransactionOptions) =>
+						database.transaction(
+							(transaction) =>
+								callback(
+									Object.create(transaction, {
+										exec: {
+											value: (sql: string) => {
+												if (sql.includes("CREATE OR REPLACE TRIGGER")) {
+													const concurrency = options?.concurrency;
+													installs.push(concurrency?.kind === "serial" ? concurrency.domain : undefined);
+												}
+												return transaction.exec(sql);
+											},
+										},
+									}),
+								),
+							options,
+						),
+				},
+			});
+			await SqlSnapshotBlobStore.open(recording);
+			assert.deepEqual(installs, Array(5).fill("atomic_migrations"));
 		});
 	});
 
