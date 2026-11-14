@@ -189,6 +189,23 @@ describe("a cold restore fetches the snapshot's commit at depth 1 (#4748)", () =
 		},
 	);
 
+	test("a snapshot's bundled commit that was pushed since is fetched at depth 1 and marked as pushed (#4748)", async () => {
+		const { clone } = await longHistory(3);
+		sandbox.write(join(clone, "later.txt"), "pushed after the capture\n");
+		const head = await sandbox.commitAll(clone, "pushed after the capture");
+		const blobs = new MemorySnapshotBlobStore();
+		const snapshot = await capture(clone, blobs);
+		assert.deepEqual(snapshot.bundle?.commits, [head]);
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
+		const storeDir = sandbox.path("host");
+
+		await restoreWorktree(snapshot, { blobs, storeDir });
+
+		const store = storeOf(storeDir);
+		assert.equal(readFileSync(join(store, "shallow"), "utf8").trim(), head);
+		assert.equal(await inStore(store, "rev-parse", `refs/remotes/atomic/pushed/${head}`), head);
+	});
+
 	test("a bundle whose prerequisite is two commits below a shallow store's boundary unshallows the store and restores (#4748)", async () => {
 		const { clone } = await longHistory(5);
 		const blobs = new MemorySnapshotBlobStore();
@@ -302,6 +319,64 @@ describe("ancestry across a shallow store's boundary (#4748)", () => {
 		assert.equal(await isHeadOnlyAdvance(drift), true);
 	});
 
+	test("a restored worktree whose remote is gone keeps its shallow store, and ancestry below the boundary is not an advance (#4748)", async () => {
+		const { remote, clone } = await longHistory(5);
+		const blobs = new MemorySnapshotBlobStore();
+		const storeDir = sandbox.path("host");
+		const restored = await restoreWorktree(await capture(clone, blobs), { blobs, storeDir });
+		const tree = await sandbox.git(restored.path, "rev-parse", "HEAD^{tree}");
+		const drift = new WorkspaceDriftError({
+			root: restored.path,
+			expectedHead: await sandbox.git(clone, "rev-parse", "HEAD~2"),
+			actualHead: await sandbox.git(restored.path, "rev-parse", "HEAD"),
+			expectedTree: tree,
+			actualTree: tree,
+			snapshotId: null,
+		});
+		renameSync(remote, sandbox.path("remote-gone.git"));
+
+		assert.equal(await isHeadOnlyAdvance(drift), false);
+		assert.equal(await inStore(storeOf(storeDir), "rev-parse", "--is-shallow-repository"), "true");
+	});
+
+	test("a recorded commit the whole history shows is not an ancestor is not an advance (#4748)", async () => {
+		const { clone } = await longHistory(5);
+		const blobs = new MemorySnapshotBlobStore();
+		const storeDir = sandbox.path("host");
+		const restored = await restoreWorktree(await capture(clone, blobs), { blobs, storeDir });
+		const head = await sandbox.git(restored.path, "rev-parse", "HEAD");
+		await sandbox.git(clone, "checkout", "-q", "--detach", "HEAD~2");
+		sandbox.write(join(clone, "side.txt"), "side\n");
+		const side = await sandbox.commitAll(clone, "a side branch");
+		await sandbox.git(clone, "push", "-q", "origin", "HEAD:refs/heads/side");
+		const tree = await sandbox.git(restored.path, "rev-parse", "HEAD^{tree}");
+		const drift = new WorkspaceDriftError({
+			root: restored.path,
+			expectedHead: side,
+			actualHead: head,
+			expectedTree: tree,
+			actualTree: tree,
+			snapshotId: null,
+		});
+
+		assert.equal(await isHeadOnlyAdvance(drift), false);
+		assert.equal(await inStore(storeOf(storeDir), "rev-parse", "--is-shallow-repository"), "false");
+	});
+
+	test("a drift reported for a directory that is no longer a repository is not an advance (#4748)", async () => {
+		const tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+		const drift = new WorkspaceDriftError({
+			root: sandbox.root,
+			expectedHead: "a".repeat(40),
+			actualHead: "b".repeat(40),
+			expectedTree: tree,
+			actualTree: tree,
+			snapshotId: null,
+		});
+
+		assert.equal(await isHeadOnlyAdvance(drift), false);
+	});
+
 	test("a user's own shallow clone is never deepened: ancestry below its boundary is not an advance (#4748)", async () => {
 		const { url, clone } = await longHistory(5);
 		const shallow = sandbox.path("user-shallow");
@@ -340,7 +415,10 @@ async function sessionWithOptionalCheckouts(first: string, others: readonly stri
 	return manager;
 }
 
-/** A Git that appends `start <remote>` and, a moment after the real Git finishes, `end <remote>` for each fetch to `log`. */
+/**
+ * A Git that appends `start <remote>` and, a moment after the real Git finishes (longer for `second.git`), `end <remote>`
+ * for each fetch to `log`.
+ */
 function gitLoggingFetches(log: string): { path: string; env: Readonly<NodeJS.ProcessEnv> } {
 	const shim = sandbox.path("git-logging-fetches");
 	writeFileSync(
@@ -351,7 +429,8 @@ function gitLoggingFetches(log: string): { path: string; env: Readonly<NodeJS.Pr
 			'for arg in "$@"; do remote="$arg"; case "$arg" in *.git) break;; esac; done',
 			`echo "start $(basename "$remote")" >> "${log}"`,
 			'git "$@"; status=$?',
-			"sleep 0.5",
+			// The first optional checkout's fetch ends last, so only an ordered recording lists it first.
+			'case "$remote" in *second.git) sleep 1.5;; *) sleep 0.5;; esac',
 			`echo "end $(basename "$remote")" >> "${log}"`,
 			'exit "$status"',
 			"",
@@ -394,6 +473,42 @@ describe("optional checkouts restore concurrently (#4748)", () => {
 			);
 			for (const mapping of manager.getWorktreeRootMappings()) {
 				assert.equal(readFileSync(join(mapping.to, "README.md"), "utf8"), `edited ${mapping.from}\n`);
+			}
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"a resume cancelled while optional checkouts restore concurrently rejects with the cancellation (#4748)",
+		async () => {
+			const { clone: first } = await sandbox.remoteWithClone("first");
+			const { clone: second } = await sandbox.remoteWithClone("second");
+			const { clone: third } = await sandbox.remoteWithClone("third");
+			const manager = await sessionWithOptionalCheckouts(first, [second, third]);
+			renameSync(second, sandbox.path("second-gone"));
+			renameSync(third, sandbox.path("third-gone"));
+			const log = sandbox.path("fetches.log");
+			const git = gitLoggingFetches(log);
+			setWorktreeSnapshotGit(async () => git);
+			const controller = new AbortController();
+			const reason = new Error("cancelled during the optional restores");
+			const watch = setInterval(() => {
+				if (existsSync(log) && readFileSync(log, "utf8").includes("start third.git")) controller.abort(reason);
+			}, 20);
+
+			try {
+				await assert.rejects(
+					prepareSessionResume(manager, {
+						entryPoint: "cli",
+						launchCwd: first,
+						settings,
+						storeDir: sandbox.path("host"),
+						blueprints: "skip",
+						signal: controller.signal,
+					}),
+					(error: unknown) => error === reason,
+				);
+			} finally {
+				clearInterval(watch);
 			}
 		},
 	);

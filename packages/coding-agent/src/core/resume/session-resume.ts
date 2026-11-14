@@ -801,7 +801,7 @@ async function restorePlanned(
 			...(git === undefined ? {} : { cannotRestore: new Map(targets.map((target) => [target.root, git])) }),
 			fallbackCwd: options.launchCwd,
 			skipMissingRecords: true,
-			...(beforeRecord === undefined ? {} : { beforeRecord }),
+			beforeRecord,
 		});
 		for (const missing of resumed.missingRecords ?? []) {
 			if (outcome.missing.has(missing.root)) continue;
