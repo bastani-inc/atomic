@@ -91,13 +91,14 @@ export function create(state) {
 
 /**
  * Sets the count of hosts that are not deleting to `target`. Scaling in removes what the real controller would: a
- * ReplicaSet its pending pods first, then the lowest pod-deletion-cost, then the newest; any other its newest hosts.
+ * ReplicaSet its pending pods first, then the newest, since it treats pod-deletion-cost as a hint only (#4803); any
+ * other its newest hosts.
  */
 export function scale(state, target) {
 	for (let count = active(state).length; count < target; count++) create(state);
 	const order =
 		state.kind === "deployment"
-			? (a, b) => (b.phase === "creating") - (a.phase === "creating") || (a.cost ?? 0) - (b.cost ?? 0) || b.n - a.n
+			? (a, b) => (b.phase === "creating") - (a.phase === "creating") || b.n - a.n
 			: (a, b) => b.n - a.n;
 	const current = active(state).toSorted(order);
 	for (const host of current.slice(0, Math.max(0, current.length - target))) host.phase = "deleting";

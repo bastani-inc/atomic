@@ -2,10 +2,7 @@
 	"kind": "command",
 	"up": ["kubectl", "--namespace", "atomic", "scale", "deployment/atomic-worker", "--replicas={target}"],
 	"down": [
-		[
-			"kubectl", "--namespace", "atomic", "annotate", "pod", "{id}",
-			"controller.kubernetes.io/pod-deletion-cost=-1000", "--overwrite"
-		],
+		["kubectl", "--namespace", "atomic", "delete", "pod", "{id}", "--ignore-not-found", "--wait=false"],
 		["kubectl", "--namespace", "atomic", "scale", "deployment/atomic-worker", "--replicas={remaining}"]
 	],
 	"list": [
