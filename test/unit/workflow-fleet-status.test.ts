@@ -766,8 +766,11 @@ test(
 			});
 			const backend = await JournalDurableBackend.open(f.journal);
 			await backend.hydrateWorkflow("root");
-			// The root's next write waits unanswered, as a wedged sqld leaves writes, and every call after it waits too.
-			server.onOpenTransaction(() => new Promise<void>((resolve) => (release = resolve)));
+			// The root's next write waits unanswered, as a wedged sqld leaves writes, and every call after it waits too: a
+			// transaction left open, or a write batch (#4768).
+			const held = () => new Promise<void>((resolve) => (release = resolve));
+			server.onOpenTransaction(held);
+			server.onBatch(held);
 			const stuck = f.shared.reportHost(host("h-busy", { busy: 1 })).catch(() => {});
 			await sleep(STORE_WRITE_STALL_MS);
 			const sent = server.pipelines.length;
@@ -788,6 +791,7 @@ test(
 			]);
 			assert.equal(server.pipelines.length, sent, "status sent the store nothing of its own");
 			server.onOpenTransaction(undefined);
+			server.onBatch(undefined);
 			release();
 			await stuck;
 		} finally {

@@ -1,4 +1,4 @@
-import type { SqliteExecutor } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
 import { StaleWorkLeaseError, type StaleWorkLeaseReason } from "../../shared/worker-pool-errors.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
@@ -8,9 +8,10 @@ import {
 	poolUsageSchema,
 	poolUsageTable,
 	poolUsageTotalsTable,
+	poolUsageUpsert,
 	upsertPoolUsage,
 } from "./pool-stage-usage.js";
-import { openSqlPoolQueue } from "./sql-pool-queue.js";
+import { openSqlPoolQueue, type PoolHeartbeatRecord } from "./sql-pool-queue.js";
 import { type Lease, type RunJournal, StaleLeaseError } from "./types.js";
 import { validateText } from "./values.js";
 
@@ -110,18 +111,43 @@ export class SqlPoolUsage {
 	}
 	/**
 	 * Validates `reports` now and returns what records them inside a pool transaction: the work of {@link report}, for a
-	 * caller that records usage within a transaction of its own, such as a worker's heartbeat.
+	 * caller that records usage within a transaction of its own, such as a worker's heartbeat. Its `batched` form is the
+	 * same recording as statements for a heartbeat's one request, whose own fences hold the attempt's lease: the reports'
+	 * rows, then the root's total, which a root without one gets from `SUM()` over its rows first.
 	 */
-	recording(
-		lease: Lease,
-		token: UsageToken,
-		reports: readonly PoolUsageReport[],
-	): (tx: SqliteExecutor) => Promise<PoolUsage> {
+	recording(lease: Lease, token: UsageToken, reports: readonly PoolUsageReport[]): PoolHeartbeatRecord<PoolUsage> {
 		validateText("runId", lease.runId);
 		validateText("holderId", lease.holderId);
 		for (const report of reports) validate(report);
 		const snapshot = reports.map((report) => ({ key: report.key, usage: { ...report.usage } }));
-		return async (tx) => {
+		const columns = FIELDS.map((field) => field.toLowerCase());
+		const pool = `${this.journal.runs}_pool`;
+		const batched = {
+			writes: [
+				{
+					sql: `INSERT INTO ${this.totals}(root, ${columns.map((column) => `${column}, ${column}_err`).join(", ")})
+					SELECT ?, ${columns.map((column) => `s.${column}, 0`).join(", ")} FROM (
+						SELECT ${columns.map((column) => `COALESCE(SUM(u.${column}), 0) AS ${column}`).join(", ")}
+						FROM ${this.table} u JOIN ${this.journal.runs}_work w ON w.id = u.work WHERE w.root = ?
+					) s WHERE NOT EXISTS (SELECT 1 FROM ${this.totals} WHERE root = ?) AND EXISTS (SELECT 1 FROM ${pool} WHERE root = ?)`,
+					params: [lease.runId, lease.runId, lease.runId, lease.runId],
+				},
+				...snapshot.map(({ key, usage }) =>
+					poolUsageUpsert(this.journal.runs, token.id, token.generation, key, usage),
+				),
+			],
+			reads: [{ sql: `SELECT * FROM ${this.totals} WHERE root = ?`, params: [lease.runId] }],
+			result: ([rows]: readonly SqliteRow[][]) => {
+				const kept = rows?.[0];
+				return Object.fromEntries(
+					FIELDS.map((field, index) => [
+						field,
+						kept === undefined ? 0 : Number(kept[columns[index]!]) + Number(kept[`${columns[index]}_err`]),
+					]),
+				) as PoolUsage;
+			},
+		};
+		const record = async (tx: SqliteExecutor): Promise<PoolUsage> => {
 			const authority = await tx.get(
 				`SELECT l.epoch, l.holder_id, l.renewed_at, p.timeout, ${STORE_NOW} AS now FROM ${this.journal.leases} l
 				 LEFT JOIN ${this.journal.runs}_pool p ON p.root = l.run_id WHERE l.run_id = ?`,
@@ -152,6 +178,7 @@ export class SqlPoolUsage {
 				await upsertPoolUsage(tx, this.journal.runs, token.id, token.generation, key, usage);
 			return this.totalIn(tx, lease.runId);
 		};
+		return Object.assign(record, { batched });
 	}
 	async total(root: string): Promise<PoolUsage> {
 		const kept = await this.read((executor) => this.keptTotal(executor, root));

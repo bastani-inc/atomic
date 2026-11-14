@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed a pooled child being taken off its worker and replayed elsewhere when a single heartbeat failed because the journal's database was briefly unreachable. The worker now keeps the child while its lease lasts and renews it with the next heartbeat that gets through, and an idle worker waits out the outage instead of exiting ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Fixed shared placement on a database server such as sqld or Turso slowing down and stalling as hosts were added. Every pool write (a checkpoint, a heartbeat, a claim, a completion, a stage input, a host's report) now goes as one request, instead of an interactive transaction of 6–17 requests that held the server's write lock across each round trip. A write that finds the lock busy waits a short random time before trying again. Each process sends at most four writes at once, with lease renewals and host reports first. A request the server leaves unanswered is abandoned after 30 seconds and the write planned again, never applied twice. At 8 hosts × 4 workers on sqld started with `--checkpoint-interval-s 60`, checkpoints commit 5% faster, with p99 latency down from 1.3 s to 1.1 s ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
 
 ## [0.9.86] - 2026-11-14
 

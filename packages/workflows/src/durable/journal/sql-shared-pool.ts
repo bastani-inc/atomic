@@ -1,9 +1,10 @@
 import type { WorktreeSnapshot } from "@bastani/atomic";
-import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, SqliteStatement } from "@bastani/atomic/storage";
 import type { SerializedError } from "../../shared/error-codec.js";
 import { StaleStageLeaseError } from "../../workers/placement-errors.js";
 import type { WorkspaceBinding } from "../../workers/workspace-binding.js";
 import { type SqlPoolStorage, sqlPoolStorage, sqlPoolWrites } from "./internal.js";
+import { guardedPoolWrite } from "./pool-guarded-write.js";
 import type {
 	SharedPoolFleet,
 	SharedPoolFleetStatus,
@@ -230,24 +231,32 @@ export class SqlSharedPool {
 	/** Publishes the root's pool configuration for worker hosts, under the root's lease. */
 	async publishConfig(lease: Lease, config: SharedPoolConfig, budgetBlocked = false): Promise<void> {
 		const payload = JSON.stringify(config);
-		await this.storage.transaction(async (tx) => {
-			await this.queue.assertRootIn(tx, lease);
-			await tx.run(
-				`INSERT INTO ${this.shared}(root, config, epoch, budget_blocked) VALUES (?, ?, ?, ?) ON CONFLICT(root) DO UPDATE SET config = excluded.config, epoch = excluded.epoch, budget_blocked = excluded.budget_blocked`,
-				lease.runId,
-				payload,
-				lease.epoch,
-				budgetBlocked ? 1 : 0,
-			);
-		});
+		await this.rootWrite(lease, [
+			{
+				sql: `INSERT INTO ${this.shared}(root, config, epoch, budget_blocked) VALUES (?, ?, ?, ?) ON CONFLICT(root) DO UPDATE SET config = excluded.config, epoch = excluded.epoch, budget_blocked = excluded.budget_blocked`,
+				params: [lease.runId, payload, lease.epoch, budgetBlocked ? 1 : 0],
+			},
+		]);
 	}
 
 	/** Records whether the root's budget blocks further spending, for the hosts that serve it (#4310). */
 	async publishBudget(lease: Lease, blocked: boolean): Promise<void> {
-		await this.storage.transaction(async (tx) => {
-			await this.queue.assertRootIn(tx, lease);
-			await tx.run(`UPDATE ${this.shared} SET budget_blocked = ? WHERE root = ?`, blocked ? 1 : 0, lease.runId);
+		await this.rootWrite(lease, [
+			{ sql: `UPDATE ${this.shared} SET budget_blocked = ? WHERE root = ?`, params: [blocked ? 1 : 0, lease.runId] },
+		]);
+	}
+
+	/** `writes` as one write under the root's lease: refused with {@link StaleLeaseError} once `lease` lost it. */
+	private rootWrite(lease: Lease, writes: readonly SqliteStatement[]): Promise<void> {
+		return guardedPoolWrite(this.storage, async (read, optimistic) => {
+			if (!optimistic) await this.queue.assertRootIn(read, lease);
+			return { fences: [this.queue.rootFence(lease)], writes, result: () => undefined };
 		});
+	}
+
+	/** `writes` as one write that depends on nothing it read, on the priority lane when `priority`. */
+	private plainWrite(writes: readonly SqliteStatement[], priority = false): Promise<void> {
+		return guardedPoolWrite(this.storage, async () => ({ writes, result: () => undefined }), { priority });
 	}
 
 	/**
@@ -289,26 +298,32 @@ export class SqlSharedPool {
 	/** Records a worker host's current state; a host that stops reporting ages out of {@link capableHostLive}. */
 	async reportHost(host: SharedPoolHostReport): Promise<void> {
 		validateText("key", host.host);
-		await this.storage.transaction((tx) =>
-			tx.run(
-				`INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id)
+		// A host's heartbeat: on the priority lane, so it never waits behind the host's other writes.
+		await this.plainWrite(
+			[
+				{
+					sql: `INSERT INTO ${this.hosts}(host, labels, git, restore, workers, max_workers, heartbeat_at, roots, slots_busy, draining, degraded, provider_id)
 				VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW}, ?, ?, ?, ?, ?)
 				ON CONFLICT(host) DO UPDATE SET labels = excluded.labels, git = excluded.git, restore = excluded.restore,
 				workers = excluded.workers, max_workers = excluded.max_workers, heartbeat_at = excluded.heartbeat_at, roots = excluded.roots,
 				slots_busy = excluded.slots_busy, draining = excluded.draining, degraded = excluded.degraded,
 				provider_id = excluded.provider_id`,
-				host.host,
-				JSON.stringify(host.labels),
-				host.git,
-				host.restore ? 1 : 0,
-				host.workers,
-				host.maxWorkers,
-				JSON.stringify(host.roots),
-				host.busy ?? null,
-				host.draining === true ? 1 : 0,
-				host.degraded === undefined ? null : JSON.stringify(host.degraded),
-				host.providerId ?? null,
-			),
+					params: [
+						host.host,
+						JSON.stringify(host.labels),
+						host.git,
+						host.restore ? 1 : 0,
+						host.workers,
+						host.maxWorkers,
+						JSON.stringify(host.roots),
+						host.busy ?? null,
+						host.draining === true ? 1 : 0,
+						host.degraded === undefined ? null : JSON.stringify(host.degraded),
+						host.providerId ?? null,
+					],
+				},
+			],
+			true,
 		);
 	}
 
@@ -322,10 +337,10 @@ export class SqlSharedPool {
 
 	/** Removes a stopped worker host from the registry, with the restore backoffs it recorded. */
 	async forgetHost(host: string): Promise<void> {
-		await this.storage.transaction(async (tx) => {
-			await tx.run(`DELETE FROM ${this.hosts} WHERE host = ?`, host);
-			await tx.run(`DELETE FROM ${this.backoffs} WHERE host = ?`, host);
-		});
+		await this.plainWrite([
+			{ sql: `DELETE FROM ${this.hosts} WHERE host = ?`, params: [host] },
+			{ sql: `DELETE FROM ${this.backoffs} WHERE host = ?`, params: [host] },
+		]);
 	}
 
 	/** Every registered worker host. */
@@ -360,23 +375,20 @@ export class SqlSharedPool {
 	 */
 	async recordRestoreBackoff(host: string, binding: string, waitMs: number, failure: SerializedError): Promise<void> {
 		validateText("key", host);
-		await this.storage.transaction((tx) =>
-			tx.run(
-				`INSERT INTO ${this.backoffs}(host, binding, until, failure, recorded_at) VALUES (?, ?, ${STORE_NOW} + ?, ?, ${STORE_NOW})
+		await this.plainWrite([
+			{
+				sql: `INSERT INTO ${this.backoffs}(host, binding, until, failure, recorded_at) VALUES (?, ?, ${STORE_NOW} + ?, ?, ${STORE_NOW})
 				ON CONFLICT(host, binding) DO UPDATE SET until = excluded.until, failure = excluded.failure, recorded_at = excluded.recorded_at`,
-				host,
-				binding,
-				waitMs,
-				JSON.stringify(failure),
-			),
-		);
+				params: [host, binding, waitMs, JSON.stringify(failure)],
+			},
+		]);
 	}
 
 	/** Records that `host` restored the binding with affinity key `binding`: it no longer backs off from it. */
 	async clearRestoreBackoff(host: string, binding: string): Promise<void> {
-		await this.storage.transaction((tx) =>
-			tx.run(`DELETE FROM ${this.backoffs} WHERE host = ? AND binding = ?`, host, binding),
-		);
+		await this.plainWrite([
+			{ sql: `DELETE FROM ${this.backoffs} WHERE host = ? AND binding = ?`, params: [host, binding] },
+		]);
 	}
 
 	/** The restore failure a host recorded last for the binding with affinity key `binding`, if any did (#4416). */
@@ -421,31 +433,26 @@ export class SqlSharedPool {
 		entries: readonly { readonly work: RelayedActivity["work"]; readonly runs: string }[],
 	): Promise<void> {
 		if (entries.length === 0) return;
-		await this.storage.transaction(async (tx) => {
-			await this.queue.assertRootIn(tx, lease);
-			let version = Number(
-				(await tx.get(`SELECT COALESCE(MAX(version), 0) AS version FROM ${this.activity}`))!.version,
-			);
-			for (const entry of entries) {
-				const held = await tx.get(
-					`SELECT 1 AS held FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND generation = ? AND worker = ? AND epoch = ?`,
+		// Each entry is written only while its attempt holds its work, decided in SQL; its version is the next one there.
+		await this.rootWrite(
+			lease,
+			entries.map((entry) => ({
+				sql: `INSERT INTO ${this.activity}(work, token, runs, version)
+				SELECT ?, ?, ?, (SELECT COALESCE(MAX(version), 0) + 1 FROM ${this.activity})
+				WHERE EXISTS (SELECT 1 FROM ${this.work} WHERE id = ? AND root = ? AND state = 'leased' AND generation = ? AND worker IS ? AND epoch = ?)
+				ON CONFLICT(work) DO UPDATE SET token = excluded.token, runs = excluded.runs, version = excluded.version`,
+				params: [
+					entry.work.id,
+					JSON.stringify(entry.work),
+					entry.runs,
 					entry.work.id,
 					lease.runId,
 					entry.work.generation,
 					entry.work.worker,
 					entry.work.epoch,
-				);
-				if (held === undefined) continue;
-				await tx.run(
-					`INSERT INTO ${this.activity}(work, token, runs, version) VALUES (?, ?, ?, ?)
-					ON CONFLICT(work) DO UPDATE SET token = excluded.token, runs = excluded.runs, version = excluded.version`,
-					entry.work.id,
-					JSON.stringify(entry.work),
-					entry.runs,
-					++version,
-				);
-			}
-		});
+				],
+			})),
+		);
 	}
 
 	/** Activity relayed for `root`'s work after `version`, oldest first. Read without the write lock. */
@@ -473,36 +480,41 @@ export class SqlSharedPool {
 	async appendStageInput(lease: Lease, input: StageInputAppend): Promise<number> {
 		validateStageInput(input);
 		for (const value of [input.work, input.runId, input.stageId, input.kind, input.op]) validateText("key", value);
-		return this.storage.transaction(async (tx) => {
-			const now = await this.queue.assertRootIn(tx, lease);
-			const existing = await tx.get(
-				`SELECT seq FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND op = ?`,
-				lease.runId,
-				input.runId,
-				input.stageId,
-				input.op,
-			);
-			if (existing !== undefined) return Number(existing.seq);
-			const last = await tx.get(
-				`SELECT COALESCE(MAX(seq), 0) AS seq FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ?`,
-				lease.runId,
-				input.runId,
-				input.stageId,
-			);
-			const seq = Number(last!.seq) + 1;
-			await tx.run(
-				`INSERT INTO ${this.inputs}(root, run_id, stage_id, seq, work, kind, op, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				lease.runId,
-				input.runId,
-				input.stageId,
-				seq,
-				input.work,
-				input.kind,
-				input.op,
-				input.payload,
-				now,
-			);
-			return seq;
+		const seqOf = {
+			sql: `SELECT seq FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND op = ?`,
+			params: [lease.runId, input.runId, input.stageId, input.op],
+		};
+		// The input takes the stage's next sequence number in SQL; the same op appended again keeps its own.
+		return guardedPoolWrite<number>(this.storage, async (read, optimistic) => {
+			if (!optimistic) {
+				await this.queue.assertRootIn(read, lease);
+				const existing = await read.get(seqOf.sql, ...seqOf.params);
+				if (existing !== undefined) return { done: Number(existing.seq) };
+			}
+			return {
+				fences: [this.queue.rootFence(lease)],
+				writes: [
+					{
+						sql: `INSERT INTO ${this.inputs}(root, run_id, stage_id, seq, work, kind, op, payload, created_at)
+						SELECT ?, ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ${STORE_NOW} FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ?
+						ON CONFLICT(root, run_id, stage_id, op) DO NOTHING`,
+						params: [
+							lease.runId,
+							input.runId,
+							input.stageId,
+							input.work,
+							input.kind,
+							input.op,
+							input.payload,
+							lease.runId,
+							input.runId,
+							input.stageId,
+						],
+					},
+				],
+				reads: [seqOf],
+				result: ([rows]) => Number(rows![0]!.seq),
+			};
 		});
 	}
 
@@ -536,17 +548,17 @@ export class SqlSharedPool {
 	): Promise<StageInputLease | undefined> {
 		if (!Number.isSafeInteger(durationMs) || durationMs <= 0)
 			throw new Error("Stage lease duration must be a positive safe integer");
-		return this.storage.transaction(async (tx) => {
-			const now = await this.queue.attemptStanding(tx, lease, attempt);
+		return guardedPoolWrite<StageInputLease | undefined>(this.storage, async (read) => {
+			const now = await this.queue.attemptStanding(read, lease, attempt);
 			if (now === undefined)
 				throw new StaleStageLeaseError("attempt-replaced", { root: lease.runId, ...stage, seq: null });
-			const held = await this.stageLease(tx, lease.runId, stage.runId, stage.stageId);
+			const held = await this.stageLease(read, lease.runId, stage.runId, stage.stageId);
 			// An idle stage's lease row has expired by construction: settling an input resets it.
 			if (held !== undefined && Number(held.expires_at) >= now) {
-				if (!sameAttempt(held, attempt)) return undefined;
-				return this.inFlight(tx, lease.runId, stage, held);
+				if (!sameAttempt(held, attempt)) return { done: undefined };
+				return { done: await this.inFlight(read, lease.runId, stage, held) };
 			}
-			const next = await tx.get<
+			const next = await read.get<
 				SqliteRow & { seq: number; kind: PooledStageInputKind; op: string; payload: string }
 			>(
 				`SELECT seq, kind, op, payload FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND work = ? AND state = 'pending'
@@ -557,35 +569,63 @@ export class SqlSharedPool {
 				attempt.id,
 				JSON.stringify(deferred),
 			);
-			if (next === undefined) return undefined;
+			if (next === undefined) return { done: undefined };
 			const token = Number(held?.token ?? 0) + 1;
-			const expiresAt = now + durationMs;
-			await tx.run(
-				`INSERT INTO ${this.stageLeases}(root, run_id, stage_id, token, work, generation, worker, epoch, seq, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(root, run_id, stage_id) DO UPDATE SET token = excluded.token, work = excluded.work, generation = excluded.generation,
-				worker = excluded.worker, epoch = excluded.epoch, seq = excluded.seq, expires_at = excluded.expires_at`,
-				lease.runId,
-				stage.runId,
-				stage.stageId,
-				token,
-				attempt.id,
-				attempt.generation,
-				attempt.worker,
-				attempt.epoch,
-				Number(next.seq),
-				expiresAt,
-			);
+			const key = [lease.runId, stage.runId, stage.stageId];
 			return {
-				root: lease.runId,
-				runId: stage.runId,
-				stageId: stage.stageId,
-				seq: Number(next.seq),
-				token,
-				attempt: { id: attempt.id, generation: attempt.generation, worker: attempt.worker, epoch: attempt.epoch },
-				kind: next.kind,
-				op: next.op,
-				payload: next.payload,
-				expiresAt,
+				fences: [
+					this.queue.rootFence(lease),
+					this.queue.attemptFence(lease, attempt, true),
+					// The stage lease is still the idle or lapsed one the read saw, and the input still waits.
+					held === undefined
+						? {
+								sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.stageLeases} WHERE root = ? AND run_id = ? AND stage_id = ?)`,
+								params: key,
+							}
+						: {
+								sql: `SELECT 1 FROM ${this.stageLeases} WHERE root = ? AND run_id = ? AND stage_id = ? AND token = ? AND expires_at < ${STORE_NOW}`,
+								params: [...key, Number(held.token)],
+							},
+					{
+						sql: `SELECT 1 FROM ${this.inputs} WHERE root = ? AND run_id = ? AND stage_id = ? AND seq = ? AND state = 'pending'`,
+						params: [...key, Number(next.seq)],
+					},
+				],
+				writes: [
+					{
+						sql: `INSERT INTO ${this.stageLeases}(root, run_id, stage_id, token, work, generation, worker, epoch, seq, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${STORE_NOW} + ?)
+						ON CONFLICT(root, run_id, stage_id) DO UPDATE SET token = excluded.token, work = excluded.work, generation = excluded.generation,
+						worker = excluded.worker, epoch = excluded.epoch, seq = excluded.seq, expires_at = excluded.expires_at`,
+						params: [
+							...key,
+							token,
+							attempt.id,
+							attempt.generation,
+							attempt.worker,
+							attempt.epoch,
+							Number(next.seq),
+							durationMs,
+						],
+					},
+				],
+				reads: [this.stageLeaseRead(key)],
+				result: ([rows]) => ({
+					root: lease.runId,
+					runId: stage.runId,
+					stageId: stage.stageId,
+					seq: Number(next.seq),
+					token,
+					attempt: {
+						id: attempt.id,
+						generation: attempt.generation,
+						worker: attempt.worker,
+						epoch: attempt.epoch,
+					},
+					kind: next.kind,
+					op: next.op,
+					payload: next.payload,
+					expiresAt: Number(rows![0]!.expires_at),
+				}),
 			};
 		});
 	}
@@ -595,39 +635,35 @@ export class SqlSharedPool {
 	 * its next input. Refused with {@link StaleStageLeaseError} when the attempt or the stage lease was replaced.
 	 */
 	async ackStageInput(lease: Lease, taken: StageInputLease, receipt: string): Promise<void> {
-		await this.settle(lease, taken, async (tx, now) => {
-			await tx.run(
-				`UPDATE ${this.inputs} SET state = 'done', receipt = ?, settled_at = ? WHERE root = ? AND run_id = ? AND stage_id = ? AND seq = ? AND state = 'pending'`,
-				receipt,
-				now,
-				taken.root,
-				taken.runId,
-				taken.stageId,
-				taken.seq,
-			);
-			await this.idle(tx, taken);
-		});
+		await this.settle(lease, taken, [
+			{
+				sql: `UPDATE ${this.inputs} SET state = 'done', receipt = ?, settled_at = ${STORE_NOW} WHERE root = ? AND run_id = ? AND stage_id = ? AND seq = ? AND state = 'pending'`,
+				params: [receipt, taken.root, taken.runId, taken.stageId, taken.seq],
+			},
+			this.idle(taken),
+		]);
 	}
 
 	/** Gives the input `taken` holds back unprocessed: it stays the stage's next input. */
 	async releaseStageInput(lease: Lease, taken: StageInputLease): Promise<void> {
-		await this.settle(lease, taken, (tx) => this.idle(tx, taken));
+		await this.settle(lease, taken, [this.idle(taken)]);
 	}
 
 	/** Extends the stage lease `taken` holds while its input is processed. */
 	async renewStageInput(lease: Lease, taken: StageInputLease, durationMs: number): Promise<StageInputLease> {
-		let expiresAt = taken.expiresAt;
-		await this.settle(lease, taken, async (tx, now) => {
-			expiresAt = Math.max(taken.expiresAt, now + durationMs);
-			await tx.run(
-				`UPDATE ${this.stageLeases} SET expires_at = ? WHERE root = ? AND run_id = ? AND stage_id = ?`,
-				expiresAt,
-				taken.root,
-				taken.runId,
-				taken.stageId,
-			);
-		});
-		return { ...taken, expiresAt };
+		const key = [taken.root, taken.runId, taken.stageId];
+		const renewed = await this.settle(
+			lease,
+			taken,
+			[
+				{
+					sql: `UPDATE ${this.stageLeases} SET expires_at = MAX(?, ${STORE_NOW} + ?) WHERE root = ? AND run_id = ? AND stage_id = ?`,
+					params: [taken.expiresAt, durationMs, ...key],
+				},
+			],
+			[this.stageLeaseRead(key)],
+		);
+		return { ...taken, expiresAt: Number(renewed[0]![0]!.expires_at) };
 	}
 
 	/** Every input of one stage, in order, with its state; for inspection and tests. */
@@ -683,22 +719,29 @@ export class SqlSharedPool {
 			readonly binding: WorkspaceBinding | null;
 		},
 	): Promise<void> {
-		await this.storage.transaction(async (tx) => {
-			const now = await this.queue.assertAttemptIn(tx, lease, attempt);
-			await tx.run(
-				`INSERT INTO ${this.workspaces}(root, run_id, stage_id, work, generation, host, worktree, binding, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT(root, run_id, stage_id) DO UPDATE SET work = excluded.work, generation = excluded.generation, host = excluded.host,
-				worktree = excluded.worktree, binding = excluded.binding, recorded_at = excluded.recorded_at`,
-				lease.runId,
-				record.runId,
-				record.stageId,
-				attempt.id,
-				attempt.generation,
-				record.host,
-				record.worktree,
-				record.binding === null ? null : JSON.stringify(record.binding),
-				now,
-			);
+		await guardedPoolWrite(this.storage, async (read, optimistic) => {
+			if (!optimistic) await this.queue.assertAttemptIn(read, lease, attempt);
+			return {
+				fences: [this.queue.rootFence(lease), this.queue.attemptFence(lease, attempt, true)],
+				writes: [
+					{
+						sql: `INSERT INTO ${this.workspaces}(root, run_id, stage_id, work, generation, host, worktree, binding, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${STORE_NOW})
+						ON CONFLICT(root, run_id, stage_id) DO UPDATE SET work = excluded.work, generation = excluded.generation, host = excluded.host,
+						worktree = excluded.worktree, binding = excluded.binding, recorded_at = excluded.recorded_at`,
+						params: [
+							lease.runId,
+							record.runId,
+							record.stageId,
+							attempt.id,
+							attempt.generation,
+							record.host,
+							record.worktree,
+							record.binding === null ? null : JSON.stringify(record.binding),
+						],
+					},
+				],
+				result: () => undefined,
+			};
 		});
 	}
 
@@ -776,30 +819,55 @@ export class SqlSharedPool {
 		};
 	}
 
-	/** Runs `body` only while `taken` still holds its stage: its attempt holds the work, and the lease is its own. */
-	private async settle(
+	/** The stage lease row of one stage, as a statement. */
+	private stageLeaseRead(key: readonly string[]): SqliteStatement {
+		return {
+			sql: `SELECT * FROM ${this.stageLeases} WHERE root = ? AND run_id = ? AND stage_id = ?`,
+			params: key,
+		};
+	}
+
+	/**
+	 * Writes `writes`, then reads `reads`, only while `taken` still holds its stage: its attempt holds the work, and the
+	 * stage lease is its own. Resolves with the rows of `reads`.
+	 */
+	private settle(
 		lease: Lease,
 		taken: StageInputLease,
-		body: (tx: SqliteExecutor, now: number) => Promise<void>,
-	): Promise<void> {
-		await this.storage.transaction(async (tx) => {
-			const now = await this.queue.attemptStanding(tx, lease, taken.attempt);
-			if (now === undefined) throw new StaleStageLeaseError("attempt-replaced", taken);
-			const held = await this.stageLease(tx, taken.root, taken.runId, taken.stageId);
-			if (held === undefined || Number(held.token) !== taken.token || Number(held.seq) !== taken.seq)
-				throw new StaleStageLeaseError("stage-lease-replaced", taken);
-			await body(tx, now);
+		writes: readonly SqliteStatement[],
+		reads: readonly SqliteStatement[] = [],
+	): Promise<readonly SqliteRow[][]> {
+		const key = [taken.root, taken.runId, taken.stageId];
+		return guardedPoolWrite<readonly SqliteRow[][]>(this.storage, async (read, optimistic) => {
+			if (!optimistic) {
+				const now = await this.queue.attemptStanding(read, lease, taken.attempt);
+				if (now === undefined) throw new StaleStageLeaseError("attempt-replaced", taken);
+				const held = await this.stageLease(read, taken.root, taken.runId, taken.stageId);
+				if (held === undefined || Number(held.token) !== taken.token || Number(held.seq) !== taken.seq)
+					throw new StaleStageLeaseError("stage-lease-replaced", taken);
+			}
+			return {
+				fences: [
+					this.queue.rootFence(lease),
+					this.queue.attemptFence(lease, taken.attempt, true),
+					{
+						sql: `SELECT 1 FROM ${this.stageLeases} WHERE root = ? AND run_id = ? AND stage_id = ? AND token = ? AND seq = ?`,
+						params: [...key, taken.token, taken.seq],
+					},
+				],
+				writes,
+				reads,
+				result: (rows) => rows,
+			};
 		});
 	}
 
-	private async idle(tx: SqliteExecutor, taken: StageInputLease): Promise<void> {
-		await tx.run(
-			`UPDATE ${this.stageLeases} SET seq = NULL, expires_at = 0 WHERE root = ? AND run_id = ? AND stage_id = ? AND token = ?`,
-			taken.root,
-			taken.runId,
-			taken.stageId,
-			taken.token,
-		);
+	/** Makes the stage idle again for its next input, if `taken`'s lease is still its own. */
+	private idle(taken: StageInputLease): SqliteStatement {
+		return {
+			sql: `UPDATE ${this.stageLeases} SET seq = NULL, expires_at = 0 WHERE root = ? AND run_id = ? AND stage_id = ? AND token = ?`,
+			params: [taken.root, taken.runId, taken.stageId, taken.token],
+		};
 	}
 }
 

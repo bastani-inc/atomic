@@ -39,7 +39,15 @@ function requestHeaders(url, namespace, headers) {
 }
 
 /**
- * `fetch` that adds `headers` to every request the libSQL HTTP client sends.
+ * How long one request to a database server may go unanswered before it is abandoned. A server answers a request that
+ * waits for its write lock within its own lock wait (sqld's is 5 seconds), so a request still unanswered long after
+ * that is stuck in the server: abandoning it lets the caller plan its write again instead of waiting without end.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * `fetch` that adds `headers` to every request the libSQL HTTP client sends, and abandons a request after
+ * `REQUEST_TIMEOUT_MS`.
  * @param {[string, string][]} headers
  * @returns {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>}
  */
@@ -47,7 +55,8 @@ function fetchWith(headers) {
 	return (input, init) => {
 		const request = new Request(input, init);
 		for (const [name, value] of headers) request.headers.set(name, value);
-		return fetch(request);
+		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+		return fetch(request, { signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
 	};
 }
 
@@ -178,6 +187,125 @@ async function collectAndFinalize() {
 	}
 }
 
+/**
+ * Write requests one process sends to a database server at once, over every database it opened: the server takes its
+ * write lock one writer at a time, so more requests in flight only lengthen the queue for it, and a process with many
+ * workers would fill it. Batches that set `priority` do not count, so a lease renewal never waits behind them.
+ */
+const MAX_IN_FLIGHT_WRITES = 4;
+
+/** Write batches in a row a server left unanswered, after which its writes count as stalled. */
+const STALLED_WRITES_WARNING_AFTER = 3;
+/**
+ * Each server's unanswered write batches in a row, and whether its stall was reported, by its location: one stalled
+ * server is told apart from another that answers.
+ * @type {Map<string, { unanswered: number; reported: boolean }>}
+ */
+const writeHealth = new Map();
+
+/**
+ * Counts a write batch's outcome toward the process's warning that a server stopped taking writes, once per stall: the
+ * first write answered after it warns that writes go through again. sqld 0.24.33 and earlier can stop granting its
+ * write lock to anyone (tursodatabase/libsql#2286): the stall warning names the fix.
+ * @param {unknown} error undefined for a batch the server answered
+ * @param {string} location
+ */
+function noteWriteOutcome(error, location) {
+	const health = writeHealth.get(location) ?? { unanswered: 0, reported: false };
+	if (!isTimeout(error)) {
+		// A write answered after a reported stall: the server takes writes again, and a later stall warns again.
+		if (health.reported)
+			reportWriteHealth(
+				false,
+				`The libSQL server at ${location} is taking writes again after ${health.unanswered} unanswered write requests.`,
+				"ATOMIC_LIBSQL_WRITES_RECOVERED",
+			);
+		writeHealth.delete(location);
+		return;
+	}
+	health.unanswered++;
+	writeHealth.set(location, health);
+	if (health.unanswered < STALLED_WRITES_WARNING_AFTER || health.reported) return;
+	health.reported = true;
+	reportWriteHealth(
+		true,
+		`The libSQL server at ${location} left ${health.unanswered} write requests in a row unanswered for ${REQUEST_TIMEOUT_MS / 1000} seconds each. sqld 0.24.33 and earlier can stop taking writes from every client until it restarts (https://github.com/tursodatabase/libsql/issues/2286); start sqld with --checkpoint-interval-s 60 (SQLD_CHECKPOINT_INTERVAL_S=60) to avoid it, and restart it now if writes stay stuck. Atomic keeps retrying its writes meanwhile.`,
+		"ATOMIC_LIBSQL_WRITES_STALLED",
+	);
+}
+
+/**
+ * Reports a server's write health as a process warning, and as the process event `atomic-libsql-write-health`, which a
+ * process that silences warnings (as Atomic's CLI does) still hears: `{ stalled, message }`.
+ * @param {boolean} stalled
+ * @param {string} message
+ * @param {string} code
+ */
+function reportWriteHealth(stalled, message, code) {
+	process.emitWarning(message, { code });
+	/** @type {(event: string, payload: { stalled: boolean; message: string }) => boolean} */ (process.emit)(
+		"atomic-libsql-write-health",
+		{ stalled, message },
+	);
+}
+
+/**
+ * Whether a request was abandoned after `REQUEST_TIMEOUT_MS`, read along the cause chain.
+ * @param {unknown} error
+ */
+function isTimeout(error) {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const { name, cause } = /** @type {{ readonly name?: unknown, readonly cause?: unknown }} */ (current);
+		if (name === "TimeoutError") return true;
+		current = cause;
+	}
+	return false;
+}
+
+let writesInFlight = 0;
+/** @type {(() => void)[]} */
+const waitingWrites = [];
+
+/**
+ * Runs `operation` once fewer than `MAX_IN_FLIGHT_WRITES` other writes of this process are in flight.
+ * @template T
+ * @param {() => Promise<T>} operation
+ * @returns {Promise<T>}
+ */
+async function limitedWrite(operation) {
+	if (writesInFlight >= MAX_IN_FLIGHT_WRITES) await new Promise((resolve) => waitingWrites.push(() => resolve(undefined)));
+	else writesInFlight++;
+	try {
+		return await operation();
+	} finally {
+		const next = waitingWrites.shift();
+		// The slot passes straight to the next waiter, so a write arriving meanwhile cannot take it first.
+		if (next) next();
+		else writesInFlight--;
+	}
+}
+
+/**
+ * Codes a server answers a batch with when it could not take the write lock in time: the batch wrote nothing.
+ * @type {ReadonlySet<unknown>}
+ */
+const LOCK_BUSY = new Set(["SQLITE_BUSY", "TRANSACTION_TIMEOUT"]);
+
+/**
+ * Whether a failed request found the write lock busy, read from each error's `code` along the cause chain.
+ * @param {unknown} error
+ */
+function isLockBusy(error) {
+	let current = error;
+	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
+		const { code, cause } = /** @type {{ readonly code?: unknown, readonly cause?: unknown }} */ (current);
+		if (LOCK_BUSY.has(code)) return true;
+		current = cause;
+	}
+	return false;
+}
+
 /** How far `transientFailure` follows `cause`: a driver error wraps the network error that fetch wraps. */
 const MAX_CAUSE_DEPTH = 8;
 /**
@@ -210,7 +338,11 @@ function transientFailure(failure) {
 	/** @type {unknown} */
 	let current = failure;
 	for (let depth = 0; depth < MAX_CAUSE_DEPTH && typeof current === "object" && current !== null; depth++) {
-		const { code, cause } = /** @type {{ readonly code?: unknown, readonly cause?: unknown }} */ (current);
+		const { code, cause, name } = /** @type {{ readonly code?: unknown, readonly cause?: unknown, readonly name?: unknown }} */ (
+			current
+		);
+		// A request abandoned after `REQUEST_TIMEOUT_MS`: the server may have applied it.
+		if (name === "TimeoutError") return { code: "connection-lost", outcome: "unknown" };
 		const ended = ENDED_BY_SERVER.get(code);
 		if (ended !== undefined) return { code: ended, outcome: "not-applied" };
 		if (NOT_SENT.has(code)) return { code: "connection-refused", outcome: "not-applied" };
@@ -245,7 +377,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			authToken,
 			intMode: "bigint",
 			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
-			...(added.length > 0 ? { fetch: fetchWith(added) } : {}),
+			...(local ? {} : { fetch: fetchWith(added) }),
 		});
 	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
 	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
@@ -302,24 +434,46 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		}
 		return (client ??= create());
 	};
+	const redact = redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]);
+	/** The server's location as diagnostics show it, without credentials. */
+	const redacted = redact(url);
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "libsql", location: url },
-		redact: redactSecrets([authToken ?? "", ...urlCredentials(url), ...Object.values(headers ?? {})]),
+		redact,
 		transientFailure,
+		// A server's batch the busy lock ended: the facade sends it again within the caller's `lockWaitMs`.
+		lockBusy: (failure) => !local && isLockBusy(failure),
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
 		// timeout wrote nothing and runs again. Several statements in one `exec` do not: the ones before the failed
 		// statement were committed.
 		...statements(connection, watch, waitForLock),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
-		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing.
-		batch: (batched) =>
-			waitForLock(async () => {
+		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
+		// server's batch counts against this process's writes in flight, unless it has priority.
+		batch: (batched, options) => {
+			const send = async () => {
 				const results = await (await connection()).batch(
 					batched.map(({ sql, params }) => ({ sql, args: [...params] })),
 					"write",
 				);
 				return results.map(driverResult);
-			}),
+			};
+			if (local) return waitForLock(send);
+			const sent = () =>
+				watch(() =>
+					send().then(
+						(results) => {
+							noteWriteOutcome(undefined, redacted);
+							return results;
+						},
+						(error) => {
+							noteWriteOutcome(error, redacted);
+							throw error;
+						},
+					),
+				);
+			return options?.priority === true ? sent() : limitedWrite(sent);
+		},
 		async beginTransaction() {
 			const transaction = await waitForLock(async () => (await connection()).transaction("write"));
 			return {
