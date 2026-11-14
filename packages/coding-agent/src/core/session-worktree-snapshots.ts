@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { failureDebugFields, reportDebug } from "./debug.ts";
+import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
 import { getBranchPath, getSessionLeafId } from "./session-manager-history.ts";
 import type { SessionEntry, WorktreeRestoreHostWarning } from "./session-manager-types.ts";
@@ -161,11 +162,19 @@ export class SessionWorktreeSnapshotRecorder {
 		for (const root of roots) {
 			const previous = this.deps.sessionManager.getLatestWorktreeSnapshots().get(root);
 			try {
+				const started = performance.now();
 				const result = await captureWorktreeSnapshot(root, { settings, previous, blobs });
-				if (result.status === "captured") {
-					await this.deps.sessionManager.appendWorktreeSnapshot(root, result.snapshot.id, result.snapshot);
-				} else if (result.status === "unchanged") {
-					await this.deps.sessionManager.appendWorktreeSnapshot(root, result.snapshot.id);
+				const captureMs = Math.floor(performance.now() - started);
+				if (result.status === "captured" || result.status === "unchanged") {
+					await this.deps.sessionManager.appendWorktreeSnapshot(
+						root,
+						result.snapshot.id,
+						result.status === "captured" ? result.snapshot : undefined,
+						undefined,
+						[],
+						undefined,
+						captureMs,
+					);
 				} else if (result.status === "unavailable") {
 					this.report(result.reason);
 				}
@@ -554,19 +563,26 @@ export async function resumeSessionWorktree(
 			const lease = options.pool ? await admitSlot(storeDir, snapshot, owner) : undefined;
 			try {
 				// The exact state, else the best this host can restore, else continue without the checkout.
-				const best = await restoreBestWorktree(snapshot, {
-					blobs,
-					storeDir: options.storeDir,
-					signal: options.signal,
-					candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
-					...(lease === undefined
-						? {}
-						: {
-								restore: (target, restoreOptions) => restoreWorktreeAt(target, lease.path, restoreOptions),
-								restoreDegraded: (degraded, failure, restoreOptions) =>
-									restoreDegradedWorktreeAt(degraded, failure, lease.path, restoreOptions),
-							}),
-				});
+				const best = await timeCheckoutRestore(
+					root,
+					() =>
+						restoreBestWorktree(snapshot, {
+							blobs,
+							storeDir: options.storeDir,
+							signal: options.signal,
+							candidates: earlierSnapshotHeads(sessionManager, original, existing, snapshot),
+							...(lease === undefined
+								? {}
+								: {
+										restore: (target, restoreOptions) =>
+											restoreWorktreeAt(target, lease.path, restoreOptions),
+										restoreDegraded: (degraded, failure, restoreOptions) =>
+											restoreDegradedWorktreeAt(degraded, failure, lease.path, restoreOptions),
+									}),
+						}),
+					(outcome) =>
+						outcome.status === "unrestored" ? undefined : outcome.degraded === undefined ? "fresh" : "degraded",
+				);
 				if (best.status === "unrestored") {
 					if (lease) await discardPooledWorktree(lease);
 					left.push({ root, snapshot, reason: best.reason });
@@ -1105,6 +1121,29 @@ export function describeWorktreeSnapshot(root: string, snapshot: WorktreeSnapsho
 			? snapshotRestoreWarnings({ ...snapshot, omitted: [] }).map(formatWorktreeRestoreWarning)
 			: []),
 	];
+}
+
+/**
+ * How long the latest turn's capture of the checkout now at `root` took, as a line, also when that capture was of the
+ * checkout before a restore moved it to `root`; undefined when no capture recorded it.
+ */
+export function describeLastCapture(
+	sessionManager: Pick<SessionManager, "getBranch" | "getWorktreeRootMappings">,
+	root: string,
+): string | undefined {
+	const branch = sessionManager.getBranch();
+	const mappings = sessionManager.getWorktreeRootMappings();
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index]!;
+		if (
+			entry.type === "worktree_snapshot" &&
+			typeof entry.captureMs === "number" &&
+			mapRestoredPath(entry.root, mappings) === resolve(root)
+		) {
+			return `last capture took ${(entry.captureMs / 1000).toFixed(1)} s`;
+		}
+	}
+	return undefined;
 }
 
 /**

@@ -162,3 +162,15 @@ export {
 	sessionResumeOptions,
 	worktreeNeedsRestore,
 } from "./session-resume.ts";
+export {
+	type BlueprintStepExit,
+	type BlueprintStepTiming,
+	type CheckoutRestoreMode,
+	type CheckoutRestoreTimings,
+	formatResumeTimings,
+	latestResumeTimings,
+	RESUME_TIMINGS_TYPE,
+	type RestoreFetchMode,
+	type RestorePhase,
+	type ResumeTimings,
+} from "./timings.ts";

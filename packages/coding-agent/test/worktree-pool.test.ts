@@ -8,6 +8,7 @@ import { bunExecutable } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import {
+	type PreparedSessionResume,
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	sessionResumeOptions,
@@ -98,6 +99,11 @@ async function restoredRoot(manager: SessionManager, maxIdle = 2): Promise<strin
 	assert.equal(result.status, "restored");
 	if (result.status !== "restored") throw new Error("unreachable");
 	return result.mappings[0]!.to;
+}
+
+/** The session a ready resume opened, which a later resume of it continues from, as the CLI reopens it. */
+function resumed(prepared: PreparedSessionResume, fallback: SessionManager): SessionManager {
+	return prepared.status === "ready" ? prepared.sessionManager : fallback;
 }
 
 function prepareOptions(overrides: Partial<PrepareSessionResumeOptions> = {}): PrepareSessionResumeOptions {
@@ -244,7 +250,7 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		writeFileSync(file, JSON.stringify({ ...record, holder: { kind: "session", id: "session-y" } }));
 		sandbox.write(join(slot(snapshot, 0), "file.txt"), "session Y's work\n");
 
-		const again = await prepareSessionResume(x, prepareOptions());
+		const again = await prepareSessionResume(resumed(first, x), prepareOptions());
 
 		assert.equal(again.status, "ready");
 		if (again.status !== "ready") return;
@@ -267,7 +273,7 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		await releaseSessionWorktrees(first.sessionManager);
 		sandbox.write(join(slot(snapshot, 0), "file.txt"), "uncaptured work\n");
 
-		const again = await prepareSessionResume(x, prepareOptions());
+		const again = await prepareSessionResume(resumed(first, x), prepareOptions());
 
 		assert.equal(again.status === "ready" && again.sessionManager.getCwd(), slot(snapshot, 0));
 		assert.equal(readFileSync(join(slot(snapshot, 0), "file.txt"), "utf8"), "uncaptured work\n");
@@ -289,7 +295,7 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		const file = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes), "0.json");
 		writeFileSync(file, JSON.stringify({ ...recordOf(snapshot, 0), holder: { kind: "session", id: "session-y" } }));
 
-		const prepared = await prepareSessionResume(x, prepareOptions({ launchCwd: slot(snapshot, 0) }));
+		const prepared = await prepareSessionResume(resumed(first, x), prepareOptions({ launchCwd: slot(snapshot, 0) }));
 
 		assert.equal(prepared.status, "ready");
 		if (prepared.status !== "ready") return;
@@ -323,7 +329,10 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		await releaseSessionWorktrees(first.sessionManager);
 		await removeRestoredWorktree(sibling, { storeDir: storeDir() });
 
-		const again = await prepareSessionResume(x, prepareOptions({ pool: { maxIdlePerRepository: 0 } }));
+		const again = await prepareSessionResume(
+			resumed(first, x),
+			prepareOptions({ pool: { maxIdlePerRepository: 0 } }),
+		);
 
 		assert.equal(again.status === "ready" && again.sessionManager.getCwd(), cwd);
 		assert.equal(existsSync(cwd), true);

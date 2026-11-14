@@ -17,6 +17,7 @@ import {
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
+import { recordTimingLines } from "../timings.ts";
 import { ProjectTrustStore } from "../trust-manager.ts";
 import { locateCheckout, readRepositoryConfig } from "../worktree-snapshot/capture.ts";
 import {
@@ -56,6 +57,7 @@ import { isResumePreconditionError, type ResumeEntryPoint } from "./errors.ts";
 import { isResumeFailure } from "./failure.ts";
 import { isInside } from "./path-mapping.ts";
 import { defaultResumePreflightIo, type ResumePreflightIo } from "./preflight.ts";
+import { formatResumeTimings, ResumeTimingsRecorder, recordResumeTimings } from "./timings.ts";
 
 /** What to do when the checkout a resume was started in belongs to the session's repository but differs from it. */
 export type DirtyCheckoutChoice = "restore" | "use" | "cancel";
@@ -329,7 +331,9 @@ async function hasLocalChanges(root: string, signal: AbortSignal | undefined): P
  * cannot be (Git is unavailable, or its restore fails) is left out with a warning that names its path and why. Each
  * worktree Atomic restored then gets its blueprints built (#4588): a failing step is a warning in `notices` and never
  * stops the resume. The agent gets the blueprints' maintenance and knowledge in the session's next turn. The session's
- * tools resolve paths under every root it recorded into the place that root was restored.
+ * tools resolve paths under every root it recorded into the place that root was restored. A resume that restored a
+ * checkout or ran a blueprint step records where its time went in the session it returns (#4748); a failure to record
+ * that never stops the resume.
  */
 export async function prepareSessionResume(
 	sessionManager: SessionManager,
@@ -339,15 +343,22 @@ export async function prepareSessionResume(
 	// The session holds the pooled worktrees it owns before anything is restored, so evicting idle slots never removes
 	// one it continues in, and until it closes (#4748).
 	await holdSessionWorktrees(sessionManager, sessionManager, storeDir);
+	// `atomic --session` counts from the launch of the process, which is 0 on the clock the recorder uses.
+	const timings = new ResumeTimingsRecorder(options.entryPoint === "cli" ? 0 : undefined);
 	let prepared: PreparedSessionResume;
 	try {
-		prepared = await prepareResume(sessionManager, options);
+		prepared = await timings.run(() => prepareResume(sessionManager, options));
 	} catch (error) {
 		await releaseSessionWorktrees(sessionManager);
 		throw error;
 	}
 	if (prepared.status === "ready") await holdSessionWorktrees(sessionManager, prepared.sessionManager, storeDir);
 	else await releaseSessionWorktrees(sessionManager);
+	if (prepared.status === "ready" && timings.recordedWork) {
+		const recorded = timings.finish();
+		await recordResumeTimings(prepared.sessionManager, recorded);
+		recordTimingLines(formatResumeTimings(recorded), "resume");
+	}
 	return prepared;
 }
 
