@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, test } from "vitest";
@@ -140,6 +142,7 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 		assert.equal(request!.method, "POST");
 		assert.equal(request!.path, "/app/installations/4242/access_tokens");
 		assert.equal(request!.headers["x-github-api-version"], "2022-11-28");
+		assert.match(request!.headers["user-agent"] ?? "", /^atomic-worker-controller/);
 		assert.deepEqual(JSON.parse(request!.body), { repositories: ["flows"], permissions: { actions: "write" } });
 	});
 
@@ -181,7 +184,7 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 		"GitHub Enterprise Server: minted from its API, passed as GH_ENTERPRISE_TOKEN with GH_HOST (#4768)",
 		async () => {
 			const { github, cloud } = await fixture("/api/v3");
-			await appProvisioner(github, { host: "ghe.acme.test" }).list(never());
+			await appProvisioner(github, { host: "ghe.acme.test", apiUrl: `${github.url}/` }).list(never());
 			assert.equal(github.requests[0]!.path, "/api/v3/app/installations/4242/access_tokens");
 			assert.deepEqual(cloud.ghEnv(), [{ GH_ENTERPRISE_TOKEN: "ghs_fake1", GH_HOST: "ghe.acme.test" }]);
 		},
@@ -189,62 +192,99 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 
 	posixOnly("a GHE.com host keeps GH_TOKEN, with GH_HOST (#4768)", async () => {
 		const { github, cloud } = await fixture();
-		await appProvisioner(github, { host: "acme.ghe.com" }).list(never());
-		assert.deepEqual(cloud.ghEnv(), [{ GH_TOKEN: "ghs_fake1", GH_HOST: "acme.ghe.com" }]);
+		await appProvisioner(github, { host: "acme.ghe.com:8443" }).list(never());
+		assert.deepEqual(cloud.ghEnv(), [{ GH_TOKEN: "ghs_fake1", GH_HOST: "acme.ghe.com:8443" }]);
 	});
 
 	test("without apiUrl, the API is GitHub's for github.com, api.<host> for GHE.com, <host>/api/v3 otherwise (#4768)", async () => {
 		const { github } = await fixture();
+		const { apiUrl: _apiUrl, ...auth } = github.auth();
+		// A port nothing listens on any more: the request fails before any network beyond this machine.
+		const closed = createServer();
+		await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+		const { port } = closed.address() as AddressInfo;
+		await new Promise((resolve) => closed.close(resolve));
+		const refused = await rejection(
+			createWorkerHostProvisioner({
+				...GH_PRESET,
+				auth: { githubApp: { ...auth, host: `127.0.0.1:${port}` } },
+			}).list(never()),
+		);
+		assert.ok(refused instanceof WorkerProvisionerError);
+		assert.equal(refused.code, "unavailable");
+		assert.equal(
+			refused.message,
+			`the GitHub App token request to https://127.0.0.1:${port}/api/v3/app/installations/4242/access_tokens failed: connect ECONNREFUSED 127.0.0.1:${port}`,
+		);
+		// The others are never reached: a 1 ms timeout stops each request first.
 		for (const [host, url] of [
-			["127.0.0.1:9", "https://127.0.0.1:9/api/v3/app/installations/4242/access_tokens"],
-			["localhost.ghe.com:9", "https://api.localhost.ghe.com:9/app/installations/4242/access_tokens"],
+			["acme.ghe.com:8443", "https://api.acme.ghe.com:8443/app/installations/4242/access_tokens"],
+			["github.com", "https://api.github.com/app/installations/4242/access_tokens"],
 		] as const) {
-			const { apiUrl: _apiUrl, ...auth } = github.auth();
-			const fleet = createWorkerHostProvisioner({ ...GH_PRESET, auth: { githubApp: { ...auth, host } } });
+			const fleet = createWorkerHostProvisioner({
+				...GH_PRESET,
+				auth: { githubApp: { ...auth, host } },
+				timeoutMs: 1,
+			});
 			const error = await rejection(fleet.list(never()));
 			assert.ok(error instanceof WorkerProvisionerError);
-			assert.equal(error.code, "unavailable");
-			assert.ok(error.message.startsWith(`the GitHub App token request to ${url} failed`), error.message);
+			assert.equal(error.code, "timeout");
+			assert.equal(
+				error.message,
+				`the GitHub App token request to ${url} did not finish within 1 ms and was stopped.`,
+			);
 		}
-		const { apiUrl: _apiUrl, ...auth } = github.auth();
-		const fleet = createWorkerHostProvisioner({ ...GH_PRESET, auth: { githubApp: auth }, timeoutMs: 1 });
-		const error = await rejection(fleet.list(never()));
-		assert.match(
-			error.message,
-			/^the GitHub App token request to https:\/\/api\.github\.com\/app\/installations\/4242\/access_tokens /,
-		);
 	});
 
 	posixOnly(
 		"401, 403, 404 and 422 reject as auth; 429, 5xx and malformed replies degrade; no key leaks (#4768)",
 		async () => {
 			const { github, cloud } = await fixture();
-			const cases: [number, object, WorkerProvisionerError["code"], RegExp][] = [
+			const url = `${github.url}/app/installations/4242/access_tokens`;
+			const failed = `the GitHub App token request to ${url} failed: `;
+			const malformed = `the GitHub App token request to ${url} did not return a token and its expiry.`;
+			const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+			const long = "x".repeat(400);
+			const cases: [number, object | string, WorkerProvisionerError["code"], string][] = [
 				[
 					401,
 					{ message: "A JSON web token could not be decoded" },
 					"auth",
-					/HTTP 401: A JSON web token could not be decoded/,
+					`${failed}HTTP 401: A JSON web token could not be decoded`,
 				],
 				[
 					403,
 					{ message: "Resource not accessible by integration" },
 					"auth",
-					/HTTP 403: Resource not accessible by integration/,
+					`${failed}HTTP 403: Resource not accessible by integration`,
 				],
-				[404, { message: "Not Found" }, "auth", /HTTP 404: Not Found/],
-				[422, { message: "The permissions requested are not granted to this installation." }, "auth", /HTTP 422/],
-				[429, { message: "API rate limit exceeded" }, "unavailable", /HTTP 429: API rate limit exceeded/],
-				[502, { message: "Server Error" }, "unavailable", /HTTP 502: Server Error/],
-				[201, { token: 7 }, "malformed", /did not return a token/],
-				[201, { token: "ghs_x", expires_at: "soon" }, "malformed", /did not return a token/],
+				[404, { message: "Not Found" }, "auth", `${failed}HTTP 404: Not Found`],
+				[
+					422,
+					{ message: "The permissions requested are not granted to this installation." },
+					"auth",
+					`${failed}HTTP 422: The permissions requested are not granted to this installation.`,
+				],
+				[429, { message: "API rate limit exceeded" }, "unavailable", `${failed}HTTP 429: API rate limit exceeded`],
+				[502, { message: "Server Error" }, "unavailable", `${failed}HTTP 502: Server Error`],
+				[503, {}, "unavailable", `${failed}HTTP 503`],
+				[500, "upstream unavailable", "unavailable", `${failed}HTTP 500`],
+				[
+					403,
+					{ message: `token=ghp_leakedvalue123 ${long}` },
+					"auth",
+					`${failed}HTTP 403: token=[redacted] ${"x".repeat(283)}…`,
+				],
+				[201, { token: 7, expires_at: expiresAt }, "malformed", malformed],
+				[201, { token: "", expires_at: expiresAt }, "malformed", malformed],
+				[201, { token: "ghs_x", expires_at: "soon" }, "malformed", malformed],
 			];
 			for (const [status, body, code, message] of cases) {
 				github.replies.push({ status, body });
 				const error = await rejection(appProvisioner(github).list(never()));
 				assert.ok(error instanceof WorkerProvisionerError, String(error));
 				assert.equal(error.code, code, `HTTP ${status}`);
-				assert.match(error.message, message);
+				assert.equal(error.message, message);
 				const text = errorText(error);
 				for (const line of keyBody(github.privateKeyPem))
 					assert.ok(!text.includes(line), `the key leaked: ${text}`);
@@ -324,6 +364,8 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 		});
 		process.env.ATOMIC_GITHUB_APP_REPOSITORY = "acme/flows";
 		process.env.ATOMIC_GITHUB_API_URL = auth.apiUrl;
+		// An empty variable is unset: the default host.
+		process.env.ATOMIC_GITHUB_HOST = "";
 		if (process.platform !== "win32") {
 			await missing().list(never());
 			assert.equal(github.requests[0]!.path, "/app/installations/4242/access_tokens");
@@ -340,41 +382,53 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 
 	test("bad app settings throw a TypeError naming the option (#4768)", () => {
 		const base = { appId: "1", installationId: "2", privateKeyFile: "/k.pem", repository: "acme/flows" };
+		const app = (options: object) => ({ auth: { githubApp: { ...base, ...options } } });
+		const appId = "auth.githubApp.appId must be a non-empty string or a positive integer.";
+		const installationId = "auth.githubApp.installationId must be a positive integer.";
+		const privateKeyFile = "auth.githubApp.privateKeyFile must be a non-empty string.";
+		const repository = "auth.githubApp.repository must be owner/name.";
+		const host = "auth.githubApp.host must be a host name, such as github.com.";
+		const apiUrl = "auth.githubApp.apiUrl must be an http or https URL.";
 		const cases: [object, string][] = [
 			[{ auth: "app" }, "auth must be an object with githubApp."],
+			[{ auth: null }, "auth must be an object with githubApp."],
+			[{ auth: [] }, "auth must be an object with githubApp."],
 			[{ auth: {} }, "auth must be an object with githubApp."],
 			[{ auth: { githubApp: [] } }, "auth.githubApp must be an object."],
-			[
-				{ auth: { githubApp: { ...base, appId: "" } } },
-				"auth.githubApp.appId must be a non-empty string or a positive integer.",
-			],
-			[
-				{ auth: { githubApp: { ...base, installationId: "x1" } } },
-				"auth.githubApp.installationId must be a positive integer.",
-			],
-			[
-				{ auth: { githubApp: { ...base, installationId: 0 } } },
-				"auth.githubApp.installationId must be a positive integer.",
-			],
-			[
-				{ auth: { githubApp: { ...base, privateKeyFile: 3 } } },
-				"auth.githubApp.privateKeyFile must be a non-empty string.",
-			],
-			[{ auth: { githubApp: { ...base, repository: "flows" } } }, "auth.githubApp.repository must be owner/name."],
-			[
-				{ auth: { githubApp: { ...base, host: "https://ghe" } } },
-				"auth.githubApp.host must be a host name, such as github.com.",
-			],
-			[
-				{ auth: { githubApp: { ...base, apiUrl: "ftp://x" } } },
-				"auth.githubApp.apiUrl must be an http or https URL.",
-			],
+			[{ auth: { githubApp: null } }, "auth.githubApp must be an object."],
+			[{ auth: { githubApp: "app" } }, "auth.githubApp must be an object."],
+			[app({ appId: "" }), appId],
+			[app({ appId: "  " }), appId],
+			[app({ appId: 0 }), appId],
+			[app({ appId: 1.5 }), appId],
+			[app({ appId: true }), appId],
+			[app({ installationId: "x1" }), installationId],
+			[app({ installationId: "1x" }), installationId],
+			[app({ installationId: 0 }), installationId],
+			[app({ installationId: 1.5 }), installationId],
+			[app({ privateKeyFile: 3 }), privateKeyFile],
+			[app({ privateKeyFile: "" }), privateKeyFile],
+			[app({ repository: "flows" }), repository],
+			[app({ repository: 5 }), repository],
+			[app({ repository: "acme/flows/x" }), repository],
+			[app({ repository: "a b/flows" }), repository],
+			[app({ repository: "acme/x y" }), repository],
+			[app({ host: "https://ghe" }), host],
+			[app({ host: 5 }), host],
+			[app({ apiUrl: "ftp://x" }), apiUrl],
+			[app({ apiUrl: "see https://x" }), apiUrl],
 		];
 		for (const [options, message] of cases)
-			assert.throws(() => createWorkerHostProvisioner({ ...GH_PRESET, ...(options as object) }), {
-				name: "TypeError",
-				message: `Invalid command provisioner options: ${message}`,
-			});
+			assert.throws(
+				() => createWorkerHostProvisioner({ ...GH_PRESET, ...(options as object) }),
+				{ name: "TypeError", message: `Invalid command provisioner options: ${message}` },
+				JSON.stringify(options),
+			);
+		// The smallest valid values.
+		createWorkerHostProvisioner({
+			...GH_PRESET,
+			...app({ appId: 1, installationId: 1, repository: "a/b", host: "ghe.acme.test:8443" }),
+		});
 	});
 });
 

@@ -26,7 +26,7 @@ export interface FakeGitHubRequest {
 }
 
 /** What the fake answers a token request with instead of a token: a status and a JSON body, or no answer at all. */
-export type FakeGitHubReply = { readonly status: number; readonly body: object } | "hang";
+export type FakeGitHubReply = { readonly status: number; readonly body: object | string } | "hang";
 
 let keys: { readonly privateKeyPem: string; readonly publicKey: KeyObject } | undefined;
 /** One RSA key pair for every fake app: generating one takes a while. */
@@ -128,7 +128,7 @@ export class FakeGitHubApp {
 			body,
 			...(jwt ? { jwt } : {}),
 		});
-		const send = (status: number, payload: object) => {
+		const send = (status: number, payload: object | string) => {
 			response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
 			response.end(JSON.stringify(payload));
 		};
