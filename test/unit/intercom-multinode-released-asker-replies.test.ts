@@ -2121,3 +2121,64 @@ describe("released-asker reply decisions (#4386)", () => {
 		});
 	});
 });
+
+describe("a released asker's question lasts as long as the ask does (#4852)", () => {
+	/** Longer than the ten minutes a released asker's question used to be kept. */
+	const LONG_AFTER_RELEASE_MS = 11 * 60 * 1_000;
+
+	/** As `releasedScene`, with the child released `LONG_AFTER_RELEASE_MS` ago. */
+	async function releasedLongAgo(): Promise<ReleasedScene & { readonly child: Session; readonly questionId: string }> {
+		const shared = await cluster();
+		const a = await startNode(shared);
+		const b = await startNode(shared);
+		const owner = session("owner");
+		await register(a, owner);
+		const replier = session("replier");
+		await register(b, replier);
+		vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - LONG_AFTER_RELEASE_MS });
+		let released: { readonly child: Session; readonly questionId: string };
+		try {
+			released = await releaseChild(a, owner, "worker", replier);
+		} finally {
+			vi.useRealTimers();
+		}
+		return { shared, a, b, owner, replier, children: [released], ...released };
+	}
+
+	test("a reply long after the release still reaches the released asker's owner (#4852)", async () => {
+		const { b, owner, replier, child, questionId } = await releasedLongAgo();
+		const sent = reply(replier, child.info.id, questionId, { expectedRecipientId: child.info.id });
+		b.router.routeSend(sent.request);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		assert.equal(only(handoffsTo(owner), "handoffs").message.id, sent.id);
+		assert.deepEqual(sent.notFound, []);
+	});
+
+	test("a recipient that ends long after the release fails the released asker's question once, through its owner (#4852)", async () => {
+		const { a, b, owner, replier, child, questionId } = await releasedLongAgo();
+		await leave(b, replier);
+		await vi.waitFor(() => assert.equal(handoffsTo(owner).length, 1), { timeout: 2_000, interval: 5 });
+		const handoff = only(handoffsTo(owner), "handoffs");
+		assert.equal(handoff.replyTo, questionId);
+		assert.equal(handoff.childName, "worker");
+		assert.equal(handoff.message.replyTo, questionId);
+		assert.equal(handoff.message.replyError, 'Session "replier" ended before replying');
+		assert.equal(a.router.releasedReplyAcknowledged(owner, handoff.message.id, handoff.handoffId, true), true);
+		await vi.waitFor(async () =>
+			assert.deepEqual(await a.state.releasedAsks.lookup({ questionId, replierSessionId: replier.info.id }), {
+				status: "found",
+				ask: {
+					questionId,
+					askerSessionId: child.info.id,
+					replierSessionId: replier.info.id,
+					childName: "worker",
+					ownerSessionId: owner.info.id,
+					state: "answered",
+					replyMessageId: handoff.message.id,
+				},
+			}),
+		);
+		await flush();
+		assert.equal(handoffsTo(owner).length, 1, "the owner is told once");
+	});
+});
