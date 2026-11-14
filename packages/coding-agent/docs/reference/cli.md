@@ -197,6 +197,17 @@ SIGTERM or SIGINT drains the host: it takes no more children, lets the running o
 
 `atomic worker controller` runs a fleet controller on the database: it adds worker hosts through the provisioner that `--provisioner` names when the queues of the database's shared roots grow, and drains and removes hosts that held no child for `--idle-drain` milliseconds. The module's default export is a provisioner, or a function that returns one. The policy options default to 0 minimum hosts, 10 maximum hosts, 4 workers per host, a queue depth of `--workers-per-host`, a 20000 ms scale-up delay, a 300000 ms idle drain, and a 600000 ms boot timeout. Several controllers can run on one database; one is active at a time and another takes over within 30 seconds when it stops. It prints `controller holder=… journal=…` and then `active`, `standby`, `scale-up target=… desired=… live=…`, `drain-requested id=… host=…`, `removed id=… reason=…`, `degraded …` and `recovered …` lines. SIGTERM or SIGINT stops it and exits `0`; a setup error exits `1`. See [Scale the fleet automatically](/guides/worker-hosts#scale-the-fleet-automatically).
 
+## Blueprint Commands
+
+```bash
+atomic blueprint cache-key [dir] [--format text|json|github-output]  # Cache keys and paths for a runner's cache action
+atomic blueprint prebuild [dir] [--park] [--approve]                 # Build the repository ahead of time
+```
+
+`atomic blueprint cache-key` prints the cache entries of the repository at `dir` (default: the current directory): `stores` for the package stores its blueprint's `cache:` section declares, `build` for its `kind: build` output and the seed manifest, `git` for Atomic's Git object store of the repository, and `atomic` for the extension transpile cache. Each has a key, a restore prefix and its paths. `--format github-output` prints `<name>-key`, `<name>-restore-prefix` and `<name>-paths` lines for `$GITHUB_OUTPUT`. Paths that could hold credentials are left out with a warning on stderr.
+
+`atomic blueprint prebuild` restores the committed `HEAD` of the checkout at `dir` into a new restored worktree, builds it with the blueprints (`initialize` and `maintenance`), and leaves it idle for the next resume of the repository to claim. `--park` moves the `kind: build` output into the seed directory that the `build` cache entry saves, for a resume on another machine to adopt. It runs project code, so the project must be trusted, or `--approve` given. It prints the restore and blueprint step durations on stderr and exits `1` when the project is untrusted, the checkout has no remote or uncommitted changes to tracked files, or a blueprint step fails; a failed build keeps earlier worktrees and seeds. See [Caches for runners](/guides/resume-on-any-machine#caches-for-runners) and [Prebuilt worktrees](/guides/resume-on-any-machine#prebuilt-worktrees).
+
 ## Modes
 
 | Flag | Description |
