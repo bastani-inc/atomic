@@ -15,7 +15,9 @@ import { computeEnvironmentHash, sha256Hex } from "../../worktree-snapshot/env-h
 import { runGit } from "../../worktree-snapshot/git.ts";
 import { canonicalizeWorktreePath } from "../../worktree-snapshot/paths.ts";
 import { isDeniedSnapshotPath } from "../../worktree-snapshot/policy.ts";
+import { repositoryIdOf } from "../../worktree-snapshot/repository-identity.ts";
 import { objectStorePath } from "../../worktree-snapshot/restore.ts";
+import { seedDirectory, seedManifestPath } from "../../worktree-snapshot/seeds.ts";
 import { blueprintPlatformOf, parseBlueprint, selectDocument } from "./schema.ts";
 import type { BlueprintCacheEntry, BlueprintPlatform } from "./types.ts";
 
@@ -102,6 +104,8 @@ export async function blueprintCacheKeys(
 	const declared = await declaredCache(root, os, warnings);
 	const remotes = await checkoutRemotes(root);
 	const store = remotes.length > 0 ? objectStorePath(storeDir, remotes) : undefined;
+	// Normalized, so a runner's HTTPS checkout names the entries a session recorded over SSH names too.
+	const repository = repositoryIdOf(remotes);
 	if (store === undefined) warnings.push("the checkout has no Git remote; the git and build entries are omitted");
 
 	const stores: { declared: BlueprintCacheEntry; path: string }[] = [];
@@ -113,8 +117,10 @@ export async function blueprintCacheKeys(
 		} else if (entry.kind === "store") {
 			stores.push({ declared: entry, path: storePath(entry.path, home) });
 		} else if (store !== undefined) {
-			const seeds = join(storeDir, "seeds", basename(store, ".git"));
-			builds.push({ declared: entry, path: join(seeds, ...buildSegments(entry.path)) });
+			builds.push({
+				declared: entry,
+				path: join(seedDirectory(storeDir, repository), ...buildSegments(entry.path)),
+			});
 		}
 	}
 
@@ -130,12 +136,15 @@ export async function blueprintCacheKeys(
 		if (members.length === 0) continue;
 		const restorePrefix = prefix(name);
 		const key = `${restorePrefix}${await declarationDigest(members, inputs)}`;
-		entries.push({ name, key, restorePrefix, paths: members.map((member) => member.path) });
+		const paths = members.map((member) => member.path);
+		// The seed manifest says which commit and environment the parked build output belongs to.
+		if (name === "build") paths.push(seedManifestPath(storeDir, repository));
+		entries.push({ name, key, restorePrefix, paths });
 	}
 	if (store !== undefined) {
 		// The store is append-only and portable across architectures: a new HEAD saves a new entry, and a restore takes
 		// the newest by prefix; fetches fill any gap and every restore verifies its tree.
-		const restorePrefix = `atomic-git-${KEY_VERSION}-${os}-${basename(store, ".git")}-`;
+		const restorePrefix = `atomic-git-${KEY_VERSION}-${os}-${repository}-`;
 		entries.push({ name: "git", key: `${restorePrefix}${await headOf(root)}`, restorePrefix, paths: [store] });
 	}
 	const transpileCache = getExtensionTranspileCacheDir(agentDir);
