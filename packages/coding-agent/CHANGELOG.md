@@ -26,6 +26,7 @@
 
 - Task heartbeats (shells and subagents) and workflow heartbeats now start a turn as soon as they arrive in an idle chat, including right after you interrupt with Esc, instead of waiting for your next message. Heartbeats that come due together still arrive as one message in one turn, the interrupted response is not resumed, and text you queued but have not sent is never sent by a heartbeat. Set `tasks.heartbeatWakesIdleSession` to `false` to keep the old behaviour ([#4795](https://github.com/bastani-inc/atomic/issues/4795))
 - Fixed a workflow child on a local worker or worker host being replayed elsewhere when the shared database was unreachable for a moment: the worker keeps the child while its lease lasts, and an idle worker waits out the outage instead of exiting ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Fixed `/resume` and `/workflow resume` lists on a libSQL server (sqld) or another storage adapter showing a session's old name or summary after a rename until Atomic restarted. Over these adapters every list now re-reads each session's listed columns, and re-reads search text only for sessions that changed. Atomic's own SQLite storage still serves an unchanged list from its cache ([#4805](https://github.com/bastani-inc/atomic/issues/4805))
 
 ## [0.9.87] - 2026-11-14
 

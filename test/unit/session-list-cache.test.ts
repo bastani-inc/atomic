@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -65,6 +66,59 @@ function yieldAfterFetchBatches(database: SqliteDatabase): void {
 		const rows = await all<Row>(sql, ...values);
 		if (sql.includes("search_texts") && sql.includes("WHERE id IN")) await nextTurn();
 		return rows;
+	};
+}
+
+/**
+ * A database over the same file that runs every call on a connection of its own, as a libSQL server runs each HTTP
+ * request on a new stream (#4805): a per-connection pragma read through it never sees a write move.
+ */
+function connectionPerCall(path: string): SqliteDatabase {
+	const onConnection = async <T>(body: (connection: DatabaseSync) => T): Promise<T> => {
+		const connection = new DatabaseSync(path);
+		try {
+			connection.exec("PRAGMA busy_timeout = 5000");
+			return body(connection);
+		} finally {
+			connection.close();
+		}
+	};
+	const executor = (connection: DatabaseSync) => ({
+		exec: async (sql: string) => connection.exec(sql),
+		run: async (sql: string, ...params: readonly SqliteValue[]) => ({
+			changes: Number(connection.prepare(sql).run(...params).changes),
+		}),
+		get: async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			connection.prepare(sql).get(...params) as Row | undefined,
+		all: async <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			connection.prepare(sql).all(...params) as Row[],
+	});
+	return {
+		descriptor: { adapter: "connection-per-call", location: path },
+		exec: (sql) => onConnection((connection) => connection.exec(sql)),
+		run: (sql, ...params) =>
+			onConnection((connection) => ({ changes: Number(connection.prepare(sql).run(...params).changes) })),
+		get: <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			onConnection((connection) => connection.prepare(sql).get(...params) as Row | undefined),
+		all: <Row extends SqliteRow>(sql: string, ...params: readonly SqliteValue[]) =>
+			onConnection((connection) => connection.prepare(sql).all(...params) as Row[]),
+		transaction: async (body) => {
+			const connection = new DatabaseSync(path);
+			try {
+				connection.exec("PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE");
+				try {
+					const result = await body(executor(connection));
+					connection.exec("COMMIT");
+					return result;
+				} catch (error) {
+					connection.exec("ROLLBACK");
+					throw error;
+				}
+			} finally {
+				connection.close();
+			}
+		},
+		close: async () => {},
 	};
 }
 
@@ -257,6 +311,21 @@ describe("/resume session list cache", () => {
 			// The unchanged reopen is served from the cache the concurrent listings left behind.
 			assertLists(await SessionManager.listAll(store), expectedAll, "the reopened all-projects listing");
 			assertLists(await SessionManager.list(cwd, store), expectedProject, "the reopened project listing");
+		},
+	);
+
+	test.each(["this store", "another connection"] as const)(
+		"a store whose database runs each call on its own connection lists a rename written through %s (#4805)",
+		async (writer) => {
+			const perCall = await openStore(connectionPerCall(path));
+			opened.push(perCall);
+			assert.equal(byId(await SessionManager.listAll(perCall)).get("alpha")?.name, undefined);
+			const renaming = writer === "this store" ? perCall : await otherConnection();
+			// Only the session's row changes: no session is added or removed.
+			await renaming.append("alpha", [rename("a-name", "Alpha renamed")], { expectSeq: 1 });
+			assert.equal(byId(await SessionManager.listAll(perCall)).get("alpha")?.name, "Alpha renamed");
+			await renaming.append("alpha", [rename("a-clear", "")], { expectSeq: 2 });
+			assert.equal(byId(await SessionManager.listAll(perCall)).get("alpha")?.name, "");
 		},
 	);
 
