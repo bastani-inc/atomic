@@ -457,6 +457,9 @@ test("worker start passes every host option on, and prints idle exit and JSON ev
 
 test("worker start reports a setup failure that is not a shared pool's by its message, and a token warning as JSON (#4768)", async () => {
 	chmodSync(tokenFile, 0o640);
+	// Windows has no group or other permission bits to warn about.
+	const warns = process.platform !== "win32";
+	const warning = `The token file ${tokenFile} is readable by other users; restrict it with chmod 600.`;
 	const failing = fakeModule({ setup: new Error("process containment is not available") });
 	const failed = await run(
 		["start", "--db", "file:///tmp/p.db", "--token-file", tokenFile],
@@ -465,10 +468,7 @@ test("worker start reports a setup failure that is not a shared pool's by its me
 	assert.deepEqual(failed, {
 		code: 1,
 		out: [],
-		err: [
-			`Warning: The token file ${tokenFile} is readable by other users; restrict it with chmod 600.`,
-			"process containment is not available",
-		],
+		err: [...(warns ? [`Warning: ${warning}`] : []), "process containment is not available"],
 	});
 	const json = await run(
 		["start", "--json", "--db", "file:///tmp/p.db", "--token-file", tokenFile],
@@ -480,10 +480,7 @@ test("worker start reports a setup failure that is not a shared pool's by its me
 			return rest;
 		}),
 		[
-			{
-				event: "warning",
-				message: `The token file ${tokenFile} is readable by other users; restrict it with chmod 600.`,
-			},
+			...(warns ? [{ event: "warning", message: warning }] : []),
 			{ event: "setup-failed", message: "process containment is not available" },
 		],
 	);

@@ -725,6 +725,10 @@ export class PoolCoordinator {
 	private readonly restoreBackoff = new RestoreBackoff();
 	/** Activity of this host's attempts not relayed yet (a satellite). */
 	private readonly relayPending = new Map<string, PoolActivityEntry>();
+	/** A worker host's claims since its host last took them: see {@link takeClaims}. */
+	private readonly claimLog: PoolWork[] = [];
+	/** Failures of unclaimed work whose write met an unreachable journal, by work id, until a pass settles them (#4768). */
+	private readonly unreportedFailures = new Map<string, WorkerRetryLimitError | WorkspaceRestoreUnavailableError>();
 	/** Which stages' next inputs this coordinator takes on a pass, by run and stage. */
 	private readonly inputScheduler = new StageInputScheduler(SHARED_POLL_MS, STAGE_INPUT_RETRY_MAX_MS);
 	/** Runs of attempts on other hosts, as their activity was relayed, and the root's views of their stages (#4391). */
@@ -1269,6 +1273,11 @@ export class PoolCoordinator {
 	/** The work this coordinator's workers hold now. */
 	heldWork(): readonly PoolWork[] {
 		return [...this.slots].flatMap((slot) => (slot.work === undefined ? [] : [slot.work]));
+	}
+
+	/** The work a worker host's workers claimed since the last call, however briefly they held it (#4768). */
+	takeClaims(): readonly PoolWork[] {
+		return this.claimLog.splice(0);
 	}
 
 	/**
@@ -2511,6 +2520,7 @@ export class PoolCoordinator {
 						}
 						slot.work = claimed.work;
 						slot.worktree = claimed.worktree;
+						if (this.satellite !== undefined) this.claimLog.push(claimed.work);
 						// Views of the work on another host's attempt reconnect to this worker's (#4391).
 						for (const id of this.remoteWatches.takenOver(claimed.work.id))
 							this.endRemoteWatch(id, "attempt_fenced");
@@ -2998,6 +3008,16 @@ export class PoolCoordinator {
 		const capable = new Map<string, boolean>();
 		for (const work of rows) {
 			if (!this.attemptBase.has(work.id)) continue;
+			// A failure an unreachable journal may have written reaches the root once a pass reads the work failed; work the
+			// journal still has unsettled is settled again below (#4768).
+			const unreported = this.unreportedFailures.get(work.id);
+			if (unreported !== undefined) {
+				this.unreportedFailures.delete(work.id);
+				if (work.state === "failed") {
+					this.failWork(work, unreported);
+					continue;
+				}
+			}
 			const now = performance.now();
 			const wait = boundWait(this.boundWaits.get(work.id), work, now);
 			if (wait === undefined) this.boundWaits.delete(work.id);
@@ -3013,8 +3033,8 @@ export class PoolCoordinator {
 			});
 			if (settlement === "report-result") await this.sendResult(work.id);
 			else if (settlement === "attempts-exhausted") {
-				if (await queue.failUnclaimed(lease, work))
-					this.failWork(work, this.retryLimit(work, "worker-lost", undefined));
+				const failure = this.retryLimit(work, "worker-lost", undefined);
+				if (await this.failUnclaimed(queue, lease, work, failure)) this.failWork(work, failure);
 			} else if (settlement === "claim-window-passed") {
 				const binding = work.execution.workspaceBinding as unknown as WorkspaceBinding;
 				const key = workspaceAffinityKey(binding);
@@ -3023,18 +3043,36 @@ export class PoolCoordinator {
 					live = await shared.capableHostLive(this.root!, WORKER_HOST_TTL_MS, key);
 					capable.set(key, live);
 				}
-				if (live || !(await queue.failUnclaimed(lease, work))) continue;
+				if (live) continue;
+				// Read before the work fails, so the failure the root receives never waits on another read (#4768).
+				const cause = await shared.restoreFailure(key);
+				const failure = new WorkspaceRestoreUnavailableError("no-capable-host", workspaceBindingIdentity(binding), {
+					childRunId: work.childRunId,
+					claimWindowMs,
+					cause: cause === undefined ? undefined : rehydrateError(cause),
+				});
+				if (!(await this.failUnclaimed(queue, lease, work, failure))) continue;
 				this.boundWaits.delete(work.id);
-				const failure = await shared.restoreFailure(key);
-				this.failWork(
-					work,
-					new WorkspaceRestoreUnavailableError("no-capable-host", workspaceBindingIdentity(binding), {
-						childRunId: work.childRunId,
-						claimWindowMs,
-						cause: failure === undefined ? undefined : rehydrateError(failure),
-					}),
-				);
+				this.failWork(work, failure);
 			}
+		}
+	}
+
+	/**
+	 * Fails unclaimed work, remembering `failure` when the journal could not be reached: the write may have landed, so a
+	 * later pass that reads the work failed reports it to the root (#4768).
+	 */
+	private async failUnclaimed(
+		queue: SqlPoolQueue,
+		lease: Lease,
+		work: PoolWork,
+		failure: WorkerRetryLimitError | WorkspaceRestoreUnavailableError,
+	): Promise<boolean> {
+		try {
+			return await queue.failUnclaimed(lease, work);
+		} catch (error) {
+			if (infrastructureFaultOf(error) === "storage_unavailable") this.unreportedFailures.set(work.id, failure);
+			throw error;
 		}
 	}
 

@@ -293,10 +293,10 @@ class WorkerHost implements WorkflowWorkerHost {
 
 	/** Reports claimed and released children, exits when idle for `idleExitMs`, and polls unless backing off. */
 	private tick(): void {
-		this.noteHeldWork();
+		const claimed = this.noteHeldWork();
 		if (this.stopping !== undefined) return;
 		const now = performance.now();
-		if (this.workerCount().busy > 0) this.busyAt = now;
+		if (claimed || this.workerCount().busy > 0) this.busyAt = now;
 		const idleExitMs = this.options.idleExitMs;
 		if (idleExitMs !== undefined && now - this.busyAt >= idleExitMs) {
 			this.emit({ kind: "idle-exit", idleMs: Math.round(now - this.busyAt) });
@@ -328,17 +328,31 @@ class WorkerHost implements WorkflowWorkerHost {
 			});
 	}
 
-	/** Emits `claimed` for each child a worker of this host took since the last tick, and `released` for each it let go. */
-	private noteHeldWork(): void {
+	/**
+	 * Emits `claimed` for each child a worker of this host took since the last tick, and `released` for each it let go,
+	 * a child that came and went between two ticks included. Returns whether any was claimed.
+	 */
+	private noteHeldWork(): boolean {
+		const key = (root: string, work: PoolWork) => `${root}\0${work.id}\0${work.generation}`;
 		const current = new Map<string, { readonly root: string; readonly work: PoolWork }>();
-		for (const [root, satellite] of this.satellites)
-			for (const work of satellite.coordinator.heldWork())
-				current.set(`${root}\0${work.id}\0${work.generation}`, { root, work });
-		for (const [key, { root, work }] of this.held)
-			if (!current.has(key)) this.emit({ kind: "released", ...heldEvent(root, work) });
-		for (const [key, { root, work }] of current)
-			if (!this.held.has(key)) this.emit({ kind: "claimed", ...heldEvent(root, work) });
+		const claims: { readonly root: string; readonly work: PoolWork }[] = [];
+		for (const [root, satellite] of this.satellites) {
+			for (const work of satellite.coordinator.takeClaims()) claims.push({ root, work });
+			for (const work of satellite.coordinator.heldWork()) current.set(key(root, work), { root, work });
+		}
+		for (const [held, { root, work }] of this.held)
+			if (!current.has(held)) this.emit({ kind: "released", ...heldEvent(root, work) });
+		for (const { root, work } of claims) {
+			const claim = key(root, work);
+			if (this.held.has(claim)) continue;
+			this.emit({ kind: "claimed", ...heldEvent(root, work) });
+			if (!current.has(claim)) this.emit({ kind: "released", ...heldEvent(root, work) });
+		}
+		for (const [held, { root, work }] of current)
+			if (!this.held.has(held) && !claims.some((claim) => key(claim.root, claim.work) === held))
+				this.emit({ kind: "claimed", ...heldEvent(root, work) });
 		this.held = current;
+		return claims.length > 0;
 	}
 
 	private get restores(): boolean {
