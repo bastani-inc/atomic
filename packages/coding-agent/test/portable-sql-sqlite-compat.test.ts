@@ -349,13 +349,14 @@ function versioned(inner: SqliteDatabase): SqliteDatabase {
 	};
 }
 
-test("a store with a migration ledger records step 1 of the session and blob domains once (#4793)", async () => {
+test("a store with a migration ledger records each step of the session and blob domains once (#4793)", async () => {
 	const database = versioned(await open("ledger.sqlite"));
 	await SqlSessionStore.open(database, { prefix: "team_" });
 	const store = await SqlSessionStore.open(database, { prefix: "team_" });
-	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain"), [
+	assert.deepEqual(await database.all("SELECT domain, version FROM team_atomic_migrations ORDER BY domain, version"), [
 		{ domain: "sessions", version: 1 },
 		{ domain: "snapshot-blobs", version: 1 },
+		{ domain: "snapshot-blobs", version: 2 },
 	]);
 	await store.create(header("a"), [message("a1", null), message("a2", "a1")]);
 	const blob = await store.putBlob("a", new TextEncoder().encode("blob"));
@@ -363,6 +364,6 @@ test("a store with a migration ledger records step 1 of the session and blob dom
 	const [listed] = await Array.fromAsync(store.list({}));
 	assert.equal(listed?.searchText, "a1 a2");
 	// A newer schema keeps every table this build knows, and is still refused.
-	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 2, 0)");
+	await database.run("INSERT INTO team_atomic_migrations VALUES ('snapshot-blobs', 3, 0)");
 	await assert.rejects(SqlSessionStore.open(database, { prefix: "team_" }), StorageSchemaVersionError);
 });
