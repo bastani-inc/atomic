@@ -32,9 +32,14 @@ function queueLine(stats: SharedPoolStats): string {
 	return `${stats.ready} ready · ${stats.leased} leased · ${stats.completed} completed · ${stats.failed} failed · ${plural(stats.pendingStageInputs, "stage input")} waiting`;
 }
 
-/** One worker host on one line: its state, workers, busy workers and leases when known, git, and its last report. */
+/**
+ * One worker host on one line: its state, the provider instance it runs on, workers, busy workers and leases when known,
+ * git, and its last report.
+ */
 function hostLine(host: SharedPoolHost & { readonly leased?: number }): string {
-	const parts: string[] = [host.state, `${host.workers} of ${host.maxWorkers} workers`];
+	const parts: string[] = [host.state];
+	if (host.providerId !== undefined) parts.push(`instance ${host.providerId}`);
+	parts.push(`${host.workers} of ${host.maxWorkers} workers`);
 	if (host.busy !== undefined) parts.push(`${host.busy} busy`);
 	if (host.leased !== undefined) parts.push(plural(host.leased, "lease"));
 	parts.push(`git ${host.git}`);
