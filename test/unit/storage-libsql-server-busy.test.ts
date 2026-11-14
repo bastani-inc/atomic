@@ -96,6 +96,26 @@ test("a statement the server answered busy after its transaction began is not ru
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
 });
 
+test("a statement the server answered busy by ending the stream of its begun transaction is not run in a new transaction", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	const failure = await database
+		.transaction(async (tx) => {
+			await tx.run("INSERT INTO events VALUES (1)");
+			fake.fail({ kind: "stream-busy" });
+			await tx.run("INSERT INTO events VALUES (2)");
+		})
+		.then(
+			() => assert.fail("the transaction committed"),
+			(error: unknown) => error,
+		);
+	assert.ok(failure instanceof StorageUnavailableError);
+	assert.equal((failure.cause as { code?: unknown }).code, "SQLITE_BUSY");
+	assert.equal(fake.pipelines.filter((pipeline) => pipeline.sql.includes("BEGIN IMMEDIATE")).length, 1);
+	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 0);
+});
+
 test("a transaction whose stream the server ended after it began does not go on in a new transaction", async () => {
 	const fake = await server();
 	const database = await open(fake.url);
