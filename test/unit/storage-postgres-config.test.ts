@@ -45,12 +45,14 @@ test("Postgres refuses URLs that are not postgres:// or postgresql:// (#4793)", 
 		await assertRefused(() => openPostgresDatabase({ url }), "url", "unsupported-url");
 });
 
-test("Postgres refuses cloud auth until a token provider is available (#4793)", async () => {
-	await assertRefused(
-		() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", auth: "azure-entra" }),
-		"auth",
-		"auth-unavailable",
-	);
+test("Postgres refuses cloud auth together with a password, and auth modes it does not know (#4793)", async () => {
+	for (const password of ["fixture-secret", async () => "fixture-secret"])
+		await assertRefused(
+			() => openPostgresDatabase({ url: "postgres://atomic@127.0.0.1:1/atomic", auth: "gcp-iam", password }),
+			"auth",
+			"conflicting-token",
+			["fixture-secret"],
+		);
 	await assertRefused(
 		() =>
 			openPostgresDatabase({
@@ -60,6 +62,14 @@ test("Postgres refuses cloud auth until a token provider is available (#4793)", 
 			}),
 		"auth",
 		"unsupported-auth",
+	);
+});
+
+test("Postgres refuses AWS IAM auth for a URL without a user before connecting (#4793)", async () => {
+	await assertRefused(
+		() => openPostgresDatabase({ url: "postgres://db.eu-west-2.rds.amazonaws.com/atomic", auth: "aws-iam" }),
+		"auth",
+		"invalid-auth-target",
 	);
 });
 

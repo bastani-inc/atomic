@@ -23,7 +23,7 @@ const DETAIL_LIMIT = 200;
 
 const AZURE_RESOURCE = "https://ossrdbms-aad.database.windows.net";
 /**
- * Host, user and region values the CLIs receive as arguments. Excludes whitespace and every shell metacharacter, so
+ * Host and user values the AWS CLI receives as arguments. Excludes whitespace and every shell metacharacter, so
  * the Windows `cmd.exe` launch below cannot misread them, and a leading `-`, so no value parses as an option.
  */
 const SAFE_ARGUMENT = /^[A-Za-z0-9_.@+:=/][A-Za-z0-9_.@+:=/-]*$/;
@@ -233,6 +233,15 @@ function azureSources() {
  * @returns {CredentialSource[]}
  */
 function awsSources(host, port, user) {
+	for (const [name, value] of [
+		["host", host],
+		["user", user],
+	])
+		if (!SAFE_ARGUMENT.test(value))
+			throw authError(
+				"invalid-auth-target",
+				`The aws-iam token needs a ${name} without spaces, quotes or shell metacharacters, not starting with "-"`,
+			);
 	const args = ["rds", "generate-db-auth-token", "--hostname", host, "--port", String(port), "--username", user];
 	// A token is signed for the database's region; an RDS endpoint names it, and the CLI's own configuration may not.
 	const region = host.match(/\.([a-z]{2}(?:-[a-z]+)+-\d+)\.rds\.amazonaws\.com(?:\.cn)?$/)?.[1];
@@ -292,15 +301,6 @@ const HINTS = /** @type {Record<CloudAuth, string>} */ ({
  */
 export function createCloudPasswordProvider(options) {
 	const { auth, host, port, user, timeoutMs } = options;
-	for (const [name, value] of [
-		["host", host],
-		["user", user],
-	])
-		if (!SAFE_ARGUMENT.test(value))
-			throw authError(
-				"invalid-auth-target",
-				`The ${auth} token needs a ${name} without spaces, quotes or shell metacharacters, not starting with "-"`,
-			);
 	const timeouts =
 		timeoutMs === undefined ? DEFAULT_TIMEOUTS : { metadata: Math.min(timeoutMs, DEFAULT_TIMEOUTS.metadata), cli: timeoutMs };
 	const sources = auth === "azure-entra" ? azureSources() : auth === "aws-iam" ? awsSources(host, port, user) : gcpSources();

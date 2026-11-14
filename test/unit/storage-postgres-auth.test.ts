@@ -667,14 +667,16 @@ test("a timed-out CLI is stopped, not left running (#4793)", async () => {
 	assert.equal(cli.finished(), 0);
 });
 
-test("a refused host or user says what is allowed (#4793)", async () => {
+test("a refused host or user says what is allowed, and only AWS, which passes them to its CLI, refuses them (#4793)", async () => {
 	await noAmbientCloud();
+	for (const auth of ["azure-entra", "gcp-iam"] as const)
+		createCloudPasswordProvider({ host: "db.example.com", port: 5432, user: "Atomic Writers", auth });
 	assert.throws(
-		() => createCloudPasswordProvider({ host: "db.example.com", port: 5432, user: "a b", auth: "gcp-iam" }),
+		() => createCloudPasswordProvider({ host: "db.example.com", port: 5432, user: "a b", auth: "aws-iam" }),
 		(error: StorageConfigError) => {
 			assert.equal(
 				error.hint,
-				'The gcp-iam token needs a user without spaces, quotes or shell metacharacters, not starting with "-"',
+				'The aws-iam token needs a user without spaces, quotes or shell metacharacters, not starting with "-"',
 			);
 			return true;
 		},
