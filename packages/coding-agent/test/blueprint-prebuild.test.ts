@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -67,6 +68,41 @@ const HTTPS = "https://example.com/acme/widgets";
 const INSTALL =
 	"test -f node_modules/.installed || { mkdir -p node_modules && echo installed > node_modules/.installed; }";
 const BUILD = "test -f build/out.txt || { mkdir -p build && echo built > build/out.txt; }";
+
+/** Interrupts at the checkout's Git work, the restore, and the build step, on fast and slow machines. */
+const INTERRUPT_DELAYS_MS = [0, 20, 60, 150, 300, 600, 1_200];
+/** Seven prebuilds, each stopped before its 5 s step ends. */
+const INTERRUPT_TEST_TIMEOUT_MS = 90_000;
+
+/**
+ * The processes whose working directory is `directory` or below it. Linux names them in `/proc`; elsewhere this is
+ * empty, and {@link movable} covers Windows, which refuses to move a directory a process works in.
+ */
+function processesInside(directory: string): string[] {
+	if (process.platform !== "linux") return [];
+	const found: string[] = [];
+	for (const pid of readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+		try {
+			const cwd = readlinkSync(`/proc/${pid}/cwd`);
+			if (cwd === directory || cwd.startsWith(`${directory}/`))
+				found.push(`${pid} ${readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")}`);
+		} catch {
+			// The process ended, or belongs to another user.
+		}
+	}
+	return found;
+}
+
+/** Whether `directory` can be moved away and back: Windows refuses while a process works in it or holds a file. */
+function movable(directory: string): boolean {
+	try {
+		renameSync(directory, `${directory}-moved`);
+	} catch {
+		return false;
+	}
+	renameSync(`${directory}-moved`, directory);
+	return true;
+}
 
 let sandbox: GitSandbox;
 let store: SqlSessionStore;
@@ -971,6 +1007,34 @@ describe("prebuild and seed edge cases (#4748)", () => {
 			assert.equal(existsSync(join(storeDir(), "pool", repositoryIdOf([remote]), "0.json")), false);
 		},
 		PREBUILD_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a prebuild interrupted at any point leaves no process in the checkout or the worktree (#4748)",
+		async () => {
+			const { clone, remote } = await checkout(`maintenance: sleep 5\n`);
+			for (const delayMs of INTERRUPT_DELAYS_MS) {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(new Error("stop")), delayMs);
+				try {
+					await prebuildRepository(clone, {
+						agentDir: agentDir(),
+						storeDir: storeDir(),
+						settings,
+						maxIdlePerRepository: 8,
+						signal: controller.signal,
+					}).catch(() => undefined);
+				} finally {
+					clearTimeout(timer);
+				}
+				// Checked at once: a Git or build process the interrupt left running would hold these directories.
+				assert.deepEqual(processesInside(clone), [], `interrupted after ${delayMs} ms`);
+				assert.deepEqual(processesInside(join(storeDir(), "worktrees")), [], `interrupted after ${delayMs} ms`);
+				assert.ok(movable(clone), `the checkout is in use after an interrupt at ${delayMs} ms`);
+			}
+			assert.equal(existsSync(slot([remote], 0)), false);
+		},
+		INTERRUPT_TEST_TIMEOUT_MS,
 	);
 
 	test("a prebuild of a repository without commits rejects without taking a slot (#4748)", async () => {
