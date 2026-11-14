@@ -39,9 +39,123 @@ Errors are exported classes with typed fields. `StorageUnavailableError` provide
 
 String bindings containing U+0000 are rejected before SQL executes with `StorageInvalidTextError`. Its `parameterIndex` is zero-based and its `reason` is `"nul-character"`. This rule applies to database calls and transaction handles. Store JSON with `JSON.stringify`, which escapes NUL characters, or use `Uint8Array` for binary data containing zero bytes. This validation does not inspect SQL source or SQL-generated values.
 
+{/* PostgreSQL sections depend on #4793: the adapter (P2), Postgres-ready stores (P3–P5; concurrent writers need P5's fenced pool paths), `storage join`/`worker --db` for postgres:// URLs (P6), and cloud identities (P7). Keep them in step with those PRs. */}
+
+## Which store to choose
+
+| Situation | Choose | Why |
+| --- | --- | --- |
+| One machine, one person | **Local SQLite** (the default) | Nothing to set up. Runs never wait for each other, because the [journal store](#the-workflow-journal-store) gives each root its own shard |
+| Worker fleets, cloud deployments, many machines writing at once, or a team that already runs PostgreSQL | **[PostgreSQL](#postgresql)** (preferred for shared storage) | Many machines write at the same time. Managed services on Azure, AWS, Google Cloud, Neon or Supabase add high availability, backups and cloud identities |
+| A few machines, a small team, CI caches | **[libSQL / Turso](#turso-and-libsql)** | One URL and a token. One writer at a time, so it suits a handful of machines writing at once |
+| Data that must stay on one machine | **Local SQLite** | Nothing leaves the machine |
+
+To move existing runs and sessions to another store, see [Exporting and importing sessions and workflow runs](#exporting-and-importing-sessions-and-workflow-runs).
+
+## PostgreSQL
+
+`@bastani/atomic-storage-postgres` stores sessions, workflow runs, worker pools, and Intercom's multi-node routing in a PostgreSQL database. It needs PostgreSQL 14 or later, self-hosted or managed: Azure Database for PostgreSQL Flexible Server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL or AlloyDB, Neon, Supabase, and others. Many machines can write at the same time, so it is the store to choose for [worker fleets](/guides/worker-hosts).
+
+### Set up the database
+
+Create a role and a database it owns. Atomic creates its tables the first time it uses the database, and upgrades them under a lock when several machines start at once.
+
+```sql
+CREATE ROLE atomic LOGIN PASSWORD '<password>';
+CREATE DATABASE atomic OWNER atomic;
+```
+
+On a managed service, run this as the administrator the service created, or create the database in the console. Size `max_connections` for your fleet: every Atomic process keeps its own pool of up to 8 connections (`maxConnections`), and a worker host runs one process per slot besides its own. When the fleet needs more connections than the server allows, lower `maxConnections` or connect through a [connection pooler](#connection-poolers).
+
+Give each team or project its own `prefix`, or its own database.
+
+### Join a machine
+
+Install the adapter once per machine, in user scope, and join the database:
+
+```bash
+atomic install npm:@bastani/atomic-storage-postgres
+printf '%s' '<password>' > ~/atomic-db-password && chmod 600 ~/atomic-db-password
+atomic storage join 'postgresql://atomic@db.example.com:5432/atomic' --password-file ~/atomic-db-password
+atomic intercom restart
+atomic storage status
+```
+
+`atomic storage join` accepts `postgres://` and `postgresql://` URLs. Put the user name in the URL, never the password: a URL with a password, or with a `password=` parameter, is refused. Pass exactly one credential:
+
+- `--password-file <path>` copies the password into a new `~/.atomic/agent/storage-token.<id>` file, readable only by you (mode 600), as for [libSQL](#joining-a-machine-to-a-shared-database). You can delete your input file afterwards.
+- `--token-file <path>` uses the file where it is, and reads it again for every new connection. Use it for a file that another process keeps fresh, such as a Vault agent or a secrets sidecar, so a rotated password takes effect without joining again.
+- `--auth azure`, `--auth aws`, or `--auth gcp` signs in with the machine's cloud identity instead of a password. See [Cloud identities](#cloud-identities).
+
+The command checks the connection with `SELECT 1` before it writes anything, then writes only the top-level `storage` key of the global settings, `~/.atomic/agent/settings.json`:
+
+```json
+{
+  "storage": {
+    "adapter": "@bastani/atomic-storage-postgres",
+    "options": { "url": "postgresql://atomic@db.example.com:5432/atomic" },
+    "secrets": { "password": { "file": "agent/storage-token.3f2a" } }
+  }
+}
+```
+
+You can write this block by hand as well. `secrets.password` takes `{ "file": … }` or `{ "env": "<variable>" }`, and the adapter reads it again for every new connection. Other `options`:
+
+| Option | Default | |
+| --- | --- | --- |
+| `url` | required | `postgres://` or `postgresql://`, with the user name and no password |
+| `auth` | `"password"` | `"azure-entra"`, `"aws-iam"`, or `"gcp-iam"` for [cloud identities](#cloud-identities) |
+| `maxConnections` | 8 | Connections each Atomic process may open |
+| `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
+
+`atomic worker start`, `atomic worker status`, and `atomic worker controller` take the same URL with `--db`, and the same `--password-file`, `--token-file`, or `--auth`, for one process without changing settings. `atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
+
+### TLS
+
+Atomic connects with TLS to every host except the local machine, and checks the server's certificate and host name. Add `sslmode` to the URL to choose otherwise:
+
+- Azure Database for PostgreSQL, Neon, and Supabase use certificates that Node.js trusts: no option is needed. `?sslmode=verify-full` states it explicitly.
+- Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslmode=verify-full&sslrootcert=/path/to/bundle.pem`.
+- Google Cloud SQL: save the instance's server CA certificate (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`) and add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem`. `verify-ca` checks the certificate against the instance's own CA, because a private IP address is not among the certificate's names.
+
+### Connection poolers
+
+Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets a large fleet share a small number of server connections; without one, keep the fleet's connections within the server's `max_connections`.
+
+### Cloud identities
+
+With `--auth`, or `options.auth` in settings, Atomic gets a short-lived access token from the machine's cloud identity for each new connection, and keeps it only in memory until shortly before it expires. No password is stored anywhere. The database user must be one that the service maps to that identity, and the connection must use TLS.
+
+| `--auth` | `options.auth` | Where the token comes from, in order |
+| --- | --- | --- |
+| `azure` | `"azure-entra"` | AKS workload identity; the managed identity of the VM, scale set, App Service, or Container App (`AZURE_CLIENT_ID` selects a user-assigned identity); then `az login` on a developer machine |
+| `aws` | `"aws-iam"` | `aws rds generate-db-auth-token` with the AWS CLI v2's credentials: instance profile, IAM roles for service accounts, `AWS_*` variables, or a profile. The AWS CLI must be on `PATH` |
+| `gcp` | `"gcp-iam"` | The metadata server's service account on Compute Engine, GKE, or Cloud Run; then `gcloud auth print-access-token` |
+
+Each source is given a few seconds (`timeoutMs`). When none works, the store fails with `StorageConfigError` reason `"auth-unavailable"`, whose hint names every source tried and why it failed.
+
+On each service, grant the identity a database user:
+
+- **Azure:** enable Microsoft Entra authentication on the server, then, as an Entra administrator, create the user with `SELECT * FROM pgaadauth_create_principal('<identity name>', false, false);` and make it the owner of the database. The URL's user name is the identity's name.
+- **AWS:** enable IAM database authentication on the instance, run `CREATE ROLE atomic LOGIN; GRANT rds_iam TO atomic;`, and allow the identity `rds-db:connect` on `arn:aws:rds-db:<region>:<account>:dbuser:<DbiResourceId>/atomic`.
+- **Google Cloud:** add the service account as an IAM database user, and give it `roles/cloudsql.instanceUser` (plus `roles/cloudsql.client` when it connects through the Cloud SQL connector). The URL's user name is the service account's email without `.gserviceaccount.com`.
+
+The [adapter's README](https://www.npmjs.com/package/@bastani/atomic-storage-postgres) has the details for each service.
+
+### Troubleshooting PostgreSQL
+
+- **`credential-in-url`**: the URL holds a password. Remove it and pass `--password-file` or `--token-file`.
+- **`unsupported-url`** from `atomic team join`: team join is for libSQL. Use `atomic storage join`.
+- **`adapter-not-installed`**: run `atomic install npm:@bastani/atomic-storage-postgres` as the user that runs Atomic.
+- **`StorageUnavailableError`** at startup: the server refused the password (`28P01`), the database does not exist (`3D000`), the role lacks a privilege it needs (`42501`), or the server is older than PostgreSQL 14. The error names which. Nothing ran.
+- **A certificate error** (`self-signed certificate in certificate chain`, `unable to get local issuer certificate`): the server's CA is not one Node.js trusts. Add `sslrootcert`, as in [TLS](#tls).
+- **`too many connections`** (`53300`): the fleet opened more connections than `max_connections`. Lower `maxConnections`, raise the server's limit, or put a [pooler](#connection-poolers) in front.
+- **`StorageTransientError` with code `lock-conflict` or `transaction-timeout`**: the server cancelled a transaction that waited too long for a lock or ran past `statementTimeoutMs`. Atomic retries a transaction that wrote nothing; persistent ones point to an overloaded server.
+- **Connections dropped during a failover or a pooler restart**: Atomic reports them as `StorageTransientError` with code `connection-lost` and retries, as for [libSQL](#turso-and-libsql). Runs that still fail can be continued with `/workflow resume`.
+
 ## Turso and libSQL
 
-`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. Install it once per machine, in user scope so Atomic can find it:
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store: one URL and a token, for a few machines. For worker fleets and cloud deployments, prefer [PostgreSQL](#postgresql). Install it once per machine, in user scope so Atomic can find it:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
@@ -551,7 +665,7 @@ These options come from the process that starts Atomic, so they are not subject 
 
 ## Sharing storage across hosts
 
-By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same remote SQLite-compatible database on every host through an [adapter](#selecting-an-adapter), such as the [Turso / libSQL package](#turso-and-libsql). Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
+By default, sessions and workflow runs live in a local file that serves one machine. To share them across machines, for example several service replicas or a CI fleet, select the same database on every host through an [adapter](#selecting-an-adapter): [PostgreSQL](#postgresql) for fleets and cloud deployments, or [Turso / libSQL](#turso-and-libsql) for a few machines. See [Which store to choose](#which-store-to-choose). Installing the adapter as an [Atomic package](#adapters-from-atomic-packages) lets every host use the same `storage` block. Give each project or tenant its own `prefix`. Do not put the local SQLite file on a network filesystem; use a database driver instead.
 
 With a shared journal:
 
@@ -566,7 +680,7 @@ The database stores sessions, the oversized tool results of agents released whil
 
 [Local workflow workers](/workflows/operations#local-workflow-workers) work on a shared journal: by default the workers run on the machine that runs the root and open the same database, and the pool keeps its work queue and leases in a SQLite file on that machine, so a pooled run resumes on the machine where it started. A root started with `workers: { placement: "shared" }` keeps its pool in the shared journal instead, runs its children on worker hosts on other machines too, and resumes on any machine; see [Workers on other hosts](/workflows/operations#workers-on-other-hosts).
 
-Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. The built-in journal uses SQLite SQL, so `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
+Scale by running more workflows, not by splitting one: a single run and a single session each have one writer. Atomic's stores use SQLite SQL, or PostgreSQL through `@bastani/atomic-storage-postgres`, so other `openDatabase` adapters need a SQLite-compatible driver. For another kind of database, implement `openRunJournal` and `openSessionStore` and validate them with the conformance suites below.
 
 ## Storage errors
 

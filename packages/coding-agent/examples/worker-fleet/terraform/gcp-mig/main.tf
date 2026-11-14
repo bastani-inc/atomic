@@ -3,14 +3,21 @@
 terraform {
   required_providers {
     google = { source = "hashicorp/google", version = "~> 6.0" }
+    random = { source = "hashicorp/random", version = "~> 3.6" }
   }
 }
 
 variable "project" {}
 variable "zone" { default = "us-central1-a" }
 variable "network" { default = "default" }
-variable "database" { default = "libsql://pool.example.turso.io" }
-variable "token_command" { description = "Prints the database token, e.g. `gcloud secrets versions access latest --secret=atomic-db-token`" }
+variable "database" {
+  default     = "libsql://pool.example.turso.io"
+  description = "The shared database when `postgres` is false"
+}
+variable "token_command" {
+  default     = null
+  description = "Prints the database token, e.g. `gcloud secrets versions access latest --secret=atomic-db-token`; defaults to the Cloud SQL password secret"
+}
 variable "controller_member" { description = "The controller's identity, e.g. serviceAccount:fleet@PROJECT.iam.gserviceaccount.com" }
 
 resource "google_compute_instance_template" "workers" {
@@ -30,13 +37,18 @@ resource "google_compute_instance_template" "workers" {
   network_interface {
     network = var.network
   }
+  # The default compute service account, with a scope that lets it read the token secret.
+  service_account {
+    scopes = ["cloud-platform"]
+  }
   metadata = {
     user-data = templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-      database = var.database
-      slots    = 4
+      database    = local.database
+      database_ca = local.database_ca
+      slots       = 4
       # The instance name, which the group's delete-instances takes.
       provider_id_command = "curl -s -H Metadata-Flavor:Google http://metadata.google.internal/computeMetadata/v1/instance/name"
-      token_command       = var.token_command
+      token_command       = local.token_command
     })
   }
   lifecycle { create_before_destroy = true }

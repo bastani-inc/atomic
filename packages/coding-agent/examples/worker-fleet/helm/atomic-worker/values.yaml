@@ -1,8 +1,11 @@
 # The worker image built from ../../Dockerfile.
 image: registry.example.com/atomic-worker:latest
-# The shared libSQL / Turso database.
-database: libsql://pool.example.turso.io
-# A Secret holding the database token under the key `token`, created outside this chart.
+# The shared database: a PostgreSQL URL (user name, no password), or a libSQL / Turso URL. Build the image with the
+# matching storage adapter.
+database: postgresql://atomic@atomic-pool.postgres.database.azure.com:5432/atomic?sslmode=verify-full
+# Or name a Secret holding the URL under the key `url`, created outside this chart; it takes precedence over `database`.
+databaseSecret: ""
+# A Secret holding the database password (PostgreSQL) or token (libSQL) under the key `token`, created outside this chart.
 tokenSecret: atomic-db-token
 # Children each worker pod runs at once; the scaling signal assumes the same number.
 workersPerHost: 4

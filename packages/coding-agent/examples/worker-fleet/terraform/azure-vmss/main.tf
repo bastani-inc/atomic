@@ -4,6 +4,7 @@
 terraform {
   required_providers {
     azurerm = { source = "hashicorp/azurerm", version = "~> 4.0" }
+    random  = { source = "hashicorp/random", version = "~> 3.6" }
   }
 }
 
@@ -14,7 +15,10 @@ provider "azurerm" {
 variable "resource_group" { default = "atomic-rg" }
 variable "location" { default = "eastus" }
 variable "subnet_id" {}
-variable "database" { default = "libsql://pool.example.turso.io" }
+variable "database" {
+  default     = "libsql://pool.example.turso.io"
+  description = "The shared database when `postgres` is false"
+}
 variable "token_command" { description = "Prints the database token, e.g. an `az keyvault secret show` with the VM's managed identity" }
 variable "controller_principal_id" { description = "The identity `atomic worker controller` runs as" }
 variable "ssh_public_key" {}
@@ -55,8 +59,9 @@ resource "azurerm_linux_virtual_machine_scale_set" "workers" {
   }
   identity { type = "SystemAssigned" }
   custom_data = base64encode(templatefile("${path.module}/../cloud-init.yaml.tftpl", {
-    database = var.database
-    slots    = 4
+    database    = local.database
+    database_ca = ""
+    slots       = 4
     # The instance id: the end of the VM's name in a Uniform scale set.
     provider_id_command = "curl -s -H Metadata:true 'http://169.254.169.254/metadata/instance/compute/name?api-version=2021-02-01&format=text' | sed 's/.*_//'"
     token_command       = var.token_command

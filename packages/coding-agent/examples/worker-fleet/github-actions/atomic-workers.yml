@@ -1,7 +1,7 @@
 # Burst worker hosts on GitHub Actions (#4768). Copy to .github/workflows/atomic-workers.yml. `workers` fans out that
 # many jobs, each running `atomic worker start --idle-exit`, which exits once no child ran for `idle-exit-ms`. Run it by
 # hand for a burst, call it from another workflow, or let presets/github-actions.json dispatch it one host at a time.
-# Repository secret: ATOMIC_DB_TOKEN. Repository variable: ATOMIC_DB.
+# Repository secret: ATOMIC_DB_TOKEN (the PostgreSQL password or libSQL token). Repository variable: ATOMIC_DB.
 name: atomic-workers
 on:
   workflow_dispatch:
@@ -39,7 +39,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: npm install -g @bastani/atomic && atomic install npm:@bastani/atomic-storage-libsql
+      - name: Install Atomic and the storage adapter for ATOMIC_DB
+        env:
+          ATOMIC_DB: ${{ vars.ATOMIC_DB }}
+        run: |
+          case "$ATOMIC_DB" in postgres://*|postgresql://*) adapter=postgres ;; *) adapter=libsql ;; esac
+          npm install -g @bastani/atomic && atomic install "npm:@bastani/atomic-storage-$adapter"
       - name: Serve until idle
         env:
           ATOMIC_DB: ${{ vars.ATOMIC_DB }}
