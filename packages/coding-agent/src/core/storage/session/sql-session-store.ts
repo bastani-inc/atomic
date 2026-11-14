@@ -1,8 +1,11 @@
+import { randomBytes } from "node:crypto";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { SqlSnapshotBlobStore } from "../../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteTransactionOptions, SqliteValue } from "../database.js";
+import { dialectOf, type StorageDialect } from "../dialect.js";
 import { SessionBlobError, StorageInvalidTextError } from "../errors.js";
-import { renderStorageIdentifiers } from "../prefix.js";
+import { applyStorageMigrations } from "../migrations.js";
+import { renderStorageIdentifiers, storageMigrationTable } from "../prefix.js";
 import { assertStorageSchemaVersion } from "../schema.js";
 import { sha256Hex } from "./blob-hash.js";
 import {
@@ -34,6 +37,8 @@ import type {
 import { validateSessionEntries, validateSessionHeader, validateSessionText } from "./validation.js";
 
 export const SESSION_SCHEMA_VERSION = 1;
+/** The schema domain of the session tables in the prefix's migration ledger. */
+export const SESSION_DOMAIN = "sessions";
 /**
  * The most bytes of a chunked session blob one row holds. New blobs use a header row and rows of at most this size,
  * so their bound and returned values stay within it: libSQL servers cap a row and a bound value (sqld's default is
@@ -149,6 +154,7 @@ function listingVersion(row: ListingRow): string {
 
 export class SqlSessionStore implements SessionStore {
 	private readonly database: SqliteDatabase;
+	private readonly dialect: StorageDialect;
 	private readonly tables: Tables;
 	private readonly prefix: string;
 	private readonly legacyBlobData: boolean;
@@ -174,6 +180,7 @@ export class SqlSessionStore implements SessionStore {
 		legacyBlobData: boolean,
 	) {
 		this.database = database;
+		this.dialect = dialectOf(database);
 		this.tables = tables;
 		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
@@ -186,8 +193,16 @@ export class SqlSessionStore implements SessionStore {
 		options: { readonly prefix?: string; readonly cwdMatcher?: SessionCwdMatcher } = {},
 	): Promise<SqlSessionStore> {
 		const tables = renderStorageIdentifiers("sessions", SESSION_TABLES, options.prefix);
-		const legacyBlobData = await database.transaction(async (tx) => {
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version INTEGER NOT NULL) STRICT`);
+		let legacyBlobData = false;
+		const createTables = async (tx: SqliteExecutor, dialect: StorageDialect) => {
+			const { int, text, blob } = dialect.types;
+			const strict = dialect.tableOptions;
+			const json = (column: string) => dialect.jsonValid(column);
+			const columnExists = async (table: string, column: string) => {
+				const probe = dialect.columnExists(table, column);
+				return (await tx.get(probe.sql, ...probe.params)) !== undefined;
+			};
+			await tx.exec(`CREATE TABLE IF NOT EXISTS ${tables.meta} (schema_version ${int} NOT NULL)${strict}`);
 			const versions = await tx.all(`SELECT schema_version FROM ${tables.meta}`);
 			if (versions.length === 0) {
 				await tx.run(`INSERT INTO ${tables.meta} VALUES (?)`, SESSION_SCHEMA_VERSION);
@@ -195,48 +210,45 @@ export class SqlSessionStore implements SessionStore {
 			for (const version of versions) {
 				assertStorageSchemaVersion("sessions", version.schema_version!, SESSION_SCHEMA_VERSION);
 			}
+			// The sessions table is ordered by insertion to notice changes, and entries for the snapshot reference index.
 			await tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${tables.sessions} (
-					id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL,
-					header_json TEXT NOT NULL CHECK(json_valid(header_json)), internal INTEGER NOT NULL,
-					last_seq INTEGER NOT NULL, modified_at TEXT NOT NULL, message_count INTEGER NOT NULL,
-					first_message TEXT NOT NULL CHECK(json_valid(first_message)),
-					name TEXT CHECK(name IS NULL OR json_valid(name)), has_name INTEGER NOT NULL,
-					summary TEXT CHECK(summary IS NULL OR json_valid(summary)), summarized_through_id TEXT,
-					summary_state TEXT NOT NULL CHECK(json_valid(summary_state)), revision TEXT NOT NULL DEFAULT ''
-				) STRICT;
+					id ${text} PRIMARY KEY, cwd ${text} NOT NULL, created_at ${text} NOT NULL,
+					header_json ${text} NOT NULL CHECK(${json("header_json")}), internal ${int} NOT NULL,
+					last_seq ${int} NOT NULL, modified_at ${text} NOT NULL, message_count ${int} NOT NULL,
+					first_message ${text} NOT NULL CHECK(${json("first_message")}),
+					name ${text} CHECK(name IS NULL OR ${json("name")}), has_name ${int} NOT NULL,
+					summary ${text} CHECK(summary IS NULL OR ${json("summary")}), summarized_through_id ${text},
+					summary_state ${text} NOT NULL CHECK(${json("summary_state")}), revision ${text} NOT NULL DEFAULT ''${dialect.rowOrderColumn}
+				)${strict};
 				CREATE TABLE IF NOT EXISTS ${tables.entries} (
-					session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,
-					entry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)
-				) STRICT;
+					session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL,
+					entry_json ${text} NOT NULL CHECK(${json("entry_json")}), PRIMARY KEY(session_id, seq)${dialect.rowOrderColumn}
+				)${strict};
 				CREATE TABLE IF NOT EXISTS ${tables.searchTexts} (
-					session_id TEXT NOT NULL, seq INTEGER NOT NULL,
-					text_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)
-				) STRICT;
+					session_id ${text} NOT NULL, seq ${int} NOT NULL,
+					text_json ${text} NOT NULL CHECK(${json("text_json")}), PRIMARY KEY(session_id, seq)
+				)${strict};
 				CREATE TABLE IF NOT EXISTS ${tables.blobs} (
-					session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, chunks INTEGER NOT NULL,
+					session_id ${text} NOT NULL, hash ${text} NOT NULL, bytes ${int} NOT NULL, chunks ${int} NOT NULL,
 					PRIMARY KEY(session_id, hash)
-				) STRICT;
+				)${strict};
 				CREATE TABLE IF NOT EXISTS ${tables.blobChunks} (
-					session_id TEXT NOT NULL, hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,
+					session_id ${text} NOT NULL, hash ${text} NOT NULL, idx ${int} NOT NULL, data ${blob} NOT NULL,
 					PRIMARY KEY(session_id, hash, idx)
-				) STRICT;
+				)${strict};
 			`);
 			// Sessions tables created before the write revision gain it; their rows pick one up on the next write.
-			const revision = await tx.get(
-				"SELECT name FROM pragma_table_info(?) WHERE name = 'revision'",
-				tables.sessions,
-			);
-			if (!revision) {
-				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision TEXT NOT NULL DEFAULT ''`);
+			if (!(await columnExists(tables.sessions, "revision"))) {
+				await tx.exec(`ALTER TABLE ${tables.sessions} ADD COLUMN revision ${text} NOT NULL DEFAULT ''`);
 			}
-			const legacy = Boolean(
-				await tx.get("SELECT name FROM pragma_table_info(?) WHERE name = 'data'", tables.blobs),
-			);
-			if (legacy && !(await tx.get("SELECT name FROM pragma_table_info(?) WHERE name = 'chunks'", tables.blobs))) {
-				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks INTEGER NOT NULL DEFAULT -1`);
+			legacyBlobData = await columnExists(tables.blobs, "data");
+			if (legacyBlobData && !(await columnExists(tables.blobs, "chunks"))) {
+				await tx.exec(`ALTER TABLE ${tables.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT -1`);
 			}
-			return legacy;
+		};
+		await applyStorageMigrations(database, SESSION_DOMAIN, [{ version: 1, up: createTables }], {
+			table: storageMigrationTable(options.prefix),
 		});
 		const blobs = await SqlSnapshotBlobStore.open(database, options.prefix);
 		return new SqlSessionStore(database, tables, options.prefix, options.cwdMatcher, blobs, legacyBlobData);
@@ -368,6 +380,7 @@ export class SqlSessionStore implements SessionStore {
 		const chunks = Math.ceil(blob.bytes / SESSION_BLOB_CHUNK_BYTES);
 		const { sessions, blobs, blobChunks } = this.tables;
 		const sessionExists = `EXISTS (SELECT 1 FROM ${sessions} WHERE id = ?)`;
+		// The data column exists only in SQLite tables written before chunked blobs; X'' is SQLite's empty BLOB.
 		for (let index = 0; index < chunks; index++) {
 			await this.database.run(
 				`INSERT INTO ${blobChunks} (session_id, hash, idx, data) SELECT ?, ?, ?, ? WHERE ${sessionExists}
@@ -529,11 +542,12 @@ export class SqlSessionStore implements SessionStore {
 	 * table if the adapter does not serve every statement from one connection.
 	 */
 	private async changeToken(): Promise<string> {
+		const { changeMarkers, rowOrder } = this.dialect;
 		const row = await this.database.get<SqliteRow>(
-			`SELECT data_version, total_changes() AS changes,
+			`SELECT ${changeMarkers.columns},
 				(SELECT count(*) FROM ${this.tables.sessions}) AS sessions,
-				(SELECT max(rowid) FROM ${this.tables.sessions}) AS last_row
-			FROM pragma_data_version`,
+				(SELECT max(${rowOrder()}) FROM ${this.tables.sessions}) AS last_row
+			${changeMarkers.from}`,
 		);
 		return JSON.stringify(Object.values(row ?? {}).map(String));
 	}
@@ -594,7 +608,7 @@ export class SqlSessionStore implements SessionStore {
 		// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
 		const rows = await this.database.all<SummaryRow>(
 			`SELECT ${LISTING_COLUMNS}, (
-				SELECT COALESCE('[' || group_concat(text_json, ',') || ']', '[]')
+				SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
 				FROM (SELECT text_json FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
 			) AS search_texts_json
 			FROM ${this.tables.sessions} AS s WHERE ${where}`,
@@ -683,7 +697,7 @@ export class SqlSessionStore implements SessionStore {
 			`INSERT INTO ${this.tables.sessions}
 				(id, cwd, created_at, header_json, internal, last_seq, modified_at, message_count,
 				 first_message, name, has_name, summary, summarized_through_id, summary_state, revision)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))))
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(id) DO UPDATE SET
 				cwd = excluded.cwd, created_at = excluded.created_at, header_json = excluded.header_json,
 				internal = excluded.internal, last_seq = excluded.last_seq, modified_at = excluded.modified_at,
@@ -705,6 +719,7 @@ export class SqlSessionStore implements SessionStore {
 			summary.summary === undefined ? null : this.encode(summary.summary),
 			summary.summarizedThroughId ?? null,
 			this.encode(state),
+			randomBytes(16).toString("hex"),
 		);
 		return texts;
 	}
