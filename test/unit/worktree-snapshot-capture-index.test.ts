@@ -303,44 +303,58 @@ describe("where the private index may not go (#4748)", () => {
 });
 
 describe("capture cost with a persistent private index (#4748)", () => {
+	/** A clone of `files` whose entries are as new as its index, as after a fresh clone: Git must read each file. */
+	async function racilyCleanClone(name: string, files: Record<string, string>): Promise<string> {
+		const { clone } = await sandbox.remoteWithClone(name, files);
+		const instant = Math.floor(Date.now() / 1000) - 60;
+		for (const path of Object.keys(files)) utimesSync(join(clone, path), instant, instant);
+		await sandbox.git(clone, "update-index", "-q", "--refresh");
+		utimesSync(join(clone, ".git", "index"), instant, instant);
+		return clone;
+	}
+
+	/** Median times of a capture that seeds the private index of `clone` and of the capture after it, three of each. */
+	async function captureTimes(clone: string) {
+		const index = await privateIndexOf(clone);
+		const timed = async () => {
+			const started = performance.now();
+			const tree = await treeOf(clone);
+			return { tree, ms: performance.now() - started };
+		};
+		const seeding: number[] = [];
+		const reusing: number[] = [];
+		const trees = new Set<string>();
+		for (let round = 0; round < 3; round++) {
+			rmSync(index, { force: true });
+			rmSync(`${index}.json`, { force: true });
+			const first = await timed();
+			const second = await timed();
+			seeding.push(first.ms);
+			reusing.push(second.ms);
+			trees.add(first.tree).add(second.tree);
+		}
+		assert.equal(trees.size, 1, "every capture records the same tree");
+		const median = (values: number[]) => values.sort((left, right) => left - right)[1]!;
+		return { seeded: median(seeding), reused: median(reusing) };
+	}
+
 	test(
-		"on a racily clean 3,000-file checkout a capture with its private index takes at most half one that seeds it (#4748)",
+		"on a racily clean 3,000-file checkout a capture with its private index costs at most half one that seeds it (#4748)",
 		async () => {
 			const files: Record<string, string> = {};
 			const body = "x".repeat(32 * 1024);
 			for (let index = 0; index < 3000; index++) files[`d${index % 30}/f${index}.txt`] = `${index}\n${body}`;
-			const { clone } = await sandbox.remoteWithClone("repo", files);
-			// As after a fresh clone: every entry is as new as the index, so Git must read each file to trust it.
-			const instant = Math.floor(Date.now() / 1000) - 60;
-			for (const path of Object.keys(files)) utimesSync(join(clone, path), instant, instant);
-			await sandbox.git(clone, "update-index", "-q", "--refresh");
-			utimesSync(join(clone, ".git", "index"), instant, instant);
-			const index = await privateIndexOf(clone);
-			const timed = async () => {
-				const started = performance.now();
-				const tree = await treeOf(clone);
-				return { tree, ms: performance.now() - started };
-			};
-			const median = (values: number[]) => values.sort((left, right) => left - right)[1]!;
+			const large = await racilyCleanClone("large", files);
+			const small = await racilyCleanClone("small", { "a.txt": "a\n" });
 
-			const seeding: number[] = [];
-			const reusing: number[] = [];
-			const trees = new Set<string>();
-			for (let round = 0; round < 3; round++) {
-				rmSync(index, { force: true });
-				rmSync(`${index}.json`, { force: true });
-				const first = await timed();
-				const second = await timed();
-				seeding.push(first.ms);
-				reusing.push(second.ms);
-				trees.add(first.tree).add(second.tree);
-			}
+			const { seeded, reused } = await captureTimes(large);
+			// What every capture costs whatever the checkout's size (starting Git about twenty times), measured here so a
+			// host where starting a process is slow, as on Windows, compares only the part the private index changes.
+			const fixed = (await captureTimes(small)).reused;
 
-			assert.equal(trees.size, 1, "every capture records the same tree");
-			const [seeded, reused] = [median(seeding), median(reusing)];
 			assert.ok(
-				reused <= seeded * 0.5,
-				`with its private index ${reused.toFixed(0)} ms, seeding it ${seeded.toFixed(0)} ms: expected at most half`,
+				reused - fixed <= (seeded - fixed) * 0.5,
+				`with its private index ${reused.toFixed(0)} ms, seeding it ${seeded.toFixed(0)} ms, a one-file capture ${fixed.toFixed(0)} ms: expected at most half beyond the one-file capture`,
 			);
 		},
 		BENCHMARK_TIMEOUT_MS,
