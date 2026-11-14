@@ -201,7 +201,7 @@ export class AwayAsks {
 		target: SessionInfo,
 		reason: string,
 		idPrefix: string,
-		failedElsewhere: (question: PendingQuestion) => boolean = () => false,
+		failedElsewhere: (question: PendingQuestion) => boolean,
 	): PendingQuestion[] {
 		const rows = this.statement(
 			"SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? ORDER BY kept_at",

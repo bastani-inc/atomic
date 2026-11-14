@@ -206,4 +206,46 @@ describe("pending question routes of a departing asker (#4326)", () => {
 		assert.equal(index.matchesReply(REPLIER, OTHER, "q2"), true);
 		assert.deepEqual(index.takeForSender(ASKER), []);
 	});
+
+	test("an ask kept again keeps one route, which an owner known only later takes over (#4765)", () => {
+		const routes = new ReleasedAskerReplies();
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], undefined), 1);
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], undefined), 0);
+		assert.deepEqual(routes.sizes(), { routes: 1, questions: 1, children: 1, owners: 0 });
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1"), question("q1")], OWNER), 0);
+		assert.deepEqual(routes.sizes(), { routes: 1, questions: 1, children: 1, owners: 1 });
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], "another-owner"), 0);
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], undefined), 0);
+		assert.deepEqual(routes.sizes(), { routes: 1, questions: 1, children: 1, owners: 1 });
+		// The same message id asked of another recipient is another route.
+		assert.equal(routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1", OTHER)], OWNER), 1);
+		assert.equal(routes.take("q1", REPLIER, ASKER)?.ownerSessionId, OWNER);
+		assert.equal(routes.take("q1", OTHER, ASKER)?.ownerSessionId, OWNER);
+		assert.deepEqual(routes.sizes(), EMPTY);
+	});
+
+	test("an ask that another child asked under the same message id keeps its own route (#4765)", () => {
+		const routes = new ReleasedAskerReplies();
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("q1")], OWNER);
+		assert.equal(
+			routes.keep({ sessionId: OTHER, childName: "subagent-other" }, [question("q1", REPLIER, OTHER)], OWNER),
+			1,
+		);
+		assert.equal(routes.take("q1", REPLIER, OTHER)?.askerSessionId, OTHER);
+		assert.equal(routes.take("q1", REPLIER, ASKER)?.askerSessionId, ASKER);
+	});
+
+	test("only a live route an owner holds says the owner is handed the ask's failure (#4765)", () => {
+		const time = clock();
+		const routes = new ReleasedAskerReplies(time.now, TTL_MS);
+		routes.keep({ sessionId: ASKER, childName: CHILD }, [question("owned")], OWNER);
+		routes.keep({ sessionId: ASKER, childName: "subagent-unowned" }, [question("unowned")], undefined);
+		assert.equal(routes.hasOwnedRoute(question("owned")), true);
+		assert.equal(routes.hasOwnedRoute(question("unowned")), false, "no owner holds it");
+		assert.equal(routes.hasOwnedRoute(question("unknown")), false);
+		assert.equal(routes.hasOwnedRoute(question("owned", OTHER)), false, "another recipient's ask");
+		assert.equal(routes.hasOwnedRoute(question("owned", REPLIER, OTHER)), false, "another asker's ask");
+		time.advance(TTL_MS);
+		assert.equal(routes.hasOwnedRoute(question("owned")), false, "an expired route");
+	});
 });
