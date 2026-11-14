@@ -157,6 +157,11 @@ async function stallableProxy(target: URL): Promise<{ readonly url: string; stal
 	};
 }
 
+/** What the libSQL adapter emits on `process` as a server stops answering writes and answers them again. */
+function emitWriteHealth(health: { readonly stalled: boolean; readonly message: string }): void {
+	(process as NodeJS.EventEmitter).emit("atomic-libsql-write-health", health);
+}
+
 /** Each host as `[host, state, busy, draining, slots, leased]`. */
 function hostStates(hosts: readonly (SharedPoolHost & { readonly leased?: number })[]) {
 	return hosts.map((entry) => [entry.host, entry.state, entry.busy, entry.draining, entry.maxWorkers, entry.leased]);
@@ -397,6 +402,47 @@ test("fleet status strips the query, fragment and user info of every URL in a me
 		"at libsql://db.example/x and https://h.example/p then wss://q.example.",
 	);
 	assert.equal(withoutUrlCredentials("no url: a?b#c @d"), "no url: a?b#c @d");
+});
+
+test("fleet status hears the libSQL adapter's write-health event, which the CLI's silenced warnings do not stop (#4768)", async () => {
+	const f = await sharedRoot();
+	const emitWarning = process.emitWarning;
+	process.emitWarning = (() => {}) as typeof process.emitWarning;
+	try {
+		emitWriteHealth({
+			stalled: true,
+			message: "The libSQL server at libsql://me:pw@db.example/x?authToken=s3cret left 3 write requests…",
+		});
+		assert.deepEqual((await readSharedPoolStats(f.journal, "root"))?.fleet.store, {
+			state: "degraded",
+			message: "The libSQL server at libsql://db.example/x left 3 write requests…",
+		});
+		emitWriteHealth({ stalled: false, message: "taking writes again" });
+		assert.deepEqual((await readSharedPoolStats(f.journal, "root"))?.fleet.store, { state: "ok" });
+	} finally {
+		process.emitWarning = emitWarning;
+		await f.close();
+	}
+});
+
+test("atomic worker status of an adapter journal that is not SQL reads as an unknown store that holds no pools (#4768)", async () => {
+	const memory = fileURLToPath(new URL("../fixtures/storage-domain-adapter.ts", import.meta.url));
+	assert.deepEqual(
+		await readWorkflowWorkerFleet({
+			journal: { adapter: memory, options: {} },
+			agentDir: join(directory, "agent"),
+		}),
+		{
+			hosts: [],
+			roots: [],
+			fleet: {
+				store: {
+					state: "unknown",
+					message: "The journal's storage adapter is not SQL, so it holds no shared pools.",
+				},
+			},
+		},
+	);
 });
 
 test("fleet status follows the libSQL adapter's write-stall warnings: degraded with its redacted message, ok once writes recover (#4768)", async () => {

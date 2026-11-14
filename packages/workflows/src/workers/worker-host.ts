@@ -735,8 +735,18 @@ export async function readWorkflowWorkerFleet(
 			agentDir,
 		);
 		try {
-			// An adapter's journal is a SQL journal, which holds a fleet.
-			return (await readSharedPoolFleet(journal))!;
+			return (
+				(await readSharedPoolFleet(journal)) ?? {
+					hosts: [],
+					roots: [],
+					fleet: {
+						store: {
+							state: "unknown",
+							message: "The journal's storage adapter is not SQL, so it holds no shared pools.",
+						},
+					},
+				}
+			);
 		} finally {
 			await journal.close();
 		}

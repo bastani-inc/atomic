@@ -24,12 +24,22 @@ export function withoutUrlCredentials(text: string): string {
 	return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@]*@)?([^\s?#]*)(?:[?#][^\s]*)?/gi, "$1$2");
 }
 
-/** The libSQL adapter's last write-stall warning in this process, until the warning that writes get through again. */
+/**
+ * The event the libSQL adapter emits on `process` as a server stops answering writes and answers them again. Atomic's
+ * CLI silences `process.emitWarning`, so status listens for it as well as for the adapter's warnings.
+ */
+const WRITE_HEALTH_EVENT = "atomic-libsql-write-health";
+
+/** The libSQL adapter's last write-stall report in this process, until the report that writes get through again. */
 let stalled: string | undefined;
+function noteWriteHealth(health: { readonly stalled: boolean; readonly message: string }): void {
+	stalled = health.stalled ? withoutUrlCredentials(health.message) : undefined;
+}
 process.on("warning", (warning: Error & { readonly code?: string }) => {
-	if (warning.code === WRITES_STALLED) stalled = withoutUrlCredentials(warning.message);
-	else if (warning.code === WRITES_RECOVERED) stalled = undefined;
+	if (warning.code === WRITES_STALLED) noteWriteHealth({ stalled: true, message: warning.message });
+	else if (warning.code === WRITES_RECOVERED) noteWriteHealth({ stalled: false, message: warning.message });
 });
+process.on(WRITE_HEALTH_EVENT, noteWriteHealth);
 
 /** The shared store as this process last saw it answer: `degraded` after a stall warning, else `ok`. */
 export function sharedStoreHealth(): SharedStoreHealth {
