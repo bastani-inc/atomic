@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
@@ -9,7 +10,9 @@ import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-
 import type { Lease, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/autoscaler.js";
 import {
+	checkFleetOptions,
 	FleetController,
+	joinHosts,
 	startWorkflowFleetController,
 	type WorkflowFleetController,
 	type WorkflowFleetEvent,
@@ -124,6 +127,9 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(await a.acquire("C", undefined, 60_000), { held: false, holder: "B", epoch: 2 });
 		await b.release({ holder: "B", epoch: 2 });
 		assert.deepEqual(await a.acquire("C", undefined, 60_000), { held: true, epoch: 3 });
+		// The holder's lease, not the one a contender would take, says when it expires.
+		await sleep(350);
+		assert.deepEqual(await b.acquire("D", undefined, 1), { held: false, holder: "C", epoch: 3 });
 	},
 );
 
@@ -335,9 +341,12 @@ test.skipIf(process.platform === "win32")(
 		const running = await controller(provisioner, [], { minHosts: 1 });
 		await until("the slow list call", () => listSignal !== undefined);
 		const epoch = running.status().epoch!;
-		// Another controller takes the lease over while the call runs (a lease of 0 ms is always expired).
-		const store = await openStore();
-		assert.deepEqual(await store.acquire("other", undefined, 0), { held: true, epoch: epoch + 1 });
+		// Another controller takes the lease over while the call runs, as one would once a stalled holder's lease expired.
+		const journal = await openJournal();
+		await sqlPoolStorage(journal)!.transaction((tx) =>
+			tx.run("UPDATE acme_wf_runs_fleet_controller SET holder = 'other', epoch = epoch + 1"),
+		);
+		assert.ok(epoch > 0);
 		await until("the call to be aborted", () => listSignal!.aborted);
 		release();
 		await until("the controller to stand by", () => running.status().role === "standby");
@@ -419,3 +428,184 @@ test("startWorkflowFleetController refuses a provisioner without its methods, an
 	await refused({ provisioner, tickMs: 0 }, "provisioner.tickMs");
 	await refused({ provisioner, minHosts: 5, maxHosts: 2 }, "provisioner.minHosts");
 });
+
+test("checkFleetOptions refuses each part of a provisioner that is missing, and a tickMs below 1 (#4768)", () => {
+	const valid = { kind: "k", list: async () => [], scaleTo: async () => {}, drain: async () => {} };
+	const refused = (provisioner: unknown, field = "provisioner.provisioner", tickMs?: number) =>
+		assert.throws(
+			() =>
+				checkFleetOptions({
+					provisioner: provisioner as WorkerHostProvisioner,
+					...(tickMs === undefined ? {} : { tickMs }),
+				}),
+			(error: Error & { field?: string; source?: string; code?: string }) => {
+				assert.deepEqual([error.field, error.source, error.code], [field, "sdk", "invalid-option"]);
+				return true;
+			},
+		);
+	refused(undefined);
+	refused(null);
+	refused("provider");
+	refused({ ...valid, kind: 1 });
+	refused({ ...valid, list: undefined });
+	refused({ ...valid, scaleTo: undefined });
+	refused({ ...valid, drain: undefined });
+	refused(valid, "provisioner.tickMs", 0);
+	refused(valid, "provisioner.tickMs", 1.5);
+	assert.deepEqual(checkFleetOptions({ provisioner: valid, tickMs: 1 }).tickMs, 1);
+	assert.deepEqual(checkFleetOptions({ provisioner: valid }).tickMs, 10_000);
+	assert.match(
+		(() => {
+			try {
+				checkFleetOptions({ provisioner: {} as WorkerHostProvisioner });
+				return "";
+			} catch (error) {
+				return (error as Error).message;
+			}
+		})(),
+		/a WorkerHostProvisioner: a kind, and list, scaleTo and drain methods/,
+	);
+});
+
+test("joinHosts matches provider hosts to registered hosts by provider id or host id, with their leases and drains (#4768)", () => {
+	const joined = joinHosts(
+		[
+			{ id: "vm-1", state: "running", since: 1 },
+			{ id: "vm-2", hostId: "h2", state: "running", since: 2 },
+			{ id: "vm-3", state: "pending", since: 3 },
+			{ id: "vm-4", hostId: "h4", state: "running", since: 4 },
+		],
+		{
+			roots: [],
+			hosts: [
+				{ host: "h1", providerId: "vm-1", live: true, leased: 2 },
+				{ host: "h2", live: true, leased: 0 },
+				{ host: "h4", live: false, leased: 0 },
+				{ host: "other", providerId: "vm-9", live: true, leased: 0 },
+			],
+			drains: [{ host: "h1", providerId: "vm-1" }, { host: "h2" }, { host: "gone", providerId: "vm-3" }],
+			leased: new Map([
+				["h1", 2],
+				["h4", 1],
+			]),
+		},
+	);
+	assert.deepEqual(joined, [
+		{
+			view: { id: "vm-1", state: "running", since: 1, registered: true, leased: 2, draining: true },
+			hostId: "h1",
+			drainHosts: ["h1"],
+		},
+		{
+			view: { id: "vm-2", state: "running", since: 2, registered: true, leased: 0, draining: true },
+			hostId: "h2",
+			drainHosts: ["h2"],
+		},
+		{
+			view: { id: "vm-3", state: "pending", since: 3, registered: false, leased: 0, draining: true },
+			drainHosts: ["gone"],
+		},
+		{
+			view: { id: "vm-4", state: "running", since: 4, registered: false, leased: 1, draining: false },
+			hostId: "h4",
+			drainHosts: [],
+		},
+	]);
+});
+
+test.skipIf(process.platform === "win32")(
+	"status follows the lease: starting, active with its epoch and plan, standby, then stopped and released at once (#4768)",
+	async () => {
+		const events: WorkflowFleetEvent[] = [];
+		const store = await openStore();
+		assert.deepEqual(await store.acquire("other", undefined, 60_000), { held: true, epoch: 1 });
+		const running = await controller(fakeProvisioner(), events);
+		assert.deepEqual(running.status(), { role: "starting", holder: running.holder, provisioner: "fake" });
+		await until("standby", () => running.status().role === "standby");
+		await sleep(3 * TICK_MS);
+		assert.deepEqual(running.status(), { role: "standby", holder: running.holder, provisioner: "fake" });
+		assert.deepEqual(events, [{ kind: "standby", holder: "other" }], "standby is reported once");
+		await store.release({ holder: "other", epoch: 1 });
+		await until("active", () => running.status().target !== undefined);
+		assert.deepEqual(running.status(), {
+			role: "active",
+			holder: running.holder,
+			provisioner: "fake",
+			epoch: 2,
+			target: 0,
+			live: 0,
+			pending: 0,
+		});
+		assert.deepEqual(events.at(-1), { kind: "active", epoch: 2 });
+		assert.ok(
+			(await store.recent(10)).some((event) => event.reason === `${running.holder} took the controller lease`),
+		);
+		assert.match(running.holder, /^.+\/\d+\/[0-9a-f]{8}$/);
+		await running.stop();
+		assert.deepEqual(running.status(), { role: "stopped", holder: running.holder, provisioner: "fake" });
+		// The lease was released: a controller with a long lease takes it at once.
+		assert.deepEqual(await store.acquire("next", undefined, 60_000), { held: true, epoch: 3 });
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a degraded controller keeps when its failures began, and records a long error cut to 1 KiB (#4768)",
+	async () => {
+		const events: WorkflowFleetEvent[] = [];
+		const provisioner: WorkerHostProvisioner = {
+			kind: "long",
+			list: () => Promise.reject("x".repeat(2_000)),
+			async scaleTo() {},
+			async drain() {},
+		};
+		const running = await controller(provisioner, events);
+		await until("a failed tick", () => running.status().degraded !== undefined);
+		const since = running.status().degraded!.since;
+		const first = events.find((event) => event.kind === "degraded");
+		assert.ok(first?.kind === "degraded");
+		assert.equal(first.error.name, "Error");
+		assert.equal(first.error.message, `${"x".repeat(1_024)}…`);
+		await until("a second failed tick", () => running.status().degraded!.failures >= 2);
+		assert.equal(running.status().degraded!.since, since);
+		const store = await openStore();
+		const recorded = (await store.recent(10)).find((event) => event.kind === "error");
+		assert.deepEqual(
+			[recorded?.reason, recorded?.error],
+			["long provisioner or journal call failed", `Error: ${"x".repeat(1_024)}…`],
+		);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a controller that is not a root's leaves its idle hosts serving when it stops (#4768)",
+	async () => {
+		const hostEvents: WorkflowWorkerHostEvent[] = [];
+		const host = await startWorkflowWorkerHost({
+			journal: selection(),
+			agentDir: join(directory, "host"),
+			maxWorkers: 1,
+			hostId: "h1",
+			providerId: "vm-1",
+			restore: false,
+			onEvent: (event) => hostEvents.push(event),
+		});
+		hosts.push(host);
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return [{ id: "vm-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain() {},
+		};
+		const running = await controller(provisioner);
+		const store = await openStore();
+		await until("the host to register", async () => (await store.snapshot()).hosts.length === 1);
+		await until("the controller to lead", () => running.status().live === 1);
+		await running.stop();
+		// The host reports and reads drain requests at least every 5 s.
+		await sleep(6_000);
+		assert.deepEqual(hostEvents, []);
+		assert.deepEqual((await store.snapshot()).drains, []);
+	},
+);

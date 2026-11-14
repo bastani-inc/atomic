@@ -409,7 +409,7 @@ export class FleetController implements WorkflowFleetController {
 	}
 }
 
-interface JoinedHost {
+export interface JoinedHost {
 	readonly view: FleetHostView;
 	/** The worker host id it registered with, when known. */
 	readonly hostId?: string;
@@ -421,7 +421,7 @@ interface JoinedHost {
  * The provider's hosts joined with the journal's registry: a registered host matches the provider host whose id it
  * reports (`ATOMIC_WORKER_PROVIDER_ID`), or whose `hostId` the provider gives.
  */
-function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSnapshot): JoinedHost[] {
+export function joinHosts(listed: readonly ProvisionedHost[], snapshot: FleetSnapshot): JoinedHost[] {
 	return listed.map((provided) => {
 		const registered = snapshot.hosts.find(
 			(host) => host.providerId === provided.id || (provided.hostId !== undefined && host.host === provided.hostId),

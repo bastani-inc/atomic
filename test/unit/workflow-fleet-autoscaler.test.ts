@@ -388,3 +388,121 @@ test("resolveFleetPolicy applies the defaults and refuses caps that cannot hold 
 	assert.throws(() => resolveFleetPolicy({ scaleUpQueueDepth: -1 }), /scaleUpQueueDepth/);
 	assert.throws(() => resolveFleetPolicy({ bootTimeoutMs: 0 }), /bootTimeoutMs/);
 });
+
+test("an empty fleet with nothing to do plans no action, from the initial state (#4768)", () => {
+	assert.deepEqual(INITIAL_FLEET_STATE, { idleSince: {}, unregisteredSince: {}, bootFailures: 0, holdUntil: 0 });
+	const plan = planFleet(POLICY, observe(0, [], []), INITIAL_FLEET_STATE);
+	assert.deepEqual(plan, { target: 0, live: 0, pending: 0, actions: [], state: INITIAL_FLEET_STATE });
+	// A queue over the depth is remembered from the tick it started.
+	assert.equal(planFleet(POLICY, observe(5, [root(3)], [host("a", { leased: 2 })]), plan.state).state.overSince, 5);
+});
+
+test("each removal names its reason, and only a failed host that was not draining counts as a boot failure (#4768)", () => {
+	const plan = planFleet(
+		{ ...POLICY, bootTimeoutMs: 10 },
+		observe(
+			100,
+			[],
+			[
+				host("failed", { state: "failed", registered: false }),
+				host("stopped", { state: "stopped", registered: false }),
+				host("failed-draining", { state: "failed", registered: false, draining: true }),
+				host("drained", { state: "draining", registered: false }),
+				host("late", { state: "pending", registered: false }),
+			],
+		),
+		{ ...INITIAL_FLEET_STATE, unregisteredSince: { late: 0 } },
+	);
+	assert.deepEqual(
+		plan.actions.map((action) => (action.kind === "remove" ? [action.id, action.reason] : [action.kind])),
+		[
+			["failed", "failed"],
+			["stopped", "stopped"],
+			["failed-draining", "drained"],
+			["drained", "drained"],
+			["late", "boot-timeout"],
+		],
+	);
+	assert.equal(plan.state.bootFailures, 2);
+});
+
+test("a host the provider reports draining is neither live nor pending, and is removed once it left the registry (#4768)", () => {
+	const plan = planFleet(
+		POLICY,
+		observe(
+			0,
+			[root(0, 2)],
+			[
+				host("leaving", { state: "draining" }),
+				host("busy-leaving", { state: "draining", leased: 1 }),
+				host("busy-failed", { state: "failed", leased: 1 }),
+				host("busy-stopped", { state: "stopped", leased: 1 }),
+				host("busy", { leased: 1 }),
+			],
+		),
+		INITIAL_FLEET_STATE,
+	);
+	assert.equal(plan.live, 1);
+	assert.equal(plan.pending, 0);
+	assert.deepEqual(removed(plan), []);
+});
+
+test("an unregistered host keeps the boot failures before it (#4768)", () => {
+	const state = { ...INITIAL_FLEET_STATE, unregisteredSince: { p: 0 }, bootFailures: 2, holdUntil: 50_000 };
+	const plan = planFleet(POLICY, observe(10, [], [host("p", { registered: false, state: "pending" })]), state);
+	assert.equal(plan.state.bootFailures, 2);
+	assert.equal(plan.state.holdUntil, 50_000);
+	assert.deepEqual(plan.state.unregisteredSince, { p: 0 });
+});
+
+test("running children with no ready work never add hosts, even at a queue depth of 0 (#4768)", () => {
+	const policy = { ...POLICY, scaleUpQueueDepth: 0, scaleUpDelayMs: 0 };
+	const plans = ticks(policy, [
+		observe(0, [root(0, 4)], [host("a", { leased: 2 })]),
+		observe(1, [root(0, 4)], [host("a", { leased: 2 })]),
+	]);
+	assert.equal(plans[1]!.target, 2);
+	assert.deepEqual(plans.map(scaleTargets), [[], []]);
+	assert.equal(plans[1]!.state.overSince, undefined);
+	// Ready work within the depth, with a host serving, waits too.
+	const within = ticks({ ...POLICY, scaleUpDelayMs: 0 }, [observe(0, [root(2, 2)], [host("a", { leased: 2 })])]);
+	assert.deepEqual(scaleTargets(within[0]!), []);
+});
+
+test("a fleet below its target but still waiting out the scale-up delay drains nothing (#4768)", () => {
+	const idle = [host("a"), host("b")];
+	const policy = { ...POLICY, idleDrainMs: 0 };
+	const plans = ticks(policy, [observe(0, [root(6)], idle), observe(1_000, [root(6)], idle)]);
+	assert.deepEqual(plans.map(scaleTargets), [[], []]);
+	assert.deepEqual(plans.map(marked), [[], []]);
+});
+
+test("a fleet at its target drains nothing, and above it drains only the excess, oldest idle first (#4768)", () => {
+	const policy = { ...POLICY, idleDrainMs: 100 };
+	const state = { ...INITIAL_FLEET_STATE, idleSince: { a: 50, b: 10, c: 30 } };
+	const hosts = [host("a"), host("b"), host("c")];
+	// Demand 4 at 2 a host is 2 hosts: one of the three goes, the one idle longest.
+	assert.deepEqual(marked(planFleet(policy, observe(1_000, [root(4)], hosts), state)), ["b"]);
+	assert.deepEqual(marked(planFleet(policy, observe(1_000, [root(6)], hosts), state)), []);
+	assert.deepEqual(marked(planFleet(policy, observe(1_000, [root(2)], hosts), state)), ["b", "c"]);
+});
+
+test("resolveFleetPolicy names the field it refuses (#4768)", () => {
+	const refused = (options: Parameters<typeof resolveFleetPolicy>[0], field: string, detail: string) =>
+		assert.throws(
+			() => resolveFleetPolicy(options),
+			(error: Error & { field?: string; source?: string; code?: string; detail?: string }) => {
+				assert.deepEqual(
+					[error.field, error.source, error.code, error.detail],
+					[field, "sdk", "invalid-option", detail],
+				);
+				return true;
+			},
+		);
+	refused({ minHosts: -1 }, "provisioner.minHosts", "must be an integer of at least 0");
+	refused({ scaleUpDelayMs: -1 }, "provisioner.scaleUpDelayMs", "must be an integer of at least 0");
+	refused({ idleDrainMs: 0.5 }, "provisioner.idleDrainMs", "must be an integer of at least 0");
+	refused({ workersPerHost: 0 }, "provisioner.workersPerHost", "must be an integer of at least 1");
+	refused({ minHosts: 3, maxHosts: 2 }, "provisioner.minHosts", "must not exceed maxHosts (2)");
+	assert.deepEqual(resolveFleetPolicy({ minHosts: 0, scaleUpDelayMs: 0, idleDrainMs: 0, maxHosts: 0 }).maxHosts, 0);
+});

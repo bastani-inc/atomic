@@ -95,7 +95,8 @@ export class SqlFleetStore {
 		await storage.transaction((tx) =>
 			tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${store.lease}(
-					id INTEGER PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL
+					id INTEGER PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL,
+					lease_ms INTEGER NOT NULL
 				);
 				CREATE TABLE IF NOT EXISTS ${store.events}(
 					seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, target INTEGER, live INTEGER,
@@ -108,33 +109,36 @@ export class SqlFleetStore {
 	}
 
 	/**
-	 * Takes or renews the controller lease for `holder`: renews it when `holder` holds it at `epoch`, takes it over with
-	 * the next epoch when nobody does or its holder did not renew it for `leaseMs` by the database's clock, and otherwise
-	 * reports who holds it.
+	 * Takes or renews the controller lease for `holder`, which then lasts `leaseMs` from each renewal: renews it when
+	 * `holder` holds it at `epoch`, takes it over with the next epoch when nobody does or its holder did not renew it
+	 * within the lease that holder set, by the database's clock, and otherwise reports who holds it.
 	 */
 	acquire(holder: string, epoch: number | undefined, leaseMs: number): Promise<FleetLeaseState> {
 		return this.storage.transaction(async (tx) => {
-			const row = await tx.get<SqliteRow & { holder: string; epoch: number; renewed_at: number; now: number }>(
-				`SELECT holder, epoch, renewed_at, ${STORE_NOW} AS now FROM ${this.lease} WHERE id = 1`,
-			);
+			const row = await tx.get<
+				SqliteRow & { holder: string; epoch: number; renewed_at: number; lease_ms: number; now: number }
+			>(`SELECT holder, epoch, renewed_at, lease_ms, ${STORE_NOW} AS now FROM ${this.lease} WHERE id = 1`);
 			if (row === undefined) {
 				await tx.run(
-					`INSERT INTO ${this.lease}(id, holder, epoch, renewed_at) VALUES (1, ?, 1, ${STORE_NOW})`,
+					`INSERT INTO ${this.lease}(id, holder, epoch, renewed_at, lease_ms) VALUES (1, ?, 1, ${STORE_NOW}, ?)`,
 					holder,
+					leaseMs,
 				);
 				return { held: true, epoch: 1 };
 			}
 			const current = Number(row.epoch);
 			if (row.holder === holder && current === epoch) {
-				await tx.run(`UPDATE ${this.lease} SET renewed_at = ${STORE_NOW} WHERE id = 1`);
+				await tx.run(`UPDATE ${this.lease} SET renewed_at = ${STORE_NOW}, lease_ms = ? WHERE id = 1`, leaseMs);
 				return { held: true, epoch: current };
 			}
-			if (Number(row.now) - Number(row.renewed_at) < leaseMs)
+			// The lease lasts as long as its holder set, whatever this controller's own lease would be.
+			if (Number(row.now) - Number(row.renewed_at) < Number(row.lease_ms))
 				return { held: false, holder: row.holder, epoch: current };
 			await tx.run(
-				`UPDATE ${this.lease} SET holder = ?, epoch = ?, renewed_at = ${STORE_NOW} WHERE id = 1`,
+				`UPDATE ${this.lease} SET holder = ?, epoch = ?, renewed_at = ${STORE_NOW}, lease_ms = ? WHERE id = 1`,
 				holder,
 				current + 1,
+				leaseMs,
 			);
 			return { held: true, epoch: current + 1 };
 		});
