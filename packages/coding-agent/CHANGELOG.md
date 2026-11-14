@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- A resume restore that needs a commit this machine lacks now fetches only that commit (`--depth=1`) instead of the repository's whole history, which roughly halves a cold restore of a long-lived repository; it fetches the full history when a remote refuses a shallow fetch or the restore needs older commits. Restored worktrees therefore start with a shallow history (`git fetch --unshallow origin` brings the rest). A session's other checkouts are now restored concurrently, up to four at a time, instead of one after another ([#4748](https://github.com/bastani-inc/atomic/issues/4748))
+
 ## [0.9.87-alpha.1] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.
