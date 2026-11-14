@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Container } from "@earendil-works/pi-tui";
 import { afterEach, beforeAll, beforeEach, describe, test } from "vitest";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { recordResumeTimings } from "../src/core/resume/timings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openSessionInWorktree } from "../src/core/session-worktree-snapshots.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
@@ -136,6 +137,32 @@ describe("/session snapshot", () => {
 			[mapping.to],
 		);
 		assert.ok(lines.includes("matches the current tree"));
+	});
+
+	test("shows how long the last capture took and where the last resume's time went (#4748)", async () => {
+		const { clone, manager, snapshot } = await recordedSession();
+		await manager.appendWorktreeSnapshot(clone, snapshot.id, undefined, undefined, [], undefined, 420);
+		await recordResumeTimings(manager, {
+			version: 1,
+			startedAt: "2026-11-14T10:00:00.000Z",
+			restores: [{ root: clone, mode: "fresh", fetch: "full", ms: 2_000, phases: { fetch: 1_500, verify: 200 } }],
+			blueprint: [{ section: "maintenance", name: "npm install", ms: 3_000, exit: "ok" }],
+			firstPromptReadyMs: 5_500,
+			blueprintReadyMs: 5_400,
+		});
+		const host = snapshotCommandHost(manager);
+		await handleSessionSnapshotCommand.call(host);
+		const lines = rendered(host.chatContainer)
+			.split("\n")
+			.map((line) => line.trim());
+		assert.ok(lines.includes("last capture took 0.4 s"));
+		const block = lines.slice(lines.indexOf("Last resume"));
+		assert.deepEqual(block.filter(Boolean), [
+			"Last resume",
+			`restored ${clone} in 2.0 s (fetch 1.5 full, verify 0.2)`,
+			"blueprint 3.0 s (npm install 3.0)",
+			"ready after 5.5 s",
+		]);
 	});
 
 	test("reports a checkout that no longer exists", async () => {

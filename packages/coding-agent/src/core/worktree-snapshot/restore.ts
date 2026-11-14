@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../../config.js";
+import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
 	readRepositoryConfig,
@@ -548,6 +549,7 @@ async function ensureHead(
 	let fetched = false;
 	if (!(await hasObject(git, `${head}^{commit}`))) {
 		// Only a fetch that succeeded proves a remote has `head`: another process may import it from a bundle meanwhile.
+		noteRestoreFetch("full");
 		const fromRemotes = await fetchCommits(git, snapshot.remotes, [head]);
 		let failure = fromRemotes.failure;
 		fetched = fromRemotes.supplied;
@@ -556,6 +558,7 @@ async function ensureHead(
 			const prerequisites = bundlePrerequisites(data);
 			assertUsableBundlePrerequisites(prerequisites, snapshot.id);
 			failure = (await fetchCommits(git, snapshot.remotes, prerequisites)).failure ?? failure;
+			noteRestoreFetch("bundle");
 			const file = join(scratch, "history.bundle");
 			await writing(file, snapshot.id, () => writeFile(file, data));
 			try {
@@ -894,11 +897,13 @@ async function restoreValidated(
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await withRepositoryLock(store, async () => {
 			await ensureObjectStore(store, snapshotId, signal);
-			const fetched = await ensureHead(
-				git,
-				snapshot ?? { id: null, head: target.head, remotes: target.remotes, bundle: null, omitted: [] },
-				options.blobs,
-				scratch,
+			const fetched = await timeRestorePhase("fetch", () =>
+				ensureHead(
+					git,
+					snapshot ?? { id: null, head: target.head, remotes: target.remotes, bundle: null, omitted: [] },
+					options.blobs,
+					scratch,
+				),
 			);
 			// What a snapshot of other remotes, such as a fork at the same commit, says is pushed is not this store's.
 			const sameRemotes =
@@ -924,7 +929,7 @@ async function restoreValidated(
 						tree: target.tree,
 					});
 				}
-				await reconstructTree(git, snapshot, patches, scratch);
+				await timeRestorePhase("reconstruct", () => reconstructTree(git, snapshot, patches, scratch));
 			}
 		});
 		await publishWorktree({
@@ -1028,7 +1033,7 @@ async function restoreDegradedValidated(
 			await ensureObjectStore(store, snapshot.id, signal);
 			const configured = await configureRecordedRemotes(git, snapshot.remotes);
 			// The exact restore may have stopped before it reached the recorded commit: fetch it, or take it from the bundle.
-			const reached = await ensureHead(git, snapshot, options.blobs, scratch).then(
+			const reached = await timeRestorePhase("fetch", () => ensureHead(git, snapshot, options.blobs, scratch)).then(
 				(fetched) => ({ fetched }),
 				(error: unknown) => {
 					if (isWorkspaceRestoreError(error)) return undefined;
@@ -1036,7 +1041,9 @@ async function restoreDegradedValidated(
 				},
 			);
 			if (reached !== undefined) {
-				const partial = await applicableChanges(git, snapshot, options.blobs, scratch);
+				const partial = await timeRestorePhase("reconstruct", () =>
+					applicableChanges(git, snapshot, options.blobs, scratch),
+				);
 				await runGit(["update-ref", "--stdin"], {
 					...git,
 					input: [
@@ -1056,7 +1063,7 @@ async function restoreDegradedValidated(
 					...cause,
 				};
 			}
-			const closest = await closestCommit(git, snapshot, candidates, options.blobs);
+			const closest = await timeRestorePhase("fetch", () => closestCommit(git, snapshot, candidates, options.blobs));
 			if (closest === undefined) throw failure;
 			await runGit(["update-ref", "--stdin"], {
 				...git,
@@ -1298,62 +1305,75 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 			: join(dirname(path), `.${basename(path)}.atomic-restore-${id}`);
 	const record: RestoreRecord = { staging, target: path, store, createdTarget };
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
-		await materialize(git, staging, head, tree, scratch, snapshotId, signal);
+		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));
 		assertActive();
 		if (snapshot?.filters?.drivers.includes("lfs")) {
 			const worktree: GitRunOptions = { cwd: staging, signal };
-			const pointers = await pullLfsObjects(worktree, head, tree, snapshot.remotes);
+			const pointers = await timeRestorePhase("lfs", () => pullLfsObjects(worktree, head, tree, snapshot.remotes));
 			if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
 		}
-		const checkout = await locateCheckout(staging, signal);
-		if (checkout instanceof Error) throw checkout;
-		const policy = await loadSnapshotPathPolicy(staging);
-		const actual = await withScratchDirectory((verifyScratch) =>
-			writeWorkingTree(checkout, settings, policy, verifyScratch, {
-				signal,
-				neutral: true,
-				seedTree: tree,
-				attributesFile: join(scratch, "empty-attributes"),
-			}),
-		);
-		measured = actual.tree;
-		if (checkout.head !== head || (publish.verify === "tree" && actual.tree !== tree)) {
-			throw new WorkspaceRestoreError("tree-mismatch", {
-				snapshotId,
-				target: path,
-				expectedTree: tree,
-				actualTree: actual.tree,
-			});
-		}
+		await timeRestorePhase("verify", async () => {
+			const checkout = await locateCheckout(staging, signal);
+			if (checkout instanceof Error) throw checkout;
+			const policy = await loadSnapshotPathPolicy(staging);
+			const actual = await withScratchDirectory((verifyScratch) =>
+				writeWorkingTree(checkout, settings, policy, verifyScratch, {
+					signal,
+					neutral: true,
+					seedTree: tree,
+					attributesFile: join(scratch, "empty-attributes"),
+				}),
+			);
+			measured = actual.tree;
+			if (checkout.head !== head || (publish.verify === "tree" && actual.tree !== tree)) {
+				throw new WorkspaceRestoreError("tree-mismatch", {
+					snapshotId,
+					target: path,
+					expectedTree: tree,
+					actualTree: actual.tree,
+				});
+			}
+		});
 		assertActive();
-		if (createdTarget) {
-			if ((await statIfPresent(path)) !== undefined) {
-				throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-			}
-		} else {
-			await writing(path, snapshotId, () => rmdir(path));
-		}
-		await runGit(["worktree", "move", staging, path], git);
-		// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
-		// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone.
-		const registered = await registeredWorktrees(git);
-		const destination = await physicalPath(path);
-		if (!includesPath(registered, destination)) {
-			const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
-			const nested = join(destination, basename(staging));
-			if (includesPath(registered, nested)) {
-				try {
-					await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
-				} catch (cleanupCause) {
-					Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
-					warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
-				}
-			}
-			throw error;
-		}
+		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
 		assertActive();
 	});
 	return measured;
+}
+
+/** Moves the verified staging worktree to the restore's final path, never into a directory that appeared there. */
+async function moveIntoPlace(
+	publish: PublishWorktree,
+	staging: string,
+	createdTarget: boolean,
+	snapshotId: string | null,
+): Promise<void> {
+	const { git, path, warn } = publish;
+	if (createdTarget) {
+		if ((await statIfPresent(path)) !== undefined) {
+			throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+		}
+	} else {
+		await writing(path, snapshotId, () => rmdir(path));
+	}
+	await runGit(["worktree", "move", staging, path], git);
+	// Git moves *inside* an existing directory. If one appeared after our check, never return it as the
+	// verified worktree: remove only the nested worktree that Git registered and leave the user's files alone.
+	const registered = await registeredWorktrees(git);
+	const destination = await physicalPath(path);
+	if (!includesPath(registered, destination)) {
+		const error = new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+		const nested = join(destination, basename(staging));
+		if (includesPath(registered, nested)) {
+			try {
+				await runGit(["worktree", "remove", "--force", "--force", nested], { ...git, signal: undefined });
+			} catch (cleanupCause) {
+				Object.defineProperty(error, "cleanupCause", { value: cleanupCause, configurable: true });
+				warn({ code: "stale-restore-retained", path: nested, kind: "worktree" });
+			}
+		}
+		throw error;
+	}
 }
 
 /** The entry at `path`, or undefined when there is none. */
