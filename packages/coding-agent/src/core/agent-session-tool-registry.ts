@@ -186,7 +186,8 @@ export function _buildRuntime(
 	},
 ): void {
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
-	const shellCommandPrefix = shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
+	// Resolved per command, so `$ENVRC` written by a blueprint build that ends after the tool is created still applies.
+	const shellCommandPrefix = () => shellCommandPrefixFor(this, this.settingsManager.getShellCommandPrefix());
 	const shellPath = this.settingsManager.getShellPath();
 	// Resolve ownership per call, just like command execution. Each wait receives
 	// a stable binding so observation cleanup can finish after session disposal.
@@ -202,7 +203,9 @@ export function _buildRuntime(
 		: createAllToolDefinitions(this._cwd, {
 				read: { autoResizeImages },
 				bash: {
-					commandPrefix: shellCommandPrefix,
+					get commandPrefix() {
+						return shellCommandPrefix();
+					},
 					shellPath,
 					get taskOwner() {
 						return getTaskOwner();

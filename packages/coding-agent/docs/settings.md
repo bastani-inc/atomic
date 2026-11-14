@@ -384,6 +384,7 @@ Both fields must be non-negative safe integers, including ordinary settings. Inv
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
+| `resume.waitForBlueprint` | `"prompt"` \| `"tools"` | `"prompt"` | When a resume restores a worktree, what waits for its blueprint build. `"prompt"` opens the session once the build has finished. `"tools"` opens it and sends the first request while the build runs; tools that run project code or read the worktree wait for the build, and the first of them reports how it went. See [Start the first turn while the build runs](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs) |
 | `resume.setupCommand` | string | unset | Deprecated; remove it in favour of a blueprint. Kept for one release as an alias for one maintenance step of the global blueprint: the command runs in the root of each worktree restored on resume, or by a worker host for a pooled child, in a trusted project. A resume that builds a worktree prints a deprecation warning while it is set. Move the command into the `maintenance` section of `.atomic/blueprint.yaml`. Read from global settings only; a project's settings cannot set it. See [Set the environment up with a blueprint](/guides/resume-on-any-machine#set-the-environment-up-with-a-blueprint) |
 
 ### Snapshots
