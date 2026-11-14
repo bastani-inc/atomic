@@ -177,6 +177,8 @@ interface Harness {
 	resumedRunsWait: boolean;
 	/** Whether the original launch ends released, waiting on a detached `wait_for_ci` call (#4326). */
 	releaseOriginal: boolean;
+	/** The task heartbeat cadence `admit` launches with; omitted uses the owner default. */
+	launchHeartbeatMs?: number;
 	/** The still-running calls a stubbed released outcome hands back, and the dispatcher their results wake through. */
 	releasedCalls: DetachedToolCall[];
 	wakeDispatcher?: AgentWakeDispatcher;
@@ -385,6 +387,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 				wait: { kind: "background" },
 				recordChild: createSubagentChildRecordSink(pi, state.ctx),
 				runtime: { runSync: runtime },
+				...(state.launchHeartbeatMs === undefined ? {} : { heartbeatMs: state.launchHeartbeatMs }),
 				...(state.wakeDispatcher ? { wakeDispatcher: state.wakeDispatcher } : {}),
 				...(schedule ? { schedule } : {}),
 			});
@@ -3498,6 +3501,39 @@ async function releasedWithWakes(h: Harness, runId: string): Promise<AgentWakeDi
 
 function clearedOk(record: SubagentChildRecord): boolean {
 	return record.state === "terminal" && record.terminalStatus === "ok" && (record.heldToolResults ?? []).length === 0;
+}
+
+function taskHeartbeatMs(h: Harness, taskId: string): number | undefined {
+	const watched = h.host.watchOwnerTasks();
+	assert.ok(watched.ok);
+	try {
+		const task = watched.value.snapshot.tasks.find((candidate) => candidate.ref.taskId === taskId);
+		assert.ok(task, `task ${taskId} is recorded`);
+		return task.heartbeatMs;
+	} finally {
+		watched.value.dispose();
+	}
+}
+
+for (const heartbeatMs of [0, 120_000]) {
+	test(`a released child launched with heartbeatMs ${heartbeatMs} keeps that cadence when a result wakes it (#4856)`, async () => {
+		const h = harness();
+		h.launchHeartbeatMs = heartbeatMs;
+		const dispatcher = await releasedWithWakes(h, `heartbeat-${heartbeatMs}`);
+		const childId = `heartbeat-${heartbeatMs}:0`;
+		const released = h.latest(childId);
+		assert.ok(released?.taskId);
+		assert.equal(taskHeartbeatMs(h, released.taskId), heartbeatMs);
+
+		await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), childId), {
+			id: "tool-result:ci-1",
+			kind: "tool-result",
+			toolResult: waitResult("CI green"),
+		});
+		const woken = await h.waitForLatest(childId, (record) => record.taskId !== released.taskId && clearedOk(record));
+		assert.ok(woken.taskId);
+		assert.equal(taskHeartbeatMs(h, woken.taskId), heartbeatMs, "the wake relaunches on the launch's cadence");
+	});
 }
 
 test("results a woken child is given stay held in its record until its run has them (#4326)", async () => {

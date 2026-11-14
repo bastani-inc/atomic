@@ -623,6 +623,7 @@ async function relaunchChild(
 		runtime,
 		recordChild,
 		forked: record.forked === true,
+		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
 			release();
