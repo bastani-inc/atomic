@@ -2,9 +2,9 @@ import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import { WorkspaceConfigError, type WorkspaceConfigSource } from "./errors.ts";
 import type { WorktreeSnapshotSettings } from "./types.ts";
 
-export const DEFAULT_WORKTREE_SNAPSHOT_SETTINGS: WorktreeSnapshotSettings = Object.freeze({
-	...SETTINGS_DEFAULTS.snapshots,
-});
+const { pool: _pool, ...SNAPSHOT_DEFAULTS } = SETTINGS_DEFAULTS.snapshots;
+
+export const DEFAULT_WORKTREE_SNAPSHOT_SETTINGS: WorktreeSnapshotSettings = Object.freeze({ ...SNAPSHOT_DEFAULTS });
 
 export type WorktreeSnapshotSettingsInput = Partial<WorktreeSnapshotSettings>;
 

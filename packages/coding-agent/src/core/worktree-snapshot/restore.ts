@@ -953,12 +953,28 @@ export async function restoreWorktree(
 	if (options.git !== undefined && (typeof options.git?.path !== "string" || options.git.path.length === 0)) {
 		throw new WorkspaceConfigError("sdk", "git", "a Git executable with a non-empty path");
 	}
-	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options));
+	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options, undefined));
+}
+
+/**
+ * {@link restoreWorktree} into `slot`, a pooled slot path under `storeDir`/worktrees that does not exist yet (#4748),
+ * staged like a restore into a new default path. Session resumes use it; `into` stays the SDK's way to choose a path.
+ */
+export async function restoreWorktreeAt(
+	target: WorkspaceBinding | WorktreeSnapshot,
+	slot: string,
+	options: Omit<RestoreWorktreeSnapshotOptions, "into"> = {},
+): Promise<RestoredWorktree> {
+	if (!isBinding(target)) {
+		throw new WorkspaceConfigError("sdk", "target", "a WorkspaceBinding or a WorktreeSnapshot");
+	}
+	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options, slot));
 }
 
 async function restoreValidated(
 	target: WorkspaceBinding,
 	options: RestoreWorktreeSnapshotOptions,
+	slot: string | undefined,
 ): Promise<RestoredWorktree> {
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
@@ -967,6 +983,7 @@ async function restoreValidated(
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const path = resolve(
 		options.into ??
+			slot ??
 			join(storeDir, "worktrees", `${(snapshot?.id ?? target.tree).slice(0, 12)}-${randomUUID().slice(0, 8)}`),
 	);
 	await checkTarget(path, snapshotId);
@@ -1094,13 +1111,24 @@ export async function restoreDegradedWorktree(
 	failure: WorkspaceRestoreError,
 	options: RestoreDegradedWorktreeOptions = {},
 ): Promise<DegradedWorktree> {
-	return withWorktreeSnapshotGit(options.git, () => restoreDegradedValidated(snapshot, failure, options));
+	return withWorktreeSnapshotGit(options.git, () => restoreDegradedValidated(snapshot, failure, options, undefined));
+}
+
+/** {@link restoreDegradedWorktree} into `slot`, a pooled slot path as for {@link restoreWorktreeAt} (#4748). */
+export async function restoreDegradedWorktreeAt(
+	snapshot: WorktreeSnapshot,
+	failure: WorkspaceRestoreError,
+	slot: string,
+	options: RestoreDegradedWorktreeOptions = {},
+): Promise<DegradedWorktree> {
+	return withWorktreeSnapshotGit(options.git, () => restoreDegradedValidated(snapshot, failure, options, slot));
 }
 
 async function restoreDegradedValidated(
 	snapshot: WorktreeSnapshot,
 	failure: WorkspaceRestoreError,
 	options: RestoreDegradedWorktreeOptions,
+	slot: string | undefined,
 ): Promise<DegradedWorktree> {
 	const { signal } = options;
 	assertUsableSnapshotRecord(
@@ -1111,7 +1139,10 @@ async function restoreDegradedValidated(
 	const unusable = candidates.findIndex((commit) => !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit));
 	if (unusable >= 0) throw new WorkspaceConfigError("sdk", `candidates[${unusable}]`, "a Git commit id");
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
-	const path = join(storeDir, "worktrees", `${snapshot.id.slice(0, 12)}-${randomUUID().slice(0, 8)}`);
+	const path =
+		slot === undefined
+			? join(storeDir, "worktrees", `${snapshot.id.slice(0, 12)}-${randomUUID().slice(0, 8)}`)
+			: resolve(slot);
 	await checkTarget(path, snapshot.id);
 	const warnings: WorktreeRestoreWarning[] = [];
 	const warn = (warning: WorktreeRestoreWarning) => {

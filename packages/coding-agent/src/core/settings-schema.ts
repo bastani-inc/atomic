@@ -168,6 +168,19 @@ const SnapshotSettingsSchema = Type.Object({
 			default: SETTINGS_DEFAULTS.snapshots.graceSeconds,
 		}),
 	),
+	pool: Type.Optional(
+		Type.Object({
+			maxIdlePerRepository: Type.Optional(
+				Type.Integer({
+					minimum: 0,
+					maximum: Number.MAX_SAFE_INTEGER,
+					description:
+						"Idle restored worktrees kept per repository in the worktree pool; the oldest unchanged ones beyond it are removed when a resume restores another.",
+					default: SETTINGS_DEFAULTS.snapshots.pool.maxIdlePerRepository,
+				}),
+			),
+		}),
+	),
 });
 
 const ResumeSettingsSchema = Type.Object({
