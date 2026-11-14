@@ -272,6 +272,25 @@ test("worker start warns about a token file other users can read (#4768)", async
 	]);
 });
 
+test("worker start with a Postgres --db warns about a password file other users can read, and labels the server without its user (#4793)", async () => {
+	if (process.platform === "win32") return;
+	chmodSync(tokenFile, 0o644);
+	const fake = fakeModule();
+	const url = "postgres://atomic@db.example.com:5432/atomic?sslmode=verify-full";
+	const host = await started(["start", "--db", url, "--password-file", tokenFile], fake);
+	host.signals.emit("SIGTERM", "SIGTERM");
+	assert.equal(await host.exit, 0);
+	assert.deepEqual(host.err, [
+		`Warning: The password file ${tokenFile} is readable by other users; restrict it with chmod 600.`,
+	]);
+	assert.match(host.out[0] ?? "", /journal=postgres:\/\/db\.example\.com:5432\/atomic$/);
+	chmodSync(tokenFile, 0o600);
+	const quiet = await started(["start", "--db", url, "--password-file", tokenFile], fakeModule());
+	quiet.signals.emit("SIGTERM", "SIGTERM");
+	assert.equal(await quiet.exit, 0);
+	assert.deepEqual(quiet.err, []);
+});
+
 async function run(args: readonly string[], loadModule: () => Promise<WorkerHostModule>) {
 	const out: string[] = [];
 	const err: string[] = [];

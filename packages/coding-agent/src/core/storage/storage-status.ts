@@ -370,7 +370,7 @@ async function postgresServerVersion(database: SqliteDatabase): Promise<string> 
 	const row = await database.get<SqliteRow & { version: string }>(
 		"SELECT current_setting('server_version') AS version",
 	);
-	return `PostgreSQL ${row?.version ?? "of an unknown version"}`;
+	return `PostgreSQL ${(row as SqliteRow & { version: string }).version}`;
 }
 
 async function roundTrip(

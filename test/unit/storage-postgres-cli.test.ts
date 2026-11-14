@@ -49,11 +49,13 @@ afterEach(() => {
 	removeTempDirectory(root);
 });
 
-function configRefusal(run: () => unknown, code: string, field: string): void {
+function configRefusal(run: () => unknown, code: string, field: string, hint?: RegExp): void {
 	assert.throws(run, (error: Error) => {
 		assert.ok(isTeamProfileConfigError(error), `${error.name}: ${error.message}`);
 		assert.equal(error.code, code);
 		assert.equal(error.field, field);
+		assert.equal(error.source, "cli");
+		if (hint !== undefined) assert.match(error.hint, hint);
 		assert.ok(!error.message.includes(PASSWORD), "the refusal never repeats the secret");
 		return true;
 	});
@@ -86,11 +88,21 @@ describe("atomic storage join postgres:// arguments (#4793)", () => {
 			`postgresql://db.example.com/atomic?password=${PASSWORD}`,
 			`postgres://atomic@db.example.com/atomic?sslmode=require&password=${PASSWORD}`,
 		])
-			configRefusal(() => parseStorageCommand(["join", url, "--password-file", "pw"]), "credential-in-url", "<url>");
+			configRefusal(
+				() => parseStorageCommand(["join", url, "--password-file", "pw"]),
+				"credential-in-url",
+				"<url>",
+				/carries a password.*--password-file or --token-file/,
+			);
 	});
 
 	test("refuses missing, conflicting and misplaced credential sources (#4793)", () => {
-		configRefusal(() => parseStorageCommand(["join", URL_]), "missing-token", "--password-file");
+		configRefusal(
+			() => parseStorageCommand(["join", URL_]),
+			"missing-token",
+			"--password-file",
+			/--password-file or --token-file, or a platform credential with --auth/,
+		);
 		configRefusal(
 			() => parseStorageCommand(["join", URL_, "--password-file", "a", "--token-file", "b"]),
 			"conflicting-token",
@@ -101,22 +113,52 @@ describe("atomic storage join postgres:// arguments (#4793)", () => {
 			"conflicting-token",
 			"--password-file, --token-file, --auth",
 		);
-		configRefusal(() => parseStorageCommand(["join", URL_, "--auth", "kerberos"]), "unsupported-auth", "--auth");
+		configRefusal(
+			() => parseStorageCommand(["join", URL_, "--auth", "kerberos"]),
+			"unsupported-auth",
+			"--auth",
+			/--auth azure, --auth aws or --auth gcp/,
+		);
+		assert.deepEqual(parseStorageCommand(["join", URL_, "--auth", "aws-iam"]), {
+			kind: "join",
+			url: URL_,
+			auth: "aws-iam",
+		});
 		configRefusal(
 			() => parseStorageCommand(["join", "libsql://db.example.turso.io", "--password-file", "a"]),
 			"unsupported-option",
 			"--password-file",
+			/Only postgres:\/\/ and postgresql:\/\/ URLs take --password-file/,
 		);
 		configRefusal(
 			() => parseStorageCommand(["join", "libsql://db.example.turso.io", "--auth", "azure"]),
 			"unsupported-option",
 			"--auth",
 		);
+		for (const url of ["postgres:///atomic", "postgres://[bad/atomic"])
+			configRefusal(
+				() => parseStorageCommand(["join", url, "--auth", "aws"]),
+				"unsupported-url",
+				"<url>",
+				/postgres:\/\/user@host\[:port\]\/database/,
+			);
 		configRefusal(
-			() => parseStorageCommand(["join", "postgres:///atomic", "--auth", "aws"]),
+			() => parseStorageCommand(["join", "mysql://db.example.com/atomic", "--token-file", "t"]),
+			"unsupported-url",
+			"<url>",
+			/Use a postgres:\/\/, postgresql:\/\/, libsql:\/\//,
+		);
+		configRefusal(
+			() => parseStorageCommand(["join", "my+postgres://db.example.com/atomic", "--token-file", "t"]),
 			"unsupported-url",
 			"<url>",
 		);
+		assert.throws(
+			() => parseStorageCommand(["join", URL_, "extra", "--auth", "azure"]),
+			/Usage: .*storage join <url>/,
+		);
+		assert.throws(() => parseStorageCommand(["import", "in", "--limit", "2"]), /Unknown option --limit/);
+		assert.throws(() => parseStorageCommand(["join", URL_, "--storage", "{}"]), /Unknown option --storage/);
 		assert.throws(() => parseStorageCommand(["join", URL_, "--auth"]), /--auth needs a value/);
 	});
 });
@@ -208,7 +250,7 @@ export default {
 		if (host === "hang") return new Promise(() => {});
 		return {
 			descriptor: { adapter: "postgres", location: host },
-			async exec() {},
+			async exec(sql) { record(sql); },
 			async run() { return { changes: 0 }; },
 			async get(sql) { record(sql); return /server_version/.test(sql) ? { version: "16.4" } : { ok: 1 }; },
 			async all() { return []; },
@@ -274,6 +316,7 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 		assert.deepEqual(open?.options, { url: URL_ });
 		assert.equal(open?.password, PASSWORD, "the connection check used the password");
 		assert.ok(fake.opens().some((entry) => entry.query === "SELECT 1 AS ok"));
+		assert.ok(result.out.includes(`Stored the password in ${tokenPath} (mode 600).`), result.out);
 		assert.ok(!`${result.out}\n${result.err}`.includes(PASSWORD));
 		assert.ok(!readFileSync(join(agentDir, "settings.json"), "utf8").includes(PASSWORD));
 	});
@@ -302,6 +345,7 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 			options: { url: URL_, auth: "azure-entra" },
 		});
 		assert.deepEqual(fake.opens()[0]?.options, { url: URL_, auth: "azure-entra" });
+		assert.match(result.out, /The adapter obtains a azure-entra credential for every new connection/);
 		assert.deepEqual(storageTokenFiles(), []);
 	});
 
@@ -324,7 +368,7 @@ describe("atomic storage join postgres:// with the adapter (#4793)", () => {
 		const empty = await storage(["join", URL_, "--password-file", join(root, "empty")]);
 		assert.equal(empty.code, 1);
 		assert.match(empty.err, /empty-token/);
-		assert.match(empty.err, /--password-file/);
+		assert.match(empty.err, /--password-file.*The password file .* is empty: write the database password into it/s);
 		assert.equal(readFileSync(join(agentDir, "settings.json"), "utf8"), before);
 		assert.deepEqual(storageTokenFiles(), []);
 		for (const output of [missing, refused, inUrl, empty])
@@ -395,7 +439,40 @@ describe("atomic storage status for a Postgres selection (#4793)", () => {
 		const status = await collectStorageStatus({ cwd: project, agentDir, probe: true, probeTimeoutMs: 100 });
 		const journal = status.domains.find((domain) => domain.domain === "journal");
 		assert.equal(journal?.probe?.connection.status, "failed");
-		assert.match(journal?.probe?.connection.detail ?? "", /did not answer within 0\.1 s/);
+		assert.match(journal?.probe?.connection.detail ?? "", /^The database did not answer within 0\.1 s/);
 		assert.ok(Date.now() - started < 10_000);
+	});
+});
+
+describe("Postgres selections in team join and export (#4793)", () => {
+	test("team join keeps to libSQL URLs (#4793)", async () => {
+		await assert.rejects(
+			joinSharedDatabase({ url: URL_, auth: "azure-entra", agentDir, cwd: project, pinLocalSessions: true }, "cli"),
+			(error: Error & { code?: string }) => error.code === "unsupported-url",
+		);
+	});
+
+	test("sessions in a joined Postgres database are not exported unless it is named (#4793)", async () => {
+		installFakePostgres();
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ ...settings(), storage: { adapter: POSTGRES_ADAPTER_PACKAGE, options: { url: URL_ } } }),
+		);
+		const refused = await storage(["export", join(root, "out"), "--sessions"]);
+		assert.equal(refused.code, 1);
+		assert.match(
+			refused.err,
+			/atomic storage export works with local session storage, but sessions here use PostgreSQL/,
+		);
+	});
+
+	test("a named Postgres selection is read without a client-side transaction (#4793)", async () => {
+		const fake = installFakePostgres();
+		const named = JSON.stringify({ adapter: POSTGRES_ADAPTER_PACKAGE, options: { url: URL_ } });
+		const result = await storage(["export", join(root, "out"), "--workflows", "--storage", named]);
+		assert.equal(result.code, 0, result.err);
+		assert.match(result.err, /it has no workflow runs in the current journal format/);
+		const statements = fake.opens().flatMap((entry) => (entry.query === undefined ? [] : [entry.query]));
+		assert.ok(!statements.some((sql) => /^(BEGIN|COMMIT)/.test(sql)), statements.join("; "));
 	});
 });

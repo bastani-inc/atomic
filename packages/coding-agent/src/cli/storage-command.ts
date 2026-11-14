@@ -30,7 +30,10 @@ import {
 import { StorageProvider, type StorageSelection } from "../core/storage/provider.js";
 import {
 	checkSharedDatabaseArguments,
+	isFileUrl,
+	isPostgresUrl,
 	LIBSQL_ADAPTER_PACKAGE,
+	missingTeamToken,
 	POSTGRES_ADAPTER_PACKAGE,
 	type PostgresAuth,
 	STORAGE_TOKEN_FILE,
@@ -249,15 +252,13 @@ export function parseStorageCommand(args: readonly string[]): StorageCommand {
 	if (command === "join") {
 		const [url, ...extra] = positional;
 		if (url === undefined || extra.length > 0) throw new StorageCommandError(`Usage: ${JOIN_USAGE}`);
-		const passwordFile = values.get("--password-file");
-		const tokenFile = values.get("--token-file");
-		const auth = values.get("--auth");
 		const checked = checkSharedDatabaseArguments({
 			url,
-			...(tokenFile === undefined ? {} : { tokenFile }),
-			...(passwordFile === undefined ? {} : { passwordFile }),
-			...(auth === undefined ? {} : { auth }),
+			tokenFile: values.get("--token-file"),
+			passwordFile: values.get("--password-file"),
+			auth: values.get("--auth"),
 		});
+		if (!isPostgresUrl(url) && checked.tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
 		const prefix = values.get("--prefix");
 		return { kind: "join", ...checked, ...(prefix === undefined ? {} : { prefix }) };
 	}
@@ -656,7 +657,7 @@ function workflowTransfer(
 				kind: "database",
 				open: () => openAdapterSelectionDatabase(named, { agentDir: options.agentDir, domain: "journal" }),
 				location: describeStorageSelection(named),
-				...(named.prefix === undefined ? {} : { prefix: named.prefix }),
+				prefix: named.prefix,
 			},
 		};
 	const selection = named ?? effectiveJournalSelection(options.cwd, options.agentDir);

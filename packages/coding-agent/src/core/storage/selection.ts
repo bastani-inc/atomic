@@ -356,11 +356,11 @@ export interface CheckedSharedDatabase {
 /**
  * Check the database URL and credential flags of `atomic storage join` and `--db`. A `postgres://` or
  * `postgresql://` URL takes exactly one of `--password-file`, `--token-file` and `--auth`; any other URL is a libSQL
- * one, checked by {@link checkTeamUrl}, and takes `--token-file` (required except for `file:` URLs).
+ * one, checked by {@link checkTeamUrl}, and takes only `--token-file`, which the caller requires or not.
  */
 export function checkSharedDatabaseArguments(input: SharedDatabaseArguments): CheckedSharedDatabase {
 	const { url, tokenFile, passwordFile, auth } = input;
-	if (url.length > 0 && isPostgresUrl(url)) {
+	if (isPostgresUrl(url)) {
 		checkPostgresUrl(url, "cli");
 		const sources = [passwordFile, tokenFile, auth].filter((value) => value !== undefined);
 		if (sources.length > 1) throw conflictingTeamToken("cli", POSTGRES_CREDENTIAL_FLAGS);
@@ -392,7 +392,6 @@ export function checkSharedDatabaseArguments(input: SharedDatabaseArguments): Ch
 				`Only postgres:// and postgresql:// URLs take ${flag}; pass a libSQL database token with --token-file.`,
 			);
 	checkTeamUrl(url, "cli", { postgres: true });
-	if (tokenFile === undefined && !isFileUrl(url)) throw missingTeamToken(url, "cli");
 	return tokenFile === undefined ? { url } : { url, tokenFile };
 }
 

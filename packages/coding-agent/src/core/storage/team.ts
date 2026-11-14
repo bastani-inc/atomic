@@ -309,7 +309,7 @@ function isJoinTokenFile(path: string, agentDir: string): boolean {
 function reusableTokenFile(
 	storage: StorageSettingsSelection | undefined,
 	secretName: JoinTarget["secretName"],
-	token: string,
+	token: string | undefined,
 	agentDir: string,
 ): string | undefined {
 	const path = secretFilePath(storage?.secrets?.[secretName], agentDir);
@@ -395,13 +395,8 @@ interface JoinPlan {
 }
 
 function joinPlan(options: SharedDatabaseJoinOptions, source: Exclude<TeamInputSource, "env">, cwd: string): JoinPlan {
-	if (!options.pinLocalSessions && options.url !== undefined && isPostgresUrl(options.url)) {
-		const checked = checkSharedDatabaseArguments({
-			url: options.url,
-			...(options.tokenFile === undefined ? {} : { tokenFile: options.tokenFile }),
-			...(options.passwordFile === undefined ? {} : { passwordFile: options.passwordFile }),
-			...(options.auth === undefined ? {} : { auth: options.auth }),
-		});
+	if (!options.pinLocalSessions && isPostgresUrl(options.url)) {
+		const checked = checkSharedDatabaseArguments(options);
 		const target = { adapter: POSTGRES_ADAPTER_PACKAGE, secretName: "password" } as const;
 		if (checked.auth !== undefined)
 			return { target: { ...target, options: { url: checked.url, auth: checked.auth } } };
@@ -424,13 +419,8 @@ function joinPlan(options: SharedDatabaseJoinOptions, source: Exclude<TeamInputS
 		if (token.length === 0) throw emptyTeamToken(source);
 	} else if (!isFileUrl(url)) throw missingTeamToken(url, source);
 	return {
-		target: {
-			adapter: LIBSQL_ADAPTER_PACKAGE,
-			options: { url },
-			secretName: "authToken",
-			...(token === undefined ? {} : { secret: token }),
-		},
-		...(token === undefined ? {} : { copy: token }),
+		target: { adapter: LIBSQL_ADAPTER_PACKAGE, options: { url }, secretName: "authToken", secret: token },
+		copy: token,
 	};
 }
 
@@ -468,7 +458,7 @@ export async function joinSharedDatabase(
 	const unchanged = "Nothing was changed: the previous selection and its token are kept.";
 	const published = withGlobalSettings(agentDir, unchanged, (settings) => {
 		const previous = settings.storage;
-		const reused = token === undefined ? undefined : reusableTokenFile(previous, target.secretName, token, agentDir);
+		const reused = reusableTokenFile(previous, target.secretName, token, agentDir);
 		const tokenPath =
 			token === undefined ? undefined : (reused ?? join(agentDir, `${STORAGE_TOKEN_FILE}.${randomUUID()}`));
 		const created = token !== undefined && tokenPath !== undefined && reused === undefined ? tokenPath : undefined;

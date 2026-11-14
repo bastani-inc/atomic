@@ -800,23 +800,21 @@ async function writeImport(
 
 /**
  * A journal file an import reads its runs from while it decides what to write: read-only, opened once. A named
- * selection's database is opened through its own `open` under its `location`.
+ * selection's database is opened through its own `open`.
  */
 class ReadOnlyFiles {
 	private readonly opened = new Map<string, Promise<SqliteDatabase>>();
 	private readonly named?: Extract<WorkflowRunTransferStorage, { kind: "database" }>;
 
 	constructor(named?: Extract<WorkflowRunTransferStorage, { kind: "database" }>) {
-		if (named !== undefined) this.named = named;
+		this.named = named;
 	}
 
 	read(path: string): Promise<SqliteDatabase> {
 		let database = this.opened.get(path);
 		if (database === undefined) {
-			database =
-				this.named !== undefined && path === this.named.location
-					? this.named.open()
-					: openNodeSqliteDatabase(path, { readOnly: true });
+			// A named selection's database is the only one its import reads.
+			database = this.named?.open() ?? openNodeSqliteDatabase(path, { readOnly: true });
 			this.opened.set(path, database);
 		}
 		return database;

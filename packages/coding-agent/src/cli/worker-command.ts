@@ -194,22 +194,18 @@ function database(values: ReadonlyMap<string, string>, cwd: string): WorkerDatab
 				throw new WorkerCommandError(option, "It qualifies --db; pass the database URL with --db too.");
 		return undefined;
 	}
-	const tokenFile = values.get("--token-file");
-	const passwordFile = values.get("--password-file");
-	const auth = values.get("--auth");
 	try {
-		// A libSQL --db without a token keeps its old meaning: the host reports the missing token with its setup.
+		// A libSQL --db without a token is accepted: the host reports the missing token with the rest of its setup.
 		const checked = checkSharedDatabaseArguments({
 			url,
-			...(tokenFile === undefined && !isPostgresUrl(url) ? { tokenFile: "" } : {}),
-			...(tokenFile === undefined ? {} : { tokenFile }),
-			...(passwordFile === undefined ? {} : { passwordFile }),
-			...(auth === undefined ? {} : { auth }),
+			tokenFile: values.get("--token-file"),
+			passwordFile: values.get("--password-file"),
+			auth: values.get("--auth"),
 		});
 		const prefix = checkTeamPrefix(values.get("--prefix"), "cli");
 		return {
 			url,
-			...(tokenFile === undefined ? {} : { tokenFile: resolve(cwd, tokenFile) }),
+			...(checked.tokenFile === undefined ? {} : { tokenFile: resolve(cwd, checked.tokenFile) }),
 			...(checked.passwordFile === undefined ? {} : { passwordFile: resolve(cwd, checked.passwordFile) }),
 			...(checked.auth === undefined ? {} : { auth: checked.auth }),
 			...(prefix === undefined ? {} : { prefix }),

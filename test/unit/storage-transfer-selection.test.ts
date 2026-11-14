@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { defaultJournalStoreDirectory } from "@bastani/atomic/storage";
+import { defaultJournalStoreDirectory, openNodeSqliteDatabase } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
@@ -138,6 +138,8 @@ test("export and import parse --storage and --storage-file (#4793)", () => {
 	);
 	assert.throws(() => parseStorageCommand(["import", "in", "--storage", "path=x"]), /--storage needs a JSON object/);
 	assert.throws(() => parseStorageCommand(["import", "in", "--storage", "[]"]), /--storage needs a JSON object/);
+	assert.throws(() => parseStorageCommand(["import", "in", "--storage", "null"]), /--storage needs a JSON object/);
+	assert.throws(() => parseStorageCommand(["import", "in", "--storage", '"x"']), /--storage needs a JSON object/);
 	assert.throws(() => parseStorageCommand(["status", "--storage", "{}"]), /Unknown option --storage/);
 });
 
@@ -164,7 +166,7 @@ test(
 		const target = machine("b", { packages: [libsqlPackage], storage: shared });
 		const refused = await storage(target, ["import", exported]);
 		assert.equal(refused.code, 1);
-		assert.match(refused.err, /A shared database already holds/);
+		assert.match(refused.err, /atomic storage import works with .*A shared database already holds/);
 		const selectionFile = join(root, "shared.json");
 		writeFileSync(selectionFile, JSON.stringify(shared));
 		const imported = await storage(target, ["import", exported, "--storage-file", selectionFile]);
@@ -178,6 +180,29 @@ test(
 		const back = await storage(target, ["export", reexported, "--storage", JSON.stringify(shared)]);
 		assert.equal(back.code, 0, back.err);
 		assert.deepEqual(tree(reexported), before, "the runs and the session read back byte for byte");
+		const database = await openNodeSqliteDatabase(join(libsqlDirectory, "shared.sqlite"), { readOnly: true });
+		try {
+			const tables = await database.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'");
+			assert.ok(
+				tables.length > 0 && tables.every(({ name }) => name.startsWith("team_") || name.startsWith("sqlite_")),
+				JSON.stringify(tables),
+			);
+		} finally {
+			await database.close();
+		}
+		const missing = await storage(target, [
+			"export",
+			join(root, "one"),
+			"--run",
+			"missing-run",
+			"--storage-file",
+			selectionFile,
+		]);
+		assert.equal(missing.code, 1);
+		assert.match(
+			missing.err,
+			/adapter @bastani\/atomic-storage-libsql \(prefix team_\).*run missing-run is not in this workflow journal/s,
+		);
 	},
 	LIBSQL_SCENARIO_TIMEOUT_MS,
 );
@@ -186,24 +211,40 @@ test("a named SQLite file selection is created by an import and read by an expor
 	const source = machine("a");
 	await seed(source);
 	const exported = join(root, "exported");
-	assert.equal((await storage(source, ["export", exported, "--workflows"])).code, 0);
+	assert.equal((await storage(source, ["export", exported])).code, 0);
 	const target = machine("b");
-	const file = { path: join(root, "moved.sqlite") };
+	// A relative path names a file in the working directory.
+	const file = { path: "moved.sqlite" };
 	const empty = await storage(target, ["export", join(root, "none"), "--storage", JSON.stringify(file)]);
 	assert.equal(empty.code, 0, empty.err);
-	assert.equal(existsSync(file.path), false, "an export creates no database");
-	const imported = await storage(target, ["import", exported, "--workflows", "--storage", JSON.stringify(file)]);
+	assert.equal(existsSync(join(project, file.path)), false, "an export creates no database");
+	const imported = await storage(target, ["import", exported, "--storage", JSON.stringify(file)]);
 	assert.equal(imported.code, 0, imported.err);
+	assert.match(imported.out, /Imported 1 session .*\(1 added/);
+	assert.ok(existsSync(join(project, file.path)));
 	const reexported = join(root, "reexported");
-	assert.equal(
-		(await storage(target, ["export", reexported, "--workflows", "--storage", JSON.stringify(file)])).code,
-		0,
-	);
+	assert.equal((await storage(target, ["export", reexported, "--storage", JSON.stringify(file)])).code, 0);
 	assert.deepEqual(tree(reexported), tree(exported));
 	const memory = await storage(target, ["import", exported, "--storage", '{"memory":true}']);
 	assert.equal(memory.code, 1);
 	assert.match(memory.err, /keeps nothing/);
 	const invalid = await storage(target, ["import", exported, "--storage", '{"adapter":""}']);
 	assert.equal(invalid.code, 1);
-	assert.match(invalid.err, /--storage/);
+	assert.match(invalid.err, /--storage \(invalid-adapter\)/);
+	const noStore = await storage(target, ["import", exported, "--storage", "{}"]);
+	assert.equal(noStore.code, 1);
+	assert.match(noStore.err, /--storage names no storage/);
+	const selectionFile = join(root, "invalid.json");
+	writeFileSync(selectionFile, '{"adapter":""}');
+	const invalidFile = await storage(target, ["import", exported, "--storage-file", selectionFile]);
+	assert.match(invalidFile.err, /--storage-file \(invalid-adapter\)/);
+	writeFileSync(selectionFile, "not json");
+	const notJson = await storage(target, ["import", exported, "--storage-file", selectionFile]);
+	assert.match(
+		notJson.err,
+		new RegExp(`--storage-file ${selectionFile.replaceAll("\\", "\\\\")} needs a JSON object`),
+	);
+	const unreadable = await storage(target, ["import", exported, "--storage-file", join(root, "absent.json")]);
+	assert.equal(unreadable.code, 1);
+	assert.match(unreadable.err, /--storage-file .*absent\.json cannot be read: .*ENOENT/);
 });
