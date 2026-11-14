@@ -86,6 +86,7 @@ import {
 } from "./definitions.js";
 import { bindChildWorkerDispatcher } from "./dispatch.js";
 import { DispatchSnapshots } from "./dispatch-snapshot.js";
+import { FleetController, type WorkflowFleetOptions } from "./fleet-controller.js";
 import {
 	HeldPromptAnswers,
 	type HeldPromptOutcome,
@@ -421,6 +422,8 @@ export class LocalWorkerPool {
 	 * from collection at any grace window (#4503); resolves with what lets it go, or undefined when the root has none.
 	 */
 	private rootSnapshotHeld?: Promise<(() => Promise<void>) | undefined>;
+	/** The fleet controller this root runs, with shared placement and a provisioner (#4768). */
+	private fleet?: FleetController;
 	constructor(
 		private readonly backend: JournalDurableBackend,
 		private readonly options: {
@@ -447,6 +450,8 @@ export class LocalWorkerPool {
 			readonly workspaceWorktree?: string;
 			/** The root's worktree snapshot settings, which the capture of `workspaceWorktree` follows. */
 			readonly snapshots?: WorktreeSnapshotSettingsInput;
+			/** With shared placement, the fleet the root runs a controller for while it runs (#4768). */
+			readonly fleet?: WorkflowFleetOptions;
 			readonly rootId?: string;
 			readonly workers: number;
 			readonly definitions: readonly WorkerDefinitionBinding[];
@@ -737,6 +742,9 @@ export class LocalWorkerPool {
 				this.routeClaims.set(runId, claimExternalRunRoute(store, runId, routeOwner));
 			});
 		}
+		// The fleet controller runs beside the root and never fails it: its failures are its own status (#4768).
+		if (this.options.shared !== undefined && this.options.fleet !== undefined && !this.closed)
+			this.fleet ??= new FleetController(this.backend.journal, { ...this.options.fleet, unref: true });
 		await this.command({
 			kind: "start",
 			sources: this.sources,
@@ -1869,6 +1877,7 @@ export class LocalWorkerPool {
 		this.stopSharingDebugSetting?.();
 		clearInterval(this.ticker);
 		this.ticker = undefined;
+		const fleetStopped = this.fleet?.stop();
 		const rootSnapshotReleased = this.releaseRootSnapshot();
 		this.releaseStageSource?.();
 		// A pool that failed takes its unfinished children with it: show them failed rather than
@@ -1926,6 +1935,7 @@ export class LocalWorkerPool {
 			failure ??= error;
 		}
 		await rootSnapshotReleased;
+		await fleetStopped;
 		if (failure !== undefined) throw failure;
 	}
 }

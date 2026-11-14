@@ -12,6 +12,7 @@ import { WorkflowAdmissionConfigError } from "./admission-errors.js";
 import { admissionBootIdentity } from "./admission-host.js";
 import type { SharedPoolCoordination } from "./coordinator-protocol.js";
 import { definitionDigest, loadWorkerDefinition } from "./definitions.js";
+import { checkFleetOptions } from "./fleet-controller.js";
 import { hostWorkerBindings } from "./host-options.js";
 import { LocalWorkerPool } from "./local-pool.js";
 import {
@@ -315,6 +316,7 @@ function sharedPlacement(options: RunOpts): WorkflowWorkerPlacementOptions | und
 			"invalid-option",
 			"must be a positive integer of milliseconds",
 		);
+	if (workers.provisioner !== undefined) checkFleetOptions(workers.provisioner);
 	if (!options.localWorkers) throw new WorkerPlacementConfigError("sdk", "localWorkers", "requires-local-workers");
 	if (options.admission?.userLimits !== undefined)
 		throw new WorkerPlacementConfigError(
@@ -335,13 +337,15 @@ export async function recordedPlacement(
 	placement: WorkflowWorkerPlacementOptions,
 	signal?: AbortSignal,
 ): Promise<{ readonly placement: RecordedWorkerPlacement; readonly worktree?: string }> {
-	const workspace = placement.workspace;
-	if (workspace === undefined) return { placement: { ...placement, workspace: undefined } };
+	// A provisioner holds live objects and the operator's cloud access: it is never recorded (#4768).
+	const { provisioner: _provisioner, ...recordable } = placement;
+	const workspace = recordable.workspace;
+	if (workspace === undefined) return { placement: { ...recordable, workspace: undefined } };
 	const binding = isWorkspace(workspace)
 		? await resolveWorkspace(workspace, signal === undefined ? {} : { signal })
 		: workspace;
 	return {
-		placement: { ...placement, workspace: bindingIdentity(binding) },
+		placement: { ...recordable, workspace: bindingIdentity(binding) },
 		...(isBoundWorkspace(binding) ? { worktree: binding.worktree } : {}),
 	};
 }
@@ -534,7 +538,11 @@ export async function activatePublicPool(
 		...(durable === undefined ? {} : { durable }),
 		...(shared === undefined || recorded === undefined
 			? {}
-			: { ...sharedPoolPlacement(shared, recorded.placement, recorded.worktree), snapshots: options.snapshots }),
+			: {
+					...sharedPoolPlacement(shared, recorded.placement, recorded.worktree),
+					snapshots: options.snapshots,
+					...(placement?.provisioner === undefined ? {} : { fleet: placement.provisioner }),
+				}),
 		workers: localWorkers.count,
 		definitions,
 		admission: resources.admission ?? {},

@@ -111,6 +111,8 @@ function validated(options: WorkflowWorkerHostOptions): void {
 		throw new WorkerPlacementConfigError("sdk", "git.path", "invalid-option", "a non-empty path");
 	if (options.idleExitMs !== undefined && (!Number.isSafeInteger(options.idleExitMs) || options.idleExitMs < 1))
 		throw new WorkerPlacementConfigError("sdk", "idleExitMs", "invalid-option", "must be a positive integer");
+	if (options.providerId !== undefined && (typeof options.providerId !== "string" || options.providerId === ""))
+		throw new WorkerPlacementConfigError("sdk", "providerId", "invalid-option", "a non-empty string");
 }
 
 /** Where a host's git comes from and, for a host given a restore function but no git, the setup problem that says so. */
@@ -268,6 +270,10 @@ class WorkerHost implements WorkflowWorkerHost {
 	readonly closed = new Promise<void>((resolve) => {
 		this.settleClosed = resolve;
 	});
+	/** The id this host's provisioner knows it by (#4768). */
+	private get providerId(): string | undefined {
+		return this.options.providerId ?? (process.env.ATOMIC_WORKER_PROVIDER_ID || undefined);
+	}
 
 	constructor(
 		readonly hostId: string,
@@ -390,8 +396,17 @@ class WorkerHost implements WorkflowWorkerHost {
 				workers,
 				maxWorkers: this.options.maxWorkers,
 				roots: served,
+				...(this.providerId === undefined ? {} : { providerId: this.providerId }),
 			});
 			this.reported = { workers, roots: JSON.stringify(served), at: now };
+			// A fleet controller asks an idle host to drain through the journal (#4768); the drain waits for this poll.
+			if (await this.shared.drainRequested(this.hostId)) {
+				this.emit({ kind: "drain-requested" });
+				void this.drain().catch((error: Error) => {
+					this.lastDetach = failure(error);
+				});
+				return;
+			}
 		}
 		const roots = await this.shared.roots();
 		const byRoot = new Map(roots.map((root) => [root.root, root]));

@@ -53,6 +53,12 @@ export interface WorkflowWorkerHostOptions {
 	 * a group of hosts that scales to zero without a controller. `closed` settles when it has stopped. Unset: never.
 	 */
 	readonly idleExitMs?: number;
+	/**
+	 * The id this host's provisioner knows it by, which it reports in the registry so a fleet controller can match the
+	 * two (#4768). Default: the environment variable `ATOMIC_WORKER_PROVIDER_ID`, which a provisioner sets for the hosts
+	 * it starts. A host a fleet controller asks to drain drains as `drain()` does.
+	 */
+	readonly providerId?: string;
 	/** Receives what this host does as it happens: children claimed and released, journal outages, idle exit (#4768). */
 	readonly onEvent?: (event: WorkflowWorkerHostEvent) => void;
 	/** Internal, tests only: the module forked for each worker instead of the shipped worker entry. */
@@ -64,7 +70,7 @@ export interface WorkflowWorkerHostOptions {
  * a released child finished, or went back to the queue for another host. `degraded` is a poll of the shared journal
  * that failed: the host keeps its running children and polls again after `retryInMs`, waiting longer after each
  * failure in a row. `recovered` is the first poll that succeeded after one or more failed. `idle-exit` starts the
- * drain `idleExitMs` asks for.
+ * drain `idleExitMs` asks for, and `drain-requested` the drain a fleet controller asked for.
  */
 export type WorkflowWorkerHostEvent =
 	| {
@@ -81,7 +87,8 @@ export type WorkflowWorkerHostEvent =
 			readonly error: WorkerHostFailure;
 	  }
 	| { readonly kind: "recovered"; readonly failures: number }
-	| { readonly kind: "idle-exit"; readonly idleMs: number };
+	| { readonly kind: "idle-exit"; readonly idleMs: number }
+	| { readonly kind: "drain-requested" };
 
 /** A failure a worker host recorded instead of throwing, as the error it was. */
 export type WorkerHostFailure = SerializedWorkerPlacementError | { readonly name: string; readonly message: string };
