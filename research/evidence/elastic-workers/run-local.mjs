@@ -190,6 +190,7 @@ async function trial(hosts) {
 		killGroup(db, "SIGKILL");
 		front?.close();
 		traced?.close();
+		if (args.keep === "1") writeFileSync(join(work, "processes.log"), log.join(""));
 		if (args.keep !== "1") rmSync(work, { recursive: true, force: true });
 	}
 }
