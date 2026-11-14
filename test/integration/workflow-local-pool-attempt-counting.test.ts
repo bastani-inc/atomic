@@ -4,6 +4,7 @@
  * does, so its child fails after the limit with an error that names the refusal instead of moving between hosts.
  */
 import assert from "node:assert/strict";
+import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +21,7 @@ import {
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { run } from "../../packages/workflows/src/engine/run.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { definitionDigest, loadWorkerDefinition } from "../../packages/workflows/src/workers/definitions.js";
 import { LocalWorkerPool } from "../../packages/workflows/src/workers/local-pool.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
@@ -41,6 +43,8 @@ async function runOneChild(
 	fault: (database: Awaited<ReturnType<typeof openNodeSqliteDatabase>>) => void,
 	/** A stand-in worker module instead of the real worker. */
 	workerEntry?: string,
+	/** Pool options the case sets: its workers, its work lease, how soon a worker hands a refused child on. */
+	options: { readonly workers?: number; readonly leaseMs?: number; readonly outageHandoffMs?: number } = {},
 ) {
 	const directory = makeTempDirectory("pool-attempt-counting-");
 	const path = join(directory, "journal.sqlite");
@@ -76,7 +80,9 @@ async function runOneChild(
 	const backend = await JournalDurableBackend.open(journal, { ownsJournal: false });
 	const pool = new LocalWorkerPool(backend, {
 		journalPath: path,
-		workers: 1,
+		workers: options.workers ?? 1,
+		...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
+		...(options.outageHandoffMs === undefined ? {} : { outageHandoffMs: options.outageHandoffMs }),
 		definitions: [{ definition: child, path: childPath, exportName }],
 		coordinator: "in-process",
 		...(workerEntry === undefined ? {} : { workerEntry }),
@@ -229,6 +235,226 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(
 			result.items.map((item) => [item.state, item.generation, item.handoffs?.length]),
 			[["failed", CAP + 3, CAP]],
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+/** The store refusing for a while: its write lock stayed busy. */
+const busy = () =>
+	new StorageUnavailableError(
+		{ adapter: "libsql", location: "http://127.0.0.1:1" },
+		Object.assign(new Error("SQLITE_BUSY: database is locked"), { code: "SQLITE_BUSY" }),
+	);
+
+/** How soon a real worker hands its child on when the store keeps refusing it, instead of two minutes. */
+const SHORT_HANDOFF_MS = 400;
+
+test.skipIf(process.platform === "win32")(
+	"a real worker whose commits the store keeps refusing for a while hands its child on uncounted, and the child completes (#4768)",
+	async () => {
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"checkpointChild",
+			() => {
+				const commit = SqlPoolQueue.prototype.commit;
+				vi.spyOn(SqlPoolQueue.prototype, "commit").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["commit"]>
+				) {
+					// The first attempt's commits never get through; the next attempt's do.
+					if (args[1].generation === 1) throw busy();
+					return commit.apply(this, args);
+				});
+			},
+			undefined,
+			{ workers: 2, outageHandoffMs: SHORT_HANDOFF_MS },
+		);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation, item.handoffs]),
+			[["completed", 2, [1]]],
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a real worker whose attempt is displaced while it resends a refused commit sends none of it afterwards, and its next attempt is never fenced (#4768)",
+	async () => {
+		/** Each commit a worker sent, with the attempt it was made for, in order. */
+		const sent: { generation: number | undefined; afterReplay: boolean }[] = [];
+		let replayClaimed = false;
+		const emit = ChildProcess.prototype.emit;
+		vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (
+			this: ChildProcess,
+			event: string | symbol,
+			...args: unknown[]
+		) {
+			const message = args[0] as { kind?: string; attempt?: { generation: number } } | undefined;
+			if (event === "message" && message?.kind === "commit")
+				sent.push({ generation: message.attempt?.generation, afterReplay: replayClaimed });
+			return (emit as (this: ChildProcess, event: string | symbol, ...rest: unknown[]) => boolean).call(
+				this,
+				event,
+				...args,
+			);
+		} as never);
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"checkpointChild",
+			() => {
+				const commit = SqlPoolQueue.prototype.commit;
+				vi.spyOn(SqlPoolQueue.prototype, "commit").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["commit"]>
+				) {
+					if (args[1].generation === 1) throw busy();
+					return commit.apply(this, args);
+				});
+				// While the first attempt resends its refused commit, its work lease is taken over: its heartbeat is
+				// refused as stale, which ends the attempt, and the child is claimed again.
+				const heartbeat = SqlPoolQueue.prototype.heartbeat;
+				vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["heartbeat"]>
+				) {
+					if (args[1].generation === 1)
+						throw new StaleWorkLeaseError({
+							root: args[0].runId,
+							workId: args[1].id,
+							generation: 1,
+							reason: "expired",
+						});
+					return heartbeat.apply(this, args);
+				});
+				const claim = SqlPoolQueue.prototype.claim;
+				vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["claim"]>
+				) {
+					const work = (await claim.apply(this, args)) as PoolWork | undefined;
+					if (work !== undefined && work.generation > 1) replayClaimed = true;
+					return work;
+				});
+			},
+			undefined,
+			{ workers: 1, outageHandoffMs: 60_000 },
+		);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		// The replay, generation 2, completed: the first attempt's late refusals never fenced it.
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation]),
+			[["completed", 2]],
+		);
+		assert.ok(
+			sent.some((commit) => commit.generation === 1),
+			JSON.stringify(sent),
+		);
+		assert.deepEqual(
+			sent.filter((commit) => commit.afterReplay && commit.generation === 1),
+			[],
+			"the displaced attempt sent no commit once its replay was claimed",
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a real worker whose attempt is displaced while it resends a refused stage-session write sends none of it afterwards, and its next attempt is never fenced (#4768)",
+	async () => {
+		/** Each commit a worker sent, with the attempt it was made for, in order. */
+		const sent: { generation: number | undefined; afterReplay: boolean }[] = [];
+		let replayClaimed = false;
+		let refusedAppends = 0;
+		const emit = ChildProcess.prototype.emit;
+		vi.spyOn(ChildProcess.prototype, "emit").mockImplementation(function (
+			this: ChildProcess,
+			event: string | symbol,
+			...args: unknown[]
+		) {
+			const message = args[0] as { kind?: string; attempt?: { generation: number } } | undefined;
+			if (event === "message" && message?.kind === "commit")
+				sent.push({ generation: message.attempt?.generation, afterReplay: replayClaimed });
+			return (emit as (this: ChildProcess, event: string | symbol, ...rest: unknown[]) => boolean).call(
+				this,
+				event,
+				...args,
+			);
+		} as never);
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"stageChild",
+			() => {
+				const commit = SqlPoolQueue.prototype.commit;
+				vi.spyOn(SqlPoolQueue.prototype, "commit").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["commit"]>
+				) {
+					// The first attempt's stage-session writes never get through; its checkpoints and every later write do.
+					if (args[1].generation === 1 && args[3].kind === "session-append") {
+						refusedAppends++;
+						throw busy();
+					}
+					return commit.apply(this, args);
+				});
+				// While the first attempt resends its refused commit, its work lease is taken over: its heartbeat is
+				// refused as stale, which ends the attempt, and the child is claimed again.
+				const heartbeat = SqlPoolQueue.prototype.heartbeat;
+				vi.spyOn(SqlPoolQueue.prototype, "heartbeat").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["heartbeat"]>
+				) {
+					if (args[1].generation === 1 && refusedAppends > 0)
+						throw new StaleWorkLeaseError({
+							root: args[0].runId,
+							workId: args[1].id,
+							generation: 1,
+							reason: "expired",
+						});
+					return heartbeat.apply(this, args);
+				});
+				const claim = SqlPoolQueue.prototype.claim;
+				vi.spyOn(SqlPoolQueue.prototype, "claim").mockImplementation(async function (
+					this: SqlPoolQueue,
+					...args: Parameters<SqlPoolQueue["claim"]>
+				) {
+					const work = (await claim.apply(this, args)) as PoolWork | undefined;
+					if (work !== undefined && work.generation > 1) replayClaimed = true;
+					return work;
+				});
+			},
+			undefined,
+			{ workers: 1, outageHandoffMs: 60_000 },
+		);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		// The replay, generation 2, completed: the first attempt's late refusals never fenced it.
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation]),
+			[["completed", 2]],
+		);
+		assert.ok(
+			sent.some((commit) => commit.generation === 1),
+			JSON.stringify(sent),
+		);
+		assert.deepEqual(
+			sent.filter((commit) => commit.afterReplay && commit.generation === 1),
+			[],
+			"the displaced attempt sent no commit once its replay was claimed",
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a child whose worker dies on every attempt fails at the attempt limit on the worker-exit path (#4768)",
+	async () => {
+		const result = await runOneChild("pool-crash-once-child.ts", "crashAlwaysChild", () => {});
+		assert.equal(result.outcome?.status, "rejected", JSON.stringify(result));
+		assert.match(result.outcome!.error!, /WorkerRetryLimitError/);
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation]),
+			[["failed", 3]],
 		);
 	},
 	BUDGET.timeoutMs,

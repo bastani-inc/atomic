@@ -92,6 +92,8 @@ export interface WorkerStart {
 	 * starts a fresh worker in its place (`localWorkers.maxWorkerRssBytes`). Undefined: never.
 	 */
 	readonly maxRssBytes?: number;
+	/** Internal, tests only: overrides `OUTAGE_HANDOFF_MS` (#4768). */
+	readonly outageHandoffMs?: number;
 }
 export type WorkerRequest = { readonly id: number } & (
 	| { readonly kind: "ready" | "claim" | "budget" | "control" }

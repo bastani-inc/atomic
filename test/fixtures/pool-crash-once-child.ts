@@ -19,3 +19,16 @@ export const crashOnceChild = workflow({
 		return {};
 	},
 });
+
+/** Kills every worker that runs it, after its first checkpoint. */
+export const crashAlwaysChild = workflow({
+	name: "crash-always-pool-child",
+	description: "Kills every worker that runs it",
+	inputs: { directory: Type.String() },
+	outputs: {},
+	async run(ctx) {
+		await ctx.tool("checkpoint", {}, async () => process.pid);
+		process.kill(process.pid, "SIGKILL");
+		return {};
+	},
+});

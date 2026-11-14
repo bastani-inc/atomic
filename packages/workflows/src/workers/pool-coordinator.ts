@@ -2195,6 +2195,7 @@ export class PoolCoordinator {
 						? {}
 						: { stageStartMaxLoadPerCpu: options.stageStartMaxLoadPerCpu }),
 					...(options.maxWorkerRssBytes === undefined ? {} : { maxRssBytes: options.maxWorkerRssBytes }),
+					...(options.outageHandoffMs === undefined ? {} : { outageHandoffMs: options.outageHandoffMs }),
 				}),
 			],
 			{

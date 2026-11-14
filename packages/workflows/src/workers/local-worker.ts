@@ -411,7 +411,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 				},
 				() => current() && leaseLeft(),
 				`a ${message.kind} request`,
-				OUTAGE_HANDOFF_MS,
+				start.outageHandoffMs ?? OUTAGE_HANDOFF_MS,
 			);
 		} catch (error) {
 			if (infrastructureFaultOf(error) !== "storage_unavailable" || heldAttempt !== held) throw error;

@@ -487,6 +487,11 @@ export class LocalWorkerPool {
 			 */
 			readonly stageInputTimeoutMs?: number;
 			/**
+			 * Internal, tests only: how long a worker resends a request the shared store refuses before it hands its child
+			 * on (`OUTAGE_HANDOFF_MS`, #4768). Public options never set it.
+			 */
+			readonly outageHandoffMs?: number;
+			/**
 			 * A caller's registry (SDK `RunOpts.stageControlRegistry`) that receives a handle for
 			 * every live pooled stage. A handle opens a watch only while it is used.
 			 */
@@ -635,6 +640,7 @@ export class LocalWorkerPool {
 					...(this.options.stageInputTimeoutMs === undefined
 						? {}
 						: { stageInputTimeoutMs: this.options.stageInputTimeoutMs }),
+					...(this.options.outageHandoffMs === undefined ? {} : { outageHandoffMs: this.options.outageHandoffMs }),
 				},
 				...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
 			})) as PoolUsage;
