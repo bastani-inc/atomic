@@ -25,7 +25,7 @@ const HELP = `Usage:
   ${APP_NAME} worker start [--db <url>] [--token-file <path>] [--prefix <prefix>] [--slots <n>]
                       [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
   ${APP_NAME} worker status [--db <url>] [--token-file <path>] [--prefix <prefix>] [--json]
-  ${APP_NAME} worker controller --provisioner <module> [--db <url>] [--token-file <path>] [--prefix <prefix>]
+  ${APP_NAME} worker controller --provisioner <module|file.json> [--db <url>] [--token-file <path>] [--prefix <prefix>]
                       [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--scale-up-queue-depth <n>]
                       [--scale-up-delay <ms>] [--idle-drain <ms>] [--boot-timeout <ms>] [--json]
 
@@ -57,8 +57,10 @@ Options:
   --json                One JSON object per line
 
 Controller options:
-  --provisioner <module>         A JavaScript module whose default export is a worker host provisioner, or a
-                                 function that returns one
+  --provisioner <module|file.json>
+                                 A JavaScript module whose default export is a worker host provisioner, or a
+                                 function that returns one; or a JSON file configuring a built-in one, whose
+                                 "kind" is azure-vmss, kubernetes or command
   --min-hosts <n>                Hosts kept however idle. Default 0
   --max-hosts <n>                Hosts never exceeded. Default 10
   --workers-per-host <n>         The --slots the hosts start with. Default 4
@@ -106,7 +108,7 @@ export type WorkerCommand =
 	| {
 			readonly kind: "controller";
 			readonly database?: WorkerDatabase;
-			/** The provisioner module's absolute path. */
+			/** The absolute path of the provisioner module, or of a built-in provisioner's JSON configuration. */
 			readonly provisioner: string;
 			readonly policy: WorkerFleetPolicy;
 			readonly json: boolean;
@@ -222,7 +224,10 @@ export function parseWorkerCommand(
 	if (command === "controller") {
 		const provisioner = values.get("--provisioner");
 		if (provisioner === undefined)
-			throw new WorkerCommandError("--provisioner", "Pass the provisioner module the controller drives.");
+			throw new WorkerCommandError(
+				"--provisioner",
+				"Pass the provisioner module, or the JSON configuration of a built-in one, that the controller drives.",
+			);
 		const policy: Record<string, number> = {};
 		for (const [option, { field, zero }] of Object.entries(POLICY_OPTIONS)) {
 			const value = values.get(option);
@@ -354,6 +359,11 @@ export interface WorkerProvisioner {
 	drain(id: string, signal: AbortSignal): Promise<void>;
 }
 
+/** A built-in provisioner's configuration, as the workflows package's `WorkerHostProvisionerConfig`: `kind` and options. */
+export interface WorkerProvisionerConfig {
+	readonly kind: string;
+}
+
 export type WorkerFleetEvent =
 	| { readonly kind: "active"; readonly epoch: number }
 	| { readonly kind: "standby"; readonly holder: string }
@@ -383,6 +393,8 @@ export interface WorkerHostModule {
 		},
 	): Promise<WorkerFleetControllerHandle>;
 	startWorkflowWorkerHost(options: WorkerHostOptions): Promise<WorkerHostHandle>;
+	/** A built-in provisioner (`azure-vmss`, `kubernetes`, `command`) from its JSON configuration; throws on bad options. */
+	createWorkerHostProvisioner(config: WorkerProvisionerConfig): WorkerProvisioner;
 	readWorkflowWorkerFleet(options: {
 		readonly journal?: WorkerJournalSelection;
 		readonly agentDir: string;
@@ -437,6 +449,25 @@ async function importProvisioner(path: string): Promise<WorkerProvisioner> {
 			`${path} does not export a provisioner: its default export must have a kind and list, scaleTo and drain methods, or be a function that returns one.`,
 		);
 	return candidate as WorkerProvisioner;
+}
+
+/**
+ * The built-in provisioner configuration in the JSON file at `path`: an object with a `kind`. Its content is never
+ * quoted in an error.
+ */
+function readProvisionerConfig(path: string): WorkerProvisionerConfig {
+	let config: { readonly kind?: unknown } | null;
+	try {
+		config = JSON.parse(readFileSync(path, "utf8")) as { readonly kind?: unknown } | null;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		throw new Error(
+			`${path} is not a provisioner configuration: ${code === undefined ? "it is not valid JSON" : `it cannot be read (${code})`}.`,
+		);
+	}
+	if (typeof config !== "object" || config === null || Array.isArray(config) || typeof config.kind !== "string")
+		throw new Error(`${path} is not a provisioner configuration: it must be a JSON object with a "kind".`);
+	return config as WorkerProvisionerConfig;
 }
 
 /** One output line: `event key=value …`, or a JSON object with `event` for `--json`. */
@@ -606,7 +637,9 @@ async function controller(
 	if (warning !== undefined) error(command.json ? line("warning", { message: warning }) : `Warning: ${warning}`);
 	let handle: WorkerFleetControllerHandle;
 	try {
-		const provisioner = await (options.loadProvisioner ?? importProvisioner)(command.provisioner);
+		const provisioner = command.provisioner.endsWith(".json")
+			? module.createWorkerHostProvisioner(readProvisionerConfig(command.provisioner))
+			: await (options.loadProvisioner ?? importProvisioner)(command.provisioner);
 		handle = await module.startWorkflowFleetController({
 			...(command.database === undefined ? {} : { journal: workerJournalSelection(command.database) }),
 			agentDir: options.agentDir,

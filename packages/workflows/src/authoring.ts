@@ -760,6 +760,28 @@ export declare function startWorkflowFleetController(
 	options: import("./workers/fleet-types.js").WorkflowFleetControllerOptions,
 ): Promise<import("./workers/fleet-types.js").WorkflowFleetController>;
 export type {
+	AzureVmssProvisionerOptions,
+	CommandProvisionerOptions,
+	KubernetesProvisionerOptions,
+	WorkerHostProvisionerConfig,
+	WorkerProvisionerErrorCode,
+} from "./workers/provisioners/types.js";
+/**
+ * A built-in worker host provisioner (#4768), after checking its options: `azure-vmss` drives `az vmss`, `kubernetes`
+ * drives `kubectl` on a Deployment or StatefulSet, and `command` runs your own up, down and list commands. Each uses its
+ * CLI's own credentials, and a failed call rejects with a {@link WorkerProvisionerError}.
+ */
+export declare function createWorkerHostProvisioner(
+	config: import("./workers/provisioners/types.js").WorkerHostProvisionerConfig,
+): import("./workers/fleet-types.js").WorkerHostProvisioner;
+/** A built-in provisioner's CLI call that failed (#4768). Its message never carries the CLI's arguments or secrets. */
+export declare class WorkerProvisionerError extends Error {
+	readonly name: "WorkerProvisionerError";
+	readonly code: import("./workers/provisioners/types.js").WorkerProvisionerErrorCode;
+	/** The CLI's exit code, when it exited. */
+	readonly exitCode?: number;
+}
+export type {
 	RestoredWorkspace,
 	WorkspaceHookOptions,
 	WorkspacePreference,

@@ -544,6 +544,14 @@ export {
 	WorkspaceRestoreUnavailableError,
 } from "./workers/placement-errors.js";
 export type {
+	AzureVmssProvisionerOptions,
+	CommandProvisionerOptions,
+	KubernetesProvisionerOptions,
+	WorkerHostProvisionerConfig,
+	WorkerProvisionerErrorCode,
+} from "./workers/provisioners/index.js";
+export { createWorkerHostProvisioner, WorkerProvisionerError } from "./workers/provisioners/index.js";
+export type {
 	LocalWorkerOptions,
 	WorkflowAdmissionOptions,
 	WorkflowWorkerPlacementOptions,

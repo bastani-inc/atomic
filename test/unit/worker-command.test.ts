@@ -16,6 +16,7 @@ import {
 	type WorkerHostOptions,
 } from "../../packages/coding-agent/src/cli/worker-command.js";
 import { LIBSQL_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
+import { createWorkerHostProvisioner } from "../../packages/workflows/src/workers/provisioners/index.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const TOKEN = "tok-secret-4768-do-not-print";
@@ -148,6 +149,7 @@ function fakeModule(behavior: { readonly setup?: Error; readonly drain?: Error }
 			return { hosts: [], roots: [] };
 		},
 		startWorkflowFleetController: () => assert.fail("start runs no controller"),
+		createWorkerHostProvisioner: () => assert.fail("start builds no provisioner"),
 	};
 	return { module, given, calls, emit: (event: WorkerHostEvent) => emit(event) };
 }
@@ -357,6 +359,7 @@ test("worker status lists each host and root's queue, as text or JSON, from the 
 	const module = (fleet: object | Error) => async (): Promise<WorkerHostModule> => ({
 		startWorkflowWorkerHost: () => assert.fail("status starts no host"),
 		startWorkflowFleetController: () => assert.fail("status runs no controller"),
+		createWorkerHostProvisioner: () => assert.fail("status builds no provisioner"),
 		async readWorkflowWorkerFleet(options) {
 			asked.push(options);
 			if (fleet instanceof Error) throw fleet;
@@ -544,7 +547,7 @@ test("worker controller parses its provisioner module and policy, and refuses op
 	refused(["controller"], "--provisioner");
 	assert.throws(
 		() => parseWorkerCommand(["controller"], { cwd: root }),
-		/Pass the provisioner module the controller drives/,
+		/Pass the provisioner module, or the JSON configuration of a built-in one/,
 	);
 	assert.throws(
 		() => parseWorkerCommand(["status", "--min-hosts", "1"], { cwd: root }),
@@ -573,6 +576,7 @@ test("worker controller runs the fleet controller with the module's provisioner,
 	const module: WorkerHostModule = {
 		startWorkflowWorkerHost: () => assert.fail("controller starts no host"),
 		readWorkflowWorkerFleet: () => assert.fail("controller reads no fleet"),
+		createWorkerHostProvisioner: () => assert.fail("a module is not a configuration"),
 		async startWorkflowFleetController(options) {
 			given.push(options);
 			emit = options.onEvent;
@@ -656,6 +660,7 @@ test("worker controller exits 1 when the provisioner module does not export a pr
 			startWorkflowWorkerHost: () => assert.fail("no host"),
 			readWorkflowWorkerFleet: () => assert.fail("no fleet"),
 			startWorkflowFleetController: () => assert.fail("no controller without a provisioner"),
+			createWorkerHostProvisioner: () => assert.fail("a module is not a configuration"),
 		}),
 	});
 	assert.equal(code, 1);
@@ -681,6 +686,7 @@ test("worker controller exits 1 when the provisioner module does not export a pr
 					startWorkflowWorkerHost: () => assert.fail("no host"),
 					readWorkflowWorkerFleet: () => assert.fail("no fleet"),
 					startWorkflowFleetController: () => assert.fail(`no controller for ${name}`),
+					createWorkerHostProvisioner: () => assert.fail("a module is not a configuration"),
 				}),
 			}),
 			1,
@@ -703,6 +709,7 @@ test("worker controller exits 1 when the provisioner module does not export a pr
 		loadModule: async () => ({
 			startWorkflowWorkerHost: () => assert.fail("no host"),
 			readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+			createWorkerHostProvisioner: () => assert.fail("a module is not a configuration"),
 			async startWorkflowFleetController(options) {
 				kinds.push(options.provisioner.kind);
 				setTimeout(() => signals.emit("SIGINT", "SIGINT"), 5);
@@ -712,6 +719,64 @@ test("worker controller exits 1 when the provisioner module does not export a pr
 	});
 	assert.equal(await exit, 0);
 	assert.deepEqual(kinds, ["f"]);
+});
+
+test("worker controller builds a built-in provisioner from a JSON configuration, and refuses a bad one without quoting it (#4768)", async () => {
+	const run = async (path: string) => {
+		const err: string[] = [];
+		const kinds: string[] = [];
+		const signals = new EventEmitter();
+		const code = await runWorkerCommand(["controller", "--provisioner", path], {
+			cwd: root,
+			agentDir: join(root, "agent"),
+			log: () => {},
+			error: (line) => err.push(line),
+			signals: signals as unknown as Pick<NodeJS.Process, "on" | "off">,
+			loadProvisioner: () => assert.fail("a configuration is not imported"),
+			loadModule: async () => ({
+				startWorkflowWorkerHost: () => assert.fail("no host"),
+				readWorkflowWorkerFleet: () => assert.fail("no fleet"),
+				createWorkerHostProvisioner,
+				async startWorkflowFleetController(options) {
+					kinds.push(options.provisioner.kind);
+					setTimeout(() => signals.emit("SIGTERM", "SIGTERM"), 5);
+					return { holder: "h", async stop() {} };
+				},
+			}),
+		});
+		return { code, err, kinds };
+	};
+	const write = (name: string, content: string) => {
+		const path = join(root, name);
+		writeFileSync(path, content);
+		return path;
+	};
+	const good = write(
+		"fleet.json",
+		JSON.stringify({ kind: "kubernetes", namespace: "atomic", deployment: "atomic-worker", selector: "app=w" }),
+	);
+	assert.deepEqual(await run(good), { code: 0, err: [], kinds: ["kubernetes"] });
+	for (const [name, content, message] of [
+		[
+			"broken.json",
+			'{"kind": "command", "up": ["secret-value"',
+			/broken\.json is not a provisioner configuration: it is not valid JSON/,
+		],
+		["kindless.json", '["secret-value"]', /must be a JSON object with a "kind"/],
+		[
+			"bad.json",
+			JSON.stringify({ kind: "command", up: ["secret-value"], down: [], list: ["l"] }),
+			/down must be a non-empty array/,
+		],
+	] as const) {
+		const result = await run(write(name, content));
+		assert.equal(result.code, 1, name);
+		assert.match(result.err.join("\n"), message, name);
+		assert.doesNotMatch(result.err.join("\n"), /secret-value/, name);
+	}
+	const missing = await run(join(root, "missing.json"));
+	assert.equal(missing.code, 1);
+	assert.match(missing.err[0] ?? "", /missing\.json is not a provisioner configuration: it cannot be read \(ENOENT\)/);
 });
 
 /** The real command loads the bundled workflows package through the extension host's module loader. */

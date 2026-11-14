@@ -182,7 +182,7 @@ See [Joining a machine to a shared database](/storage#joining-a-machine-to-a-sha
 atomic worker start [--db <url>] [--token-file <path>] [--prefix <prefix>] [--slots <n>]
                     [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
 atomic worker status [--db <url>] [--token-file <path>] [--prefix <prefix>] [--json]
-atomic worker controller --provisioner <module> [--db <url>] [--token-file <path>] [--prefix <prefix>]
+atomic worker controller --provisioner <module|file.json> [--db <url>] [--token-file <path>] [--prefix <prefix>]
                     [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--scale-up-queue-depth <n>]
                     [--scale-up-delay <ms>] [--idle-drain <ms>] [--boot-timeout <ms>] [--json]
 ```
@@ -195,7 +195,7 @@ SIGTERM or SIGINT drains the host: it takes no more children, lets the running o
 
 `atomic worker status` lists the worker hosts registered in the database, with their workers, labels, and when each last reported, and the queue of each running root they serve. See [Running workers on many machines](/guides/worker-hosts).
 
-`atomic worker controller` runs a fleet controller on the database: it adds worker hosts through the provisioner that `--provisioner` names when the queues of the database's shared roots grow, and drains and removes hosts that held no child for `--idle-drain` milliseconds. The module's default export is a provisioner, or a function that returns one. The policy options default to 0 minimum hosts, 10 maximum hosts, 4 workers per host, a queue depth of `--workers-per-host`, a 20000 ms scale-up delay, a 300000 ms idle drain, and a 600000 ms boot timeout. Several controllers can run on one database; one is active at a time and another takes over within 30 seconds when it stops. It prints `controller holder=… journal=…` and then `active`, `standby`, `scale-up target=… desired=… live=…`, `drain-requested id=… host=…`, `removed id=… reason=…`, `degraded …` and `recovered …` lines. SIGTERM or SIGINT stops it and exits `0`; a setup error exits `1`. See [Scale the fleet automatically](/guides/worker-hosts#scale-the-fleet-automatically).
+`atomic worker controller` runs a fleet controller on the database: it adds worker hosts through the provisioner that `--provisioner` names when the queues of the database's shared roots grow, and drains and removes hosts that held no child for `--idle-drain` milliseconds. The module's default export is a provisioner, or a function that returns one. A path ending in `.json` instead configures a built-in provisioner: a JSON object whose `kind` is `azure-vmss`, `kubernetes` or `command`, with that provisioner's options. See [Built-in provisioners](/guides/worker-hosts#built-in-provisioners). The policy options default to 0 minimum hosts, 10 maximum hosts, 4 workers per host, a queue depth of `--workers-per-host`, a 20000 ms scale-up delay, a 300000 ms idle drain, and a 600000 ms boot timeout. Several controllers can run on one database; one is active at a time and another takes over within 30 seconds when it stops. It prints `controller holder=… journal=…` and then `active`, `standby`, `scale-up target=… desired=… live=…`, `drain-requested id=… host=…`, `removed id=… reason=…`, `degraded …` and `recovered …` lines. SIGTERM or SIGINT stops it and exits `0`; a setup error exits `1`. See [Scale the fleet automatically](/guides/worker-hosts#scale-the-fleet-automatically).
 
 ## Modes
 
