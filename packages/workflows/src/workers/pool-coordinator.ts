@@ -868,11 +868,21 @@ export class PoolCoordinator {
 			const batch = this.batches.get(notice.batch);
 			this.batches.delete(notice.batch);
 			const rejected = new Map(notice.rejected.map((entry) => [entry.workId, entry]));
-			for (const entry of rejected.values())
-				this.publicationFailures.set(entry.workId, {
-					generation: entry.generation,
-					error: rehydrateError(entry.error),
-				});
+			for (const entry of rejected.values()) {
+				const error = rehydrateError(entry.error);
+				// The root's store refused the publication only for a while (unreachable, or busy): it is not the attempt's
+				// failure. What the root last took of the attempt is forgotten and its refused activity goes out again, in
+				// full, unless newer activity already waits (#4768).
+				if (infrastructureFaultOf(error) === "storage_unavailable") {
+					this.sentRuns.forget(entry.workId);
+					const refused = batch?.entries.find((published) => published.work.id === entry.workId);
+					if (refused !== undefined && !this.pendingActivity.has(entry.workId))
+						this.pendingActivity.set(entry.workId, refused);
+					this.scheduleFlush();
+					continue;
+				}
+				this.publicationFailures.set(entry.workId, { generation: entry.generation, error });
+			}
 			this.routes?.accept(
 				(batch?.entries ?? []).filter((entry) => rejected.get(entry.work.id)?.generation !== entry.work.generation),
 			);

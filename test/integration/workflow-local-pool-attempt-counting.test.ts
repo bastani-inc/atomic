@@ -29,6 +29,7 @@ import {
 	type AdmissionConfiguration,
 	SqlResourceAdmission,
 } from "../../packages/workflows/src/workers/resource-admission.js";
+import { PoolStageHandoff } from "../../packages/workflows/src/workers/stage-handoff.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
 import { fileExistsSync, makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
@@ -623,6 +624,45 @@ test.skipIf(process.platform === "win32")(
 		assert.deepEqual(
 			result.items.map((item) => [item.state, item.generation, item.handoffs]),
 			Array.from({ length: WORKERS }, () => ["completed", 2, [1]]),
+		);
+	},
+	BUDGET.timeoutMs,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a stage publication the root's store refuses for a while is sent again in full, and its child completes without spending an attempt (#4768)",
+	async () => {
+		let refused = 0;
+		const result = await runOneChild(
+			"pool-checkpoint-child.ts",
+			"stageChild",
+			() => {
+				// The root's store refuses the attempt's first stage publication, busy, before applying any of it.
+				const prepare = (
+					PoolStageHandoff.prototype as unknown as { prepare: (...args: unknown[]) => Promise<unknown> }
+				).prepare;
+				const handoff = PoolStageHandoff.prototype as unknown as {
+					prepare: (...args: unknown[]) => Promise<unknown>;
+				};
+				vi.spyOn(handoff, "prepare").mockImplementation(async function (
+					this: PoolStageHandoff,
+					...args: unknown[]
+				) {
+					if (refused === 0) {
+						refused++;
+						throw busy();
+					}
+					return prepare.apply(this, args);
+				});
+			},
+			undefined,
+			{ workers: 1 },
+		);
+		assert.equal(refused, 1);
+		assert.equal(result.outcome?.status, "completed", JSON.stringify(result));
+		assert.deepEqual(
+			result.items.map((item) => [item.state, item.generation]),
+			[["completed", 1]],
 		);
 	},
 	BUDGET.timeoutMs,
