@@ -23,7 +23,7 @@ write_files:
 # Block scalars hold the commands' own quotes as they are; cloud-init runs each string with sh.
 runcmd:
   - |
-    mkdir -p /etc/atomic && echo "ATOMIC_WORKER_PROVIDER_ID=$(${provider_id_command})" > /etc/atomic/worker.env
+    mkdir -p /etc/atomic && echo "ATOMIC_PROVIDER_ID=$(${provider_id_command})" > /etc/atomic/worker.env
   - |
     (umask 077 && ${token_command} > /etc/atomic/token && chown atomic:atomic /etc/atomic/token)
   - [sh, -c, "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs git"]

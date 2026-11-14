@@ -31,7 +31,8 @@ export function defaultWorkerSlots(cpus: number = availableParallelism()): numbe
 
 const HELP = `Usage:
   ${APP_NAME} worker start [--db <url>] [<credential>] [--prefix <prefix>] [--slots <n>]
-                      [--label <key=value>]... [--host-id <id>] [--no-restore] [--idle-exit <ms>] [--json]
+                      [--label <key=value>]... [--host-id <id>] [--provider-id <id>] [--no-restore]
+                      [--idle-exit <ms>] [--json]
   ${APP_NAME} worker status [--db <url>] [<credential>] [--prefix <prefix>]
                       [--min-hosts <n>] [--max-hosts <n>] [--workers-per-host <n>] [--json]
   ${APP_NAME} worker metrics [--listen <host:port>] [--db <url>] [<credential>] [--prefix <prefix>]
@@ -79,6 +80,9 @@ Options:
   --slots <n>           Most children this host runs at once. Default: half the CPUs, from 1 to 16 (here ${defaultWorkerSlots()})
   --label <key=value>   A label this host reports in status; repeat for more
   --host-id <id>        This host's id. Default: the id this machine keeps in its agent directory
+  --provider-id <id>    The id of the instance this host runs on, such as a VM instance id or a pod name, so a
+                        controller's drain also applies to a worker that restarts on it. Default:
+                        ATOMIC_PROVIDER_ID, or HOSTNAME (the pod name) on Kubernetes
   --no-restore          Take only work whose repository tree is already here; never restore one
   --idle-exit <ms>      Drain and exit 0 after no child ran for this many milliseconds
   --json                One JSON object per line
@@ -97,9 +101,7 @@ Controller options:
   --boot-timeout <ms>            How long a new host may take to register. Default 600000
 
 Metrics options:
-  --listen <host:port>           Where to serve. Default 127.0.0.1:9464; use 0.0.0.0:9464 in a container
-
-A host a provisioner starts reports the provider's id for it from ATOMIC_WORKER_PROVIDER_ID.`;
+  --listen <host:port>           Where to serve. Default 127.0.0.1:9464; use 0.0.0.0:9464 in a container`;
 
 const HELP_HINT = `Use "${APP_NAME} worker --help" for usage.`;
 
@@ -135,6 +137,7 @@ export type WorkerCommand =
 			readonly slots: number;
 			readonly labels: Readonly<Record<string, string>>;
 			readonly hostId?: string;
+			readonly providerId?: string;
 			readonly restore: boolean;
 			readonly idleExitMs?: number;
 			readonly json: boolean;
@@ -192,6 +195,7 @@ const VALUE_OPTIONS = new Set([
 	"--slots",
 	"--label",
 	"--host-id",
+	"--provider-id",
 	"--idle-exit",
 	"--provisioner",
 	"--listen",
@@ -202,7 +206,10 @@ const SIGNAL_OPTIONS = new Set(["--min-hosts", "--max-hosts", "--workers-per-hos
 /** Each option and the commands that take it; any other option every command takes. */
 const OPTION_COMMANDS: Readonly<Record<string, readonly string[]>> = {
 	...Object.fromEntries(
-		["--slots", "--label", "--host-id", "--idle-exit", "--no-restore"].map((option) => [option, ["start"]]),
+		["--slots", "--label", "--host-id", "--provider-id", "--idle-exit", "--no-restore"].map((option) => [
+			option,
+			["start"],
+		]),
 	),
 	...Object.fromEntries(
 		Object.keys(POLICY_OPTIONS).map((option) => [
@@ -335,6 +342,8 @@ export function parseWorkerCommand(
 	const hostId = values.get("--host-id");
 	if (hostId !== undefined && (hostId === "" || hostId.includes("/")))
 		throw new WorkerCommandError("--host-id", "Pass a non-empty id without '/'.");
+	const providerId = values.get("--provider-id");
+	if (providerId === "") throw new WorkerCommandError("--provider-id", "Pass a non-empty id.");
 	const slots = values.get("--slots");
 	const idleExit = values.get("--idle-exit");
 	return {
@@ -343,6 +352,7 @@ export function parseWorkerCommand(
 		slots: slots === undefined ? defaultWorkerSlots(options.cpus) : positiveInteger("--slots", slots),
 		labels,
 		...(hostId === undefined ? {} : { hostId }),
+		...(providerId === undefined ? {} : { providerId }),
 		restore,
 		...(idleExit === undefined ? {} : { idleExitMs: positiveInteger("--idle-exit", idleExit) }),
 		json,
@@ -424,6 +434,7 @@ export interface WorkerHostOptions {
 	readonly maxWorkers: number;
 	readonly labels: Readonly<Record<string, string>>;
 	readonly hostId?: string;
+	readonly providerId?: string;
 	readonly restore?: false;
 	readonly idleExitMs?: number;
 	readonly onEvent: (event: WorkerHostEvent) => void;
@@ -614,6 +625,7 @@ async function start(
 			maxWorkers: command.slots,
 			labels: command.labels,
 			...(command.hostId === undefined ? {} : { hostId: command.hostId }),
+			...(command.providerId === undefined ? {} : { providerId: command.providerId }),
 			...(command.restore ? {} : { restore: false as const }),
 			...(command.idleExitMs === undefined ? {} : { idleExitMs: command.idleExitMs }),
 			onEvent: (event) => {
