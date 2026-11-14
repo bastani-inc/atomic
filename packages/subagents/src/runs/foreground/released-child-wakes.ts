@@ -17,6 +17,7 @@ import {
 	INTERCOM_CONNECTED_EVENT,
 	markEndedChildrenOf,
 	type ReleasedChildHoldFailure,
+	releasedChildReservation,
 	reserveReleasedChildrenOf,
 	SUBAGENT_HOLD_FAILURE_EVENT,
 	SUBAGENT_HOLD_RECOVERED_EVENT,
@@ -223,7 +224,10 @@ export function bindReleasedChildWakes(
 			indexSubagentChildOwner(ctx);
 			const record = subagentChildRecordForTarget(ownerSessionId, request.childName);
 			const call = record?.waitingOn?.find((item) => item.replyWait?.questionId === request.replyTo);
-			if (record === undefined || call === undefined) return false;
+			if (record === undefined) return false;
+			// #4751: the child's `ask` already returned, so the reply is an ordinary message: the broker holds it for the
+			// released child and wakes it, like any other send to it.
+			if (call === undefined) return releasedChildReservation(record)?.wake === true ? "deliver" : false;
 			const result = releasedReplyToolResult(call, request.message);
 			const accepted = await recordSubagentChildReply(
 				deps.pi,

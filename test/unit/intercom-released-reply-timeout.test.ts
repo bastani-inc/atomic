@@ -14,7 +14,8 @@ import {
 	releasedReplyTimeout,
 } from "../../packages/subagents/src/runs/foreground/released-child-replies.js";
 
-for (const name of ["intercom", "contact_supervisor"] as const) {
+// #4751: an `ask` has no reply timeout; its wait yields and leaves the ask pending, so only contact_supervisor times out.
+for (const name of ["contact_supervisor"] as const) {
 	test(`a released ${name} timeout matches the inline tool result exactly (#4326)`, async () => {
 		vi.useFakeTimers();
 		try {
@@ -64,10 +65,7 @@ for (const name of ["intercom", "contact_supervisor"] as const) {
 			);
 			const tool = tools.get(name);
 			assert.ok(tool);
-			const params =
-				name === "intercom"
-					? { action: "ask", to: "peer", message: "Question?" }
-					: { reason: "need_decision", message: "Question?" };
+			const params = { reason: "need_decision", message: "Question?" };
 			const pending = tool.execute("call-1", params, new AbortController().signal, undefined, {
 				sessionManager: { getSessionId: () => "child-session" },
 			} as never);

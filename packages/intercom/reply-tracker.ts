@@ -1,4 +1,6 @@
-import { ASK_REPLY_TIMEOUT_MS } from "./retry-policy.js";
+import type { SessionEntry } from "@bastani/atomic";
+import { isMessage, isSessionInfo } from "./broker/client-message-validation.js";
+import { INTERCOM_SESSION_IDENTITY_ENTRY } from "./session-identity.js";
 import type { Message, SessionInfo } from "./types.js";
 import { resolveSessionTarget, sessionTargetFailureReason } from "./session-target.js";
 
@@ -13,8 +15,6 @@ export class ReplyTracker {
   private readonly pendingTurnContexts: IntercomContext[] = [];
   private currentTurnContext: IntercomContext | null = null;
   private turnContextAdmitted = false;
-
-  constructor(private readonly askTimeoutMs = ASK_REPLY_TIMEOUT_MS) {}
 
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt = Date.now()): IntercomContext {
     const context = { from, message, receivedAt };
@@ -41,8 +41,7 @@ export class ReplyTracker {
    * (a followUp waiting behind a tool call, or a continuation with no new input), so only
    * `admitTurnMessage` makes it the reply target.
    */
-  beginTurn(now = Date.now()): void {
-    this.pruneExpired(now);
+  beginTurn(): void {
     this.turnContextAdmitted = false;
   }
 
@@ -83,8 +82,8 @@ export class ReplyTracker {
     this.currentTurnContext = null;
   }
 
-	resolveReplyTarget(options: { to?: string; replyTo?: string }, now = Date.now()): IntercomContext {
-		this.pruneExpired(now);
+	/** An ask has no expiry (#4751): it can be answered until it is replied to. */
+	resolveReplyTarget(options: { to?: string; replyTo?: string }): IntercomContext {
 		if (options.replyTo !== undefined) {
 			const contexts = new Map(this.pendingAsks);
 			if (this.currentTurnContext && !this.currentTurnContext.message.expectsReply) {
@@ -152,16 +151,37 @@ export class ReplyTracker {
     }
   }
 
-  listPending(now = Date.now()): IntercomContext[] {
-    this.pruneExpired(now);
+  listPending(): IntercomContext[] {
     return Array.from(this.pendingAsks.values()).sort((a, b) => a.receivedAt - b.receivedAt);
   }
+}
 
-  private pruneExpired(now: number): void {
-    for (const [messageId, context] of this.pendingAsks) {
-      if (now - context.receivedAt > this.askTimeoutMs) {
-        this.pendingAsks.delete(messageId);
-      }
+/**
+ * #4751: after a restart, the asks this session was sent and has not answered can still be answered. Their cards are
+ * on the branch; a reply this session sent (`intercom_sent` with `replyTo`) marks one answered. Only cards that arrived
+ * after this session first registered with Intercom count: a fork inherits its parent's cards, not its asks.
+ */
+export function restorePendingInboundAsks(tracker: ReplyTracker, entries: Iterable<SessionEntry>, sessionId: string): void {
+  const asks = new Map<string, IntercomContext>();
+  const answered = new Set<string>();
+  let registered = false;
+  for (const entry of entries) {
+    if (!registered) {
+      registered = entry.type === "custom" && entry.customType === INTERCOM_SESSION_IDENTITY_ENTRY &&
+        (entry.data as { sessionId?: unknown } | undefined)?.sessionId === sessionId;
+      continue;
     }
+    if (entry.type === "custom_message" && entry.customType === "intercom_message") {
+      const details = entry.details as { from?: unknown; message?: unknown } | undefined;
+      if (!isSessionInfo(details?.from) || !isMessage(details.message) || details.message.expectsReply !== true) continue;
+      if ((details as { historyOnly?: unknown }).historyOnly === true) continue;
+      asks.set(details.message.id, { from: details.from, message: details.message, receivedAt: Date.parse(entry.timestamp) || Date.now() });
+    } else if (entry.type === "custom" && entry.customType === "intercom_sent") {
+      const replyTo = (entry.data as { message?: { replyTo?: unknown } } | undefined)?.message?.replyTo;
+      if (typeof replyTo === "string") answered.add(replyTo);
+    }
+  }
+  for (const [id, context] of asks) {
+    if (!answered.has(id)) tracker.recordIncomingMessage(context.from, context.message, context.receivedAt);
   }
 }

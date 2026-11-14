@@ -556,7 +556,10 @@ for (const wait of [{ kind: "background" }, { kind: "foreground", budgetMs: 1000
 				assert.equal(current.surfaced.length, 1);
 				const closed = await current.host.close(cause);
 				assert.ok(closed.ok);
-				assert.equal((await execution).isError, true);
+				// #4751: closing the owner interrupts the ask's wait; the delivered ask yields instead of failing.
+				const interrupted = await execution;
+				assert.equal(interrupted.isError, false);
+				assert.match(JSON.stringify(interrupted.content), /stopped waiting/);
 				assert.equal(child.waits.has(), false);
 				assert.equal(child.reply(current.surfaced[0]!.id), false);
 				assert.deepEqual(current.starts, [0, 1]);

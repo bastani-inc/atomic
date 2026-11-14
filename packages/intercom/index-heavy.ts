@@ -61,8 +61,9 @@ import { IntercomRuntimeInactiveError } from "./runtime-inactive-error.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, WorkflowStageRosterAnnouncement, WorkflowPossibleStageAnnouncement, WorkflowRunParentAnnouncement } from "./types.js";
-import { ReplyTracker } from "./reply-tracker.js";
+import { ReplyTracker, restorePendingInboundAsks } from "./reply-tracker.js";
 import { DEFAULT_REPLY_TIMEOUT_MS, ReplyWaiterRegistry } from "./reply-waiter.ts";
+import { frameOutboundAskReply, OutboundAsks, type OutboundAskRecord, recipientClosedAskEntry } from "./outbound-asks.js";
 import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest, replyWaitGates } from "./released-reply-wait.js";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
 import { registerIntercomTool } from "./intercom-tool.js";
@@ -299,19 +300,30 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   }
   // #3761: a message counts as shown once its `intercom_message` card is on the session branch.
   const pendingIdleMessages = new InboundIdleQueue(() => consumedIntercomMessageIds(sessionBranch()));
+  /** Whether this session is saved, so it can be resumed: anything but an in-memory (`--no-session`) store. */
+  function sessionIsSaved(): boolean {
+    try {
+      return runtimeContext?.sessionManager.getSessionStore?.().descriptor.adapter !== "memory";
+    } catch {
+      return true;
+    }
+  }
   const durableInbox = new DurableInbox({
-    durable: () => {
-      try {
-        return runtimeContext?.sessionManager.getSessionStore?.().descriptor.adapter !== "memory";
-      } catch {
-        return true;
-      }
-    },
+    durable: sessionIsSaved,
     entries: sessionBranch,
     append: (record) => pi.appendEntry(INTERCOM_INBOX_ENTRY, record),
     appendHandled: (messageId) => pi.appendEntry(INTERCOM_INBOX_HANDLED_ENTRY, { messageId }),
   });
   const inboundDeliveries = new InboundMessageAdmission();
+  // #4751: the asks this session sent; their replies arrive as messages on this session's own thread.
+  const outboundAsks = new OutboundAsks({
+    entries: sessionBranch,
+    append: (customType, data) => pi.appendEntry(customType, data),
+    sessionId: () => currentSessionId,
+  });
+  function outboundAskFor(from: SessionInfo, message: Message): OutboundAskRecord | undefined {
+    return outboundAsks.answeredBy(from, message);
+  }
   const pendingStageRoutes = new Map<string, PendingStageRouteRegistration>();
   /**
    * #4006: per run, a secret minted here and registered with the run's route. Unlike the route capability,
@@ -668,6 +680,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
     const rawEntry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
+    const ask = outboundAskFor(from, message);
+    if (ask !== undefined) return frameOutboundAskReply(rawEntry, ask);
     return isDeliveryFeedback(message) ? frameDeliveryFeedback(rawEntry) : frameHistoricalSupervisorUpdate(rawEntry);
   }
   /** #3761: save an arriving message, confirm it to the broker, then handle it; a copy already saved is only confirmed. */
@@ -737,6 +751,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       }
       const admission = inboundDeliveries.admit(record.from, record.message);
       if (admission.kind !== "reserved") continue;
+      const askReply = outboundAskFor(record.from, record.message);
+      if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, record.message.replyError === undefined ? "answered" : "failed");
       replyTracker.recordIncomingMessage(record.from, record.message);
       if (pendingIdleMessages.enqueue(entry)) queued += 1;
       inboundDeliveries.commit(admission.reservation);
@@ -803,7 +819,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       inboundDeliveries.commit(reservation);
       return;
     }
-    if (isDeliveryFeedback(message)) {
+    // #4751: a reply to one of this session's asks arrives as a message on its own thread; a refusal is a failed ask.
+    const askReply = outboundAskFor(from, message);
+    if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, message.replyError === undefined ? "answered" : "failed");
+    if (isDeliveryFeedback(message) && askReply === undefined) {
       // Correlated asks were resolved above. A refusal of a fire-and-forget
       // send is feedback, not a new conversation to queue until parent idle.
       return retryStableDelivery({
@@ -869,6 +888,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
         const activeContext = getLiveContext(liveContext, messageGeneration);
         if (!activeContext) {
           release(new Error("Intercom session retired before inbound delivery"));
+          return;
+        }
+        // #4751: the reply to an ask starts a turn when idle and otherwise arrives after the current tool call.
+        if (askReply !== undefined) {
+          await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+          commit();
           return;
         }
         // Parent-addressed peers need not match an exact child handshake. Reach
@@ -1084,7 +1109,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const request: ReleasedChildReplyRequest = { childName: notice.childName, replyTo: notice.replyTo, message: notice.message };
       if (client === nextClient && getLiveContext()) pi.events.emit(RELEASED_CHILD_REPLY_EVENT, request);
       void (request.completion ?? Promise.resolve(false)).then(
-        (accepted) => nextClient.acknowledgeReleasedChildReply(notice, accepted),
+        (accepted) => nextClient.acknowledgeReleasedChildReply(notice, accepted === true, accepted === "deliver"),
         () => nextClient.acknowledgeReleasedChildReply(notice, false),
       );
     });
@@ -1103,7 +1128,23 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       if (client !== nextClient) {
         return;
       }
-      routePeerDisconnect(replyWaiters.pending(), notice);
+      if (routePeerDisconnect(replyWaiters.pending(), notice)) return;
+      // #4751: an ask whose recipient session ended comes back as a failed-ask message.
+      const record = outboundAsks.find(notice.replyTo);
+      if (record === undefined || record.state !== "pending") return;
+      const liveContext = getLiveContext();
+      if (!liveContext) return;
+      const generation = runtimeGeneration;
+      const entry = recipientClosedAskEntry(record.ask, { sessionId: notice.peerSessionId, ...(notice.peerName === undefined ? {} : { name: notice.peerName }) });
+      // Saved like any arriving message first, so a restart before the card is written still shows it once.
+      void durableInbox.receive(entry.from, entry.message, undefined, () => {}).then(async (arrival) => {
+        if (arrival !== "fresh") return;
+        await retryStableDelivery({
+          deliver: () => sendIncomingMessage(entry, "trigger", generation, false),
+          isCurrent: () => Boolean(getLiveContext(liveContext, generation)),
+        });
+        await outboundAsks.settle(record.ask.askId, "failed");
+      }).catch(() => {});
     });
     nextClient.on("peer_rebound", (notice: { replyTo: string; previousSessionId: string; sessionId: string }) => {
       if (client !== nextClient) return;
@@ -1861,6 +1902,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   });
   registerIntercomLifecycle(pi, {
     config,
+    sessionResumable: () => runtimeContext !== null && sessionIsSaved(),
     client: () => client,
     disconnectAuxiliaryClients: async () => {
       await disconnectPendingStageRouteClients();
@@ -1913,7 +1955,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       replyWaiters.releaseRunningWaits(error);
     },
     replyTracker: () => replyTracker,
-    bindReplyTracker: (ctx) => { replyTracker = bindWorkflowReplyTracker(ctx, replyTracker); },
+    bindReplyTracker: (ctx) => {
+      replyTracker = bindWorkflowReplyTracker(ctx, replyTracker);
+      // #4751: a restarted recipient can still answer the asks it was sent before the restart.
+      try {
+        restorePendingInboundAsks(replyTracker, ctx.sessionManager.getBranch(), ctx.sessionManager.getSessionId());
+      } catch {
+        // A session without a readable branch has no earlier asks to restore.
+      }
+    },
     preserveReplyTrackerOnCleanup: () => preserveWorkflowReplyTracker(runtimeContext),
     pendingIdleMessages,
     clearInboundFlushTimer,
@@ -1986,9 +2036,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
 
 
   pi.registerMessageRenderer("intercom_message", (message, _options, theme) => {
-    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
+    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string; heading?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
+    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText, details.heading);
   });
 
   const replyWaits = replyWaitGates(() => client);
@@ -2004,7 +2054,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     childOrchestratorMetadata: currentChildOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
-    beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
+    beginReplyWait: (from, replyTo, signal, timeoutMs) => replyWaiters.begin(from, replyTo, signal, timeoutMs),
     ...replyWaits,
     confirmSend: config.confirmSend,
     homeGroup: resolveSessionHomeGroup,
@@ -2018,6 +2068,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       await persistJoinedGroups(null);
     },
     replyTracker: () => replyTracker,
+    outboundAsks,
+    cancelReplyWait: (askId) => replyWaiters.cancel(askId, new Error("Ask cancelled")),
   });
   registerIntercomOverlay(pi, {
     runtimeGeneration: () => runtimeGeneration,

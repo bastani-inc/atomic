@@ -12,7 +12,7 @@ Atomic bundles `@bastani/intercom` for direct 1:1 messaging between sessions on 
 The extension registers commands and tools at startup. Connections are lazy: a session connects when you or the model invoke Intercom. Workflow stages and admitted subagent children connect at session start so they are listable and steerable immediately.
 
 **Key capabilities:**
-- **Session messaging** - `send`, `ask` (blocking, 10-minute timeout), `reply`, `pending`, `list`, `groups`, and `status` via the `intercom` tool
+- **Session messaging** - `send`, `ask` (never blocks; the reply arrives as a message), `reply`, `pending`, `cancel`, `list`, `groups`, and `status` via the `intercom` tool
 - **Runtime groups** - Add or remove named memberships without restarting; joined sessions keep their broker IDs and later subagents inherit the most recently joined membership
 - **Session and group discovery** - List connected sessions or every available group, including session counts and membership markers
 - **Keyboard overlay** - ALT+M or `/intercom` opens a session picker and compose overlay
@@ -101,6 +101,16 @@ intercom({ action: "send", to: "subagents:*", message: "Stop and report what you
 
 // The full session ID printed by list is also a valid target
 intercom({ action: "ask", to: "6332faab-1111-4222-8333-123456789abc", message: "Which validation path should I use?" })
+// → A quick reply comes back inline. Otherwise: Ask 4c4d8427-… delivered to research (busy: running bash).
+//   The reply arrives later as a message starting "Reply to your ask 4c4d8427-… from research".
+
+// Ask without waiting at all, or wait up to a budget, as with bash
+intercom({ action: "ask", to: "research", message: "Any blockers?", wait: { kind: "background" } })
+intercom({ action: "ask", to: "research", message: "Any blockers?", wait: { kind: "foreground", budgetMs: 60000 } })
+
+// Your pending asks, and cancelling one
+intercom({ action: "pending" })
+intercom({ action: "cancel", askId: "4c4d8427" })
 
 // Check connection status
 intercom({ action: "status" })
@@ -133,7 +143,7 @@ Found the issue — UserService.validate() doesn't check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients never need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. The recipient saves each message to its session as soon as it arrives, and the sender sees `delivered` only after that save. If the recipient closes or crashes before it shows a saved message, resuming that session with `atomic --session <id>` or `/resume` shows the message then, once, in arrival order, if its sender is still connected. A message from a sender that is gone is added once, in full, to the session history without starting a turn, and the recovery notice says the sender is gone. A reply already returned to a waiting `ask`, or a message the recipient refused, is not shown again when the session reopens. If Intercom cannot be reached when the session reopens, or the sender is a background subagent that was relaunched but has not reconnected yet, the message is deferred: it starts no turn, the notice says so, and the next reopen of the session decides again. Sessions started with `--no-session` are not saved, so their messages are not recovered. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Atomic session history.
+The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients never need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. The recipient saves each message to its session as soon as it arrives, and the sender sees `delivered` only after that save. If the recipient closes or crashes before it shows a saved message, resuming that session with `atomic --session <id>` or `/resume` shows the message then, once, in arrival order, if its sender is still connected. A message from a sender that is gone is added once, in full, to the session history without starting a turn, and the recovery notice says the sender is gone. A reply already returned inline to an `ask`, or a message the recipient refused, is not shown again when the session reopens. If Intercom cannot be reached when the session reopens, or the sender is a background subagent that was relaunched but has not reconnected yet, the message is deferred: it starts no turn, the notice says so, and the next reopen of the session decides again. Sessions started with `--no-session` are not saved, so their messages are not recovered. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Atomic session history.
 
 Working subagents and live workflow stages handle incoming `send` and `ask` messages in the same task and session, according to the sender's `delivery` option:
 
@@ -149,7 +159,7 @@ For example, `intercom({ action: "send", to: "worker", message: "Stop; the spec 
 
 This works for foreground and background children. Startup messages join the original task, multiple messages keep arrival order, and asks retain their reply thread. Subagent `pause` and `quit`, owner cancellation, host stop, and terminal children or closed stages take precedence over later input. Use an exact child name or full session ID from `intercom list`, not a workflow-stage path.
 
-A busy non-interactive recipient that is neither an admitted subagent nor a workflow stage can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: a waiting `ask` returns an error; otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
+A busy non-interactive recipient that is neither an admitted subagent nor a workflow stage can still refuse a message without interrupting its task. A successful `send` receipt means the recipient saved the message, not that its model accepted it. The refusal carries the original reply thread: an `ask` gets it as a failed-ask message (or as an error while its call is still waiting); otherwise the sender sees **Intercom delivery failed** feedback with a `Sent:` timestamp. That feedback bypasses the ordinary idle queue and does not trigger a standalone agent turn. During an active turn, protected delivery makes it visible and reconciles it at a protocol-safe boundary. Its wording describes the refused send, not the recipient's later activity.
 
 Atomic enables ordinary `intercom` by default, but it respects tool allowlists, exclusions and `noTools: "all"`. Include `"intercom"` in an explicit allowlist when needed. SDK hosts can disable the entire package with `builtins: { intercom: false }`; reload does not restore it. `contact_supervisor` remains subagent-only. Registration is lightweight; broker connection and heavy initialization remain lazy until an Intercom surface is used.
 
@@ -208,20 +218,22 @@ intercom({
   message: "Task-3: Add retry logic to API client. Key files: src/api/client.ts, src/api/types.ts. Ask if anything's unclear."
 })
 
-// Worker hits an ambiguity — asks and waits
+// Worker hits an ambiguity — asks, and keeps working on what it can
 intercom({
   action: "ask",
   to: "planner",
   message: "Should retry apply to all endpoints or just idempotent ones? Also, max retry count and backoff strategy?"
 })
-// → Reply from planner: Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
-// Worker continues implementing with the answer, same turn, full context.
+// → If the planner answers within the wait, the reply comes back inline.
+// → Otherwise the ask stays pending, and the answer arrives later as a message:
+//   Reply to your ask 4c4d8427-… from planner
+//   Only GET/PUT/DELETE — never POST. Max 3 retries, exponential backoff starting at 100ms.
 ```
 
 | Pattern | Action | Why |
 |---------|--------|-----|
 | **Task delegation** | Planner uses `send` | Fire-and-forget. Planner doesn't need to wait for an ack. |
-| **Clarification request** | Worker uses `ask` | Worker needs the answer to proceed. Blocks until reply. |
+| **Clarification request** | Worker uses `ask` | Worker needs the answer to proceed. It keeps working on what it can; the reply arrives as a message. |
 | **Discovery escalation** | Worker uses `ask` | Worker needs approval before changing course. |
 | **Completion report** | Worker uses `ask` | Planner might have follow-up instructions or the next task. |
 | **Peer handoff** | Sibling uses `send` | A locator, researcher, or debugger passes paths, evidence, or a reproduction straight to the sibling that needs it. |
@@ -246,7 +258,7 @@ Coordinate with other local Atomic sessions on related codebases. Use `/skill:in
 
 **Not when:** Unrelated codebases, trivial questions, or when you can proceed independently.
 
-**Principle:** Prefer `send` for notifications; `ask` only when blocked waiting for input.
+**Principle:** Prefer `send` for notifications; `ask` when you need an answer. `ask` never blocks: its reply arrives as a message.
 </intercom>
 ```
 
@@ -258,7 +270,7 @@ When Atomic's [subagent runtime](/subagents) admits a delegated child, the child
 
 The tool appears only in a delegated child whose parent granted supervisor coordination. Otherwise the child receives only ordinary `intercom`. Supervisor identity is supplied by the runtime, not environment variables.
 
-In parallel runs, a parent-targeted blocking ask waits in its original child execution. Foreground observations may yield so the parent can reply, but active and queued siblings retain their identities and execution capacity. Sends and progress updates never wait for a reply. A single-child launch retains the terminal fresh-child handoff when its exact live owner claims a blocking parent request.
+In parallel runs, a parent-targeted `contact_supervisor` request waits in its original child execution; an `intercom` ask to the parent returns at delivery and its reply arrives as a message. Foreground observations may yield so the parent can reply, but active and queued siblings retain their identities and execution capacity. Sends and progress updates never wait for a reply. A single-child launch retains the terminal fresh-child handoff when its exact live owner claims a blocking parent request.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

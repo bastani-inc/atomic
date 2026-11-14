@@ -1,8 +1,19 @@
-import { type ExtensionAPI, isIntercomRoutingError, isProjectGroupError, isRetryableIntercomRoutingError } from "@bastani/atomic";
+import {
+  automaticWaitBudgetMs,
+  type ExtensionAPI,
+  type ExtensionContext,
+  isIntercomRoutingError,
+  isProjectGroupError,
+  isRetryableIntercomRoutingError,
+} from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient, SendResult } from "./broker/client.js";
-import type { Attachment, BrokerMultiNodeStatus, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
+import type { Attachment, BrokerMultiNodeStatus, Message, SessionInfo, SessionDirectory, WorkflowStageRosterEntry, WorkflowFutureStageRosterEntry } from "./types.js";
+import { OutboundAsks } from "./outbound-asks.js";
+import { HELD_FOR_AWAY_ASKER_TARGET, OFFLINE_SESSION_TARGET } from "./broker/held-reply-targets.js";
+import { ASK_DESCRIPTION, ASK_PROMPT_SNIPPET, ASK_USAGE, askIdSchema, askWaitSchema, parseAskWait } from "./ask-wait.js";
+import { PeerDisconnectedError } from "./peer-disconnect-routing.js";
 import { describeMultiNodeStatus } from "./broker/broker-status.js";
 import { appendEntryUnlessReleased, intercomCallMayDetach } from "./detachable-calls.js";
 import { requestParentAskHandoff } from "./parent-ask-handoff.js";
@@ -241,6 +252,52 @@ function formatDeliveryStateSummary(stage: WorkflowFutureStageRosterEntry): stri
 	return `\n  … ${omitted} more delivery state${omitted === 1 ? "" : "s"} omitted (all: ${counts})`;
 }
 
+/** #4751: the recipient of an ask as the asker sees it at delivery: idle or busy, and what it is doing if known. */
+export interface AskRecipient {
+  readonly name: string;
+  readonly state: "idle" | "busy" | "unknown";
+  readonly currentAction?: string;
+}
+
+/** The recipient's presence at delivery; a listing that fails or misses it leaves the state unknown. */
+async function describeAskRecipient(client: IntercomClient, to: string, recipientId: string): Promise<AskRecipient> {
+  let session: SessionInfo | undefined;
+  try {
+    const sessions = await client.listSessions();
+    session = sessions.find((candidate) => candidate.id === recipientId) ??
+      sessions.find((candidate) => candidate.name !== undefined && candidate.name.toLowerCase() === to.trim().toLowerCase());
+  } catch {
+    session = undefined;
+  }
+  const name = session?.name || to;
+  const status = session?.status?.trim();
+  if (status === undefined || status.length === 0) return { name, state: "unknown" };
+  const activity = status.split(" · ")[0] ?? status;
+  if (activity === "idle") return { name, state: "idle" };
+  return { name, state: "busy", currentAction: activity.startsWith("tool:") ? `running ${activity.slice(5)}` : activity };
+}
+
+function askPendingText(askId: string, to: string, recipient: AskRecipient, stopped?: string): string {
+  const state = recipient.state === "unknown"
+    ? ""
+    : recipient.state === "idle"
+      ? " (idle)"
+      : ` (busy${recipient.currentAction === undefined ? "" : `: ${recipient.currentAction}`})`;
+  const prefix = stopped === undefined ? "" : `No reply yet; ${stopped}. `;
+  return `${prefix}Ask ${askId} delivered to ${recipient.name || to}${state}. The ask stays pending: its reply will arrive later as a message starting "Reply to your ask ${askId} from ${recipient.name || to}". Continue with other work; cancel it with intercom({ action: "cancel", askId: "${askId}" }).`;
+}
+
+/** The same automatic yield bash uses for a command wait that names no budget; `undefined` waits until the reply. */
+function automaticAskWaitBudgetMs(ctx: Pick<ExtensionContext, "getAgentTaskHost">): number | undefined {
+  try {
+    const host = ctx.getAgentTaskHost?.();
+    if (host !== undefined) return host.commandWaitBudgetMs;
+  } catch {
+    // A context without a task owner uses the default owner policy.
+  }
+  return automaticWaitBudgetMs(undefined, true);
+}
+
 interface IntercomToolDeps {
   childOrchestratorMetadata?: ChildOrchestratorMetadata | null | (() => ChildOrchestratorMetadata | null);
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
@@ -253,13 +310,17 @@ interface IntercomToolDeps {
   setJoinedGroups(groups: readonly string[]): void | Promise<void>;
   clearJoinedGroups(): void | Promise<void>;
   confirmSend: boolean;
-  /** Atomically reserves one correlation-keyed reply waiter. */
-  beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
+  /** Atomically reserves one correlation-keyed reply waiter; `timeoutMs: null` waits without a deadline. */
+  beginReplyWait(from: string, replyTo: string, signal?: AbortSignal, timeoutMs?: number | null): ReplyWaitAdmission;
   /** True only when this registration has confirmed that the broker routes locally. */
   mayDetachReplyWait?: () => boolean;
   /** True unless the broker is known to route across machines; a call may start before its connection exists. */
   mayAdmitReplyWait?: () => boolean;
   replyTracker: ReplyTracker | (() => ReplyTracker);
+  /** #4751: the asks this session sent, whose replies arrive as messages. */
+  outboundAsks?: OutboundAsks | (() => OutboundAsks);
+  /** Stop waiting on an ask's reply (cancel), without failing it. */
+  cancelReplyWait?(askId: string): void;
   /** Internal test seam for exercising retry pressure before public tool side effects. */
   retryIdentityMaxEntries?: number;
 }
@@ -275,6 +336,15 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
     : () => childOrchestratorMetadata ?? null;
   const activeReplyTracker = (): ReplyTracker =>
     typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
+  const ownOutboundAsks = deps.outboundAsks === undefined
+    ? new OutboundAsks({
+        entries: () => [],
+        append: (customType, data) => pi.appendEntry(customType, data),
+        sessionId: () => null,
+      })
+    : undefined;
+  const outboundAsks = (): OutboundAsks =>
+    ownOutboundAsks ?? (typeof deps.outboundAsks === "function" ? deps.outboundAsks() : deps.outboundAsks!);
   const patternError = (text: string): IntercomAttemptResult => ({
     content: [{ type: "text", text }],
     isError: true,
@@ -388,6 +458,7 @@ stage until the root run terminates; narrower name or pattern sends likewise rea
 A valid target outside the known set still queues and settles undeliverable at terminal only if never
 delivered; the result carries \`prediction\` (\`known\`, \`predicted\` or \`unknown\`) and shows a note only
 when the target looks like a typo of a known stage. Use \`ask\` only for a live, reply-capable target.
+${ASK_DESCRIPTION}
 Stage paths win over same-named owned subgroups for send/ask; \`list\` with \`group\` continues to
 select the group.
 Choose \`delivery\` per send/ask by urgency. The default "steer" arrives after the recipient's current
@@ -406,20 +477,20 @@ Usage:
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message (shared group only)
   intercom({ action: "send", to: "subagent-worker-*", message: "..." }) → Send to every matching session
   intercom({ action: "send", to: "subagents:*", message: "..." })   → Send to every subagent you launched
-  intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
+${ASK_USAGE}
   intercom({ action: "send", to: "session-name", message: "...", delivery: "interrupt" }) → Cancel the recipient's current work
   intercom({ action: "reply", message: "..." })                      → Reply to the active or exact pending ask
-  intercom({ action: "pending" })                                      → List unresolved inbound asks
+  intercom({ action: "pending" })                                      → List unresolved inbound asks and your pending asks
   intercom({ action: "status" })                  → Show connection status and all your groups
 
 The "join" action is additive. "default" is the shared default group; "true" and
 "auto" are reserved for subagent auto-groups. Ordinary delivery requires at least
 one shared membership; contact_supervisor remains the only cross-group path.`,
     promptSnippet:
-      "Use to coordinate with other local agent sessions that share an intercom group. Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.",
+      `Use to coordinate with other local agent sessions that share an intercom group. ${ASK_PROMPT_SNIPPET} Send/ask/reply retry reconnects internally; do not automatically repeat an unknown delivery outcome.`,
     parameters: Type.Object({
       action: Type.String({
-        description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', or 'status'",
+        description: "Action: 'list', 'groups', 'join', 'leave', 'send', 'ask', 'reply', 'pending', 'cancel', or 'status'",
       }),
       to: Type.Optional(Type.String({
         description: "Live session name, exact full session ID, unique 8-hex session UUID prefix, or `workflow:<rootRunId>/<segment>[/<segment>...]` path; `*` matches one segment and `**` any depth. Send also takes a session-name glob (`subagent-worker-*`, `*`) or `subagents:*` / `subagents:<runId>/*` for the subagents this session launched; ask needs one exact target. Send queues sticky delivery for pending/future matches; `workflow:<rootRunId>/**` broadcasts to live and future stages. Use `ask` only on live targets (for 'send', 'ask', or targeted 'reply')",
@@ -436,6 +507,8 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
       delivery: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp"), Type.Literal("interrupt")], {
         description: "For 'send'/'ask'; choose per message by urgency. 'steer' (default): arrives after the recipient's current tool calls, never cancelling work. 'interrupt': the recipient must stop now (urgent correction, stop order); cancels its current model call or tool call. 'followUp': can wait until the recipient finishes (low priority, after you're done).",
       })),
+      wait: Type.Optional(askWaitSchema),
+      askId: Type.Optional(askIdSchema),
       replyTo: Type.Optional(Type.String({
         description: "Exact pending-ask message ID or unique 8-hex UUID prefix; disambiguates concurrent asks, including asks from one sender",
       })),
@@ -910,6 +983,10 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               details: retryErrorDetails(retryToken),
             };
           }
+          const askWait = parseAskWait(params.wait);
+          if (askWait instanceof Error) {
+            return { content: [{ type: "text", text: askWait.message }], isError: true, details: { error: true } };
+          }
           let wait: ReplyWait | null = null;
           let retryIdentity: RetryIdentityAttempt | undefined;
           let askDelivered = false;
@@ -1044,28 +1121,34 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 				};
 			}
 			const questionId = retryIdentity.messageId;
-			const replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
-			const admission = beginReplyWait(replyFrom, questionId, _signal);
-            if (!admission.ok) {
-              const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
-              retryIdentity = undefined;
-              const text = admission.reason === "busy"
-                ? `Too many pending asks (${admission.limit}); reply-wait slots are full`
-                : "Cancelled";
-              return {
-                content: [{
-                  type: "text",
-                  text,
-                }],
-                isError: true,
-                details: retryErrorDetails(retained.retryToken),
-              };
-            }
-            wait = admission.wait;
+			let replyFrom = replySender.kind === "resolved" ? replySender.sessionId : sendTo;
+			const question = message ?? "";
+			// #4751: the asker waits for the reply only within its wait budget; an omitted `wait` uses the same
+			// automatic budget as bash, `background` yields at delivery, and `undefined` waits until the reply.
+			const budgetMs = askWait?.kind === "background"
+				? 0
+				: askWait?.budgetMs !== undefined ? askWait.budgetMs : automaticAskWaitBudgetMs(ctx);
+			outboundAsks().open({ askId: questionId, to, recipientId: replyFrom, question });
+			if (budgetMs !== 0) {
+				// The caller's own signal, not the retry operation's: a delivered ask's wait outlives retry recovery.
+				const admission = beginReplyWait(replyFrom, questionId, signal, budgetMs ?? null);
+				if (!admission.ok && admission.reason === "cancelled") {
+					outboundAsks().forget(questionId);
+					const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
+					retryIdentity = undefined;
+					return {
+						content: [{ type: "text", text: "Cancelled" }],
+						isError: true,
+						details: retryErrorDetails(retained.retryToken),
+					};
+				}
+				// With every reply-wait slot taken, the ask still goes out; its reply arrives as a message.
+				if (admission.ok) wait = admission.wait;
+			}
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
               logicalTarget: to,
-              text: message ?? "",
+              text: question,
               attachments,
               replyTo,
               expectsReply: true,
@@ -1073,13 +1156,17 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               // The broker names the recipient it authorized to answer, so its reply is matched to this ask: the
               // session behind a canonical path, a target the listing could not resolve (such as a peer's own
               // session id, #3760), or a recipient that reconnected under a new session id before confirming (#3761).
-              onReplyTarget: wait.bindSender,
+              onReplyTarget: (sender) => {
+                replyFrom = sender;
+                wait?.bindSender(sender);
+              },
             });
 
             if (sendResult.queued === true) {
+              outboundAsks().forget(questionId);
               retryIdentities.release(retryIdentity);
               retryIdentity = undefined;
-              wait.cancel(new Error(`Message queued for ${to}`));
+              wait?.cancel(new Error(`Message queued for ${to}`));
               await pi.appendEntry("intercom_sent", {
                 to,
                 message: { text: message, attachments, replyTo },
@@ -1099,10 +1186,11 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             if (!sendResult.delivered) {
+              outboundAsks().forget(questionId);
               const retained = retainInconclusiveRetry(retryIdentities, retryIdentity);
               retryIdentity = undefined;
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
-              wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
+              wait?.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
 							const pendingStageAskRefusal = errorText.startsWith(
 								"Cannot ask a workflow stage whose session has not initialized.",
 							);
@@ -1125,22 +1213,54 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               };
             }
             askDelivered = true;
+            retryIdentities.release(retryIdentity);
+            retryIdentity = undefined;
+            outboundAsks().open({ askId: questionId, to, recipientId: replyFrom, question });
             await pi.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: sendResult.id,
               timestamp: Date.now(),
             });
-            await prepareReleasedReplyWait(
-              pi,
-              wait,
-              signal,
-              { toolCallId, questionId, from: replyFrom, retryCount: retries },
-              () => deps.mayDetachReplyWait?.() === true,
-            );
-            const replyMessage = await wait.promise;
-            retryIdentities.release(retryIdentity);
-            retryIdentity = undefined;
+            await outboundAsks().persist(questionId);
+            const recipient = await describeAskRecipient(connectedClient, to, replyFrom);
+            const pendingResult = (stopped?: string) => ({
+              content: [{
+                type: "text" as const,
+                text: askPendingText(questionId, to, recipient, stopped),
+              }],
+              isError: false,
+              details: { askId: questionId, delivered: true, recipient, pending: true },
+            });
+            if (wait === null) return pendingResult();
+            const activeWait: ReplyWait = wait;
+            if (budgetMs !== undefined) {
+              await prepareReleasedReplyWait(
+                pi,
+                activeWait,
+                signal,
+                { toolCallId, questionId, from: replyFrom, retryCount: retries },
+                () => deps.mayDetachReplyWait?.() === true,
+              );
+            }
+            let replyMessage: Message;
+            try {
+              replyMessage = await activeWait.promise;
+            } catch (waitError) {
+              if (waitError instanceof ReleasedReplyHandoff) throw waitError;
+              if (waitError instanceof PeerDisconnectedError) {
+                await outboundAsks().settle(questionId, "failed");
+                return {
+                  content: [{ type: "text", text: `Failed: ${getErrorMessage(waitError)}` }],
+                  isError: true,
+                  details: { error: true, askId: questionId },
+                };
+              }
+              // The wait budget ended, the call was interrupted, or the connection dropped: the ask stays pending
+              // and its reply arrives later as a message.
+              return pendingResult(signal?.aborted === true ? "stopped waiting" : "the wait budget ended");
+            }
+            await outboundAsks().settle(questionId, replyMessage.replyError === undefined ? "answered" : "failed");
             const replyText = replyMessage.content.text;
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
@@ -1155,13 +1275,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               return {
                 content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
                 isError: true,
-                details: { error: true, replyTo: replyMessage.replyTo },
+                details: { error: true, askId: questionId, replyTo: replyMessage.replyTo },
               };
             }
             return {
               content: [{ type: "text", text: `**Reply from ${to}:**\n${replyText}${replyAttachments}` }],
               isError: false,
-              details: {},
+              details: { askId: questionId, delivered: true, recipient, replied: true },
             };
           } catch (error) {
             if (error instanceof ReleasedReplyHandoff) {
@@ -1169,6 +1289,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
               return releasedReplyHandoffResult();
             }
             wait?.cancel(toError(error));
+            if (!askDelivered && retryIdentity !== undefined) outboundAsks().forget(retryIdentity.messageId);
             let failure = error;
             let retained: { readonly retryToken?: string; readonly remainingRetries: number } | undefined;
             if (retryIdentity !== undefined) {
@@ -1307,8 +1428,13 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
                 timestamp: Date.now(),
               });
               activeReplyTracker().markReplied(route.messageId);
+              // #4751: a reply to an asker that is closed is held for it and delivered once it is back.
+              const heldForAsker = result.target === HELD_FOR_AWAY_ASKER_TARGET || result.target === OFFLINE_SESSION_TARGET;
               return {
-                content: [{ type: "text", text: `Reply queued for ${displayTarget}` }],
+                content: [{
+                  type: "text",
+                  text: heldForAsker ? `Reply delivered (held for ${displayTarget} until it is back)` : `Reply queued for ${displayTarget}`,
+                }],
                 isError: false,
                 details: {
                   messageId: result.id,
@@ -1380,26 +1506,61 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
 
         case "pending": {
           const pendingAsks = activeReplyTracker().listPending();
-          if (pendingAsks.length === 0) {
+          const outbound = outboundAsks().pending();
+          if (pendingAsks.length === 0 && outbound.length === 0) {
             return {
-              content: [{ type: "text", text: "No unresolved inbound asks." }],
+              content: [{ type: "text", text: "No unresolved inbound or outbound asks." }],
               isError: false,
-              details: {},
+              details: { outbound: [] },
             };
           }
 
           const now = Date.now();
-          const lines = pendingAsks.map(({ from, message, receivedAt }) => {
-            const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
-            const elapsedSeconds = Math.max(0, Math.floor((now - receivedAt) / 1000));
-            return `- ${from.name || from.id} · ${message.id} · ${elapsedSeconds}s ago · ${preview}`;
-          });
+          const elapsed = (since: number) => `${Math.max(0, Math.floor((now - since) / 1000))}s ago`;
+          const sections: string[] = [];
+          if (pendingAsks.length > 0) {
+            const lines = pendingAsks.map(({ from, message, receivedAt }) => {
+              const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
+              return `- ${from.name || from.id} · ${message.id} · ${elapsed(receivedAt)} · ${preview}`;
+            });
+            sections.push(`**Pending asks:**\n${lines.join("\n")}`);
+          }
+          if (outbound.length > 0) {
+            const lines = outbound.map(({ askId, to, question, askedAt }) =>
+              `- ${askId} → ${to} · ${elapsed(askedAt)} · ${question.replace(/\s+/g, " ").slice(0, 80)}`
+            );
+            sections.push(`**Your asks awaiting a reply:**\n${lines.join("\n")}`);
+          }
           return {
-            content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
+            content: [{ type: "text", text: sections.join("\n\n") }],
             isError: false,
-            details: {},
+            details: { outbound: outbound.map(({ askId, to, askedAt }) => ({ askId, to, askedAt })) },
           };
         }
+
+        case "cancel": {
+          const requested = typeof params.askId === "string" ? params.askId.trim() : "";
+          if (!requested) {
+            return { content: [{ type: "text", text: "Missing 'askId' parameter" }], isError: true, details: { error: true } };
+          }
+          const matches = outboundAsks().pending().filter(({ askId }) => askId === requested || askId.startsWith(requested));
+          const exact = matches.find(({ askId }) => askId === requested);
+          const target = exact ?? (matches.length === 1 ? matches[0] : undefined);
+          if (target === undefined) {
+            const text = matches.length > 1
+              ? `"${requested}" matches several pending asks; use the full ask id`
+              : `No pending ask "${requested}"`;
+            return { content: [{ type: "text", text }], isError: true, details: { error: true } };
+          }
+          deps.cancelReplyWait?.(target.askId);
+          await outboundAsks().settle(target.askId, "cancelled");
+          return {
+            content: [{ type: "text", text: `Cancelled ask ${target.askId} to ${target.to}. A reply that still arrives is shown once, marked late.` }],
+            isError: false,
+            details: { askId: target.askId, cancelled: true },
+          };
+        }
+
         case "status": {
           try {
             const mySessionId = connectedClient.sessionId;
@@ -1417,7 +1578,7 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
             return {
               content: [{
                 type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}`,
+                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nGroups: ${ownGroups.join(", ")}\nActive visible sessions: ${sessions.length}${selectedSection}${multiNodeSection}\nYour asks awaiting a reply: ${outboundAsks().pending().length}`,
               }],
               isError: false,
               details: {

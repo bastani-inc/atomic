@@ -3709,7 +3709,12 @@ for (const toolName of ["intercom", "contact_supervisor"] as const) {
 			0,
 			"the question is not sent again",
 		);
-		assert.equal(h.runs.filter((run) => run.task.includes('No reply from "peer" within 10 minutes')).length, 1);
+		// #4751: an intercom ask has no reply timeout; its released wait ends and the ask stays pending.
+		const deadlineText =
+			toolName === "intercom"
+				? 'No reply from "peer" yet; stopped waiting'
+				: 'No reply from "peer" within 10 minutes';
+		assert.equal(h.runs.filter((run) => run.task.includes(deadlineText)).length, 1);
 	});
 }
 

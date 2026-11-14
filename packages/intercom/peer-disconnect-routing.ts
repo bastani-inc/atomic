@@ -1,3 +1,8 @@
+/** The recipient of a waiting ask ended before it replied. */
+export class PeerDisconnectedError extends Error {
+  override readonly name = "PeerDisconnectedError";
+}
+
 export interface PeerDisconnectWaiter {
 	from: string;
 	replyTo: string;
@@ -24,7 +29,7 @@ export function routePeerDisconnect(waiters: PeerDisconnectWaiters, notice: Peer
 	const candidates = Symbol.iterator in Object(waiters) ? waiters : [waiters];
 	for (const waiter of candidates as Iterable<PeerDisconnectWaiter>) {
 		if (!matches(waiter, notice)) continue;
-		waiter.reject(new Error(`Session "${notice.peerName ?? notice.peerSessionId}" disconnected before replying`));
+		waiter.reject(new PeerDisconnectedError(`Session "${notice.peerName ?? notice.peerSessionId}" disconnected before replying`));
 		return true;
 	}
 	return false;

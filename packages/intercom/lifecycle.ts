@@ -8,6 +8,8 @@ import type { ReplyTracker } from "./reply-tracker.js";
 
 interface LifecycleDeps {
   config: IntercomConfig;
+  /** Whether this session is saved and can be resumed, so its asks stay pending while it is away (#4751). */
+  sessionResumable?(): boolean;
   client(): IntercomClient | null;
   setClient(client: IntercomClient | null): void;
   setShuttingDown(value: boolean): void;
@@ -69,7 +71,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setClient(null);
     if (activeClient) {
       try {
-        await activeClient.disconnect();
+        await activeClient.disconnect({ resumable: deps.sessionResumable?.() === true });
       } catch (error) {
         if (!reportOwnedIntercomDiagnostic()) console.error(`Intercom failed to disconnect during ${reason.toLowerCase()}; continuing cleanup:`, error);
       }

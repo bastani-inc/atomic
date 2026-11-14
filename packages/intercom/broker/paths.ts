@@ -61,6 +61,11 @@ export function getBrokerDeliveredMessagesPath(agentDir: string = getAgentDir())
   return join(getIntercomDirPath(agentDir), "delivered-messages.sqlite");
 }
 
+/** #4751: asks that wait for away sessions, and the replies held for away askers; owner-only. */
+export function getBrokerAwayAsksPath(agentDir: string = getAgentDir()): string {
+  return join(getIntercomDirPath(agentDir), "away-asks.sqlite");
+}
+
 /** Owner-only HMAC key paired with durable accepted-operation authority. */
 export function getBrokerDeliveredMessagesKeyPath(agentDir: string = getAgentDir()): string {
   return join(getIntercomDirPath(agentDir), "delivered-messages.key");

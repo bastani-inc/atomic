@@ -50,7 +50,8 @@ export interface ReleasedChildReplyRequest {
 	readonly childName: string;
 	readonly replyTo: string;
 	readonly message: Message;
-	completion?: Promise<boolean>;
+	/** `"deliver"`: no call of the child waits for this reply, so it reaches the child as an ordinary message (#4751). */
+	completion?: Promise<boolean | "deliver">;
 }
 
 export interface ReleasedReplyWaitData {

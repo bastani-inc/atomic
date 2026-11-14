@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, test, vi } from "vitest";
 import { IntercomBrokerFixture } from "../helpers/intercom-broker-fixture.js";
+import { sleep } from "../helpers/runtime.js";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const brokerFixture = new IntercomBrokerFixture(mkdtempSync(join(tmpdir(), "released-asker-reply-")));
@@ -528,7 +529,8 @@ test(
 		released.owner.on("released_child_reply", (notice: ReleasedChildReply) => handed.push(notice));
 		void replyTo(replierClient, released, "first try").catch(() => undefined);
 		await vi.waitFor(() => assert.equal(handed.length, 1), WAIT);
-		await replierClient.disconnect();
+		// The replier's session can be resumed (#4751): it is only away, so the ask waiting for it does not fail.
+		await replierClient.disconnect({ resumable: true });
 		await waitUntilGone(released.owner, "replier-sender-gone");
 		released.owner.acknowledgeReleasedChildReply(handoffAt(handed, 0), true);
 
@@ -540,6 +542,192 @@ test(
 		released.owner.acknowledgeReleasedChildReply(handoffAt(handed, 1), true);
 		assert.equal((await retry).delivered, true);
 		released.call.abort();
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a reply to a released child's ask that no call waits for wakes the child and reaches it once as a message (#4751)",
+	async () => {
+		let replierClient: Client | undefined;
+		const released = await releaseAsker(
+			"async-ask",
+			peerAsk("replier-async-ask"),
+			async () => {
+				const made = await peerReplier("replier-async-ask")();
+				replierClient = made.client;
+				return made;
+			},
+			"reserve-first",
+			false,
+		);
+		assert.ok(replierClient);
+		const handoffs: ReleasedChildReply[] = [];
+		// The child's `ask` already returned, so its owner tells the broker to deliver the reply to the child itself.
+		released.owner.on("released_child_reply", (notice: ReleasedChildReply) => {
+			handoffs.push(notice);
+			released.owner.acknowledgeReleasedChildReply(notice, false, true);
+		});
+		const wakes: string[] = [];
+		released.owner.on("restoring_recipient_wake", (notice: { childName: string }) => wakes.push(notice.childName));
+
+		const reply = replyTo(replierClient, released, "src/config.ts");
+		await vi.waitFor(() => assert.deepEqual(wakes, [released.childName]), WAIT);
+		// The owner wakes the child: it registers again under the owner's authorization and takes the held reply.
+		const { capability, supervisorSessionId } = await released.owner.authorizeSupervisorChild(released.childName);
+		const woken = new IntercomClient(randomUUID(), { preferredSessionId: released.childSessionId });
+		const received = recordMessages(woken);
+		await woken.connect(
+			{
+				name: released.childName,
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				status: "idle",
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: "default",
+				groups: ["default"],
+			},
+			{ capability, supervisorSessionId },
+		);
+		brokerFixture.onCleanup(() => woken.disconnect().catch(() => undefined));
+		const delivered = await reply;
+		assert.equal(delivered.delivered, true, delivered.reason);
+		await vi.waitFor(() => assert.equal(received.length, 1), WAIT);
+		assert.deepEqual(
+			{ replyTo: received[0]?.replyTo, text: received[0]?.content.text },
+			{ replyTo: released.questionId, text: "src/config.ts" },
+		);
+		assert.equal(handoffs.length, 1);
+		const again = await replyTo(replierClient, released, "a second answer");
+		assert.equal(again.delivered, false, "the ask takes one reply");
+		await sleep(200);
+		assert.equal(received.length, 1, "the reply reaches the child exactly once");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a recipient that ends while a released child's ask waits for it fails that ask once, waking the child (#4751)",
+	async () => {
+		let replierClient: Client | undefined;
+		const released = await releaseAsker(
+			"recipient-ends",
+			peerAsk("replier-recipient-ends"),
+			async () => {
+				const made = await peerReplier("replier-recipient-ends")();
+				replierClient = made.client;
+				return made;
+			},
+			"reserve-first",
+			false,
+		);
+		assert.ok(replierClient);
+		const handoffs: ReleasedChildReply[] = [];
+		released.owner.on("released_child_reply", (notice: ReleasedChildReply) => {
+			handoffs.push(notice);
+			released.owner.acknowledgeReleasedChildReply(notice, false, true);
+		});
+		const wakes: string[] = [];
+		released.owner.on("restoring_recipient_wake", (notice: { childName: string }) => wakes.push(notice.childName));
+
+		// The recipient's session ends for good before it replies.
+		await replierClient.disconnect();
+		await vi.waitFor(() => assert.equal(handoffs.length, 1), WAIT);
+		assert.equal(handoffs[0]?.replyTo, released.questionId);
+		assert.match(handoffs[0]?.message.replyError ?? "", /ended before replying/);
+		await vi.waitFor(() => assert.deepEqual(wakes, [released.childName]), WAIT);
+
+		const { capability, supervisorSessionId } = await released.owner.authorizeSupervisorChild(released.childName);
+		const woken = new IntercomClient(randomUUID(), { preferredSessionId: released.childSessionId });
+		const received = recordMessages(woken);
+		await woken.connect(
+			{
+				name: released.childName,
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				status: "idle",
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: "default",
+				groups: ["default"],
+			},
+			{ capability, supervisorSessionId },
+		);
+		brokerFixture.onCleanup(() => woken.disconnect().catch(() => undefined));
+		await vi.waitFor(() => assert.equal(received.length, 1), WAIT);
+		assert.equal(received[0]?.replyTo, released.questionId);
+		assert.match(received[0]?.replyError ?? "", /ended before replying/);
+		await sleep(200);
+		assert.equal(received.length, 1, "the failed ask reaches the child exactly once");
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a released child's failed ask survives its owner leaving before saving the handoff, and reaches the child once (#4751)",
+	async () => {
+		let replierClient: Client | undefined;
+		const ownerReturnAddress = randomUUID();
+		const ownerToken = randomUUID();
+		const owner = await connect("owner-failed-handoff", { ownerToken, returnAddress: ownerReturnAddress });
+		const ownerId = sessionIdOf(owner);
+		const released = await releaseAsker(
+			"failed-handoff",
+			peerAsk("replier-failed-handoff"),
+			async () => {
+				const made = await peerReplier("replier-failed-handoff")();
+				replierClient = made.client;
+				return made;
+			},
+			"reserve-first",
+			false,
+			owner,
+		);
+		assert.ok(replierClient);
+		const handoffs: ReleasedChildReply[] = [];
+		owner.on("released_child_reply", (notice: ReleasedChildReply) => handoffs.push(notice));
+		// The recipient ends; the owner is handed the failed ask but leaves before it saves it.
+		await replierClient.disconnect();
+		await vi.waitFor(() => assert.equal(handoffs.length, 1), WAIT);
+		await owner.disconnect({ resumable: true });
+
+		// The owner is back under its id and reserves the child again: the child is woken for the kept failed ask.
+		const back = await connect("owner-failed-handoff", {
+			ownerToken,
+			returnAddress: ownerReturnAddress,
+			preferredSessionId: ownerId,
+		});
+		assert.equal(sessionIdOf(back), ownerId);
+		const wakes: string[] = [];
+		back.on("restoring_recipient_wake", (notice: { childName: string }) => wakes.push(notice.childName));
+		await back.reserveReleasedChildren([{ childName: released.childName, wake: true }]);
+		await vi.waitFor(() => assert.deepEqual(wakes, [released.childName]), WAIT);
+		const { capability, supervisorSessionId } = await back.authorizeSupervisorChild(released.childName);
+		const woken = new IntercomClient(randomUUID(), { preferredSessionId: released.childSessionId });
+		const received = recordMessages(woken);
+		await woken.connect(
+			{
+				name: released.childName,
+				model: "test-model",
+				cwd: repoRoot,
+				pid: process.pid,
+				status: "idle",
+				startedAt: Date.now(),
+				lastActivity: Date.now(),
+				group: "default",
+				groups: ["default"],
+			},
+			{ capability, supervisorSessionId },
+		);
+		brokerFixture.onCleanup(() => woken.disconnect().catch(() => undefined));
+		await vi.waitFor(() => assert.equal(received.length, 1), WAIT);
+		assert.equal(received[0]?.replyTo, released.questionId);
+		assert.match(received[0]?.replyError ?? "", /ended before replying/);
+		await sleep(200);
+		assert.equal(received.length, 1, "the failed ask reaches the child exactly once");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );

@@ -84,7 +84,7 @@ subagent({
 
 Parallel tasks have independent identities. Accepted work beyond the concurrency limit stays queued. Use `/agents` to browse available definitions before choosing an agent.
 
-Intercom communication does not cancel a parallel batch. A blocking ask or supervisor decision waits only in the requesting child and resumes that same execution after the matching reply. Sends and progress updates remain nonblocking. Foreground observations may yield so the parent can reply; execution concurrency, queued siblings, and task identities are preserved. Stop a selected task explicitly, or close its owner to cancel all owned work.
+Intercom communication does not cancel a parallel batch. An `intercom` ask returns at delivery and its reply arrives as a message in the requesting child; a supervisor decision waits only in the requesting child and resumes that same execution after the matching reply. Sends and progress updates remain nonblocking. Foreground observations may yield so the parent can reply; execution concurrency, queued siblings, and task identities are preserved. Stop a selected task explicitly, or close its owner to cancel all owned work.
 
 A launch result says **Launched in background**. This records what happened at launch; it is not a permanently live status label. The below-prompt indicator and `/tasks` show the current state.
 

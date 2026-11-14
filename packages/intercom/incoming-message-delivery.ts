@@ -88,9 +88,10 @@ export function frameHistoricalSupervisorUpdate(entry: InboundMessageEntry): Inb
 export function buildIncomingCustomMessage(entry: InboundMessageEntry) {
   const senderDisplay = entry.from.name || entry.from.id;
   const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
+  const opening = entry.heading ?? `**📨 From ${senderDisplay}** (${entry.from.cwd})`;
   return {
     customType: "intercom_message" as const,
-    content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
+    content: `${opening}${replyInstruction}\n\n${entry.bodyText}`,
     display: true as const,
     details: entry,
   };

@@ -1,3 +1,5 @@
+import type { Message, SessionInfo } from "../types.js";
+import { AwayAsks, type HeldAwayMessage } from "./away-asks.js";
 export interface PendingQuestion {
   senderSessionId: string;
   targetSessionId: string;
@@ -7,7 +9,124 @@ export interface PendingQuestion {
 /** Tracks delivered questions until their reply or either peer's departure. */
 export class PendingQuestionIndex {
   private readonly questions = new Map<string, PendingQuestion[]>();
+  /**
+   * #4751: questions whose asker, or whose recipient, is away (closed without ending its session, or released), and
+   * the replies held for an away asker. An ask has no expiry, so these wait for that session to register again.
+   */
+  private away: AwayAsks | undefined;
+
+  /** Keep what waits for away sessions in this store (the broker's durable one); in memory until then. */
+  useAwayStore(store: AwayAsks): void {
+    this.away = store;
+  }
+
+  private awayAsks(): AwayAsks {
+    this.away ??= new AwayAsks();
+    return this.away;
+  }
+
+  /** Keep questions whose peer is away until it is back. */
+  keepDormant(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+    if (questions.length === 0) return;
+    this.awayAsks().keep(questions, senderReturnAddress);
+  }
+
+  /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
+  hasDormantReply(questionId: string, replierSessionId: string): boolean {
+    return this.awayAsks().question(questionId, replierSessionId) !== undefined;
+  }
+
+  /** The kept question `questionId` that `replierSessionId` answers while its asker is away (#4751). */
+  dormantReply(
+    questionId: string,
+    replierSessionId: string,
+  ): (PendingQuestion & { readonly senderReturnAddress?: string }) | undefined {
+    return this.awayAsks().question(questionId, replierSessionId);
+  }
+
+  /** A session is back under its id: its kept questions route again once both of their peers are connected. */
+  restoreDormant(
+    sessionId: string,
+    returnAddress: string | undefined,
+    isConnected: (sessionId: string) => boolean,
+  ): PendingQuestion[] {
+    const restored = this.awayAsks().restore(sessionId, returnAddress, isConnected);
+    for (const question of restored) this.record(question.senderSessionId, question.targetSessionId, question.messageId);
+    return restored;
+  }
+
+  /**
+   * Kept questions to a recipient that ended or can no longer answer. Their askers are away, so each gets a failed-ask
+   * message held until it is back (#4751).
+   */
+  failDormantForTarget(target: SessionInfo, reason: string, idPrefix: string): void {
+    this.awayAsks().failForTarget(target, reason, idPrefix);
+  }
+
+  /** The session ended for good: nothing waits for it any more. */
+  dropAway(returnAddress: string | undefined): void {
+    this.awayAsks().drop(returnAddress);
+  }
+
+  /** Hold a reply for the away asker of `question`, delivered once when it registers again (#4751). */
+  holdForAwayAsker(
+    question: PendingQuestion & { readonly senderReturnAddress: string },
+    from: SessionInfo,
+    message: Message,
+  ): void {
+    this.awayAsks().hold(question, from, message);
+  }
+
+  /** Whether this reply is already held for its asker. */
+  isHeldForAwayAsker(messageId: string, replierSessionId: string): boolean {
+    return this.awayAsks().isHeld(messageId, replierSessionId);
+  }
+
+  /** What is held for the asker that proves itself by its return address, in the order it was held. */
+  heldForAsker(askerReturnAddress: string | undefined): HeldAwayMessage[] {
+    return this.awayAsks().held(askerReturnAddress);
+  }
+
+  /** The verified asker saved a held message. */
+  releaseHeld(messageId: string, askerReturnAddress: string | undefined): void {
+    this.away?.release(messageId, askerReturnAddress);
+  }
+
   private readonly parked = new Map<string, { ownerSessionId: string; questions: PendingQuestion[] }>();
+  /** #4751: asks of released subagents whose reply is held for them, by owner and child name. */
+  private readonly parkedAskers = new Map<string, PendingQuestion[]>();
+
+  parkAsker(childName: string, ownerSessionId: string, question: PendingQuestion): void {
+    const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
+    this.parkedAskers.set(key, [...(this.parkedAskers.get(key) ?? []), question]);
+  }
+
+  /** #4751: failed-ask messages for a released subagent whose recipient ended, by owner and child name. */
+  private readonly heldForChildren = new Map<string, HeldAwayMessage[]>();
+
+  holdForReleasedChild(childName: string, ownerSessionId: string, held: HeldAwayMessage): void {
+    const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
+    const list = this.heldForChildren.get(key) ?? [];
+    if (!list.some((existing) => existing.message.id === held.message.id)) this.heldForChildren.set(key, [...list, held]);
+  }
+
+  hasHeldForReleasedChild(childName: string, ownerSessionId: string): boolean {
+    return (this.heldForChildren.get(JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]))?.length ?? 0) > 0;
+  }
+
+  takeHeldForReleasedChild(childName: string, ownerSessionId: string): HeldAwayMessage[] {
+    const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
+    const held = this.heldForChildren.get(key) ?? [];
+    this.heldForChildren.delete(key);
+    return held;
+  }
+
+  takeParkedAskers(childName: string, ownerSessionId: string): PendingQuestion[] {
+    const key = JSON.stringify([ownerSessionId, childName.trim().toLowerCase()]);
+    const questions = this.parkedAskers.get(key) ?? [];
+    this.parkedAskers.delete(key);
+    return questions;
+  }
 
   parkTarget(targetSessionId: string, childName: string, ownerSessionId: string): void {
     const questions = this.takeForTarget(targetSessionId);
