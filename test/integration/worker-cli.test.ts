@@ -8,7 +8,14 @@ import { type BudgetedProcess, expectExitedCleanly, spawnWithinBudget } from "..
 import { startFakeLibsqlServer } from "../helpers/fake-libsql-server.js";
 import { startOutageProxy } from "../helpers/outage-proxy.js";
 import { poolTestBudgetMs } from "../helpers/pool-budget.js";
-import { bunExecutable, makeTempDirectory, readJson, removeTempDirectory, sleep } from "../helpers/runtime.js";
+import {
+	bunExecutable,
+	makeTempDirectory,
+	readJson,
+	removeTempDirectory,
+	sleep,
+	spawnSyncCollect,
+} from "../helpers/runtime.js";
 
 /**
  * `atomic worker start` (#4768) as users run it: the CLI from source, one process per node with its own agent
@@ -197,6 +204,44 @@ test.skipIf(process.platform === "win32")(
 			// Each child works for 8 s; the root's one worker takes one, node B the others.
 			root = startRoot(s, 3, 8_000);
 			await until("node B to run a child", s, () => claimed(node!).length > 0, [node.process, root]);
+			// `atomic worker status` on another node sees node B and the root's queue.
+			const agentDir = join(s.directory, "C", "agent");
+			mkdirSync(agentDir, { recursive: true });
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [libsqlPackage] }));
+			const status = spawnSyncCollect(
+				[
+					bunExecutable(),
+					cli,
+					"worker",
+					"status",
+					"--json",
+					"--db",
+					s.url,
+					"--token-file",
+					s.tokenFile,
+					"--prefix",
+					PREFIX,
+				],
+				{
+					cwd: s.directory,
+					env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir, ATOMIC_PROFILE: "", ATOMIC_STORAGE: "" },
+				},
+			);
+			assert.equal(status.exitCode, 0, status.stderr.toString());
+			const fleet = JSON.parse(status.stdout.toString()) as {
+				hosts: { host: string; labels: Record<string, string>; maxWorkers: number }[];
+				roots: { root: string; leased: number }[];
+			};
+			assert.deepEqual(
+				fleet.hosts.map((host) => [host.host, host.labels, host.maxWorkers]),
+				[["B", { node: "B" }, 2]],
+			);
+			assert.deepEqual(
+				fleet.roots.map((entry) => entry.root),
+				[s.root],
+			);
+			assert.ok(fleet.roots[0]!.leased > 0);
+			assert.ok(!status.stdout.toString().includes(TOKEN) && !status.stderr.toString().includes(TOKEN));
 			// SIGTERM mid-run: node B takes nothing more, and exits 0 once the children it holds finished there.
 			node.process.process.kill("SIGTERM");
 			const stderr = await expectExitedCleanly(node.process);

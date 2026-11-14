@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import {
 	defaultWorkerSlots,
 	parseWorkerCommand,
 	runWorkerCommand,
 	WorkerCommandError,
+	type WorkerFleet,
 	type WorkerHostEvent,
 	type WorkerHostModule,
 	type WorkerHostOptions,
@@ -16,6 +18,7 @@ import { LIBSQL_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/sto
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const TOKEN = "tok-secret-4768-do-not-print";
+const libsqlPackage = fileURLToPath(new URL("../../packages/storage-libsql", import.meta.url));
 let root: string;
 let tokenFile: string;
 
@@ -265,3 +268,264 @@ test("worker start warns about a token file other users can read (#4768)", async
 		`Warning: The token file ${tokenFile} is readable by other users; restrict it with chmod 600.`,
 	]);
 });
+
+async function run(args: readonly string[], loadModule: () => Promise<WorkerHostModule>) {
+	const out: string[] = [];
+	const err: string[] = [];
+	const code = await runWorkerCommand(args, {
+		cwd: root,
+		agentDir: join(root, "agent"),
+		log: (line) => out.push(line),
+		error: (line) => err.push(line),
+		loadModule,
+	});
+	return { code, out, err };
+}
+
+const unloadable = async (): Promise<WorkerHostModule> => {
+	throw new Error("the workflows package did not load");
+};
+
+test("worker help and refused command lines exit without loading the workflows package (#4768)", async () => {
+	for (const args of [["--help"], ["help"], ["start", "-h"], []]) {
+		const help = await run(args, unloadable);
+		assert.equal(help.code, 0);
+		assert.match(help.out[0] ?? "", /^Usage:\n {2}atomic worker start \[--db <url>\]/);
+		assert.match(help.out[0] ?? "", /--slots <n> +Most children this host runs at once/);
+	}
+	const refusedRun = await run(["start", "--slots", "3 "], unloadable);
+	assert.deepEqual(refusedRun, {
+		code: 1,
+		out: [],
+		err: ["Invalid worker command: --slots. Pass a positive integer."],
+	});
+	const unknown = await run(["serve"], unloadable);
+	assert.deepEqual(unknown.err, [
+		'Invalid worker command: <command>. Use start or status. Use "atomic worker --help" for usage.',
+	]);
+	const broken = await run(["status"], unloadable);
+	assert.deepEqual(broken, { code: 1, out: [], err: ["Error: the workflows package did not load"] });
+});
+
+test("worker status refuses every start-only option, and labels may hold '=' or nothing (#4768)", () => {
+	for (const option of ["--label", "--host-id", "--idle-exit", "--slots"]) refused(["status", option, "x"], option);
+	refused(["status", "--no-restore"], "--no-restore");
+	refused(["start", "--no-such"], "--no-such");
+	refused(["start", "--host-id", ""], "--host-id");
+	const command = parseWorkerCommand(["start", "--label", "a=b", "--label", "empty="], { cwd: root, cpus: 2 });
+	assert.deepEqual(command.kind === "start" && command.labels, { a: "b", empty: "" });
+	assert.deepEqual(parseWorkerCommand(["status", "--db", "file:///tmp/p.db", "--prefix", "p_"], { cwd: root }), {
+		kind: "status",
+		database: { url: "file:///tmp/p.db", prefix: "p_" },
+		json: false,
+	});
+});
+
+const FLEET: WorkerFleet = {
+	hosts: [
+		{
+			host: "n1",
+			labels: { zone: "east", rack: "2" },
+			workers: 2,
+			maxWorkers: 4,
+			roots: ["r1"],
+			heartbeatAgoMs: 1_500,
+		},
+		{ host: "n2", labels: {}, workers: 0, maxWorkers: 1, roots: [], heartbeatAgoMs: 999.4 },
+		{ host: "n3", labels: {}, workers: 0, maxWorkers: 1, roots: [], heartbeatAgoMs: -3 },
+	],
+	roots: [
+		{
+			root: "r1",
+			ready: 3,
+			leased: 2,
+			completed: 10,
+			failed: 1,
+			hosts: [
+				{ host: "n1", leased: 2 },
+				{ host: "n2", leased: 0 },
+			],
+		},
+		{ root: "r2", ready: 1, leased: 0, completed: 0, failed: 0, hosts: [{ host: "n2", leased: 0 }] },
+	],
+};
+
+test("worker status lists each host and root's queue, as text or JSON, from the database it names (#4768)", async () => {
+	const asked: unknown[] = [];
+	const module = (fleet: object | Error) => async (): Promise<WorkerHostModule> => ({
+		startWorkflowWorkerHost: () => assert.fail("status starts no host"),
+		async readWorkflowWorkerFleet(options) {
+			asked.push(options);
+			if (fleet instanceof Error) throw fleet;
+			return fleet as WorkerFleet;
+		},
+	});
+	const text = await run(
+		["status", "--db", "libsql://pool.example.turso.io", "--token-file", tokenFile],
+		module(FLEET),
+	);
+	assert.equal(text.code, 0);
+	assert.deepEqual(text.out, [
+		"Hosts: 3",
+		"  n1  workers 2/4  roots 1  reported 1.5 s ago  labels zone=east,rack=2",
+		"  n2  workers 0/1  roots 0  reported 999 ms ago",
+		"  n3  workers 0/1  roots 0  reported 0 ms ago",
+		"Roots: 2",
+		"  r1  ready 3  running 2  completed 10  failed 1  on n1(2)",
+		"  r2  ready 1  running 0  completed 0  failed 0",
+	]);
+	assert.deepEqual(asked[0], {
+		journal: {
+			adapter: LIBSQL_ADAPTER_PACKAGE,
+			options: { url: "libsql://pool.example.turso.io" },
+			secrets: { authToken: { file: tokenFile } },
+		},
+		agentDir: join(root, "agent"),
+	});
+	const json = await run(["status", "--json"], module(FLEET));
+	assert.deepEqual(JSON.parse(json.out.join("\n")), FLEET);
+	assert.deepEqual(asked[1], { agentDir: join(root, "agent") }, "without --db, the journal this machine selects");
+	const setup = Object.assign(new Error("incomplete"), {
+		name: "SharedPoolSetupError",
+		problems: [{ subject: "a shared journal", code: "shared-journal-required", hint: "Pass --db." }],
+	});
+	const failed = await run(["status"], module(setup));
+	assert.deepEqual(failed, {
+		code: 1,
+		out: [],
+		err: ["Worker host setup is incomplete:", "  - a shared journal (shared-journal-required): Pass --db."],
+	});
+	const other = await run(["status"], module(new Error("database is locked")));
+	assert.deepEqual(other.err, ["database is locked"]);
+});
+
+test("worker start passes every host option on, and prints idle exit and JSON events with their time (#4768)", async () => {
+	const fake = fakeModule();
+	const host = await started(
+		["start", "--host-id", "n9", "--no-restore", "--idle-exit", "500", "--label", "zone=east", "--json"],
+		fake,
+	);
+	const options = fake.given[0]!;
+	assert.equal(options.hostId, "n9");
+	assert.equal(options.restore, false);
+	assert.equal(options.idleExitMs, 500);
+	assert.deepEqual(options.labels, { zone: "east" });
+	fake.emit({ kind: "idle-exit", idleMs: 512 });
+	fake.emit({
+		kind: "degraded",
+		failures: 2,
+		retryInMs: 1_800,
+		error: { name: "StorageUnavailableError", message: "a\n\nb" },
+	});
+	host.signals.emit("SIGTERM", "SIGTERM");
+	assert.equal(await host.exit, 0);
+	const events = host.out.map((line) => JSON.parse(line) as Record<string, unknown>);
+	assert.deepEqual(
+		events.map(({ time, ...rest }) => {
+			assert.match(String(time), /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+			return rest;
+		}),
+		[
+			{ event: "ready", host: "n9", slots: defaultWorkerSlots(), journal: "selected", labels: "zone=east" },
+			{ event: "idle-exit", idle_ms: 512 },
+			{ event: "degraded", failures: 2, retry_in_ms: 1_800, error: "StorageUnavailableError: a\n\nb" },
+			{ event: "draining", signal: "SIGTERM" },
+			{ event: "drained", host: "n9" },
+		],
+	);
+	const plain = fakeModule();
+	const text = await started(["start", "--db", "libsql://pool.example.turso.io/db?x=1#frag", "--prefix", "p_"], plain);
+	assert.equal(plain.given[0]?.restore, undefined, "restoring is the host's default");
+	assert.equal(plain.given[0]?.hostId, undefined);
+	assert.equal(plain.given[0]?.idleExitMs, undefined);
+	plain.emit({ kind: "idle-exit", idleMs: 7 });
+	plain.emit({ kind: "degraded", failures: 1, retryInMs: 9, error: { name: "E", message: "a \n\t b" } });
+	text.signals.emit("SIGINT", "SIGINT");
+	text.signals.emit("SIGINT", "SIGINT");
+	text.signals.emit("SIGINT", "SIGINT");
+	assert.equal(await text.exit, 2);
+	assert.deepEqual(plain.calls, ["drain", "stop"], "a third signal changes nothing");
+	assert.deepEqual(text.out, [
+		`ready host=host-a slots=${defaultWorkerSlots()} journal=libsql://pool.example.turso.io/db prefix=p_`,
+		"idle-exit idle_ms=7",
+		"degraded failures=1 retry_in_ms=9 error=E: a b",
+		"draining signal=SIGINT",
+		"stopping signal=SIGINT",
+		"stopped host=host-a",
+	]);
+});
+
+test("worker start reports a setup failure that is not a shared pool's by its message, and a token warning as JSON (#4768)", async () => {
+	chmodSync(tokenFile, 0o640);
+	const failing = fakeModule({ setup: new Error("process containment is not available") });
+	const failed = await run(
+		["start", "--db", "file:///tmp/p.db", "--token-file", tokenFile],
+		async () => failing.module,
+	);
+	assert.deepEqual(failed, {
+		code: 1,
+		out: [],
+		err: [
+			`Warning: The token file ${tokenFile} is readable by other users; restrict it with chmod 600.`,
+			"process containment is not available",
+		],
+	});
+	const json = await run(
+		["start", "--json", "--db", "file:///tmp/p.db", "--token-file", tokenFile],
+		async () => failing.module,
+	);
+	assert.deepEqual(
+		json.err.map((line) => {
+			const { time: _time, ...rest } = JSON.parse(line) as Record<string, unknown>;
+			return rest;
+		}),
+		[
+			{
+				event: "warning",
+				message: `The token file ${tokenFile} is readable by other users; restrict it with chmod 600.`,
+			},
+			{ event: "setup-failed", message: "process containment is not available" },
+		],
+	);
+	const missing = await run(
+		["start", "--db", "file:///tmp/p.db", "--token-file", join(root, "none")],
+		async () => failing.module,
+	);
+	assert.deepEqual(
+		missing.err,
+		["process containment is not available"],
+		"a missing token file is the host's to report",
+	);
+});
+
+/** The real command loads the bundled workflows package through the extension host's module loader. */
+const REAL_PACKAGE_TIMEOUT_MS = 120_000;
+
+test(
+	"worker status loads the bundled workflows package and reads a shared database, or lists what setup lacks (#4768)",
+	async () => {
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const db = pathToFileURL(join(root, "shared.db")).href;
+		const out: string[] = [];
+		const err: string[] = [];
+		const options = {
+			cwd: root,
+			agentDir,
+			log: (line: string) => out.push(line),
+			error: (line: string) => err.push(line),
+		};
+		// Without the libSQL adapter installed, setup lists it.
+		assert.equal(await runWorkerCommand(["status", "--db", db], options), 1);
+		assert.equal(err[0], "Worker host setup is incomplete:");
+		assert.match(
+			err[1] ?? "",
+			/^ {2}- the storage adapter @bastani\/atomic-storage-libsql, .*\(storage-adapter-unavailable\): Install it/,
+		);
+		writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [libsqlPackage] }));
+		err.length = 0;
+		assert.equal(await runWorkerCommand(["status", "--db", db], options), 0, err.join("\n"));
+		assert.deepEqual(out, ["Hosts: 0", "Roots: 0"]);
+	},
+	REAL_PACKAGE_TIMEOUT_MS,
+);

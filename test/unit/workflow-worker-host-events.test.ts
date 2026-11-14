@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
-import { isWorkerPlacementConfigError } from "../../packages/workflows/src/workers/placement-errors.js";
+import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { readSharedPoolFleet } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import {
+	isSharedPoolSetupError,
+	isWorkerPlacementConfigError,
+} from "../../packages/workflows/src/workers/placement-errors.js";
 import {
 	readWorkflowWorkerFleet,
 	startWorkflowWorkerHost,
@@ -77,8 +82,49 @@ test("a worker host refuses an idleExitMs that is not a positive integer (#4768)
 	for (const idleExitMs of [0, -1, 1.5])
 		await assert.rejects(
 			startWorkflowWorkerHost({ journal: journal(), maxWorkers: 1, idleExitMs }),
-			(error: unknown) => isWorkerPlacementConfigError(error) && error.field === "idleExitMs",
+			(error: unknown) =>
+				isWorkerPlacementConfigError(error) &&
+				error.field === "idleExitMs" &&
+				error.code === "invalid-option" &&
+				error.detail === "must be a positive integer",
 		);
+});
+
+test.skipIf(process.platform === "win32")(
+	"a worker host with the smallest idleExitMs exits at its first tick, reporting its idle time once (#4768)",
+	async () => {
+		const events: WorkflowWorkerHostEvent[] = [];
+		const host = await startWorkflowWorkerHost({
+			journal: journal(),
+			agentDir: join(directory, "agent"),
+			maxWorkers: 1,
+			restore: false,
+			idleExitMs: 1,
+			onEvent: (event) => events.push(event),
+		});
+		await host.closed;
+		assert.equal(events.length, 1, JSON.stringify(events));
+		assert.ok(events[0]?.kind === "idle-exit" && events[0].idleMs >= 1);
+		assert.equal("degraded" in (await host.stats()), false);
+	},
+	OUTAGE_TEST_TIMEOUT_MS,
+);
+
+test("reading the fleet lists every setup problem first, and a journal that is not SQL holds no fleet (#4768)", async () => {
+	await assert.rejects(
+		readWorkflowWorkerFleet({
+			journal: { adapter: join(directory, "no-such-adapter.js"), options: { url: "file:///none" } },
+			agentDir: join(directory, "agent"),
+		}),
+		(error: unknown) =>
+			isSharedPoolSetupError(error) &&
+			error.operation === "worker-host" &&
+			error.problems.map((problem) => problem.code).join() === "storage-adapter-unavailable",
+	);
+	assert.equal(
+		await readSharedPoolFleet(new MemoryRunJournal({ adapter: "memory", location: ":memory:" })),
+		undefined,
+	);
 });
 
 test("reading the fleet of a journal that never ran a shared pool finds nothing and creates nothing (#4768)", async () => {
@@ -123,7 +169,7 @@ test.skipIf(process.platform === "win32")(
 			await until("the host to recover", () => events.some((event) => event.kind === "recovered"));
 			const recovered = events.find((event) => event.kind === "recovered");
 			assert.ok(recovered?.kind === "recovered" && recovered.failures >= 1);
-			assert.equal((await host.stats()).degraded, undefined, "a recovered host is no longer degraded");
+			assert.equal("degraded" in (await host.stats()), false, "a recovered host is no longer degraded");
 		} finally {
 			proxy.restore();
 			await host.stop();
