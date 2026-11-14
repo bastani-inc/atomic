@@ -38,6 +38,12 @@ const WRITE_PROBE_INTERVAL_MS = 5_000;
 const SCALE_CASE_BUDGET_MS = 600_000;
 /** What the case keeps of its budget, after its waits give up, to stop its processes and drop its tables. */
 const CLEANUP_HEADROOM_MS = 30_000;
+/**
+ * How long the root's workers may take to start. A fleet of 16 hosts starts its processes at once, alongside the CI
+ * job's other server tests, and on a 16-core runner under that load a worker took 68 s to start: past the pool's
+ * default. The case measures the shared store, not process startup, so its workers get the time they need.
+ */
+const WORKER_STARTUP_TIMEOUT_MS = 240_000;
 
 interface Outcome {
 	readonly status: string;
@@ -141,7 +147,11 @@ async function runScale(url: string, hosts: number): Promise<void> {
 			{
 				cwd: directory,
 				stdout: "ignore",
-				env: env("root", { SHARED_POOL_STEPS: String(STEPS), SHARED_POOL_SESSIONS: String(hosts * SLOTS) }),
+				env: env("root", {
+					SHARED_POOL_STEPS: String(STEPS),
+					SHARED_POOL_SESSIONS: String(hosts * SLOTS),
+					SHARED_POOL_STARTUP_TIMEOUT_MS: String(WORKER_STARTUP_TIMEOUT_MS),
+				}),
 			},
 			deadline,
 		);

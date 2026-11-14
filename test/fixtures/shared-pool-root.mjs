@@ -119,6 +119,9 @@ const options = {
 		count: Number(workers),
 		definitions: [{ path: childPath, exportName }],
 		...(process.env.SHARED_POOL_LEASE_MS === undefined ? {} : { leaseMs: Number(process.env.SHARED_POOL_LEASE_MS) }),
+		...(process.env.SHARED_POOL_STARTUP_TIMEOUT_MS === undefined
+			? {}
+			: { startupTimeoutMs: Number(process.env.SHARED_POOL_STARTUP_TIMEOUT_MS) }),
 	},
 	workers: {
 		placement: "shared",
