@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
+	adapterOpenContext,
 	loadStorageAdapter,
 	openNodeSqliteDatabase,
 	resolveAdapterOptions,
@@ -78,13 +79,13 @@ export async function resolveBrokerStateSource(
 	}
 	if (selection.kind !== "adapter") return { status: "off", reason: "no-storage" };
 	validateStoragePrefix(selection.prefix);
-	const context: StorageOpenContext = { agentDir, domain: "intercom" };
+	const context: StorageOpenContext = adapterOpenContext(selection, { agentDir, domain: "intercom" });
 	// Destructured: the broker's runtime-graph walker reads a bare `module` identifier as the CJS module object.
 	const { module: adapterModule } = selection;
 	const adapter = await loadStorageAdapter(adapterModule, context);
 	const hook = adapter.openDatabase?.bind(adapter);
 	if (hook === undefined) return { status: "off", reason: "domain-only-adapter" };
-	const options = await resolveAdapterOptions(selection, context);
+	const options = await resolveAdapterOptions(selection, context, adapter.liveSecrets);
 	const location = { adapter: adapterModule, location: adapterModule };
 	return {
 		status: "shared",

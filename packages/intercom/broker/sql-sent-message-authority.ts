@@ -1,4 +1,4 @@
-import { type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
+import { dialectOf, type SqliteExecutor, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
 	InvalidStateInput,
@@ -19,8 +19,6 @@ type SentRow = SqliteRow & {
 	state: SentMessageState;
 };
 
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
-
 const emptyMessageId: InvalidStateInput = { status: "invalid", reason: "empty-message-id" };
 
 function questionRouteOf(row: SentRow): { questionRoute?: SentQuestionRoute } {
@@ -38,6 +36,7 @@ export async function openSqlSentMessageAuthority({
 	prefix,
 }: IntercomBrokerStateOptions): Promise<SentMessageAuthority> {
 	const table = `${validateStoragePrefix(prefix)}intercom_sent_messages`;
+	const { types, nowMs } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
@@ -46,7 +45,7 @@ export async function openSqlSentMessageAuthority({
 				target_identity TEXT NOT NULL,
 				question_route_json TEXT,
 				state TEXT NOT NULL CHECK (state IN ('reserved', 'accepted')),
-				recorded_at INTEGER NOT NULL
+				recorded_at ${types.int} NOT NULL
 			);
 			CREATE INDEX IF NOT EXISTS ${table}_recorded ON ${table}(recorded_at);
 		`),
@@ -71,7 +70,7 @@ export async function openSqlSentMessageAuthority({
 			return database.transaction(async (tx) => {
 				const { changes } = await tx.run(
 					`INSERT INTO ${table}(message_id, digest, target_identity, question_route_json, state, recorded_at)
-					 VALUES (?, ?, ?, ?, 'reserved', ${STORE_NOW}) ON CONFLICT(message_id) DO NOTHING`,
+					 VALUES (?, ?, ?, ?, 'reserved', ${nowMs}) ON CONFLICT(message_id) DO NOTHING`,
 					reservation.messageId,
 					reservation.digest,
 					reservation.targetIdentity,
@@ -117,7 +116,7 @@ export async function openSqlSentMessageAuthority({
 		},
 		async prune(olderThanMs: number): Promise<number> {
 			const { changes } = await database.run(
-				`DELETE FROM ${table} WHERE ${STORE_NOW} - recorded_at > ?`,
+				`DELETE FROM ${table} WHERE ${nowMs} - recorded_at > ?`,
 				olderThanMs,
 			);
 			return changes;

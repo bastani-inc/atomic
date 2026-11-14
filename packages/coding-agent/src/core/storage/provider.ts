@@ -61,9 +61,19 @@ export interface StorageOpenContext {
 	/** `intercom`: the shared Intercom broker state that multi-node brokers open on the top-level selection. */
 	readonly domain: "sessions" | "journal" | "intercom";
 	readonly signal?: AbortSignal;
+	/**
+	 * Reads the selection's `secrets[name]` reference again, on every call: a file rotated in place yields its new
+	 * contents. The provider passes it to adapter hooks; it is how an adapter reads its `liveSecrets`.
+	 */
+	readonly secret?: (name: string) => Promise<string>;
 }
 export interface StorageAdapterModule {
 	readonly atomicStorageAdapter: 1;
+	/**
+	 * Secrets the adapter reads itself through `context.secret(name)`, every time it needs them (for example once per
+	 * new connection), instead of once in `options`. The provider leaves these names out of `options`.
+	 */
+	readonly liveSecrets?: readonly string[];
 	openDatabase?(options: AdapterOptions, context: StorageOpenContext): Promise<SqliteDatabase>;
 	openSessionStore?(
 		options: AdapterOptions,
@@ -281,35 +291,68 @@ export async function loadStorageAdapter(
 	}
 }
 
-/** The adapter's options with every `secrets` reference resolved, as the provider passes them to its hooks. */
+/** Reads one `secrets` reference: an environment variable, a file without its final line ending, or a value. */
+async function readSecret(
+	selection: Extract<StorageSelection, { kind: "adapter" }>,
+	name: string,
+	ref: SecretRef,
+	agentDir: string,
+): Promise<string> {
+	if ("value" in ref) return ref.value;
+	if ("env" in ref) {
+		const environment = process.env[ref.env];
+		if (environment === undefined) throw new StorageConfigError("sdk", `secrets.${name}`, "secret-env-missing");
+		return environment;
+	}
+	let text: string;
+	try {
+		text = await readFile(secretFilePath(ref.file, agentDir), "utf8");
+	} catch (cause) {
+		throw new StorageUnavailableError(
+			{ adapter: selection.module, location: ref.file },
+			cause as StorageFailureCause,
+		);
+	}
+	return text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
+}
+
+/**
+ * The adapter's options with every `secrets` reference resolved, as the provider passes them to its hooks. Names in
+ * `liveSecrets` (the adapter's own `liveSecrets`) are left out: the adapter reads them through `context.secret`.
+ */
 export async function resolveAdapterOptions(
 	selection: Extract<StorageSelection, { kind: "adapter" }>,
 	context: StorageOpenContext,
+	liveSecrets: readonly string[] = [],
 ): Promise<AdapterOptions> {
 	const options = { ...selection.options };
 	for (const [name, ref] of Object.entries(selection.secrets ?? {})) {
-		let value: string;
-		if ("value" in ref) {
-			value = ref.value;
-		} else if ("env" in ref) {
-			const environment = process.env[ref.env];
-			if (environment === undefined) throw new StorageConfigError("sdk", `secrets.${name}`, "secret-env-missing");
-			value = environment;
-		} else {
-			let text: string;
-			try {
-				text = await readFile(secretFilePath(ref.file, context.agentDir), "utf8");
-			} catch (cause) {
-				throw new StorageUnavailableError(
-					{ adapter: selection.module, location: ref.file },
-					cause as StorageFailureCause,
-				);
-			}
-			value = text.endsWith("\r\n") ? text.slice(0, -2) : text.endsWith("\n") ? text.slice(0, -1) : text;
+		if (liveSecrets.includes(name)) {
+			delete options[name];
+			continue;
 		}
+		const value = await readSecret(selection, name, ref, context.agentDir);
 		Object.defineProperty(options, name, { value, enumerable: true, writable: true, configurable: true });
 	}
 	return options;
+}
+
+/**
+ * `context` with `secret(name)`, which reads `selection.secrets[name]` again on every call, as the provider passes it
+ * to adapter hooks. A name the selection does not reference is a `StorageConfigError`.
+ */
+export function adapterOpenContext(
+	selection: Extract<StorageSelection, { kind: "adapter" }>,
+	context: StorageOpenContext,
+): StorageOpenContext {
+	return {
+		...context,
+		secret: async (name) => {
+			const ref = Object.hasOwn(selection.secrets ?? {}, name) ? selection.secrets?.[name] : undefined;
+			if (ref === undefined) throw new StorageConfigError("sdk", `secrets.${name}`, "secret-missing");
+			return readSecret(selection, name, ref, context.agentDir);
+		},
+	};
 }
 
 async function closeAfterSnapshotCollections(database: SqliteDatabase): Promise<void> {
@@ -372,7 +415,8 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 				),
 			jsonl: async (dir) =>
 				(await import("./session/jsonl-session-store.js")).JsonlSessionStore.open(dir, { exactDirectory: true }),
-			direct: (adapter, options, storage) => adapter.openSessionStore?.(options, context, storage),
+			direct: (adapter, options, storage, adapterContext) =>
+				adapter.openSessionStore?.(options, adapterContext, storage),
 			sql: async (database, options) =>
 				(await import("./session/sql-session-store.js")).SqlSessionStore.open(database, {
 					...options,
@@ -399,7 +443,8 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		return this.open<RunJournal>(selection, context, {
 			memory: () => journals.memory({ adapter: "memory", location: ":memory:" }),
 			hostModules: journals.hostModules,
-			direct: (adapter, options, storage) => adapter.openRunJournal?.(options, context, storage),
+			direct: (adapter, options, storage, adapterContext) =>
+				adapter.openRunJournal?.(options, adapterContext, storage),
 			sql: async (database, options) => {
 				const journal = await journals.sql(database, options);
 				const createRun = journal.createRun.bind(journal);
@@ -419,6 +464,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 				adapter: StorageAdapterModule,
 				options: AdapterOptions,
 				storage: { readonly prefix?: string },
+				context: StorageOpenContext,
 			): Promise<T> | undefined;
 			hostModules?: Readonly<Record<string, object>>;
 			sql(database: SqliteDatabase, options: { readonly prefix?: string }): Promise<T>;
@@ -466,9 +512,10 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 		let openDatabase: () => Promise<SqliteDatabase>;
 		if (selection.kind === "adapter") {
 			const adapter = await loadStorageAdapter(selection.module, context, factories.hostModules);
-			const options = await resolveAdapterOptions(selection, context);
+			const adapterContext = adapterOpenContext(selection, context);
+			const options = await resolveAdapterOptions(selection, adapterContext, adapter.liveSecrets);
 			try {
-				const direct = factories.direct(adapter, options, { prefix: selection.prefix });
+				const direct = factories.direct(adapter, options, { prefix: selection.prefix }, adapterContext);
 				if (direct !== undefined) return withIdempotentClose(await direct);
 			} catch (cause) {
 				if (cause instanceof StorageError) throw cause;
@@ -481,7 +528,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 			const hook = adapter.openDatabase.bind(adapter);
 			openDatabase = async () => {
 				try {
-					return await hook(options, context);
+					return await hook(options, adapterContext);
 				} catch (cause) {
 					if (cause instanceof StorageError) throw cause;
 					throw new StorageUnavailableError(

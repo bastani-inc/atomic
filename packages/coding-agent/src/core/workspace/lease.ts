@@ -181,7 +181,9 @@ export async function acquireWorkspaceWriterLease(
 				)) as HolderRow | undefined;
 				if (row !== undefined && !isStale(row)) return row;
 				await transaction.run(
-					"INSERT OR REPLACE INTO writer (id, token, owner, pid, host, acquired_at) VALUES (1, ?, ?, ?, ?, ?)",
+					`INSERT INTO writer (id, token, owner, pid, host, acquired_at) VALUES (1, ?, ?, ?, ?, ?)
+					ON CONFLICT (id) DO UPDATE SET token = excluded.token, owner = excluded.owner, pid = excluded.pid,
+					host = excluded.host, acquired_at = excluded.acquired_at`,
 					holder.token,
 					holder.owner,
 					holder.pid,

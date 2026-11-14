@@ -3,6 +3,8 @@
 // worker-fleet/presets as the real CLI would, from one group of hosts kept in FAKE_CLOUD_DIR/state.json. The list
 // queries (a JMESPath --query, a gcloud --format, a kubectl go-template, gh --json) must be the preset's exactly: the
 // fake prints what the real CLI prints for them.
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { active, begin, create, fail, observe, readState, remove, scale, update } from "./fake-cloud.mjs";
 
 const [cli, ...args] = process.argv.slice(2);
@@ -113,6 +115,12 @@ function kubectl() {
 }
 
 function gh() {
+	// The credentials gh got: with FAKE_GH_APP set, only a GitHub App installation token (ghs_…) is accepted, from GH_TOKEN
+	// or, for a GitHub Enterprise Server GH_HOST, GH_ENTERPRISE_TOKEN.
+	const { GH_TOKEN, GH_ENTERPRISE_TOKEN, GH_HOST } = process.env;
+	appendFileSync(join(process.env.FAKE_CLOUD_DIR, "gh-env.jsonl"), `${JSON.stringify({ GH_TOKEN, GH_ENTERPRISE_TOKEN, GH_HOST })}\n`);
+	if (process.env.FAKE_GH_APP === "1" && !/^ghs_/.test(GH_ENTERPRISE_TOKEN ?? GH_TOKEN ?? ""))
+		fail("HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login", 1);
 	if (has("workflow", "run", "atomic-workers.yml", "--repo", "acme/flows")) {
 		if (!args.includes("workers=1")) fail("could not create workflow dispatch event: expected workers=1", 1);
 		update(create);

@@ -440,7 +440,7 @@ describe("atomic storage join and broker reports (#4320)", () => {
 		const missing = await storage(["join", databaseUrl]);
 		assert.equal(
 			missing.err,
-			`The libSQL storage adapter is not installed: ${LIBSQL_ADAPTER_PACKAGE} for <root>/agent (adapter-not-installed). Install it, then run this command again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
+			`The storage adapter is not installed: ${LIBSQL_ADAPTER_PACKAGE} for <root>/agent (adapter-not-installed). Install it, then run this command again: atomic install npm:${LIBSQL_ADAPTER_PACKAGE}`,
 		);
 	});
 

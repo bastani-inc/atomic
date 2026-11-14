@@ -45,10 +45,7 @@ test("team errors carry an explicit name, a stable code, safe fields and a hint 
 	const withoutDetail = new TeamProfileError("adapter-not-installed", { subject: "x", hint: "Install it." });
 	assert.equal(withoutDetail.detail, undefined);
 	assert.equal(withoutDetail.cause, undefined);
-	assert.equal(
-		withoutDetail.message,
-		"The libSQL storage adapter is not installed: x (adapter-not-installed). Install it.",
-	);
+	assert.equal(withoutDetail.message, "The storage adapter is not installed: x (adapter-not-installed). Install it.");
 	assert.deepEqual(
 		[...TEAM_PROFILE_ERROR_CODES].filter((code) => new TeamProfileError(code, { subject: "s", hint: "h" }).retryable),
 		["connection-failed", "connection-timeout", "settings-locked", "broker-restart-failed"],
@@ -200,6 +197,8 @@ test("the code lists, summaries and usage prefixes are the documented ones (#432
 			"unreadable-token-file",
 			"relative-token-file",
 			"empty-token",
+			"unsupported-auth",
+			"unsupported-option",
 			"invalid-prefix",
 			"unknown-command",
 			"unknown-option",
@@ -215,7 +214,7 @@ test("the code lists, summaries and usage prefixes are the documented ones (#432
 	);
 	assert.deepEqual(summaries, {
 		"settings-unreadable": "Cannot update the global settings",
-		"adapter-not-installed": "The libSQL storage adapter is not installed",
+		"adapter-not-installed": "The storage adapter is not installed",
 		"connection-failed": "Could not connect to the team database",
 		"connection-timeout": "The team database did not answer in time",
 		"token-write-failed": "Could not store the database token",

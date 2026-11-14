@@ -43,6 +43,7 @@
     "include": [
         "packages/coding-agent/src/**/*.d.ts",
         "packages/storage-libsql/*.js",
+        "packages/storage-postgres/*.js",
         "packages/workflows/**/*",
         "test/**/*",
         "examples/**/*",

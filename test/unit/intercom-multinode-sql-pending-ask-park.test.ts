@@ -49,9 +49,7 @@ function failingAlter(database: SqliteDatabase, failure: () => Error | string, s
 		database: {
 			...borrowed,
 			all: (async (sql: string, ...params: never[]) =>
-				staleColumns && sql.startsWith("PRAGMA table_info")
-					? []
-					: borrowed.all(sql, ...params)) as SqliteDatabase["all"],
+				staleColumns && /table_info/i.test(sql) ? [] : borrowed.all(sql, ...params)) as SqliteDatabase["all"],
 			exec: async (sql: string) => {
 				if (sql.startsWith("ALTER TABLE")) {
 					alters.push(sql);
