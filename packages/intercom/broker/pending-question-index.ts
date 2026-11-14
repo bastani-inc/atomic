@@ -31,6 +31,11 @@ export class PendingQuestionIndex {
     this.awayAsks().keep(questions, senderReturnAddress);
   }
 
+  /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */
+  markAwayAsker(senderSessionId: string, senderReturnAddress: string | undefined): void {
+    this.away?.markAsker(senderSessionId, senderReturnAddress);
+  }
+
   /** Whether `replierSessionId` answers the kept question `questionId`, whose asker is away (#4751). */
   hasDormantReply(questionId: string, replierSessionId: string): boolean {
     return this.awayAsks().question(questionId, replierSessionId) !== undefined;

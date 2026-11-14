@@ -98,6 +98,18 @@ export class AwayAsks {
 		this.purge();
 	}
 
+	/**
+	 * #4761: the asker `senderSessionId` is away now too. Its questions kept while only their recipient was away, which
+	 * have no asker identity yet, take its return address, so a recipient that ends before the asker is back fails them
+	 * with a message held for the asker rather than dropping them.
+	 */
+	markAsker(senderSessionId: string, senderReturnAddress: string | undefined): void {
+		if (senderReturnAddress === undefined || senderReturnAddress === "") return;
+		this.statement(
+			"UPDATE away_questions SET sender_return_address = ? WHERE sender_session_id = ? AND sender_return_address = ''",
+		).run(senderReturnAddress, senderSessionId);
+	}
+
 	/** The kept question `questionId` that `replierSessionId` answers, if its asker is away. */
 	question(
 		questionId: string,

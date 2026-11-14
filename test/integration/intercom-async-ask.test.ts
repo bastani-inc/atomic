@@ -919,3 +919,86 @@ test("an ask to a child that finishes while its top-level asker is closed fails 
 	assert.ok(card?.content?.startsWith(`Your ask ${askId} to child-that-finishes failed`));
 	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
 });
+
+test("an ask whose recipient goes away before its asker closes still fails once when the asker resumes (#4761)", async () => {
+	const first = await started({ name: "asker-closes-second" });
+	const recipientFirst = await started({ name: "recipient-away-first" });
+	const asked = await first.call({
+		action: "ask",
+		to: "recipient-away-first",
+		message: "will you end?",
+		wait: { kind: "background" },
+	});
+	const askId = String(asked.details.askId);
+	await questionArrives(recipientFirst, "will you end\\?");
+
+	// The recipient disconnects, then the asker closes, then the recipient returns and ends, and only then does the
+	// asker resume.
+	await recipientFirst.shutdown();
+	await first.shutdown();
+	// A session that is not saved cannot be resumed, so ending this one ends the ask.
+	const recipientBack = session({
+		name: "recipient-away-first",
+		sessionId: recipientFirst.sessionId,
+		entries: recipientFirst.entries,
+		saved: false,
+	});
+	await recipientBack.start("resume");
+	assert.equal((await recipientBack.call({ action: "status" })).isError, false);
+	await recipientBack.shutdown();
+
+	const resumed = session({ name: "asker-closes-second", sessionId: first.sessionId, entries: first.entries });
+	await resumed.start("resume");
+	cleanups.push(() => resumed.shutdown());
+	assert.equal((await resumed.call({ action: "status" })).isError, false);
+	await until(() => resumed.cards(/^Your ask .* failed/).length > 0, "the resumed asker learns its recipient ended");
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, SHORT_BUDGET_MS));
+	const cards = resumed.cards(/^Your ask .* failed/);
+	assert.equal(cards.length, 1);
+	assert.ok(cards[0]?.content?.startsWith(`Your ask ${askId} to recipient-away-first failed`));
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});
+
+test("an ask whose recipient goes away fails once even when its asker resumes and closes again before the recipient ends (#4761)", async () => {
+	const first = await started({ name: "asker-closes-twice" });
+	const recipientFirst = await started({ name: "recipient-away-twice" });
+	const asked = await first.call({
+		action: "ask",
+		to: "recipient-away-twice",
+		message: "end while I am away again?",
+		wait: { kind: "background" },
+	});
+	const askId = String(asked.details.askId);
+	await questionArrives(recipientFirst, "end while I am away again\\?");
+
+	await recipientFirst.shutdown();
+	await first.shutdown();
+	// The asker resumes while its recipient is still away, and closes again.
+	const between = session({ name: "asker-closes-twice", sessionId: first.sessionId, entries: first.entries });
+	await between.start("resume");
+	assert.equal((await between.call({ action: "status" })).isError, false);
+	assert.match((await between.call({ action: "pending" })).content[0]?.text ?? "", new RegExp(askId));
+	await between.shutdown();
+	const recipientBack = session({
+		name: "recipient-away-twice",
+		sessionId: recipientFirst.sessionId,
+		entries: recipientFirst.entries,
+		saved: false,
+	});
+	await recipientBack.start("resume");
+	assert.equal((await recipientBack.call({ action: "status" })).isError, false);
+	await recipientBack.shutdown();
+
+	const resumed = session({ name: "asker-closes-twice", sessionId: first.sessionId, entries: first.entries });
+	await resumed.start("resume");
+	cleanups.push(() => resumed.shutdown());
+	assert.equal((await resumed.call({ action: "status" })).isError, false);
+	await until(() => resumed.cards(/^Your ask .* failed/).length > 0, "the resumed asker learns its recipient ended");
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, SHORT_BUDGET_MS));
+	const failures = first.entries.filter(
+		(entry) => entry.type === "custom_message" && /^Your ask .* failed/.test(String(entry.content)),
+	);
+	assert.equal(failures.length, 1);
+	assert.ok(String(failures[0]?.content).startsWith(`Your ask ${askId} to recipient-away-twice failed`));
+	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});
