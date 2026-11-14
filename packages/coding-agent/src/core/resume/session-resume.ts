@@ -13,6 +13,7 @@ import {
 	missingSnapshotRecords,
 	openResumedSession,
 	pooledWorktreeOwnedElsewhere,
+	releaseSessionWorktrees,
 	resumeSessionWorktree,
 } from "../session-worktree-snapshots.ts";
 import type { SettingsManager } from "../settings-manager.ts";
@@ -181,6 +182,7 @@ type CheckoutReuse =
  */
 async function reuseLaunchCheckout(
 	match: SessionSnapshotMatch,
+	sessionId: string,
 	options: PrepareSessionResumeOptions,
 ): Promise<CheckoutReuse> {
 	const checkout = await locateCheckout(options.launchCwd, options.signal).catch((error: unknown) => {
@@ -189,6 +191,8 @@ async function reuseLaunchCheckout(
 	});
 	if (checkout instanceof Error) return undefined;
 	const root = resolve(checkout.root);
+	// A pooled worktree another session owns holds that session's work, even when it matches (#4748).
+	if (await pooledWorktreeOwnedElsewhere(resolveStoreDir(options), root, sessionId)) return undefined;
 	const { remotes } = await readRepositoryConfig(root, options.signal);
 	if (!remotes.some((remote) => match.snapshot.remotes.includes(remote))) return undefined;
 	let matches = true;
@@ -331,11 +335,19 @@ export async function prepareSessionResume(
 	sessionManager: SessionManager,
 	options: PrepareSessionResumeOptions,
 ): Promise<PreparedSessionResume> {
-	const prepared = await prepareResume(sessionManager, options);
-	// The session holds the pooled worktrees it continues in until it closes (#4748).
-	if (prepared.status === "ready") {
-		await holdSessionWorktrees(sessionManager, prepared.sessionManager, resolveStoreDir(options));
+	const storeDir = resolveStoreDir(options);
+	// The session holds the pooled worktrees it owns before anything is restored, so evicting idle slots never removes
+	// one it continues in, and until it closes (#4748).
+	await holdSessionWorktrees(sessionManager, sessionManager, storeDir);
+	let prepared: PreparedSessionResume;
+	try {
+		prepared = await prepareResume(sessionManager, options);
+	} catch (error) {
+		await releaseSessionWorktrees(sessionManager);
+		throw error;
 	}
+	if (prepared.status === "ready") await holdSessionWorktrees(sessionManager, prepared.sessionManager, storeDir);
+	else await releaseSessionWorktrees(sessionManager);
 	return prepared;
 }
 
@@ -417,7 +429,10 @@ async function prepareResume(
 		kept.length > 0 ? { ...options, keepInPlace: new Set([...(options.keepInPlace ?? []), ...kept]) } : options;
 	if (match !== undefined && !keepsOwnCheckout && needsRestore) {
 		git = { unavailable: await io.probeGit(options.signal) };
-		const reuse = git.unavailable === undefined ? await reuseLaunchCheckout(match, options) : undefined;
+		const reuse =
+			git.unavailable === undefined
+				? await reuseLaunchCheckout(match, sessionManager.getSessionId(), options)
+				: undefined;
 		if (reuse?.kind === "cancelled") return { status: "cancelled" };
 		if (reuse?.kind === "reused" && !reuse.matches) {
 			await recordReuse(sessionManager, reuse.mapping);

@@ -11,7 +11,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { type PoolSlotRecord, pooledWorktreeHolder } from "../src/core/worktree-snapshot/pool.ts";
+import { type PoolSlotRecord, pooledWorktreeHolder } from "../src/core/worktree-snapshot/pool.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 import { formatWorktreeRestoreNotice, isWorkspaceConfigError, openSessionInWorktree } from "../src/index.ts";
 import { createHarness } from "./suite/harness.js";

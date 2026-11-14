@@ -3,7 +3,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
 import { sha256Hex } from "./env-hash.ts";
+import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
+import { isDeniedSnapshotPath } from "./policy.ts";
 import { removeRestoredWorktree, verifyWorktree } from "./restore.ts";
 import type { WorktreeSnapshotSettings } from "./types.ts";
 
@@ -441,6 +443,7 @@ async function evictSlot(storeDir: string, record: PoolSlotRecord, options: Evic
 				settings: options.settings,
 				signal: options.signal,
 			});
+			if (await holdsUnrecordedFiles(current.path, tree, options.signal)) return false;
 			await removeRestoredWorktree(current.path, { storeDir, signal: options.signal, onWarning: () => {} });
 		}
 		await rm(file, { force: true });
@@ -451,4 +454,20 @@ async function evictSlot(storeDir: string, record: PoolSlotRecord, options: Evic
 	} finally {
 		await unlock().catch(() => {});
 	}
+}
+
+/**
+ * Whether the worktree at `path` holds files its recorded `tree` does not, that verification leaves out: an untracked
+ * file outside the tree, as when untracked files are not captured or are on the deny list, or an ignored file on the
+ * deny list, such as `.env`. Other ignored files, build output and dependencies, are rebuilt and may go.
+ */
+async function holdsUnrecordedFiles(path: string, tree: string, signal: AbortSignal | undefined): Promise<boolean> {
+	const git = { cwd: path, signal };
+	const recorded = new Set(nulFields((await runGit(["ls-tree", "-r", "-z", "--name-only", tree], git)).stdout));
+	const untracked = nulFields((await runGit(["ls-files", "-z", "--others", "--exclude-standard"], git)).stdout);
+	if (untracked.some((file) => !recorded.has(file))) return true;
+	const ignored = nulFields(
+		(await runGit(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], git)).stdout,
+	);
+	return ignored.some((file) => !file.endsWith("/") && isDeniedSnapshotPath(file));
 }

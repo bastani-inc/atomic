@@ -11,17 +11,17 @@ import {
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 	sessionResumeOptions,
-} from "../src/core/resume/session-resume.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+} from "../src/core/resume/session-resume.js";
+import { SessionManager } from "../src/core/session-manager.js";
 import {
 	releaseSessionWorktrees,
 	resumeSessionWorktree,
 	SessionWorktreeSnapshotRecorder,
-} from "../src/core/session-worktree-snapshots.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
-import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
-import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.ts";
+} from "../src/core/session-worktree-snapshots.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
+import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.js";
+import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import {
 	holdRestoredWorktree,
 	type PoolSlotRecord,
@@ -30,9 +30,10 @@ import {
 	releaseRestoredWorktree,
 	repositoryIdOf,
 	type SlotNumber,
-} from "../src/core/worktree-snapshot/pool.ts";
-import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
-import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.ts";
+} from "../src/core/worktree-snapshot/pool.js";
+import { removeRestoredWorktree } from "../src/core/worktree-snapshot/restore.js";
+import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
+import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 useTemporaryAgentDir();
 
@@ -278,6 +279,57 @@ describe("worktree pool ownership on resume (#4748)", () => {
 		if (again.status === "ready") opened.push(again.sessionManager);
 	});
 
+	test("a resume started inside a slot another session owns does not reuse it, even when it matches (#4748)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const x = await sessionOf(clone, snapshot);
+		const first = await prepareSessionResume(x, prepareOptions());
+		assert.equal(first.status, "ready");
+		if (first.status !== "ready") return;
+		await releaseSessionWorktrees(first.sessionManager);
+		const file = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes), "0.json");
+		writeFileSync(file, JSON.stringify({ ...recordOf(snapshot, 0), holder: { kind: "session", id: "session-y" } }));
+
+		const prepared = await prepareSessionResume(x, prepareOptions({ launchCwd: slot(snapshot, 0) }));
+
+		assert.equal(prepared.status, "ready");
+		if (prepared.status !== "ready") return;
+		opened.push(prepared.sessionManager);
+		assert.equal(prepared.sessionManager.getCwd(), slot(snapshot, 1));
+		assert.deepEqual(
+			prepared.notices.filter((notice) => notice.message.startsWith(`Resuming in ${slot(snapshot, 0)}`)),
+			[],
+		);
+	});
+
+	test("restoring a sibling checkout never evicts the idle slot the session continues in (#4748)", async () => {
+		const { clone: a } = await sandbox.remoteWithClone("a");
+		const b = sandbox.path("b");
+		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("a.git"), b);
+		const x = await SessionManager.create(store, a);
+		for (const root of [a, b]) {
+			sandbox.write(join(root, "file.txt"), `${root}\n`);
+			const capture = await captureWorktreeSnapshot(root, { settings, blobs: store.snapshotBlobs });
+			assert.equal(capture.status, "captured");
+			if (capture.status !== "captured") return;
+			await x.appendWorktreeSnapshot(root, capture.snapshot.id, capture.snapshot);
+		}
+		renameSync(a, sandbox.path("a-away"));
+		renameSync(b, sandbox.path("b-away"));
+		const first = await prepareSessionResume(x, prepareOptions({ pool: { maxIdlePerRepository: 0 } }));
+		assert.equal(first.status, "ready");
+		if (first.status !== "ready") return;
+		const cwd = first.sessionManager.getCwd();
+		const sibling = first.sessionManager.getWorktreeRootMappings().find((mapping) => mapping.from === b)!.to;
+		await releaseSessionWorktrees(first.sessionManager);
+		await removeRestoredWorktree(sibling, { storeDir: storeDir() });
+
+		const again = await prepareSessionResume(x, prepareOptions({ pool: { maxIdlePerRepository: 0 } }));
+
+		assert.equal(again.status === "ready" && again.sessionManager.getCwd(), cwd);
+		assert.equal(existsSync(cwd), true);
+		if (again.status === "ready") opened.push(again.sessionManager);
+	});
+
 	test("unpooled restores keep today's paths and ownership, as for workflow runs and earlier versions (#4748)", async () => {
 		const { snapshot, clone } = await recordedSnapshot();
 		const x = await sessionOf(clone, snapshot);
@@ -334,6 +386,19 @@ describe("worktree pool eviction (#4748)", () => {
 		assert.equal(readFileSync(join(slot(snapshot, 0), "file.txt"), "utf8"), "uncaptured work\n");
 		assert.equal(existsSync(slot(snapshot, 2)), true);
 		assert.equal(fourth, slot(snapshot, 3));
+	});
+
+	test("an idle slot holding a file no snapshot records, such as an untracked .env, is never evicted (#4748)", async () => {
+		const { snapshot, clone } = await recordedSnapshot();
+		const sessions = await Promise.all([1, 2].map(() => sessionOf(clone, snapshot)));
+		for (const session of sessions) await restoredRoot(session, 0);
+		for (const session of sessions) await releaseSessionWorktrees(session);
+		sandbox.write(join(slot(snapshot, 0), ".env"), "TOKEN=secret\n");
+
+		await restoredRoot(await sessionOf(clone, snapshot), 0);
+
+		assert.equal(readFileSync(join(slot(snapshot, 0), ".env"), "utf8"), "TOKEN=secret\n");
+		assert.equal(existsSync(slot(snapshot, 1)), false);
 	});
 });
 
