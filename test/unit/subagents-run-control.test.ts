@@ -51,6 +51,7 @@ import {
 	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
+	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import {
@@ -3898,6 +3899,34 @@ test("after an owner restart, a reply to a released child's ask wakes it with th
 		0,
 		"no call is reported still running",
 	);
+});
+
+test("after an owner restart, a resume before the ask's reply keeps the ask waiting and reports only the detached call interrupted (#4848)", async () => {
+	const h = harness();
+	const runId = "restart-ask-pending";
+	const earlier = await releasedByEarlierProcess(h, runId, {
+		waitingOn: [
+			{ ...ASK_CALL, replyWait: { questionId: "question-2", deadline: Date.now() + 60_000, from: "peer" } },
+			DETACHED_BASH,
+		],
+	});
+	await endChildSessionOnCalls(earlier, [ASK_CALL, DETACHED_BASH]);
+	bindProcessWakes(h);
+
+	const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "carry on" });
+	await settled(h, resumedTaskId(resumed));
+
+	const run = h.runs.find((item) => item.options.resumeToolResults !== undefined);
+	assert.ok(run);
+	const results = run.options.resumeToolResults ?? [];
+	const ask = results.find((result) => result.toolCallId === ASK_CALL.toolCallId);
+	assert.equal(
+		resultText(ask),
+		SUBAGENT_STILL_RUNNING_RESULT,
+		"the question's reply still arrives through the broker",
+	);
+	assert.equal(ask?.isError, false);
+	assertInterruptedByRestart(results);
 });
 
 test("after an owner restart, a paused released child waiting only on a detached call gets it reported interrupted on its resume (#4848)", async () => {
