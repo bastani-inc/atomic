@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - A workflow heartbeat that arrives while main chat is idle after an interrupt now starts a turn at once instead of waiting for your next message; `tasks.heartbeatWakesIdleSession` turns this off ([#4795](https://github.com/bastani-inc/atomic/issues/4795))
 - Fixed a pooled child being taken off its worker and replayed elsewhere when a single heartbeat failed because the journal's database was briefly unreachable. The worker now keeps the child while its lease lasts and renews it with the next heartbeat that gets through, and an idle worker waits out the outage instead of exiting ([#4768](https://github.com/bastani-inc/atomic/issues/4768))
+- Fixed `/workflow resume` on a libSQL server (sqld) or another storage adapter still listing a deleted run, and missing the run that replaced it, until Atomic restarted. Over these adapters `SqlRunJournal.changeToken()` now returns `undefined` and each catalog read compares every run's latest event, about 77 ms at 10,000 runs on sqld. Atomic's own SQLite storage still serves an unchanged catalog from its cache. `RunJournal.changeToken` may now return `undefined` ([#4814](https://github.com/bastani-inc/atomic/issues/4814))
 
 ## [0.9.86] - 2026-11-14
 
