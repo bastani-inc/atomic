@@ -17,7 +17,8 @@ Pull request / selected branch push
 
 Release tag push (`0.9.10` or `0.9.10-alpha.1`)
 └─ publish.yml
-   ├─ integrity: tag package version = tag and tag commit subject = `Release <tag>`
+   ├─ integrity: source ref = tag commit, tag package version = tag, and tag
+   │  commit subject = `Release <tag>`; later jobs build that verified SHA
    ├─ native-artifacts: eight-platform NAPI matrix
    ├─ linux-binary-smoke + windows-binary-smoke (also builds both shipped
    │  Windows archives on the Windows runner) + alpine-binary-smoke, whose
@@ -419,9 +420,9 @@ detection through `/etc/alpine-release`.
 | `0.9.10` | `latest` | stable, marked latest |
 | `0.9.10-alpha.1` | `next` | prerelease, not latest |
 
-A manual dispatch is available only for release recovery. It requires `tag` and accepts optional `source_ref`; when omitted, `source_ref` defaults to the tag. The integrity job always verifies the release tag itself. Native, smoke, and payload builds consume `source_ref`, matching pi's recovery model; payload metadata validation still requires the recovery source's package version to equal the release tag.
+A manual dispatch is available only for release recovery. It requires `tag` and accepts optional `source_ref`; when omitted, `source_ref` defaults to the tag. The integrity job checks out `source_ref` and fails unless it resolves to the tag's commit, so a branch or any other commit cannot be built under a release version. Native, smoke, and payload builds then check out the commit SHA the integrity job verified, not `source_ref` by name, so what is built is exactly what was verified.
 
-For a workflow-only repair of integrity, native, smoke, payload, npm, or GitHub Release jobs, dispatch with `--ref` selecting the reviewed branch containing the corrected workflow, supply the original `tag`, and omit `source_ref`. This executes the corrected workflow while building the unchanged tagged source. `source_ref` selects build inputs, not the workflow definition. Do not move the release tag to repair CI tooling.
+For a workflow-only repair of integrity, native, smoke, payload, npm, or GitHub Release jobs, dispatch with `--ref` selecting the reviewed branch containing the corrected workflow, supply the original `tag`, and omit `source_ref`. This executes the corrected workflow while building the unchanged tagged source. `source_ref` never selects the workflow definition, and it cannot change the build inputs: it must resolve to the tag's commit. Do not move the release tag to repair CI tooling.
 
 Published-version registration does not follow that branch-ref path. The Worker accepts `push` and `workflow_dispatch` only when the OIDC `ref`, `workflow_ref`, and `sub` equal `refs/tags/<version>` for that version. A dispatch from a repaired branch therefore mints `refs/heads/...` claims and the Worker returns a terminal HTTP 401, even if npm and GitHub publication succeed. That 401 is the trust contract, not a service outage. Do not broaden OIDC to accept branch refs.
 
@@ -438,7 +439,7 @@ The publication jobs are resumable, so the first move after a failure is **Re-ru
 - `publish-github-release` leaves a release an earlier attempt already published as it is.
 - GitHub rejects a release body longer than 125,000 characters. When the merged notes are longer, `stage-github-release` keeps the summary, drops the collapsed full changelog, links to each package's `CHANGELOG.md` at the tag, and emits a workflow warning. Because staging runs from the workflow's own commit, a recovery dispatch from a branch with this fix stages a tag whose notes were built too long.
 - A failed `stage-github-release` deletes the draft it could not complete, and its re-run stages the draft from scratch. If GitHub cannot say whether the failed attempt left a draft, staging stops instead of creating a second one.
-- Skipping checks only the version, not the contents: npm never takes a version twice, so a recovery that builds different contents for the same tag (a moved tag, or another `source_ref`) completes with the packages npm already had beside new GitHub assets. Recover with the same build inputs, and never move a release tag.
+- Skipping checks only the version, not the contents: npm never takes a version twice, so a recovery that builds different contents for the same tag (a moved tag) completes with the packages npm already had beside new GitHub assets. The integrity job refuses a `source_ref` other than the tag's commit; never move a release tag.
 - One tag has one draft, and the latest staging owns it. After a later dispatch has staged the tag again, recover from that dispatch's run, not an earlier one: re-running an earlier run would publish the draft the later build staged.
 
 Before giving up, the scripts retry transient failures with doubling waits: an npm publish up to four times (10, 20, 40 s) when it fails with a provenance transparency-log error, a registry 5xx, 408, 409 or 429, or a network error; a GitHub API call up to four times (15, 30, 60 s) on a 5xx, a 429, a secondary rate limit or a dropped connection. Other errors, such as a permission error or a missing trusted publisher, fail at once.
@@ -447,15 +448,18 @@ Recover a failed release before cutting the next one on the same channel. Re-run
 
 If the draft is gone, for example because someone deleted it by hand, re-running failed jobs cannot finish the release; `publish-github-release` says so and names the command. Dispatch a full run at the tag instead: `gh workflow run publish.yml --ref <tag> -f tag=<tag>`. It rebuilds, stages the draft again, skips every npm version that already exists, and publishes the release.
 
-The scripts these jobs run live in `scripts/release/`, and each job checks them out from the workflow's own commit rather than from `source_ref`. `test/ci/release-publish-recovery.test.ts` runs the workflow's steps against fake `npm`, `gh` and `sleep` executables for each failure above.
+The scripts these jobs run live in `scripts/release/`, and each job checks them out from the workflow's own commit rather than from the verified tag commit. Those jobs only run the scripts against the already-built payload; they build nothing. `test/ci/release-publish-recovery.test.ts` runs the workflow's steps against fake `npm`, `gh` and `sleep` executables for each failure above.
 
 ## Lightweight integrity gate
 
-The integrity job checks out the release tag and performs only these release identity checks:
+The integrity job checks out `source_ref` (the tag unless a recovery dispatch supplies one) and performs only these release identity checks:
 
 1. The tag has the supported stable or `-alpha.N` format.
-2. `packages/coding-agent/package.json` at the tag has a version exactly equal to the tag.
-3. The tag commit subject is exactly `Release <tag>`.
+2. `source_ref` resolves to the tag's commit.
+3. `packages/coding-agent/package.json` at the tag has a version exactly equal to the tag.
+4. The tag commit subject is exactly `Release <tag>`.
+
+It outputs that commit SHA, and every native, smoke, and payload job checks out that SHA.
 
 The publisher intentionally does not reconstruct the release tree, validate release-base trailers, inspect protected workflow ancestry, maintain a release-base allowlist, or bind a separate create event. `scripts/cut-release.ts` still records release-base trailers because they are useful release provenance, but they are not a publisher gate.
 
@@ -831,5 +835,5 @@ Both polling doors run through durable `ctx.tool` nodes, forward their `AbortSig
 2. Require the selected base's normal CI to pass.
 3. From a clean checkout, run `bun run scripts/cut-release.ts <version> --base <base> --push`.
 4. Inspect the single `Publish <version>` push run. Do not start a duplicate manual run during normal publication.
-5. If publication fails, re-run the failed jobs first (see [Recovering a failed publication](#recovering-a-failed-publication)). If that cannot finish it, manually dispatch `publish.yml` with the original `tag`; set `source_ref` to the exact recovery ref whose package version still matches that tag. If only registration failed, rerun that job on the tag-ref run, or dispatch with `--ref` equal to the tag. A branch-ref dispatch will 401 at registration.
+5. If publication fails, re-run the failed jobs first (see [Recovering a failed publication](#recovering-a-failed-publication)). If that cannot finish it, manually dispatch `publish.yml` with the original `tag` and omit `source_ref`; any `source_ref` that does not resolve to the tag's commit fails the integrity job. If only registration failed, rerun that job on the tag-ref run, or dispatch with `--ref` equal to the tag. A branch-ref dispatch will 401 at registration.
 6. Confirm all twelve npm packages and the public GitHub Release exist with the expected dist-tag and assets.
