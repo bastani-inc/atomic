@@ -112,6 +112,16 @@ export class FakeCloud {
 			.map((line) => JSON.parse(line) as string[]);
 	}
 
+	/** The GitHub credentials each fake `gh` call got in its environment. */
+	ghEnv(): { GH_TOKEN?: string; GH_ENTERPRISE_TOKEN?: string; GH_HOST?: string }[] {
+		const file = join(this.dir, "gh-env.jsonl");
+		if (!existsSync(file)) return [];
+		return readFileSync(file, "utf8")
+			.split("\n")
+			.filter((line) => line !== "")
+			.map((line) => JSON.parse(line) as { GH_TOKEN?: string; GH_ENTERPRISE_TOKEN?: string; GH_HOST?: string });
+	}
+
 	/** The pids of each hung CLI call and of the grandchild it started. */
 	hungPids(): number[] {
 		const file = join(this.dir, "hung.jsonl");
@@ -222,7 +232,10 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
  * Registers the conformance suite for one provisioner. `setup` builds a provisioner over a fresh fake cloud for each
  * case; a CLI's process must be stopped (with its children) on a timeout or an abort.
  */
-export function runProvisionerConformance(name: string, setup: () => ProvisionerConformanceSubject): void {
+export function runProvisionerConformance(
+	name: string,
+	setup: () => ProvisionerConformanceSubject | Promise<ProvisionerConformanceSubject>,
+): void {
 	const posixOnly = test.skipIf(process.platform === "win32");
 	const cases: [string, (subject: ProvisionerConformanceSubject) => Promise<void>][] = [
 		[
@@ -391,7 +404,7 @@ export function runProvisionerConformance(name: string, setup: () => Provisioner
 	describe(`${name} provisioner conformance (#4768)`, () => {
 		for (const [title, body] of cases)
 			posixOnly(`${name}: ${title} (#4768)`, async () => {
-				const subject = setup();
+				const subject = await setup();
 				try {
 					await body(subject);
 				} finally {
