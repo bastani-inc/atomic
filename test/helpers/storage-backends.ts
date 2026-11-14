@@ -116,10 +116,15 @@ async function dropLibsqlScope(database: SqliteDatabase, prefix: string): Promis
 	let pending = rows.map((row) => String(row.name));
 	while (pending.length > 0) {
 		const failed: string[] = [];
+		let cause: unknown;
 		for (const name of pending) {
-			await database.exec(`DROP TABLE IF EXISTS "${name}"`).catch(() => failed.push(name));
+			await database.exec(`DROP TABLE IF EXISTS "${name}"`).catch((error: unknown) => {
+				failed.push(name);
+				cause = error;
+			});
 		}
-		if (failed.length === pending.length) throw new Error(`could not drop ${failed.join(", ")} on the libSQL server`);
+		if (failed.length === pending.length)
+			throw new Error(`could not drop ${failed.join(", ")} on the libSQL server`, { cause });
 		pending = failed;
 	}
 }
