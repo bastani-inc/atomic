@@ -56,6 +56,7 @@ import {
 	snapshotRestoreWarnings,
 	verifyWorktree,
 } from "./worktree-snapshot/restore.ts";
+import { adoptPrebuiltSeed } from "./worktree-snapshot/seeds.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -568,6 +569,7 @@ export async function resumeSessionWorktree(
 			let restored: Extract<BestWorktreeRestore, { status: "restored" }>;
 			let lease: WorktreeLease | undefined;
 			let claimed = false;
+			let seeded = false;
 			// The exact state, else the best this host can restore, else continue without the checkout.
 			const restoreFresh = (slot: WorktreeLease | undefined) =>
 				restoreBestWorktree(snapshot, {
@@ -589,13 +591,16 @@ export async function resumeSessionWorktree(
 					async (): Promise<BestWorktreeRestore> => {
 						if (!options.pool) return restoreFresh(undefined);
 						// An idle slot of the repository keeps its dependencies and build output; else a new slot (#4748).
-						const claim = await claimIdleWorktree(snapshot, {
-							storeDir,
-							owner,
-							settings: options.settings,
-							blobs,
-							signal: options.signal,
-						});
+						const claimOptions = { storeDir, owner, settings: options.settings, blobs, signal: options.signal };
+						let claim = await claimIdleWorktree(snapshot, claimOptions);
+						// Without one, prebuilt build output parked as a seed becomes an idle slot to claim (#4748).
+						if (
+							!claim.claimed &&
+							(await adoptPrebuiltSeed(snapshot, { storeDir, signal: options.signal })).adopted
+						) {
+							claim = await claimIdleWorktree(snapshot, claimOptions);
+							seeded = claim.claimed;
+						}
 						if (claim.claimed) {
 							lease = claim.lease;
 							claimed = true;
@@ -607,11 +612,13 @@ export async function resumeSessionWorktree(
 					(outcome) =>
 						outcome.status === "unrestored"
 							? undefined
-							: claimed
-								? "claimed"
-								: outcome.degraded === undefined
-									? "fresh"
-									: "degraded",
+							: seeded
+								? "seeded"
+								: claimed
+									? "claimed"
+									: outcome.degraded === undefined
+										? "fresh"
+										: "degraded",
 				);
 				if (best.status === "unrestored") {
 					if (lease) await discardPooledWorktree(lease);

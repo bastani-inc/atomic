@@ -16,6 +16,13 @@ import {
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
+/**
+ * Postgres reads JSON text as `jsonb`, with each NUL and surrogate escape as U+FFFD when `jsonb` rejects the document,
+ * so a document with a `\u0000` or a lone surrogate never fails a query or trigger that reads it.
+ */
+const jsonb = (column: string) =>
+	String.raw`(CASE WHEN strpos(${column}, '\u') = 0 OR pg_input_is_valid(${column}, 'jsonb') THEN ${column} ELSE regexp_replace(${column}, '(?<!\\)((?:\\\\)*)\\u(?:0000|[dD][89abcdefABCDEF][0-9a-fA-F]{2})', '\1\\ufffd', 'g') END)::jsonb`;
+
 /** Each construct of spec §3.1, rendered by both dialects. SQLite's column is the SQL the stores ran before #4793. */
 const renderings: readonly (readonly [string, (dialect: StorageDialect) => string, string, string])[] = [
 	["int", (d) => d.types.int, "INTEGER", "BIGINT"],
@@ -48,25 +55,25 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 		"jsonText",
 		(d) => d.jsonText("descriptor", "scope"),
 		"json_extract(descriptor, '$.scope')",
-		"((descriptor)::jsonb ->> 'scope')",
+		`(${jsonb("descriptor")} ->> 'scope')`,
 	],
 	[
 		"jsonText path",
 		(d) => d.jsonText("r.entry_json", "restore", "to"),
 		"json_extract(r.entry_json, '$.restore.to')",
-		"((r.entry_json)::jsonb #>> '{restore,to}')",
+		`(${jsonb("r.entry_json")} #>> '{restore,to}')`,
 	],
 	[
 		"jsonHasType",
 		(d) => d.jsonHasType("text", "payload", "kind"),
 		"json_type(payload, '$.kind') = 'text'",
-		"jsonb_typeof((payload)::jsonb -> 'kind') = 'string'",
+		`jsonb_typeof(${jsonb("payload")} -> 'kind') = 'string'`,
 	],
 	[
 		"jsonHasType path",
 		(d) => d.jsonHasType("object", "payload", "a", "b"),
 		"json_type(payload, '$.a.b') = 'object'",
-		"jsonb_typeof((payload)::jsonb #> '{a,b}') = 'object'",
+		`jsonb_typeof(${jsonb("payload")} #> '{a,b}') = 'object'`,
 	],
 	["jsonValid", (d) => d.jsonValid("body"), "json_valid(body)", "((body) IS JSON)"],
 	[
@@ -90,6 +97,101 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 	["rowOrder alias", (d) => d.rowOrder("e"), "e.rowid", "e.row_order"],
 	["rowOrderColumn", (d) => d.rowOrderColumn, "", ", row_order BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE"],
 	["versionedMigrations", (d) => String(d.versionedMigrations), "false", "true"],
+	[
+		"renderTrigger",
+		(d) =>
+			d.renderTrigger({
+				name: "t_refs",
+				table: "t",
+				timing: "AFTER",
+				event: "UPDATE OF body",
+				when: "NEW.k = 1",
+				statements: ["DELETE FROM r WHERE k = OLD.k", "INSERT INTO r (k) VALUES (NEW.k)"],
+			}),
+		"CREATE TRIGGER IF NOT EXISTS t_refs AFTER UPDATE OF body ON t WHEN NEW.k = 1 BEGIN DELETE FROM r WHERE k = OLD.k; INSERT INTO r (k) VALUES (NEW.k); END;",
+		"CREATE OR REPLACE FUNCTION t_refs_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN IF (NEW.k = 1) THEN DELETE FROM r WHERE k = OLD.k; INSERT INTO r (k) VALUES (NEW.k); END IF; RETURN NULL; END $trigger$;\nCREATE OR REPLACE TRIGGER t_refs AFTER UPDATE OF body ON t FOR EACH ROW EXECUTE FUNCTION t_refs_fn();",
+	],
+	[
+		"renderTrigger before delete",
+		(d) =>
+			d.renderTrigger({ name: "t_d", table: "t", timing: "BEFORE", event: "DELETE", statements: ["DELETE FROM r"] }),
+		"CREATE TRIGGER IF NOT EXISTS t_d BEFORE DELETE ON t BEGIN DELETE FROM r; END;",
+		"CREATE OR REPLACE FUNCTION t_d_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN DELETE FROM r; RETURN OLD; END $trigger$;\nCREATE OR REPLACE TRIGGER t_d BEFORE DELETE ON t FOR EACH ROW EXECUTE FUNCTION t_d_fn();",
+	],
+	[
+		"renderTrigger before insert",
+		(d) =>
+			d.renderTrigger({ name: "t_i", table: "t", timing: "BEFORE", event: "INSERT", statements: ["DELETE FROM r"] }),
+		"CREATE TRIGGER IF NOT EXISTS t_i BEFORE INSERT ON t BEGIN DELETE FROM r; END;",
+		"CREATE OR REPLACE FUNCTION t_i_fn() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN DELETE FROM r; RETURN NEW; END $trigger$;\nCREATE OR REPLACE TRIGGER t_i BEFORE INSERT ON t FOR EACH ROW EXECUTE FUNCTION t_i_fn();",
+	],
+	[
+		"dropTrigger",
+		(d) => d.dropTrigger("t_refs", "t"),
+		"DROP TRIGGER IF EXISTS t_refs",
+		"DROP TRIGGER IF EXISTS t_refs ON t",
+	],
+	[
+		"schemaObjects",
+		(d) => {
+			const { sql, params } = d.schemaObjects(["a", "b"]);
+			return `${sql}|${params.join(",")}`;
+		},
+		"SELECT name FROM sqlite_schema WHERE name IN (?, ?)|a,b",
+		"SELECT relname AS name FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace AND relname IN (?, ?) UNION ALL SELECT tgname AS name FROM pg_catalog.pg_trigger JOIN pg_catalog.pg_class ON pg_class.oid = tgrelid WHERE relnamespace = current_schema()::regnamespace AND NOT tgisinternal AND tgname IN (?, ?)|a,b,a,b",
+	],
+	[
+		"jsonType",
+		(d) => d.jsonType("p", "a", "b"),
+		"json_type(p, '$.a.b')",
+		`(CASE jsonb_typeof((${jsonb("p")} #> '{a,b}')) WHEN 'string' THEN 'text' WHEN 'boolean' THEN ((${jsonb("p")} #> '{a,b}'))::text WHEN 'number' THEN CASE WHEN ((${jsonb("p")} #> '{a,b}'))::text ~ '^-?[0-9]+$' THEN 'integer' ELSE 'real' END ELSE jsonb_typeof((${jsonb("p")} #> '{a,b}')) END)`,
+	],
+	[
+		"jsonEach",
+		(d) => d.jsonEach({ column: "r.p" }, "s", "a", "b"),
+		"json_each(r.p, '$.a.b') AS s",
+		`jsonb_path_query(${jsonb("r.p")}, '$."a"."b"[*]') AS s(value)`,
+	],
+	[
+		"jsonEach element",
+		(d) => d.jsonEach({ column: "r.p", element: "s" }, "l", "chain"),
+		"json_each(r.p, s.fullkey || '.chain') AS l",
+		`jsonb_path_query(s.value, '$."chain"[*]') AS l(value)`,
+	],
+	[
+		"jsonAt",
+		(d) => d.jsonAt({ column: "r.p" }, "a", "b"),
+		"json_extract(r.p, '$.a.b')",
+		`(${jsonb("r.p")} #>> '{a,b}')`,
+	],
+	[
+		"jsonAt element",
+		(d) => d.jsonAt({ column: "r.p", element: "l" }, "patch"),
+		"json_extract(r.p, l.fullkey || '.patch')",
+		"(l.value ->> 'patch')",
+	],
+	[
+		"jsonAtIsText",
+		(d) => d.jsonAtIsText({ column: "r.p", element: "l" }, "patch"),
+		"typeof(json_extract(r.p, l.fullkey || '.patch')) = 'text'",
+		"jsonb_typeof(l.value -> 'patch') = 'string'",
+	],
+	["contains", (d) => d.contains("p", "'x'"), "instr(p, 'x') > 0", "strpos(p, 'x') > 0"],
+	["isDistinct", (d) => d.isDistinct("a", "'b'"), "a IS NOT 'b'", "a IS DISTINCT FROM 'b'"],
+	["literals", (d) => `${d.literals.true}|${d.literals.false}`, "1|0", "true|false"],
+	["flag", (d) => d.flag("a = 1"), "a = 1", "(a = 1)::int"],
+	[
+		"insertOrIgnore",
+		(d) => d.insertOrIgnore("t", ["a", "b"], "SELECT 1, 2"),
+		"INSERT OR IGNORE INTO t (a, b) SELECT 1, 2",
+		"INSERT INTO t (a, b) SELECT 1, 2 ON CONFLICT DO NOTHING",
+	],
+	[
+		"insertOrReplace",
+		(d) => d.insertOrReplace("t", ["a", "b", "c"], ["a"], "SELECT 1, 2, 3"),
+		"INSERT OR REPLACE INTO t (a, b, c) SELECT 1, 2, 3",
+		"INSERT INTO t (a, b, c) SELECT 1, 2, 3 ON CONFLICT (a) DO UPDATE SET b = excluded.b, c = excluded.c",
+	],
 	[
 		"tableExists",
 		(d) => JSON.stringify(d.tableExists("team_runs")),
@@ -136,6 +238,13 @@ test("JSON paths accept only identifier keys and at least one (#4793)", () => {
 		assert.throws(() => dialect.jsonText("c", "1a"), TypeError);
 	}
 	assert.equal(sqliteDialect.jsonText("c", "_a1"), "json_extract(c, '$._a1')");
+});
+
+test("a Postgres trigger function name longer than an identifier is refused, not truncated (#4793)", () => {
+	const trigger = { table: "t", timing: "AFTER", event: "INSERT", statements: ["DELETE FROM r"] } as const;
+	assert.throws(() => postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(61) }), TypeError);
+	assert.match(postgresDialect.renderTrigger({ ...trigger, name: "n".repeat(60) }), /n{60}_fn\(\)/);
+	assert.match(sqliteDialect.renderTrigger({ ...trigger, name: "n".repeat(61) }), /n{61} AFTER/);
 });
 
 test("fencedPath mints the audited name itself (#4793)", () => {

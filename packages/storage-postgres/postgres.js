@@ -7,6 +7,7 @@ import {
 	StorageError,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
+import { createCloudPasswordProvider } from "./auth.js";
 
 /**
  * @typedef {import("@bastani/atomic/storage").SqliteDriverResult} SqliteDriverResult
@@ -42,8 +43,6 @@ const CLIENT_TIMEOUT_GRACE_MS = 5_000;
 const DATABASE_LOCK_SCOPE = "atomic";
 /** The oldest server major version the adapter supports. */
 const MINIMUM_SERVER_VERSION = 140000;
-
-const CLOUD_AUTH = new Set(["azure-entra", "aws-iam", "gcp-iam"]);
 
 /**
  * @param {string} field
@@ -315,9 +314,11 @@ function literal(text) {
 export async function openPostgresDatabase(options) {
 	const connectionString = connectionUrl(options.url);
 	const auth = options.auth ?? "password";
-	if (CLOUD_AUTH.has(auth))
-		throw configError("auth", "auth-unavailable", "Cloud IAM authentication is not available in this version");
-	if (auth !== "password") throw configError("auth", "unsupported-auth", 'Use "password"');
+	const cloud = auth === "azure-entra" || auth === "aws-iam" || auth === "gcp-iam" ? auth : undefined;
+	if (cloud === undefined && auth !== "password")
+		throw configError("auth", "unsupported-auth", 'Use "password", "azure-entra", "aws-iam" or "gcp-iam"');
+	if (cloud !== undefined && options.password !== undefined)
+		throw configError("auth", "conflicting-token", `Use either a password or ${cloud} auth, not both`);
 	const maxConnections = positiveInteger("maxConnections", options.maxConnections, DEFAULT_MAX_CONNECTIONS);
 	const statementTimeoutMs = positiveInteger(
 		"statementTimeoutMs",
@@ -336,9 +337,21 @@ export async function openPostgresDatabase(options) {
 		throw new StorageAdapterLoadError("pg", /** @type {StorageFailureCause} */ (cause));
 	}
 
+	// The URL is parsed here rather than passed as `connectionString`, whose empty password would replace `password`.
+	const connection = parseUrl(connectionString);
+	delete connection.password;
+
 	/** Every password the pool was given, so the redactor can remove them from failures. */
 	const passwords = new Set(typeof options.password === "string" ? [options.password] : []);
-	const source = options.password;
+	const source =
+		cloud === undefined
+			? options.password
+			: createCloudPasswordProvider({
+					auth: cloud,
+					host: connection.host ?? "",
+					port: connection.port ?? 5432,
+					user: connection.user ?? "",
+				});
 	/** @type {(() => Promise<string>) | undefined} */
 	const password =
 		source === undefined
@@ -351,9 +364,6 @@ export async function openPostgresDatabase(options) {
 					return value;
 				};
 
-	// The URL is parsed here rather than passed as `connectionString`, whose empty password would replace `password`.
-	const connection = parseUrl(connectionString);
-	delete connection.password;
 	// pg leaves the socket of a connection that failed to start open, for instance when the password source failed while
 	// the server waited for the password; the server keeps that half-started backend until its authentication timeout,
 	// and meanwhile it holds up statements that wait for every backend, such as `DROP DATABASE`.
@@ -564,13 +574,17 @@ const adapter = {
 		if (typeof options.url !== "string" || options.url === "")
 			return Promise.reject(configError("url", "unsupported-url", "Use a postgres:// or postgresql:// URL"));
 		const { secret } = context;
+		// Cloud IAM auth issues its own password; a selection carries no password secret for it.
+		const cloud = typeof options.auth === "string" && options.auth !== "password";
 		return openPostgresDatabase({
 			url: options.url,
-			...(secret !== undefined
-				? { password: () => secret("password") }
-				: typeof options.password === "string"
-					? { password: options.password }
-					: {}),
+			...(cloud
+				? {}
+				: secret !== undefined
+					? { password: () => secret("password") }
+					: typeof options.password === "string"
+						? { password: options.password }
+						: {}),
 			...(typeof options.auth === "string" ? { auth: /** @type {PostgresAuth} */ (options.auth) } : {}),
 			...(typeof options.maxConnections === "number" ? { maxConnections: options.maxConnections } : {}),
 			...(typeof options.statementTimeoutMs === "number" ? { statementTimeoutMs: options.statementTimeoutMs } : {}),

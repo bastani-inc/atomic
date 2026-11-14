@@ -1,4 +1,10 @@
-import { type SqliteExecutor, type SqliteRow, type SqliteValue, validateStoragePrefix } from "@bastani/atomic/storage";
+import {
+	dialectOf,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteValue,
+	validateStoragePrefix,
+} from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
 	InvalidStateInput,
@@ -11,8 +17,6 @@ import type {
 	ReleasedAskSupersede,
 	StateStoreInvalidReason,
 } from "./multinode-state-store.js";
-
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 interface ReleasedAskRow extends SqliteRow {
 	readonly question_id: string;
@@ -66,10 +70,11 @@ function toRecord(row: ReleasedAskRow): ReleasedAskRecord {
 /** S3 (#4386): `ReleasedAskStore` on the shared storage adapter's database, table `<prefix>intercom_released_asks`. */
 export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrokerStateOptions): Promise<ReleasedAskStore> {
 	const table = `${validateStoragePrefix(prefix)}intercom_released_asks`;
+	const { types, nowMs, greatest } = dialectOf(database);
 	await database.transaction((tx) =>
 		tx.exec(`
 			CREATE TABLE IF NOT EXISTS ${table}(
-				"order" INTEGER PRIMARY KEY AUTOINCREMENT,
+				"order" ${types.serialKey},
 				question_id TEXT NOT NULL,
 				replier_session_id TEXT NOT NULL,
 				asker_session_id TEXT NOT NULL,
@@ -77,8 +82,8 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 				owner_session_id TEXT NOT NULL,
 				state TEXT NOT NULL CHECK (state IN ('open', 'claimed', 'answered')),
 				reply_message_id TEXT,
-				claimed_at INTEGER,
-				expires_at INTEGER NOT NULL,
+				claimed_at ${types.int},
+				expires_at ${types.int} NOT NULL,
 				UNIQUE(question_id, replier_session_id)
 			);
 		`),
@@ -86,8 +91,8 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 	const select = (executor: SqliteExecutor, key: ReleasedAskKey) =>
 		executor.get<ReleasedAskRow>(
 			`SELECT question_id, replier_session_id, asker_session_id, child_name, owner_session_id, state, reply_message_id,
-				(state = 'open' AND expires_at <= ${STORE_NOW}) AS lapsed,
-				CASE WHEN claimed_at IS NULL THEN NULL ELSE MAX(0, ${STORE_NOW} - claimed_at) END AS claim_age
+				CASE WHEN state = 'open' AND expires_at <= ${nowMs} THEN 1 ELSE 0 END AS lapsed,
+				CASE WHEN claimed_at IS NULL THEN NULL ELSE ${greatest("0", `${nowMs} - claimed_at`)} END AS claim_age
 			 FROM ${table} WHERE question_id = ? AND replier_session_id = ?`,
 			key.questionId,
 			key.replierSessionId,
@@ -107,7 +112,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 					const { changes } = await tx.run(
 						`INSERT INTO ${table}(question_id, replier_session_id, asker_session_id, child_name, owner_session_id, state,
 							expires_at)
-						 VALUES (?, ?, ?, ?, ?, 'open', ${STORE_NOW} + ?) ON CONFLICT DO NOTHING`,
+						 VALUES (?, ?, ?, ?, ?, 'open', ${nowMs} + ?) ON CONFLICT DO NOTHING`,
 						ask.questionId,
 						ask.replierSessionId,
 						ask.askerSessionId,
@@ -166,7 +171,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 			return settle(claim, "open", ["claimed"]);
 		},
 		async prune(olderThanMs) {
-			const { changes } = await database.run(`DELETE FROM ${table} WHERE expires_at + ? < ${STORE_NOW}`, olderThanMs);
+			const { changes } = await database.run(`DELETE FROM ${table} WHERE expires_at + ? < ${nowMs}`, olderThanMs);
 			return changes;
 		},
 	};
@@ -174,7 +179,7 @@ export async function openSqlReleasedAskStore({ database, prefix }: IntercomBrok
 	/** Hand the ask to this reply now. */
 	async function claimFor(tx: SqliteExecutor, claim: ReleasedAskClaim, row: ReleasedAskRow) {
 		await tx.run(
-			`UPDATE ${table} SET state = 'claimed', reply_message_id = ?, claimed_at = ${STORE_NOW}
+			`UPDATE ${table} SET state = 'claimed', reply_message_id = ?, claimed_at = ${nowMs}
 			 WHERE question_id = ? AND replier_session_id = ?`,
 			claim.replyMessageId,
 			claim.questionId,

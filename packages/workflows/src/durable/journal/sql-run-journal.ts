@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+	dialectOf,
 	openNodeSqliteDatabase,
 	renderStorageIdentifiers,
 	runJournalTableDefinitions,
@@ -10,6 +11,7 @@ import {
 	type SqliteValue,
 	SqlSnapshotBlobStore,
 	type StorageDescriptor,
+	type StorageDialect,
 	type StorageFailureCause,
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
@@ -66,7 +68,6 @@ type SnapshotTailRow = EventRow & {
 };
 type LeaseRow = SqliteRow & JournalLeaseRow & { [c.renewedAt]: number };
 type HeaderRow = SqliteRow & { [c.headerJson]: string; [c.status]: string };
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 const EVENT_COLUMNS = [c.runId, c.seq, c.epoch, c.key, c.type, c.payload, c.at] as const;
 const APPEND_SAVEPOINT = "journal_append";
 
@@ -138,6 +139,7 @@ export class SqlRunJournal implements RunJournal {
 	private tail: Promise<void> = Promise.resolve();
 	private closePromise?: Promise<void>;
 	private readonly database: SqliteDatabase;
+	private readonly dialect: StorageDialect;
 	private readonly tables: Tables;
 	private readonly legacy: LegacyJournalRuns | undefined;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
@@ -154,6 +156,7 @@ export class SqlRunJournal implements RunJournal {
 		snapshotBlobs: SqlSnapshotBlobStore,
 	) {
 		this.database = database;
+		this.dialect = dialectOf(database);
 		this.tables = tables;
 		this.legacy = legacy;
 		this.readerFile = readerFile;
@@ -193,14 +196,11 @@ export class SqlRunJournal implements RunJournal {
 	 * of a database another process writes (#4325).
 	 */
 	private static async initialized(database: SqliteDatabase, t: Tables): Promise<boolean> {
-		const tables = await database.all<SqliteRow & { name: string }>(
-			"SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)",
-			t.meta,
-			t.runs,
-			t.events,
-			t.leases,
-		);
-		if (tables.length !== 4) return false;
+		const dialect = dialectOf(database);
+		for (const table of [t.meta, t.runs, t.events, t.leases]) {
+			const exists = dialect.tableExists(table);
+			if ((await database.get(exists.sql, ...exists.params)) === undefined) return false;
+		}
 		const versions = await database.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
 		if (versions.length !== 1) return false;
 		SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
@@ -214,15 +214,16 @@ export class SqlRunJournal implements RunJournal {
 	private static async initialize(database: SqliteDatabase, t: Tables, prefix?: string): Promise<void> {
 		// Opening a journal waits for the lock as its writes do: a process starting while another stalls must not fail.
 		await database.transaction(async (tx) => {
-			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} INTEGER NOT NULL)`);
+			const dialect = dialectOf(database);
+			await tx.exec(`CREATE TABLE IF NOT EXISTS ${t.meta}(${c.schemaVersion} ${dialect.types.int} NOT NULL)`);
 			const versions = await tx.all(`SELECT ${c.schemaVersion} FROM ${t.meta}`);
 			if (versions.length > 1) throw new JournalMetaCorruptError(database.descriptor.location, versions.length);
 			if (versions.length === 0) {
 				await tx.run(`INSERT INTO ${t.meta} VALUES (?)`, JOURNAL_SCHEMA_VERSION);
 			} else SqlRunJournal.assertSchemaVersion(versions[0]![c.schemaVersion]!);
-			await tx.exec(runJournalTableDefinitions(prefix));
+			await tx.exec(runJournalTableDefinitions(prefix, dialect));
 			// The snapshot blob table too, so a new journal takes the write lock once (#4325) and opens it lock-free.
-			await SqlSnapshotBlobStore.initialize(tx, prefix);
+			await SqlSnapshotBlobStore.initialize(tx, prefix, dialect);
 		}, JOURNAL_WRITE_TRANSACTION);
 	}
 
@@ -346,7 +347,7 @@ export class SqlRunJournal implements RunJournal {
 				let status: string | undefined;
 				for (const [index, append] of prepared.entries()) {
 					await tx.run(
-						`INSERT INTO ${eventTable} VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
+						`INSERT INTO ${eventTable} VALUES (?, ?, ?, ?, ?, ?, ${this.dialect.nowMs})`,
 						header.runId,
 						index + 1,
 						JOURNAL_LEASE.absentEpoch,
@@ -397,21 +398,22 @@ export class SqlRunJournal implements RunJournal {
 	}
 
 	/**
-	 * `data_version` moves when another connection commits and `total_changes()` when this one writes, so together
-	 * they cover writers in every process, but only on one connection: Atomic's own SQLite adapter serves every
-	 * statement from one. Over an adapter that may not, such as a libSQL server whose every HTTP request is a new
-	 * stream, neither moves, and the table aggregates miss a deleted run replaced by one with as many events (its
-	 * events reuse the deleted rowids), so there is no token and each catalog read compares every run's version (#4814).
+	 * The dialect's change markers move when another connection commits (on SQLite, `data_version`) and when this one
+	 * writes (`total_changes()`), so together they cover writers in every process, but only on one connection: Atomic's
+	 * own SQLite adapter serves every statement from one. Over an adapter that may not, such as a libSQL server whose
+	 * every HTTP request is a new stream, neither moves, and the table aggregates miss a deleted run replaced by one with
+	 * as many events (its events reuse the deleted rowids), so there is no token and each catalog read compares every
+	 * run's version (#4814).
 	 */
 	async changeToken(): Promise<string | undefined> {
 		this.assertOpen();
 		if (this.database.descriptor.adapter !== "node-sqlite") return undefined;
+		const { changeMarkers, rowOrder } = this.dialect;
 		return this.operation(async () => {
 			const row = await this.database.get<SqliteRow>(
-				`SELECT data_version, total_changes() AS changes,
+				`SELECT ${changeMarkers.columns},
 					(SELECT count(*) FROM ${this.tables.runs}) AS runs,
-					(SELECT max(rowid) FROM ${this.tables.events}) AS last_event
-				FROM pragma_data_version`,
+					(SELECT max(${rowOrder()}) FROM ${this.tables.events}) AS last_event${changeMarkers.from}`,
 			);
 			return JSON.stringify(Object.values(row ?? {}).map(String));
 		});
@@ -447,7 +449,7 @@ export class SqlRunJournal implements RunJournal {
 				`SELECT ${EVENT_COLUMNS.map((column) => `snapshot.${column}`).join(", ")},
 					latest.${c.seq} AS latest_seq, latest.${c.at} AS latest_at,
 					(SELECT count(*) ${later}) AS later_checkpoints,
-					(SELECT json_extract(later.${c.payload}, '$.completedAt') ${later} ORDER BY later.${c.seq} DESC LIMIT 1) AS last_checkpoint_at
+					(SELECT ${this.dialect.jsonText(`later.${c.payload}`, "completedAt")} ${later} ORDER BY later.${c.seq} DESC LIMIT 1) AS last_checkpoint_at
 				FROM (SELECT ${c.seq}, ${c.at} FROM ${events} WHERE ${c.runId} = ? ORDER BY ${c.seq} DESC LIMIT 1) AS latest,
 					(SELECT ${EVENT_COLUMNS.join(", ")} FROM ${events} WHERE ${c.runId} = ? AND ${c.type} NOT IN (${NON_SNAPSHOT_EVENT_TYPES.map(() => "?").join(", ")}) ORDER BY ${c.seq} DESC LIMIT 1) AS snapshot`,
 				RUN_EVENT_TYPES.checkpointRecorded,
@@ -494,7 +496,7 @@ export class SqlRunJournal implements RunJournal {
 			? journalCounter(runId, "epoch", previous[c.epoch] + JOURNAL_LEASE.epochIncrement, "overflow")
 			: JOURNAL_LEASE.initialEpoch;
 		await tx.run(
-			`INSERT INTO ${this.tables.leases} VALUES (?, ?, ?, ${STORE_NOW}) ON CONFLICT(${c.runId}) DO UPDATE SET ${c.holderId} = excluded.${c.holderId}, ${c.epoch} = excluded.${c.epoch}, ${c.renewedAt} = excluded.${c.renewedAt}`,
+			`INSERT INTO ${this.tables.leases} VALUES (?, ?, ?, ${this.dialect.nowMs}) ON CONFLICT(${c.runId}) DO UPDATE SET ${c.holderId} = excluded.${c.holderId}, ${c.epoch} = excluded.${c.epoch}, ${c.renewedAt} = excluded.${c.renewedAt}`,
 			runId,
 			holderId,
 			epoch,
@@ -542,9 +544,10 @@ export class SqlRunJournal implements RunJournal {
 	async leaseState(runId: string): Promise<LeaseState | undefined> {
 		this.assertOpen();
 		validateText("runId", runId);
+		const { least, greatest, nowMs } = this.dialect;
 		return this.operation(async () => {
 			const row = await this.database.get<LeaseRow & { age_ms: number }>(
-				`SELECT *, MIN(${Number.MAX_SAFE_INTEGER}, MAX(0, ${STORE_NOW} - ${c.renewedAt})) AS age_ms FROM ${this.tables.leases} WHERE ${c.runId} = ?`,
+				`SELECT *, ${least(String(Number.MAX_SAFE_INTEGER), greatest("0", `${nowMs} - ${c.renewedAt}`))} AS age_ms FROM ${this.tables.leases} WHERE ${c.runId} = ?`,
 				runId,
 			);
 			return row && row[c.holderId] !== null
@@ -570,7 +573,7 @@ export class SqlRunJournal implements RunJournal {
 				if (current?.[c.holderId] === holderId)
 					return { status: "acquired", lease: { runId, holderId, epoch: current[c.epoch] } };
 				if (current && current[c.holderId] !== null) {
-					const now = (await tx.get<SqliteRow & { now: number }>(`SELECT ${STORE_NOW} AS now`))!.now;
+					const now = (await tx.get<SqliteRow & { now: number }>(`SELECT ${this.dialect.nowMs} AS now`))!.now;
 					const ageMs = Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, now - Number(current[c.renewedAt])));
 					if (!isWorkflowLeaseExpired(0, staleAfterMs, ageMs))
 						return { status: "held", holderId: current[c.holderId], epoch: current[c.epoch] };
@@ -595,7 +598,7 @@ export class SqlRunJournal implements RunJournal {
 			this.transaction(async (tx) => {
 				await this.checkLease(tx, owned);
 				await tx.run(
-					`UPDATE ${this.tables.leases} SET ${c.renewedAt} = ${STORE_NOW} WHERE ${c.runId} = ?`,
+					`UPDATE ${this.tables.leases} SET ${c.renewedAt} = ${this.dialect.nowMs} WHERE ${c.runId} = ?`,
 					owned.runId,
 				);
 			}),
@@ -728,34 +731,32 @@ export class SqlRunJournal implements RunJournal {
 							sql: `SELECT * FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?`,
 							params: [owned.runId, key],
 						});
-			at({
-				sql: `INSERT INTO ${t.events}
-					SELECT ?, current.latest + 1, ?, ?, ?, ?, ${STORE_NOW}
-					FROM (SELECT COALESCE(MAX(${c.seq}), 0) AS latest FROM ${t.events} WHERE ${c.runId} = ?) AS current
+			// The append is written when the run's last sequence is below the limit, the lease is still held and the key
+			// is new. The status update tests the same condition first, which it does not change, so the two agree.
+			const appends = `FROM (SELECT COALESCE(MAX(${c.seq}), 0) AS latest FROM ${t.events} WHERE ${c.runId} = ?) AS current
 					WHERE current.latest < ? AND ${holds}${
 						key === undefined
 							? ""
 							: ` AND NOT EXISTS (SELECT 1 FROM ${t.events} WHERE ${c.runId} = ? AND ${c.key} = ?)`
-					}`,
-				params: [
-					owned.runId,
-					owned.epoch,
-					key ?? null,
-					type,
-					payload as string,
-					owned.runId,
-					Number.MAX_SAFE_INTEGER,
-					...held,
-					...(key === undefined ? [] : [owned.runId, key]),
-				],
-			});
-			const inserted = at({ sql: "SELECT changes() AS inserted", params: [] });
-			// changes() still counts the insert: a SELECT does not reset it.
+					}`;
+			const appendsParams = [
+				owned.runId,
+				Number.MAX_SAFE_INTEGER,
+				...held,
+				...(key === undefined ? [] : [owned.runId, key]),
+			];
 			if (status !== undefined)
 				at({
-					sql: `UPDATE ${t.runs} SET ${c.status} = ? WHERE ${c.runId} = ? AND changes() = 1`,
-					params: [status, owned.runId],
+					sql: `UPDATE ${t.runs} SET ${c.status} = ? WHERE ${c.runId} = ? AND EXISTS (SELECT 1 ${appends})`,
+					params: [status, owned.runId, ...appendsParams],
 				});
+			const inserted = at({
+				sql: `INSERT INTO ${t.events}
+					SELECT ?, current.latest + 1, ?, ?, ?, ?, ${this.dialect.nowMs}
+					${appends}
+					RETURNING 1 AS inserted`,
+				params: [owned.runId, owned.epoch, key ?? null, type, payload as string, ...appendsParams],
+			});
 			const row = at({ sql: latest, params: [owned.runId, owned.runId] });
 			return { existing, inserted, row };
 		});
@@ -771,7 +772,7 @@ export class SqlRunJournal implements RunJournal {
 					plan.existing === undefined ? undefined : (rows[plan.existing]![0] as EventRow | undefined);
 				if (existing) return { status: "fulfilled", value: { status: "exists", entry: entryFromRow(existing) } };
 				const row = rows[plan.row]![0] as EventRow | undefined;
-				if (Number(rows[plan.inserted]![0]!.inserted) === 1)
+				if (rows[plan.inserted]!.length === 1)
 					return { status: "fulfilled", value: { status: "appended", entry: entryFromRow(row!) } };
 				const actual = journalCounter(owned.runId, "seq", row?.[c.seq] ?? 0);
 				journalCounter(owned.runId, "seq", actual + 1, "overflow");
@@ -823,7 +824,7 @@ export class SqlRunJournal implements RunJournal {
 		const seq = journalCounter(owned.runId, "seq", actual + 1, "overflow");
 		if (payload instanceof StorageUnavailableError) throw payload;
 		await tx.run(
-			`INSERT INTO ${this.tables.events} VALUES (?, ?, ?, ?, ?, ?, ${STORE_NOW})`,
+			`INSERT INTO ${this.tables.events} VALUES (?, ?, ?, ?, ?, ?, ${this.dialect.nowMs})`,
 			owned.runId,
 			seq,
 			owned.epoch,

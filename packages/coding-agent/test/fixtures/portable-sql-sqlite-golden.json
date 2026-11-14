@@ -1,0 +1,1068 @@
+{
+	"freshSchema": [
+		{
+			"type": "index",
+			"name": "snapshot_blobs_age",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE INDEX snapshot_blobs_age ON snapshot_blobs (created_at, hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_carried_refs_hash",
+			"tbl_name": "snapshot_carried_refs",
+			"sql": "CREATE INDEX snapshot_carried_refs_hash ON snapshot_carried_refs (hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_run_refs_hash",
+			"tbl_name": "snapshot_run_refs",
+			"sql": "CREATE INDEX snapshot_run_refs_hash ON snapshot_run_refs (hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_links_broken",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE INDEX snapshot_session_links_broken ON snapshot_session_links (session_id) WHERE broken = 1"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_links_entry",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE INDEX snapshot_session_links_entry ON snapshot_session_links (session_id, entry_id)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_links_leaves",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE INDEX snapshot_session_links_leaves ON snapshot_session_links (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_records_hash",
+			"tbl_name": "snapshot_session_records",
+			"sql": "CREATE INDEX snapshot_session_records_hash ON snapshot_session_records (hash)"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_blobs_age",
+			"tbl_name": "team_snapshot_blobs",
+			"sql": "CREATE INDEX team_snapshot_blobs_age ON team_snapshot_blobs (created_at, hash)"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_carried_refs_hash",
+			"tbl_name": "team_snapshot_carried_refs",
+			"sql": "CREATE INDEX team_snapshot_carried_refs_hash ON team_snapshot_carried_refs (hash)"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_run_refs_hash",
+			"tbl_name": "team_snapshot_run_refs",
+			"sql": "CREATE INDEX team_snapshot_run_refs_hash ON team_snapshot_run_refs (hash)"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_session_links_broken",
+			"tbl_name": "team_snapshot_session_links",
+			"sql": "CREATE INDEX team_snapshot_session_links_broken ON team_snapshot_session_links (session_id) WHERE broken = 1"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_session_links_entry",
+			"tbl_name": "team_snapshot_session_links",
+			"sql": "CREATE INDEX team_snapshot_session_links_entry ON team_snapshot_session_links (session_id, entry_id)"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_session_links_leaves",
+			"tbl_name": "team_snapshot_session_links",
+			"sql": "CREATE INDEX team_snapshot_session_links_leaves ON team_snapshot_session_links (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL"
+		},
+		{
+			"type": "index",
+			"name": "team_snapshot_session_records_hash",
+			"tbl_name": "team_snapshot_session_records",
+			"sql": "CREATE INDEX team_snapshot_session_records_hash ON team_snapshot_session_records (hash)"
+		},
+		{
+			"type": "table",
+			"name": "session_blob_chunks",
+			"tbl_name": "session_blob_chunks",
+			"sql": "CREATE TABLE session_blob_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, hash, idx)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_blobs",
+			"tbl_name": "session_blobs",
+			"sql": "CREATE TABLE session_blobs (\n\t\t\t\t\tsession_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, chunks INTEGER NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, hash)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_entries",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_meta",
+			"tbl_name": "session_meta",
+			"sql": "CREATE TABLE session_meta (schema_version INTEGER NOT NULL) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_search_texts",
+			"tbl_name": "session_search_texts",
+			"sql": "CREATE TABLE session_search_texts (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\ttext_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_sessions",
+			"tbl_name": "session_sessions",
+			"sql": "CREATE TABLE session_sessions (\n\t\t\t\t\tid TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL,\n\t\t\t\t\theader_json TEXT NOT NULL CHECK(json_valid(header_json)), internal INTEGER NOT NULL,\n\t\t\t\t\tlast_seq INTEGER NOT NULL, modified_at TEXT NOT NULL, message_count INTEGER NOT NULL,\n\t\t\t\t\tfirst_message TEXT NOT NULL CHECK(json_valid(first_message)),\n\t\t\t\t\tname TEXT CHECK(name IS NULL OR json_valid(name)), has_name INTEGER NOT NULL,\n\t\t\t\t\tsummary TEXT CHECK(summary IS NULL OR json_valid(summary)), summarized_through_id TEXT,\n\t\t\t\t\tsummary_state TEXT NOT NULL CHECK(json_valid(summary_state)), revision TEXT NOT NULL DEFAULT ''\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_blobs",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_carried_refs",
+			"tbl_name": "snapshot_carried_refs",
+			"sql": "CREATE TABLE snapshot_carried_refs (owner TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (owner, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_collection",
+			"tbl_name": "snapshot_collection",
+			"sql": "CREATE TABLE snapshot_collection (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_index_sources",
+			"tbl_name": "snapshot_index_sources",
+			"sql": "CREATE TABLE snapshot_index_sources (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_run_refs",
+			"tbl_name": "snapshot_run_refs",
+			"sql": "CREATE TABLE snapshot_run_refs (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_run_state",
+			"tbl_name": "snapshot_run_state",
+			"sql": "CREATE TABLE snapshot_run_state (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_session_links",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE TABLE snapshot_session_links (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_session_records",
+			"tbl_name": "snapshot_session_records",
+			"sql": "CREATE TABLE snapshot_session_records (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_session_refs",
+			"tbl_name": "snapshot_session_refs",
+			"sql": "CREATE TABLE snapshot_session_refs (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_session_blob_chunks",
+			"tbl_name": "team_session_blob_chunks",
+			"sql": "CREATE TABLE team_session_blob_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, hash, idx)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_blobs",
+			"tbl_name": "team_session_blobs",
+			"sql": "CREATE TABLE team_session_blobs (\n\t\t\t\t\tsession_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, chunks INTEGER NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, hash)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_entries",
+			"tbl_name": "team_session_entries",
+			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_meta",
+			"tbl_name": "team_session_meta",
+			"sql": "CREATE TABLE team_session_meta (schema_version INTEGER NOT NULL) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_search_texts",
+			"tbl_name": "team_session_search_texts",
+			"sql": "CREATE TABLE team_session_search_texts (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\ttext_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_sessions",
+			"tbl_name": "team_session_sessions",
+			"sql": "CREATE TABLE team_session_sessions (\n\t\t\t\t\tid TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL,\n\t\t\t\t\theader_json TEXT NOT NULL CHECK(json_valid(header_json)), internal INTEGER NOT NULL,\n\t\t\t\t\tlast_seq INTEGER NOT NULL, modified_at TEXT NOT NULL, message_count INTEGER NOT NULL,\n\t\t\t\t\tfirst_message TEXT NOT NULL CHECK(json_valid(first_message)),\n\t\t\t\t\tname TEXT CHECK(name IS NULL OR json_valid(name)), has_name INTEGER NOT NULL,\n\t\t\t\t\tsummary TEXT CHECK(summary IS NULL OR json_valid(summary)), summarized_through_id TEXT,\n\t\t\t\t\tsummary_state TEXT NOT NULL CHECK(json_valid(summary_state)), revision TEXT NOT NULL DEFAULT ''\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_blobs",
+			"tbl_name": "team_snapshot_blobs",
+			"sql": "CREATE TABLE team_snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_carried_refs",
+			"tbl_name": "team_snapshot_carried_refs",
+			"sql": "CREATE TABLE team_snapshot_carried_refs (owner TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (owner, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_collection",
+			"tbl_name": "team_snapshot_collection",
+			"sql": "CREATE TABLE team_snapshot_collection (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_index_sources",
+			"tbl_name": "team_snapshot_index_sources",
+			"sql": "CREATE TABLE team_snapshot_index_sources (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_run_refs",
+			"tbl_name": "team_snapshot_run_refs",
+			"sql": "CREATE TABLE team_snapshot_run_refs (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_run_state",
+			"tbl_name": "team_snapshot_run_state",
+			"sql": "CREATE TABLE team_snapshot_run_state (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_session_links",
+			"tbl_name": "team_snapshot_session_links",
+			"sql": "CREATE TABLE team_snapshot_session_links (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_session_records",
+			"tbl_name": "team_snapshot_session_records",
+			"sql": "CREATE TABLE team_snapshot_session_records (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_snapshot_session_refs",
+			"tbl_name": "team_snapshot_session_refs",
+			"sql": "CREATE TABLE team_snapshot_session_refs (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "team_wf_events",
+			"tbl_name": "team_wf_events",
+			"sql": "CREATE TABLE team_wf_events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (run_id, seq))"
+		},
+		{
+			"type": "table",
+			"name": "team_wf_runs",
+			"tbl_name": "team_wf_runs",
+			"sql": "CREATE TABLE team_wf_runs (run_id TEXT PRIMARY KEY, status TEXT NOT NULL)"
+		},
+		{
+			"type": "table",
+			"name": "team_wf_runs_pool_root_snapshot",
+			"tbl_name": "team_wf_runs_pool_root_snapshot",
+			"sql": "CREATE TABLE team_wf_runs_pool_root_snapshot (root TEXT PRIMARY KEY, snapshot TEXT NOT NULL)"
+		},
+		{
+			"type": "table",
+			"name": "team_wf_runs_work",
+			"tbl_name": "team_wf_runs_work",
+			"sql": "CREATE TABLE team_wf_runs_work (id TEXT PRIMARY KEY, descriptor TEXT NOT NULL)"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_links",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_links AFTER INSERT ON session_entries WHEN (SELECT backfilled_through >= watermark FROM snapshot_index_sources WHERE source = 'session-entries') BEGIN UPDATE snapshot_session_links SET children = children + 1 FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE snapshot_session_links.session_id = r.session_id AND snapshot_session_links.entry_id = r.parent_id AND r.parent_type = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_session_links AS own WHERE own.session_id = r.session_id AND own.seq = r.seq); INSERT OR IGNORE INTO snapshot_session_links (session_id, seq, entry_id, parent_id, anchor_seq, children, broken) SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END, CASE WHEN instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text' THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM snapshot_session_links AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN r.parent_type = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_pending",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_pending AFTER INSERT ON session_entries WHEN NOT COALESCE((SELECT backfilled_through >= watermark FROM snapshot_index_sources WHERE source = 'session-entries'), 1) BEGIN UPDATE snapshot_index_sources SET watermark = NEW.rowid WHERE source = 'session-entries' AND watermark < NEW.rowid; UPDATE snapshot_index_sources SET backfilled_through = NEW.rowid - 1 WHERE source = 'session-entries' AND backfilled_through >= NEW.rowid; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_refs",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_refs AFTER INSERT ON session_entries WHEN instr(NEW.entry_json, '\"worktree_snapshot\"') > 0 AND (SELECT backfilled_through >= watermark FROM snapshot_index_sources WHERE source = 'session-entries') BEGIN INSERT OR REPLACE INTO snapshot_session_refs (session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.root'), json_extract(r.entry_json, '$.snapshotId'), parent.anchor_seq, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.from') END, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.to') END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text' WHERE instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; INSERT OR IGNORE INTO snapshot_session_records (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), json_extract(r.entry_json, link.fullkey || '.patch') FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r, json_each(r.entry_json, '$.snapshot.chain') AS link WHERE typeof(json_extract(r.entry_json, link.fullkey || '.patch')) = 'text' AND instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; INSERT OR IGNORE INTO snapshot_session_records (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), json_extract(r.entry_json, '$.snapshot.bundle.blob') FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE typeof(json_extract(r.entry_json, '$.snapshot.bundle.blob')) = 'text' AND instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_refs_delete",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_refs_delete AFTER DELETE ON session_entries BEGIN UPDATE snapshot_session_links SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq); DELETE FROM snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM snapshot_session_refs WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM snapshot_session_records WHERE session_id = OLD.session_id AND seq = OLD.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_session_entries_snapshot_links",
+			"tbl_name": "team_session_entries",
+			"sql": "CREATE TRIGGER team_session_entries_snapshot_links AFTER INSERT ON team_session_entries WHEN (SELECT backfilled_through >= watermark FROM team_snapshot_index_sources WHERE source = 'session-entries') BEGIN UPDATE team_snapshot_session_links SET children = children + 1 FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE team_snapshot_session_links.session_id = r.session_id AND team_snapshot_session_links.entry_id = r.parent_id AND r.parent_type = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_session_links AS own WHERE own.session_id = r.session_id AND own.seq = r.seq); INSERT OR IGNORE INTO team_snapshot_session_links (session_id, seq, entry_id, parent_id, anchor_seq, children, broken) SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END, CASE WHEN instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text' THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM team_snapshot_session_links AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN r.parent_type = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN team_snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_session_entries_snapshot_pending",
+			"tbl_name": "team_session_entries",
+			"sql": "CREATE TRIGGER team_session_entries_snapshot_pending AFTER INSERT ON team_session_entries WHEN NOT COALESCE((SELECT backfilled_through >= watermark FROM team_snapshot_index_sources WHERE source = 'session-entries'), 1) BEGIN UPDATE team_snapshot_index_sources SET watermark = NEW.rowid WHERE source = 'session-entries' AND watermark < NEW.rowid; UPDATE team_snapshot_index_sources SET backfilled_through = NEW.rowid - 1 WHERE source = 'session-entries' AND backfilled_through >= NEW.rowid; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_session_entries_snapshot_refs",
+			"tbl_name": "team_session_entries",
+			"sql": "CREATE TRIGGER team_session_entries_snapshot_refs AFTER INSERT ON team_session_entries WHEN instr(NEW.entry_json, '\"worktree_snapshot\"') > 0 AND (SELECT backfilled_through >= watermark FROM team_snapshot_index_sources WHERE source = 'session-entries') BEGIN INSERT OR REPLACE INTO team_snapshot_session_refs (session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.root'), json_extract(r.entry_json, '$.snapshotId'), parent.anchor_seq, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.from') END, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.to') END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN team_snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text' WHERE instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; INSERT OR IGNORE INTO team_snapshot_session_records (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), json_extract(r.entry_json, link.fullkey || '.patch') FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r, json_each(r.entry_json, '$.snapshot.chain') AS link WHERE typeof(json_extract(r.entry_json, link.fullkey || '.patch')) = 'text' AND instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; INSERT OR IGNORE INTO team_snapshot_session_records (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), json_extract(r.entry_json, '$.snapshot.bundle.blob') FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE typeof(json_extract(r.entry_json, '$.snapshot.bundle.blob')) = 'text' AND instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_session_entries_snapshot_refs_delete",
+			"tbl_name": "team_session_entries",
+			"sql": "CREATE TRIGGER team_session_entries_snapshot_refs_delete AFTER DELETE ON team_session_entries BEGIN UPDATE team_snapshot_session_links SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM team_snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq); DELETE FROM team_snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM team_snapshot_session_refs WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM team_snapshot_session_records WHERE session_id = OLD.session_id AND seq = OLD.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_events_snapshot_refs",
+			"tbl_name": "team_wf_events",
+			"sql": "CREATE TRIGGER team_wf_events_snapshot_refs AFTER INSERT ON team_wf_events WHEN NEW.type = 'CheckpointRecorded' AND instr(NEW.payload, '\"worktreeSnapshots\"') > 0 AND CASE WHEN json_valid(NEW.payload) THEN (json_extract(NEW.payload, '$.kind') IN ('tool', 'stage')) ELSE 0 END BEGIN INSERT OR IGNORE INTO team_snapshot_run_refs (run_id, hash) SELECT r.run_id, json_extract(r.payload, link.fullkey || '.patch') FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r, json_each(r.payload, '$.worktreeSnapshots') AS snapshot, json_each(r.payload, snapshot.fullkey || '.chain') AS link WHERE typeof(json_extract(r.payload, link.fullkey || '.patch')) = 'text'; INSERT OR IGNORE INTO team_snapshot_run_refs (run_id, hash) SELECT r.run_id, json_extract(r.payload, snapshot.fullkey || '.bundle.blob') FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r, json_each(r.payload, '$.worktreeSnapshots') AS snapshot WHERE typeof(json_extract(r.payload, snapshot.fullkey || '.bundle.blob')) = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_events_snapshot_state",
+			"tbl_name": "team_wf_events",
+			"sql": "CREATE TRIGGER team_wf_events_snapshot_state AFTER INSERT ON team_wf_events WHEN NEW.type IN ('RunStarted', 'StatusChanged') AND CASE WHEN json_valid(NEW.payload) THEN (json_type(NEW.payload, '$.workflowId') = 'text' AND json_type(NEW.payload, '$.status') = 'text' AND json_type(NEW.payload, '$.completedCheckpoints') IN ('integer', 'real') AND json_type(NEW.payload, '$.pendingPrompts') IN ('integer', 'real')) ELSE 0 END BEGIN INSERT INTO team_snapshot_run_state (run_id, retained, seq) SELECT r.run_id, CASE\n\t\tWHEN json_type(r.payload, '$.rootWorkflowId') IS NOT NULL AND (json_type(r.payload, '$.rootWorkflowId') <> 'text' OR json_extract(r.payload, '$.rootWorkflowId') <> json_extract(r.payload, '$.workflowId')) THEN 0\n\t\tWHEN json_extract(r.payload, '$.status') IN ('failed', 'blocked', 'running', 'paused') THEN json_type(r.payload, '$.resumable') IS NOT 'false'\n\t\tELSE 0\n\tEND, r.seq FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r WHERE true ON CONFLICT (run_id) DO UPDATE SET retained = excluded.retained, seq = excluded.seq WHERE excluded.seq >= team_snapshot_run_state.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_pool_root_snapshot_snapshot_carried_delete",
+			"tbl_name": "team_wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER team_wf_runs_pool_root_snapshot_snapshot_carried_delete AFTER DELETE ON team_wf_runs_pool_root_snapshot BEGIN DELETE FROM team_snapshot_carried_refs WHERE owner = 'root:' || OLD.root; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_pool_root_snapshot_snapshot_carried_insert",
+			"tbl_name": "team_wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER team_wf_runs_pool_root_snapshot_snapshot_carried_insert AFTER INSERT ON team_wf_runs_pool_root_snapshot BEGIN INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.bundle.blob') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_pool_root_snapshot_snapshot_carried_update",
+			"tbl_name": "team_wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER team_wf_runs_pool_root_snapshot_snapshot_carried_update AFTER UPDATE OF snapshot ON team_wf_runs_pool_root_snapshot BEGIN DELETE FROM team_snapshot_carried_refs WHERE owner = 'root:' || OLD.root; INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.bundle.blob') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_snapshot_refs_delete",
+			"tbl_name": "team_wf_runs",
+			"sql": "CREATE TRIGGER team_wf_runs_snapshot_refs_delete AFTER DELETE ON team_wf_runs BEGIN DELETE FROM team_snapshot_run_refs WHERE run_id = OLD.run_id; DELETE FROM team_snapshot_run_state WHERE run_id = OLD.run_id; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_snapshot_state_insert",
+			"tbl_name": "team_wf_runs",
+			"sql": "CREATE TRIGGER team_wf_runs_snapshot_state_insert AFTER INSERT ON team_wf_runs BEGIN INSERT INTO team_snapshot_run_state (run_id, retained, seq) SELECT r.run_id, r.status NOT IN ('completed', 'cancelled'), -1 FROM (SELECT NEW.run_id AS run_id, NEW.status AS status) AS r WHERE true ON CONFLICT (run_id) DO NOTHING; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_snapshot_state_status",
+			"tbl_name": "team_wf_runs",
+			"sql": "CREATE TRIGGER team_wf_runs_snapshot_state_status AFTER UPDATE OF status ON team_wf_runs BEGIN UPDATE team_snapshot_run_state SET retained = NEW.status NOT IN ('completed', 'cancelled') WHERE run_id = NEW.run_id AND seq = -1; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_work_snapshot_carried_delete",
+			"tbl_name": "team_wf_runs_work",
+			"sql": "CREATE TRIGGER team_wf_runs_work_snapshot_carried_delete AFTER DELETE ON team_wf_runs_work WHEN instr(OLD.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN DELETE FROM team_snapshot_carried_refs WHERE owner = 'work:' || OLD.id; END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_work_snapshot_carried_insert",
+			"tbl_name": "team_wf_runs_work",
+			"sql": "CREATE TRIGGER team_wf_runs_work_snapshot_carried_insert AFTER INSERT ON team_wf_runs_work WHEN instr(NEW.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.execution.workspaceSnapshot.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "team_wf_runs_work_snapshot_carried_update",
+			"tbl_name": "team_wf_runs_work",
+			"sql": "CREATE TRIGGER team_wf_runs_work_snapshot_carried_update AFTER UPDATE OF descriptor ON team_wf_runs_work WHEN instr(OLD.descriptor, '\"workspaceSnapshot\"') > 0 OR instr(NEW.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN DELETE FROM team_snapshot_carried_refs WHERE owner = 'work:' || OLD.id; INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.execution.workspaceSnapshot.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO team_snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM team_snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_events_snapshot_refs",
+			"tbl_name": "wf_events",
+			"sql": "CREATE TRIGGER wf_events_snapshot_refs AFTER INSERT ON wf_events WHEN NEW.type = 'CheckpointRecorded' AND instr(NEW.payload, '\"worktreeSnapshots\"') > 0 AND CASE WHEN json_valid(NEW.payload) THEN (json_extract(NEW.payload, '$.kind') IN ('tool', 'stage')) ELSE 0 END BEGIN INSERT OR IGNORE INTO snapshot_run_refs (run_id, hash) SELECT r.run_id, json_extract(r.payload, link.fullkey || '.patch') FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r, json_each(r.payload, '$.worktreeSnapshots') AS snapshot, json_each(r.payload, snapshot.fullkey || '.chain') AS link WHERE typeof(json_extract(r.payload, link.fullkey || '.patch')) = 'text'; INSERT OR IGNORE INTO snapshot_run_refs (run_id, hash) SELECT r.run_id, json_extract(r.payload, snapshot.fullkey || '.bundle.blob') FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r, json_each(r.payload, '$.worktreeSnapshots') AS snapshot WHERE typeof(json_extract(r.payload, snapshot.fullkey || '.bundle.blob')) = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_events_snapshot_state",
+			"tbl_name": "wf_events",
+			"sql": "CREATE TRIGGER wf_events_snapshot_state AFTER INSERT ON wf_events WHEN NEW.type IN ('RunStarted', 'StatusChanged') AND CASE WHEN json_valid(NEW.payload) THEN (json_type(NEW.payload, '$.workflowId') = 'text' AND json_type(NEW.payload, '$.status') = 'text' AND json_type(NEW.payload, '$.completedCheckpoints') IN ('integer', 'real') AND json_type(NEW.payload, '$.pendingPrompts') IN ('integer', 'real')) ELSE 0 END BEGIN INSERT INTO snapshot_run_state (run_id, retained, seq) SELECT r.run_id, CASE\n\t\tWHEN json_type(r.payload, '$.rootWorkflowId') IS NOT NULL AND (json_type(r.payload, '$.rootWorkflowId') <> 'text' OR json_extract(r.payload, '$.rootWorkflowId') <> json_extract(r.payload, '$.workflowId')) THEN 0\n\t\tWHEN json_extract(r.payload, '$.status') IN ('failed', 'blocked', 'running', 'paused') THEN json_type(r.payload, '$.resumable') IS NOT 'false'\n\t\tELSE 0\n\tEND, r.seq FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r WHERE true ON CONFLICT (run_id) DO UPDATE SET retained = excluded.retained, seq = excluded.seq WHERE excluded.seq >= snapshot_run_state.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_pool_root_snapshot_snapshot_carried_delete",
+			"tbl_name": "wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_delete AFTER DELETE ON wf_runs_pool_root_snapshot BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'root:' || OLD.root; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_pool_root_snapshot_snapshot_carried_insert",
+			"tbl_name": "wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_insert AFTER INSERT ON wf_runs_pool_root_snapshot BEGIN INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.bundle.blob') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_pool_root_snapshot_snapshot_carried_update",
+			"tbl_name": "wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_update AFTER UPDATE OF snapshot ON wf_runs_pool_root_snapshot BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'root:' || OLD.root; INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.bundle.blob') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_snapshot_refs_delete",
+			"tbl_name": "wf_runs",
+			"sql": "CREATE TRIGGER wf_runs_snapshot_refs_delete AFTER DELETE ON wf_runs BEGIN DELETE FROM snapshot_run_refs WHERE run_id = OLD.run_id; DELETE FROM snapshot_run_state WHERE run_id = OLD.run_id; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_snapshot_state_insert",
+			"tbl_name": "wf_runs",
+			"sql": "CREATE TRIGGER wf_runs_snapshot_state_insert AFTER INSERT ON wf_runs BEGIN INSERT INTO snapshot_run_state (run_id, retained, seq) SELECT r.run_id, r.status NOT IN ('completed', 'cancelled'), -1 FROM (SELECT NEW.run_id AS run_id, NEW.status AS status) AS r WHERE true ON CONFLICT (run_id) DO NOTHING; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_snapshot_state_status",
+			"tbl_name": "wf_runs",
+			"sql": "CREATE TRIGGER wf_runs_snapshot_state_status AFTER UPDATE OF status ON wf_runs BEGIN UPDATE snapshot_run_state SET retained = NEW.status NOT IN ('completed', 'cancelled') WHERE run_id = NEW.run_id AND seq = -1; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_work_snapshot_carried_delete",
+			"tbl_name": "wf_runs_work",
+			"sql": "CREATE TRIGGER wf_runs_work_snapshot_carried_delete AFTER DELETE ON wf_runs_work WHEN instr(OLD.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'work:' || OLD.id; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_work_snapshot_carried_insert",
+			"tbl_name": "wf_runs_work",
+			"sql": "CREATE TRIGGER wf_runs_work_snapshot_carried_insert AFTER INSERT ON wf_runs_work WHEN instr(NEW.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.execution.workspaceSnapshot.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_work_snapshot_carried_update",
+			"tbl_name": "wf_runs_work",
+			"sql": "CREATE TRIGGER wf_runs_work_snapshot_carried_update AFTER UPDATE OF descriptor ON wf_runs_work WHEN instr(OLD.descriptor, '\"workspaceSnapshot\"') > 0 OR instr(NEW.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'work:' || OLD.id; INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.execution.workspaceSnapshot.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')); END"
+		}
+	],
+	"upgradedSchema": [
+		{
+			"type": "index",
+			"name": "snapshot_blobs_age",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE INDEX snapshot_blobs_age ON snapshot_blobs (created_at, hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_carried_refs_hash",
+			"tbl_name": "snapshot_carried_refs",
+			"sql": "CREATE INDEX snapshot_carried_refs_hash ON snapshot_carried_refs (hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_run_refs_hash",
+			"tbl_name": "snapshot_run_refs",
+			"sql": "CREATE INDEX snapshot_run_refs_hash ON snapshot_run_refs (hash)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_links_broken",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE INDEX snapshot_session_links_broken ON snapshot_session_links (session_id) WHERE broken = 1"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_links_entry",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE INDEX snapshot_session_links_entry ON snapshot_session_links (session_id, entry_id)"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_links_leaves",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE INDEX snapshot_session_links_leaves ON snapshot_session_links (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL"
+		},
+		{
+			"type": "index",
+			"name": "snapshot_session_records_hash",
+			"tbl_name": "snapshot_session_records",
+			"sql": "CREATE INDEX snapshot_session_records_hash ON snapshot_session_records (hash)"
+		},
+		{
+			"type": "table",
+			"name": "session_blob_chunks",
+			"tbl_name": "session_blob_chunks",
+			"sql": "CREATE TABLE session_blob_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, hash, idx)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_blobs",
+			"tbl_name": "session_blobs",
+			"sql": "CREATE TABLE session_blobs (session_id TEXT NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, data BLOB NOT NULL, chunks INTEGER NOT NULL DEFAULT -1, PRIMARY KEY(session_id, hash)) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_entries",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_meta",
+			"tbl_name": "session_meta",
+			"sql": "CREATE TABLE session_meta (schema_version INTEGER NOT NULL) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_search_texts",
+			"tbl_name": "session_search_texts",
+			"sql": "CREATE TABLE session_search_texts (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\ttext_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_sessions",
+			"tbl_name": "session_sessions",
+			"sql": "CREATE TABLE session_sessions (\n\t\t\tid TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at TEXT NOT NULL,\n\t\t\theader_json TEXT NOT NULL CHECK(json_valid(header_json)), internal INTEGER NOT NULL,\n\t\t\tlast_seq INTEGER NOT NULL, modified_at TEXT NOT NULL, message_count INTEGER NOT NULL,\n\t\t\tfirst_message TEXT NOT NULL CHECK(json_valid(first_message)),\n\t\t\tname TEXT CHECK(name IS NULL OR json_valid(name)), has_name INTEGER NOT NULL,\n\t\t\tsummary TEXT CHECK(summary IS NULL OR json_valid(summary)), summarized_through_id TEXT,\n\t\t\tsummary_state TEXT NOT NULL CHECK(json_valid(summary_state))\n\t\t, revision TEXT NOT NULL DEFAULT '') STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_blobs",
+			"tbl_name": "snapshot_blobs",
+			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT 0) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_carried_refs",
+			"tbl_name": "snapshot_carried_refs",
+			"sql": "CREATE TABLE snapshot_carried_refs (owner TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (owner, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_collection",
+			"tbl_name": "snapshot_collection",
+			"sql": "CREATE TABLE snapshot_collection (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_index_sources",
+			"tbl_name": "snapshot_index_sources",
+			"sql": "CREATE TABLE snapshot_index_sources (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_run_refs",
+			"tbl_name": "snapshot_run_refs",
+			"sql": "CREATE TABLE snapshot_run_refs (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_run_state",
+			"tbl_name": "snapshot_run_state",
+			"sql": "CREATE TABLE snapshot_run_state (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_session_links",
+			"tbl_name": "snapshot_session_links",
+			"sql": "CREATE TABLE snapshot_session_links (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_session_records",
+			"tbl_name": "snapshot_session_records",
+			"sql": "CREATE TABLE snapshot_session_records (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
+			"name": "snapshot_session_refs",
+			"tbl_name": "snapshot_session_refs",
+			"sql": "CREATE TABLE snapshot_session_refs (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_links",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_links AFTER INSERT ON session_entries WHEN (SELECT backfilled_through >= watermark FROM snapshot_index_sources WHERE source = 'session-entries') BEGIN UPDATE snapshot_session_links SET children = children + 1 FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE snapshot_session_links.session_id = r.session_id AND snapshot_session_links.entry_id = r.parent_id AND r.parent_type = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_session_links AS own WHERE own.session_id = r.session_id AND own.seq = r.seq); INSERT OR IGNORE INTO snapshot_session_links (session_id, seq, entry_id, parent_id, anchor_seq, children, broken) SELECT r.session_id, r.seq, r.entry_id, CASE WHEN r.parent_type = 'text' THEN r.parent_id END, CASE WHEN instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text' THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM snapshot_session_links AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN r.parent_type IS NULL OR r.parent_type = 'null' THEN 0 WHEN r.parent_type = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_pending",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_pending AFTER INSERT ON session_entries WHEN NOT COALESCE((SELECT backfilled_through >= watermark FROM snapshot_index_sources WHERE source = 'session-entries'), 1) BEGIN UPDATE snapshot_index_sources SET watermark = NEW.rowid WHERE source = 'session-entries' AND watermark < NEW.rowid; UPDATE snapshot_index_sources SET backfilled_through = NEW.rowid - 1 WHERE source = 'session-entries' AND backfilled_through >= NEW.rowid; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_refs",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_refs AFTER INSERT ON session_entries WHEN instr(NEW.entry_json, '\"worktree_snapshot\"') > 0 AND (SELECT backfilled_through >= watermark FROM snapshot_index_sources WHERE source = 'session-entries') BEGIN INSERT OR REPLACE INTO snapshot_session_refs (session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.root'), json_extract(r.entry_json, '$.snapshotId'), parent.anchor_seq, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.from') END, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.to') END FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r LEFT JOIN snapshot_session_links AS parent ON parent.session_id = r.session_id AND parent.entry_id = r.parent_id AND r.parent_type = 'text' WHERE instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; INSERT OR IGNORE INTO snapshot_session_records (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), json_extract(r.entry_json, link.fullkey || '.patch') FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r, json_each(r.entry_json, '$.snapshot.chain') AS link WHERE typeof(json_extract(r.entry_json, link.fullkey || '.patch')) = 'text' AND instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; INSERT OR IGNORE INTO snapshot_session_records (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), json_extract(r.entry_json, '$.snapshot.bundle.blob') FROM (SELECT NEW.session_id AS session_id, NEW.seq AS seq, NEW.entry_id AS entry_id, NEW.entry_json AS entry_json, json_extract(NEW.entry_json, '$.parentId') AS parent_id, json_type(NEW.entry_json, '$.parentId') AS parent_type) AS r WHERE typeof(json_extract(r.entry_json, '$.snapshot.bundle.blob')) = 'text' AND instr(r.entry_json, '\"worktree_snapshot\"') > 0 AND json_extract(r.entry_json, '$.type') = 'worktree_snapshot' AND json_type(r.entry_json, '$.root') = 'text' AND json_type(r.entry_json, '$.snapshotId') = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "session_entries_snapshot_refs_delete",
+			"tbl_name": "session_entries",
+			"sql": "CREATE TRIGGER session_entries_snapshot_refs_delete AFTER DELETE ON session_entries BEGIN UPDATE snapshot_session_links SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq); DELETE FROM snapshot_session_links WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM snapshot_session_refs WHERE session_id = OLD.session_id AND seq = OLD.seq; DELETE FROM snapshot_session_records WHERE session_id = OLD.session_id AND seq = OLD.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_events_snapshot_refs",
+			"tbl_name": "wf_events",
+			"sql": "CREATE TRIGGER wf_events_snapshot_refs AFTER INSERT ON wf_events WHEN NEW.type = 'CheckpointRecorded' AND instr(NEW.payload, '\"worktreeSnapshots\"') > 0 AND CASE WHEN json_valid(NEW.payload) THEN (json_extract(NEW.payload, '$.kind') IN ('tool', 'stage')) ELSE 0 END BEGIN INSERT OR IGNORE INTO snapshot_run_refs (run_id, hash) SELECT r.run_id, json_extract(r.payload, link.fullkey || '.patch') FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r, json_each(r.payload, '$.worktreeSnapshots') AS snapshot, json_each(r.payload, snapshot.fullkey || '.chain') AS link WHERE typeof(json_extract(r.payload, link.fullkey || '.patch')) = 'text'; INSERT OR IGNORE INTO snapshot_run_refs (run_id, hash) SELECT r.run_id, json_extract(r.payload, snapshot.fullkey || '.bundle.blob') FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r, json_each(r.payload, '$.worktreeSnapshots') AS snapshot WHERE typeof(json_extract(r.payload, snapshot.fullkey || '.bundle.blob')) = 'text'; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_events_snapshot_state",
+			"tbl_name": "wf_events",
+			"sql": "CREATE TRIGGER wf_events_snapshot_state AFTER INSERT ON wf_events WHEN NEW.type IN ('RunStarted', 'StatusChanged') AND CASE WHEN json_valid(NEW.payload) THEN (json_type(NEW.payload, '$.workflowId') = 'text' AND json_type(NEW.payload, '$.status') = 'text' AND json_type(NEW.payload, '$.completedCheckpoints') IN ('integer', 'real') AND json_type(NEW.payload, '$.pendingPrompts') IN ('integer', 'real')) ELSE 0 END BEGIN INSERT INTO snapshot_run_state (run_id, retained, seq) SELECT r.run_id, CASE\n\t\tWHEN json_type(r.payload, '$.rootWorkflowId') IS NOT NULL AND (json_type(r.payload, '$.rootWorkflowId') <> 'text' OR json_extract(r.payload, '$.rootWorkflowId') <> json_extract(r.payload, '$.workflowId')) THEN 0\n\t\tWHEN json_extract(r.payload, '$.status') IN ('failed', 'blocked', 'running', 'paused') THEN json_type(r.payload, '$.resumable') IS NOT 'false'\n\t\tELSE 0\n\tEND, r.seq FROM (SELECT NEW.run_id AS run_id, NEW.seq AS seq, NEW.payload AS payload) AS r WHERE true ON CONFLICT (run_id) DO UPDATE SET retained = excluded.retained, seq = excluded.seq WHERE excluded.seq >= snapshot_run_state.seq; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_pool_root_snapshot_snapshot_carried_delete",
+			"tbl_name": "wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_delete AFTER DELETE ON wf_runs_pool_root_snapshot BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'root:' || OLD.root; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_pool_root_snapshot_snapshot_carried_insert",
+			"tbl_name": "wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_insert AFTER INSERT ON wf_runs_pool_root_snapshot BEGIN INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.bundle.blob') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_pool_root_snapshot_snapshot_carried_update",
+			"tbl_name": "wf_runs_pool_root_snapshot",
+			"sql": "CREATE TRIGGER wf_runs_pool_root_snapshot_snapshot_carried_update AFTER UPDATE OF snapshot ON wf_runs_pool_root_snapshot BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'root:' || OLD.root; INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.bundle.blob') FROM (SELECT 'root:' || NEW.root AS owner, CASE WHEN json_valid(NEW.snapshot) THEN NEW.snapshot ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_snapshot_refs_delete",
+			"tbl_name": "wf_runs",
+			"sql": "CREATE TRIGGER wf_runs_snapshot_refs_delete AFTER DELETE ON wf_runs BEGIN DELETE FROM snapshot_run_refs WHERE run_id = OLD.run_id; DELETE FROM snapshot_run_state WHERE run_id = OLD.run_id; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_snapshot_state_insert",
+			"tbl_name": "wf_runs",
+			"sql": "CREATE TRIGGER wf_runs_snapshot_state_insert AFTER INSERT ON wf_runs BEGIN INSERT INTO snapshot_run_state (run_id, retained, seq) SELECT r.run_id, r.status NOT IN ('completed', 'cancelled'), -1 FROM (SELECT NEW.run_id AS run_id, NEW.status AS status) AS r WHERE true ON CONFLICT (run_id) DO NOTHING; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_snapshot_state_status",
+			"tbl_name": "wf_runs",
+			"sql": "CREATE TRIGGER wf_runs_snapshot_state_status AFTER UPDATE OF status ON wf_runs BEGIN UPDATE snapshot_run_state SET retained = NEW.status NOT IN ('completed', 'cancelled') WHERE run_id = NEW.run_id AND seq = -1; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_work_snapshot_carried_delete",
+			"tbl_name": "wf_runs_work",
+			"sql": "CREATE TRIGGER wf_runs_work_snapshot_carried_delete AFTER DELETE ON wf_runs_work WHEN instr(OLD.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'work:' || OLD.id; END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_work_snapshot_carried_insert",
+			"tbl_name": "wf_runs_work",
+			"sql": "CREATE TRIGGER wf_runs_work_snapshot_carried_insert AFTER INSERT ON wf_runs_work WHEN instr(NEW.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.execution.workspaceSnapshot.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')); END"
+		},
+		{
+			"type": "trigger",
+			"name": "wf_runs_work_snapshot_carried_update",
+			"tbl_name": "wf_runs_work",
+			"sql": "CREATE TRIGGER wf_runs_work_snapshot_carried_update AFTER UPDATE OF descriptor ON wf_runs_work WHEN instr(OLD.descriptor, '\"workspaceSnapshot\"') > 0 OR instr(NEW.descriptor, '\"workspaceSnapshot\"') > 0 BEGIN DELETE FROM snapshot_carried_refs WHERE owner = 'work:' || OLD.id; INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, link.fullkey || '.patch') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r, json_each(r.snapshot, '$.execution.workspaceSnapshot.chain') AS link WHERE typeof(json_extract(r.snapshot, link.fullkey || '.patch')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, link.fullkey || '.patch')); INSERT OR IGNORE INTO snapshot_carried_refs (owner, hash) SELECT DISTINCT r.owner, json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob') FROM (SELECT 'work:' || NEW.id AS owner, CASE WHEN json_valid(NEW.descriptor) THEN NEW.descriptor ELSE '{}' END AS snapshot) AS r WHERE typeof(json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')) = 'text' AND NOT EXISTS (SELECT 1 FROM snapshot_carried_refs AS held WHERE held.owner = r.owner AND held.hash = json_extract(r.snapshot, '$.execution.workspaceSnapshot.bundle.blob')); END"
+		}
+	],
+	"index": {
+		"deleted": [
+			"d-bundle-after",
+			"d-bundle-before",
+			"d-patch-after",
+			"d-patch-before",
+			"s-bundle-2",
+			"s-bundle-3",
+			"s-patch-2",
+			"s-patch-3",
+			"unreferenced",
+			"w-bundle-after",
+			"w-patch-after"
+		],
+		"rows": {
+			"blobs": [
+				{
+					"hash": "p-bundle-after",
+					"bytes": 14,
+					"data": "p-bundle-after"
+				},
+				{
+					"hash": "p-bundle-before",
+					"bytes": 15,
+					"data": "p-bundle-before"
+				},
+				{
+					"hash": "p-patch-after",
+					"bytes": 13,
+					"data": "p-patch-after"
+				},
+				{
+					"hash": "p-patch-before",
+					"bytes": 14,
+					"data": "p-patch-before"
+				},
+				{
+					"hash": "r-bundle-after",
+					"bytes": 14,
+					"data": "r-bundle-after"
+				},
+				{
+					"hash": "r-bundle-before",
+					"bytes": 15,
+					"data": "r-bundle-before"
+				},
+				{
+					"hash": "r-patch-after",
+					"bytes": 13,
+					"data": "r-patch-after"
+				},
+				{
+					"hash": "r-patch-before",
+					"bytes": 14,
+					"data": "r-patch-before"
+				},
+				{
+					"hash": "s-bundle-1",
+					"bytes": 10,
+					"data": "s-bundle-1"
+				},
+				{
+					"hash": "s-bundle-4",
+					"bytes": 10,
+					"data": "s-bundle-4"
+				},
+				{
+					"hash": "s-patch-1",
+					"bytes": 9,
+					"data": "s-patch-1"
+				},
+				{
+					"hash": "s-patch-4",
+					"bytes": 9,
+					"data": "s-patch-4"
+				},
+				{
+					"hash": "w-bundle-before",
+					"bytes": 15,
+					"data": "w-bundle-before"
+				},
+				{
+					"hash": "w-patch-before",
+					"bytes": 14,
+					"data": "w-patch-before"
+				}
+			],
+			"runRefs": [
+				{
+					"run_id": "done-after",
+					"hash": "d-bundle-after"
+				},
+				{
+					"run_id": "done-after",
+					"hash": "d-patch-after"
+				},
+				{
+					"run_id": "run-after",
+					"hash": "r-bundle-after"
+				},
+				{
+					"run_id": "run-after",
+					"hash": "r-patch-after"
+				},
+				{
+					"run_id": "run-before",
+					"hash": "r-bundle-before"
+				},
+				{
+					"run_id": "run-before",
+					"hash": "r-patch-before"
+				}
+			],
+			"runState": [
+				{
+					"run_id": "done-after",
+					"retained": 0,
+					"seq": 2
+				},
+				{
+					"run_id": "run-after",
+					"retained": 1,
+					"seq": 3
+				},
+				{
+					"run_id": "run-before",
+					"retained": 1,
+					"seq": 3
+				}
+			],
+			"sessionRefs": [
+				{
+					"session_id": "new",
+					"seq": 2,
+					"root": "/project",
+					"snapshot_id": "snap-3",
+					"prev_seq": null,
+					"restore_from": null,
+					"restore_to": null
+				},
+				{
+					"session_id": "new",
+					"seq": 3,
+					"root": "/project",
+					"snapshot_id": "snap-4",
+					"prev_seq": 2,
+					"restore_from": null,
+					"restore_to": null
+				},
+				{
+					"session_id": "old",
+					"seq": 2,
+					"root": "/project",
+					"snapshot_id": "snap-1",
+					"prev_seq": null,
+					"restore_from": null,
+					"restore_to": null
+				}
+			],
+			"sessionLinks": [
+				{
+					"session_id": "new",
+					"seq": 1,
+					"entry_id": "n1",
+					"parent_id": null,
+					"anchor_seq": null,
+					"children": 2,
+					"broken": 0
+				},
+				{
+					"session_id": "new",
+					"seq": 2,
+					"entry_id": "t1",
+					"parent_id": "n1",
+					"anchor_seq": 2,
+					"children": 1,
+					"broken": 0
+				},
+				{
+					"session_id": "new",
+					"seq": 3,
+					"entry_id": "t2",
+					"parent_id": "t1",
+					"anchor_seq": 3,
+					"children": 0,
+					"broken": 0
+				},
+				{
+					"session_id": "new",
+					"seq": 4,
+					"entry_id": "n2",
+					"parent_id": "n1",
+					"anchor_seq": null,
+					"children": 0,
+					"broken": 0
+				},
+				{
+					"session_id": "old",
+					"seq": 1,
+					"entry_id": "m1",
+					"parent_id": null,
+					"anchor_seq": null,
+					"children": 1,
+					"broken": 0
+				},
+				{
+					"session_id": "old",
+					"seq": 2,
+					"entry_id": "s1",
+					"parent_id": "m1",
+					"anchor_seq": 2,
+					"children": 0,
+					"broken": 0
+				}
+			],
+			"sessionRecords": [
+				{
+					"session_id": "new",
+					"seq": 2,
+					"snapshot_id": "snap-3",
+					"hash": "s-bundle-3"
+				},
+				{
+					"session_id": "new",
+					"seq": 2,
+					"snapshot_id": "snap-3",
+					"hash": "s-patch-3"
+				},
+				{
+					"session_id": "new",
+					"seq": 3,
+					"snapshot_id": "snap-4",
+					"hash": "s-bundle-4"
+				},
+				{
+					"session_id": "new",
+					"seq": 3,
+					"snapshot_id": "snap-4",
+					"hash": "s-patch-4"
+				},
+				{
+					"session_id": "old",
+					"seq": 2,
+					"snapshot_id": "snap-1",
+					"hash": "s-bundle-1"
+				},
+				{
+					"session_id": "old",
+					"seq": 2,
+					"snapshot_id": "snap-1",
+					"hash": "s-patch-1"
+				}
+			],
+			"carriedRefs": [
+				{
+					"owner": "root:run-after",
+					"hash": "p-bundle-after"
+				},
+				{
+					"owner": "root:run-after",
+					"hash": "p-patch-after"
+				},
+				{
+					"owner": "root:run-before",
+					"hash": "p-bundle-before"
+				},
+				{
+					"owner": "root:run-before",
+					"hash": "p-patch-before"
+				},
+				{
+					"owner": "work:work-before",
+					"hash": "w-bundle-before"
+				},
+				{
+					"owner": "work:work-before",
+					"hash": "w-patch-before"
+				}
+			],
+			"collection": [
+				{
+					"id": 1,
+					"holder": "holder-a",
+					"deleted": 11,
+					"error_code": null
+				}
+			],
+			"sources": [
+				{
+					"source": "journal-events",
+					"watermark": 6,
+					"backfilled_through": 6
+				},
+				{
+					"source": "journal-pool-root-snapshot",
+					"watermark": 1,
+					"backfilled_through": 1
+				},
+				{
+					"source": "journal-pool-work",
+					"watermark": 2,
+					"backfilled_through": 2
+				},
+				{
+					"source": "journal-runs",
+					"watermark": 2,
+					"backfilled_through": 2
+				},
+				{
+					"source": "session-entries",
+					"watermark": 6,
+					"backfilled_through": 6
+				}
+			]
+		}
+	},
+	"sessions": {
+		"sessions": [
+			{
+				"id": "a",
+				"cwd": "/project",
+				"created_at": "2026-11-14T00:00:00Z",
+				"header_json": "{\"id\":\"a\",\"version\":4,\"cwd\":\"/project\",\"createdAt\":\"2026-11-14T00:00:00Z\"}",
+				"internal": 0,
+				"last_seq": 1,
+				"modified_at": "1970-01-01T00:00:00.000Z",
+				"message_count": 1,
+				"first_message": "\"a1\"",
+				"name": null,
+				"has_name": 0,
+				"summary": null,
+				"summarized_through_id": null,
+				"summary_state": "{\"messageCount\":1,\"firstMessage\":\"a1\",\"hasName\":false,\"latestMessageTime\":0}"
+			},
+			{
+				"id": "b",
+				"cwd": "/project",
+				"created_at": "2026-11-14T00:00:00Z",
+				"header_json": "{\"id\":\"b\",\"version\":4,\"cwd\":\"/project\",\"createdAt\":\"2026-11-14T00:00:00Z\",\"internal\":true}",
+				"internal": 1,
+				"last_seq": 1,
+				"modified_at": "1970-01-01T00:00:00.000Z",
+				"message_count": 1,
+				"first_message": "\"b1\"",
+				"name": null,
+				"has_name": 0,
+				"summary": null,
+				"summarized_through_id": null,
+				"summary_state": "{\"messageCount\":1,\"firstMessage\":\"b1\",\"hasName\":false,\"latestMessageTime\":0}"
+			}
+		],
+		"blobs": [
+			{
+				"session_id": "a",
+				"hash": "fa2c8cc4f28176bbeed4b736df569a34c79cd3723e9ec42f9674b4d46ac6b8b8",
+				"bytes": 4,
+				"chunks": 1
+			}
+		],
+		"listed": [
+			"a",
+			"b"
+		]
+	},
+	"legacyDeletionSchema": [
+		{
+			"type": "table",
+			"name": "session_legacy_deleted",
+			"tbl_name": "session_legacy_deleted",
+			"sql": "CREATE TABLE session_legacy_deleted(id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL)"
+		}
+	]
+}

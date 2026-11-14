@@ -5,7 +5,10 @@ export interface PostgresDatabaseOptions {
 	url: string;
 	/** The password, or a function that returns it, called for each new connection the server asks one of. */
 	password?: string | (() => Promise<string>);
-	/** How the password is obtained. Only `"password"` is available in this version. */
+	/**
+	 * How the password is obtained. Default `"password"`. `"azure-entra"`, `"aws-iam"` and `"gcp-iam"` take a token from
+	 * the platform's own credentials for each new connection, and refuse a `password` beside them.
+	 */
 	auth?: "password" | "azure-entra" | "aws-iam" | "gcp-iam";
 	/** Connections kept open at most, in this process. Default 8. */
 	maxConnections?: number;

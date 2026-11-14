@@ -1,6 +1,8 @@
-import type { SqliteDatabase, SqliteExecutor, SqliteRow, StorageDescriptor } from "../storage/database.js";
+import type { SqliteDatabase, SqliteExecutor, SqliteRow, SqliteValue, StorageDescriptor } from "../storage/database.js";
+import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTrigger } from "../storage/dialect.js";
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
-import { renderStorageIdentifiers, validateStoragePrefix } from "../storage/prefix.js";
+import { applyStorageMigrations } from "../storage/migrations.js";
+import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -81,6 +83,9 @@ export function snapshotIndexTables(prefix = ""): SnapshotIndexTables {
 		sources: `${p}snapshot_index_sources`,
 	});
 }
+
+/** The schema domain of the blob table and its reference index, in the prefix's migration ledger. */
+export const SNAPSHOT_BLOB_DOMAIN = "snapshot-blobs";
 
 export type SnapshotCollectionSkipReason = "disabled" | "unsupported" | "in-progress" | "not-due";
 
@@ -243,8 +248,8 @@ function collectableAge(graceSeconds: number): number {
 interface IndexSource {
 	readonly name: string;
 	readonly table: string;
-	readonly triggers: readonly string[];
-	readonly createTriggers: string;
+	/** The triggers that index the table's future rows, in the order they are created. */
+	readonly triggers: readonly StorageTrigger[];
 	/** Each statement indexes the rows with `rowid > ? AND rowid <= ?`, bound in that order. */
 	readonly backfill: readonly string[];
 	/**
@@ -274,33 +279,39 @@ const newRow: Column = (name) => `NEW.${name}`;
 const oldRow: Column = (name) => `OLD.${name}`;
 const storedRow: Column = (name) => name;
 
-/** `test` on a payload that may not be JSON: SQLite does not promise to stop at the first false term of an AND. */
-const whenValidJson = (json: string, test: string) => `CASE WHEN json_valid(${json}) THEN (${test}) ELSE 0 END`;
+/**
+ * `test` on a payload that may not be JSON: SQLite does not promise to stop at the first false term of an AND, and
+ * Postgres fails a cast of text that is not JSON.
+ */
+const whenValidJson = (d: StorageDialect, json: string, test: string) =>
+	`CASE WHEN ${d.jsonValid(json)} THEN (${test}) ELSE ${d.literals.false} END`;
 
 const triggerRows = (columns: readonly string[]) =>
 	`(SELECT ${columns.map((name) => `NEW.${name} AS ${name}`).join(", ")})`;
-const storedRows = (table: string, columns: readonly string[], condition: string) =>
-	`(SELECT ${columns.join(", ")} FROM ${table} WHERE rowid > ? AND rowid <= ? AND ${condition})`;
+const storedRows = (d: StorageDialect, table: string, columns: readonly string[], condition: string) =>
+	`(SELECT ${columns.join(", ")} FROM ${table} WHERE ${d.rowOrder()} > ? AND ${d.rowOrder()} <= ? AND ${condition})`;
 
-function checkpointCondition(column: Column): string {
+function checkpointCondition(d: StorageDialect, column: Column): string {
 	const payload = column("payload");
-	return `${column("type")} = '${CHECKPOINT_EVENT}' AND instr(${payload}, '"worktreeSnapshots"') > 0 AND ${whenValidJson(
+	return `${column("type")} = '${CHECKPOINT_EVENT}' AND ${d.contains(payload, `'"worktreeSnapshots"'`)} AND ${whenValidJson(
+		d,
 		payload,
-		`json_extract(${payload}, '$.kind') IN ('tool', 'stage')`,
+		`${d.jsonText(payload, "kind")} IN ('tool', 'stage')`,
 	)}`;
 }
 
-function statusCondition(column: Column): string {
+function statusCondition(d: StorageDialect, column: Column): string {
 	const payload = column("payload");
 	return `${column("type")} IN (${STATUS_EVENTS}) AND ${whenValidJson(
+		d,
 		payload,
-		`json_type(${payload}, '$.workflowId') = 'text' AND json_type(${payload}, '$.status') = 'text' AND json_type(${payload}, '$.completedCheckpoints') IN ('integer', 'real') AND json_type(${payload}, '$.pendingPrompts') IN ('integer', 'real')`,
+		`${d.jsonHasType("text", payload, "workflowId")} AND ${d.jsonHasType("text", payload, "status")} AND ${d.jsonType(payload, "completedCheckpoints")} IN ('integer', 'real') AND ${d.jsonType(payload, "pendingPrompts")} IN ('integer', 'real')`,
 	)}`;
 }
 
-function snapshotEntryCondition(column: Column): string {
+function snapshotEntryCondition(d: StorageDialect, column: Column): string {
 	const entry = column("entry_json");
-	return `instr(${entry}, '"worktree_snapshot"') > 0 AND json_extract(${entry}, '$.type') = 'worktree_snapshot' AND json_type(${entry}, '$.root') = 'text' AND json_type(${entry}, '$.snapshotId') = 'text'`;
+	return `${d.contains(entry, `'"worktree_snapshot"'`)} AND ${d.jsonText(entry, "type")} = 'worktree_snapshot' AND ${d.jsonHasType("text", entry, "root")} AND ${d.jsonHasType("text", entry, "snapshotId")}`;
 }
 
 /**
@@ -308,17 +319,25 @@ function snapshotEntryCondition(column: Column): string {
  * reference and so at least one checkpoint: a root run keeps its snapshots while it is failed or blocked, or running or
  * paused, unless it was marked not resumable.
  */
-function retainedByStatus(payload: string): string {
-	const root = `json_type(${payload}, '$.rootWorkflowId')`;
+function retainedByStatus(d: StorageDialect, payload: string): string {
+	const root = d.jsonType(payload, "rootWorkflowId");
 	return `CASE
-		WHEN ${root} IS NOT NULL AND (${root} <> 'text' OR json_extract(${payload}, '$.rootWorkflowId') <> json_extract(${payload}, '$.workflowId')) THEN 0
-		WHEN json_extract(${payload}, '$.status') IN ('failed', 'blocked', 'running', 'paused') THEN json_type(${payload}, '$.resumable') IS NOT 'false'
+		WHEN ${root} IS NOT NULL AND (${root} <> 'text' OR ${d.jsonText(payload, "rootWorkflowId")} <> ${d.jsonText(payload, "workflowId")}) THEN 0
+		WHEN ${d.jsonText(payload, "status")} IN ('failed', 'blocked', 'running', 'paused') THEN ${d.flag(d.isDistinct(d.jsonType(payload, "resumable"), "'false'"))}
 		ELSE 0
 	END`;
 }
 
-function createTrigger(name: string, event: string, table: string, body: readonly string[], when?: string): string {
-	return `CREATE TRIGGER IF NOT EXISTS ${name} AFTER ${event} ON ${table}${when === undefined ? "" : ` WHEN ${when}`} BEGIN ${body.join("; ")}; END;`;
+/** A trigger of the reference index: after `event` on `table`, when `when` holds for the row, it runs `statements`. */
+function createTrigger(
+	name: string,
+	event: string,
+	table: string,
+	statements: readonly string[],
+	when?: string,
+): StorageTrigger {
+	const trigger = { name, table, timing: "AFTER", event, statements } as const;
+	return when === undefined ? trigger : { ...trigger, when };
 }
 
 /** A table whose rows each carry the snapshot that dispatched work restores its tree from (#4503). */
@@ -328,39 +347,45 @@ interface CarriedSnapshots {
 	/** The prefix of each row's owner in {@link SnapshotIndexTables.carriedRefs}, before the row's `key`. */
 	readonly owner: "work" | "root";
 	readonly key: string;
-	/** The JSON column that holds the snapshot, at `path`. */
+	/** The JSON column that holds the snapshot, at the object keys `path` (none: the whole document). */
 	readonly json: string;
-	readonly path: string;
+	readonly path: readonly string[];
 	/** Text `json` holds whenever its row carries a snapshot, so a row that carries none costs the index nothing. */
 	readonly marker?: string;
 }
 
 /**
  * Indexes the blobs of the snapshot each row of `carried.table` carries as the row's references, from its insert until
- * its delete; an update of the snapshot replaces them. A row whose JSON SQLite cannot parse references nothing, so a
- * write never fails on the index. No statement inserts a reference that exists already: an upsert's update runs its
- * triggers under its own conflict policy, which overrides their `OR IGNORE`.
+ * its delete; an update of the snapshot replaces them. A row whose JSON the database cannot parse references nothing,
+ * so a write never fails on the index. No statement inserts a reference that exists already: an upsert's update runs
+ * its triggers under its own conflict policy, which overrides their `OR IGNORE`.
  */
-function carriedSource(t: SnapshotIndexTables, carried: CarriedSnapshots): IndexSource {
+function carriedSource(d: StorageDialect, t: SnapshotIndexTables, carried: CarriedSnapshots): IndexSource {
 	const { table, key, json, path, marker } = carried;
 	const owner = (row: Column) => `'${carried.owner}:' || ${row(key)}`;
-	const carries = (row: Column) => (marker === undefined ? undefined : `instr(${row(json)}, '${marker}') > 0`);
+	const carries = (row: Column) => (marker === undefined ? undefined : d.contains(row(json), `'${marker}'`));
 	const rowOf = (row: Column) =>
-		`${owner(row)} AS owner, CASE WHEN json_valid(${row(json)}) THEN ${row(json)} ELSE '{}' END AS snapshot`;
+		`${owner(row)} AS owner, CASE WHEN ${d.jsonValid(row(json))} THEN ${row(json)} ELSE '{}' END AS snapshot`;
+	const snapshot = { column: "r.snapshot" };
 	const index = (rows: string) =>
 		[
 			{
-				from: `, json_each(r.snapshot, '${path}.chain') AS link`,
-				hash: `json_extract(r.snapshot, link.fullkey || '.patch')`,
+				from: `, ${d.jsonEach(snapshot, "link", ...path, "chain")}`,
+				link: { ...snapshot, element: "link" },
+				keys: ["patch"],
 			},
-			{ from: "", hash: `json_extract(r.snapshot, '${path}.bundle.blob')` },
-		].map(
-			({ from, hash }) =>
-				`INSERT OR IGNORE INTO ${t.carriedRefs} (owner, hash) SELECT DISTINCT r.owner, ${hash} FROM ${rows} AS r${from} WHERE typeof(${hash}) = 'text' AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS held WHERE held.owner = r.owner AND held.hash = ${hash})`,
-		);
+			{ from: "", link: snapshot, keys: [...path, "bundle", "blob"] },
+		].map(({ from, link, keys }) => {
+			const hash = d.jsonAt(link, ...keys);
+			return d.insertOrIgnore(
+				t.carriedRefs,
+				["owner", "hash"],
+				`SELECT DISTINCT r.owner, ${hash} FROM ${rows} AS r${from} WHERE ${d.jsonAtIsText(link, ...keys)} AND NOT EXISTS (SELECT 1 FROM ${t.carriedRefs} AS held WHERE held.owner = r.owner AND held.hash = ${hash})`,
+			);
+		});
 	const inserted = `(SELECT ${rowOf(newRow)})`;
 	const release = `DELETE FROM ${t.carriedRefs} WHERE owner = ${owner(oldRow)}`;
-	const triggers = {
+	const names = {
 		insert: `${table}_snapshot_carried_insert`,
 		update: `${table}_snapshot_carried_update`,
 		delete: `${table}_snapshot_carried_delete`,
@@ -368,49 +393,51 @@ function carriedSource(t: SnapshotIndexTables, carried: CarriedSnapshots): Index
 	return {
 		name: carried.name,
 		table,
-		triggers: Object.values(triggers),
-		createTriggers: [
-			createTrigger(triggers.insert, "INSERT", table, index(inserted), carries(newRow)),
+		triggers: [
+			createTrigger(names.insert, "INSERT", table, index(inserted), carries(newRow)),
 			createTrigger(
-				triggers.update,
+				names.update,
 				`UPDATE OF ${json}`,
 				table,
 				[release, ...index(inserted)],
 				marker === undefined ? undefined : `${carries(oldRow)} OR ${carries(newRow)}`,
 			),
-			createTrigger(triggers.delete, "DELETE", table, [release], carries(oldRow)),
-		].join("\n"),
-		backfill: index(storedRows(table, [rowOf(storedRow)], carries(storedRow) ?? "1")),
+			createTrigger(names.delete, "DELETE", table, [release], carries(oldRow)),
+		],
+		backfill: index(storedRows(d, table, [rowOf(storedRow)], carries(storedRow) ?? d.literals.true)),
 		reset: [`DELETE FROM ${t.carriedRefs} WHERE owner LIKE '${carried.owner}:%'`],
 	};
 }
 
-function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSource[] {
+function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect): readonly IndexSource[] {
 	const { events, runs } = renderStorageIdentifiers("journal", { events: "events", runs: "runs" }, prefix);
 	const { entries } = renderStorageIdentifiers("sessions", { entries: "entries" }, prefix);
 
+	const payload = { column: "r.payload" };
+	const snapshot = { ...payload, element: "snapshot" };
+	const link = { ...payload, element: "link" };
+	const snapshots = d.jsonEach(payload, "snapshot", "worktreeSnapshots");
 	const runRefs = (rows: string) =>
 		[
-			{
-				from: `json_each(r.payload, '$.worktreeSnapshots') AS snapshot, json_each(r.payload, snapshot.fullkey || '.chain') AS link`,
-				hash: `json_extract(r.payload, link.fullkey || '.patch')`,
-			},
-			{
-				from: `json_each(r.payload, '$.worktreeSnapshots') AS snapshot`,
-				hash: `json_extract(r.payload, snapshot.fullkey || '.bundle.blob')`,
-			},
-		].map(
-			({ from, hash }) =>
-				`INSERT OR IGNORE INTO ${t.runRefs} (run_id, hash) SELECT r.run_id, ${hash} FROM ${rows} AS r, ${from} WHERE typeof(${hash}) = 'text'`,
+			{ from: `${snapshots}, ${d.jsonEach(snapshot, "link", "chain")}`, source: link, keys: ["patch"] },
+			{ from: snapshots, source: snapshot, keys: ["bundle", "blob"] },
+		].map(({ from, source, keys }) =>
+			d.insertOrIgnore(
+				t.runRefs,
+				["run_id", "hash"],
+				`SELECT r.run_id, ${d.jsonAt(source, ...keys)} FROM ${rows} AS r, ${from} WHERE ${d.jsonAtIsText(source, ...keys)}`,
+			),
 		);
+	const released = (status: string) => d.flag(`${status} NOT IN (${RELEASED_STATUSES})`);
 	const runState = (rows: string) =>
-		`INSERT INTO ${t.runState} (run_id, retained, seq) SELECT r.run_id, ${retainedByStatus("r.payload")}, r.seq FROM ${rows} AS r WHERE true ON CONFLICT (run_id) DO UPDATE SET retained = excluded.retained, seq = excluded.seq WHERE excluded.seq >= ${t.runState}.seq`;
+		`INSERT INTO ${t.runState} (run_id, retained, seq) SELECT r.run_id, ${retainedByStatus(d, "r.payload")}, r.seq FROM ${rows} AS r WHERE true ON CONFLICT (run_id) DO UPDATE SET retained = excluded.retained, seq = excluded.seq WHERE excluded.seq >= ${t.runState}.seq`;
 	const runHeader = (rows: string) =>
-		`INSERT INTO ${t.runState} (run_id, retained, seq) SELECT r.run_id, r.status NOT IN (${RELEASED_STATUSES}), ${HEADER_SEQ} FROM ${rows} AS r WHERE true ON CONFLICT (run_id) DO NOTHING`;
+		`INSERT INTO ${t.runState} (run_id, retained, seq) SELECT r.run_id, ${released("r.status")}, ${HEADER_SEQ} FROM ${rows} AS r WHERE true ON CONFLICT (run_id) DO NOTHING`;
 	const entryRow = (name: string) => `r.${name}`;
+	const entry = { column: "r.entry_json" };
 	const parentType = "r.parent_type";
 	const parentId = "r.parent_id";
-	const isSnapshot = snapshotEntryCondition(entryRow);
+	const isSnapshot = snapshotEntryCondition(d, entryRow);
 	const parentOf = (rows: string) =>
 		`${rows} AS r LEFT JOIN ${t.sessionLinks} AS parent ON parent.session_id = r.session_id AND parent.entry_id = ${parentId} AND ${parentType} = 'text'`;
 	/**
@@ -419,19 +446,30 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 	 */
 	const sessionLink = (rows: string) => [
 		`UPDATE ${t.sessionLinks} SET children = children + 1 FROM ${rows} AS r WHERE ${t.sessionLinks}.session_id = r.session_id AND ${t.sessionLinks}.entry_id = ${parentId} AND ${parentType} = 'text' AND NOT EXISTS (SELECT 1 FROM ${t.sessionLinks} AS own WHERE own.session_id = r.session_id AND own.seq = r.seq)`,
-		`INSERT OR IGNORE INTO ${t.sessionLinks} (session_id, seq, entry_id, parent_id, anchor_seq, children, broken) SELECT r.session_id, r.seq, r.entry_id, CASE WHEN ${parentType} = 'text' THEN ${parentId} END, CASE WHEN ${isSnapshot} THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM ${t.sessionLinks} AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN ${parentType} IS NULL OR ${parentType} = 'null' THEN 0 WHEN ${parentType} = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM ${parentOf(rows)}`,
+		d.insertOrIgnore(
+			t.sessionLinks,
+			["session_id", "seq", "entry_id", "parent_id", "anchor_seq", "children", "broken"],
+			`SELECT r.session_id, r.seq, r.entry_id, CASE WHEN ${parentType} = 'text' THEN ${parentId} END, CASE WHEN ${isSnapshot} THEN r.seq ELSE parent.anchor_seq END, 0, CASE WHEN EXISTS (SELECT 1 FROM ${t.sessionLinks} AS other WHERE other.session_id = r.session_id AND other.entry_id = r.entry_id AND other.seq <> r.seq) THEN 1 WHEN ${parentType} IS NULL OR ${parentType} = 'null' THEN 0 WHEN ${parentType} = 'text' AND parent.entry_id IS NOT NULL THEN parent.broken ELSE 1 END FROM ${parentOf(rows)}`,
+		),
 	];
 	/** Indexes a snapshot entry's reference and the blobs of its record; any other entry adds nothing. */
 	const sessionRecord = (rows: string) => {
-		const record = (hash: string, from = "") =>
-			`INSERT OR IGNORE INTO ${t.sessionRecords} (session_id, seq, snapshot_id, hash) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.snapshotId'), ${hash} FROM ${rows} AS r${from} WHERE typeof(${hash}) = 'text' AND ${isSnapshot}`;
+		const record = (source: StorageJsonSource, keys: readonly string[], from = "") =>
+			d.insertOrIgnore(
+				t.sessionRecords,
+				["session_id", "seq", "snapshot_id", "hash"],
+				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "snapshotId")}, ${d.jsonAt(source, ...keys)} FROM ${rows} AS r${from} WHERE ${d.jsonAtIsText(source, ...keys)} AND ${isSnapshot}`,
+			);
+		const restored = `${d.jsonHasType("text", entry.column, "restore", "from")} AND ${d.jsonHasType("text", entry.column, "restore", "to")}`;
 		return [
-			`INSERT OR REPLACE INTO ${t.sessionRefs} (session_id, seq, root, snapshot_id, prev_seq, restore_from, restore_to) SELECT r.session_id, r.seq, json_extract(r.entry_json, '$.root'), json_extract(r.entry_json, '$.snapshotId'), parent.anchor_seq, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.from') END, CASE WHEN json_type(r.entry_json, '$.restore.from') = 'text' AND json_type(r.entry_json, '$.restore.to') = 'text' THEN json_extract(r.entry_json, '$.restore.to') END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
-			record(
-				`json_extract(r.entry_json, link.fullkey || '.patch')`,
-				`, json_each(r.entry_json, '$.snapshot.chain') AS link`,
+			d.insertOrReplace(
+				t.sessionRefs,
+				["session_id", "seq", "root", "snapshot_id", "prev_seq", "restore_from", "restore_to"],
+				["session_id", "seq"],
+				`SELECT r.session_id, r.seq, ${d.jsonText(entry.column, "root")}, ${d.jsonText(entry.column, "snapshotId")}, parent.anchor_seq, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "from")} END, CASE WHEN ${restored} THEN ${d.jsonText(entry.column, "restore", "to")} END FROM ${parentOf(rows)} WHERE ${isSnapshot}`,
 			),
-			record(`json_extract(r.entry_json, '$.snapshot.bundle.blob')`),
+			record({ ...entry, element: "link" }, ["patch"], `, ${d.jsonEach(entry, "link", "snapshot", "chain")}`),
+			record(entry, ["snapshot", "bundle", "blob"]),
 		];
 	};
 
@@ -439,62 +477,55 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 	const eventsSource = {
 		name: "journal-events",
 		table: events,
-		triggers: [`${events}_snapshot_refs`, `${events}_snapshot_state`],
-		createTriggers: [
+		triggers: [
 			createTrigger(
 				`${events}_snapshot_refs`,
 				"INSERT",
 				events,
 				runRefs(triggerRows(eventColumns)),
-				checkpointCondition(newRow),
+				checkpointCondition(d, newRow),
 			),
 			createTrigger(
 				`${events}_snapshot_state`,
 				"INSERT",
 				events,
 				[runState(triggerRows(eventColumns))],
-				statusCondition(newRow),
+				statusCondition(d, newRow),
 			),
-		].join("\n"),
+		],
 		backfill: [
-			...runRefs(storedRows(events, eventColumns, checkpointCondition(storedRow))),
-			runState(storedRows(events, eventColumns, statusCondition(storedRow))),
+			...runRefs(storedRows(d, events, eventColumns, checkpointCondition(d, storedRow))),
+			runState(storedRows(d, events, eventColumns, statusCondition(d, storedRow))),
 		],
 	};
 	const headerColumns = ["run_id", "status"];
 	const runsSource = {
 		name: "journal-runs",
 		table: runs,
-		triggers: [`${runs}_snapshot_state_insert`, `${runs}_snapshot_state_status`, `${runs}_snapshot_refs_delete`],
-		createTriggers: [
+		triggers: [
 			createTrigger(`${runs}_snapshot_state_insert`, "INSERT", runs, [runHeader(triggerRows(headerColumns))]),
 			createTrigger(`${runs}_snapshot_state_status`, "UPDATE OF status", runs, [
-				`UPDATE ${t.runState} SET retained = NEW.status NOT IN (${RELEASED_STATUSES}) WHERE run_id = NEW.run_id AND seq = ${HEADER_SEQ}`,
+				`UPDATE ${t.runState} SET retained = ${released("NEW.status")} WHERE run_id = NEW.run_id AND seq = ${HEADER_SEQ}`,
 			]),
 			createTrigger(`${runs}_snapshot_refs_delete`, "DELETE", runs, [
 				`DELETE FROM ${t.runRefs} WHERE run_id = OLD.run_id`,
 				`DELETE FROM ${t.runState} WHERE run_id = OLD.run_id`,
 			]),
-		].join("\n"),
-		backfill: [runHeader(storedRows(runs, headerColumns, "1"))],
+		],
+		backfill: [runHeader(storedRows(d, runs, headerColumns, d.literals.true))],
 	};
 	const entryColumns = ["session_id", "seq", "entry_id", "entry_json"];
 	/** One entry as `r`, with its parent named once, so that each statement parses the entry's JSON for it only once. */
 	const parentColumns = (json: string) =>
-		`json_extract(${json}, '$.parentId') AS parent_id, json_type(${json}, '$.parentId') AS parent_type`;
+		`${d.jsonText(json, "parentId")} AS parent_id, ${d.jsonType(json, "parentId")} AS parent_type`;
 	const triggerEntry = `(SELECT ${entryColumns.map((name) => `NEW.${name} AS ${name}`).join(", ")}, ${parentColumns("NEW.entry_json")})`;
-	const storedEntry = `(SELECT ${entryColumns.join(", ")}, ${parentColumns("entry_json")} FROM ${entries} WHERE rowid = ?)`;
+	const storedEntry = `(SELECT ${entryColumns.join(", ")}, ${parentColumns("entry_json")} FROM ${entries} WHERE ${d.rowOrder()} = ?)`;
 	const indexComplete = `(SELECT backfilled_through >= watermark FROM ${t.sources} WHERE source = 'session-entries')`;
+	const newRowOrder = d.rowOrder("NEW");
 	const entriesSource = {
 		name: "session-entries",
 		table: entries,
 		triggers: [
-			`${entries}_snapshot_links`,
-			`${entries}_snapshot_refs`,
-			`${entries}_snapshot_pending`,
-			`${entries}_snapshot_refs_delete`,
-		],
-		createTriggers: [
 			// While the rows that existed first are indexed, new rows wait for that pass, which keeps parents ahead of
 			// their children: the pass reaches them by extending its watermark. A row written at a rowid the pass has
 			// already gone by, which SQLite reuses once the newest rows are deleted, moves the pass back to it; indexing
@@ -505,17 +536,17 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 				"INSERT",
 				entries,
 				sessionRecord(triggerEntry),
-				`instr(NEW.entry_json, '"worktree_snapshot"') > 0 AND ${indexComplete}`,
+				`${d.contains("NEW.entry_json", `'"worktree_snapshot"'`)} AND ${indexComplete}`,
 			),
 			createTrigger(
 				`${entries}_snapshot_pending`,
 				"INSERT",
 				entries,
 				[
-					`UPDATE ${t.sources} SET watermark = NEW.rowid WHERE source = 'session-entries' AND watermark < NEW.rowid`,
-					`UPDATE ${t.sources} SET backfilled_through = NEW.rowid - 1 WHERE source = 'session-entries' AND backfilled_through >= NEW.rowid`,
+					`UPDATE ${t.sources} SET watermark = ${newRowOrder} WHERE source = 'session-entries' AND watermark < ${newRowOrder}`,
+					`UPDATE ${t.sources} SET backfilled_through = ${newRowOrder} - 1 WHERE source = 'session-entries' AND backfilled_through >= ${newRowOrder}`,
 				],
-				`NOT COALESCE(${indexComplete}, 1)`,
+				`NOT COALESCE(${indexComplete}, ${d.literals.true})`,
 			),
 			createTrigger(`${entries}_snapshot_refs_delete`, "DELETE", entries, [
 				`UPDATE ${t.sessionLinks} SET children = children - 1 WHERE session_id = OLD.session_id AND children > 0 AND entry_id = (SELECT parent_id FROM ${t.sessionLinks} WHERE session_id = OLD.session_id AND seq = OLD.seq)`,
@@ -523,29 +554,29 @@ function indexSources(prefix: string, t: SnapshotIndexTables): readonly IndexSou
 				`DELETE FROM ${t.sessionRefs} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 				`DELETE FROM ${t.sessionRecords} WHERE session_id = OLD.session_id AND seq = OLD.seq`,
 			]),
-		].join("\n"),
+		],
 		backfill: [],
 		rowwise: [...sessionLink(storedEntry), ...sessionRecord(storedEntry)],
 		reset: [`DELETE FROM ${t.sessionLinks}`, `DELETE FROM ${t.sessionRefs}`, `DELETE FROM ${t.sessionRecords}`],
 	};
 	// What a shared-placement root carries to its children (#4503): the snapshot each queued pool work row carries, and
 	// the one of the root's own binding, which its pool records while it is prepared, children queued or not.
-	const workSource = carriedSource(t, {
+	const workSource = carriedSource(d, t, {
 		name: "journal-pool-work",
 		table: `${runs}_work`,
 		owner: "work",
 		key: "id",
 		json: "descriptor",
-		path: "$.execution.workspaceSnapshot",
+		path: ["execution", "workspaceSnapshot"],
 		marker: '"workspaceSnapshot"',
 	});
-	const rootSource = carriedSource(t, {
+	const rootSource = carriedSource(d, t, {
 		name: "journal-pool-root-snapshot",
 		table: `${runs}_pool_root_snapshot`,
 		owner: "root",
 		key: "root",
 		json: "snapshot",
-		path: "$",
+		path: [],
 	});
 	return [eventsSource, runsSource, entriesSource, workSource, rootSource];
 }
@@ -555,82 +586,113 @@ async function createSnapshotIndexTables(
 	transaction: SqliteExecutor,
 	t: SnapshotIndexTables,
 	prefix: string,
+	dialect: StorageDialect,
 ): Promise<void> {
+	const { int, text, blob } = dialect.types;
+	const strict = dialect.tableOptions;
+	const keyed = dialect.withoutRowidTableOptions;
 	await transaction.exec(
-		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT`,
+		`CREATE TABLE IF NOT EXISTS ${t.blobs} (hash ${text} PRIMARY KEY, bytes ${int} NOT NULL, data ${blob} NOT NULL, created_at ${int} NOT NULL DEFAULT (${dialect.nowSeconds}))${strict}`,
 	);
-	const age = await transaction.get("SELECT dflt_value FROM pragma_table_info(?) WHERE name = 'created_at'", t.blobs);
+	const ageColumn = dialect.columnExists(t.blobs, "created_at");
+	const age = await transaction.get<SqliteRow & { default_value: SqliteValue }>(ageColumn.sql, ...ageColumn.params);
 	if (!age) {
 		// Unknown ages are stamped in short collection batches, never by rewriting the table at open.
-		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`);
+		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN created_at ${int} NOT NULL DEFAULT 0`);
 	}
 	// A constant zero default identifies an upgraded table. Its age index is also deferred to collection.
-	if (age && String(age.dflt_value) !== "0") {
+	if (age && String(age.default_value) !== "0") {
 		await transaction.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`);
 	}
 	await transaction.exec(`
-		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (run_id, hash)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.runRefs} (run_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (run_id, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.runRefs}_hash ON ${t.runRefs} (hash);
-		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id TEXT PRIMARY KEY, retained INTEGER NOT NULL, seq INTEGER NOT NULL) STRICT, WITHOUT ROWID;
-		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, root TEXT NOT NULL, snapshot_id TEXT NOT NULL, prev_seq INTEGER, restore_from TEXT, restore_to TEXT, PRIMARY KEY (session_id, seq)) STRICT, WITHOUT ROWID;
-		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL, parent_id TEXT, anchor_seq INTEGER, children INTEGER NOT NULL, broken INTEGER NOT NULL, PRIMARY KEY (session_id, seq)) STRICT;
+		CREATE TABLE IF NOT EXISTS ${t.runState} (run_id ${text} PRIMARY KEY, retained ${int} NOT NULL, seq ${int} NOT NULL)${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionRefs} (session_id ${text} NOT NULL, seq ${int} NOT NULL, root ${text} NOT NULL, snapshot_id ${text} NOT NULL, prev_seq ${int}, restore_from ${text}, restore_to ${text}, PRIMARY KEY (session_id, seq))${keyed};
+		CREATE TABLE IF NOT EXISTS ${t.sessionLinks} (session_id ${text} NOT NULL, seq ${int} NOT NULL, entry_id ${text} NOT NULL, parent_id ${text}, anchor_seq ${int}, children ${int} NOT NULL, broken ${int} NOT NULL, PRIMARY KEY (session_id, seq))${strict};
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_entry ON ${t.sessionLinks} (session_id, entry_id);
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_leaves ON ${t.sessionLinks} (session_id, anchor_seq) WHERE children = 0 AND anchor_seq IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS ${t.sessionLinks}_broken ON ${t.sessionLinks} (session_id) WHERE broken = 1;
-		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id TEXT NOT NULL, seq INTEGER NOT NULL, snapshot_id TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (session_id, seq, hash)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.sessionRecords} (session_id ${text} NOT NULL, seq ${int} NOT NULL, snapshot_id ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (session_id, seq, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.sessionRecords}_hash ON ${t.sessionRecords} (hash);
-		CREATE TABLE IF NOT EXISTS ${t.carriedRefs} (owner TEXT NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (owner, hash)) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.carriedRefs} (owner ${text} NOT NULL, hash ${text} NOT NULL, PRIMARY KEY (owner, hash))${keyed};
 		CREATE INDEX IF NOT EXISTS ${t.carriedRefs}_hash ON ${t.carriedRefs} (hash);
-		CREATE TABLE IF NOT EXISTS ${t.collection} (id INTEGER PRIMARY KEY CHECK (id = 1), claimed_at INTEGER, holder TEXT, finished_at INTEGER, deleted INTEGER, error_code TEXT) STRICT;
-		INSERT OR IGNORE INTO ${t.collection} (id) VALUES (1);
-		CREATE TABLE IF NOT EXISTS ${t.sources} (source TEXT PRIMARY KEY, watermark INTEGER NOT NULL, backfilled_through INTEGER NOT NULL) STRICT, WITHOUT ROWID;
+		CREATE TABLE IF NOT EXISTS ${t.collection} (id ${int} PRIMARY KEY CHECK (id = 1), claimed_at ${int}, holder ${text}, finished_at ${int}, deleted ${int}, error_code ${text})${strict};
+		INSERT INTO ${t.collection} (id) VALUES (1) ON CONFLICT DO NOTHING;
+		CREATE TABLE IF NOT EXISTS ${t.sources} (source ${text} PRIMARY KEY, watermark ${int} NOT NULL, backfilled_through ${int} NOT NULL)${keyed};
 	`);
-	const columns = await transaction.all<{ name: string }>(`PRAGMA table_info(${t.sessionRefs})`);
 	let migrated = false;
 	for (const [name, type] of [
-		["prev_seq", "INTEGER"],
-		["restore_from", "TEXT"],
-		["restore_to", "TEXT"],
-	]) {
-		if (columns.some((column) => column.name === name)) continue;
+		["prev_seq", int],
+		["restore_from", text],
+		["restore_to", text],
+	] as const) {
+		const column = dialect.columnExists(t.sessionRefs, name);
+		if (await transaction.get(column.sql, ...column.params)) continue;
 		await transaction.exec(`ALTER TABLE ${t.sessionRefs} ADD COLUMN ${name} ${type}`);
 		migrated = true;
 	}
 	if (migrated) {
 		// Mark the tree-aware rebuild durably, but leave its old rows untouched until completeIndex runs.
-		const source = indexSources(prefix, t).find((source) => source.name === "session-entries")!;
-		for (const trigger of source.triggers) await transaction.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+		const source = indexSources(prefix, t, dialect).find((source) => source.name === "session-entries")!;
+		for (const trigger of source.triggers) await transaction.exec(dialect.dropTrigger(trigger.name, trigger.table));
 		await transaction.run(
-			`INSERT OR REPLACE INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1)`,
+			`INSERT INTO ${t.sources} (source, watermark, backfilled_through) VALUES (?, -1, -1) ${REPLACE_PROGRESS}`,
 			source.name,
 		);
 	}
 }
 
+/** Replaces a source's progress row: `sources` has no triggers or references, so this upsert is what a REPLACE did. */
+const REPLACE_PROGRESS =
+	"ON CONFLICT (source) DO UPDATE SET watermark = excluded.watermark, backfilled_through = excluded.backfilled_through";
+
 /** Installs `source`'s index triggers and records that rows above its current last row are indexed by them. */
-async function installSource(transaction: SqliteExecutor, t: SnapshotIndexTables, source: IndexSource): Promise<void> {
+async function installSource(
+	transaction: SqliteExecutor,
+	dialect: StorageDialect,
+	t: SnapshotIndexTables,
+	source: IndexSource,
+): Promise<void> {
 	for (const sql of source.reset ?? []) await transaction.run(sql);
-	await transaction.exec(source.createTriggers);
+	await transaction.exec(source.triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n"));
 	await transaction.run(
-		`INSERT OR REPLACE INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(rowid), 0), 0 FROM ${source.table}`,
+		`INSERT INTO ${t.sources} (source, watermark, backfilled_through) SELECT ?, COALESCE(MAX(${dialect.rowOrder()}), 0), 0 FROM ${source.table} WHERE true ${REPLACE_PROGRESS}`,
 		source.name,
 	);
+}
+
+/**
+ * Installs the index triggers of every referencing table that exists and lacks them, except a source whose rebuild is
+ * deferred to collection. Installing again replaces nothing, so the step can run any number of times.
+ */
+async function installMissingSources(
+	transaction: SqliteExecutor,
+	t: SnapshotIndexTables,
+	prefix: string,
+	dialect: StorageDialect,
+): Promise<void> {
+	for (const { source, installed, deferred } of await readSourceStates(
+		transaction,
+		dialect,
+		t,
+		indexSources(prefix, t, dialect),
+	)) {
+		if (!installed && !deferred) await installSource(transaction, dialect, t, source);
+	}
 }
 
 /** Which referencing tables exist, whether each has all its triggers and a source row, and whether its backfill is done. */
 async function readSourceStates(
 	executor: SqliteExecutor,
+	dialect: StorageDialect,
 	t: SnapshotIndexTables,
 	sources: readonly IndexSource[],
 ): Promise<SourceState[]> {
-	const names = sources.flatMap((source) => [source.table, ...source.triggers]);
+	const names = sources.flatMap((source) => [source.table, ...source.triggers.map((trigger) => trigger.name)]);
+	const objects = dialect.schemaObjects(names);
 	const present = new Set(
-		(
-			await executor.all<SqliteRow & { name: string }>(
-				`SELECT name FROM sqlite_schema WHERE name IN (${names.map(() => "?").join(", ")})`,
-				...names,
-			)
-		).map((row) => row.name),
+		(await executor.all<SqliteRow & { name: string }>(objects.sql, ...objects.params)).map((row) => row.name),
 	);
 	const progress = new Map(
 		(
@@ -646,7 +708,9 @@ async function readSourceStates(
 			return {
 				source,
 				installed:
-					row !== undefined && Number(row.watermark) >= 0 && source.triggers.every((name) => present.has(name)),
+					row !== undefined &&
+					Number(row.watermark) >= 0 &&
+					source.triggers.every((trigger) => present.has(trigger.name)),
 				backfilled:
 					row !== undefined &&
 					Number(row.watermark) >= 0 &&
@@ -661,10 +725,17 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly database: SqliteDatabase;
 	private readonly tables: SnapshotIndexTables;
 	private readonly sources: readonly IndexSource[];
+	private readonly dialect: StorageDialect;
 	readonly table: string;
 
-	private constructor(database: SqliteDatabase, tables: SnapshotIndexTables, sources: readonly IndexSource[]) {
+	private constructor(
+		database: SqliteDatabase,
+		dialect: StorageDialect,
+		tables: SnapshotIndexTables,
+		sources: readonly IndexSource[],
+	) {
 		this.database = database;
+		this.dialect = dialect;
 		this.tables = tables;
 		this.sources = sources;
 		this.table = tables.blobs;
@@ -682,21 +753,37 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 */
 	static async open(database: SqliteDatabase, prefix = ""): Promise<SqlSnapshotBlobStore> {
 		const t = snapshotIndexTables(prefix);
-		const tables = Object.values(t);
-		const present = await database.all(
-			`SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN (${tables.map(() => "?").join(", ")})`,
-			...tables,
-		);
-		const current =
-			present.length === tables.length &&
-			(await database.get(
-				`SELECT 1 AS current WHERE EXISTS (SELECT 1 FROM pragma_table_info(?) WHERE name = 'created_at')
-			AND (SELECT count(*) FROM pragma_table_info(?) WHERE name IN ('prev_seq', 'restore_from', 'restore_to')) = 3`,
-				t.blobs,
-				t.sessionRefs,
-			));
-		if (!current) await database.transaction((transaction) => createSnapshotIndexTables(transaction, t, prefix));
-		const store = new SqlSnapshotBlobStore(database, t, indexSources(prefix, t));
+		const dialect = dialectOf(database);
+		const probes = [
+			...Object.values(t).map((table) => dialect.tableExists(table)),
+			dialect.columnExists(t.blobs, "created_at"),
+			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
+		];
+		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
+		// A versioned database always checks its ledger: a newer schema with the same tables is refused, and a step it
+		// lacks, such as the index triggers, runs even when every table exists.
+		if (dialect.versionedMigrations || !found.every((row) => row !== undefined)) {
+			await applyStorageMigrations(
+				database,
+				SNAPSHOT_BLOB_DOMAIN,
+				[
+					{ version: 1, up: (transaction, dialect) => createSnapshotIndexTables(transaction, t, prefix, dialect) },
+					// Where a ledger records the steps, it records the index triggers too, installed under the migration lock.
+					// Without one, installIndex below installs each source in a transaction of its own, as it always has.
+					...(dialect.versionedMigrations
+						? [
+								{
+									version: 2,
+									up: (transaction: SqliteExecutor, dialect: StorageDialect) =>
+										installMissingSources(transaction, t, prefix, dialect),
+								},
+							]
+						: []),
+				],
+				{ table: storageMigrationTable(prefix) },
+			);
+		}
+		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect));
 		await store.installIndex();
 		return store;
 	}
@@ -706,17 +793,15 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * that exist, so a store that creates its own tables, such as a new run journal, takes the write lock once for all
 	 * of them.
 	 */
-	static async initialize(transaction: SqliteExecutor, prefix = ""): Promise<void> {
+	static async initialize(transaction: SqliteExecutor, prefix = "", dialect: StorageDialect): Promise<void> {
 		const t = snapshotIndexTables(prefix);
-		await createSnapshotIndexTables(transaction, t, prefix);
-		for (const { source, installed, deferred } of await readSourceStates(transaction, t, indexSources(prefix, t))) {
-			if (!installed && !deferred) await installSource(transaction, t, source);
-		}
+		await createSnapshotIndexTables(transaction, t, prefix, dialect);
+		await installMissingSources(transaction, t, prefix, dialect);
 	}
 
 	async putBlobs(blobs: readonly SnapshotBlob[]): Promise<void> {
 		if (blobs.length === 0) return;
-		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, unixepoch()) ON CONFLICT(hash) DO UPDATE SET created_at = unixepoch()`;
+		const sql = `INSERT INTO ${this.table} (hash, bytes, data, created_at) VALUES (?, ?, ?, ${this.dialect.nowSeconds}) ON CONFLICT(hash) DO UPDATE SET created_at = ${this.dialect.nowSeconds}`;
 		const statements = blobs.map((blob) => ({ sql, params: [blob.hash, blob.data.byteLength, blob.data] }));
 		if (this.database.batch) {
 			await this.database.batch(statements);
@@ -746,7 +831,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		}
 		const { changes } = await this.database.transaction((transaction) =>
 			transaction.run(
-				`UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN (SELECT value FROM json_each(?))`,
+				`UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
 				JSON.stringify(unique),
 			),
 		);
@@ -764,16 +849,16 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * Resolves with the state of every referencing table.
 	 */
 	private async installIndex(pace?: BackgroundCollectionPace, includeDeferred = false): Promise<SourceState[]> {
-		const states = await readSourceStates(this.database, this.tables, this.sources);
+		const states = await readSourceStates(this.database, this.dialect, this.tables, this.sources);
 		const missing = states.filter((state) => !state.installed && (includeDeferred || !state.deferred));
 		for (const { source } of missing) {
 			await this.write(pace, async (transaction) => {
-				const [current] = await readSourceStates(transaction, this.tables, [source]);
+				const [current] = await readSourceStates(transaction, this.dialect, this.tables, [source]);
 				if (current === undefined || current.installed || (current.deferred && !includeDeferred)) return;
-				await installSource(transaction, this.tables, source);
+				await installSource(transaction, this.dialect, this.tables, source);
 			});
 		}
-		return missing.length === 0 ? states : readSourceStates(this.database, this.tables, this.sources);
+		return missing.length === 0 ? states : readSourceStates(this.database, this.dialect, this.tables, this.sources);
 	}
 
 	/**
@@ -797,6 +882,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	/** Indexes the next rows of `source`, and resolves true once every row at or below its watermark is indexed. */
 	private backfillBatch(source: IndexSource, { holder, pace, signal }: SnapshotIndexOptions): Promise<boolean> {
 		const t = this.tables;
+		const row = this.dialect.rowOrder();
 		return this.write(pace, async (transaction) => {
 			const progress = await transaction.get<SqliteRow & { watermark: number; backfilled_through: number }>(
 				`SELECT watermark, backfilled_through FROM ${t.sources} WHERE source = ?`,
@@ -804,7 +890,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			);
 			if (progress === undefined || progress.backfilled_through >= progress.watermark) return true;
 			const { upper: lastRow } = (await transaction.get<SqliteRow & { upper: number | null }>(
-				`SELECT MAX(rowid) AS upper FROM (SELECT rowid FROM ${source.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?)`,
+				`SELECT MAX(${row}) AS upper FROM (SELECT ${row} FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row} LIMIT ?)`,
 				progress.backfilled_through,
 				progress.watermark,
 				SNAPSHOT_INDEX_BACKFILL_BATCH,
@@ -813,7 +899,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			for (const sql of source.backfill) await transaction.run(sql, progress.backfilled_through, upper);
 			if (source.rowwise !== undefined) {
 				const rows = await transaction.all<SqliteRow & { id: number }>(
-					`SELECT rowid AS id FROM ${source.table} WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+					`SELECT ${row} AS id FROM ${source.table} WHERE ${row} > ? AND ${row} <= ? ORDER BY ${row}`,
 					progress.backfilled_through,
 					upper,
 				);
@@ -849,7 +935,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	async sweep(options: SnapshotSweepOptions): Promise<readonly string[]> {
 		const t = this.tables;
 		options.signal?.throwIfAborted();
-		if (!(await this.database.get("SELECT name FROM sqlite_schema WHERE name = ?", `${t.blobs}_age`))) {
+		const ageIndex = this.dialect.schemaObjects([`${t.blobs}_age`]);
+		if (!(await this.database.get(ageIndex.sql, ...ageIndex.params))) {
 			await this.write(options.pace, (tx) =>
 				tx.exec(`CREATE INDEX IF NOT EXISTS ${t.blobs}_age ON ${t.blobs} (created_at, hash)`),
 			);
@@ -872,13 +959,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			options.signal?.throwIfAborted();
 			const after = cursor;
 			const batch = await this.write(options.pace, async (transaction) => {
-				const states = await readSourceStates(transaction, this.tables, this.sources);
+				const states = await readSourceStates(transaction, this.dialect, this.tables, this.sources);
 				if (!states.every((state) => state.installed && state.backfilled)) return undefined;
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 				const page = await this.page(transaction, minimumAge, unreferenced, after);
 				if (page.length === 0) return { page, deleted: [] };
 				const rows = await transaction.all<SqliteRow & { hash: string }>(
-					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM json_each(?)) AND created_at > 0 AND created_at <= unixepoch() - ? AND ${unreferenced} RETURNING hash`,
+					`DELETE FROM ${t.blobs} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")}) AND created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} RETURNING hash`,
 					JSON.stringify(page.map((row) => row.hash)),
 					minimumAge,
 				);
@@ -909,7 +996,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			const stamped = await this.write(options.pace, async (transaction) => {
 				if (options.holder !== undefined) await this.renewClaim(transaction, options.holder);
 				const { changes } = await transaction.run(
-					`UPDATE ${this.table} SET created_at = unixepoch() WHERE hash IN
+					`UPDATE ${this.table} SET created_at = ${this.dialect.nowSeconds} WHERE hash IN
 					(SELECT hash FROM ${this.table} WHERE created_at = 0 ORDER BY hash LIMIT ?) AND created_at = 0`,
 					SNAPSHOT_COLLECTION_BATCH,
 				);
@@ -973,12 +1060,12 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const t = this.tables;
 		return after === undefined
 			? transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= unixepoch() - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					SNAPSHOT_COLLECTION_BATCH,
 				)
 			: transaction.all<PageRow>(
-					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= unixepoch() - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
+					`SELECT created_at, hash FROM ${t.blobs} WHERE created_at > 0 AND created_at <= ${this.dialect.nowSeconds} - ? AND (created_at, hash) > (?, ?) AND ${unreferenced} ORDER BY created_at, hash LIMIT ?`,
 					minimumAge,
 					after.created_at,
 					after.hash,
@@ -994,13 +1081,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	 * the lock, waiting for it on `pace` when one is given.
 	 */
 	async claimCollection(intervalSeconds: number, holder: string, pace?: BackgroundCollectionPace): Promise<boolean> {
-		const due = `id = 1 AND (claimed_at IS NULL OR (finished_at IS NULL AND claimed_at <= unixepoch() - ?) OR (finished_at IS NOT NULL AND finished_at <= unixepoch() - ?))`;
+		const due = `id = 1 AND (claimed_at IS NULL OR (finished_at IS NULL AND claimed_at <= ${this.dialect.nowSeconds} - ?) OR (finished_at IS NOT NULL AND finished_at <= ${this.dialect.nowSeconds} - ?))`;
 		const lease = SNAPSHOT_COLLECTION_LEASE_SECONDS;
 		if (!(await this.database.get(`SELECT id FROM ${this.tables.collection} WHERE ${due}`, lease, intervalSeconds)))
 			return false;
 		const { changes } = await this.write(pace, (transaction) =>
 			transaction.run(
-				`UPDATE ${this.tables.collection} SET claimed_at = unixepoch(), holder = ?, finished_at = NULL, deleted = NULL, error_code = NULL WHERE ${due}`,
+				`UPDATE ${this.tables.collection} SET claimed_at = ${this.dialect.nowSeconds}, holder = ?, finished_at = NULL, deleted = NULL, error_code = NULL WHERE ${due}`,
 				holder,
 				lease,
 				intervalSeconds,
@@ -1011,7 +1098,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 
 	private renewClaim(transaction: SqliteExecutor, holder: string): Promise<unknown> {
 		return transaction.run(
-			`UPDATE ${this.tables.collection} SET claimed_at = unixepoch() WHERE id = 1 AND holder = ?`,
+			`UPDATE ${this.tables.collection} SET claimed_at = ${this.dialect.nowSeconds} WHERE id = 1 AND holder = ?`,
 			holder,
 		);
 	}
@@ -1027,7 +1114,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	): Promise<void> {
 		await this.write(pace, (transaction) =>
 			transaction.run(
-				`UPDATE ${this.tables.collection} SET finished_at = unixepoch(), deleted = ?, error_code = ? WHERE id = 1 AND holder = ?`,
+				`UPDATE ${this.tables.collection} SET finished_at = ${this.dialect.nowSeconds}, deleted = ?, error_code = ? WHERE id = 1 AND holder = ?`,
 				outcome.deleted,
 				outcome.errorCode,
 				holder,
