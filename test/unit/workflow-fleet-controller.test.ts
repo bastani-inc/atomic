@@ -4,7 +4,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
-import type { RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import type { Lease, RunJournal } from "../../packages/workflows/src/durable/journal/types.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/autoscaler.js";
 import {
 	startWorkflowFleetController,
@@ -12,7 +14,12 @@ import {
 	type WorkflowFleetEvent,
 } from "../../packages/workflows/src/workers/fleet-controller.js";
 import { isWorkerPlacementConfigError } from "../../packages/workflows/src/workers/placement-errors.js";
+import {
+	startWorkflowWorkerHost,
+	type WorkflowWorkerHostEvent,
+} from "../../packages/workflows/src/workers/worker-host.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
+import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { sleep } from "../helpers/runtime.js";
 
 const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
@@ -35,10 +42,14 @@ function selection() {
 	return { adapter: libsql, options: { url: pathToFileURL(join(directory, "shared.db")).href }, prefix: "acme_" };
 }
 
-async function openStore(): Promise<SqlFleetStore> {
+async function openJournal(): Promise<RunJournal> {
 	const journal = await resolveRunJournal({ journal: selection(), agentDir: join(directory, "agent") });
 	journals.push(journal);
-	return SqlFleetStore.open(journal);
+	return journal;
+}
+
+async function openStore(): Promise<SqlFleetStore> {
+	return SqlFleetStore.open(await openJournal());
 }
 
 async function until(what: string, check: () => boolean | Promise<boolean>, timeoutMs = 20_000): Promise<void> {
@@ -69,6 +80,7 @@ function fakeProvisioner(): WorkerHostProvisioner & { failing: boolean; lists: n
 async function controller(
 	provisioner: WorkerHostProvisioner,
 	events: WorkflowFleetEvent[] = [],
+	policy: Omit<Parameters<typeof startWorkflowFleetController>[0], "provisioner"> = {},
 ): Promise<WorkflowFleetController> {
 	const started = await startWorkflowFleetController({
 		journal: selection(),
@@ -76,6 +88,7 @@ async function controller(
 		provisioner,
 		tickMs: TICK_MS,
 		onEvent: (event) => events.push(event),
+		...policy,
 	});
 	controllers.push(started);
 	return started;
@@ -185,6 +198,117 @@ test.skipIf(process.platform === "win32")(
 		await until("the controller to recover", () => events.some((event) => event.kind === "recovered"));
 		assert.equal(running.status().degraded, undefined);
 	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"the controller scales up to the demand of a shared root's queue once, and records why (#4768)",
+	async () => {
+		const journal = await openJournal();
+		await journal.createRun({ runId: "root", name: "root", cwd: "", createdAt: 0, status: "running" });
+		const lease = ((await journal.acquire("root", "coordinator")) as { lease: Lease }).lease;
+		const queue = await openSqlPoolQueue(journal);
+		await queue.initialize(lease, 60_000);
+		const shared = await SqlSharedPool.open(journal, queue);
+		await shared.publishConfig(lease, {
+			definitions: [],
+			leaseMs: 60_000,
+			heartbeatMs: 15_000,
+			startupTimeoutMs: 60_000,
+			claimWindowMs: 60_000,
+		});
+		for (const name of ["a", "b", "c"]) {
+			const { work, boundary } = poolWorkFixture(name);
+			await queue.enqueue(lease, work, boundary);
+		}
+		const hosts: ProvisionedHost[] = [];
+		const targets: number[] = [];
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return [...hosts];
+			},
+			async scaleTo(target) {
+				targets.push(target);
+				while (hosts.length < target) hosts.push({ id: `vm-${hosts.length}`, state: "pending", since: Date.now() });
+			},
+			async drain() {},
+		};
+		const events: WorkflowFleetEvent[] = [];
+		const running = await controller(provisioner, events, {
+			workersPerHost: 2,
+			scaleUpQueueDepth: 0,
+			scaleUpDelayMs: 0,
+		});
+		await until("a scale-up", () => targets.length > 0);
+		// Booting hosts count: later ticks add none.
+		await sleep(5 * TICK_MS);
+		assert.deepEqual(targets, [2]);
+		assert.deepEqual(
+			events.filter((event) => event.kind === "scale-up"),
+			[{ kind: "scale-up", target: 2, desired: 2, live: 0 }],
+		);
+		assert.deepEqual([running.status().target, running.status().live, running.status().pending], [2, 0, 2]);
+		const recorded = (await SqlFleetStore.open(journal).then((store) => store.recent(10))).filter(
+			(event) => event.kind === "scale-up",
+		);
+		assert.deepEqual(
+			recorded.map((event) => [event.target, event.live, event.reason]),
+			[[2, 0, "3 ready, 0 live and 0 pending hosts: scaleTo(2)"]],
+		);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"the controller drains an idle worker host matched by its provider id, then removes it from the provider (#4768)",
+	async () => {
+		const hostEvents: WorkflowWorkerHostEvent[] = [];
+		const host = await startWorkflowWorkerHost({
+			journal: selection(),
+			agentDir: join(directory, "host"),
+			maxWorkers: 1,
+			hostId: "h1",
+			providerId: "vm-1",
+			restore: false,
+			onEvent: (event) => hostEvents.push(event),
+		});
+		const removed: string[] = [];
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return removed.includes("vm-1") ? [] : [{ id: "vm-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {
+				assert.fail("an idle fleet adds no host");
+			},
+			async drain(id) {
+				removed.push(id);
+			},
+		};
+		const events: WorkflowFleetEvent[] = [];
+		await controller(provisioner, events, { idleDrainMs: 0 });
+		await host.closed;
+		assert.deepEqual(hostEvents, [{ kind: "drain-requested" }]);
+		await until("the host's removal", () => removed.length > 0);
+		assert.deepEqual(removed, ["vm-1"]);
+		assert.deepEqual(
+			events.filter((event) => event.kind === "drain-requested" || event.kind === "removed"),
+			[
+				{ kind: "drain-requested", id: "vm-1", host: "h1" },
+				{ kind: "removed", id: "vm-1", reason: "drained" },
+			],
+		);
+		const store = await openStore();
+		await until("the drain request to be cleared", async () => (await store.snapshot()).drains.length === 0);
+		const recorded = await store.recent(10);
+		assert.deepEqual(
+			recorded.filter((event) => event.kind !== "active").map((event) => [event.kind, event.reason]),
+			[
+				["drain", "vm-1 (h1) idle for 0 ms"],
+				["remove", "vm-1: drained"],
+			],
+		);
+	},
+	60_000,
 );
 
 test("startWorkflowFleetController refuses a provisioner without its methods, and a policy whose caps cannot hold (#4768)", async () => {
