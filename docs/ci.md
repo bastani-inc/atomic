@@ -1,6 +1,6 @@
 # CI/CD Pipeline
 
-Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, `@bastani/pi-ai` from `packages/ai`, and `@bastani/atomic-storage-libsql` from `packages/storage-libsql`. The other workspace packages remain private and are bundled into the coding-agent package. The libSQL storage adapter is the exception: it is a separate package that users install with `atomic install npm:@bastani/atomic-storage-libsql`, so it is never a dependency of `@bastani/atomic` and never enters its shrinkwrap or binaries. The first npm version of `@bastani/pi-ai` and of `@bastani/atomic-storage-libsql` must be published by hand so npm trusted publishing can be attached; later tagged releases publish them from `publish.yml`.
+Atomic publishes `@bastani/atomic` from `packages/coding-agent`, `@bastani/atomic-natives` from `packages/natives`, `@bastani/pi-ai` from `packages/ai`, `@bastani/atomic-storage-libsql` from `packages/storage-libsql`, and `@bastani/atomic-storage-postgres` from `packages/storage-postgres`. The other workspace packages remain private and are bundled into the coding-agent package. The storage adapters are the exception: each is a separate package that users install with `atomic install npm:<name>`, so neither is ever a dependency of `@bastani/atomic` and never enters its shrinkwrap or binaries. The first npm version of `@bastani/pi-ai` and of each storage adapter must be published by hand so npm trusted publishing can be attached; later tagged releases publish them from `publish.yml`.
 
 ## Workflow overview
 
@@ -773,15 +773,16 @@ The npm job uses environment `npm-publish` with only `contents: read` and `id-to
 9. `@bastani/atomic-natives`
 10. `@bastani/pi-ai`
 11. `@bastani/atomic-storage-libsql`
-12. `@bastani/atomic`
+12. `@bastani/atomic-storage-postgres`
+13. `@bastani/atomic`
 
-That order publishes native leaves first, four at a time, then the native root, then `@bastani/pi-ai`, then `@bastani/atomic-storage-libsql`, then the coding agent. `@bastani/atomic` stays last so a CLI version appears on npm only after every other package in the payload published. The adapter has no ordering requirement of its own, because its peer dependency on `@bastani/atomic` is optional. A package version already present in the registry is logged and skipped, making recovery idempotent. Transient failures are retried; see [Recovering a failed publication](#recovering-a-failed-publication). Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
+That order publishes native leaves first, four at a time, then the native root, then `@bastani/pi-ai`, then the two storage adapters, then the coding agent. `@bastani/atomic` stays last so a CLI version appears on npm only after every other package in the payload published. The adapters have no ordering requirement of their own, because their peer dependency on `@bastani/atomic` is optional. A package version already present in the registry is logged and skipped, making recovery idempotent. Transient failures are retried; see [Recovering a failed publication](#recovering-a-failed-publication). Stable versions use `latest`; alpha versions use `next`. No static npm credential is configured.
 
 ### Registering a new package name
 
-A package name that npm has never seen cannot use trusted publishing. `publish.yml` lists such names in its `requires_registered_name=(…)` array, currently only `@bastani/atomic-storage-libsql`, and skips them with a workflow warning only after npm confirms a not-found response. Network, rate-limit, server, and other indeterminate errors fail publication before dependent packages are published. The [registration preflight](#npm-registration-preflight) reads the same array and reports confirmed missing names as skipped instead of refusing the cut. Every other payload name still has to be registered.
+A package name that npm has never seen cannot use trusted publishing. `publish.yml` lists such names in its `requires_registered_name=(…)` array, currently `@bastani/atomic-storage-libsql` and `@bastani/atomic-storage-postgres`, and skips them with a workflow warning only after npm confirms a not-found response. Network, rate-limit, server, and other indeterminate errors fail publication before dependent packages are published. The [registration preflight](#npm-registration-preflight) reads the same array and reports confirmed missing names as skipped instead of refusing the cut. Every other payload name still has to be registered.
 
-To start publishing `@bastani/atomic-storage-libsql`, a maintainer does this once, outside the repository:
+To start publishing `@bastani/atomic-storage-libsql` or `@bastani/atomic-storage-postgres`, a maintainer does this once per package, outside the repository:
 
 1. Publish a first version of the package by hand from a maintainer account (`npm publish --access public` from the package directory, with the default `latest` dist-tag). Alpha releases publish to `next`, and the install commands in the user docs, such as `atomic install npm:@bastani/atomic-storage-libsql`, resolve `latest`.
 2. In the package's npm settings, add a trusted publisher for repository `bastani-inc/atomic`, workflow filename `publish.yml`, and environment `npm-publish`.

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { join, resolve } from "node:path";
 import { inspect } from "node:util";
-import { StorageConfigError } from "@bastani/atomic/storage";
+import { loadStorageAdapter, StorageConfigError } from "@bastani/atomic/storage";
 import { test } from "vitest";
 import adapter, { openPostgresDatabase } from "../../packages/storage-postgres/postgres.js";
+import { makeTempDirectory, moduleDir, removeTempDirectory, writeFileEnsuringDir } from "../helpers/runtime.js";
 
 /** Asserts that `open` fails with `StorageConfigError` for `field`/`reason`, and that no secret reaches the error. */
 async function assertRefused(
@@ -88,4 +90,27 @@ test("the Postgres adapter requires a URL option (#4793)", async () => {
 			"url",
 			"unsupported-url",
 		);
+});
+
+test("Atomic loads the installed Postgres package by name as a storage adapter (#4793)", async () => {
+	const agentDir = makeTempDirectory("storage-postgres-agent-");
+	try {
+		const packageRoot = resolve(moduleDir(import.meta.url), "../../packages/storage-postgres");
+		await writeFileEnsuringDir(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
+		const loaded = await loadStorageAdapter("@bastani/atomic-storage-postgres", { agentDir, domain: "journal" });
+		assert.deepEqual(loaded.liveSecrets, ["password"]);
+		assert.ok(loaded.openDatabase);
+		await assertRefused(
+			() =>
+				loaded.openDatabase?.(
+					{ url: "postgres://atomic:fixture-secret@127.0.0.1:1/atomic" },
+					{ agentDir, domain: "journal" },
+				) ?? Promise.resolve(),
+			"url",
+			"credential-in-url",
+			["fixture-secret"],
+		);
+	} finally {
+		removeTempDirectory(agentDir);
+	}
 });
