@@ -4,6 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
+import { MAX_CONTROL_STRING_LENGTH, UNTERMINATED_CONTROL_SEQUENCE_MARKER } from "../../src/utils/terminal-text.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 function getEntryTypes(harness: Harness): string[] {
@@ -303,12 +304,14 @@ describe("AgentSession bash and persistence characterization", () => {
 		});
 
 		it("does not hold back output behind a long unterminated sequence", async () => {
-			const long = "x".repeat(300);
+			// The payload is dropped up to the length limit; the text after it streams before the command exits.
+			const payload = "x".repeat(MAX_CONTROL_STRING_LENGTH);
 			let streamedBeforeExit = "";
-			await runChunks([`\x1b]${long}`], (streamed) => {
+			const { output } = await runChunks(["before ", `\x1b]${payload}`, "after\n"], (streamed) => {
 				streamedBeforeExit = streamed;
 			});
-			expect(streamedBeforeExit).toBe(`]${long}`);
+			expect(streamedBeforeExit).toBe(`before ${UNTERMINATED_CONTROL_SEQUENCE_MARKER}after\n`);
+			expect(output).toBe(`before ${UNTERMINATED_CONTROL_SEQUENCE_MARKER}after\n`);
 		});
 	});
 });
