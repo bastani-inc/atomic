@@ -775,6 +775,8 @@ export function handleBrokerSend(
     const outbound = messageFrameFor(target, fromSession.info, message, supervisorSend ? "supervisor" : undefined);
     const failDelivery = (): void => {
 	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
+	  // #5095: the reply was never written, so its ask is still unanswered.
+	  if (message.replyTo !== undefined) pendingQuestions.unmarkReplied(fromSession.info.id, target.info.id, message.replyTo);
       write(socket, {
         type: "delivery_failed",
         messageId: message.id,
@@ -887,6 +889,9 @@ export function handleBrokerSend(
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
+    // #5095: from here the reply is on its way: its ask is answered, so the replier ending before the asker saves the
+    // reply does not also fail it. The asker's save clears its route as before.
+    if (message.replyTo !== undefined) pendingQuestions.markReplied(fromSession.info.id, target.info.id, message.replyTo);
     if (confirmsSaves && receipts !== undefined) {
       receipts.await(
         {

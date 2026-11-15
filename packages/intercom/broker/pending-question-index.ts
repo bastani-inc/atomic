@@ -260,12 +260,35 @@ export class PendingQuestionIndex {
 				) === true
 		);
 	}
+  /**
+   * #5095: routes whose reply is on its way to the asker (written, and waiting for it to save it). Answered, they no
+   * longer fail when their recipient leaves; the asker's save clears them as usual.
+   */
+  private readonly replied = new Set<string>();
+
+  private static repliedKey(question: PendingQuestion): string {
+    return JSON.stringify([question.messageId, question.senderSessionId, question.targetSessionId]);
+  }
+
+  /** #5095: `senderSessionId`'s reply to `replyTo` is on its way to `targetSessionId`; returns whether it answers a route. */
+  markReplied(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
+    if (!this.matchesReply(senderSessionId, targetSessionId, replyTo)) return false;
+    this.replied.add(PendingQuestionIndex.repliedKey({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId }));
+    return true;
+  }
+
+  /** #5095: the reply marked by {@link markReplied} was never written, so the ask still waits for one. */
+  unmarkReplied(senderSessionId: string, targetSessionId: string, replyTo: string): void {
+    this.replied.delete(PendingQuestionIndex.repliedKey({ messageId: replyTo, senderSessionId: targetSessionId, targetSessionId: senderSessionId }));
+  }
+
   clearReply(senderSessionId: string, targetSessionId: string, replyTo: string): boolean {
     const routes = this.questions.get(replyTo);
     const index = routes?.findIndex(
       (route) => route.targetSessionId === senderSessionId && route.senderSessionId === targetSessionId,
     ) ?? -1;
     if (!routes || index < 0) return false;
+    this.unmarkReplied(senderSessionId, targetSessionId, replyTo);
     this.forgetLive(routes.splice(index, 1));
     if (routes.length === 0) this.questions.delete(replyTo);
     // #4765: a released subagent's ask can be kept for its away recipient while it is live again; answered, it is not.
@@ -312,11 +335,12 @@ export class PendingQuestionIndex {
     return pending;
   }
 
+  /** #5095: a route whose reply is on its way stays until the asker saves the reply: its recipient leaving does not end it. */
   private removeForTarget(targetSessionId: string): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
-        if (route.targetSessionId !== targetSessionId) return true;
+        if (route.targetSessionId !== targetSessionId || this.replied.has(PendingQuestionIndex.repliedKey(route))) return true;
         pending.push(route);
         return false;
       });

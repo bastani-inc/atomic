@@ -141,3 +141,32 @@ test("an index that keeps nothing for away sessions has no kept ask to hand a re
 	index.record("child", "recipient", "q1");
 	assert.equal(index.clearReply("recipient", "child", "q1"), true);
 });
+
+test("an ask whose reply is on its way is not taken when its recipient leaves, and is again once that reply is unwritten (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.record("asker", "recipient", "answered");
+	index.record("asker", "recipient", "unanswered");
+	index.record("asker", "other", "answered");
+
+	assert.equal(index.markReplied("stranger", "asker", "answered"), false, "only the asked recipient answers");
+	assert.equal(index.markReplied("recipient", "asker", "answered"), true);
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "unanswered")]);
+	assert.deepEqual(
+		index.takeForTarget("other"),
+		[route("asker", "other", "answered")],
+		"another route is not answered",
+	);
+	assert.equal(index.matchesReply("recipient", "asker", "answered"), true, "the route waits for the asker's save");
+
+	index.unmarkReplied("recipient", "asker", "answered");
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "answered")]);
+});
+
+test("a reply the asker saved leaves nothing marked for a later ask with the same id (#5095)", () => {
+	const index = new PendingQuestionIndex();
+	index.record("asker", "recipient", "q");
+	assert.equal(index.markReplied("recipient", "asker", "q"), true);
+	assert.equal(index.clearReply("recipient", "asker", "q"), true);
+	index.record("asker", "recipient", "q");
+	assert.deepEqual(index.takeForTarget("recipient"), [route("asker", "recipient", "q")]);
+});

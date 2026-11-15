@@ -785,6 +785,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const admission = inboundDeliveries.admit(record.from, record.message);
       if (admission.kind !== "reserved") continue;
       const askReply = outboundAskFor(record.from, record.message);
+      // #5095: as on arrival, a failure for an ask already answered is not shown.
+      if (askReply?.state === "answered" && record.message.replyError !== undefined) {
+        void durableInbox.handledWithoutCard(record.message.id);
+        inboundDeliveries.commit(admission.reservation);
+        continue;
+      }
       if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, record.message.replyError === undefined ? "answered" : "failed");
       replyTracker.recordIncomingMessage(record.from, record.message);
       if (pendingIdleMessages.enqueue(entry)) queued += 1;
@@ -854,6 +860,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     // #4751: a reply to one of this session's asks arrives as a message on its own thread; a refusal is a failed ask.
     const askReply = outboundAskFor(from, message);
+    // #5095: an ask has one outcome. A failure for one already answered is not shown; one after a failure still is.
+    if (askReply?.state === "answered" && message.replyError !== undefined) {
+      void durableInbox.handledWithoutCard(message.id);
+      inboundDeliveries.commit(reservation);
+      return;
+    }
     if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, message.replyError === undefined ? "answered" : "failed");
     if (isDeliveryFeedback(message) && askReply === undefined) {
       // Correlated asks were resolved above. A refusal of a fire-and-forget
