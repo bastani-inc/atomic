@@ -341,14 +341,15 @@ test("stores under a storage prefix index and collect their own tables only (#43
 		await journal.close();
 		await sessions.close();
 	});
+	// A checkpoint records its snapshots only while their blobs are stored (#5077).
+	await plain.blobs.putBlobs([textBlob("plain retained"), textBlob("plain orphan")]);
+	await journal.snapshotBlobs.putBlobs([textBlob("team retained"), textBlob("team orphan")]);
 	const lease = await startRun(plain.journal, "plain-run");
 	await plain.journal.append(lease, statusEvent("plain-run", { status: "running" }, "RunStarted"));
 	await plain.journal.append(lease, checkpointEvent([syntheticSnapshot("p", [textBlob("plain retained").hash])]));
 	const teamLease = await startRun(journal, "team-run");
 	await journal.append(teamLease, statusEvent("team-run", { status: "running" }, "RunStarted"));
 	await journal.append(teamLease, checkpointEvent([syntheticSnapshot("t", [textBlob("team retained").hash])]));
-	await plain.blobs.putBlobs([textBlob("plain retained"), textBlob("plain orphan")]);
-	await journal.snapshotBlobs.putBlobs([textBlob("team retained"), textBlob("team orphan")]);
 	await ageBlobs(database, "snapshot_blobs", 10_000);
 	await ageBlobs(database, "team_snapshot_blobs", 10_000);
 
