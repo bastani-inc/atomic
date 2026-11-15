@@ -26,6 +26,8 @@
  * SOFTWARE.
  */
 
+import { terminalDisplayText } from "./terminal-text.ts";
+
 // Valid string terminator sequences are BEL, ESC\, and 0x9c
 const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
 
@@ -41,32 +43,6 @@ const CSI_FINAL = "[\\dA-PR-TZcf-nq-uy=><~]";
 
 // Complete sequences. OSC is non-greedy until the first ST.
 const regex = new RegExp(`(?:${OSC_START}[\\s\\S]*?${ST})|${CSI_START}${CSI_FINAL}`, "g");
-
-// Unfinished sequence at the end of the text: OSC without its ST (a trailing ESC may start ESC\),
-// or CSI without its final byte.
-const unfinishedAnsiAtEndRegex = new RegExp(
-	`(?:${OSC_START}(?:[^\\u0007\\u009C\\u001B]|\\u001B(?!\\\\))*|${CSI_START})$`,
-);
-
-// Longest unfinished sequence held back while streaming. Longer ones are processed as-is.
-const MAX_PENDING_ANSI_LENGTH = 256;
-
-/**
- * Split streamed text into a part that is safe to pass to stripAnsi now and a trailing
- * unfinished escape sequence that should be prepended to the next chunk.
- */
-export function splitIncompleteAnsiSuffix(value: string): { complete: string; pending: string } {
-	if (!value.includes("\u001B") && !value.includes("\u009B")) {
-		return { complete: value, pending: "" };
-	}
-	const windowStart = Math.max(0, value.length - MAX_PENDING_ANSI_LENGTH);
-	const match = unfinishedAnsiAtEndRegex.exec(value.slice(windowStart));
-	if (!match) {
-		return { complete: value, pending: "" };
-	}
-	const splitAt = windowStart + match.index;
-	return { complete: value.slice(0, splitAt), pending: value.slice(splitAt) };
-}
 
 export function stripAnsi(value: string): string {
 	if (typeof value !== "string") {
@@ -84,13 +60,10 @@ export function stripAnsi(value: string): string {
 	return value.replace(regex, "");
 }
 
-// C0 and C1 control characters other than tab and newline.
-const UNSAFE_CONTROL_CHARACTERS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g;
-
 /**
- * Remove terminal sequences and the remaining control characters from text that is rendered as content, keeping
- * newlines and tabs, so the text cannot drive the terminal.
+ * Make text that is rendered as content inert for the terminal: remove escape sequences (7-bit and 8-bit) with their
+ * payloads and the remaining control characters, keeping newlines and tabs, and show bidirectional overrides escaped.
  */
 export function stripTerminalControls(value: string): string {
-	return stripAnsi(value).replace(UNSAFE_CONTROL_CHARACTERS, "");
+	return terminalDisplayText(value);
 }

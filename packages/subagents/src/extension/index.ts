@@ -283,7 +283,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	let runtimeCleanupInstalled = false;
 	try {
 		const config = loadConfig();
-		const tempArtifactsDir = getArtifactsDir(null);
 		const state: SubagentState = {
 			baseCwd: "",
 			currentSessionId: null,
@@ -302,7 +301,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			pi,
 			state,
 			config,
-			tempArtifactsDir,
+			// Resolved on use: choosing it creates and verifies a private directory,
+			// which registration (every session start) should not pay for.
+			get tempArtifactsDir() {
+				return getArtifactsDir(null);
+			},
 			getSubagentSessionRoot: subagentSessionRoot,
 			expandTilde,
 			discoverAgents,
