@@ -43,15 +43,38 @@ function removeFile(path: string): void {
 export function createLockFile(path: string, content: string): boolean {
   const made = `${path}.${Date.now()}.${randomUUID()}.new`;
   writeFileSync(made, content, { flag: "wx" });
+  let linked: boolean | undefined;
   try {
     linkSync(made, path);
+    linked = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") linked = false;
+    // Any other failure is a file system without hard links (FAT, exFAT, some SMB shares): created below instead.
+  } finally {
+    removeFile(made);
+  }
+  return linked ?? createExclusively(path, content);
+}
+
+/**
+ * Creates `path` holding `content` where no hard link can be made: created and then written, so a reader may see it
+ * empty or partly written for a moment. Each record ends its lines with a newline, and readers judge a record whose
+ * last line is unterminated, or that is empty, as still being written until {@link UNREADABLE_FILE_GRACE_MS} has passed.
+ */
+function createExclusively(path: string, content: string): boolean {
+  try {
+    writeFileSync(path, content, { flag: "wx" });
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
     throw error;
-  } finally {
-    removeFile(made);
   }
+}
+
+/** `content` without a last line that is not yet terminated, as a record still being written ends. */
+export function completeLines(content: string | undefined): string | undefined {
+  if (content === undefined) return undefined;
+  return content.slice(0, content.lastIndexOf("\n") + 1);
 }
 
 /**
@@ -122,7 +145,8 @@ export function holderRecord(): string {
  * that started at another time than the one it records (#5220), or once it stayed unreadable past the grace period. A
  * start that cannot be read now never makes a running pid another process, as for #5164.
  */
-export function isAbandoned(path: string, content: string | undefined): boolean {
+export function isAbandoned(path: string, written: string | undefined): boolean {
+  const content = completeLines(written);
   const pid = pidOf(content);
   if (pid !== undefined) {
     if (!isProcessAlive(pid)) return true;
