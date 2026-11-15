@@ -242,6 +242,7 @@ test("a crashed run paused by a process that already took over its dead owner's 
 test("a crashed run handed to a new owner whose executor runs it is that owner's: its pause does not release it (#5167)", async () => {
 	const { workflowId, backend } = await orphanedRun();
 	await backend.withWorkflowLease(workflowId, async () => {
+		// The adoption claim hands the run over; the new owner's executor then registers the run it claimed.
 		assert.equal(
 			await backend.commitWorkflowStatusTransition(
 				workflowId,
@@ -252,6 +253,11 @@ test("a crashed run handed to a new owner whose executor runs it is that owner's
 				undefined,
 				"new-session",
 			),
+			true,
+		);
+		const claimed = backend.getWorkflow(workflowId)!;
+		assert.equal(
+			await backend.commitClaimedWorkflowRegistration({ ...claimed, status: "running" }, "new-session"),
 			true,
 		);
 		assert.equal(await backend.commitWorkflowStatusTransition(workflowId, ["running"], "paused"), true);

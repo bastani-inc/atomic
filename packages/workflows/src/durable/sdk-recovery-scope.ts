@@ -31,24 +31,21 @@ export function isSdkDurableRunInScope<
 	return handle.modelOwner !== undefined && isProjectRootRun(handle, cwd, canonicalize);
 }
 
-/**
- * A running run whose owner crashed: nothing executes it. `resuming` is set by a resume of the run, which holds the
- * run's execution scope itself while it decides; no other executor of this process can hold it meanwhile.
- */
+/** A running run whose owner crashed: nothing executes it. */
 export async function isSdkCrashedRunAdoptable(
 	handle: DurableWorkflowHandle,
 	cwd: string | undefined,
 	backend: DurableWorkflowBackend,
-	resuming = false,
 ): Promise<boolean> {
 	if (!isSdkDurableRunInScope(handle, cwd) || handle.status !== "running") return false;
 	const ownership = await backend.workflowOwnership(handle.workflowId);
-	// #5167: a lease this process took over from the crashed owner (to answer a prompt, say) runs nothing here.
+	// #5167: a lease this backend took over from the crashed owner (to answer a prompt, say) runs nothing here. A lease
+	// another session of this process holds is that session's, so it is not adoptable.
 	return (
 		ownership === "available" ||
 		(ownership === "local" &&
 			handle.ownerLiveness !== "alive" &&
-			(resuming || backend.hasWorkflowExecution?.(handle.workflowId) === false))
+			backend.holdsIdleWorkflowLease?.(handle.workflowId) === true)
 	);
 }
 
@@ -67,7 +64,6 @@ export async function isSdkRunAdoptable(
 	handle: DurableWorkflowHandle,
 	cwd: string | undefined,
 	backend: DurableWorkflowBackend,
-	resuming = false,
 ): Promise<boolean> {
-	return (await isSdkCrashedRunAdoptable(handle, cwd, backend, resuming)) || isSdkReleasedRunAdoptable(handle, cwd);
+	return (await isSdkCrashedRunAdoptable(handle, cwd, backend)) || isSdkReleasedRunAdoptable(handle, cwd);
 }

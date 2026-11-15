@@ -299,8 +299,11 @@ export interface DurableWorkflowBackend {
 	workflowOwnership(
 		workflowId: string,
 	): "local" | "foreign" | "available" | Promise<"local" | "foreign" | "available">;
-	/** Whether an executor of this process runs `workflowId` (it holds the run's lease to execute it). */
-	hasWorkflowExecution?(workflowId: string): boolean;
+	/**
+	 * Whether this backend itself holds `workflowId`'s lease without an executor running the run: it took a crashed
+	 * owner's lease over to write to the run, for example to answer a prompt (#5167).
+	 */
+	holdsIdleWorkflowLease?(workflowId: string): boolean;
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;

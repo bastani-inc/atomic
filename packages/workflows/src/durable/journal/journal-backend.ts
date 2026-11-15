@@ -365,8 +365,6 @@ interface WorkflowLeaseExecution {
 	lease?: Lease;
 	users: number;
 	retired: boolean;
-	/** The execution took the run up (wrote it `running`), so an executor of this process runs it (#5167). */
-	running?: boolean;
 }
 
 /**
@@ -507,6 +505,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/** Runs that kept only their own checkpoints while this backend owned them, and lack the rest until rebuilt. */
 	private readonly partialRuns = new Set<string>();
 	private timer: ReturnType<typeof setInterval> | undefined;
+	/** Runs this backend took up to run, until they stop running or its lease is dropped (#5167). */
+	private readonly takenUp = new Set<string>();
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
 	/** Each run's renewal in flight; a run renews independently of every other run. */
@@ -997,10 +997,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			released,
 		);
 	}
-	/** Mark that the execution of `runId` in this context, if any, took the run up (#5167). */
+	/** Mark that this backend took `runId` up to run it: it registered the run, or wrote it running again (#5167). */
 	private takeUp(runId: string): void {
-		const execution = this.executionContext.getStore()?.get(runId);
-		if (execution !== undefined) execution.running = true;
+		this.takenUp.add(runId);
 	}
 	commitClaimedWorkflowRegistration(
 		input: WorkflowRegistrationInput,
@@ -1157,7 +1156,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const seq = this.sequences.get(runId) ?? 0;
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
-		if (status === "running") this.takeUp(runId);
+		// A run written running from another status is taken up here; a run leaving running is no longer run here. A write
+		// that keeps a running run running (an answer, an adoption claim) takes nothing up.
+		if (status === "running" && acquired.status !== "running") this.takeUp(runId);
+		else if (status !== "running") this.takenUp.delete(runId);
 		try {
 			yield* this.snapshot(
 				{
@@ -1180,7 +1182,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	/** Whether an executor runs `runId`: one of this process's, or another process's that holds a live lease on it. */
 	private *executing(runId: string): Operation<boolean> {
-		if (this.executions.get(runId)?.running === true) return true;
+		if (this.takenUp.has(runId)) return true;
 		const lease = yield* invoke(() => this.journal.leaseState(runId));
 		return (
 			lease !== undefined &&
@@ -1488,6 +1490,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	async hydrateWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.rebuild(runId), false);
+	}
+	holdsIdleWorkflowLease(runId: string): boolean {
+		return this.leases.has(runId) && !this.takenUp.has(runId);
 	}
 	/** Whether a workflow execution of this process holds `runId` (`withWorkflowLease`). */
 	hasWorkflowExecution(runId: string): boolean {
@@ -1844,6 +1849,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private dropLease(runId: string): void {
 		this.leases.delete(runId);
+		this.takenUp.delete(runId);
 		// Only the run's owner keeps it narrowed; the next full read of the run rebuilds every checkpoint.
 		if (this.ownCheckpoints.delete(runId)) this.partialRuns.add(runId);
 		if (this.leases.size === 0) {
