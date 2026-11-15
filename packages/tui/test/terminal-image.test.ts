@@ -47,6 +47,9 @@ const ENV_KEYS = [
 	"CMUX_WORKSPACE_ID",
 	"WARP_SESSION_ID",
 	"WARP_TERMINAL_SESSION_UUID",
+	"ATOMIC_HYPERLINKS",
+	"ATOMIC_IMAGE_PROTOCOL",
+	"ATOMIC_TRUE_COLOR",
 	"PI_HYPERLINKS",
 	"PI_IMAGE_PROTOCOL",
 	"PI_TRUE_COLOR",
@@ -237,6 +240,23 @@ describe("detectCapabilities", () => {
 				detectCapabilities(),
 			),
 			{ images: null, trueColor: false, hyperlinks: false },
+		);
+	});
+
+	it("prefers the ATOMIC_* overrides over the legacy PI_* names (#5174)", () => {
+		assert.deepStrictEqual(
+			withEnv(
+				{
+					ATOMIC_HYPERLINKS: "1",
+					ATOMIC_IMAGE_PROTOCOL: "kitty",
+					ATOMIC_TRUE_COLOR: "1",
+					PI_HYPERLINKS: "0",
+					PI_IMAGE_PROTOCOL: "none",
+					PI_TRUE_COLOR: "0",
+				},
+				() => detectCapabilities(),
+			),
+			{ images: "kitty", trueColor: true, hyperlinks: true },
 		);
 	});
 
@@ -831,9 +851,10 @@ describe("imageFallback", () => {
 	it("shortens home-prefixed absolute paths without hyperlinks", () => {
 		setCapabilities({ images: null, trueColor: false, hyperlinks: false });
 		try {
-			const abs = join(homedir(), ".pi", "agent", "shot.png");
+			const abs = join(homedir(), ".atomic", "agent", "shot.png");
 			const result = imageFallback("image/png", { widthPx: 1280, heightPx: 720 }, abs);
-			assert.strictEqual(result, "[Image: ~/.pi/agent/shot.png [image/png] 1280x720]");
+			// The shortened path keeps the platform separator after `~`.
+			assert.strictEqual(result, `[Image: ${join("~", ".atomic", "agent", "shot.png")} [image/png] 1280x720]`);
 		} finally {
 			resetCapabilitiesCache();
 		}
@@ -842,7 +863,7 @@ describe("imageFallback", () => {
 	it("wraps shortened absolute paths in OSC 8 file links when hyperlinks are enabled", () => {
 		setCapabilities({ images: null, trueColor: false, hyperlinks: true });
 		try {
-			const abs = join(homedir(), ".pi", "agent", "shot.png");
+			const abs = join(homedir(), ".atomic", "agent", "shot.png");
 			const result = imageFallback("image/png", { widthPx: 10, heightPx: 10 }, abs);
 			assert.ok(result.includes("\x1b]8;;file://"), "expected OSC 8 file link");
 			assert.ok(
@@ -851,7 +872,7 @@ describe("imageFallback", () => {
 			);
 			// Visible text must use ~/... not the expanded home path.
 			const visible = result.replace(/\x1b\]8;;.*?\x1b\\/g, "");
-			assert.strictEqual(visible, "[Image: ~/.pi/agent/shot.png [image/png] 10x10]");
+			assert.strictEqual(visible, `[Image: ${join("~", ".atomic", "agent", "shot.png")} [image/png] 10x10]`);
 		} finally {
 			resetCapabilitiesCache();
 		}
