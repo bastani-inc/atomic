@@ -251,6 +251,16 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 			});
 		},
 
+		async releaseClaimsOf(claimantId) {
+			const { changes } = await database.run(
+				`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
+					saving_at = NULL
+				WHERE state = 'claimed' AND claimant_id = ?`,
+				claimantId,
+			);
+			return changes;
+		},
+
 		markDelivered(claim) {
 			return withClaim(claim, async (executor) => ({
 				status: "delivered" as const,

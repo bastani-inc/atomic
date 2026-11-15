@@ -417,6 +417,31 @@ export function registerOutboxStoreConformance(
 		assert.deepEqual(ids(expectStatus(await b.listUndelivered(RECIPIENT), "listed").rows), ["m1", "m2"]);
 	});
 
+	check("releases every claim of one claimant at once so the queue can be claimed again (#5038)", async (connect) => {
+		const [a, b] = [await connect(), await connect()];
+		await insert(a, frameFor("m1", "first"));
+		await insert(a, frameFor("m2", "second"));
+		await insert(a, frameFor("m3", "other"), { targetIdentity: OTHER_RECIPIENT });
+		const [first] = await claimAll(a, "broker-dead");
+		await claimAll(b, "broker-b", LIVE_MS, OTHER_RECIPIENT);
+		const delivered = expectStatus(
+			await b.claim({ claimantId: "broker-b", targetIdentity: RECIPIENT, staleAfterMs: LIVE_MS }),
+			"held",
+		);
+		assert.equal(delivered.claimantId, "broker-dead");
+		assert.ok(first);
+		assert.equal(await b.releaseClaimsOf("broker-dead"), 2);
+		assert.deepEqual(await a.renewClaim(first.claim), { status: "stale" });
+		const again = await claimAll(b, "broker-b");
+		assert.deepEqual(ids(again), ["m1", "m2"]);
+		assert.equal(again[0]!.row.claimAttempts, 2);
+		assert.equal(expectStatus(await a.read("m3"), "found").row.state, "claimed");
+		assert.equal(await b.releaseClaimsOf("broker-dead"), 0);
+		await b.markDelivered(again[0]!.claim);
+		assert.equal(await b.releaseClaimsOf("broker-b"), 2);
+		assert.equal(expectStatus(await a.read("m1"), "found").row.state, "delivered");
+	});
+
 	check("stores and returns the delivery frame verbatim and detached", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		const frame = richFrame("rich");

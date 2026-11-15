@@ -314,6 +314,16 @@ function outboxStore(shared: OutboxState): OutboxStore {
 			record.state = "queued";
 			return { status: "released" };
 		},
+		async releaseClaimsOf(claimantId) {
+			let released = 0;
+			for (const record of shared.rows.values()) {
+				if (settled(record) || record.claim?.claimantId !== claimantId) continue;
+				record.claim = undefined;
+				record.state = "queued";
+				released++;
+			}
+			return released;
+		},
 		async markDelivered(claim) {
 			const record = heldClaim(claim);
 			if ("status" in record) return record;

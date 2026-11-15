@@ -74,6 +74,7 @@ import {
 	senderGroupIdentity,
 } from "./send-handler.js";
 import { deliverHeldToAsker } from "./ask-failures.js";
+import { brokerHostIdentity, isProcessAlive } from "./broker-instance.js";
 import type { BrokerOutboundFrame } from "./socket-writes.js";
 import type { SupervisorChannelCache } from "./supervisor-channel.js";
 import type { WakeUpBus, WakeUpEvent, WakeUpSubscription } from "./wake-up-bus.js";
@@ -197,10 +198,16 @@ export interface MultiNodeRouterOptions {
 	readonly brokerId?: string;
 	readonly nodeId?: string;
 	/**
-	 * #5038: what stays the same when this broker restarts (its socket path); with the node it names the previous
-	 * instance, whose leases this one retires as it starts.
+	 * #5038: what stays the same when this broker restarts (its socket path); with the node and host identity it
+	 * names the earlier instances, whose leases and claims this one retires as it starts once their process exited.
 	 */
 	readonly instanceKey?: string;
+	/** #5038: tells this host from another with the same name (`brokerHostIdentity`). */
+	readonly hostIdentity?: string;
+	/** #5038: this broker's process id; `process.pid` by default. */
+	readonly pid?: number;
+	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
+	readonly isProcessAlive?: (pid: number) => boolean;
 }
 
 interface Inflight {
@@ -359,6 +366,8 @@ export class MultiNodeRouter {
 	private readonly host: MultiNodeHost;
 	private readonly nodeId: string;
 	private readonly instanceKey: string;
+	private readonly pid: number;
+	private readonly isProcessAlive: (pid: number) => boolean;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
@@ -384,7 +393,10 @@ export class MultiNodeRouter {
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
 		// Without a key of its own, no earlier broker can be this one.
-		this.instanceKey = `${this.nodeId}:${options.instanceKey ?? this.brokerId}`;
+		const hostIdentity = options.hostIdentity ?? brokerHostIdentity();
+		this.instanceKey = `${this.nodeId}:${hostIdentity}:${options.instanceKey ?? this.brokerId}`;
+		this.pid = options.pid ?? process.pid;
+		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
@@ -2140,19 +2152,22 @@ export class MultiNodeRouter {
 			nodeId: this.nodeId,
 			startedAt: Date.now(),
 			instanceKey: this.instanceKey,
+			pid: this.pid,
 		};
 	}
 
 	/**
-	 * #5038: an instance of this broker that is still listed as live died without releasing its leases (only one
-	 * broker serves a socket). Its presence leases would keep other brokers routing to it, and keep sessions that
-	 * re-register here from taking their presence, until they go stale; retire them now.
+	 * #5038: an earlier instance of this broker (same host and socket) still listed as live whose process has exited
+	 * died without releasing anything. Its presence leases would keep other brokers routing to it, and keep sessions
+	 * that re-register here from taking their presence, and its outbox claims would hold its recipients' queues, until
+	 * they go stale; retire them now. Its claimed rows are delivered again, once, by whoever claims them next.
 	 */
 	private async retirePreviousInstances(): Promise<void> {
-		// It runs before this broker takes its own membership, so every match is an earlier instance.
 		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
-			const { instanceKey } = lease.subject as Partial<BrokerMembershipSubject>;
-			if (instanceKey === this.instanceKey) await this.state.leases.retireHolder(lease.holderId);
+			const { instanceKey, pid } = lease.subject as Partial<BrokerMembershipSubject>;
+			if (instanceKey !== this.instanceKey || pid === undefined || this.isProcessAlive(pid)) continue;
+			await this.state.leases.retireHolder(lease.holderId);
+			await this.state.outbox.releaseClaimsOf(lease.holderId);
 		}
 	}
 
