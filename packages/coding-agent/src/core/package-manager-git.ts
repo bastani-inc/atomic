@@ -19,7 +19,7 @@ import type {
 	PackageManagerContext,
 	SourceScope,
 } from "./package-manager-types.ts";
-import { renameReplacing } from "./settings-storage.ts";
+import { renameReplacing } from "./rename-retry.ts";
 
 /** A failure to provide git is never a best-effort miss: callers see it, with its code and install command. */
 function rethrowGitProvisionError(error: unknown): void {

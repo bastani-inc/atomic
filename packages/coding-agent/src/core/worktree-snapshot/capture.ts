@@ -405,7 +405,13 @@ async function copyRecorded(from: string, hash: string, to: string): Promise<boo
 async function writeAtomically(file: string, data: string): Promise<void> {
 	const temporary = `${file}.${process.pid}.tmp`;
 	await writeFile(temporary, data);
-	await rename(temporary, file);
+	try {
+		await rename(temporary, file);
+	} catch (error) {
+		// Windows refuses to replace a file another process has open, which concurrent captures do.
+		await rm(temporary, { force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 /** Files staged in the user's index that an ignore rule matches and the private index, read from the seed, lacks. */

@@ -19,6 +19,7 @@ import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
+import { type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
 
 export type LockResult<T> = {
 	result: T;
@@ -44,8 +45,13 @@ const PROVIDER_LOCK_HEARTBEAT_MS = 2_000;
  */
 const PROVIDER_LOCK_STALE_MS = 2 * OAUTH_REFRESH_TIMEOUT_MS + PROVIDER_LOCK_HEARTBEAT_MS;
 
-/** How long a commit waits for the shared auth file lock. */
+/** How long a commit waits for one other process to release the shared auth file lock. */
 const AUTH_FILE_LOCK_WAIT_MS = 30_000;
+/** How long a synchronous save waits for one other process to release the auth file lock. */
+const AUTH_FILE_SYNC_LOCK_WAIT_MS = 5_000;
+const AUTH_FILE_LOCK_POLL_MIN_MS = 10;
+/** Low enough that a waiter which has backed off still competes with the processes polling at the minimum. */
+const AUTH_FILE_LOCK_POLL_MAX_MS = 50;
 
 /** Attempts to resolve an existing auth file's real path; see resolveExistingAuthPath. */
 const REALPATH_ATTEMPTS = 20;
@@ -73,31 +79,15 @@ function resolveExistingAuthPath(path: string): string {
  */
 const PROVIDER_LOCK_WAIT_MS = Math.max(OAUTH_REFRESH_LOCK_HOLD_MS, PROVIDER_LOCK_STALE_MS) + AUTH_FILE_LOCK_WAIT_MS;
 
+/** How long a session waits in all while other sessions refresh the provider one after another. */
+const PROVIDER_LOCK_CONTENTION_WAIT_MS = 3 * PROVIDER_LOCK_WAIT_MS;
+
 /** A waiter polls a held provider lock at growing intervals, at least once per holder heartbeat (plus jitter). */
 const PROVIDER_LOCK_POLL_MIN_MS = 100;
 const PROVIDER_LOCK_POLL_MAX_MS = PROVIDER_LOCK_HEARTBEAT_MS;
 
 /** The result of a provider transaction may be a completed token rotation, so a lost or busy auth file lock retries its commit. */
 const PROVIDER_COMMIT_ATTEMPTS = 3;
-
-/** Waits `ms`, or rejects with the signal's reason as soon as it aborts. */
-function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(signal.reason);
-			return;
-		}
-		const onAbort = () => {
-			clearTimeout(timer);
-			reject(signal?.reason);
-		};
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-}
 
 function isLockContention(error: unknown): boolean {
 	const code = error instanceof Error && "code" in error ? error.code : undefined;
@@ -227,40 +217,67 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		return undefined;
 	}
 
-	/** Takes a provider lock, waiting up to PROVIDER_LOCK_WAIT_MS for its holder; the caller's signal stops the wait. */
+	/**
+	 * Takes a provider lock, waiting up to PROVIDER_LOCK_WAIT_MS for each holder in turn, so sessions queued behind
+	 * one another's refreshes all get the rotated token; the caller's signal stops the wait.
+	 */
 	private async acquireProviderLock(
 		path: string,
 		options: Omit<LockOptions, "retries">,
 		signal: AbortSignal | undefined,
 	): Promise<() => Promise<void>> {
-		const deadline = Date.now() + PROVIDER_LOCK_WAIT_MS;
-		for (let pollMs = PROVIDER_LOCK_POLL_MIN_MS; ; pollMs = Math.min(pollMs * 2, PROVIDER_LOCK_POLL_MAX_MS)) {
-			signal?.throwIfAborted();
-			try {
-				return await lockfile.lock(path, { ...options, retries: 0 });
-			} catch (error) {
-				const remainingMs = deadline - Date.now();
-				if (!this.getRetryableLockErrorCode(error) || remainingMs <= 0) throw error;
-				await delay(Math.min(Math.round(pollMs * (1 + Math.random())), remainingMs), signal);
-			}
-		}
+		return waitForLock(
+			() => lockfile.lock(path, { ...options, retries: 0 }),
+			{
+				lockPath: `${path}.lock`,
+				holderWaitMs: PROVIDER_LOCK_WAIT_MS,
+				contentionWaitMs: PROVIDER_LOCK_CONTENTION_WAIT_MS,
+				pollMinMs: PROVIDER_LOCK_POLL_MIN_MS,
+				pollMaxMs: PROVIDER_LOCK_POLL_MAX_MS,
+				retryable: (error) => this.getRetryableLockErrorCode(error) !== undefined,
+				stuck: (error) => error as Error,
+				contended: (error, waitedMs) =>
+					Object.assign(
+						new Error(`Other sessions kept refreshing ${path} for ${Math.round(waitedMs / 1000)} s`, {
+							cause: error,
+						}),
+						{ code: "ELOCKED" },
+					),
+			},
+			signal,
+		);
 	}
 
+	/** Takes the lock of the auth file `path`, waiting while other processes save to it (see {@link waitForLockSync}). */
 	private acquireLockSyncWithRetry(path: string): () => void {
-		const maxAttempts = 10;
-		const delayMs = 20;
-		for (let attempt = 1; ; attempt++) {
-			try {
-				// Lock the resolved file so symlinked aliases of auth.json share one lock (pi #11655).
-				return lockfile.lockSync(resolveExistingAuthPath(path), { realpath: false });
-			} catch (error) {
-				if (!this.getRetryableLockErrorCode(error) || attempt === maxAttempts) throw error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
-			}
-		}
+		// Lock the resolved file so symlinked aliases of auth.json share one lock (pi #11655).
+		const resolved = resolveExistingAuthPath(path);
+		return waitForLockSync(
+			() => lockfile.lockSync(resolved, { realpath: false }),
+			this.authFileLockWait(resolved, AUTH_FILE_SYNC_LOCK_WAIT_MS, () => true),
+		);
+	}
+
+	/** How a save waits for the lock of the resolved auth file `path`; `retryEperm` decides whether a Windows EPERM is retried. */
+	private authFileLockWait(path: string, holderWaitMs: number, retryEperm: () => boolean): LockWait {
+		return {
+			lockPath: `${path}.lock`,
+			holderWaitMs,
+			pollMinMs: AUTH_FILE_LOCK_POLL_MIN_MS,
+			pollMaxMs: AUTH_FILE_LOCK_POLL_MAX_MS,
+			retryable: (error) => {
+				const code = this.getRetryableLockErrorCode(error);
+				return code === "ELOCKED" || (code === "EPERM" && retryEperm());
+			},
+			stuck: (error) => error as Error,
+			contended: (error, waitedMs) =>
+				Object.assign(
+					new Error(`Other processes kept saving ${path} for ${Math.round(waitedMs / 1000)} s`, { cause: error }),
+					{
+						code: "ELOCKED",
+					},
+				),
+		};
 	}
 
 	private readMergedAuth(): string | undefined {
@@ -411,13 +428,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			if (!existsSync(this.authPath)) {
 				this.ensureFileExists();
 			}
-			const deadline = Date.now() + AUTH_FILE_LOCK_WAIT_MS;
-			let retry = 0;
 			let epermRetries = 0;
-			for (;;) {
-				try {
-					// Lock the resolved file so symlinked aliases share one lock (pi #11655).
-					release = await lockfile.lock(resolveExistingAuthPath(this.authPath), {
+			// Lock the resolved file so symlinked aliases share one lock (pi #11655).
+			const resolved = resolveExistingAuthPath(this.authPath);
+			release = await waitForLock(
+				() =>
+					lockfile.lock(resolved, {
 						realpath: false,
 						retries: 0,
 						stale: 30_000,
@@ -425,18 +441,9 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 							lockCompromised = true;
 							lockCompromisedError = err;
 						},
-					});
-					break;
-				} catch (error) {
-					const code = this.getRetryableLockErrorCode(error);
-					const remainingMs = deadline - Date.now();
-					if (!code || remainingMs <= 0) throw error;
-					if (code === "EPERM" && ++epermRetries > 5) throw error;
-					const baseDelayMs = Math.min(10 * 2 ** retry++, 1_000);
-					const delayMs = Math.min(Math.round(baseDelayMs * (1 + Math.random())), remainingMs);
-					await new Promise((resolve) => setTimeout(resolve, delayMs));
-				}
-			}
+					}),
+				this.authFileLockWait(resolved, AUTH_FILE_LOCK_WAIT_MS, () => ++epermRetries <= 5),
+			);
 
 			throwIfCompromised();
 			const current = this.readMergedAuth();
