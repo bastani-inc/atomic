@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "../../config.js";
+import { renameReplacingAsync } from "../rename-retry.ts";
 import type { WorkspaceBinding } from "../worktree-snapshot/types.ts";
 import {
 	attachCleanupCause,
@@ -191,7 +192,8 @@ async function createStore(spec: Extract<WorkspaceRepository, { kind: "remote" }
 			phase: "fetch",
 			allowFailure: true,
 		});
-		await filesystem("move clone to", store, () => rename(staging, store));
+		// Windows can refuse for a moment to move a directory Git has just written.
+		await filesystem("move clone to", store, () => renameReplacingAsync(staging, store));
 	} catch (error) {
 		const cleanupCause = await rm(staging, { recursive: true, force: true }).then(
 			() => undefined,

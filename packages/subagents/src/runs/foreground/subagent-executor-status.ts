@@ -202,7 +202,7 @@ async function emitForegroundResultIntercom(input: {
 	runId: string;
 	mode: SubagentRunMode;
 	results: SingleResult[];
-}): Promise<ReturnType<typeof buildSubagentResultIntercomPayload> | null> {
+}): Promise<{ payload: ReturnType<typeof buildSubagentResultIntercomPayload>; confirmed: boolean } | null> {
 	if (!input.intercomBridge.active || !input.intercomBridge.orchestratorTarget) return null;
 	const children = input.results.flatMap((result, index) =>
 		result.detached
@@ -231,9 +231,9 @@ async function emitForegroundResultIntercom(input: {
 		mode: input.mode,
 		children,
 	});
-	const delivered = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
-	if (!delivered) return null;
-	return payload;
+	const delivery = await deliverSubagentResultIntercomEvent(input.pi.events, payload);
+	if (delivery === "undelivered") return null;
+	return { payload, confirmed: delivery === "delivered" };
 }
 
 export async function maybeBuildForegroundIntercomReceipt(input: {
@@ -243,16 +243,16 @@ export async function maybeBuildForegroundIntercomReceipt(input: {
 	mode: SubagentRunMode;
 	details: Details;
 }): Promise<{ text: string; details: Details } | null> {
-	const payload = await emitForegroundResultIntercom({
+	const delivery = await emitForegroundResultIntercom({
 		pi: input.pi,
 		intercomBridge: input.intercomBridge,
 		runId: input.runId,
 		mode: input.mode,
 		results: input.details.results,
 	});
-	if (!payload) return null;
+	if (!delivery) return null;
 	return {
-		text: formatSubagentResultReceipt({ mode: input.mode, runId: input.runId, payload }),
+		text: formatSubagentResultReceipt({ mode: input.mode, runId: input.runId, ...delivery }),
 		details: stripDetailsOutputsForIntercomReceipt(input.details),
 	};
 }
