@@ -121,7 +121,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 	// Collect complete lines that fit
 	const outputLinesArr: string[] = [];
 	let outputBytesCount = 0;
-	let truncatedBy: "lines" | "bytes" = "lines";
+	let truncatedBy: "lines" | "bytes" | null = null;
 
 	for (let i = 0; i < lines.length && i < maxLines; i++) {
 		const line = lines[i];
@@ -136,8 +136,9 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 		outputBytesCount += lineBytes;
 	}
 
-	// If we exited due to line limit
-	if (outputLinesArr.length >= maxLines && outputBytesCount <= maxBytes) {
+	// Lines left over were cut by the line limit. When every line was kept, only the trailing
+	// newline went over the byte limit and nothing was cut.
+	if (truncatedBy === null && outputLinesArr.length < totalLines) {
 		truncatedBy = "lines";
 	}
 
@@ -146,7 +147,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 
 	return {
 		content: outputContent,
-		truncated: true,
+		truncated: truncatedBy !== null,
 		truncatedBy,
 		totalLines,
 		totalBytes,
@@ -193,7 +194,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 	// Work backwards from the end
 	const outputLinesArr: string[] = [];
 	let outputBytesCount = 0;
-	let truncatedBy: "lines" | "bytes" = "lines";
+	let truncatedBy: "lines" | "bytes" | null = null;
 	let lastLinePartial = false;
 
 	for (let i = lines.length - 1; i >= 0 && outputLinesArr.length < maxLines; i--) {
@@ -217,8 +218,9 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 		outputBytesCount += lineBytes;
 	}
 
-	// If we exited due to line limit
-	if (outputLinesArr.length >= maxLines && outputBytesCount <= maxBytes) {
+	// Lines left over were cut by the line limit. When every line was kept, only the trailing
+	// newline went over the byte limit and nothing was cut.
+	if (truncatedBy === null && outputLinesArr.length < totalLines) {
 		truncatedBy = "lines";
 	}
 
@@ -227,7 +229,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 
 	return {
 		content: outputContent,
-		truncated: true,
+		truncated: truncatedBy !== null,
 		truncatedBy,
 		totalLines,
 		totalBytes,
