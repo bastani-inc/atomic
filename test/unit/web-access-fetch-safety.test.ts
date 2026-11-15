@@ -331,7 +331,6 @@ test("public URLs still use the remote fallback services (#4898)", async () => {
 		"http://[::ffff:a00:101:1]/",
 		"http://[2001:db8::fd1]/",
 		"http://[2001:db8::fe80]/",
-		"http://[fec0::1]/",
 		"http://[::ffff:8.8.8.8]/",
 		"http://notlocalhost.com/",
 		"http://example.local.com/",
@@ -344,6 +343,246 @@ test("public URLs still use the remote fallback services (#4898)", async () => {
 		publicUrls.map((url) => `https://r.jina.ai/${url}`),
 	);
 	assert.equal(geminiFallbacks.extractWithUrlContext.mock.calls.length, publicUrls.length);
+});
+
+function stubFetchFailingDirectly() {
+	const fetch = vi.fn(
+		async (_input: string | URL | Request, _init?: RequestInit) =>
+			new Response("down", { status: 500, statusText: "Internal Server Error" }),
+	);
+	vi.stubGlobal("fetch", fetch);
+	return fetch;
+}
+
+function requestedUrls(fetch: ReturnType<typeof stubFetchFailingDirectly>): string[] {
+	return fetch.mock.calls.map(([input]) => String(input));
+}
+
+function assertNoRemoteFallback(fetch: ReturnType<typeof stubFetchFailingDirectly>) {
+	assert.deepEqual(
+		requestedUrls(fetch).filter((url) => url.startsWith("https://r.jina.ai/")),
+		[],
+	);
+	assert.equal(geminiFallbacks.extractWithUrlContext.mock.calls.length, 0);
+	assert.equal(geminiFallbacks.extractWithGeminiWeb.mock.calls.length, 0);
+}
+
+test("non-http(s) URLs are refused without any request (#5127)", async () => {
+	const fetch = stubFetchFailingDirectly();
+
+	for (const url of [
+		"foo://intranet.LOCAL/secret",
+		"ftp://files.example.com/report.txt",
+		"file:///etc/passwd",
+		"gopher://Wiki.Corp.Internal/",
+	]) {
+		const result = await extractContent(url);
+		assert.deepEqual(
+			result,
+			{ url, title: "", content: "", error: `Unsupported URL scheme: ${new URL(url).protocol}` },
+			url,
+		);
+	}
+
+	assert.deepEqual(requestedUrls(fetch), []);
+	assertNoRemoteFallback(fetch);
+});
+
+test("private hosts in every notation are never sent to remote fallback services (#5127)", async () => {
+	const fetch = stubFetchFailingDirectly();
+
+	for (const url of [
+		"http://INTRANET.LOCAL/",
+		"HTTPS://Wiki.Corp.INTERNAL/",
+		"http://nas.lan/",
+		"http://router.home.arpa/",
+		"http://localhost.localdomain/",
+		"http://printer.local../",
+		"http://Intranet./",
+		"http://2130706433/",
+		"http://0177.0.0.1/",
+		"http://0x7f.1/",
+		"http://10.1/",
+		"http://0xa000001/",
+		"http://0300.0250.0.1/",
+		"http://0xac.0x10.1/",
+		"http://0251.0376.1.1/",
+		"http://[0:0:0:0:0:ffff:127.0.0.1]/",
+		"http://[::FFFF:a9fe:a9fe]/",
+		"http://[::ffff:0:a00:1]/",
+		"http://[::ffff:0:192.168.1.1]/",
+		"http://[::10.0.0.1]/",
+		"http://[::0.0.0.1]/",
+		"http://[64:ff9b::10.0.0.1]/",
+		"http://[0:0:0:0:0:0:0:1]/",
+		"http://[FE80::1]/",
+		"http://[FEBF::1]/",
+		"http://[FEC0::1]/",
+		"http://[feff::1]/",
+		"http://100.64.0.1/",
+		"http://100.127.255.254/",
+		"http://[FD12:3456::1]/",
+		"http://[FC00::1]/",
+	]) {
+		const result = await extractContent(url);
+		assert.equal(result.error, "HTTP 500: Internal Server Error", url);
+	}
+
+	assertNoRemoteFallback(fetch);
+});
+
+test("an IPv6 URL with a zone id is rejected and never sent to remote fallback services (#5127)", async () => {
+	const fetch = stubFetchFailingDirectly();
+
+	const result = await extractContent("http://[fe80::1%25eth0]/");
+
+	assert.equal(result.error, "Invalid URL");
+	assert.deepEqual(requestedUrls(fetch), []);
+	assertNoRemoteFallback(fetch);
+});
+
+test("public hosts that only resemble private ones still use the remote fallback (#5127)", async () => {
+	const fetch = stubFetchFailingDirectly();
+	const publicUrls = [
+		"http://nas.lan.example.com/",
+		"http://home.arpa.example.com/",
+		"http://[64:ff9b::8.8.8.8]/",
+		"http://[::ffff:0:8.8.8.8]/",
+		"http://[::8.8.8.8]/",
+		"http://[64:ff9c::a00:1]/",
+		"http://[0:0:0:1::a00:1]/",
+		"http://100.63.255.255/",
+		"http://100.128.0.1/",
+		"http://101.64.0.1/",
+		"http://[fbff::1]/",
+		"http://[fe7f::1]/",
+	];
+
+	for (const url of publicUrls) await extractContent(url);
+
+	assert.deepEqual(
+		requestedUrls(fetch).filter((url) => url.startsWith("https://r.jina.ai/")),
+		publicUrls.map((url) => `https://r.jina.ai/${url}`),
+	);
+});
+
+test("a public URL that redirects to a private host is never sent to remote fallback services (#5127)", async () => {
+	const fetch = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+		const url = String(input);
+		if (url === "https://example.com/start") {
+			return new Response(null, { status: 302, headers: { location: "https://example.com/next" } });
+		}
+		if (url === "https://example.com/next") {
+			return new Response(null, { status: 307, headers: { location: "http://10.0.0.5/admin" } });
+		}
+		if (url.startsWith("https://r.jina.ai/")) {
+			return new Response(`Markdown Content:\n# Leaked\n\n${"Readable text. ".repeat(20)}`);
+		}
+		throw new TypeError("fetch failed");
+	});
+	vi.stubGlobal("fetch", fetch);
+
+	const result = await extractContent("https://example.com/start");
+
+	assert.equal(result.error, "fetch failed");
+	assert.deepEqual(requestedUrls(fetch), [
+		"https://example.com/start",
+		"https://example.com/next",
+		"http://10.0.0.5/admin",
+	]);
+	for (const [, init] of fetch.mock.calls) assert.equal(init?.redirect, "manual");
+	assert.equal(geminiFallbacks.extractWithUrlContext.mock.calls.length, 0);
+	assert.equal(geminiFallbacks.extractWithGeminiWeb.mock.calls.length, 0);
+});
+
+test("a public URL that redirects to a non-http(s) URL is never sent to remote fallback services (#5127)", async () => {
+	const fetch = vi.fn(async (input: string | URL | Request) => {
+		const url = String(input);
+		if (url === "https://example.com/start") {
+			return new Response(null, { status: 301, headers: { location: "foo://intranet.LOCAL/x" } });
+		}
+		return new Response("down", { status: 500, statusText: "Internal Server Error" });
+	});
+	vi.stubGlobal("fetch", fetch);
+
+	const result = await extractContent("https://example.com/start");
+
+	assert.equal(result.error, "Unsupported redirect URL scheme: foo:");
+	assert.deepEqual(requestedUrls(fetch), ["https://example.com/start"]);
+	assert.equal(geminiFallbacks.extractWithUrlContext.mock.calls.length, 0);
+});
+
+test("redirects between public URLs are followed and still allow the remote fallback (#5127)", async () => {
+	const markdown = `# Page\n\n${"Readable text. ".repeat(20)}`;
+	const fetch = vi.fn(async (input: string | URL | Request) => {
+		const url = String(input);
+		if (url === "https://example.com/a/start") {
+			return new Response("moved", { status: 308, headers: { location: "next?x=1" } });
+		}
+		if (url === "https://example.com/a/next?x=1") {
+			return new Response(null, { status: 303, headers: { location: "https://docs.example.org/page" } });
+		}
+		if (url.startsWith("https://r.jina.ai/")) return new Response(`Markdown Content:\n${markdown}`);
+		return new Response("down", { status: 503, statusText: "Service Unavailable" });
+	});
+	vi.stubGlobal("fetch", fetch);
+
+	const result = await extractContent("https://example.com/a/start");
+
+	assert.deepEqual(result, {
+		url: "https://example.com/a/start",
+		title: "Page",
+		content: markdown.trim(),
+		error: null,
+	});
+	assert.deepEqual(requestedUrls(fetch), [
+		"https://example.com/a/start",
+		"https://example.com/a/next?x=1",
+		"https://docs.example.org/page",
+		"https://r.jina.ai/https://example.com/a/start",
+	]);
+});
+
+test("a non-redirect response with a Location header is used as is (#5127)", async () => {
+	const fetch = vi.fn(
+		async (_input: string | URL | Request) =>
+			new Response("# Created\n\nDone.", {
+				status: 201,
+				headers: { "content-type": "text/plain", location: "http://10.0.0.5/item" },
+			}),
+	);
+	vi.stubGlobal("fetch", fetch);
+
+	const result = await extractContent("https://example.com/items");
+
+	assert.deepEqual(result, {
+		url: "https://example.com/items",
+		title: "Created",
+		content: "# Created\n\nDone.",
+		error: null,
+	});
+	assert.deepEqual(requestedUrls(fetch), ["https://example.com/items"]);
+});
+
+test("a 3xx response without a Location header is reported as an HTTP error (#5127)", async () => {
+	vi.stubGlobal("fetch", async () => new Response(null, { status: 304, statusText: "Not Modified" }));
+
+	const result = await extractContent("http://localhost/cached");
+
+	assert.equal(result.error, "HTTP 304: Not Modified");
+});
+
+test("a redirect loop stops after 20 redirects (#5127)", async () => {
+	const fetch = vi.fn(
+		async (input: string | URL | Request) =>
+			new Response(null, { status: 302, headers: { location: `${String(input)}x` } }),
+	);
+	vi.stubGlobal("fetch", fetch);
+
+	const result = await extractContent("http://localhost/loop");
+
+	assert.equal(result.error, "Too many redirects");
+	assert.equal(fetch.mock.calls.length, 21);
 });
 
 test("PDF file names keep the title but drop unsafe characters and reserved names (#4898)", async () => {
