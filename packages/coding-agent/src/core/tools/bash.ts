@@ -316,6 +316,15 @@ export function createLocalBashOperations(options?: {
 		},
 	};
 }
+async function isEnterableDirectory(path: string): Promise<boolean> {
+	try {
+		if (!(await fsStat(path)).isDirectory()) return false;
+		await fsAccess(path, constants.X_OK);
+		return true;
+	} catch {
+		return false;
+	}
+}
 export interface BashSpawnContext {
 	command: string;
 	cwd: string;
@@ -498,9 +507,16 @@ export function createBashToolDefinition(
 				true,
 				options?.shellDialect,
 			);
-			const strippedExpandedContext = hasExplicitCwd
+			let strippedExpandedContext = hasExplicitCwd
 				? undefined
 				: stripLeadingCdCommand(expandedCommand, requestedCwd);
+			// Locally, a `cd` that bash would refuse runs as written so the command fails, or continues, as bash decides.
+			if (
+				strippedExpandedContext &&
+				!options?.operations &&
+				!(await isEnterableDirectory(strippedExpandedContext.cwd))
+			)
+				strippedExpandedContext = undefined;
 			// Read per command: a blueprint build that ran behind the first turn writes its `$ENVRC` after the tool exists.
 			const commandPrefix = options?.commandPrefix;
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${expandedCommand}` : expandedCommand;

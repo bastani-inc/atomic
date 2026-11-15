@@ -129,14 +129,26 @@ afterEach(async () => {
 const storeDir = () => sandbox.path("host");
 const agentDir = () => sandbox.path("agent");
 
-/** A checkout whose blueprint installs `node_modules` and declares `build/` as build output. */
+const DEFAULT_BLUEPRINT = `maintenance:\n  - ${JSON.stringify(INSTALL)}\n  - ${JSON.stringify(BUILD)}\n`;
+
+/** The project settings that declare `paths` as build output in `resume.cache`. */
+function buildSettings(paths: readonly string[]): string {
+	return JSON.stringify({ resume: { cache: paths.length === 0 ? [] : [{ paths, kind: "build" }] } });
+}
+
+/**
+ * A checkout whose blueprint installs `node_modules` and whose committed `.atomic/settings.json` declares `build` (by
+ * default `build/` for the default blueprint, nothing for another) as build output in `resume.cache`.
+ */
 async function checkout(
-	blueprint = `maintenance:\n  - ${JSON.stringify(INSTALL)}\n  - ${JSON.stringify(BUILD)}\ncache:\n  - path: build\n    kind: build\n`,
+	blueprint = DEFAULT_BLUEPRINT,
+	build: readonly string[] = blueprint === DEFAULT_BLUEPRINT ? ["build"] : [],
 ) {
 	return sandbox.remoteWithClone("repo", {
 		".gitignore": "node_modules/\nbuild/\n.env\nid_rsa\n",
 		"README.md": "hello\n",
 		".atomic/blueprint.yaml": forThisHost(blueprint),
+		".atomic/settings.json": buildSettings(build),
 	});
 }
 
@@ -349,7 +361,8 @@ describe("atomic blueprint prebuild (#4748)", () => {
 		"secrets of the checkout never reach the prebuilt slot or the parked seeds (#4748)",
 		async () => {
 			const { clone, remote } = await checkout(
-				`maintenance: mkdir -p build && echo out > build/out.txt && echo token > .env.local\ncache:\n  - path: build\n    kind: build\n  - path: .env.local\n    kind: build\n`,
+				`maintenance: mkdir -p build && echo out > build/out.txt && echo token > .env.local\n`,
+				["build", ".env.local"],
 			);
 			sandbox.write(join(clone, ".env"), "SECRET=1\n");
 			sandbox.write(join(clone, "id_rsa"), "PRIVATE KEY\n");
@@ -406,7 +419,8 @@ describe("atomic blueprint prebuild (#4748)", () => {
 					? ""
 					: `ln -s ${JSON.stringify(outside.replace(/\\/g, "/"))} linked && ln -s ${JSON.stringify(outside.replace(/\\/g, "/"))} below && `;
 			const { clone, remote } = await checkout(
-				`maintenance: ${link}mkdir -p build/sub && echo out > build/sub/out.txt\ncache:\n  - path: build/sub\n    kind: build\n  - path: build\n    kind: build\n  - path: build\n    kind: build\n  - path: below/build\n    kind: build\n  - path: linked\n    kind: build\n  - path: never-built\n    kind: build\n`,
+				`maintenance: ${link}mkdir -p build/sub && echo out > build/sub/out.txt\n`,
+				["build/sub", "build", "build", "below/build", "linked", "never-built"],
 			);
 			sandbox.write(join(clone, ".gitignore"), "build/\nlinked\nbelow\n");
 			await sandbox.commitAll(clone, "ignore the link");
@@ -645,7 +659,7 @@ describe("repository identity across remote spellings (#4748)", () => {
 	});
 
 	test("the cache keys of an SSH and an HTTPS checkout of one repository are the same (#4748)", async () => {
-		const { clone } = await checkout(`cache:\n  - path: build\n    kind: build\n`);
+		const { clone } = await checkout("maintenance: echo ok\n", ["build"]);
 		await sandbox.git(clone, "remote", "set-url", "origin", SSH);
 		const ssh = await blueprintCacheKeys(clone, { agentDir: agentDir(), storeDir: storeDir() });
 		await sandbox.git(clone, "remote", "set-url", "origin", HTTPS);
@@ -943,16 +957,13 @@ describe("prebuild and seed edge cases (#4748)", () => {
 	);
 
 	test(
-		"parking without kind: build output removes the earlier seed and writes none (#4748)",
+		"parking without build paths in resume.cache removes the earlier seed and writes none (#4748)",
 		async () => {
 			const { clone, remote } = await checkout();
 			const first = await prebuild(clone, true);
 			assert.deepEqual(first.parked, ["build"]);
 			assert.ok(first.parkMs !== null && first.parkMs >= 0 && first.parkMs < PREBUILD_TEST_TIMEOUT_MS);
-			sandbox.write(
-				join(clone, ".atomic", "blueprint.yaml"),
-				forThisHost(`maintenance: ${JSON.stringify(INSTALL)}\n`),
-			);
+			sandbox.write(join(clone, ".atomic", "settings.json"), buildSettings([]));
 			await sandbox.commitAll(clone, "no build output");
 			const second = await prebuild(clone, true);
 			assert.equal(second.status, "built");
@@ -971,9 +982,10 @@ describe("prebuild and seed edge cases (#4748)", () => {
 	test.skipIf(process.platform === "win32")(
 		"a move that fails puts the parked paths back, keeps the earlier seed, and leaves the worktree idle (#4748)",
 		async () => {
-			const { clone, remote } = await checkout(
-				`maintenance: mkdir -p a b && echo a > a/f && chmod 555 b\ncache:\n  - path: a\n    kind: build\n  - path: b\n    kind: build\n`,
-			);
+			const { clone, remote } = await checkout(`maintenance: mkdir -p a b && echo a > a/f && chmod 555 b\n`, [
+				"a",
+				"b",
+			]);
 			sandbox.write(join(clone, ".gitignore"), "a/\nb/\n");
 			await sandbox.commitAll(clone, "ignore a and b");
 			try {
