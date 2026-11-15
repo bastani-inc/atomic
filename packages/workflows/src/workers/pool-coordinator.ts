@@ -2867,8 +2867,10 @@ export class PoolCoordinator {
 						const receipt = await leased(() =>
 							shipping === undefined ? commitShared() : shipping.commit(work, message.mutation, commitShared),
 						);
-						// #3983: a session append bills no usage, so its receipt does not wait on another transaction.
-						if (message.mutation.kind !== "session-append") this.noteUsage(await this.usageLedger!.total(root));
+						// #3983: a session append bills no usage, so its receipt does not wait on another transaction. Nor does a
+						// checkpoint this host accepted locally: only a checkpoint that bills none ships (#4768).
+						if (message.mutation.kind !== "session-append" && receipt.local !== true)
+							this.noteUsage(await this.usageLedger!.total(root));
 						return receipt;
 					}
 					if (message.kind === "budget") {
