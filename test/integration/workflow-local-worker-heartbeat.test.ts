@@ -298,11 +298,11 @@ test(
 			await until(() => acknowledged().includes(3));
 			assert.equal(
 				requests.filter((request) => request.kind === "heartbeat").length,
-				1,
-				"only the attempt's final heartbeat ran: pause, resume and quit arrived by push",
+				2,
+				"only the heartbeat that confirms the claim (#5034) and the attempt's final heartbeat ran: pause, resume and quit arrived by push",
 			);
 			assert.ok(
-				requests.findIndex((request) => request.kind === "heartbeat") <
+				requests.findLastIndex((request) => request.kind === "heartbeat") <
 					requests.findIndex((request) => request.kind === "controlled" && request.revision === 3),
 				"a quit attempt records its final usage before it acknowledges the quit",
 			);
