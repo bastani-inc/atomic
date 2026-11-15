@@ -497,6 +497,9 @@ describe("git resolution (#4322)", () => {
 						"certs",
 						"ca-bundle.crt",
 					),
+					GIT_CONFIG_COUNT: "1",
+					GIT_CONFIG_KEY_0: "core.longpaths",
+					GIT_CONFIG_VALUE_0: "true",
 				}
 			: {
 					GIT_EXEC_PATH: join(layoutRoot, "libexec", "git-core"),
@@ -1448,8 +1451,28 @@ describe("git resolution details (#4322)", () => {
 			GIT_EXEC_PATH: join(installDir, subfolder, "libexec", "git-core"),
 			GIT_TEMPLATE_DIR: join(installDir, subfolder, "share", "git-core", "templates"),
 			GIT_SSL_CAINFO: join(installDir, subfolder, "etc", "ssl", "certs", "ca-bundle.crt"),
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "core.longpaths",
+			GIT_CONFIG_VALUE_0: "true",
 		});
 		assert.equal(tools.getGitShellEnvironment({ Path: join(tempDir, "none") })?.pathEntry, join(installDir, "cmd"));
+	});
+
+	it("turns on long paths for the Windows distribution after the caller's own configuration (#4932)", () => {
+		mocks.platform.mockReturnValue("win32");
+		mocks.arch.mockReturnValue("x64");
+		writeGit(join(installDir, "cmd"), "git.exe", 0o644, "2.56.0");
+		markCurrentInstall();
+		const shell = tools.getGitShellEnvironment({
+			Path: join(tempDir, "none"),
+			GIT_CONFIG_COUNT: "1",
+			GIT_CONFIG_KEY_0: "user.name",
+			GIT_CONFIG_VALUE_0: "Someone",
+		});
+		assert.equal(shell?.env.GIT_CONFIG_COUNT, "2");
+		assert.equal(shell?.env.GIT_CONFIG_KEY_0, undefined);
+		assert.equal(shell?.env.GIT_CONFIG_KEY_1, "core.longpaths");
+		assert.equal(shell?.env.GIT_CONFIG_VALUE_1, "true");
 	});
 
 	it("finds git.exe on a Windows PATH without an executable bit", async () => {
