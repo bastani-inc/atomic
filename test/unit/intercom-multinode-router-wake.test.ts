@@ -1794,3 +1794,67 @@ describe("released child sends queued across faults (#4401)", () => {
 		assert.deepEqual(wakeFramesOf(owner), [WAKE]);
 	});
 });
+
+describe("an Intercom id bound to the return address that registered it", () => {
+	/** A session on another broker registering under `original`'s id with a return address of its own. */
+	function underTheSameId(original: BrokerConnectedSession): BrokerConnectedSession {
+		const other = session("other");
+		return { ...other, info: { ...other.info, id: original.info.id } };
+	}
+
+	/** `original` registered on `node` and is away; a sender on a second broker. */
+	async function awaySessionAndSender(shared: Cluster) {
+		const home = await startNode(shared);
+		const original = session("original");
+		home.sessions.set(original.info.id, original);
+		await home.router.sessionRegistered(original);
+		home.sessions.delete(original.info.id);
+		home.router.sessionLeft(original, undefined, false);
+		await flush();
+		const senderNode = await startNode(shared);
+		const sender = session("sender");
+		senderNode.sessions.set(sender.info.id, sender);
+		await senderNode.router.sessionRegistered(sender);
+		return { home, original, senderNode, sender };
+	}
+
+	async function queuedFor(node: Node, target: BrokerConnectedSession): Promise<string[]> {
+		const rows = await node.state.outbox.listUndelivered(deliveryTargetIdentity(target));
+		if (rows.status !== "listed") throw new Error(`the outbox did not list: ${rows.reason}`);
+		return rows.rows.map((row) => row.messageId);
+	}
+
+	test("a session registered under an id bound to another return address is not routed to by that id", async () => {
+		const shared = await cluster();
+		const { original, senderNode, sender } = await awaySessionAndSender(shared);
+		const elsewhere = await startNode(shared);
+		const other = underTheSameId(original);
+		elsewhere.sessions.set(other.info.id, other);
+		await elsewhere.router.sessionRegistered(other);
+
+		const send = remoteSend(sender, original.info.id, false);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		assert.deepEqual(await queuedFor(senderNode, other), []);
+		assert.deepEqual(await queuedFor(senderNode, original), [send.id]);
+	});
+
+	test("a presence taken under an id bound to another return address is not routed to by that id", async () => {
+		const shared = await cluster();
+		const { original, senderNode, sender } = await awaySessionAndSender(shared);
+		// A broker that grants ids without binding them took a presence under the id.
+		const other = underTheSameId(original);
+		const taken = await senderNode.state.leases.acquire(
+			{ kind: "presence", targetIdentity: deliveryTargetIdentity(other), session: other.info },
+			"unbinding-broker",
+			BROKER_LEASE_STALE_AFTER_MS,
+		);
+		assert.equal(taken.status, "acquired");
+
+		const send = remoteSend(sender, original.info.id, false);
+		senderNode.router.routeSend(send.request);
+		await flush();
+		assert.deepEqual(await queuedFor(senderNode, other), []);
+		assert.deepEqual(await queuedFor(senderNode, original), [send.id]);
+	});
+});

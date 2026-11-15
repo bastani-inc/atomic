@@ -1,6 +1,7 @@
 import type { Message, SessionInfo } from "../types.js";
 import {
 	BROKER_LEASE_STALE_AFTER_MS,
+	holdsSessionId,
 	type IntercomBrokerStateStore,
 	KNOWN_SESSION_RETENTION_MS,
 	OUTBOX_CLAIM_STALE_AFTER_MS,
@@ -12,6 +13,7 @@ import {
 	type ReleasedAskClaim,
 	type ReleasedAskerReplyFrame,
 	type ReleasedAskRecord,
+	returnAddressOf,
 } from "./multinode-state-store.js";
 import { AWAY_ASK_RETENTION_MS } from "./away-asks.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
@@ -107,11 +109,16 @@ async function liveSession(
 /** The owner where it is connected now, or where it last was, so the reply waits there for it. */
 async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string): Promise<ReleasedReplyOwner | undefined> {
 	const live = await liveSession(state, (subject) => subject.session.id === ownerSessionId);
-	if (live !== undefined) return live;
+	// A presence or record under the owner's id bound to another return address is not the owner (multi-node binding).
+	if (live !== undefined && (await holdsSessionId(state.knownSessions, ownerSessionId, returnAddressOf(live.identity))))
+		return live;
 	const known = await state.knownSessions.lookup(ownerSessionId, KNOWN_SESSION_RETENTION_MS);
-	const session =
-		known.status === "found" ? known.sessions.find((candidate) => candidate.intercomSessionId === ownerSessionId) : undefined;
-	return session === undefined ? undefined : { identity: session.targetIdentity, sessionId: ownerSessionId };
+	for (const session of known.status === "found" ? known.sessions : []) {
+		if (session.intercomSessionId !== ownerSessionId) continue;
+		if (await holdsSessionId(state.knownSessions, ownerSessionId, session.atomicSessionId))
+			return { identity: session.targetIdentity, sessionId: ownerSessionId };
+	}
+	return undefined;
 }
 
 /**
