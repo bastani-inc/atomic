@@ -1128,7 +1128,6 @@ export class MultiNodeRouter {
 	 * routes the shared state did not take, which this broker keeps as a single-node broker does.
 	 */
 	keepAwayRoutes(questions: readonly PendingQuestion[], keepLocally: (questions: readonly PendingQuestion[]) => void): void {
-		if (questions.length === 0) return;
 		let kept = 0;
 		const keeping = (async () => {
 			for (const question of questions) {
@@ -1297,10 +1296,8 @@ export class MultiNodeRouter {
 			}
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
-			if (moved !== "expired") {
-				const adopted = this.adoptSharedRoute(request, target);
-				if ((await Promise.race([adopted, expired])) === "expired") adopted.catch((error: Error) => this.report(error));
-			}
+			const adopted = this.adoptSharedRoute(request, target);
+			if ((await Promise.race([adopted, expired])) === "expired") adopted.catch((error: Error) => this.report(error));
 			request.notFound();
 		} finally {
 			clearTimeout(bound);
