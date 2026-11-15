@@ -96,6 +96,7 @@ import {
 	questionIdentity,
 } from "./held-prompt-answers.js";
 import { hostWorkerBindings, PROCESS_BOUND_RUN_OPTIONS } from "./host-options.js";
+import { retryWithinLease } from "./lease-outage.js";
 import { OpenStages, type PublishedStages } from "./open-stages.js";
 import { childPlacement } from "./placement-choice.js";
 import { WorkerPlacementConfigError } from "./placement-errors.js";
@@ -486,6 +487,11 @@ export class LocalWorkerPool {
 			 */
 			readonly stageInputTimeoutMs?: number;
 			/**
+			 * Internal, tests only: how long a worker resends a request the shared store refuses before it hands its child
+			 * on (`OUTAGE_HANDOFF_MS`, #4768). Public options never set it.
+			 */
+			readonly outageHandoffMs?: number;
+			/**
 			 * A caller's registry (SDK `RunOpts.stageControlRegistry`) that receives a handle for
 			 * every live pooled stage. A handle opens a watch only while it is used.
 			 */
@@ -634,6 +640,7 @@ export class LocalWorkerPool {
 					...(this.options.stageInputTimeoutMs === undefined
 						? {}
 						: { stageInputTimeoutMs: this.options.stageInputTimeoutMs }),
+					...(this.options.outageHandoffMs === undefined ? {} : { outageHandoffMs: this.options.outageHandoffMs }),
 				},
 				...(this.desiredControl === undefined ? {} : { control: this.desiredControl }),
 			})) as PoolUsage;
@@ -1405,21 +1412,30 @@ export class LocalWorkerPool {
 		if (options.stageUiBroker !== undefined) this.questionBroker ??= options.stageUiBroker;
 		this.evaluateBudget();
 		await this.flushRootRun();
-		const enqueued = (await this.command({
-			kind: "enqueue",
-			descriptor: {
-				boundaryId: options.parentRun.stageId,
-				childRunId: options.runId!,
-				scope: options.durableScope.scopePrefix,
-				definition: `${selectedSource.path}#${selectedSource.exportName}`,
-				digest: selectedSource.digest,
-				inputs,
-				execution,
-			},
-			boundary,
-			...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
-			...(await forkSessionClaims(this.backend, root, options.durableScope.scopePrefix)),
-		})) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
+		// The shared store refusing the enqueue for a while (its write lock busy under other hosts' writes) delays the
+		// child rather than failing it (#4768): an enqueue sent again finds the same work, and the pool's own failure,
+		// its close, or the root's abort still end the wait.
+		const claims = await forkSessionClaims(this.backend, root, options.durableScope.scopePrefix);
+		const descriptor = {
+			boundaryId: options.parentRun.stageId,
+			childRunId: options.runId!,
+			scope: options.durableScope.scopePrefix,
+			definition: `${selectedSource.path}#${selectedSource.exportName}`,
+			digest: selectedSource.digest,
+			inputs,
+			execution,
+		};
+		const enqueued = (await retryWithinLease(
+			() =>
+				this.command({
+					kind: "enqueue",
+					descriptor,
+					boundary,
+					...(this.options.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
+					...claims,
+				}),
+			() => !this.closed && this.failure === undefined && options.signal?.aborted !== true,
+		)) as { readonly work: PoolWork; readonly result?: WorkflowSerializableObject };
 		const work = enqueued.work;
 		this.works.set(work.id, work);
 		if (enqueued.result !== undefined && !this.results.has(work.id)) this.results.set(work.id, enqueued.result);
@@ -1596,6 +1612,8 @@ export class LocalWorkerPool {
 	private command(body: CoordinatorCommandBody): Promise<unknown> {
 		const coordinator = this.connect();
 		if (this.coordinatorLost !== undefined) return Promise.reject(this.coordinatorLost);
+		// A closed pool's coordinator may already be gone without telling: work sent to it now would wait forever (#4768).
+		if (this.closed && body.kind === "enqueue") return Promise.reject(this.closedError(this.root));
 		const id = ++this.commandSequence;
 		return new Promise((resolve, reject) => {
 			this.commands.set(id, { resolve, reject });
