@@ -9,6 +9,7 @@ import type { RunOpts } from "../../packages/workflows/src/runs/foreground/execu
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import {
 	CheckpointShipping,
+	RELEASE_FLUSH_ATTEMPTS,
 	type ShipDelivery,
 	type ShippingFallback,
 	shippableCheckpoint,
@@ -464,4 +465,77 @@ test("a stage checkpoint with a session never ships (#4768)", async () => {
 	await shipping.commit(LEASE, stage, direct.commit);
 	assert.equal(direct.calls.length, 1);
 	assert.deepEqual(await local.pending(LEASE), []);
+});
+
+test("an attempt whose oldest unshipped checkpoint waited past maxLagMs accepts nothing more until it is shipped (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	const unreachable = new Error("shared store unreachable");
+	shared.state.failWith = unreachable;
+	clock.now = SHIPPING.maxLagMs;
+	await shipping.hold(LEASE, LEASE_MS);
+	assert.equal((await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit)).local, true, "within maxLagMs");
+	clock.now = SHIPPING.maxLagMs + 1;
+	await shipping.hold(LEASE, LEASE_MS);
+	await assert.rejects(shipping.commit(LEASE, checkpoint("c"), sharedCommit().commit), unreachable);
+	assert.deepEqual(
+		(await local.pending(LEASE)).map((event) => event.key),
+		["a", "b"].map(keyOf),
+		"the step past the window was not acknowledged",
+	);
+	shared.state.failWith = undefined;
+	await shipping.commit(LEASE, checkpoint("c"), sharedCommit().commit);
+	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf), "what waited too long shipped first");
+});
+
+test("releasing an attempt ships what it accepted, retrying while the shared store is briefly unreachable (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	let failures = 2;
+	const flaky: ShipDelivery = async (attempt, batch) => {
+		if (failures-- > 0) throw new Error("briefly unreachable");
+		await shared.deliver(attempt, batch);
+	};
+	const reported: ShippingFallback[] = [];
+	const shipping = new CheckpointShipping(local, {
+		...SHIPPING,
+		host: "host",
+		deliver: flaky,
+		onReleaseFailure: (failure) => reported.push(failure),
+	});
+	opened.push(shipping);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await shipping.release(LEASE.id);
+	assert.deepEqual(shared.recorded, [keyOf("a")]);
+	assert.deepEqual(reported, []);
+});
+
+test("an attempt released while the shared store stays unreachable is reported, and keeps its checkpoints for a later ship (#4768)", async () => {
+	const { shard: local } = await shard();
+	const down = new Error("unreachable");
+	const reported: ShippingFallback[] = [];
+	let tries = 0;
+	const shipping = new CheckpointShipping(local, {
+		...SHIPPING,
+		host: "host",
+		deliver: async () => {
+			tries++;
+			throw down;
+		},
+		onReleaseFailure: (failure) => reported.push(failure),
+	});
+	opened.push(shipping);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await shipping.release(LEASE.id);
+	assert.equal(tries, RELEASE_FLUSH_ATTEMPTS);
+	assert.deepEqual(reported, [{ workId: LEASE.id, error: down }]);
+	assert.deepEqual(
+		(await local.pending(LEASE)).map((event) => event.key),
+		[keyOf("a")],
+	);
 });

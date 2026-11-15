@@ -26,6 +26,13 @@ export function shippableCheckpoint(
 	return !(Array.isArray(snapshots) && snapshots.length > 0);
 }
 
+/** How many times an attempt's checkpoints are shipped before its work is released without them. */
+export const RELEASE_FLUSH_ATTEMPTS = 4;
+/** The first wait between those tries; each next one is twice as long. */
+export const RELEASE_FLUSH_RETRY_MS = 250;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** A local journal failure that sent an attempt back to committing every checkpoint to the shared journal. */
 export interface ShippingFallback {
 	readonly workId: string;
@@ -80,6 +87,11 @@ export class CheckpointShipping {
 			readonly host: string;
 			readonly deliver: ShipDelivery;
 			readonly onFallback?: (fallback: ShippingFallback) => void;
+			/**
+			 * An attempt's work is released with checkpoints it accepted still unshipped, after {@link RELEASE_FLUSH_ATTEMPTS}
+			 * tries: they ship later only if no other attempt took the work over.
+			 */
+			readonly onReleaseFailure?: (failure: ShippingFallback) => void;
 			/** The monotonic clock, in milliseconds. */
 			readonly now?: () => number;
 		},
@@ -111,7 +123,21 @@ export class CheckpointShipping {
 	 */
 	async release(workId: string): Promise<void> {
 		const attempt = this.attempts.get(workId);
-		if (attempt !== undefined) await this.flush(attempt.lease).catch(() => {});
+		if (attempt !== undefined)
+			for (let tries = 1; ; tries++) {
+				try {
+					await this.flush(attempt.lease);
+					break;
+				} catch (error) {
+					// A fenced attempt's checkpoints are dropped: another attempt owns its work.
+					if (attempt.fenced !== undefined) break;
+					if (tries >= RELEASE_FLUSH_ATTEMPTS) {
+						this.options.onReleaseFailure?.({ workId, error: error as Error });
+						break;
+					}
+					await sleep(RELEASE_FLUSH_RETRY_MS * 2 ** (tries - 1));
+				}
+			}
 		this.attempts.delete(workId);
 		this.shard.release(workId);
 		this.syncOnly.delete(workId);
@@ -138,6 +164,12 @@ export class CheckpointShipping {
 			return commitShared();
 		}
 		const checkpoint = mutation.checkpoint;
+		// An attempt whose oldest unshipped checkpoint waited past `maxLagMs` accepts nothing more until it is shipped,
+		// so the steps a host's death leaves to run again stay within that window.
+		const behind = this.attempts.get(lease.id);
+		const oldest = behind?.accepted[0];
+		if (behind !== undefined && oldest !== undefined && this.now() - oldest > this.options.maxLagMs)
+			await this.flush(lease);
 		try {
 			const { accepted } = await this.shard.accept(
 				this.shard.root,
