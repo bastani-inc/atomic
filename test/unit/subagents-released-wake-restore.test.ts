@@ -92,6 +92,10 @@ interface Harness {
 	host: AgentTaskHost;
 	original: OriginalLaunch;
 	originalGate?: PromiseWithResolvers<void>;
+	/** Holds a woken run open, before ("before-save") or after ("after-save") its results are saved, until resolved. */
+	wokenGate?: { gate: PromiseWithResolvers<void>; at: "before-save" | "after-save" };
+	/** Every tool result a woken run saved into the child's transcript, in order. */
+	readonly saved: DetachedToolResult[];
 	closeOwnerAndReopen(cause: "session-close" | "stage-close"): Promise<void>;
 	call(params: Parameters<ReturnType<typeof createSubagentExecutor>["execute"]>[1]): Promise<SubagentToolResult>;
 	admit(runId: string, options?: Partial<RunSyncOptions>): Promise<TaskId>;
@@ -206,6 +210,7 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 		} as unknown as ExtensionContext,
 		runs,
 		holds,
+		saved: [],
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async admit(runId, extra) {
 			const response = await runAgentTask({
@@ -249,7 +254,25 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 		const [parentCwd, agents, agentName, task, options] = args;
 		runs.push({ task, options, scope: currentWorktreeRootMappings() });
 		if (task !== ORIGINAL_TASK) {
-			const { resumeToolResults: _results, skipTaskPrompt: _skip, ...rest } = options;
+			const { resumeToolResults: results, skipTaskPrompt: _skip, ...rest } = options;
+			// As the real runner: a woken run's results are saved into its transcript only once nothing stopped it first, and
+			// then toolResultsSaved reports them.
+			const saveResults = () => {
+				if (!results?.length) return;
+				state.saved.push(...results);
+				options.taskExecution?.toolResultsSaved?.(results.map((result) => result.toolCallId));
+			};
+			const woken = state.wokenGate;
+			if (woken) {
+				if (woken.at === "after-save") saveResults();
+				const out = await runSync(parentCwd, agents, agentName, task, {
+					...rest,
+					testSession: { output: "resumed", promptGate: woken.gate.promise, abortResolvesPrompt: true },
+				});
+				if (woken.at === "before-save" && out.status !== "interrupted") saveResults();
+				return out;
+			}
+			saveResults();
 			return runSync(parentCwd, agents, agentName, task, { ...rest, testSession: { output: "resumed" } });
 		}
 		if (state.original === "completes")
@@ -1032,5 +1055,76 @@ test("a child that never started and whose directory is gone here is reported un
 	assert.equal(
 		outcome.kind === "unrestorable" ? outcome.reason : "",
 		`its working directory no longer exists: ${gone}`,
+	);
+});
+
+/**
+ * Wake a released child waiting on ci-1 with ci-1's result, as the wake handler does: the result is held in its record
+ * first, then the child is relaunched. Its woken run stays open at `at` until the returned gate is resolved.
+ */
+async function wokenByResult(
+	h: Harness,
+	runId: string,
+	result: DetachedToolResult,
+	at: "before-save" | "after-save",
+): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void> }> {
+	const record = await endedOnPendingCall(h, runId);
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [result]);
+	const gate = Promise.withResolvers<void>();
+	h.wokenGate = { gate, at };
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
+		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		toolResults: [result],
+		promptless: true,
+	});
+	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
+	assert.ok(outcome.kind === "restored");
+	await h.waitForLatest(record.childId, (latest) => latest.state === "running" && latest.taskId === outcome.taskId);
+	return { record, gate };
+}
+
+/** Stop the child with `action`, then resume it and let the resumed run finish. */
+async function stopThenResume(h: Harness, childId: string, action: "pause" | "quit"): Promise<void> {
+	await h.call({ action, id: childId });
+	await h.waitForLatest(childId, (latest) => latest.terminalStatus === (action === "pause" ? "paused" : "quit"));
+	h.wokenGate = undefined;
+	const runsBefore = h.runs.length;
+	await h.call({ action: "resume", id: childId });
+	await h.waitForLatest(childId, (latest) => h.runs.length > runsBefore && latest.terminalStatus === "ok");
+}
+
+function savedCopies(h: Harness, output: string): number {
+	return h.saved.filter((saved) => text({ content: saved.result.content } as SubagentToolResult) === output).length;
+}
+
+for (const action of ["pause", "quit"] as const)
+	test(`a woken child ${action === "pause" ? "paused" : "quit"} before it saved its wake's result receives that result exactly once when resumed (#5012)`, async () => {
+		const h = harness();
+		const output = `CI is green (${action})`;
+		const { record } = await wokenByResult(h, `wake-${action}-unsaved`, waitResult(output), "before-save");
+
+		await stopThenResume(h, record.childId, action);
+
+		assert.equal(savedCopies(h, output), 1, "the result reaches the child's transcript once, through its resume");
+		assert.deepEqual(
+			h.latest(record.childId)?.heldToolResults ?? [],
+			[],
+			"nothing is left held once it was delivered",
+		);
+	});
+
+test("a woken child paused after it saved its wake's result is not given that result again when resumed (#5012)", async () => {
+	const h = harness();
+	const output = "CI is green (saved)";
+	const { record } = await wokenByResult(h, "wake-pause-saved", waitResult(output), "after-save");
+
+	await stopThenResume(h, record.childId, "pause");
+
+	assert.equal(savedCopies(h, output), 1, "the result saved before the pause is not delivered again");
+	const resumed = h.runs.at(-1);
+	assert.ok(resumed);
+	assert.doesNotMatch(
+		JSON.stringify([resumed.task, resumed.options.resumeFollowUps, resumed.options.resumeToolResults]),
+		/CI is green \(saved\)/,
 	);
 });
