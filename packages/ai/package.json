@@ -1,7 +1,7 @@
 {
 	"name": "@bastani/atomic-ai",
 	"version": "0.0.0",
-	"description": "Bastani-branded unified LLM API with automatic model discovery and provider configuration",
+	"description": "Atomic's unified LLM API: providers, models, auth, streaming, tools, images and classification",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -115,7 +115,7 @@
 		"bedrock",
 		"unified",
 		"api",
-		"bastani"
+		"atomic"
 	],
 	"author": "Mario Zechner",
 	"contributors": [
@@ -130,7 +130,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/ai"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/ai#readme",
+	"homepage": "https://docs.bastani.ai/libraries/ai",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
