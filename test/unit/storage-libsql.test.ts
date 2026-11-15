@@ -17,6 +17,7 @@ import {
 	removeTempDirectory,
 	spawnSyncCollect,
 } from "../helpers/runtime.js";
+import { TEST_TIMEOUT_MS } from "../helpers/test-timeout.js";
 
 registerSqliteDatabaseConformance({ describe, it }, "libSQL file", withLibsqlDatabase);
 
@@ -91,6 +92,11 @@ for (const scenario of ["local file", "unsupported query", "malformed URL"]) {
 }
 
 const REAL_BUN_CONFORMANCE_TIMEOUT_MS = 120_000;
+/**
+ * Each case of the Bun child opens, writes and closes real libSQL database files, so a case is held to the repository's
+ * per-test budget rather than `bun test`'s 5 s default, which the first cases outgrow on a loaded Windows host.
+ */
+const BUN_CONFORMANCE_CASE_TIMEOUT_MS = TEST_TIMEOUT_MS;
 test(
 	"libSQL facade and SQL session conformance pass on Bun",
 	() => {
@@ -98,7 +104,13 @@ test(
 		try {
 			// The synchronous spawn returns only after the child exits and releases its native file handles.
 			const result = spawnSyncCollect(
-				[bunExecutable(), "test", join(moduleDir(import.meta.url), "../fixtures/storage-libsql.bun.ts")],
+				[
+					bunExecutable(),
+					"test",
+					"--timeout",
+					String(BUN_CONFORMANCE_CASE_TIMEOUT_MS),
+					join(moduleDir(import.meta.url), "../fixtures/storage-libsql.bun.ts"),
+				],
 				{ env: { ...process.env, ATOMIC_TEST_LIBSQL_ROOT: directory } },
 			);
 			assert.equal(result.exitCode, 0, result.stdout.toString() + result.stderr.toString());

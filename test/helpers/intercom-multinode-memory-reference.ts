@@ -802,6 +802,14 @@ function releasedAskStore(entries: ReleasedAskEntry[]): ReleasedAskStore {
 			const entry = live(entryOf(key.questionId, key.replierSessionId));
 			return entry === undefined ? { status: "missing" } : { status: "found", ask: record(entry) };
 		},
+		async openForReplier(replierSessionId) {
+			if (replierSessionId.length === 0) return invalid("empty-session-id");
+			const open = entries.filter(
+				(entry) =>
+					entry.ask.replierSessionId === replierSessionId && entry.state === "open" && live(entry) !== undefined,
+			);
+			return { status: "listed", asks: open.map(record) };
+		},
 		async claim(claim) {
 			const bad = invalidClaim(claim);
 			if (bad !== undefined) return bad;

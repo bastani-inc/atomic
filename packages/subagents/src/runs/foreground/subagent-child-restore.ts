@@ -24,6 +24,7 @@ import {
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
+import { contextAgentDiscoveryOptions } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -43,7 +44,7 @@ import { inheritedIntercomGroup } from "../shared/intercom-group.js";
 import { currentModelFullId } from "../shared/model-fallback.js";
 import { type OwnerlessChildLaunch, runOwnerlessChild, takeStoppedQueuedOwnerlessChild } from "./ownerless-children.js";
 import { formatReleasedReplyResults } from "./released-child-replies.js";
-import { pendingToolCalls, planReleasedChildWake } from "./released-children.js";
+import { interruptedByRestart, pendingToolCalls, planReleasedChildWake } from "./released-children.js";
 import { resumeRunWorktree } from "./run-worktrees.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import { type ChildTargetHold, childHoldKey, holdChildTargets, takeEarlyChildHold } from "./subagent-child-hold.js";
@@ -301,6 +302,7 @@ function freshPrompts(
  */
 function rediscoverAgent(
 	deps: SubagentChildRestoreDeps,
+	ctx: ExtensionContext,
 	cwd: string,
 	name: string,
 	source: AgentSource | undefined,
@@ -308,7 +310,7 @@ function rediscoverAgent(
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
 		const agent = deps
-			.discoverAgents(cwd, scope)
+			.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx))
 			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
 		if (agent) return agent;
 	}
@@ -438,7 +440,7 @@ async function relaunchChild(
 		onReopened(previousIntercomId);
 		if (previousIntercomId) await hold?.add(previousIntercomId);
 	}
-	const discovered = rediscoverAgent(deps, cwd, record.agent, record.agentSource);
+	const discovered = rediscoverAgent(deps, ctx, cwd, record.agent, record.agentSource);
 	if (!discovered)
 		return unrestorable(
 			`agent "${record.agent}"${record.agentSource ? ` (${record.agentSource})` : ""} is no longer defined`,
@@ -511,7 +513,12 @@ async function relaunchChild(
 		(record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS ||
 			(record.waitingOn?.length ?? 0) > 0 ||
 			toolResults.length > 0)
-			? planReleasedChildWake(pendingToolCalls(sessionManager), toolResults, !promptless)
+			? planReleasedChildWake(
+					pendingToolCalls(sessionManager),
+					toolResults,
+					!promptless,
+					interruptedByRestart(record),
+				)
 			: undefined;
 	const basePrompts = fresh ? freshPrompts(record, fresh, resume) : resumedPrompts(record, resume);
 	const prompts = redispatch
@@ -618,6 +625,7 @@ async function relaunchChild(
 		runtime,
 		recordChild,
 		forked: record.forked === true,
+		...(record.heartbeatMs === undefined ? {} : { heartbeatMs: record.heartbeatMs }),
 		...(schedule ? { schedule } : {}),
 		onTerminal: () => {
 			release();

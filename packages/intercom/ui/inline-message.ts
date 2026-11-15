@@ -2,6 +2,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Theme } from "@bastani/atomic";
 import type { SessionInfo, Message } from "../types.js";
+import { terminalSafeLabel, terminalSafeText } from "./terminal-text.js";
 
 export class InlineMessageComponent implements Component {
   private from: SessionInfo;
@@ -25,19 +26,22 @@ export class InlineMessageComponent implements Component {
   render(width: number): string[] {
     const lines: string[] = [];
     const borderChar = "─";
+    // Every field below comes from a peer session; none may reach the terminal as control sequences (#4889).
+    const senderName = terminalSafeLabel(this.from.name || this.from.id);
     if (width < 3) {
-      return [truncateToWidth(`From ${this.from.name || this.from.id}`, width)];
+      return [truncateToWidth(`From ${senderName}`, width)];
     }
     const bodyWidth = Math.max(1, width - 2);
 
-    const senderName = this.from.name || this.from.id;
-    const header = this.heading === undefined ? ` 📨 From: ${senderName} (${this.from.cwd}) ` : ` 📨 ${this.heading} `;
+    const header = this.heading === undefined
+      ? ` 📨 From: ${senderName} (${terminalSafeLabel(this.from.cwd)}) `
+      : ` 📨 ${terminalSafeLabel(this.heading)} `;
     // An empty ellipsis silently clips full sender IDs; keep header overflow visible.
     const headerText = truncateToWidth(header, bodyWidth, "…");
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));
 
-    const contentLines = wrapTextWithAnsi(this.bodyText || this.message.content.text, bodyWidth);
+    const contentLines = wrapTextWithAnsi(terminalSafeText(this.bodyText || this.message.content.text), bodyWidth);
     for (const line of contentLines) {
       const text = truncateToWidth(line, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));
@@ -57,7 +61,7 @@ export class InlineMessageComponent implements Component {
     if (this.message.content.attachments?.length) {
       lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
       for (const att of this.message.content.attachments) {
-        const label = this.theme.fg("dim", ` 📎 ${att.name}`);
+        const label = this.theme.fg("dim", ` 📎 ${terminalSafeLabel(att.name)}`);
         const text = truncateToWidth(label, bodyWidth, "");
         const padding = Math.max(0, bodyWidth - visibleWidth(text));
         lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));
@@ -67,7 +71,7 @@ export class InlineMessageComponent implements Component {
     if (this.message.replyTo && !this.message.expectsReply) {
       lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
       // An empty ellipsis silently clips full reply-to IDs; keep overflow visible.
-      const reply = this.theme.fg("dim", ` ↳ Reply to ${this.message.replyTo}`);
+      const reply = this.theme.fg("dim", ` ↳ Reply to ${terminalSafeLabel(this.message.replyTo)}`);
       const text = truncateToWidth(reply, bodyWidth, "…");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));
       lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));

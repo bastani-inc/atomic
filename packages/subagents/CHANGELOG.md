@@ -5,6 +5,9 @@
 ### Fixed
 
 - Fixed a parallel `worktree: true` task whose change was larger than 1 MiB being reported as having no changes and its worktree, with all its work, being deleted. Git now writes each task's patch straight to its file, so a change of any size is saved in full and the summary lists every task. When a diff cannot be captured, the worktree is kept and the summary names it, and it is removed only once a later capture succeeds. A `.worktreeinclude` file such as `.env` is also copied into a new worktree again in a repository with an installed `node_modules`, where it was silently skipped ([#4876](https://github.com/bastani-inc/atomic/issues/4876))
+- Fixed worktree cleanup leaving a setup hook's synthetic link whose name starts with two dots (for example `..cache`) in place before removing the worktree. On older Git for Windows, removal could then delete the main checkout's copy through the link ([#4836](https://github.com/bastani-inc/atomic/issues/4836))
+- Fixed a released subagent being told a detached tool call (such as a long `bash`) was "still running" after Atomic restarted, though the call died with the old process and its result never arrived: when a reply, deadline or resume wakes the subagent, that call is now reported interrupted so it can re-run it. An extension `/reload` in the same process is not a restart: a call still running then is neither reported interrupted nor started again ([#4848](https://github.com/bastani-inc/atomic/issues/4848))
+- Fixed a subagent launched with `heartbeatMs` (including `0`, which disables heartbeats) falling back to the 15-minute default after a wake, resume or restore: the cadence is now recorded with the subagent and applied on every relaunch ([#4856](https://github.com/bastani-inc/atomic/issues/4856))
 
 ## [0.9.86] - 2026-11-14
 
