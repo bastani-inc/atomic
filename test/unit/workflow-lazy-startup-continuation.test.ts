@@ -220,6 +220,58 @@ describe("workflow lazy-startup continuation fixes", () => {
 		}
 	});
 
+	test("session_start ask skips a run paused while the confirmation was open (#5149)", async () => {
+		const root = mkdtempSync(join(tmpdir(), "atomic-workflow-startup-paused-race-"));
+		try {
+			mkdirSync(workflowConfigDir(root), { recursive: true });
+			writeFileSync(join(workflowConfigDir(root), "config.json"), JSON.stringify({ resumeInFlight: "ask" }));
+			const workflowPath = join(root, "paused.ts");
+			await writeTrackedWorkflowFixture(workflowPath, "paused");
+			process.chdir(root);
+			const backend = getDurableBackend();
+			const runId = testRunId("startup-paused-confirmation-race");
+			await backend.commitWorkflowRegistration({
+				workflowId: runId,
+				name: "paused",
+				inputs: {},
+				status: "running",
+				createdAt: 1,
+				updatedAt: 1,
+				completedCheckpoints: 1,
+				invocationCwd: root,
+			});
+			const { handlers } = registerFactory({
+				refreshWorkflowResources: async () => [{ path: workflowPath, enabled: true }],
+			});
+			const notices: string[] = [];
+			await startSession(
+				handlers,
+				{ reason: "startup" },
+				{
+					cwd: root,
+					hasUI: true,
+					ui: {
+						notify: (message: string) => notices.push(message),
+						confirm: async () => {
+							await backend.commitWorkflowStatus(runId, "paused");
+							return true;
+						},
+					},
+				},
+			);
+			await cleanupJobs();
+			assert.equal(store.runs().length, 0);
+			assert.equal(backend.getWorkflow(runId)?.status, "paused");
+			assert.ok(
+				notices.some((notice) => notice.includes(`Workflow ${runId} changed while startup recovery was pending`)),
+				JSON.stringify(notices),
+			);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	for (const mode of ["auto", "ask"] as const) {
 		for (const ownership of ["user", "agent", "legacy"] as const) {
 			test(`session_start ${mode} excludes ${ownership} runs from another project sharing a database (#3468)`, async () => {

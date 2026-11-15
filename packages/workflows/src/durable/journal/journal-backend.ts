@@ -959,6 +959,67 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
+	commitAdoptionRollback(
+		runId: string,
+		adopter: string,
+		status: DurableWorkflowStatus,
+		modelOwner: string | undefined,
+		releasedModelOwner: string | undefined,
+	): Promise<boolean> {
+		return this.serialize(runId, () => this.rollBackAdoption(runId, adopter, status, modelOwner, releasedModelOwner));
+	}
+	private *rollBackAdoption(
+		runId: string,
+		adopter: string,
+		status: DurableWorkflowStatus,
+		modelOwner: string | undefined,
+		releasedModelOwner: string | undefined,
+	): Operation<boolean> {
+		yield* this.refresh(runId);
+		const current = this.projection.getWorkflow(runId);
+		if (current === undefined || current.modelOwner !== adopter) return false;
+		if (current.status !== "running" && current.status !== "paused") return false;
+		const restored = current.status === "running" ? status : current.status;
+		// #5149: a run left paused goes back released by its previous owner, as any paused run whose owner is gone, so
+		// another session can adopt it; a running one stays adoptable once its lease is free.
+		const released = restored === "paused" ? (releasedModelOwner ?? modelOwner) : releasedModelOwner;
+		return yield* this.transition(
+			runId,
+			[current.status],
+			restored,
+			undefined,
+			undefined,
+			current.updatedAt,
+			modelOwner,
+			released,
+		);
+	}
+	commitClaimedWorkflowRegistration(
+		input: WorkflowRegistrationInput,
+		modelOwner: string | undefined,
+	): Promise<boolean> {
+		return this.serialize(input.workflowId, () => this.registerClaimed(input, modelOwner));
+	}
+	private *registerClaimed(input: WorkflowRegistrationInput, modelOwner: string | undefined): Operation<boolean> {
+		this.assertExecutionActive(true);
+		this.ensureOpen();
+		yield* this.ownership(input.workflowId);
+		yield* this.refresh(input.workflowId);
+		const draft = yield* this.draft(input.workflowId);
+		const claimed = draft.getWorkflow(input.workflowId);
+		if (claimed === undefined || claimed.status !== "running" || claimed.modelOwner !== modelOwner) return false;
+		draft.registerWorkflow(
+			{
+				...input,
+				status: "running",
+				resumable: claimed.resumable ?? input.resumable,
+				pendingPrompts: claimed.pendingPrompts,
+			},
+			true,
+		);
+		yield* this.snapshot(draft.getWorkflow(input.workflowId)!);
+		return true;
+	}
 	/**
 	 * Commits a checkpoint through the run's append queue: checkpoints queued back to back, as a fan-out's child
 	 * boundaries are, share one journal transaction instead of one each, so work queued behind a burst of them waits for

@@ -302,6 +302,27 @@ export interface DurableWorkflowBackend {
 	persistSummary?(workflowId: string, summary: string, summarizedThrough: number): Promise<boolean>;
 	/** Register or update a workflow's top-level metadata. */
 	commitWorkflowRegistration(handle: WorkflowRegistrationInput): Promise<void>;
+	/**
+	 * Update the top-level metadata of a run a resume claimed, only while it is still as the claim left it: `running`
+	 * under `modelOwner`. Its pending prompts and resumability stay as they are. False when another write changed it.
+	 */
+	commitClaimedWorkflowRegistration?(
+		handle: WorkflowRegistrationInput,
+		modelOwner: string | undefined,
+	): Promise<boolean>;
+	/**
+	 * Undo an aborted adoption by `adopter`, merging into whatever was written since: only while `adopter` still owns
+	 * the run, the run goes back to `modelOwner` and `releasedModelOwner`, and back to `status` if it is still `running`
+	 * from the adoption. A pause, its pending prompts and its resumability stay; a run left paused is released by
+	 * `modelOwner` when it was not already, so it stays adoptable. False when another owner has it.
+	 */
+	commitAdoptionRollback?(
+		workflowId: string,
+		adopter: string,
+		status: DurableWorkflowStatus,
+		modelOwner: string | undefined,
+		releasedModelOwner: string | undefined,
+	): Promise<boolean>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,

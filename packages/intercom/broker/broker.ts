@@ -2029,8 +2029,9 @@ class IntercomBroker {
             // #5095: a failure of an ask whose reply went out again stays held: saving the reply releases it.
             if (held.message.replyError !== undefined && replyingTo.has(JSON.stringify([held.from.id, held.message.replyTo])))
               continue;
-            writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
-            if (clientMessage.acknowledgesReceipt !== true)
+            const written = writeMessageIfOpen(socket, { type: "message", from: held.from, message: held.message });
+            // #5149: a socket that closed during registration keeps them held for its next connection.
+            if (written && clientMessage.acknowledgesReceipt !== true)
               this.pendingQuestions.releaseHeld(held.message.id, returnAddress);
           }
           // #3760: a restored subagent is back under the capability its owner reserved it with; the sends held

@@ -27,6 +27,7 @@ import { availableRunDurableBackend, bindRunDurableBackend } from "../durable/ru
 import {
 	recordedInvocationCwd,
 	restorePreconditionsChecked,
+	resumeClaim,
 	resumeLaunchCwd,
 } from "../durable/run-restore-preconditions.js";
 import { recordRunResultCheckpointAsync } from "../durable/run-result.js";
@@ -1653,8 +1654,10 @@ async function executeRun(
 				: undefined,
 		);
 		if (opts.parentRun === undefined) {
+			const claim = opts[resumeClaim];
+			let taken = true;
 			if (durableRootRegistration !== undefined) {
-				await durableBackend.commitWorkflowRegistration({
+				const registration = {
 					...durableRootRegistration,
 					modelOwner: runSnapshot.modelOwner,
 					...workflowInvocationMetadata(
@@ -1664,9 +1667,21 @@ async function executeRun(
 						runSnapshot.origin,
 					),
 					...(opts[recordedInvocationCwd] === undefined ? {} : { invocationCwd: opts[recordedInvocationCwd] }),
-				});
-			} else {
+				};
+				if (claim === undefined || durableBackend.commitClaimedWorkflowRegistration === undefined)
+					await durableBackend.commitWorkflowRegistration(registration);
+				else taken = await durableBackend.commitClaimedWorkflowRegistration(registration, claim.modelOwner);
+			} else if (claim === undefined) {
 				await durableBackend.commitWorkflowStatus(runId, "running");
+			} else {
+				taken = await durableBackend.commitWorkflowStatusTransition(runId, ["running"], "running");
+			}
+			// #5149: a run another write changed after the resume claimed it is left as that write left it.
+			if (!taken) {
+				claim?.onLost();
+				const lost = new WorkflowGracefulQuitError(runId, "resume of a run that changed after its claim");
+				ownController.abort(lost);
+				throw lost;
 			}
 			// Before this attempt writes anything, so each of its records is told from an earlier attempt's (#4874).
 			await beginDurableWorkflowAttempt(durableBackend, runId);
