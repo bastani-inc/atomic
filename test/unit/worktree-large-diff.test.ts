@@ -49,6 +49,12 @@ function inBun<T>(
 	return JSON.parse(result.stdout) as T;
 }
 
+/**
+ * The numstat scenario's cost is its real git children (about 25 of them, on a 400-file change), which took up to 34 s
+ * on Windows with twenty suites running at once.
+ */
+const MANY_FILES_SCENARIO_TIMEOUT_MS = 60_000;
+
 type Runtime = "Node" | "Bun";
 const cases: Array<{ runtime: Runtime; module: WorktreeModule }> = [
 	{ runtime: "Node", module: "subagents" },
@@ -108,6 +114,7 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 	// The git runner and its buffer are the same under Bun.
 	test.runIf(runtime === "Node")(
 		"a worktree change of so many files that its numstat is over 1 MiB is saved in full (#4876)",
+		{ timeout: MANY_FILES_SCENARIO_TIMEOUT_MS },
 		() => {
 			const result = runManyFilesScenario(tempRoot(), module);
 			assert.ok(result.numstatBytes > 1024 * 1024, "the numstat is over the 1 MiB output cap");
