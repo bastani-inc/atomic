@@ -32,6 +32,7 @@ import {
 	handleReleasedChildWakes,
 	holdToolResultsInRecord,
 	isRelaunchableChildRecord,
+	reportInterruptedStillRunningCalls,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	subagentWakeKey,
 	subagentWakeNamespace,
@@ -189,6 +190,11 @@ export function bindReleasedChildWakes(
 			},
 			hold: holdResults,
 			resume: async (record, request) => {
+				// Held first, as a wake holds them: a stop before the resumed run saves them leaves them for its resume (#5012).
+				const unsaved = (request.toolResults ?? []).filter(
+					(result) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === result.toolCallId),
+				);
+				if (unsaved.length > 0) await holdResults(record, unsaved);
 				const outcome = await restoreSubagentChild(deps, ctx, record.childId, request);
 				if (outcome.kind === "unrestorable")
 					throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
@@ -231,6 +237,7 @@ export function bindReleasedChildWakes(
 	};
 	const stopReporting = dispatcher.onUnobservedFailure(report);
 	wakeReleasedChildrenOfEarlierProcess(dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
+	reportInterruptedStillRunningCalls(deps.pi, dispatcher, ownerSessionId, subagentChildRecordsOf(ownerSessionId));
 	const unsubscribe = events.on(SUBAGENT_RELEASED_CHILD_WAKE_EVENT, (payload) => {
 		const childName = (payload as { readonly childName?: string } | null)?.childName;
 		if (typeof childName !== "string") return;

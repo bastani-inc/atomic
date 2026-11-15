@@ -23,6 +23,7 @@ import { type ReleasedChildResumeWake, setReleasedChildWakeActive, settleResumeW
 import { isReleasedReplyHandoffResult } from "./released-reply-protocol.js";
 import { indexSubagentChildOwner, subagentChildRecordOf } from "./subagent-child-card-state.js";
 import {
+	holdInterruptedStillRunningCalls,
 	observeChildRecordFailure,
 	recordSubagentChildHeldToolResults,
 	SUBAGENT_CHILD_GONE_STATUS,
@@ -31,6 +32,7 @@ import {
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
 	type SubagentChildRecordSink,
+	type SubagentChildStillRunningCall,
 	type SubagentChildWaitingCall,
 	subagentChildOwner,
 	subagentChildRecordsAppended,
@@ -98,6 +100,61 @@ export function interruptedByRestart(
 		record.waitingOn.flatMap((call) => (call.replyWait === undefined ? [] : [call.toolCallId])),
 	);
 	return (toolCallId) => !questions.has(toolCallId);
+}
+
+/** The result a call told "still running" gets once the owner process that ran it is gone (#5014). */
+export function interruptedStillRunningResult(call: Pick<SubagentChildStillRunningCall, "toolCallId" | "toolName">) {
+	return {
+		toolCallId: call.toolCallId,
+		toolName: call.toolName,
+		result: {
+			content: [{ type: "text" as const, text: SUBAGENT_INTERRUPTED_BY_RESTART_RESULT }],
+			details: undefined,
+		},
+		isError: true,
+	} satisfies DetachedToolResult;
+}
+
+/**
+ * Hold the interrupted result of each call a child was told is still running by an earlier owner process (#5014), and
+ * wake a child that ended on its own for it; any other child takes it when it is restored, woken or resumed.
+ */
+export function reportInterruptedStillRunningCalls(
+	pi: Parameters<typeof holdInterruptedStillRunningCalls>[0],
+	dispatcher: AgentWakeDispatcher,
+	ownerSessionId: string,
+	records: readonly SubagentChildRecord[],
+): void {
+	for (const record of records) {
+		if (!record.stillRunning?.some((call) => call.ownerGeneration !== SUBAGENT_OWNER_GENERATION)) continue;
+		void holdInterruptedStillRunningCalls(
+			pi,
+			ownerSessionId,
+			record.childId,
+			SUBAGENT_OWNER_GENERATION,
+			interruptedStillRunningResult,
+		)
+			.then((held) => {
+				if (held?.state === "terminal" && !releasedByEarlierProcess(held))
+					wakeReleasedChildWithHeldResults(
+						dispatcher,
+						subagentWakeKey(ownerSessionId, record.childId),
+						`interrupted:${SUBAGENT_OWNER_GENERATION}`,
+					);
+			})
+			.catch((error: Error) =>
+				observeChildRecordFailure(
+					ownerSessionId,
+					isReleasedChildError(error)
+						? error
+						: new ReleasedChildError(
+								"wake-failed",
+								{ childId: record.childId, reason: error.message },
+								{ cause: error },
+							),
+				),
+			);
+	}
 }
 
 export function needsRedispatch(record: SubagentChildRecord): boolean {
@@ -235,6 +292,35 @@ export function pendingToolCalls(sessionManager: Pick<SessionManager, "buildSess
 	for (const part of assistant.content)
 		if (part.type === "toolCall" && !answered.has(part.id)) pending.set(part.id, part.name);
 	return pending;
+}
+
+function textOf(content: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>): string {
+	return typeof content === "string"
+		? content
+		: content.map((part) => (part.type === "text" ? (part.text ?? "") : `[${part.type}]`)).join("\n");
+}
+
+/**
+ * The ids of `results` the child's transcript already holds: recorded as their call's own result (one that is not
+ * "still running"), or read as a late result's message. A run that saved them and then stopped, failed or lost its
+ * owner before it reported them leaves them held; they are not delivered again (#5012).
+ */
+export function savedToolResultIds(
+	sessionManager: Pick<SessionManager, "buildSessionProjection">,
+	results: readonly DetachedToolResult[],
+): string[] {
+	const messages = sessionManager.buildSessionProjection().messages;
+	const answered = new Set(
+		messages.flatMap((message) =>
+			message.role === "toolResult" && textOf(message.content) !== SUBAGENT_STILL_RUNNING_RESULT
+				? [message.toolCallId]
+				: [],
+		),
+	);
+	const read = new Set(messages.flatMap((message) => (message.role === "user" ? [textOf(message.content)] : [])));
+	return results
+		.filter((result) => answered.has(result.toolCallId) || read.has(lateToolResultMessage(result)))
+		.map((result) => result.toolCallId);
 }
 
 function resultText(result: DetachedToolResult): string {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	agentWakeDispatcher,
 	currentWorktreeRootMappings,
 	type DetachedToolResult,
 	type ExtensionContext,
@@ -22,13 +23,16 @@ import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../../packages/coding-agent/
 import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js";
 import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagents/src/intercom/supervisor-authorization.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
 	lateToolResultMessage,
+	SUBAGENT_INTERRUPTED_BY_RESTART_RESULT,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	SUBAGENT_STILL_RUNNING_RESULT,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
 import { registerRunWorktrees, runWorktreeRecord } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
+import { observeSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
 	readSubagentChildRecords,
@@ -38,6 +42,7 @@ import {
 	SUBAGENT_CHILD_RELEASED_STATUS,
 	SUBAGENT_CHILD_STAGE_PAUSED_STATUS,
 	type SubagentChildRecord,
+	type SubagentChildWaitingCall,
 } from "../../packages/subagents/src/runs/foreground/subagent-child-records.js";
 import {
 	awaitSubagentChildRestoration,
@@ -94,6 +99,12 @@ interface Harness {
 	originalGate?: PromiseWithResolvers<void>;
 	/** Holds a woken run open, before ("before-save") or after ("after-save") its results are saved, until resolved. */
 	wokenGate?: { gate: PromiseWithResolvers<void>; at: "before-save" | "after-save" };
+	/** The calls the original launch is released waiting on. */
+	releasedWaits: readonly SubagentChildWaitingCall[];
+	/** When set, a woken run that is not stopped ends in an error, before it reports the results it saved. */
+	wokenFails?: true;
+	/** When set, a woken run that is not stopped is released again, waiting on these calls. */
+	wokenReleasedOn?: readonly SubagentChildWaitingCall[];
 	/** Every tool result a woken run saved into the child's transcript, in order. */
 	readonly saved: DetachedToolResult[];
 	closeOwnerAndReopen(cause: "session-close" | "stage-close"): Promise<void>;
@@ -211,6 +222,7 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 		runs,
 		holds,
 		saved: [],
+		releasedWaits: [WAIT_CALL],
 		call: (params) => executor.execute("run-control", params, new AbortController().signal, undefined, state.ctx),
 		async admit(runId, extra) {
 			const response = await runAgentTask({
@@ -269,8 +281,17 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 					...rest,
 					testSession: { output: "resumed", promptGate: woken.gate.promise, abortResolvesPrompt: true },
 				});
-				if (woken.at === "before-save" && out.status !== "interrupted") saveResults();
-				return out;
+				// A run that fails as it continues its turn never gets to report what it saved.
+				if (woken.at === "before-save" && out.status !== "interrupted" && !state.wokenFails) saveResults();
+				if (out.status === "interrupted") return out;
+				if (state.wokenFails) return { ...out, status: "error", error: "boom" };
+				if (state.wokenReleasedOn === undefined) return out;
+				return {
+					...out,
+					status: "interrupted",
+					interrupted: true,
+					released: { waitingOn: [...state.wokenReleasedOn], calls: [] },
+				};
 			}
 			saveResults();
 			return runSync(parentCwd, agents, agentName, task, { ...rest, testSession: { output: "resumed" } });
@@ -292,7 +313,12 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 					? { output: "waiting", promptGate: neverReleased.promise, abortResolvesPrompt: true }
 					: { output: "waiting", ...(state.originalGate ? { promptGate: state.originalGate.promise } : {}) },
 		});
-		return { ...waiting, status: "interrupted", interrupted: true, released: { waitingOn: [WAIT_CALL], calls: [] } };
+		return {
+			...waiting,
+			status: "interrupted",
+			interrupted: true,
+			released: { waitingOn: [...state.releasedWaits], calls: [] },
+		};
 	};
 	const deps: ExecutorDeps = {
 		pi,
@@ -366,12 +392,20 @@ async function releasedChild(h: Harness, runId: string): Promise<SubagentChildRe
 	return h.waitForLatest(`${runId}:0`, (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
 }
 
-async function endSessionOnPendingCall(record: SubagentChildRecord): Promise<void> {
+async function endSessionOnPendingCall(
+	record: SubagentChildRecord,
+	calls: readonly SubagentChildWaitingCall[] = [WAIT_CALL],
+): Promise<void> {
 	assert.ok(record.childSessionFile);
 	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
 	await session.appendMessage({
 		role: "assistant",
-		content: [{ type: "toolCall", id: WAIT_CALL.toolCallId, name: WAIT_CALL.toolName, arguments: { run: "7" } }],
+		content: calls.map((call) => ({
+			type: "toolCall" as const,
+			id: call.toolCallId,
+			name: call.toolName,
+			arguments: { run: "7" },
+		})),
 		api: "faux",
 		provider: "faux",
 		model: "faux",
@@ -1068,7 +1102,8 @@ async function wokenByResult(
 	result: DetachedToolResult,
 	at: "before-save" | "after-save",
 ): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void> }> {
-	const record = await endedOnPendingCall(h, runId);
+	const record = await releasedChild(h, runId);
+	await endSessionOnPendingCall(record, h.releasedWaits);
 	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [result]);
 	const gate = Promise.withResolvers<void>();
 	h.wokenGate = { gate, at };
@@ -1127,4 +1162,235 @@ test("a woken child paused after it saved its wake's result is not given that re
 		JSON.stringify([resumed.task, resumed.options.resumeFollowUps, resumed.options.resumeToolResults]),
 		/CI is green \(saved\)/,
 	);
+});
+
+const DEPLOY_CALL = { toolCallId: "deploy-2", toolName: "wait_for_deploy" } as const;
+const LINT_CALL = { toolCallId: "lint-3", toolName: "wait_for_lint" } as const;
+
+function interruptedDeploy(): DetachedToolResult {
+	return {
+		...DEPLOY_CALL,
+		result: { content: [{ type: "text", text: SUBAGENT_INTERRUPTED_BY_RESTART_RESULT }], details: undefined },
+		isError: true,
+	};
+}
+
+/** A released child waiting on ci-1 and deploy-2 is woken by ci-1's result alone: deploy-2 is told "still running". */
+async function wokenWhileDeployRuns(
+	h: Harness,
+	runId: string,
+	at: "before-save" | "after-save",
+): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void>; woken: RunSyncOptions }> {
+	h.releasedWaits = [WAIT_CALL, DEPLOY_CALL];
+	const woke = await wokenByResult(h, runId, waitResult("ci-1 green"), at);
+	const woken = h.runs.at(-1)?.options;
+	assert.ok(woken);
+	assert.deepEqual(
+		woken.resumeToolResults?.map((result) => [
+			result.toolCallId,
+			text({ content: result.result.content } as SubagentToolResult),
+		]),
+		[
+			["ci-1", "ci-1 green"],
+			["deploy-2", SUBAGENT_STILL_RUNNING_RESULT],
+		],
+	);
+	return { ...woke, woken };
+}
+
+/** Write what a woken run saves: its results, as its session's resumeDetachedTurn does. */
+async function saveIntoTranscript(record: SubagentChildRecord, results: readonly DetachedToolResult[]): Promise<void> {
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	for (const result of results)
+		await session.appendMessage({
+			role: "toolResult",
+			toolCallId: result.toolCallId,
+			toolName: result.toolName,
+			content: result.result.content,
+			isError: result.isError,
+			timestamp: Date.now(),
+		} as Parameters<SessionManager["appendMessage"]>[0]);
+}
+
+/** Atomic restarts: the child's records were written by an earlier owner process, whose detached calls died with it. */
+async function restartOwner(h: Harness, childId: string): Promise<void> {
+	await h.closeOwnerAndReopen("session-close");
+	const latest = await h.waitForLatest(childId, (record) => record.childSessionFile !== undefined);
+	const earlier: SubagentChildRecord = {
+		...latest,
+		ownerGeneration: "earlier-process",
+		...(latest.stillRunning
+			? { stillRunning: latest.stillRunning.map((call) => ({ ...call, ownerGeneration: "earlier-process" })) }
+			: {}),
+	};
+	await appendRecord(h, earlier);
+	observeSubagentChildRecord(earlier);
+}
+
+/** How many times the child's runs were given `message`, as their task or a follow-up. */
+function toldTimes(h: Harness, message: string): number {
+	return h.runs.filter((run) => run.task === message || run.options.resumeFollowUps?.includes(message)).length;
+}
+
+function told(run: RunSyncOptions & { task: string }): string {
+	return JSON.stringify([run.task, run.resumeFollowUps, run.resumeToolResults]);
+}
+
+test("a call a wake answered still running is reported interrupted when Atomic restarts before the woken child saved its results (#5014)", async () => {
+	const h = harness();
+	const { record } = await wokenWhileDeployRuns(h, "still-running-unsaved", "before-save");
+
+	await restartOwner(h, record.childId);
+	h.wokenGate = undefined;
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+	const run = h.runs.at(-1);
+	assert.ok(run);
+
+	assert.deepEqual(run.options.resumeToolResults, [waitResult("ci-1 green"), interruptedDeploy()]);
+});
+
+test("a call a wake answered still running is reported interrupted when Atomic restarts after the woken child saved its results (#5014)", async () => {
+	const h = harness();
+	const { record, woken } = await wokenWhileDeployRuns(h, "still-running-saved", "after-save");
+	await saveIntoTranscript(record, woken.resumeToolResults ?? []);
+
+	await restartOwner(h, record.childId);
+	h.wokenGate = undefined;
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+	const run = h.runs.at(-1);
+	assert.ok(run);
+
+	assert.equal(
+		run.task,
+		lateToolResultMessage(interruptedDeploy()),
+		"the restored child reads first that deploy-2 died with the restart",
+	);
+	assert.equal(toldTimes(h, lateToolResultMessage(interruptedDeploy())), 1);
+	assert.doesNotMatch(
+		told({ ...run.options, task: run.task }),
+		/ci-1 green/,
+		"ci-1's saved result is not given again",
+	);
+});
+
+test("a call a wake answered still running is reported interrupted after a restart even when the child was released again for another call (#5014)", async () => {
+	const h = harness();
+	h.wokenReleasedOn = [LINT_CALL];
+	const { record, gate, woken } = await wokenWhileDeployRuns(h, "still-running-rereleased", "after-save");
+	gate.resolve();
+	const released = await h.waitForLatest(
+		record.childId,
+		(latest) =>
+			latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS && latest.waitingOn?.[0]?.toolCallId === "lint-3",
+	);
+	await saveIntoTranscript(record, woken.resumeToolResults ?? []);
+	await endSessionOnPendingCall(released, [LINT_CALL]);
+	h.wokenReleasedOn = undefined;
+	h.wokenGate = undefined;
+
+	await restartOwner(h, record.childId);
+	const lint: DetachedToolResult = { ...waitResult("lint clean"), ...LINT_CALL };
+	const run = await restored(h, record.childId, {
+		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		toolResults: [lint],
+		promptless: true,
+	});
+
+	assert.deepEqual(run.resumeToolResults, [lint]);
+	assert.equal(run.task, lateToolResultMessage(interruptedDeploy()));
+	assert.equal(toldTimes(h, lateToolResultMessage(interruptedDeploy())), 1);
+});
+
+test("a child that finished after a wake told it a call is still running is woken after a restart to learn the call was interrupted (#5014)", async () => {
+	const h = harness();
+	const { record, gate, woken } = await wokenWhileDeployRuns(h, "still-running-finished", "after-save");
+	gate.resolve();
+	await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.terminalStatus === "ok");
+	await saveIntoTranscript(record, woken.resumeToolResults ?? []);
+	h.wokenGate = undefined;
+	await restartOwner(h, record.childId);
+
+	const dispatcher = agentWakeDispatcher();
+	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => stop());
+	const interrupted = lateToolResultMessage(interruptedDeploy());
+	const done = await h.waitForLatest(
+		record.childId,
+		(latest) => toldTimes(h, interrupted) > 0 && latest.state === "terminal" && latest.terminalStatus === "ok",
+	);
+	await dispatcher.whenIdle();
+
+	assert.equal(toldTimes(h, interrupted), 1);
+	assert.deepEqual(done.heldToolResults ?? [], [], "nothing is left held once the child was told");
+	assert.deepEqual(done.stillRunning ?? [], [], "the interrupted call is no longer tracked as running");
+});
+
+test("a woken child whose run saved its results and then lost its owner is not given them again when restored (#5012)", async () => {
+	const h = harness();
+	const result = waitResult("ci-1 green: run /deploy now");
+	const { record } = await wokenByResult(h, "saved-then-closed", result, "before-save");
+	// Its session saved the result, and Atomic closed while the turn it continued still ran.
+	await saveIntoTranscript(record, [result]);
+	await h.closeOwnerAndReopen("session-close");
+	await h.waitForLatest(record.childId, (latest) => latest.state === "running");
+	h.wokenGate = undefined;
+
+	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+	assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+	const run = h.runs.at(-1);
+	assert.ok(run);
+
+	assert.doesNotMatch(told({ ...run.options, task: run.task }), /run \/deploy now/);
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], [], "nothing already delivered stays held");
+});
+
+test("a woken child whose run saved its results and then failed is not given them again by its next wake (#5012)", async () => {
+	const h = harness();
+	h.wokenFails = true;
+	const result = waitResult("ci-1 green: run /deploy now");
+	const { record, gate } = await wokenByResult(h, "saved-then-failed", result, "before-save");
+	await saveIntoTranscript(record, [result]);
+	gate.resolve();
+	await h.waitForLatest(record.childId, (latest) => latest.terminalStatus === "error");
+	h.wokenFails = undefined;
+	h.wokenGate = undefined;
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.doesNotMatch(told(run), /run \/deploy now/);
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], []);
+});
+
+test("a result for a call the child was told is still running still reaches it, as a message (#5012)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "late-after-still-running");
+	await saveIntoTranscript(record, [stillRunning]);
+	const late = waitResult("/deploy now");
+
+	const run = await restored(h, record.childId, {
+		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		toolResults: [late],
+		promptless: true,
+	});
+
+	assert.equal(run.task, lateToolResultMessage(late));
+});
+
+test("a late result the child already read as a message is not given to it again (#5012)", async () => {
+	const h = harness();
+	const record = await endedOnPendingCall(h, "late-already-read");
+	await saveIntoTranscript(record, [stillRunning]);
+	const late = waitResult("/deploy now");
+	assert.ok(record.childSessionFile);
+	const session = await SessionManager.open(record.childSessionFile, undefined, record.cwd);
+	await session.appendMessage({ role: "user", content: lateToolResultMessage(late), timestamp: Date.now() });
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+
+	const run = await restored(h, record.childId, { prompt: "a new message", message: "a new message" });
+
+	assert.doesNotMatch(told(run), /deploy now/);
+	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], []);
 });

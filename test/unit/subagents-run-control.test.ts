@@ -4504,3 +4504,38 @@ test("pause of a released child whose resume is starting it stops the resumed ru
 		(record) => record.state === "terminal" && record.terminalStatus === "paused" && record.taskId === taskId,
 	);
 });
+
+test("a result batched with a resume is kept for the child when the resumed run is paused before saving it (#5012)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "resume-batch");
+	const owner = h.sessionManager.getSessionId();
+	const childId = "resume-batch:0";
+	const key = subagentWakeKey(owner, childId);
+	const released = h.latest(childId);
+	assert.ok(released);
+	await endChildSessionOnCalls(released, [RELEASED_CALL]);
+	const resumedRun = Promise.withResolvers<void>();
+	h.finishOn.set("resume note", resumedRun);
+	const green = waitResult("CI green");
+	// A wake that asks for nothing is being handled, so the result and the resume behind it arrive in one batch.
+	const idle = dispatcher.deliver(key, { id: "redispatch:none", kind: "tool-result" });
+	const result = dispatcher.deliver(key, { id: "tool-result:ci-1", kind: "tool-result", toolResult: green });
+	const resumed = resumeReleasedChild(owner, childId, { prompt: "resume note", message: "resume note" });
+	assert.ok(resumed);
+	await idle;
+	const outcome = await resumed;
+	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
+	await result;
+	assert.equal(h.runs.length, 2, "one run takes the resume and the result together");
+	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green]);
+	// The resumed run is paused before it saved the result.
+	await h.waitForLatest(childId, (record) => record.state === "running");
+	await h.call({ action: "pause", id: childId });
+	await h.waitForLatest(childId, (record) => record.terminalStatus === "paused");
+	h.finishOn.clear();
+
+	await h.call({ action: "resume", id: childId });
+	await h.waitForLatest(childId, (record) => h.runs.length === 3 && record.state === "terminal");
+
+	assert.deepEqual(h.runs.at(-1)?.options.resumeToolResults, [green], "the resume after the pause hands it over");
+});
