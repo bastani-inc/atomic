@@ -321,6 +321,32 @@ async function persistToolOutput(input: {
 }
 
 /**
+ * Bound text an extension adds to the model's context the way oversized tool results are bounded: text within
+ * `maxBytes` (UTF-8) is returned unchanged; longer text is saved to a session file and replaced by the same
+ * `<persisted-output>` card, a short preview plus the file's path. When the file cannot be written, the card keeps
+ * only the preview and says the full text was not saved.
+ */
+export async function boundOversizedText(input: {
+	text: string;
+	maxBytes: number;
+	sessionId: string;
+	sessionDir?: string;
+}): Promise<string> {
+	const originalSizeBytes = Buffer.byteLength(input.text, "utf8");
+	if (originalSizeBytes <= input.maxBytes) return input.text;
+	const { preview, hasMore } = generatePreview(input.text, PREVIEW_SIZE_BYTES);
+	const persisted = await persistToolOutput({
+		text: input.text,
+		sessionDir: input.sessionDir,
+		sessionId: input.sessionId,
+	});
+	if (persisted !== undefined) {
+		return buildPersistedOutputMessage({ originalSizeBytes, ...persisted, preview, hasMore });
+	}
+	return `${PERSISTED_OUTPUT_TAG}\nOutput too large (${formatFileSize(originalSizeBytes)}) and could not be saved to a file; only this preview was kept.\n\nPreview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):\n${preview}${hasMore ? "\n...\n" : "\n"}${PERSISTED_OUTPUT_CLOSING_TAG}`;
+}
+
+/**
  * When a tool result's text content exceeds the persistence threshold (default
  * 50,000 chars — {@link DEFAULT_MAX_RESULT_SIZE_CHARS}), persist the full output
  * to a session-scoped file and replace the model-visible content with a

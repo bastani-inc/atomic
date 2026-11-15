@@ -462,11 +462,18 @@ export class McpServerConnection implements McpToolCaller, McpResourceServer {
 		this.state = "connecting";
 		this.changed();
 		const retries = "url" in this.entry.config ? CONNECT_RETRY_DELAYS_MS : [];
+		let sessionExpired = false;
 		for (let attempt = 0; ; attempt++) {
 			this.stderrTail = undefined;
 			try {
 				return await this.connectOnce();
 			} catch (error) {
+				// The server dropped the session it just created: initialize once more, as an established client does.
+				if (error instanceof McpSessionExpiredError && !sessionExpired && !this.closed) {
+					sessionExpired = true;
+					attempt--;
+					continue;
+				}
 				const delay = retries[attempt];
 				if (this.closed || delay === undefined || !isTransientError(error)) {
 					throw this.connectFailed(error);
