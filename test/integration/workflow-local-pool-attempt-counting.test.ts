@@ -267,6 +267,31 @@ test.skipIf(process.platform === "win32")(
 	BUDGET.timeoutMs,
 );
 
+for (const [mode, named, other] of [
+	["stale", /was refused by the root as stale/, /failed on a fault of the pool/],
+	["fault", /failed on a fault of the pool.*the store stayed busy/, /was refused by the root as stale/],
+] as const)
+	test.skipIf(process.platform === "win32")(
+		`a child whose every attempt ends fenced (${mode}) fails at its attempt limit with an error naming why (#4822)`,
+		async () => {
+			const result = await runOneChild(
+				"pool-crash-once-child.ts",
+				"crashOnceChild",
+				(_database, directory) => writeFileSync(join(directory, "fenced-mode"), mode),
+				fileURLToPath(new URL("../fixtures/pool-handoff-stub-worker.mjs", import.meta.url)),
+			);
+			assert.equal(result.outcome?.status, "rejected", JSON.stringify(result.outcome));
+			assert.match(result.outcome!.error!, /WorkerRetryLimitError/);
+			assert.match(result.outcome!.error!, named);
+			assert.doesNotMatch(result.outcome!.error!, other);
+			assert.deepEqual(
+				result.items.map((item) => [item.state, item.generation, item.handoffs ?? []]),
+				[["failed", 3, []]],
+			);
+		},
+		BUDGET.timeoutMs,
+	);
+
 /** The store refusing for a while: its write lock stayed busy. */
 const busy = () =>
 	new StorageUnavailableError(
