@@ -108,6 +108,7 @@ import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } 
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
+import { crashPoint, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -3310,7 +3311,9 @@ class IntercomBroker {
     this.failParkedQuestions(this.pendingQuestions.takeParkedForOwner(sessionId));
     this.failParkedKept(sessionId);
 
-    const unanswered = this.pendingQuestions.takeForSender(sessionId);
+    // Each ask keeps its live record until what replaces it is written, so a crash in between loses none.
+    const unanswered = this.pendingQuestions.takeForSender(sessionId, { keepLiveRecords: true });
+    crashPoint(DEPARTURE_ASKS_TAKEN);
     if (departed.supervisorId !== undefined && departed.registrationName !== undefined) {
       // #4765: an ask kept while its recipient was away waits on the owner's route too, so the recipient's later end
       // fails it through the owner, which wakes the subagent. It stays kept under the subagent's own return address as
@@ -3326,10 +3329,15 @@ class IntercomBroker {
         this.restoringRecipients.releasedOwner(departed.registrationName) ?? departed.supervisorId,
         departed.registrationName,
       );
+      // A kept route rewrote its ask's live record; one it did not keep has no record left to wait on.
+      this.pendingQuestions.forgetLive(unanswered.filter((question) => !this.releasedAskerReplies.holds(question)));
     } else if (departed.supervisorId === undefined && !ended) {
       // #4751: an ask has no expiry and survives its asker's restart or release: the route waits for the asker.
       this.pendingQuestions.keepDormant(unanswered, departed.registrationReturnAddress);
       this.pendingQuestions.markAwayAsker(sessionId, departed.registrationReturnAddress);
+      this.pendingQuestions.forgetLive(unanswered);
+    } else {
+      this.pendingQuestions.forgetLive(unanswered);
     }
     this.releasedAskerReplies.dropOwner(sessionId);
     for (const [messageId, pending] of [...this.releasedReplyAcks]) {
@@ -3344,7 +3352,11 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
+      // Each ask keeps its live record until its away record is written, so a crash in between loses none.
+      const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
+      crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
+      this.pendingQuestions.keepDormant(askedOfIt);
+      this.pendingQuestions.forgetLive(askedOfIt);
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended

@@ -306,7 +306,11 @@ export class PendingQuestionIndex {
     this.takeForSender(senderSessionId);
   }
 
-  takeForSender(senderSessionId: string): PendingQuestion[] {
+  /**
+   * `keepLiveRecords`: the caller writes what replaces each question's live record first, then forgets the ones nothing
+   * keeps, so a crash in between loses no ask (a broker adopting both records keeps one).
+   */
+  takeForSender(senderSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
@@ -326,13 +330,14 @@ export class PendingQuestionIndex {
       if (remaining.length === 0) this.parked.delete(key);
       else parked.questions = remaining;
     }
-    this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 
-  takeForTarget(targetSessionId: string): PendingQuestion[] {
+  /** `keepLiveRecords`: as for {@link takeForSender}, the caller forgets them once what replaces them is written. */
+  takeForTarget(targetSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending = this.removeForTarget(targetSessionId);
-    this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 

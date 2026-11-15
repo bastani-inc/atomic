@@ -35,6 +35,9 @@ test(
 			await f.finishing();
 			const stats = () => f.store.run("root")?.pool?.coordination;
 			await waitUntil(async () => (stats()?.requests.heartbeat?.count ?? 0) > 0, f.budget);
+			// The first heartbeat confirms the claim before the attempt starts (#5034), and the attempt reads pool control as
+			// it starts: the sample begins once the attempt is running.
+			await sleep(2 * HEARTBEAT_MS);
 			const firstSnapshot = stats()!;
 			const first = heartbeatTraffic(firstSnapshot);
 			await waitUntil(

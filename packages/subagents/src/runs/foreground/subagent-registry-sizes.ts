@@ -36,6 +36,7 @@ export function subagentRegistrySizes(): Readonly<Record<string, number>> {
 		goneChildren: restore.gone,
 		queuedChildren: task.queued,
 		schedules: task.schedules,
+		scheduledRuns: task.scheduledRuns,
 		closingChildren: task.closing,
 		earlyHolds: earlyChildHoldCount(),
 		ownerlessLive: ownerless.live,
