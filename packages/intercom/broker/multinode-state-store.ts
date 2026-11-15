@@ -602,6 +602,7 @@ export type ReleasedAskLookupResult =
 	| { readonly status: "found"; readonly ask: ReleasedAskRecord }
 	| { readonly status: "missing" }
 	| InvalidStateInput;
+export type ReleasedAskListResult = { readonly status: "listed"; readonly asks: ReleasedAskRecord[] } | InvalidStateInput;
 export type ReleasedAskClaimResult =
 	/** This reply holds the ask: it claimed it now, or had claimed or answered it before. */
 	| { readonly status: "claimed"; readonly ask: ReleasedAskRecord }
@@ -625,6 +626,8 @@ export interface ReleasedAskStore {
 	/** Keep each ask open for `ttlMs` of store time; an ask kept before is left as it is. */
 	keep(asks: readonly ReleasedAsk[], ttlMs: number): Promise<ReleasedAskKeepResult>;
 	lookup(key: ReleasedAskKey): Promise<ReleasedAskLookupResult>;
+	/** #4852: the asks to this replier still open, which no reply has claimed, oldest first. */
+	openForReplier(replierSessionId: string): Promise<ReleasedAskListResult>;
 	/** Claim an open ask for this reply, atomically, so only one reply is ever handed to the owner at a time. */
 	claim(claim: ReleasedAskClaim): Promise<ReleasedAskClaimResult>;
 	/** The owner accepted the claiming reply. Answering again for the same reply is `settled`. */
