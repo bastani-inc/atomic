@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hasToolDetachment, waitsOnDetachedResults } from "./agent-session-detached-tools.ts";
+import { pendingCustomMessageSaved } from "./agent-session-message-queue.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { hasUnreadProtectedCustomMessage } from "./agent-session-persistent-custom-messages.ts";
 import { getExtensionRuntimeEventBus } from "./extensions/loader-core.js";
@@ -133,6 +134,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 					throw new Error("Task owner is closed");
 				}).completion;
 			}
+			// A restored notice admitted mid-turn waits in memory for the turn to end; it is acknowledged once saved (#5047).
+			const saved = restored ? pendingCustomMessageSaved(this, envelope.completionId) : undefined;
+			return saved === undefined ? undefined : { saved };
 		},
 		// Each notice holds its task's record until it is delivered, so a burst of finishes cannot evict what the
 		// notice is built from (#4385).

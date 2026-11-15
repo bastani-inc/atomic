@@ -200,21 +200,29 @@ export function formatTaskCompletion(
 	return lines.join("\n");
 }
 
+/** An admission whose notice is not yet saved in the session: the intent is acknowledged once `saved` settles. */
+export type AdmittedTaskCompletion = { readonly saved: Promise<void> } | undefined;
+
 /**
  * Session history retains intent even when model admission or its acknowledgement fails.
  * Intents restored from an earlier process wait for `flushRestored()`; they never ride a live flush.
  * `delivered` runs once the notice of an envelope recorded live by this process is admitted and acknowledged, and
  * `restoredDelivered` once a restored one is: one restored from session history may come from an earlier process.
  * While `canAdmit()` is false an intent is saved but not admitted; a later flush admits it.
+ * An intent is acknowledged only once its notice is saved in the session (#5047): an admission that leaves the notice
+ * waiting in memory returns `saved`, and the acknowledgement waits for it. A notice already saved, as when a process
+ * ended between saving it and its acknowledgement, is acknowledged without a second admission.
  */
 export class TaskCompletionOutbox {
 	private readonly entries = new Map<string, TaskCompletionEnvelope>();
 	private readonly restored = new Set<string>();
+	/** Admitted intents whose notice waits to be saved before they are acknowledged. */
+	private readonly saving = new Set<string>();
 	private delivery: Promise<void> | undefined;
 	private restoredDelivery: Promise<void> | undefined;
 	private readonly session: SessionManager;
 	private readonly isOpen: () => boolean;
-	private readonly admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>;
+	private readonly admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<AdmittedTaskCompletion>;
 	private readonly delivered: (envelope: TaskCompletionEnvelope) => void;
 	private readonly canAdmit: () => boolean;
 	private readonly restoredDelivered: (envelope: TaskCompletionEnvelope) => void;
@@ -222,7 +230,7 @@ export class TaskCompletionOutbox {
 	constructor(
 		session: SessionManager,
 		isOpen: () => boolean,
-		admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<void>,
+		admit: (envelope: TaskCompletionEnvelope, restored: boolean) => Promise<AdmittedTaskCompletion>,
 		delivered: (envelope: TaskCompletionEnvelope) => void = () => {},
 		canAdmit: () => boolean = () => true,
 		restoredDelivered: (envelope: TaskCompletionEnvelope) => void = () => {},
@@ -272,31 +280,67 @@ export class TaskCompletionOutbox {
 
 	private async deliver(restored: boolean): Promise<void> {
 		for (const envelope of this.entries.values()) {
+			if (this.saving.has(envelope.completionId)) continue;
 			if (this.restored.has(envelope.completionId) !== restored) continue;
 			if (!this.isOpen()) return;
 			try {
-				const persisted = this.session
-					.getEntries()
-					.some(
-						(entry) =>
-							entry.type === "custom" &&
-							entry.customType === "task-completion-intent" &&
-							(entry.data as TaskCompletionEnvelope | undefined)?.completionId === envelope.completionId,
-					);
+				const { persisted, noticeSaved } = this.saved(envelope.completionId);
 				if (!persisted) await this.session.appendCustomEntry("task-completion-intent", envelope);
 				if (!this.isOpen()) return;
 				// Saved, it waits for a later flush; the rest are saved too.
 				if (!this.canAdmit()) continue;
-				await this.admit(envelope, restored);
-				await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
-				this.entries.delete(envelope.completionId);
-				this.restored.delete(envelope.completionId);
-				if (restored) this.restoredDelivered(envelope);
-				else this.delivered(envelope);
+				const admitted = noticeSaved ? undefined : await this.admit(envelope, restored);
+				if (admitted !== undefined) {
+					this.saving.add(envelope.completionId);
+					this.restored.delete(envelope.completionId);
+					void admitted.saved.then(
+						() => this.acknowledge(envelope, restored),
+						() => this.saving.delete(envelope.completionId),
+					);
+					continue;
+				}
+				await this.acknowledge(envelope, restored);
 			} catch {
 				// Execution stays terminal. Explicit retry uses this same envelope and identity.
 			}
 		}
+	}
+
+	/** Whether this session already holds the intent, and the notice, of a completion. */
+	private saved(completionId: string): { persisted: boolean; noticeSaved: boolean } {
+		let persisted = false;
+		let noticeSaved = false;
+		for (const entry of this.session.getEntries()) {
+			if (
+				entry.type === "custom" &&
+				entry.customType === "task-completion-intent" &&
+				(entry.data as TaskCompletionEnvelope | undefined)?.completionId === completionId
+			)
+				persisted = true;
+			else if (
+				entry.type === "custom_message" &&
+				entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
+				entry.stageAdmissionKey === completionId
+			)
+				noticeSaved = true;
+		}
+		return { persisted, noticeSaved };
+	}
+
+	private async acknowledge(envelope: TaskCompletionEnvelope, restored: boolean): Promise<void> {
+		try {
+			await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
+		} catch {
+			// The intent stays pending; its saved notice keeps a later delivery from showing it twice.
+			this.saving.delete(envelope.completionId);
+			if (restored) this.restored.add(envelope.completionId);
+			return;
+		}
+		this.saving.delete(envelope.completionId);
+		this.entries.delete(envelope.completionId);
+		this.restored.delete(envelope.completionId);
+		if (restored) this.restoredDelivered(envelope);
+		else this.delivered(envelope);
 	}
 }
 

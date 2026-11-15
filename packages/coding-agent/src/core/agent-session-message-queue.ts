@@ -265,6 +265,26 @@ export async function closeWorkflowStageGeneration(this: AgentSession): Promise<
 	await this._agentEventQueue;
 }
 
+const pendingCustomMessageSaves = new WeakMap<CustomMessage, PromiseWithResolvers<void>>();
+
+/**
+ * A custom message keyed `stageAdmissionKey` that waits in memory for the current turn to end, and a promise that
+ * settles once it is saved in the session; undefined when no such message waits (#5047).
+ */
+export function pendingCustomMessageSaved(session: AgentSession, stageAdmissionKey: string): Promise<void> | undefined {
+	const owner = resolveWorkflowStageDeliveryTarget(session);
+	const message = owner._pendingCustomMessages.find(
+		(candidate) => (candidate as StageAdmittedCustomMessage).stageAdmissionKey === stageAdmissionKey,
+	);
+	if (message === undefined) return undefined;
+	let saved = pendingCustomMessageSaves.get(message);
+	if (saved === undefined) {
+		saved = Promise.withResolvers<void>();
+		pendingCustomMessageSaves.set(message, saved);
+	}
+	return saved.promise;
+}
+
 export async function _appendCustomMessage<T>(this: AgentSession, message: CustomMessage<T>): Promise<void> {
 	const owner = resolveWorkflowStageDeliveryTarget(this);
 	if (owner !== this) {
@@ -282,6 +302,7 @@ export async function _appendCustomMessage<T>(this: AgentSession, message: Custo
 		stageAdmissionMessage.stageAdmissionKey,
 	);
 	this._entryIdsByMessage.set(message, entryId);
+	pendingCustomMessageSaves.get(message)?.resolve();
 	this._refreshFinalizedContext();
 	this._emit({ type: "message_start", message });
 	this._emit({ type: "message_end", message });
