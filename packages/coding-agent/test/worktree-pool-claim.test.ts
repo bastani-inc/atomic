@@ -390,6 +390,42 @@ await withWorktreeSnapshotGit({ path: ${JSON.stringify(git)}, env }, () =>
 	);
 });
 
+describe("what pool actions leave in the pool directory (#4991)", () => {
+	/** The pool directory of `snapshot`'s repository holds slot records and live leases, never a private file left over. */
+	function assertOnlyRecordsAndLeases(snapshot: WorktreeSnapshot): void {
+		const pool = join(storeDir(), "pool", repositoryIdOf(snapshot.remotes));
+		const leftovers = readdirSync(pool).filter((name) => !/^\d+\.json(?:\.[0-9a-f-]+\.lease\.lock)?$/.test(name));
+		assert.deepEqual(leftovers, []);
+	}
+
+	test("a hold, a release, a claim and an eviction leave no taken record, temporary file or lock token behind (#4991)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		const x = await idleSlotOfX(a, clone);
+		assertOnlyRecordsAndLeases(a);
+
+		const held = await holdRestoredWorktree(storeDir(), slot(a, 0), { kind: "session", id: x.getSessionId() });
+		assert.ok(held);
+		assertOnlyRecordsAndLeases(a);
+		assert.equal(await releaseRestoredWorktree(held), true);
+		assertOnlyRecordsAndLeases(a);
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+		assert.equal(claim.claimed, true);
+		assertOnlyRecordsAndLeases(a);
+		if (claim.claimed) await releaseRestoredWorktree(claim.lease);
+		assertOnlyRecordsAndLeases(a);
+
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repositoryIdOf(a.remotes), { maxIdle: 0, settings }), [
+			slot(a, 0),
+		]);
+		assertOnlyRecordsAndLeases(a);
+		assert.deepEqual(
+			readdirSync(join(storeDir(), "worktrees")).filter((name) => name.startsWith(`${repositoryIdOf(a.remotes)}-`)),
+			[],
+		);
+	});
+});
+
 describe("claim candidates and failures (#4748)", () => {
 	/** `count` sessions restored A into slots 0.. and released them, oldest slot first; returns their sessions. */
 	async function idleSlots(a: WorktreeSnapshot, clone: string, count: number): Promise<SessionManager[]> {
