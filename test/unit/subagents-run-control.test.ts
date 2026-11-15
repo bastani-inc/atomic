@@ -58,6 +58,7 @@ import {
 	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentWakeKey,
 } from "../../packages/subagents/src/runs/foreground/released-children.js";
+import { holdRunWorktree } from "../../packages/subagents/src/runs/foreground/run-worktrees.js";
 import {
 	observeSubagentChildRecord,
 	subagentChildRecordOf,
@@ -2519,6 +2520,8 @@ test("pausing a worktree child that finished on its own as the pause reached it 
 	await h.waitForLatest(childA.childId, (candidate) => !!candidate.childSessionId);
 	await h.waitForLatest(childB.childId, (candidate) => !!candidate.childSessionId);
 	writeFileSync(join(childB.cwd, "draft.md"), "draft by B\n");
+	// A sibling execution still holds the run's worktrees, so how B's worktree goes is decided once it lets go.
+	const releaseSibling = holdRunWorktree(childB.runId, childA.index);
 	// While pause stops child A, child B finishes on its own, so the cancel pause sends it finds it already settled.
 	duringCancelOf(h, childA.taskId as string, async () => {
 		finisherDone.resolve();
@@ -2538,6 +2541,8 @@ test("pausing a worktree child that finished on its own as the pause reached it 
 	assert.match(text(paused), /completed \(ok\) before it could be paused/);
 	assert.equal(h.latest(childB.childId)?.terminalStatus, "ok");
 	assert.equal(takeSubagentChildStop(childB.taskId as string), undefined, "no stop request is left for it");
+	assert.equal(existsSync(childB.cwd), true, "the sibling still holds the run's worktrees");
+	releaseSibling();
 	await waitUntilRemoved(childB.cwd);
 	assert.equal(existsSync(childB.cwd), false, "its worktree is removed as any finished child's is, not kept parked");
 	const [patch] = savedPatches(childB);
