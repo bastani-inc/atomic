@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { StorageUnavailableError } from "@bastani/atomic/storage";
+import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { RUN_TIMING_CHECKPOINT_NAME } from "../../packages/workflows/src/durable/run-timing.js";
@@ -109,4 +110,34 @@ test("a run that failed after an earlier attempt completed does not read as comp
 	assert.equal(backend.getWorkflow(runId)?.status, "failed");
 	const reopened = await backend.reopen();
 	assert.equal(reopened.getWorkflow(runId)?.status, "failed");
+});
+
+test("a run that returned blocked does not read as completed when its status write is refused (#5133)", async () => {
+	const backend = await JournalTestBackend.create();
+	setDurableBackend(backend);
+	const commitStatus = backend.commitWorkflowStatus.bind(backend);
+	backend.commitWorkflowStatus = ((...args: Parameters<typeof backend.commitWorkflowStatus>) =>
+		args[1] === "blocked"
+			? Promise.reject(
+					new StorageUnavailableError({ adapter: "test", location: "refused" }, new Error("refused") as never),
+				)
+			: commitStatus(...args)) as typeof backend.commitWorkflowStatus;
+	const def = workflow({
+		name: "returned-blocked",
+		description: "",
+		inputs: {},
+		outputs: {
+			status: Type.Union([Type.Literal("completed"), Type.Literal("blocked")]),
+			summary: Type.String(),
+		},
+		run: async (ctx) => {
+			await ctx.tool("work", {}, async () => "done");
+			return { status: "blocked" as const, summary: "checks pending" };
+		},
+	}) as WorkflowDefinition;
+	const runId = `returned-blocked-${Date.now()}`;
+	await run(def, {}, { runId, store: createStore(), durableBackend: backend }).catch(() => undefined);
+	assert.notEqual(backend.getWorkflow(runId)?.status, "completed");
+	const reopened = await backend.reopen();
+	assert.notEqual(reopened.getWorkflow(runId)?.status, "completed");
 });
