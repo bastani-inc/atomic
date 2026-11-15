@@ -1,4 +1,4 @@
-import { reportDebug } from "@bastani/atomic";
+import { reportDebug, sliceHead } from "@bastani/atomic";
 import type { BudgetDimension, BudgetReport } from "../shared/budget.js";
 import {
 	actionableReturnedStatusText,
@@ -679,7 +679,7 @@ function lifecycleToolOrigin(details: WorkflowLifecycleNoticeDetails): string | 
 function truncateSnippet(value: string): string {
 	const normalized = value.replace(/\s+/g, " ").trim();
 	if (normalized.length <= LIFECYCLE_NOTICE_SNIPPET_LIMIT) return normalized;
-	return `${normalized.slice(0, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
+	return `${sliceHead(normalized, LIFECYCLE_NOTICE_SNIPPET_LIMIT - 1)}…`;
 }
 
 function formatLifecycleOutputs(outputs: WorkflowOutputValues | undefined): string | undefined {
