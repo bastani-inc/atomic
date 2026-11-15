@@ -462,6 +462,12 @@ const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
 const QUOTA_EXHAUSTED_FAILURE_PATTERN =
 	/(?<![a-z0-9.])402(?![a-z0-9.])|payment[_\s-]*required|insufficient[_\s-]*quota|\bServiceQuotaExceededException\b|"quotaId"\s*:\s*"[^"]*PerDay|"(?:code|type|error_code)"\s*:\s*"(?:quota_exceeded|usage_limit|usage_limit_reached|usage_limit_exceeded)"/i;
 
+// An account out of credit or money: nothing serves it again until it is topped up, so a short rate-limit cooldown would
+// spend one failed request per cooldown. Anthropic answers with HTTP 400 and `invalid_request_error`, and OpenRouter's
+// affordability error names `max_tokens`, so this wording outranks the request-error grammar and the status.
+const BILLING_EXHAUSTED_FAILURE_PATTERN =
+	/credit\s+balance\s+is\s+too\s+low|insufficient[_\s-]*(?:credits?|balance|funds)|(?:requires|purchase|buy|add)\s+more\s+credits|used\s+all\s+(?:of\s+)?(?:your\s+)?available\s+credits|out\s+of\s+(?:credits?|budget)|spending\s+limit|available\s+balance|check\s+your\s+plan\s+and\s+billing/i;
+
 function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
 	return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
 		? "transport_error"
@@ -506,6 +512,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	if (refusalKind !== undefined) return refusalKind;
 	const transportOutageKind = transportOutageKindFromMessage(message);
 	if (transportOutageKind !== undefined) return transportOutageKind;
+	if (BILLING_EXHAUSTED_FAILURE_PATTERN.test(message)) return "quota_exhausted";
 	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
@@ -725,17 +732,23 @@ function structuredSignal(
 	)
 		return makeSignal("model_unavailable", value, source);
 
+	const directMessageSignal = directMessageSignalUnlessTransient(value, source);
+	// An exhausted quota the failure names outranks a generic request error: Anthropic answers an account out of
+	// credit with HTTP 400 and `invalid_request_error`.
+	const quotaExhausted =
+		directMessageSignal?.kind === "quota_exhausted" || bestNestedFallbackSignal?.kind === "quota_exhausted";
 	const directSignals = [
 		directRefusalSignal,
 		directCancellationSignal,
 		providerTransportSignal,
-		directMessageSignalUnlessTransient(value, source),
+		directMessageSignal,
 		// A provider error code names the cause more exactly than its HTTP status: Bedrock answers a service-quota
 		// exception with a generic 400.
-		kindFromStatus(statusFrom(value)) === undefined || kindFromCode(codeFrom(value)) !== undefined
+		kindFromStatus(statusFrom(value)) === undefined || kindFromCode(codeFrom(value)) !== undefined || quotaExhausted
 			? undefined
 			: makeSignal(kindFromStatus(statusFrom(value))!, value, source),
-		kindFromCode(codeFrom(value)) === undefined
+		kindFromCode(codeFrom(value)) === undefined ||
+		(quotaExhausted && kindFromCode(codeFrom(value)) === "request_incompatible")
 			? undefined
 			: makeSignal(kindFromCode(codeFrom(value))!, value, source),
 		kindFromCode(errorName(value)) === undefined
