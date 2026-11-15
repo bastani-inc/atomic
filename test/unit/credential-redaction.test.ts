@@ -264,7 +264,7 @@ describe("credential shape coverage", () => {
 		assertGone(`dbPassword: ${PLAIN_SECRET}`);
 		assertGone(`apiToken=${PLAIN_SECRET}`);
 		assertGone(`clientSecret: "${PLAIN_SECRET}"`);
-		for (const kept of ["monkey: plain", "primaryKey: id", "tokenizer=bpe", "hotKey: ctrl"]) {
+		for (const kept of ["monkey: plain", "tokenizer=bpe", "keyboard: us", "tokens: 12"]) {
 			assert.equal(redactCredentialShapes(kept), kept);
 		}
 	});
@@ -370,7 +370,97 @@ describe("credential shape coverage", () => {
 	});
 });
 
+describe("credential field variants", () => {
+	function assertGone(text: string): string {
+		const redacted = redactCredentialShapes(text);
+		assert.equal(redacted.includes("Zq9v"), false, JSON.stringify(redacted));
+		return redacted;
+	}
+
+	test("camelCase key, secret and token suffixes are redacted", () => {
+		for (const name of [
+			"openaiApiKey",
+			"secretAccessKey",
+			"privateKey",
+			"awsSecret",
+			"githubToken",
+			"dbCredentials",
+		]) {
+			assertGone(`${name}: ${PLAIN_SECRET}`);
+			assertGone(`${name}=${PLAIN_SECRET}`);
+			assertGone(`{"${name}":"${PLAIN_SECRET}"}`);
+		}
+		assert.equal(
+			assertGone(`dbPassword: correct horse ${PLAIN_SECRET}\nnext: kept`),
+			"dbPassword: [redacted]\nnext: kept",
+		);
+	});
+
+	test("an escaped quote inside an escaped JSON value does not end it", () => {
+		assert.equal(
+			assertGone(`{"body":"{\\"password\\":\\"ab\\\\\\"${PLAIN_SECRET}\\",\\"user\\":\\"kept\\"}"}`),
+			`{"body":"{\\"password\\": [redacted],\\"user\\":\\"kept\\"}"}`,
+		);
+	});
+
+	test("terminal styling around a field name does not hide its value", () => {
+		assertGone(
+			`\u001b[1;39m{\n  \u001b[0m\u001b[34;1m"token"\u001b[0m\u001b[1;39m:\u001b[0m\u001b[0;32m"${PLAIN_SECRET}"\u001b[0m`,
+		);
+		assert.equal(
+			assertGone(`\u001b[34mpassword\u001b[0m: ${PLAIN_SECRET}`),
+			"\u001b[34mpassword\u001b[0m: [redacted]",
+		);
+		assertGone(`Authorization: Bearer abcd\u001b[0m${PLAIN_SECRET}`);
+	});
+
+	test("a YAML block scalar under a credential field is redacted", () => {
+		assert.equal(
+			assertGone(`password: |\n  ${PLAIN_SECRET}\n  second line\nnext: kept`),
+			"password: |\n  [redacted]\nnext: kept",
+		);
+		assertGone(`token: >-\n    ${PLAIN_SECRET}\n`);
+	});
+
+	test("URL user info that looks like a port or a path is removed when a host follows", () => {
+		assert.equal(redactUrlCredentials("https://user:1234/5678@example.com/x"), "https://example.com/x");
+		assert.equal(redactUrlCredentials(`https://ab/${PLAIN_SECRET}@example.com/x`), "https://example.com/x");
+		for (const kept of ["http://localhost:8080/foo@bar", "https://registry:8080/@scope/pkg", "a://u/p@h x"]) {
+			assert.equal(redactUrlCredentials(kept), kept);
+		}
+	});
+
+	test("an encoded '/' in encoded user info and double-encoded URLs are removed", () => {
+		assert.equal(
+			redactUrlCredentials(`?next=https%3A%2F%2Fuser%3Aab%2F${PLAIN_SECRET}%40b.example%2Fp`),
+			"?next=https%3A%2F%2Fb.example%2Fp",
+		);
+		assert.equal(
+			redactUrlCredentials(`?next=https%253A%252F%252Fuser%253A${PLAIN_SECRET}%2540b.example%252Fp`),
+			"?next=https%253A%252F%252Fb.example%252Fp",
+		);
+	});
+});
+
 describe("configured secret redaction", () => {
+	test("short lines of a multi-line configured secret do not redact ordinary text", () => {
+		const redact = configuredSecretRedactor([`${PLAIN_SECRET}\n}\n`]);
+		assert.equal(redact('{"ok":{"a":1}} and } braces'), '{"ok":{"a":1}} and } braces');
+		assert.equal(redact(`x ${PLAIN_SECRET} y`), "x [redacted] y");
+		assert.equal(configuredSecretRedactor(["ab\ncd"])("abacus cdrom"), "abacus cdrom");
+	});
+
+	test("base64 of a short configured secret is redacted at every alignment", () => {
+		for (const secret of ["Qx7#pZ", "Qx7#pZw", "Qx7#pZwK"]) {
+			const redact = configuredSecretRedactor([secret]);
+			for (const prefix of ["", "u", "u:", "us:"]) {
+				const encoded = Buffer.from(`${prefix}${secret}`).toString("base64");
+				const redacted = redact(`Basic ${encoded}`);
+				assert.ok(redacted.includes("[redacted]"), `${secret} ${prefix}: ${redacted}`);
+			}
+		}
+	});
+
 	test("configured secret redaction stays linear on adversarial input", () => {
 		const redact = configuredSecretRedactor(["aaaaaa", "aaaaaaab", `${"a".repeat(64)}\n${"b".repeat(64)}`]);
 		for (const input of [

@@ -20,13 +20,21 @@ const MAX_STDERR_BYTES = 1024 * 1024;
 const MAX_DETAIL_CHARS = 600;
 /** Names of environment variables and options whose values are treated as secrets. */
 const SECRET_NAME = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key|private[-_]?key|signature|sas|auth/i;
-/** A secret a CLI might print: a bearer token, a JWT, or a `name=value` / `name: value` pair with a secret's name. */
-const SECRET_TEXT: readonly [RegExp, string][] = [
-	[/\bBearer\s+[^\s"',;]+/gi, "Bearer [redacted]"],
-	[/\beyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, "[redacted]"],
+/** Words that make a `name=value` / `name: value` pair a secret's. */
+const SECRET_WORD = /secret|token|passw|pwd|credential|api[-_]?key|access[-_]?key|signature|sig/i;
+/** Longest name of a `name=value` pair that is checked for a secret's word: longer runs are not names. */
+const MAX_SECRET_NAME_LENGTH = 128;
+/**
+ * A secret a CLI might print: a bearer token, a JWT, or a `name=value` / `name: value` pair with a secret's name. Each
+ * pattern starts only where its run of word characters starts and bounds what it scans, so it is linear in the length
+ * of the text, however long the runs of `-`, word characters or spaces it meets.
+ */
+const SECRET_TEXT: readonly [RegExp, (match: string, ...groups: string[]) => string][] = [
+	[/\bBearer\s+[^\s"',;]+/gi, () => "Bearer [redacted]"],
+	[/(?<![\w-])eyJ[\w-]+\.[\w-]+(?:\.[\w-]*)?/g, () => "[redacted]"],
 	[
-		/\b([\w-]*(?:secret|token|passw(?:or)?d?|pwd|credential|api[-_]?key|access[-_]?key|signature|sig)[\w-]*)(["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi,
-		"$1$2[redacted]",
+		new RegExp(String.raw`(?<![\w-])([\w-]{1,${MAX_SECRET_NAME_LENGTH}})(["']?\s*[:=]\s*["']?)[^\s"',;&]+`, "g"),
+		(match, name = "", separator = "") => (SECRET_WORD.test(name) ? `${name}${separator}[redacted]` : match),
 	],
 ];
 /** Shorter values are not redacted where they appear: they would match ordinary words. */
@@ -79,26 +87,22 @@ export function redactSecrets(text: string, args: readonly string[], env: NodeJS
 			.map(([, value]) => value ?? ""),
 	];
 	let redacted = configuredSecretRedactor(values, { minLength: MIN_SECRET_LENGTH })(text);
-	for (const [pattern, replacement] of SECRET_TEXT) redacted = redacted.replace(pattern, replacement);
+	for (const [pattern, replace] of SECRET_TEXT) redacted = redacted.replace(pattern, replace);
 	return redacted;
 }
 
 /**
  * A CLI's stderr for an error message: redacted whole, so a secret that spans lines is still found, then its lines
- * trimmed and joined, redacted again, and cut to {@link MAX_DETAIL_CHARS}. Stderr cut at {@link MAX_STDERR_BYTES}
- * loses its last, partial line first.
+ * trimmed and joined, and cut to {@link MAX_DETAIL_CHARS}. Stderr cut at {@link MAX_STDERR_BYTES} loses its last,
+ * partial line first.
  */
 function detail(stderr: string, cut: boolean, call: CliCall, env: NodeJS.ProcessEnv): string {
 	const kept = cut ? stderr.slice(0, stderr.lastIndexOf("\n") + 1) : stderr;
-	const text = redactSecrets(
-		redactSecrets(kept, call.args, env)
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.filter((line) => line !== "")
-			.join(" "),
-		call.args,
-		env,
-	);
+	const text = redactSecrets(kept, call.args, env)
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line !== "")
+		.join(" ");
 	return text.length > MAX_DETAIL_CHARS ? `${text.slice(0, MAX_DETAIL_CHARS)}…` : text;
 }
 

@@ -684,6 +684,22 @@ describe("secret redaction (#4768)", () => {
 		assert.equal(redactSecrets("a=b x--token=abcdefg", ["x--token=abcdefg"], {}), "a=b x--token=[redacted]");
 	});
 
+	test("redacting a megabyte of adversarial CLI output stays linear", () => {
+		const env = { MY_TOKEN: "abcdefgh", OTHER_SECRET: "x".repeat(64) };
+		for (const input of [
+			"sk-".repeat(350_000),
+			"eyJ-".repeat(260_000),
+			"secret_".repeat(150_000),
+			"a".repeat(1_048_576),
+			"token-x ".repeat(130_000),
+		]) {
+			const started = performance.now();
+			redactSecrets(input, [], env);
+			const elapsed = performance.now() - started;
+			assert.ok(elapsed < 2_000, `took ${Math.round(elapsed)} ms`);
+		}
+	});
+
 	test("redacts tokens a CLI prints (#4768)", () => {
 		const cases: [string, string][] = [
 			["Authorization: Bearer abc.def-ghi, next", "Authorization: Bearer [redacted], next"],

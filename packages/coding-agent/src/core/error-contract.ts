@@ -102,11 +102,17 @@ export function redactUrlCredentials(
 	}
 }
 
+/** Whether `value` is empty or only ASCII digits, as a port is. */
+function isDigits(value: string): boolean {
+	return [...value].every((character) => character >= "0" && character <= "9");
+}
+
 /**
- * The last `@` of user info that holds a raw `/`, `?` or `#` (`https://user:ab/cd@host`), or -1. It counts only when
- * the authority up to `delimiter` is `user:password` with a password that is not a port number, and the `@` comes
- * before the end of the URL in text and before the next `://`. The user info then runs, as usual, to the last `@`
- * before the host's own `/`, `?` or `#`.
+ * The last `@` of user info that holds a raw `/`, `?` or `#` (`https://user:ab/cd@host`), or -1. The `@` must come
+ * before the end of the URL in text and before the next `://`, and the user info then runs, as usual, to the last `@`
+ * before the host's own `/`, `?` or `#`. When the authority up to `delimiter` could be a host (no `:`, or a `:` before
+ * digits, as in `user:1234/5678@host` or `token/rest@host`), it counts only if that part holds no `.` and the host
+ * after the `@` holds one, so `localhost:8080/a@b` and `example.com/user@example.org` stay as they are.
  */
 function rawDelimiterUserInfoEnd(
 	text: string,
@@ -115,52 +121,84 @@ function rawDelimiterUserInfoEnd(
 	ends: (character: string) => boolean,
 ): number {
 	const authority = text.slice(authorityStart, delimiter);
-	const colon = authorityStart + authority.indexOf(":");
-	if (colon < authorityStart || authority.startsWith("[")) return -1;
-	if ([...authority.slice(colon - authorityStart + 1)].every((character) => character >= "0" && character <= "9")) {
-		return -1;
-	}
+	if (authority === "" || authority.startsWith("[")) return -1;
+	const colon = authority.indexOf(":");
+	const hostLike = colon === -1 || isDigits(authority.slice(colon + 1));
+	if (hostLike && authority.slice(0, colon === -1 ? undefined : colon).includes(".")) return -1;
 	let lastAt = -1;
+	let hostEnd = text.length;
 	for (let index = delimiter; index < text.length; index++) {
 		const character = text[index]!;
-		if (ends(character) || text.startsWith("://", index)) break;
+		const delimits = character === "/" || character === "?" || character === "#";
+		if (ends(character) || text.startsWith("://", index) || (lastAt !== -1 && delimits)) {
+			hostEnd = index;
+			break;
+		}
 		if (character === "@") lastAt = index;
-		else if (lastAt !== -1 && (character === "/" || character === "?" || character === "#")) break;
 	}
+	if (lastAt === -1 || (hostLike && !text.slice(lastAt + 1, hostEnd).includes("."))) return -1;
 	return lastAt;
 }
 
-const ENCODED_SCHEME_SEPARATOR = "%3A%2F%2F";
-const ENCODED_AUTHORITY_ENDS = new Set(["%2F", "%3F", "%23"]);
-const ENCODED_AT = "%40";
+/** How a URL is percent-encoded once (`%3A`) or twice (`%253A`): the prefix of each encoded character. */
+const ENCODING_PREFIXES = ["%", "%25"] as const;
 
-/** Whether `text` holds the percent-encoding `encoded` (upper-case) at `index`, in either case. */
+/** Whether `text` holds `encoded` at `index`, in either case. */
 function encodedAt(text: string, index: number, encoded: string): boolean {
 	return text.slice(index, index + encoded.length).toUpperCase() === encoded;
 }
 
 /**
- * Remove the user info of every percent-encoded URL in `text`, as in `?next=https%3A%2F%2Fuser%3Apass%40host`: from
- * an encoded `://` to the last encoded `@` before an encoded `/`, `?` or `#`, a raw `/`, `?`, `#` or `&`, or whitespace.
+ * The last encoded `@` of the user info of the URL whose authority starts at `start`, encoded with `prefix`, or -1. The
+ * authority ends at an encoded `/`, `?` or `#`, a raw `/`, `?`, `#` or `&`, whitespace, or another encoded `://`. When
+ * it holds an encoded `:` followed by a password that is not a port, an encoded `/`, `?` or `#` before any `@` is part
+ * of the password, as in `user%3Aab%2Fcd%40host`.
+ */
+function encodedUserInfoEnd(text: string, start: number, prefix: string): number {
+	const width = prefix.length + 2;
+	const separator = `${prefix}3A${prefix}2F${prefix}2F`;
+	let lastAt = -1;
+	let colon = false;
+	let password = false;
+	let pastDelimiter = false;
+	for (let index = start; index < text.length; index++) {
+		const character = text[index]!;
+		if ("/?#&".includes(character) || WHITESPACE.test(character)) break;
+		if (character !== "%" || !text.startsWith(prefix, index)) {
+			if (colon && !pastDelimiter && !(character >= "0" && character <= "9")) password = true;
+			continue;
+		}
+		const encoded = text.slice(index, index + width).toUpperCase();
+		if (encodedAt(text, index, separator)) break;
+		if (encoded === `${prefix}2F` || encoded === `${prefix}3F` || encoded === `${prefix}23`) {
+			if (lastAt !== -1 || !password) break;
+			pastDelimiter = true;
+		} else if (encoded === `${prefix}40`) lastAt = index;
+		else if (encoded === `${prefix}3A` && !colon) colon = true;
+		else if (colon && !pastDelimiter) password = true;
+		index += width - 1;
+	}
+	return lastAt;
+}
+
+/**
+ * Remove the user info of every percent-encoded URL in `text`, encoded once (`?next=https%3A%2F%2Fuser%3Apass%40host`)
+ * or twice (`%253A%252F%252F`), up to its last encoded `@`.
  */
 function redactEncodedUrlCredentials(text: string): string {
 	let redacted = "";
 	let copied = 0;
 	for (let percent = text.indexOf("%"); percent !== -1; percent = text.indexOf("%", percent + 1)) {
-		if (!encodedAt(text, percent, ENCODED_SCHEME_SEPARATOR)) continue;
-		const authorityStart = percent + ENCODED_SCHEME_SEPARATOR.length;
-		let lastAt = -1;
-		for (let index = authorityStart; index < text.length; index++) {
-			const character = text[index]!;
-			if ("/?#&".includes(character) || WHITESPACE.test(character)) break;
-			if (character !== "%") continue;
-			const encoded = text.slice(index, index + 3).toUpperCase();
-			if (ENCODED_AUTHORITY_ENDS.has(encoded)) break;
-			if (encoded === ENCODED_AT) lastAt = index;
-		}
+		if (percent < copied) continue;
+		const prefix = ENCODING_PREFIXES.find((candidate) =>
+			encodedAt(text, percent, `${candidate}3A${candidate}2F${candidate}2F`),
+		);
+		if (prefix === undefined) continue;
+		const authorityStart = percent + 3 * (prefix.length + 2);
+		const lastAt = encodedUserInfoEnd(text, authorityStart, prefix);
 		if (lastAt === -1) continue;
 		redacted += text.slice(copied, authorityStart);
-		copied = lastAt + ENCODED_AT.length;
+		copied = lastAt + prefix.length + 2;
 	}
 	return redacted + text.slice(copied);
 }

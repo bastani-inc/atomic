@@ -155,49 +155,59 @@ export interface ConfiguredSecretRedactorOptions {
 	readonly minLength?: number;
 }
 
+/**
+ * Fewest characters of a form derived from a secret (a line of it, or an encoding) that is redacted, so short pieces
+ * of a secret do not match ordinary text. A secret itself is redacted at any length its caller allows.
+ */
+const MIN_DERIVED_LENGTH = 6;
 /** Fewest base64 characters of a secret's encoding that are redacted, so short secrets do not match random base64. */
-const MIN_BASE64_LENGTH = 8;
+const MIN_BASE64_LENGTH = 7;
 
 /**
- * The base64 runs that appear wherever `secret`'s bytes are encoded, at any alignment and in standard or URL-safe
- * alphabets: for each of the three offsets, the encoding of the whole 3-byte groups that start there.
+ * The base64 runs that appear wherever `secret`'s bytes are encoded, in standard and URL-safe alphabets: for each of
+ * the three alignments of its first byte in a 3-byte group, the characters that only its bits decide.
  */
 function base64Forms(secret: string): string[] {
 	const bytes = Buffer.from(secret);
 	const forms: string[] = [];
 	for (let offset = 0; offset < 3; offset++) {
-		const whole = bytes.subarray(offset, offset + Math.floor((bytes.length - offset) / 3) * 3);
-		const encoded = whole.toString("base64");
-		if (encoded.length >= MIN_BASE64_LENGTH) forms.push(encoded, whole.toString("base64url"));
+		const encoded = Buffer.concat([Buffer.alloc(offset), bytes, Buffer.alloc(2)]).toString("base64");
+		const form = encoded.slice(Math.ceil((8 * offset) / 6), Math.floor((8 * (offset + bytes.length)) / 6));
+		if (form.length >= MIN_BASE64_LENGTH) forms.push(form, form.replaceAll("+", "-").replaceAll("/", "_"));
 	}
 	return forms;
 }
 
-/**
- * The plain forms of a configured secret: trimmed, since a secret read from a file often ends with a line break that
- * the text around a printed secret need not repeat, and each line of a multi-line secret, trimmed. The secret as given
- * holds its trimmed form, so overlapping matches still remove it whole.
- */
-function plainForms(secret: string): string[] {
-	return [secret.trim(), ...secret.split(/\r?\n/u).map((line) => line.trim())];
+/** The JSON-escaped, URI-encoded, URI-decoded and base64 forms of `plain`. */
+function encodedForms(plain: string): string[] {
+	const forms = [JSON.stringify(plain).slice(1, -1), ...base64Forms(plain)];
+	try {
+		forms.push(encodeURIComponent(plain));
+	} catch {}
+	try {
+		forms.push(decodeURIComponent(plain));
+	} catch {}
+	return forms;
 }
 
-/** The forms a configured secret takes in output: plain, JSON-escaped, URI-encoded and -decoded, and base64. */
+/**
+ * The forms a configured secret takes in output: trimmed, since a secret read from a file often ends with a line break
+ * that the text around a printed secret need not repeat; each line of a multi-line secret, trimmed, that holds a letter
+ * or digit; and the encodings of both. The secret as given holds its trimmed form, so overlapping matches still remove
+ * it whole. Forms derived from the secret are kept only from {@link MIN_DERIVED_LENGTH} characters.
+ */
 function secretForms(secret: string, minLength: number): string[] {
-	const forms = new Set<string>();
-	for (const plain of plainForms(secret)) {
-		if (plain.length < minLength) continue;
-		forms.add(plain);
-		forms.add(JSON.stringify(plain).slice(1, -1));
-		try {
-			forms.add(encodeURIComponent(plain));
-		} catch {}
-		try {
-			forms.add(decodeURIComponent(plain));
-		} catch {}
-		for (const form of base64Forms(plain)) forms.add(form);
-	}
-	return [...forms].filter((form) => form.length >= Math.max(1, minLength));
+	const trimmed = secret.trim();
+	if (trimmed.length < Math.max(1, minLength)) return [];
+	const derivedLength = Math.max(minLength, MIN_DERIVED_LENGTH);
+	const lines = trimmed.includes("\n")
+		? trimmed
+				.split(/\r?\n/u)
+				.map((line) => line.trim())
+				.filter((line) => /[\p{L}\p{N}]/u.test(line))
+		: [];
+	const derived = [...lines, ...[trimmed, ...lines].flatMap(encodedForms)];
+	return [trimmed, ...derived.filter((form) => form.length >= derivedLength)];
 }
 
 /** Every occurrence of each of `forms` in `text`, overlapping ones merged, as `[start, end)` ranges in order. */
