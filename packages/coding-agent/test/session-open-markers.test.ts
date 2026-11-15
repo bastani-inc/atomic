@@ -355,6 +355,28 @@ describe("a session open in this process (#4971)", () => {
 		},
 	);
 
+	test.skipIf(process.platform === "win32")(
+		"a mark that does not say when its running holder started counts for a day, and not after (#5058)",
+		async () => {
+			const target = await saved("target");
+			const deleter = await saved("deleter");
+			const markers = markersOf(target.getSessionId());
+			mkdirSync(markers, { recursive: true });
+			const mark = join(markers, "init.json");
+			writeFileSync(mark, JSON.stringify({ pid: 1, host: hostname() }));
+			const age = (ms: number) => {
+				const at = new Date(Date.now() - ms);
+				utimesSync(mark, at, at);
+			};
+
+			age(23 * 60 * 60_000);
+			await assert.rejects(deleter.deleteSession(target.getSessionId()), SessionOpenElsewhereError);
+			age(25 * 60 * 60_000);
+			await deleter.deleteSession(target.getSessionId());
+			assert.equal(existsSync(mark), false);
+		},
+	);
+
 	test("marks that name no running session are ignored and removed (#4971)", async () => {
 		const target = await saved("target");
 		const deleter = await saved("deleter");
