@@ -236,8 +236,23 @@ for (const backend of storageBackends) {
 					const write = database.run(`INSERT INTO ${table} VALUES (?)`, value);
 					if (backend.name !== "libSQL server (sqld)") {
 						await write;
+						// A value the database computes over its own limit: SQLite's 1,000,000,000 bytes, Postgres's 1 GB.
+						const [computed, limitBytes] =
+							backend.name === "Postgres"
+								? ["SELECT repeat('x', 1100000000) AS data", 1_073_741_823]
+								: ["SELECT zeroblob(2000000000) AS data", 1_000_000_000];
+						await assert.rejects(database.get(computed), (error: unknown) => {
+							assert.ok(error instanceof StoragePayloadTooLargeError);
+							assert.deepEqual([error.kind, error.limitBytes, error.retryable], ["value", limitBytes, false]);
+							return true;
+						});
 						return;
 					}
+					await assert.rejects(database.get("SELECT zeroblob(6000000) AS data"), (error: unknown) => {
+						assert.ok(error instanceof StoragePayloadTooLargeError);
+						assert.deepEqual([error.kind, error.limitBytes, error.actualBytes], ["value", 5_000_000, 0]);
+						return true;
+					});
 					await assert.rejects(write, (error: unknown) => {
 						assert.ok(error instanceof StoragePayloadTooLargeError);
 						assert.ok(!(error instanceof StorageUnavailableError));
