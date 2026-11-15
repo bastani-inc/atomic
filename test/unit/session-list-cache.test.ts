@@ -44,8 +44,7 @@ function observeReads(database: SqliteDatabase) {
 	database.all = async <Row extends SqliteRow>(sql: string, ...values: readonly SqliteValue[]): Promise<Row[]> => {
 		const rows = await all<Row>(sql, ...values);
 		reads.statements++;
-		// Rows of search text read; the sizes a listing reads first to page its reads (#4954) hold none.
-		if (sql.includes("search_texts") && !sql.includes("sum(length(text_json))")) reads.searchTextRows += rows.length;
+		if (sql.includes("search_texts")) reads.searchTextRows += rows.length;
 		return rows;
 	};
 	return {

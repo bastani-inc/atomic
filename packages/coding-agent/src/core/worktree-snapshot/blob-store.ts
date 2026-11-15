@@ -599,8 +599,8 @@ function indexSources(prefix: string, t: SnapshotIndexTables, d: StorageDialect)
 }
 
 /**
- * Chunked blobs (#4954): the chunk table, and the blob table's `chunks` column, 0 for a blob whose bytes are in its
- * own row, as every blob written before it was. Idempotent.
+ * Chunked blobs (#4954): the chunk table, the blob table's `chunks` column, 0 for a blob whose bytes are in its own row,
+ * as every blob written before it was, and the trigger that deletes a blob's chunks with it. Idempotent.
  */
 async function addBlobChunks(
 	transaction: SqliteExecutor,
@@ -615,6 +615,20 @@ async function addBlobChunks(
 	if (!(await transaction.get(column.sql, ...column.params))) {
 		await transaction.exec(`ALTER TABLE ${t.blobs} ADD COLUMN chunks ${int} NOT NULL DEFAULT 0`);
 	}
+	// A deleted blob takes its chunks with it, in the statement that deletes it, whoever deletes it.
+	const trigger = dialect.schemaObjects([`${t.blobs}_chunks_delete`]);
+	if (await transaction.get(trigger.sql, ...trigger.params)) return;
+	await transaction.exec(
+		dialect.renderTrigger(
+			createTrigger(
+				`${t.blobs}_chunks_delete`,
+				"DELETE",
+				t.blobs,
+				[`DELETE FROM ${t.blobChunks} WHERE hash = OLD.hash`],
+				"OLD.chunks > 0",
+			),
+		),
+	);
 }
 
 /** Creates the blob table and the tables of its reference index that are missing. */
@@ -795,6 +809,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			...Object.values(t).map((table) => dialect.tableExists(table)),
 			dialect.columnExists(t.blobs, "created_at"),
 			dialect.columnExists(t.blobs, "chunks"),
+			dialect.schemaObjects([`${t.blobs}_chunks_delete`]),
 			...["prev_seq", "restore_from", "restore_to"].map((column) => dialect.columnExists(t.sessionRefs, column)),
 		];
 		const found = await Promise.all(probes.map((probe) => database.get(probe.sql, ...probe.params)));
@@ -1054,10 +1069,6 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 					JSON.stringify(page.map((row) => row.hash)),
 					minimumAge,
 				);
-				await transaction.run(
-					`DELETE FROM ${t.blobChunks} WHERE hash IN (SELECT value FROM ${this.dialect.jsonValues("?")})`,
-					JSON.stringify(rows.map((row) => row.hash)),
-				);
 				return { page, deleted: rows.map((row) => row.hash) };
 			});
 			if (batch === undefined) {
@@ -1130,10 +1141,10 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			checkout(session_id, start_seq, root, original) AS (
 				SELECT session_id, start_seq, root, current FROM walk AS last WHERE position = (SELECT max(other.position) FROM walk AS other WHERE other.session_id = last.session_id AND other.start_seq = last.start_seq AND other.root = last.root)
 			),
-			session_heads(session_id, snapshot_id, head) AS (
-				SELECT branch.session_id, branch.snapshot_id, row_number() OVER (PARTITION BY branch.session_id, branch.start_seq, checkout.original ORDER BY branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root
+			session_heads(session_id, start_seq, original, depth) AS (
+				SELECT branch.session_id, branch.start_seq, checkout.original, min(branch.depth) FROM branch JOIN checkout ON checkout.session_id = branch.session_id AND checkout.start_seq = branch.start_seq AND checkout.root = branch.root GROUP BY branch.session_id, branch.start_seq, checkout.original
 			)
-			SELECT session_id, snapshot_id FROM session_heads WHERE head = 1`;
+			SELECT branch.session_id, branch.snapshot_id FROM session_heads JOIN checkout ON checkout.session_id = session_heads.session_id AND checkout.start_seq = session_heads.start_seq AND checkout.original = session_heads.original JOIN branch ON branch.session_id = checkout.session_id AND branch.start_seq = checkout.start_seq AND branch.root = checkout.root AND branch.depth = session_heads.depth`;
 	}
 
 	/**

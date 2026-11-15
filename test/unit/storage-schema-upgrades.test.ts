@@ -129,7 +129,7 @@ for (const adapter of ["node-sqlite", "libsql"] as const) {
 			await SqlSnapshotBlobStore.open(database);
 			// The blob table as builds before blob ages and chunks (#4954) created it.
 			await database.exec(
-				"DROP INDEX snapshot_blobs_age; ALTER TABLE snapshot_blobs DROP COLUMN created_at; ALTER TABLE snapshot_blobs DROP COLUMN chunks",
+				"DROP INDEX snapshot_blobs_age; DROP TRIGGER snapshot_blobs_chunks_delete; ALTER TABLE snapshot_blobs DROP COLUMN created_at; ALTER TABLE snapshot_blobs DROP COLUMN chunks",
 			);
 			const old = textBlob("old blob with all index tables present");
 			await database.run("INSERT INTO snapshot_blobs VALUES (?, ?, ?)", old.hash, old.data.byteLength, old.data);

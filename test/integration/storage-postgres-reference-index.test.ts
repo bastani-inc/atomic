@@ -302,7 +302,8 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			const triggers =
 				"SELECT tgname, tgfoid::regprocedure::text AS fn FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname";
 			const installed = await database.all(triggers);
-			assert.equal(installed.length, 15);
+			// The reference index's triggers, and the one that deletes a chunked blob's chunks with it (#4954).
+			assert.equal(installed.length, 16);
 
 			// Forget that the triggers were installed, as a database migrated by a build before them would.
 			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version >= 2", SNAPSHOT_BLOB_DOMAIN);

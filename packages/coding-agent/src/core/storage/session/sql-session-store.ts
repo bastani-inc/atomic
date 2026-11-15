@@ -91,21 +91,17 @@ type ListingRow = HeaderRow & {
 type SummaryRow = ListingRow & { search_texts_json: string };
 /** A row's key and how many characters its stored text holds, for reading rows in pages. */
 type SizedRow = SqliteRow & { size: number | bigint | null };
+/** A row of a page: its position in store order, and how many rows the page's statement could have returned. */
+type PageRow = { ord: number | bigint; remaining: number | bigint };
 
-/**
- * `rows` split into runs, in order, whose sizes add up to at most {@link SESSION_READ_PAGE_CHARS} and that hold at
- * most `limit` rows; a row larger than a page is a page of its own.
- */
-function pagesOf<Row extends { readonly size: number | bigint | null }>(
-	rows: readonly Row[],
-	limit = Number.POSITIVE_INFINITY,
-): Row[][] {
+/** `rows` split into runs, in order, of at most {@link SESSION_READ_PAGE_CHARS}; a longer row is a run of its own. */
+function pagesOf<Row extends { readonly size: number | bigint | null }>(rows: readonly Row[]): Row[][] {
 	const pages: Row[][] = [];
 	let page: Row[] = [];
 	let chars = 0;
 	for (const row of rows) {
 		const size = Number(row.size ?? 0);
-		if (page.length > 0 && (chars + size > SESSION_READ_PAGE_CHARS || page.length >= limit)) {
+		if (page.length > 0 && chars + size > SESSION_READ_PAGE_CHARS) {
 			pages.push(page);
 			page = [];
 			chars = 0;
@@ -115,12 +111,6 @@ function pagesOf<Row extends { readonly size: number | bigint | null }>(
 	}
 	if (page.length > 0) pages.push(page);
 	return pages;
-}
-
-/** `rows` in the order of the ids in `order`; an id with no row, such as a session deleted meanwhile, is left out. */
-function inOrderOf<Row extends { readonly id: string }>(order: readonly { readonly id: string }[], rows: Row[]): Row[] {
-	const byId = new Map(rows.map((row) => [row.id, row]));
-	return order.flatMap((row) => byId.get(row.id) ?? []);
 }
 
 /** An entry's JSON as its entries row stores it, and the UTF-8 chunks of a long one. */
@@ -697,72 +687,75 @@ export class SqlSessionStore implements SessionStore {
 	}
 
 	/**
-	 * The listing rows `where` selects, without search text, in pages of at most {@link SESSION_READ_PAGE_CHARS}, so
-	 * that no response passes a libSQL server's limit however many sessions there are (#4954). In store order.
+	 * The listing rows `where` selects, without search text, in store order, a page per statement: each returns the rows
+	 * whose preceding rows in it fit in {@link SESSION_READ_PAGE_CHARS}, the first always, so that no response passes a
+	 * libSQL server's limit however many sessions there are (#4954), while a listing that fits takes one statement.
 	 */
 	private async readListingRows(where: string, params: readonly SqliteValue[]): Promise<ListingRow[]> {
-		const sized = await this.database.all<SizedRow & { id: string }>(
-			`SELECT id, ${LISTING_SIZE} AS size FROM ${this.tables.sessions} WHERE ${where}`,
-			...params,
-		);
+		const order = this.dialect.rowOrder();
 		const rows: ListingRow[] = [];
-		for (const page of pagesOf(sized, LISTING_FETCH_BATCH)) {
-			const ids = page.map((row) => row.id);
-			rows.push(
-				...(await this.database.all<ListingRow>(
-					`SELECT ${LISTING_COLUMNS} FROM ${this.tables.sessions} WHERE id IN (${ids.map(() => "?").join(", ")})`,
-					...ids,
-				)),
+		for (let after = 0; ; ) {
+			const page = await this.database.all<ListingRow & PageRow>(
+				`SELECT ${LISTING_COLUMNS}, ord, remaining FROM (
+					SELECT ${LISTING_COLUMNS}, ord, count(*) OVER () AS remaining,
+						sum(size) OVER (ORDER BY ord) - size AS before_chars
+					FROM (
+						SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size
+						FROM ${this.tables.sessions} WHERE (${where}) AND ${order} > ?
+					) AS sized
+				) AS page WHERE before_chars < ? ORDER BY ord LIMIT ?`,
+				...params,
+				after,
+				SESSION_READ_PAGE_CHARS,
+				LISTING_FETCH_BATCH,
 			);
+			rows.push(...page);
+			const last = page.at(-1);
+			if (last === undefined || page.length >= Number(last.remaining)) return rows;
+			after = Number(last.ord);
 		}
-		return inOrderOf(sized, rows);
 	}
 
 	/**
-	 * Reads full listing rows, search text included, and caches their summaries. Rows are read in pages of at most
-	 * {@link SESSION_READ_PAGE_CHARS}, search text included; a session whose search text alone is longer has it read
-	 * in pages of its own, and joined here rather than by the database, whose string limit it may pass (#4954).
+	 * Reads full listing rows, search text included, and caches their summaries, a page per statement as
+	 * {@link readListingRows} reads, search text counted. A session whose search text alone is longer than a page has
+	 * it read in pages of its own and joined here rather than by the database, whose string limit it may pass (#4954).
 	 */
 	private async readSummaries(where: string, params: readonly SqliteValue[]): Promise<readonly SummaryRow[]> {
-		const sized = (
-			await this.database.all<SizedRow & { id: string; search_size: number | bigint | null }>(
-				`SELECT id, ${LISTING_SIZE} AS size,
-					(SELECT sum(length(text_json)) FROM ${this.tables.searchTexts} WHERE session_id = s.id) AS search_size
-				FROM ${this.tables.sessions} AS s WHERE ${where}`,
+		const order = this.dialect.rowOrder();
+		const rows: SummaryRow[] = [];
+		for (let after = 0; ; ) {
+			// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
+			const page = await this.database.all<SummaryRow & PageRow & { search_texts_json: string | null }>(
+				`SELECT ${LISTING_COLUMNS}, ord, remaining, CASE WHEN search_size <= ? THEN (
+					SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
+					FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = page.id ORDER BY seq)
+				) END AS search_texts_json
+				FROM (
+					SELECT ${LISTING_COLUMNS}, ord, search_size, count(*) OVER () AS remaining,
+						sum(size + search_size) OVER (ORDER BY ord) - (size + search_size) AS before_chars
+					FROM (
+						SELECT ${LISTING_COLUMNS}, ${order} AS ord, ${LISTING_SIZE} AS size,
+							(SELECT COALESCE(sum(length(text_json)), 0) FROM ${this.tables.searchTexts} WHERE session_id = s.id) AS search_size
+						FROM ${this.tables.sessions} AS s WHERE (${where}) AND ${order} > ?
+					) AS sized
+				) AS page WHERE before_chars < ? ORDER BY ord LIMIT ?`,
+				SESSION_READ_PAGE_CHARS,
 				...params,
-			)
-		).map((row) => ({ id: row.id, search: Number(row.search_size ?? 0), size: Number(row.size ?? 0) }));
-		const unpaged: SummaryRow[] = [];
-		for (const page of pagesOf(
-			sized.map((row) => ({ ...row, size: row.size + row.search })),
-			LISTING_FETCH_BATCH,
-		)) {
-			const joined = page.filter((row) => row.search <= SESSION_READ_PAGE_CHARS).map((row) => row.id);
-			if (joined.length > 0) {
-				// Combine encoded strings only at read time, preserving NUL and lone surrogates verbatim.
-				unpaged.push(
-					...(await this.database.all<SummaryRow>(
-						`SELECT ${LISTING_COLUMNS}, (
-							SELECT COALESCE('[' || ${this.dialect.orderedConcat("text_json", "','", "seq")} || ']', '[]')
-							FROM (SELECT text_json, seq FROM ${this.tables.searchTexts} WHERE session_id = s.id ORDER BY seq)
-						) AS search_texts_json
-						FROM ${this.tables.sessions} AS s WHERE id IN (${joined.map(() => "?").join(", ")})`,
-						...joined,
-					)),
-				);
+				after,
+				SESSION_READ_PAGE_CHARS,
+				LISTING_FETCH_BATCH,
+			);
+			for (const row of page) {
+				const summaryRow =
+					row.search_texts_json === null ? { ...row, search_texts_json: await this.readSearchTexts(row.id) } : row;
+				this.summaries.set(row.id, { version: listingVersion(summaryRow), summary: summaryFromRow(summaryRow) });
+				rows.push(summaryRow);
 			}
-			for (const { id } of page.filter((row) => row.search > SESSION_READ_PAGE_CHARS)) {
-				const row = await this.database.get<ListingRow>(
-					`SELECT ${LISTING_COLUMNS} FROM ${this.tables.sessions} WHERE id = ?`,
-					id,
-				);
-				if (row) unpaged.push({ ...row, search_texts_json: await this.readSearchTexts(id) });
-			}
+			const last = page.at(-1);
+			if (last === undefined || page.length >= Number(last.remaining)) return rows;
+			after = Number(last.ord);
 		}
-		const rows = inOrderOf(sized, unpaged);
-		for (const row of rows)
-			this.summaries.set(row.id, { version: listingVersion(row), summary: summaryFromRow(row) });
-		return rows;
 	}
 
 	/** A session's search texts as one JSON array, read in pages of at most {@link SESSION_READ_PAGE_CHARS}. */
@@ -809,25 +802,30 @@ export class SqlSessionStore implements SessionStore {
 		);
 		if (!row) throw new SessionNotFoundError(sessionId);
 		// One statement for every entry would return the whole session at once, more than a libSQL server's response
-		// limit for a long one: the entries are read in pages by their length, all in this transaction (#4954).
-		const sizes = await tx.all<SizedRow & { seq: number }>(
-			`SELECT seq, length(entry_json) AS size FROM ${this.tables.entries} WHERE session_id = ? AND seq <= ? ORDER BY seq`,
-			sessionId,
-			row.last_seq,
-		);
+		// limit for a long one. Each statement returns the entries whose preceding entries in it fit in a page, the
+		// first always, so a session that fits takes one statement, as before; all of them run in this transaction.
 		const entries: SessionEntry[] = [];
-		for (const page of pagesOf(sizes)) {
-			const rows = await tx.all<SqliteRow & { seq: number; entry_json: string; chunks: number }>(
-				`SELECT seq, entry_json, chunks FROM ${this.tables.entries} WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+		for (let next = 0; ; ) {
+			const rows = await tx.all<
+				SqliteRow & { seq: number; entry_json: string; chunks: number; remaining: number | bigint }
+			>(
+				`SELECT seq, entry_json, chunks, remaining FROM (
+					SELECT seq, entry_json, chunks, count(*) OVER () AS remaining,
+						sum(length(entry_json)) OVER (ORDER BY seq) - length(entry_json) AS before_chars
+					FROM ${this.tables.entries} WHERE session_id = ? AND seq > ?
+				) AS page WHERE before_chars < ? ORDER BY seq`,
 				sessionId,
-				page[0]!.seq,
-				page.at(-1)!.seq,
+				next,
+				SESSION_READ_PAGE_CHARS,
 			);
 			for (const entry of rows) {
 				const chunks = Number(entry.chunks);
 				const json = chunks === 0 ? entry.entry_json : await this.readEntryChunks(tx, sessionId, entry.seq, chunks);
 				entries.push(JSON.parse(json) as SessionEntry);
 			}
+			const last = rows.at(-1);
+			if (last === undefined || rows.length >= Number(last.remaining)) break;
+			next = Number(last.seq);
 		}
 		return {
 			header: JSON.parse(row.header_json) as SessionRecordHeader,
