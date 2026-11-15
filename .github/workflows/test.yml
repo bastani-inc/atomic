@@ -555,7 +555,7 @@ jobs:
       - name: Build @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode
         run: npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
       - name: atomic-ai vitest suite
-        run: npm --workspace=@bastani/atomic-ai  run test-- --shard=${{ matrix.shard }}/3
+        run: npm --workspace=@bastani/atomic-ai run test -- --shard=${{ matrix.shard }}/3
       # The other forked packages' suites are small, so one shard per OS runs them whole.
       - name: Forked package suites (schema, telemetry, tui, agent-core, codemode)
         if: matrix.shard == 1
