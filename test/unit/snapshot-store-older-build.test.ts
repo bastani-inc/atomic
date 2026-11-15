@@ -15,6 +15,7 @@ import { createSession, messageEntry, syntheticSnapshot } from "../helpers/snaps
 /** The snapshot blob store of Atomic 0.9.87, vendored unmodified (test/fixtures/snapshot-store-0.9.87/README.md). */
 interface Release0987BlobStore {
 	getBlob(hash: string): Promise<Uint8Array | undefined>;
+	putBlobs(blobs: readonly { readonly hash: string; readonly data: Uint8Array }[]): Promise<void>;
 	collectGarbage(options: { readonly graceSeconds: number }): Promise<readonly string[]>;
 }
 const release0987 = (await import(
@@ -22,17 +23,23 @@ const release0987 = (await import(
 )) as { SqlSnapshotBlobStore: { open(database: SqliteDatabase): Promise<Release0987BlobStore> } };
 
 /**
- * What 0.9.87 does when it reads a snapshot blob through its run journal: its `SqlRunJournal.open` refuses a journal
- * whose meta row is not schema version 1 with `JournalSchemaVersionError`, and otherwise reads the blob with the store
- * above, which returns a row's `data` as it is.
+ * What 0.9.87 does when it reads a snapshot blob through its run journal: its `SqlRunJournal.open` creates the journal's
+ * meta table at schema version 1 when it is missing, refuses one whose row is not version 1 with
+ * `JournalSchemaVersionError`, and otherwise reads the blob with the store above, which returns a row's `data` as it is.
+ * With `store`, it first stores those bytes itself, as a run whose worktree holds the same content does.
  */
 async function readAsRelease0987(
 	database: SqliteDatabase,
 	hash: string,
+	store?: Uint8Array,
 ): Promise<{ readonly refused: unknown } | { readonly blob: Uint8Array | undefined }> {
+	await database.exec("CREATE TABLE IF NOT EXISTS wf_meta(schema_version INTEGER NOT NULL)");
+	if ((await database.all("SELECT schema_version FROM wf_meta")).length === 0)
+		await database.run("INSERT INTO wf_meta VALUES (1)");
 	const versions = await database.all<SqliteRow & { schema_version: unknown }>("SELECT schema_version FROM wf_meta");
 	if (versions.length !== 1 || versions[0]!.schema_version !== 1) return { refused: versions[0]?.schema_version };
 	const blobs = await release0987.SqlSnapshotBlobStore.open(database);
+	if (store !== undefined) await blobs.putBlobs([{ hash, data: store }]);
 	return { blob: await blobs.getBlob(hash) };
 }
 
@@ -71,6 +78,28 @@ describe("an older build on a snapshot store this build wrote (#5065)", () => {
 			"refused" in read,
 			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
 		);
+		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
+		await journal.close();
+	});
+
+	test("an older build refuses a database where this build stored a chunked blob through its sessions only (#5065)", async () => {
+		const database = await open();
+		// Shared or team storage before any workflow run: this build has opened the session store and no journal.
+		const sessions = await SqlSessionStore.open(database);
+		const blob = largeBlob();
+		await sessions.snapshotBlobs.putBlobs([blob]);
+
+		// 0.9.87 would create the journal at version 1, store the same bytes (kept as this build's chunked header) and
+		// read them back empty.
+		const read = await readAsRelease0987(database, blob.hash, blob.data);
+
+		assert.ok(
+			"refused" in read,
+			`0.9.87 read the chunked blob as ${(read as { blob?: Uint8Array }).blob?.byteLength} bytes`,
+		);
+		assert.deepEqual(await sessions.snapshotBlobs.getBlob(blob.hash), blob.data);
+		// This build's journal opens the database it marked, and reads the blob whole.
+		const journal = await SqlRunJournal.open(database);
 		assert.deepEqual(await journal.snapshotBlobs.getBlob(blob.hash), blob.data);
 		await journal.close();
 	});

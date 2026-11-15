@@ -3,6 +3,7 @@ import { dialectOf, type StorageDialect, type StorageJsonSource, type StorageTri
 import { StorageWriteLockTimeoutError } from "../storage/errors.js";
 import { applyStorageMigrations } from "../storage/migrations.js";
 import { renderStorageIdentifiers, storageMigrationTable, validateStoragePrefix } from "../storage/prefix.js";
+import { RUN_JOURNAL_SCHEMA_VERSION } from "../storage/run-journal.js";
 import type { WorkspaceCollectionError } from "./errors.ts";
 import type { SnapshotBlob, SnapshotBlobStore, WorktreeSnapshot } from "./types.ts";
 
@@ -842,6 +843,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 	private readonly tables: SnapshotIndexTables;
 	private readonly sources: readonly IndexSource[];
 	private readonly dialect: StorageDialect;
+	/** The meta table of the run journal under the same prefix, which a chunked blob's write marks (#5065). */
+	private readonly journalMeta: string;
 	readonly table: string;
 
 	private constructor(
@@ -849,11 +852,13 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		dialect: StorageDialect,
 		tables: SnapshotIndexTables,
 		sources: readonly IndexSource[],
+		journalMeta: string,
 	) {
 		this.database = database;
 		this.dialect = dialect;
 		this.tables = tables;
 		this.sources = sources;
+		this.journalMeta = journalMeta;
 		this.table = tables.blobs;
 	}
 
@@ -913,7 +918,8 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				{ table: storageMigrationTable(prefix) },
 			);
 		}
-		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect));
+		const journalMeta = renderStorageIdentifiers("journal", { meta: "meta" }, prefix).meta;
+		const store = new SqlSnapshotBlobStore(database, dialect, t, indexSources(prefix, t, dialect), journalMeta);
 		await store.installIndex();
 		return store;
 	}
@@ -940,6 +946,7 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 		const header = `INSERT INTO ${this.table} (hash, bytes, data, created_at, chunks) VALUES (?, ?, ?, ${now}, ?) ON CONFLICT(hash) DO UPDATE SET created_at = ${now}`;
 		const chunk = `INSERT INTO ${this.tables.blobChunks} (hash, idx, data) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM ${this.table} WHERE hash = ?) ON CONFLICT DO NOTHING`;
 		const statements: { sql: string; params: SqliteValue[] }[] = [];
+		let chunked = false;
 		for (const blob of blobs) {
 			const { hash, data } = blob;
 			if (data.byteLength <= SNAPSHOT_BLOB_CHUNK_BYTES) {
@@ -947,12 +954,14 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 				continue;
 			}
 			const chunks = Math.ceil(data.byteLength / SNAPSHOT_BLOB_CHUNK_BYTES);
+			chunked = true;
 			for (let index = 0; index < chunks; index++) {
 				const bytes = data.subarray(index * SNAPSHOT_BLOB_CHUNK_BYTES, (index + 1) * SNAPSHOT_BLOB_CHUNK_BYTES);
 				statements.push({ sql: chunk, params: [hash, index, bytes, hash] });
 			}
 			statements.push({ sql: header, params: [hash, data.byteLength, new Uint8Array(), chunks] });
 		}
+		if (chunked) statements.unshift(...this.refuseOlderJournals());
 		if (this.database.batch) {
 			await this.database.batch(statements);
 			return;
@@ -961,6 +970,24 @@ export class SqlSnapshotBlobStore implements SnapshotBlobStore {
 			for (const statement of statements) await transaction.run(statement.sql, ...statement.params);
 		});
 	}
+	/**
+	 * Statements that give the run journal under this store's prefix a meta row at this build's version when it has
+	 * none, as a new journal's would be. Builds before chunked blobs read one as empty; they open a journal only at
+	 * the version they know, so a database holding one refuses them even where this build never opened a journal,
+	 * such as shared storage before any workflow run (#5065). A journal of an older version is left to the journal's
+	 * own upgrade.
+	 */
+	private refuseOlderJournals(): { sql: string; params: SqliteValue[] }[] {
+		const meta = this.journalMeta;
+		return [
+			{ sql: `CREATE TABLE IF NOT EXISTS ${meta}(schema_version ${this.dialect.types.int} NOT NULL)`, params: [] },
+			{
+				sql: `INSERT INTO ${meta} (schema_version) SELECT ${RUN_JOURNAL_SCHEMA_VERSION} WHERE NOT EXISTS (SELECT 1 FROM ${meta})`,
+				params: [],
+			},
+		];
+	}
+
 	/**
 	 * The blob's bytes, read a chunk per statement when it has chunks, so no response holds more than one chunk. A
 	 * chunked blob whose chunks are not all there, as when a collection deleted it during the read, is not returned.

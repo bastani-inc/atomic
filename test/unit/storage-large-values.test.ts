@@ -381,6 +381,7 @@ describe("a database written with chunked entries is refused by older builds (#4
 			await assert.rejects(store.load("session"), refused);
 			await assert.rejects(store.append("session", [message("n", "m", "more")], { expectSeq: 1 }), refused);
 			await assert.rejects(store.create(header("other"), [message("o", null, "new")]), refused);
+			await assert.rejects(Array.fromAsync(store.list({})), refused);
 		});
 	});
 

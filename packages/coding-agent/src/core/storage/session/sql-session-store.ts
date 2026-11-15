@@ -633,6 +633,13 @@ export class SqlSessionStore implements SessionStore {
 	private async listScope(query: SessionListQuery): Promise<readonly SessionSummary[]> {
 		// The store may have closed, or the caller given up, while an earlier listing held the turn.
 		this.assertListing(query);
+		// A newer build may have upgraded the schema since this store opened it (#5065).
+		await assertStoredSchemaVersion(
+			this.database,
+			{ sql: `SELECT schema_version FROM ${this.tables.meta}` },
+			"sessions",
+			SESSION_SCHEMA_VERSION,
+		);
 		// Read the token first: a commit racing the reads below moves it again before the next call.
 		const token = await this.changeToken();
 		const key = JSON.stringify([
