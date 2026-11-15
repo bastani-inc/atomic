@@ -13,6 +13,47 @@ const { resolvedHost, setResolvedHost } = vi.hoisted(() => {
 		},
 	};
 });
+// Pinned undici fetches are recorded rather than sent while `pinnedRequests.capture`
+// is set, so the pinned-connect test needs no network: it checks which address
+// the dispatcher's own lookup hands undici at connect time.
+const { pinnedRequests } = vi.hoisted(() => ({
+	pinnedRequests: {
+		capture: false,
+		seen: [] as { url: string; lookedUp: unknown[] }[],
+	},
+}));
+vi.mock("undici", async (importActual) => {
+	const actual = await importActual<typeof import("undici")>();
+	type ConnectOptions = { connect?: { lookup?: (...args: unknown[]) => void } };
+	class RecordingAgent extends actual.Agent {
+		readonly connectOptions: ConnectOptions["connect"];
+		constructor(options?: ConstructorParameters<typeof actual.Agent>[0]) {
+			super(options);
+			this.connectOptions = (options as ConnectOptions | undefined)?.connect;
+		}
+	}
+	return {
+		...actual,
+		Agent: RecordingAgent,
+		request: (async (url: string, options: { dispatcher?: RecordingAgent }) => {
+			if (!pinnedRequests.capture) return actual.request(url, options as never);
+			const lookup = options.dispatcher?.connectOptions?.lookup;
+			const lookedUp: unknown[] = [];
+			if (lookup) {
+				await new Promise<void>((resolve) =>
+					lookup(new URL(url).hostname, { all: true }, (_error: unknown, address: unknown) => {
+						lookedUp.push(address);
+						resolve();
+					}),
+				);
+			}
+			pinnedRequests.seen.push({ url, lookedUp });
+			const body = new PassThrough();
+			body.end("pinned-ok");
+			return { statusCode: 200, headers: { "content-type": "text/plain" }, body };
+		}) as typeof actual.request,
+	};
+});
 vi.mock("node:dns/promises", async (importActual) => {
 	const actual = await importActual<typeof import("node:dns/promises")>();
 	return {
@@ -127,8 +168,8 @@ test("cache keys are scoped and split raw vs rendered", () => {
 test("pins the DNS-resolved address for hostname fetches (no rebinding at connect)", async () => {
 	// Regression: globalThis.fetch ignores the undici `dispatcher` option under
 	// Bun's compiled binary, so a hostname target must route through undici's
-	// own client for the pinned lookup to take effect. If the pinned (undici)
-	// path is taken, a mocked global fetch returning 200 must NOT be reached.
+	// own client, whose connect lookup returns only the address validated at
+	// resolution time. The request is recorded, not sent, so no network is used.
 	const previousAllowance = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	const previousFetch = globalThis.fetch;
 	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
@@ -137,20 +178,17 @@ test("pins the DNS-resolved address for hostname fetches (no rebinding at connec
 		globalFetchCalls++;
 		return new Response("should-not-reach", { status: 200 });
 	}) as typeof fetch;
-	// Resolve the hostname to a public IP on a port nothing answers; undici's
-	// pinned client attempts the connect and fails — proving the request went
-	// through undici (the pinned path), not the mocked global fetch.
 	setResolvedHost({ address: "8.8.8.8", family: 4 });
+	pinnedRequests.capture = true;
+	pinnedRequests.seen.length = 0;
 	try {
-		const failure = await loadPage("http://dns-pinned.example:9/", 2000, undefined, "text/plain").then(
-			() => undefined,
-			(error: unknown) => error,
-		);
-		expect(failure).toBeInstanceOf(Error);
-		expect((failure as Error).message).not.toMatch(/Refusing to fetch/);
-		// The hostname went through undici's pinned client, not global fetch.
+		await loadPage("http://dns-pinned.example/", 2000, undefined, "text/plain");
 		expect(globalFetchCalls).toBe(0);
+		expect(pinnedRequests.seen).toEqual([
+			{ url: "http://dns-pinned.example/", lookedUp: [[{ address: "8.8.8.8", family: 4, pinned: true }]] },
+		]);
 	} finally {
+		pinnedRequests.capture = false;
 		setResolvedHost(null);
 		globalThis.fetch = previousFetch;
 		if (previousAllowance === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
