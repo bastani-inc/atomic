@@ -40,19 +40,12 @@ describe("bash timeout validation", () => {
 		expect(observed).toEqual([1.9, 0.29, 0.001]);
 	});
 
-	test("lets a command finish within a fractional timeout longer than its whole seconds", async () => {
+	test("stops a command at a fractional timeout, not at the whole second it floors to", async () => {
 		const bash = createBashToolDefinition(process.cwd());
 
-		const result = await bash.execute(
-			"fraction",
-			{ command: "sleep 1.2; echo done", timeout: 1.9 },
-			undefined,
-			undefined,
-			context,
-		);
-
-		expect(result.content).toEqual([{ type: "text", text: "done\n" }]);
-		expect(result.details?.timeoutSeconds).toBe(1.9);
+		await expect(
+			bash.execute("fraction", { command: "sleep 30", timeout: 0.5 }, undefined, undefined, context),
+		).rejects.toThrow(/Command timed out after 0\.5 seconds/);
 	});
 
 	test("local operations accept omitted timeout and the 3600 second maximum", async () => {
