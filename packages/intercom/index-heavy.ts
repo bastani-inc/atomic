@@ -785,12 +785,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       const admission = inboundDeliveries.admit(record.from, record.message);
       if (admission.kind !== "reserved") continue;
       const askReply = outboundAskFor(record.from, record.message);
-      // #5095: as on arrival, a failure for an ask already answered is not shown.
-      if (askReply?.state === "answered" && record.message.replyError !== undefined) {
-        void durableInbox.handledWithoutCard(record.message.id);
-        inboundDeliveries.commit(admission.reservation);
-        continue;
-      }
       if (askReply !== undefined) void outboundAsks.settle(askReply.ask.askId, record.message.replyError === undefined ? "answered" : "failed");
       replyTracker.recordIncomingMessage(record.from, record.message);
       if (pendingIdleMessages.enqueue(entry)) queued += 1;
