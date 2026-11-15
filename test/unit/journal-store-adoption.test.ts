@@ -29,6 +29,7 @@ import {
 	JournalCatalog,
 	JournalCatalogError,
 	legacyDefaultJournalPath,
+	openNodeSqliteDatabase,
 } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test } from "vitest";
 import { ShardedRunJournal } from "../../packages/workflows/src/durable/journal/sharded-run-journal.js";
@@ -2487,3 +2488,34 @@ for (const repointed of [true, false])
 			DatabaseSync.prototype.prepare = prepare;
 		}
 	});
+
+// On Windows SQLite opens these through the `\\?\` form; elsewhere the same paths open as written.
+test("a journal and a store whose database paths pass 240 characters adopt and consolidate under their ordinary paths (#5139)", async () => {
+	// Long enough that SQLite opens every database here through the `\\?\` form.
+	const deep = join(root, "d".repeat(250 - join(root, "a", "journal.sqlite").length - 1));
+	store = join(deep, "workflows", "journal");
+	const path = await journal(join(deep, "a", "journal.sqlite"), [
+		{ runId: "a1", references: join(deep, "a", "journal.sqlite") },
+	]);
+	assert.ok(path.length > 240, path);
+
+	const database = await openNodeSqliteDatabase(path, { readOnly: true });
+	try {
+		assert.equal(database.descriptor.location, path, "the descriptor names the path, not its long-path form");
+	} finally {
+		await database.close();
+	}
+	await withCatalog(async (catalog) => {
+		const report = await adoptJournals(catalog, [path]);
+		// The journal's reference to itself is recognised as the journal, so nothing else is discovered.
+		assert.deepEqual(report.adopted, [{ path, status: "adopted", shardId: 1, runs: 1 }]);
+		assert.deepEqual(report.discovered, []);
+	});
+	const consolidated = await consolidateJournalStore(store);
+	assert.deepEqual(
+		consolidated.runs.map((run) => [run.runId, run.outcome]),
+		[["a1", "moved"]],
+	);
+	const shard = (await withCatalog((catalog) => catalog.locate("a1")))?.shard.path;
+	assert.ok(shard?.startsWith(store), shard);
+});
