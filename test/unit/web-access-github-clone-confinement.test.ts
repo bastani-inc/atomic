@@ -19,6 +19,8 @@ const boundary = vi.hoisted(() => ({
 	sandbox: "",
 	calls: [] as string[][],
 	files: {} as Record<string, string>,
+	/** Links the fake clone creates: name inside the clone to target (relative targets are kept as written). */
+	links: {} as Record<string, { target: string; type: "file" | "dir" | "junction" }>,
 	failClone: false,
 	/** `gh api` output keyed by `<endpoint> <jq filter>`; any other request fails. */
 	api: {} as Record<string, string>,
@@ -35,6 +37,10 @@ vi.mock("node:child_process", () => ({
 				for (const [name, content] of Object.entries(boundary.files)) {
 					mkdirSync(dirname(join(target, name)), { recursive: true });
 					writeFileSync(join(target, name), content);
+				}
+				for (const [name, link] of Object.entries(boundary.links)) {
+					mkdirSync(dirname(join(target, name)), { recursive: true });
+					symlinkSync(link.target, join(target, name), link.type);
 				}
 				return callback(boundary.failClone ? new Error("clone failed") : null, "");
 			}
@@ -55,6 +61,17 @@ const { loadGitHubConfig } = await import("../../packages/web-access/github-conf
 
 afterAll(() => removeTempDirectory(suiteDirectory));
 
+/** File symlinks need extra privileges on Windows; tests that create them are skipped where that fails. */
+const fileLinksSupported = (() => {
+	try {
+		writeFileSync(join(suiteDirectory, "link-target"), "");
+		symlinkSync(join(suiteDirectory, "link-target"), join(suiteDirectory, "link-probe"), "file");
+		return true;
+	} catch {
+		return false;
+	}
+})();
+
 let sandbox = "";
 let clonePath = "";
 let victim = "";
@@ -69,6 +86,7 @@ beforeEach(() => {
 	boundary.sandbox = sandbox;
 	boundary.calls = [];
 	boundary.files = { "README.md": "Repository readme", "src/a.ts": "export const a = 1;\n" };
+	boundary.links = {};
 	boundary.failClone = false;
 	boundary.api = {};
 	writeFileSync(boundary.configPath, JSON.stringify({ githubClone: { clonePath } }));
@@ -400,6 +418,79 @@ test("clearing the cache leaves a clone moved outside the clone directory alone"
 		await readText(join(outside, relative(join(clonePath, "octo"), target!), "README.md")),
 		"Repository readme",
 	);
+});
+
+const OUTSIDE_TEXT = "text kept outside the clone";
+
+test.skipIf(!fileLinksSupported)(
+	"a repository README that links to an absolute path outside the clone is not read",
+	async () => {
+		writeFileSync(join(victim, "notes.txt"), OUTSIDE_TEXT);
+		boundary.files = { "readme.md": "Second readme" };
+		boundary.links = { "README.md": { target: join(victim, "notes.txt"), type: "file" } };
+		const root = await extractGitHub("https://github.com/octo/widgets", undefined, true);
+		assert.equal(root?.error, null);
+		assert.doesNotMatch(root!.content, new RegExp(OUTSIDE_TEXT));
+		assert.match(root!.content, /## README.md\nSecond readme/);
+	},
+);
+
+test.skipIf(!fileLinksSupported)(
+	"a repository README that links through ../ outside the clone is not read",
+	async () => {
+		writeFileSync(join(victim, "notes.txt"), OUTSIDE_TEXT);
+		boundary.files = {};
+		// The checkout is <clones>/octo/widgets/widgets, so four levels up is the sandbox.
+		boundary.links = { "README.md": { target: "../../../../victim/notes.txt", type: "file" } };
+		const root = await extractGitHub("https://github.com/octo/widgets", undefined, true);
+		assert.equal(root?.error, null);
+		assert.equal(await readText(join(cloneTargets()[0]!, "README.md")), OUTSIDE_TEXT);
+		assert.doesNotMatch(root!.content, new RegExp(OUTSIDE_TEXT));
+		assert.doesNotMatch(root!.content, /## README.md/);
+	},
+);
+
+test("a directory in the repository that links outside the clone is not listed or read", async () => {
+	writeFileSync(join(victim, "notes.txt"), OUTSIDE_TEXT);
+	boundary.links = { docs: { target: victim, type: LINK_TYPE } };
+	const tree = await extractGitHub("https://github.com/octo/widgets/tree/main/docs", undefined, true);
+	assert.equal(tree?.error, null);
+	assert.match(tree!.content, /Path `docs` not found in clone/);
+	assert.doesNotMatch(tree!.content, /notes\.txt|keep\.txt/);
+	assert.match(tree!.content, /docs {2}\[outside repo skipped\]/);
+	const blob = await extractGitHub("https://github.com/octo/widgets/blob/main/docs/notes.txt", undefined, true);
+	assert.doesNotMatch(blob!.content, new RegExp(OUTSIDE_TEXT));
+	const root = await extractGitHub("https://github.com/octo/widgets/tree/main", undefined, true);
+	assert.match(root!.content, /\n {2}docs {2}\(outside repo\)/);
+	assert.doesNotMatch(root!.content, /notes\.txt|keep\.txt/);
+});
+
+test("a dangling link that points outside the clone is not followed", async () => {
+	const missing = join(victim, "created-later");
+	boundary.links = { docs: { target: missing, type: LINK_TYPE } };
+	const tree = await extractGitHub("https://github.com/octo/widgets/tree/main/docs/sub", undefined, true);
+	assert.match(tree!.content, /Path `docs\/sub` not found in clone/);
+
+	// A clone directory reached through a dangling link outside the clone directory is refused.
+	clearCloneCache();
+	boundary.calls = [];
+	symlinkSync(join(victim, "elsewhere"), join(clonePath, "other"), LINK_TYPE);
+	await extractGitHub("https://github.com/other/widgets", undefined, true);
+	assert.deepEqual(cloneTargets(), []);
+	assert.equal(existsSync(join(victim, "elsewhere")), false);
+});
+
+test.skipIf(!fileLinksSupported)("links that stay inside the repository are still read", async () => {
+	boundary.files = { "docs/intro.md": "Linked readme", "src/a.ts": "export const a = 1;\n" };
+	boundary.links = {
+		"README.md": { target: join("docs", "intro.md"), type: "file" },
+		lib: { target: "src", type: "dir" },
+	};
+	const root = await extractGitHub("https://github.com/octo/widgets", undefined, true);
+	assert.match(root!.content, /## README.md\nLinked readme/);
+	assert.match(root!.content, /\nlib\/\nlib\/a\.ts\n/);
+	const blob = await extractGitHub("https://github.com/octo/widgets/blob/main/lib/a.ts", undefined, true);
+	assert.match(blob!.content, /## lib\/a\.ts\nexport const a = 1;/);
 });
 
 test("invalid GitHub URLs name the part that was rejected", () => {

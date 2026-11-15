@@ -55,12 +55,19 @@ function pathExists(path: string): boolean {
 	return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
 }
 
-/** True when `path` is strictly inside the clone root after resolving every symlink that exists along it. */
+/**
+ * True when `path` is strictly inside the clone root after resolving every symlink along it.
+ * The walk uses lstat, so a dangling symlink is resolved too and refuses the path.
+ */
 function isConfined(root: string, path: string): boolean {
 	let existing = path;
-	while (!existsSync(existing)) existing = dirname(existing);
-	const realPath = join(realpathSync(existing), relative(existing, path));
-	return isInside(realpathSync(root), realPath);
+	while (!pathExists(existing)) existing = dirname(existing);
+	try {
+		const realPath = join(realpathSync(existing), relative(existing, path));
+		return isInside(realpathSync(root), realPath);
+	} catch {
+		return false;
+	}
 }
 
 /** Removes a clone directory only when it is confined and carries this tool's marker. */
@@ -173,7 +180,7 @@ function resolveWithinRepo(rootPath: string, relativePath: string): string | nul
 		if (!candidate.startsWith(rootPrefix)) return null;
 	}
 
-	if (!existsSync(candidate)) return candidate;
+	if (!pathExists(candidate)) return isConfined(normalizedRoot, candidate) ? candidate : null;
 
 	try {
 		const realRoot = realpathSync(normalizedRoot);
@@ -285,8 +292,8 @@ function buildDirListing(rootPath: string, subPath: string): string {
 export function readReadme(localPath: string): string | null {
 	const candidates = ["README.md", "readme.md", "README", "README.txt", "README.rst"];
 	for (const name of candidates) {
-		const readmePath = join(localPath, name);
-		if (existsSync(readmePath)) {
+		const readmePath = resolveWithinRepo(localPath, name);
+		if (readmePath && existsSync(readmePath)) {
 			try {
 				const content = readFileSync(readmePath, "utf-8");
 				return content.length > 8192 ? flattenTruncatedString(content.slice(0, 8192) + "\n\n[README truncated at 8K chars]") : content;
