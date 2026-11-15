@@ -417,6 +417,31 @@ describe("claim candidates and failures (#4748)", () => {
 		assert.equal(readFileSync(join(slot(a, 2), "file.txt"), "utf8"), "A\n");
 	});
 
+	test("a claim whose slot another holder took while it reset records nothing and holds no slot (#4830)", async () => {
+		const { a, b, clone } = await twoSnapshots();
+		await idleSlotOfX(a, clone);
+		const z = { kind: "session" as const, id: "session-z" };
+		let taken = "";
+		// Another process takes the slot while the claim fetches the snapshot's content, as after a long stall.
+		const blobs = {
+			...store.snapshotBlobs,
+			getBlob: async (hash: string) => {
+				if (taken === "") {
+					writeFileSync(recordFile(a, 0), JSON.stringify({ ...recordOf(a, 0), holder: z, tenancy: "taken-by-z" }));
+					taken = readFileSync(recordFile(a, 0), "utf8");
+				}
+				return store.snapshotBlobs!.getBlob(hash);
+			},
+		};
+
+		const claim = await claimIdleWorktree(b, { ...claimOptions(), blobs });
+
+		assert.deepEqual(claim, { claimed: false, reason: "busy" });
+		assert.notEqual(taken, "");
+		assert.equal(readFileSync(recordFile(a, 0), "utf8"), taken);
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(a, 0)), { owner: z, held: false });
+	});
+
 	test("a claim of a snapshot with Git LFS files downloads what it can and reports what it cannot (#4748)", async () => {
 		await sandbox.git(sandbox.root, "lfs", "install", "--skip-repo");
 		const { clone } = await sandbox.remoteWithClone("repo", {
@@ -542,6 +567,78 @@ describe("claim candidates and failures (#4748)", () => {
 			{ readme: mtime("README.md"), shared: mtime("shared.txt"), file: mtime("file.txt") === before.file },
 			{ readme: before.readme, shared: before.shared, file: false },
 		);
+	});
+});
+
+describe("tracked files snapshots omit (#4897)", () => {
+	/**
+	 * Two snapshots of a checkout that tracks files snapshots leave out: `.env.example` on the deny list, `private/notes.txt`
+	 * under `.atomic/snapshot-ignore`, and `big.dat`, whose edit below goes over the size cap. A and B both edit the
+	 * tracked `README.md` differently, so each records a tracked change. Session X then restores A into slot 0 and
+	 * releases it.
+	 */
+	async function idleSlotWithOmittedFiles() {
+		const { clone } = await sandbox.remoteWithClone("omitting", {
+			".gitignore": "node_modules/\n",
+			".atomic/snapshot-ignore": "private/\n",
+			".env.example": "TOKEN=placeholder\n",
+			"private/notes.txt": "committed notes\n",
+			"big.dat": "small\n",
+			"README.md": "hello\n",
+		});
+		sandbox.write(join(clone, "README.md"), "A\n");
+		const a = await capture(clone);
+		sandbox.write(join(clone, "README.md"), "B\n");
+		const b = await capture(clone);
+		renameSync(clone, sandbox.path("omitting-away"));
+		const x = await idleSlotOfX(a, clone);
+		return { a, b, x };
+	}
+
+	const omittedEdits: [string, string, () => string][] = [
+		["a deny-listed .env.example", ".env.example", () => "TOKEN=edited\n"],
+		["a file under .atomic/snapshot-ignore", "private/notes.txt", () => "edited notes\n"],
+		["a file over the size cap", "big.dat", () => "x".repeat(settings.maxFileBytes + 1)],
+	];
+	for (const [what, file, content] of omittedEdits) {
+		test(`a slot with an edit to ${what} that it tracks is not claimed and keeps the edit (#4897)`, async () => {
+			const { a, b, x } = await idleSlotWithOmittedFiles();
+			const edited = content();
+			sandbox.write(join(slot(a, 0), file), edited);
+
+			assert.deepEqual(await claimIdleWorktree(b, claimOptions()), { claimed: false, reason: "dirty" });
+
+			assert.equal(readFileSync(join(slot(a, 0), file), "utf8"), edited);
+			assert.equal(readFileSync(join(slot(a, 0), "README.md"), "utf8"), "A\n");
+			assert.deepEqual(recordOf(a, 0).holder, { kind: "session", id: x.getSessionId() });
+		});
+
+		test(`a slot with an edit to ${what} that it tracks is never evicted (#4897)`, async () => {
+			const { a } = await idleSlotWithOmittedFiles();
+			const edited = content();
+			sandbox.write(join(slot(a, 0), file), edited);
+
+			const removed = await evictIdleWorktrees(storeDir(), repositoryIdOf(a.remotes), { maxIdle: 0, settings });
+
+			assert.deepEqual(removed, []);
+			assert.equal(readFileSync(join(slot(a, 0), file), "utf8"), edited);
+			assert.equal(existsSync(recordFile(a, 0)), true);
+		});
+	}
+
+	test("a slot whose omitted tracked files are unchanged is still claimed, and evicted when idle (#4897)", async () => {
+		const { a, b } = await idleSlotWithOmittedFiles();
+
+		const claim = await claimIdleWorktree(b, claimOptions());
+
+		assert.equal(claim.claimed && claim.lease.path, slot(a, 0));
+		if (claim.claimed) await releaseRestoredWorktree(claim.lease);
+		assert.equal(readFileSync(join(slot(a, 0), "README.md"), "utf8"), "B\n");
+		assert.equal(readFileSync(join(slot(a, 0), ".env.example"), "utf8"), "TOKEN=placeholder\n");
+		assert.deepEqual(await evictIdleWorktrees(storeDir(), repositoryIdOf(a.remotes), { maxIdle: 0, settings }), [
+			slot(a, 0),
+		]);
+		assert.equal(existsSync(slot(a, 0)), false);
 	});
 });
 

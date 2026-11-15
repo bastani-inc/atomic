@@ -19,6 +19,7 @@ import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction 
 import { startOAuthCallbackServer, waitForCallbackOrManualInput } from "./callback-server.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { generatePKCE } from "./pkce.ts";
+import { refreshedOAuthCredential } from "./token-response.ts";
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTH_BASE_URL = "https://auth.openai.com";
@@ -144,6 +145,9 @@ async function readTokenResponse(
 		refresh_token?: string;
 		expires_in?: number;
 	} | null;
+	if (presentedRefreshToken !== undefined && json?.access_token) {
+		return refreshedOAuthCredential(json.access_token, json, presentedRefreshToken, 0);
+	}
 	if (!json?.access_token || !json.refresh_token || typeof json.expires_in !== "number") {
 		throw new Error(`OpenAI Codex token ${operation} response missing fields: ${JSON.stringify(json)}`);
 	}

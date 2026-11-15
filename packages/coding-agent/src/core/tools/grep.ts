@@ -1,5 +1,4 @@
 import { stat as fsStat } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
 import { spawn } from "child_process";
@@ -7,6 +6,7 @@ import path from "path";
 import { type Static, Type } from "typebox";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
+import { attachLineReader } from "../../utils/lines.ts";
 import type { ManagedToolError } from "../../utils/managed-tool-errors.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
@@ -74,6 +74,7 @@ type RipgrepLineEvent = {
 		path?: RipgrepText;
 		line_number?: unknown;
 		lines?: RipgrepText;
+		submatches?: Array<{ start?: unknown; end?: unknown }>;
 	};
 };
 
@@ -91,6 +92,25 @@ function decodeRgText(data: RipgrepText | undefined): string {
 	if (typeof data?.text === "string") return data.text;
 	if (typeof data?.bytes === "string") return Buffer.from(data.bytes, "base64").toString("utf-8");
 	return "";
+}
+
+/**
+ * The first submatch of a ripgrep match event as UTF-16 offsets into the displayed line, which has its CRs removed.
+ * ripgrep reports byte offsets into the raw line.
+ */
+function firstSubmatchRange(event: RipgrepLineEvent): { start: number; end: number } | undefined {
+	const submatch = event.data?.submatches?.[0];
+	if (typeof submatch?.start !== "number" || typeof submatch.end !== "number") return undefined;
+	const lines = event.data?.lines;
+	const raw =
+		typeof lines?.text === "string"
+			? Buffer.from(lines.text, "utf-8")
+			: typeof lines?.bytes === "string"
+				? Buffer.from(lines.bytes, "base64")
+				: undefined;
+	if (!raw) return undefined;
+	const toOffset = (byteOffset: number) => raw.subarray(0, byteOffset).toString("utf-8").replace(/\r/g, "").length;
+	return { start: toOffset(submatch.start), end: toOffset(submatch.end) };
 }
 
 /** Clamp a line count so String() never yields exponent notation, which rg rejects. */
@@ -353,7 +373,8 @@ export function createGrepToolDefinition(
 							return;
 						}
 
-						const args: string[] = ["--no-config", "--json", "--line-number", "--color=never"];
+						// --crlf lets `$` match before CRLF line endings, as it does before LF.
+						const args: string[] = ["--no-config", "--json", "--line-number", "--color=never", "--crlf"];
 						if (hidden !== false) args.push("--hidden");
 						if (gitignore === false) args.push("--no-ignore");
 						if (ignoreCase) args.push("--ignore-case");
@@ -374,7 +395,7 @@ export function createGrepToolDefinition(
 							stdio: ["ignore", "pipe", "pipe"],
 						});
 						const timeoutTimer = timeoutMs !== undefined ? setTimeout(() => stopChild(), timeoutMs) : undefined;
-						const rl = createInterface({ input: child.stdout });
+						let detachLines = () => {};
 						let stderr = "";
 						let matchCount = 0;
 						let matchLimitReached = false;
@@ -385,7 +406,7 @@ export function createGrepToolDefinition(
 
 						const cleanup = () => {
 							if (timeoutTimer) clearTimeout(timeoutTimer);
-							rl.close();
+							detachLines();
 							signal?.removeEventListener("abort", onAbort);
 						};
 						const stopChild = (dueToLimit = false) => {
@@ -406,13 +427,19 @@ export function createGrepToolDefinition(
 						// Size of the full output, including lines past the byte cap that are counted but not stored.
 						let outputBytes = 0;
 						let outputLineCount = 0;
-						const pushLine = (filePath: string, lineNumber: number, lineText: string, isMatch: boolean) => {
+						const pushLine = (
+							filePath: string,
+							lineNumber: number,
+							lineText: string,
+							isMatch: boolean,
+							match?: { start: number; end: number },
+						) => {
 							const relativePath = formatPath(filePath);
 							// Lines are split only at LF, like ripgrep; a CR inside a line is dropped from the display,
 							// as in the native search.
 							const sanitized = lineText.replace(/\r/g, "").replace(/\n$/, "");
-							// Truncate long lines so grep output stays compact.
-							const { text: truncatedText, wasTruncated } = truncateLine(sanitized);
+							// Truncate long lines so grep output stays compact, keeping the first match visible.
+							const { text: truncatedText, wasTruncated } = truncateLine(sanitized, GREP_MAX_LINE_LENGTH, match);
 							if (wasTruncated) linesTruncated = true;
 							const line = isMatch
 								? `${relativePath}:${lineNumber}: ${truncatedText}`
@@ -456,7 +483,13 @@ export function createGrepToolDefinition(
 							done = true;
 							stopChild(true);
 						};
-						const onContentLine = (filePath: string, lineNumber: number, lineText: string, isMatch: boolean) => {
+						const onContentLine = (
+							filePath: string,
+							lineNumber: number,
+							lineText: string,
+							isMatch: boolean,
+							match?: { start: number; end: number },
+						) => {
 							const trailingEnd = (lastShown?.lineNumber ?? 0) + contextAfterValue;
 							const inTrailingWindow = filePath === lastShown?.filePath && lineNumber <= trailingEnd;
 							if (limitHit) {
@@ -485,13 +518,13 @@ export function createGrepToolDefinition(
 							}
 							pendingContext = [];
 							pendingContextStart = 0;
-							pushLine(filePath, lineNumber, lineText, true);
+							pushLine(filePath, lineNumber, lineText, true, match);
 							lastShown = { filePath, lineNumber };
 							matchCount++;
 							if (matchCount >= effectiveLimit) limitHit = true;
 						};
 
-						rl.on("line", (line) => {
+						detachLines = attachLineReader(child.stdout, (line) => {
 							if (done || !line.trim() || (mode === "filesWithMatches" && matchCount >= effectiveLimit)) return;
 							let event: unknown;
 							try {
@@ -504,7 +537,14 @@ export function createGrepToolDefinition(
 							const lineNumber = event.data?.line_number;
 							if (!filePath || typeof lineNumber !== "number") return;
 							if (contentMode) {
-								onContentLine(filePath, lineNumber, decodeRgText(event.data?.lines), event.type === "match");
+								const isMatch = event.type === "match";
+								onContentLine(
+									filePath,
+									lineNumber,
+									decodeRgText(event.data?.lines),
+									isMatch,
+									isMatch ? firstSubmatchRange(event) : undefined,
+								);
 								return;
 							}
 							if (event.type !== "match") return;
