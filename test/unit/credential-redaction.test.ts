@@ -1073,8 +1073,7 @@ describe("credential redaction, fourth pass", () => {
 			"docker run -p127.0.0.1:8080:80/tcp nginx",
 			"mkdir -p/tmp/a1",
 			"docker run -u 1000:1000 img",
-			"function f(password: Password) {}",
-			"function f(token: AccessToken, password: Password): void {}",
+			"function f(token: AccessToken, timeout: number): void {}",
 			"I like sweets, cookie: chocolate=yes",
 			"The Set-Cookie header (e.g. Set-Cookie: lang=en-US) sets a cookie.".replace("lang=en-US", "lang"),
 			"note: login bob password reset failed in the middle of a line",
@@ -1095,5 +1094,57 @@ describe("credential redaction, fourth pass", () => {
 		);
 		assert.equal(redactCredentialShapes(`  login bob password ${S}`), "  login bob password [redacted]");
 		assert.equal(redactCredentialShapes(`{"stripeKey":"sk9_${S}"}`), '{"stripeKey": [redacted]}');
+	});
+});
+
+describe("capitalised credential values", () => {
+	test("a capitalised word value is redacted unless type syntax shows it is a type", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			["token: CorrectHorse", "token: [redacted]"],
+			["token: AbcDef", "token: [redacted]"],
+			["token: AbcDef, x", "token: [redacted], x"],
+			["secret: MySecretValue", "secret: [redacted]"],
+			["token: Abc", "token: [redacted]"],
+			["password: Hunter)", "password: [redacted]"],
+			["password: Hunter, x", "password: [redacted]"],
+			["token=AbcDef&x=1", "token= [redacted]&x=1"],
+			["a: string, token: AbcDef, b: number", "a: string, token: [redacted], b: number"],
+			["f(a: string) token: AbcDef, b: number", "f(a: string) token: [redacted], b: number"],
+			["x, a: string; f(token: AbcDef)", "x, a: string; f(token: [redacted]"],
+			[`(${"x".repeat(130)} a: string, token: AbcDef`, `(${"x".repeat(130)} a: string, token: [redacted]`],
+			["f(a: string,\ntoken: AbcDef", "f(a: string,\ntoken: [redacted]"],
+			["client_secret=Zq9vR2mXw7LpT4kN&grant_type=x", "client_secret= [redacted]&grant_type=x"],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(redactCredentialShapes(input), expected, input);
+			assert.equal(redactSensitiveText(input), expected, input);
+		}
+	});
+
+	test("type annotations stay readable", () => {
+		for (const text of [
+			"apiKey: string | undefined",
+			"token: string;",
+			"function f(secret: SecretRef, timeout: number) {}",
+			"function f(token: AccessToken, timeout: number): void {}",
+			"def f(secret_key: SecretStr, user: str): ...",
+			"token: Optional[str] = None",
+			"token: Record<string, string>",
+			"token: Promise<Token>",
+			"secret: SecretRef | null",
+			"token: AuthToken & Disposable",
+			"token: TokenSet[]",
+			"token?: AuthToken;",
+			"token: TokenFactory => void",
+			"password: str",
+			"password: Optional[str]",
+		]) {
+			assert.equal(redactCredentialShapes(text), text, text);
+		}
+		assert.equal(redactCredentialShapes("password: Password)"), "password: [redacted]");
+		assert.equal(
+			redactCredentialShapes("connect(host: string, password: Password)"),
+			"connect(host: string, password: [redacted]",
+		);
 	});
 });

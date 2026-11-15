@@ -96,14 +96,45 @@ type Redaction = (match: RegExpExecArray) => readonly Replacement[];
 
 const WHOLE: Redaction = (match) => [{ start: 0, end: match[0].length, replacement: REDACTED }];
 
-/** Values that name no secret: literals, and TypeScript's primitive types. */
+/** Values that name no secret: literals, and builtin type names of TypeScript and Python. */
 const LITERAL =
-	/^(?:null|true|false|undefined|none|nil|string|number|boolean|bigint|symbol|object|unknown|any|never|void)$/iu;
-/** A code identifier rather than a secret: a type name of capitalized words, or a member access such as `this.token` or `process.env.TOKEN`. */
-const CODE_IDENTIFIER =
-	/^(?:(?:[A-Z][a-z]+)+|(?:this|self|process|window|globalThis|options|opts|config|props|state|params|args|ctx|context|req|request|res|response|input|data|env)(?:\.[A-Za-z_$][\w$]*)+)$/u;
-/** A type name of capitalized words. */
+	/^(?:null|true|false|undefined|none|nil|string|number|boolean|bigint|symbol|object|unknown|any|never|void|str|int|float|bytes|bool|dict|list)$/iu;
+/** A generic type such as `Optional[str]`, `Record<string, string>` or `Promise<Token>`. */
+const GENERIC_TYPE =
+	/^(?:Optional|Union|Record|Array|ReadonlyArray|Promise|List|Dict|Set|Map|Partial|Readonly|Tuple|Sequence|Mapping)[<[]/u;
+/** A member access such as `this.token` or `process.env.TOKEN`: code, not a secret. */
+const MEMBER_ACCESS =
+	/^(?:this|self|process|window|globalThis|options|opts|config|props|state|params|args|ctx|context|req|request|res|response|input|data|env)(?:\.[A-Za-z_$][\w$]*)+$/u;
+/** A PascalCase type name, as in `SecretRef` or `AccessToken`. */
 const TYPE_NAME = /^(?:[A-Z][a-z]+)+$/u;
+/**
+ * Type syntax right after a type name: a union, a spaced intersection (a bare `&` joins query parameters), type
+ * arguments, an array, an optional, an arrow.
+ */
+const TYPE_SYNTAX = /^(?:[ \t]*(?:[|<[?]|=>)|[ \t]+&[ \t])/u;
+/** Another `name: Type` pair of the same parameter list, before or after a field. */
+const OTHER_PARAMETER = /[(,][ \t]*[A-Za-z_$][\w$]*\??[ \t]*:[ \t]*[A-Za-z_$]/u;
+
+/**
+ * Whether the PascalCase value of a field that `match` found is a type annotation: type syntax follows it, or
+ * it sits in a parameter list (an open `(` on its line before it) that has another `name: Type` pair. It looks at most
+ * 120 characters around the field.
+ */
+function annotatesType(match: RegExpExecArray): boolean {
+	const input = match.input;
+	const valueEnd = match.index + match[0].length;
+	const after = input.slice(valueEnd, valueEnd + 120).split("\n", 1)[0]!;
+	if (TYPE_SYNTAX.test(after)) return true;
+	const before = input
+		.slice(Math.max(0, match.index - 120), match.index)
+		.split("\n")
+		.at(-1)!;
+	const open = before.lastIndexOf("(");
+	if (open === -1 || before.indexOf(")", open) !== -1) return false;
+	const list = `${before.slice(open)}${after.split(")", 1)[0]}`;
+	return OTHER_PARAMETER.test(list);
+}
+
 /** Ends of names that always name a credential, whatever word comes before them, as in `nextAuthSecret`. */
 const CREDENTIAL_NAME_END =
 	/(?:AccessToken|RefreshToken|AuthSecret|ClientSecret|ApiKey|Secret|Password|Passwd|Pwd|Passphrase)$/u;
@@ -124,18 +155,22 @@ function ordinaryCamelCase(input: string, index: number, name: string): boolean 
 
 /**
  * Whether `value`, a field's value after its separator, holds a secret: a quoted or escaped value always does; an
- * unquoted one unless it is a literal, a number after a quoted name, or (for names other than passwords) a code
- * identifier, followed by nothing but closing punctuation.
+ * unquoted one unless it is a builtin type or literal, a generic type, a number after a quoted name, or (for names
+ * other than passwords) a member access or a PascalCase type annotation, followed by nothing but closing punctuation.
+ * A lone capitalised word, as in `token: CorrectHorse`, is a secret.
  */
-function holdsSecret(value: string, quotedName: boolean, password: boolean): boolean {
+function holdsSecret(match: RegExpExecArray, value: string, quotedName: boolean, password: boolean): boolean {
+	if (GENERIC_TYPE.test(value)) return false;
 	const first = /[^\s,;)}\]]*/u.exec(value)![0];
 	const rest = value.slice(first.length).trim();
-	// A type annotation in a parameter list, as in `f(password: Password)` or `f(token: AccessToken, …)`.
-	if (/^[),]/u.test(rest) && TYPE_NAME.test(first)) return false;
 	if (!/^[,;)}\]]*$/u.test(rest)) return true;
 	if (LITERAL.test(first)) return false;
 	if (quotedName && /^-?\d+(?:\.\d+)?$/u.test(first)) return false;
-	return password || !CODE_IDENTIFIER.test(first);
+	if (password) return true;
+	if (MEMBER_ACCESS.test(first)) return false;
+	// An array type, `TokenSet[]`, ends its first word at `[`.
+	if (first.endsWith("[") && TYPE_NAME.test(first.slice(0, -1))) return false;
+	return !(TYPE_NAME.test(first) && annotatesType(match));
 }
 
 /** The value of a credential field: from its separator to its end, unless it holds no secret or names a flag. */
@@ -147,7 +182,7 @@ function fieldValue(password: boolean): Redaction {
 		const value = text.slice(separator + 1).trimStart();
 		// A value redacted already stays as it is, unless it sits on the next line, as a key block under `key:` does.
 		if (value.startsWith(REDACTED) && !text.includes("\n")) return [];
-		if (!holdsSecret(value, /["']/u.test(name), password)) return [];
+		if (!holdsSecret(match, value, /["']/u.test(name), password)) return [];
 		if (ordinaryCamelCase(match.input, match.index, name)) return [];
 		return [{ start: separator + 1, end: text.trimEnd().length, replacement: ` ${REDACTED}` }];
 	};
