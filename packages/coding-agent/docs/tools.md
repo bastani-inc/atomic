@@ -179,6 +179,8 @@ Use `find` to locate paths by glob and `search` to match file contents with a re
 - Broad scans prune `.git` and `node_modules` even with `gitignore: false`. To search `node_modules`, name it explicitly in the path or glob.
 - Results are capped at 200 by default; the default timeout is 5 seconds.
 
+A path that exists exactly as written is used as that path, even when it contains glob characters, so `app/[id]/page.tsx` names that Next.js or SvelteKit route file. To match a literal `[`, `]`, `*`, `?`, `{` or `}` in a pattern, escape it with a backslash: `app/\[id\]/*.tsx`. On Windows, and in `C:\` or `\\server\share` paths, a backslash is always a separator, so only the exact-path rule applies there.
+
 Copied quotes around paths are removed. Existing paths containing spaces, commas, or semicolons are kept intact. Otherwise, comma/semicolon-separated paths split when at least one part resolves; whitespace-separated paths split only when every part resolves.
 
 Results include `scopePath`, `fileCount`, `files`, truncation and missing-path metadata, and streamed `onUpdate` snapshots during long scans.
