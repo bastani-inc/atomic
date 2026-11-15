@@ -1337,6 +1337,10 @@ test("an away session's asks move to the shared state only once it has them, and
 	assert.equal(await shared(refused), "no-match");
 	assert.equal(await shared(failed), "no-match");
 	assert.equal(a!.pendingQuestions.isDormant(takenUp), false);
+
+	// Both of its peers are back on this broker, which takes the moved ask up again: its shared route is settled.
+	a!.router.settleRestoredRoutes([moved]);
+	await vi.waitFor(async () => assert.equal(await shared(moved), "no-match"), { timeout: CROSS_NODE_WAIT_MS });
 });
 
 test(
