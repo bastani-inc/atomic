@@ -37,7 +37,7 @@ import {
 import { canonicalizeWorktreePath, defaultWorktreeSnapshotStoreDir } from "./paths.ts";
 import { loadSnapshotPathPolicy } from "./policy.ts";
 import { assertUsableBundlePrerequisites, assertUsableSnapshotRecord, isAllowedRemote } from "./records.ts";
-import { legacyRepositoryIdOf, repositoryIdOf } from "./repository-identity.ts";
+import { checkoutStoreIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import {
 	DEFAULT_WORKTREE_SNAPSHOT_SETTINGS,
 	resolveWorktreeSnapshotSettings,
@@ -504,14 +504,42 @@ async function withRestoreRecord(
 }
 
 /**
- * The shared object store of the repository that `remotes` name, under `storeDir`: named after the normalized remotes
- * (#4748), so SSH and HTTPS checkouts of one repository share it, or after the remotes as spelled when only a store an
- * earlier version created that way exists.
+ * The object store, under `storeDir`, of the checkout at `root` whose remotes are `remotes`. Checkouts of one
+ * repository share it: it is named after the normalized remotes (#4748), relative paths resolved against `root`, so
+ * SSH and HTTPS checkouts of one repository share it, or after the remotes as spelled when only a store an earlier
+ * version created that way exists. A checkout whose remotes name no one repository, as one without remotes, has a
+ * store of its own (#4989). Undefined when that checkout's `root` is unknown: its store cannot be told apart from
+ * another repository's.
  */
-export function objectStorePath(storeDir: string, remotes: readonly string[]): string {
-	const store = join(storeDir, "repositories", `${repositoryIdOf(remotes)}.git`);
-	const legacy = join(storeDir, "repositories", `${legacyRepositoryIdOf(remotes)}.git`);
-	return existsSync(store) || !existsSync(legacy) ? store : legacy;
+export function objectStorePath(storeDir: string, remotes: readonly string[], root?: string): string | undefined {
+	const [current, legacy] = sharedRepositoryIdsOf(remotes, root);
+	const named = (repository: string) => join(storeDir, "repositories", `${repository}.git`);
+	if (current === undefined) {
+		return root === undefined || !isAbsolute(root) ? undefined : named(checkoutStoreIdOf(root));
+	}
+	if (legacy === undefined) return named(current);
+	return existsSync(named(current)) || !existsSync(named(legacy)) ? named(current) : named(legacy);
+}
+
+/**
+ * {@link objectStorePath} of the checkout a restore of `target` restores, its snapshot's when known; rejects with
+ * `commits-unavailable` when it has none, as for a binding of a checkout without remotes and no snapshot: no store can
+ * be its repository's (#4989).
+ */
+function restoreStorePath(
+	storeDir: string,
+	target: { readonly remotes: readonly string[]; readonly head: string },
+	checkout: { readonly id: string | null; readonly root: string | undefined },
+): string {
+	const store = objectStorePath(storeDir, target.remotes, checkout.root);
+	if (store !== undefined) return store;
+	throw new WorkspaceRestoreError("commits-unavailable", {
+		snapshotId: checkout.id,
+		head: target.head,
+		commits: [target.head],
+		remotes: [...target.remotes],
+		reason: "not-fetched",
+	});
 }
 
 /**
@@ -526,7 +554,7 @@ export async function storeCheckoutHead(
 	head: string,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const store = objectStorePath(resolve(storeDir), remotes);
+	const store = restoreStorePath(resolve(storeDir), { remotes, head }, { id: null, root: checkout });
 	const git: GitRunOptions = { cwd: checkout, signal, env: { GIT_DIR: store } };
 	await withRepositoryLock(store, null, signal, async () => {
 		await ensureObjectStore(store, signal);
@@ -1057,18 +1085,22 @@ export async function restoreWorktree(
 export async function restoreWorktreeAt(
 	target: WorkspaceBinding | WorktreeSnapshot,
 	slot: string,
-	options: Omit<RestoreWorktreeSnapshotOptions, "into"> = {},
+	options: Omit<RestoreWorktreeSnapshotOptions, "into"> & {
+		/** The root of the checkout a binding was recorded in, which its relative-path remotes are relative to (#4989). */
+		readonly root?: string;
+	} = {},
 ): Promise<RestoredWorktree> {
 	if (!isBinding(target)) {
 		throw new WorkspaceConfigError("sdk", "target", "a WorkspaceBinding or a WorktreeSnapshot");
 	}
-	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options, slot));
+	return withWorktreeSnapshotGit(options.git, () => restoreValidated(target, options, slot, options.root));
 }
 
 async function restoreValidated(
 	target: WorkspaceBinding,
 	options: RestoreWorktreeSnapshotOptions,
 	slot: string | undefined,
+	root?: string,
 ): Promise<RestoredWorktree> {
 	const { signal } = options;
 	const snapshot = resolveSnapshot(target, options.snapshots);
@@ -1094,7 +1126,7 @@ async function restoreValidated(
 	};
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(storeDir, target.remotes);
+		const store = restoreStorePath(storeDir, target, snapshot ?? { id: null, root });
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, target, snapshot, patches, options.blobs, scratch);
 		await publishWorktree({
@@ -1203,7 +1235,7 @@ export async function storeSnapshotTree(
 	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	const patches = await snapshotPatches(snapshot, options.blobs);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(storeDir, snapshot.remotes);
+		const store = restoreStorePath(storeDir, snapshot, snapshot);
 		const git: GitRunOptions = { cwd: scratch, signal: options.signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
 		return store;
@@ -1242,7 +1274,7 @@ export async function resetPooledWorktree(
 	assertUsableSnapshotRecord(binding, snapshot);
 	const patches = await snapshotPatches(snapshot, options.blobs);
 	// The slot's own store: one an earlier version named after the remotes as spelled stays the slot's (#4748).
-	const store = await linkedObjectStore(options.storeDir, slot, signal);
+	const store = await pooledWorktreeStore(options.storeDir, slot, signal);
 	return withScratchDirectory(async (scratch) => {
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
@@ -1278,8 +1310,15 @@ export async function resetPooledWorktree(
 	});
 }
 
-/** The shared object store under `storeDir` that the restored worktree at `worktree` belongs to. */
-async function linkedObjectStore(storeDir: string, worktree: string, signal: AbortSignal | undefined): Promise<string> {
+/**
+ * The shared object store under `storeDir` that the restored worktree at `worktree` belongs to; rejects with
+ * `unsafe-target` when it belongs to none.
+ */
+export async function pooledWorktreeStore(
+	storeDir: string,
+	worktree: string,
+	signal: AbortSignal | undefined,
+): Promise<string> {
 	const store = resolve(
 		await gitText(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: worktree, signal }),
 	);
@@ -1369,7 +1408,7 @@ async function restoreDegradedValidated(
 	};
 	await sweepRestoreRecords(storeDir, warn, signal);
 	return withScratchDirectory(async (scratch) => {
-		const store = objectStorePath(storeDir, snapshot.remotes);
+		const store = restoreStorePath(storeDir, snapshot, snapshot);
 		const git: GitRunOptions = { cwd: scratch, signal, env: { GIT_DIR: store } };
 		const cause = {
 			cause: failure.code,
