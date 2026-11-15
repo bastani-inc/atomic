@@ -6,6 +6,7 @@ import { getProviderEnvValue } from "../../utils/provider-env.ts";
 import { isPermanentRefreshRejection, OAuthRefreshRejectedError, parseOAuthErrorBody } from "../oauth-refresh-errors.ts";
 import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { generatePKCE } from "./pkce.ts";
+import { refreshedOAuthCredential } from "./token-response.ts";
 
 const DYNAMIC_CLIENT_ID = "dynamic_agent_client";
 const AGENT_NAME_HINT = "Atomic";
@@ -145,16 +146,24 @@ function requireTokenString(value: unknown, field: "access_token" | "refresh_tok
 	return value;
 }
 
-function credentialFromTokenResponse(token: TokenResponse, clientId: string): OAuthCredential {
+/** `presentedRefreshToken` is the token a refresh sends; OpenAI may answer without a new one or without `expires_in`. */
+function credentialFromTokenResponse(
+	token: TokenResponse,
+	clientId: string,
+	presentedRefreshToken?: string,
+): OAuthCredential {
 	const access = requireTokenString(token.access_token, "access_token");
-	const refresh = requireTokenString(token.refresh_token, "refresh_token");
 	const scope = requireTokenString(token.scope, "scope");
-	if (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) {
-		throw new Error("OpenAI OAuth token response has invalid expires_in");
-	}
 	const scopes = scope.trim().split(/\s+/).filter(Boolean);
 	if (!scopes.includes(DIRECT_TOKEN_SCOPE)) {
 		throw new Error(`OpenAI OAuth grant did not include ${DIRECT_TOKEN_SCOPE}`);
+	}
+	if (presentedRefreshToken !== undefined) {
+		return { ...refreshedOAuthCredential(access, token, presentedRefreshToken, EXPIRY_MARGIN_MS), clientId, scopes };
+	}
+	const refresh = requireTokenString(token.refresh_token, "refresh_token");
+	if (typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) {
+		throw new Error("OpenAI OAuth token response has invalid expires_in");
 	}
 	return {
 		type: "oauth",
@@ -204,7 +213,7 @@ async function refreshAccessToken(credential: OAuthCredential, signal: AbortSign
 		}),
 		signal,
 	);
-	return credentialFromTokenResponse(token, clientId);
+	return credentialFromTokenResponse(token, clientId, credential.refresh);
 }
 
 function agentHostId(deviceId: string | undefined): string {
