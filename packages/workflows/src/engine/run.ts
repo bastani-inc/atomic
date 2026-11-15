@@ -839,15 +839,8 @@ async function executeRun(
 				runTopology: durableRunTopology(runSnapshot),
 			},
 			node,
-			{
-				name: node.name,
-				...(node.args !== undefined ? { args: node.args } : {}),
-				...(node.source !== undefined ? { source: node.source } : {}),
-				argsHash: node.argsHash,
-				ordinal: node.ordinal,
-				startedAt: node.startedAt ?? Date.now(),
-			},
-			new Error(node.error ?? "ctx.tool failed"),
+			{ ...node, startedAt: node.startedAt ?? Date.now() },
+			new Error(node.error),
 			1,
 		);
 	};
@@ -866,10 +859,7 @@ async function executeRun(
 		(...args: A): Promise<void> => {
 			const write = record(...args);
 			stageEndWrites.add(write);
-			void write.then(
-				() => stageEndWrites.delete(write),
-				() => stageEndWrites.delete(write),
-			);
+			void write.finally(() => stageEndWrites.delete(write)).catch(() => {});
 			return write;
 		};
 	const durableOnStageEnd = trackStageEnd(

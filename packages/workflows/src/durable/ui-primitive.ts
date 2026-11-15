@@ -105,10 +105,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 			completedAt: Date.now(),
 		};
 		await deps.beforeCheckpoint?.();
-		// A prompt node's completion record holds its answer too, and a resume replays the answer from there, so the
-		// store refusing this record does not fail the attempt (#5027).
-		if (deps.onReplay !== undefined) await deps.backend.commitAdditiveCheckpointBestEffort(checkpoint);
-		else await recordCheckpointDurably(deps.backend, checkpoint);
+		await recordCheckpointDurably(deps.backend, checkpoint);
 	};
 
 	const cached = (identity: { readonly hash: string }): WorkflowSerializableValue | undefined =>

@@ -153,6 +153,8 @@ async function runWithRefusal(
 	errors: readonly string[];
 	/** The live and durable views of the run after each of its attempts. */
 	views: readonly { readonly live: unknown; readonly durable: unknown }[];
+	/** The failed stage each failed attempt named. */
+	failedStages: readonly (string | undefined)[];
 }> {
 	const shape = options.shape ?? "full";
 	let attempt = 0;
@@ -216,6 +218,7 @@ async function runWithRefusal(
 	assert.ok("runId" in started, JSON.stringify(started));
 	const errors: string[] = [];
 	const views: { live: unknown; durable: unknown }[] = [];
+	const failedStages: (string | undefined)[] = [];
 	const where = () => `refused ${refused ?? "nothing"} in attempt ${attempt}`;
 	/** Resume `runId` until it completes, from attempt `first`, with a durable view after every attempt. */
 	const complete = async (runId: string, first: number, plans: readonly Plan[]): Promise<void> => {
@@ -224,6 +227,10 @@ async function runWithRefusal(
 		for (let next = first; ; next++) {
 			assert.notEqual(durableGraph(backend, runId), undefined, `${where()}: the run has a durable view`);
 			if (live !== undefined) views.push({ live: liveGraph(runId), durable: durableGraph(backend, runId) });
+			if (live !== undefined && live.status !== "completed") {
+				const failedStageId = live.failedStageId;
+				failedStages.push(live.stages.find((stage) => stage.id === failedStageId)?.name);
+			}
 			if (live?.status === "completed") {
 				assert.deepEqual(
 					durableGraph(backend, runId),
@@ -288,7 +295,7 @@ async function runWithRefusal(
 	const reopened = await backend.reopen();
 	assert.deepEqual(durableGraph(reopened, runId), expected, `${where()}: the reopened durable view is the live one`);
 	await forkCheck(reopened);
-	return { refused, errors, views };
+	return { refused, errors, views, failedStages };
 }
 
 /** The attempts of a fork of the completed run are numbered from here. */
@@ -357,9 +364,14 @@ describe("a refused durable write leaves the run inspectable and resumable (#502
 	});
 
 	test("a refused stage completion record names the stage the attempt failed at (#5027)", async () => {
-		for (const prefix of ["stage:stage:s1:", "stage:stage:s2:"]) {
-			const { refused } = await runWithRefusal({ attempt: 0, prefix }, COMPLETES);
+		for (const [prefix, stage] of [
+			["stage:stage:s1:", "s1"],
+			["stage:stage:s2:", "s2"],
+		] as const) {
+			const { refused, failedStages, errors } = await runWithRefusal({ attempt: 0, prefix }, COMPLETES);
 			assert.equal(refused?.startsWith(prefix), true, prefix);
+			assert.equal(failedStages[0], stage, "the attempt names the stage whose record was refused");
+			assert.match(errors[0] ?? "", /Storage unavailable/);
 			store.clear();
 		}
 	});
@@ -522,6 +534,66 @@ describe("which failed runs resume from their records (#5027)", () => {
 		} as RunSnapshot);
 		const resumed = await h.runtime.resumeFailedRun(h.runId);
 		assert.equal(resumed.ok, false, JSON.stringify(resumed));
+	});
+
+	test("a run that stopped part-way through a stage after a storage refusal is not resumed from records (#5027)", async () => {
+		const h = await failOnce(async (ctx) => {
+			await tool(ctx as never, "t1");
+			throw new Error("planned failure in plain code");
+		});
+		const source = store.run(h.runId)!;
+		store.recordRunStart({
+			...source,
+			failureCode: "storage_unavailable",
+			stages: [{ ...source.stages[0]!, id: "stopped", name: "stopped", status: "running" }],
+		} as RunSnapshot);
+		const resumed = await h.runtime.resumeFailedRun(h.runId);
+		assert.equal(resumed.ok, false, JSON.stringify(resumed));
+	});
+
+	test("a run with a failed tool it names no frontier for is not resumed from records (#5027)", async () => {
+		const h = await failOnce(async (ctx) => {
+			await tool(ctx as never, "t1");
+			throw new Error("planned failure in plain code");
+		});
+		const source = store.run(h.runId)!;
+		store.recordRunStart({
+			...source,
+			toolNodes: source.toolNodes.map((node) => ({ ...node, status: "failed" as const })),
+		});
+		const resumed = await h.runtime.resumeFailedRun(h.runId);
+		assert.equal(resumed.ok, false, JSON.stringify(resumed));
+	});
+
+	test("a tool replay record the store fails to write for another reason fails the attempt at that tool (#5027)", async () => {
+		const backend = await createMemoryTestBackend();
+		const commit = backend.commitCheckpoint.bind(backend);
+		let refuse = false;
+		backend.commitCheckpoint = ((checkpoint: DurableCheckpoint, signal?: { readonly signal?: AbortSignal }) =>
+			refuse && checkpoint.checkpointId.startsWith("tool-replay-meta:")
+				? Promise.reject(new Error("journal lease lost"))
+				: commit(checkpoint, signal)) as typeof backend.commitCheckpoint;
+		let failing = true;
+		const def = workflow({
+			name: "replay-write-failure",
+			description: "",
+			inputs: {},
+			outputs: {},
+			run: async (ctx) => {
+				await ctx.tool("t1", {}, async () => "t1");
+				if (failing) throw new Error("planned failure in plain code");
+				return {};
+			},
+		}) as WorkflowDefinition;
+		const runId = `replay-write-failure-${Date.now()}`;
+		assert.equal((await run(def, {}, { runId, store: createStore(), durableBackend: backend })).status, "failed");
+		refuse = true;
+		failing = false;
+		const second = createStore();
+		const result = await run(def, {}, { runId, store: second, durableBackend: backend });
+		assert.equal(result.status, "failed");
+		assert.match(result.error ?? "", /journal lease lost/);
+		assert.equal(second.run(runId)?.failedToolNodeId, second.run(runId)?.toolNodes[0]?.id);
 	});
 
 	test("a failed tool's refused failure record is written again as the run ends (#5027)", async () => {
