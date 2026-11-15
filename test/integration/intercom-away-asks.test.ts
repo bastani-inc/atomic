@@ -51,11 +51,12 @@ async function startBroker(): Promise<void> {
 	}, WAIT);
 }
 
-async function restartBroker(): Promise<void> {
+/** `SIGKILL` stands for a crash: the broker handles nothing more, as a Windows hard kill can leave a departure unhandled. */
+async function restartBroker(signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
 	const running = broker;
 	if (running !== undefined && running.exitCode === null) {
 		const exited = new Promise<void>((resolveExit) => running.once("exit", () => resolveExit()));
-		running.kill("SIGTERM");
+		running.kill(signal);
 		await exited;
 	}
 	await startBroker();
@@ -384,6 +385,67 @@ test(
 		await recipientBack.client.disconnect();
 		await sleep(SETTLE_MS);
 		assert.equal(asker.received.filter((message) => message.replyTo === questionId).length, 1);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a released subagent's ask to a recipient that went away first fails once after a broker crash before its own departure was handled (#4950)",
+	async () => {
+		const childName = "subagent-asker-crash-4950";
+		const owner = { returnAddress: randomUUID(), ownerToken: randomUUID() };
+		const ownerFirst = await connect("owner-crash-4950", owner);
+		const childReturnAddress = randomUUID();
+		const childFirst = await connect(childName, {
+			returnAddress: childReturnAddress,
+			supervisor: await ownerFirst.client.authorizeSupervisorChild(childName),
+		});
+		const childId = idOf(childFirst.client);
+		const recipientReturnAddress = randomUUID();
+		const recipientFirst = await connect("recipient-crash-4950", { returnAddress: recipientReturnAddress });
+		const recipientId = idOf(recipientFirst.client);
+		const questionId = randomUUID();
+		const asked = await childFirst.client.send("recipient-crash-4950", {
+			messageId: questionId,
+			text: "will you end after the broker crashes?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
+
+		// The recipient goes away while the child is live, then the child is released, and the broker crashes while the
+		// child is still registered: it never handles the child's departure.
+		await recipientFirst.client.disconnect({ resumable: true });
+		await untilDeparted(ownerFirst.client, recipientId);
+		await ownerFirst.client.reserveReleasedChildren([{ childName, wake: true }]);
+		await restartBroker("SIGKILL");
+
+		// The recipient comes back under its id and ends.
+		const recipientBack = await connect("recipient-crash-4950", {
+			returnAddress: recipientReturnAddress,
+			preferredSessionId: recipientId,
+		});
+		assert.equal(idOf(recipientBack.client), recipientId);
+		await recipientBack.client.disconnect();
+
+		// The child's own session is back under its owner, and gets the failure once.
+		const ownerBack = await connect("owner-crash-4950", owner);
+		const childBack = await connect(childName, {
+			returnAddress: childReturnAddress,
+			preferredSessionId: childId,
+			supervisor: await ownerBack.client.authorizeSupervisorChild(childName),
+		});
+		await vi.waitFor(() => assert.equal(childBack.received.length, 1), WAIT);
+		assert.equal(childBack.received[0]?.replyTo, questionId);
+		assert.match(childBack.received[0]?.replyError ?? "", /ended before replying/);
+		await childBack.client.disconnect({ resumable: true });
+		const childAgain = await connect(childName, {
+			returnAddress: childReturnAddress,
+			preferredSessionId: childId,
+			supervisor: await ownerBack.client.authorizeSupervisorChild(childName),
+		});
+		await sleep(SETTLE_MS);
+		assert.deepEqual(childAgain.received, [], "a saved failure is delivered once");
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
