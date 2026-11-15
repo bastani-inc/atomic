@@ -274,6 +274,18 @@ const STREAM_REUSE_MAX_AGE_MS = 60_000;
 const STREAM_CLOSE_WAIT_MS = 1_000;
 
 /**
+ * What sqld answers, as plain text with HTTP 400, for a request whose baton it refuses when it looks the stream up,
+ * before it runs any request of the pipeline (`stream::acquire` and `Guard::get_db` in sqld's
+ * `hrana/http/stream.rs`): the stream was cleaned up after expiring, the baton was used already, or the stream was
+ * closed. Any other HTTP 400 can follow a request of the same pipeline that ran, so it is never taken for a refusal.
+ */
+const REFUSED_BATON = [
+	"Received an invalid baton",
+	"Received a baton that has already been used",
+	"Stream for this baton was closed",
+];
+
+/**
  * Statements that run on the reused stream: reads and writes that leave the connection as they found it. Anything
  * else, such as `BEGIN`, a `PRAGMA`, a temporary table or a schema change, runs on a stream of its own, so the
  * connection a reused stream holds never carries a transaction or a setting from one call into the next.
@@ -312,7 +324,7 @@ function hranaCode(hrana, error) {
  * every stream it opens, so a request that opens, uses and closes a stream costs time that grows with the number of
  * tables; a stream kept open loads it once. A stream that failed, sat idle `STREAM_REUSE_IDLE_MS` or lived
  * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. A statement is sent again only when the server refused its
- * request without running it: it found the stream expired, or refused the request outright (HTTP 400). A request whose
+ * request without running it: it found the stream expired, or refused its baton (`REFUSED_BATON`). A request whose
  * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own.
  */
 class ReusedStream {
@@ -377,15 +389,17 @@ class ReusedStream {
 	}
 
 	/**
-	 * Whether the server refused a request on a kept stream without running it: the stream had expired, or the request
-	 * was refused as a whole, as sqld refuses a baton it does not know.
+	 * Whether the server refused a request on a kept stream without running it: it found the stream expired, or refused
+	 * the stream's baton (`REFUSED_BATON`).
 	 * @param {unknown} error
 	 */
 	ranNothing(error) {
 		const { hrana } = this;
+		if (error instanceof hrana.ResponseError) return error.code === "STREAM_EXPIRED";
 		return (
-			(error instanceof hrana.ResponseError && error.code === "STREAM_EXPIRED") ||
-			(error instanceof hrana.HttpServerError && error.status === 400)
+			error instanceof hrana.HttpServerError &&
+			error.status === 400 &&
+			REFUSED_BATON.some((refusal) => error.message.endsWith(`: ${refusal}`))
 		);
 	}
 

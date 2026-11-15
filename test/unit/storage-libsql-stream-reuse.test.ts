@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/index.js";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { countRows, useFakeLibsqlServers } from "../helpers/fake-libsql-server.js";
+import { sleep } from "../helpers/runtime.js";
 
 const { server, open } = useFakeLibsqlServers();
 
@@ -129,4 +131,100 @@ test("a transaction keeps a stream of its own while statements outside it reuse 
 		"the insert after the transaction continued the first insert's stream",
 	);
 	assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 4);
+});
+
+test("a statement whose kept stream's baton the server refused, as sqld does before running anything, runs once on a new stream (#5151)", async () => {
+	for (const message of [
+		"Received an invalid baton",
+		"Received a baton that has already been used",
+		"Stream for this baton was closed",
+	]) {
+		const fake = await server();
+		const database = await open(fake.url);
+		await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+		await database.run("INSERT INTO events VALUES (?)", 1);
+		fake.fail({ kind: "bad-request", message });
+		await database.run("INSERT INTO events VALUES (?)", 2);
+		assert.equal(countRows(fake, "SELECT COUNT(*) AS count FROM events"), 2, message);
+		assert.deepEqual(
+			requestsRunning(fake, "INSERT INTO events VALUES (?)")
+				.slice(1)
+				.map((pipeline) => pipeline.continuesStream),
+			[true, false],
+			`${message}: refused on the kept stream, then sent once on a new one`,
+		);
+	}
+});
+
+test("any other HTTP 400 on the kept stream is not sent again, since it may follow a request that ran (#5151)", async () => {
+	const fake = await server();
+	const database = await open(fake.url);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await database.run("INSERT INTO events VALUES (?)", 1);
+	fake.fail({ kind: "bad-request", message: "SQL text 1 not found" });
+	await assert.rejects(database.run("INSERT INTO events VALUES (?)", 2), StorageUnavailableError);
+	assert.equal(requestsRunning(fake, "INSERT INTO events VALUES (?)").length, 2, "sent once");
+	await database.run("INSERT INTO events VALUES (?)", 3);
+	assert.equal(
+		requestsRunning(fake, "INSERT INTO events VALUES (?)").at(-1)?.continuesStream,
+		false,
+		"the refused stream is not used again",
+	);
+});
+
+test("closing the database waits for its reused stream's close to be answered (#5151)", async () => {
+	const fake = await server();
+	const database = await openLibsqlDatabase({ url: fake.url });
+	await database.run("SELECT 1");
+	let answered = false;
+	fake.onStreamClose(async () => {
+		await sleep(300);
+		answered = true;
+	});
+	await database.close();
+	assert.equal(answered, true, "the close was answered before the database finished closing");
+});
+
+test("closing the database does not wait long for a server that never answers its stream's close (#5151)", async () => {
+	const fake = await server();
+	const database = await openLibsqlDatabase({ url: fake.url });
+	await database.run("SELECT 1");
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	fake.onStreamClose(() => held);
+	const started = performance.now();
+	await database.close();
+	const took = performance.now() - started;
+	release();
+	assert.ok(took >= 900 && took < 3_000, `closed after ${Math.round(took)} ms`);
+});
+
+test("a libsql: URL reuses its stream as an http: URL does (#5151)", async () => {
+	const fake = await server();
+	const database = await open(`libsql://127.0.0.1:${fake.port}?tls=0`);
+	await database.exec("CREATE TABLE events(n INTEGER NOT NULL)");
+	await database.run("INSERT INTO events VALUES (?)", 1);
+	await database.run("INSERT INTO events VALUES (?)", 2);
+	assert.deepEqual(
+		requestsRunning(fake, "INSERT INTO events VALUES (?)").map((pipeline) => pipeline.continuesStream),
+		[false, true],
+	);
+});
+
+test("a remote database whose Hrana client cannot load fails to open, naming that module (#5151)", async () => {
+	vi.resetModules();
+	vi.doMock("@libsql/hrana-client", () => {
+		throw new Error("not installed");
+	});
+	const { openLibsqlDatabase: openFresh } = await import("../../packages/storage-libsql/libsql.js");
+	await assert.rejects(openFresh({ url: "http://127.0.0.1:9" }), (error: unknown) => {
+		// A fresh module graph loads its own copy of the error class, so it is told by its name.
+		assert.equal((error as Error).name, "StorageAdapterLoadError");
+		assert.equal((error as { module?: unknown }).module, "@libsql/hrana-client");
+		return true;
+	});
+	vi.doUnmock("@libsql/hrana-client");
+	vi.resetModules();
 });
