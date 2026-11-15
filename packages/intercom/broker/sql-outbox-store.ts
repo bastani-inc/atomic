@@ -72,7 +72,7 @@ const isSettled = (record: OutboxRecord): boolean => record.state === "delivered
  */
 export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): Promise<OutboxStore> {
 	const { database } = options;
-	const table = `${validateStoragePrefix(options.prefix)}intercom_outbox`;
+	const table = `${validateStoragePrefix(options.prefix, dialectOf(database).name)}intercom_outbox`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const ageSince = (column: string) => greatest("0", `${nowMs} - ${column}`);
 	// In a serial transaction, so brokers opening a new store at once take turns creating it (#5054).
@@ -164,14 +164,18 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 						: ({ status: "conflict", messageId } as const);
 				}
 				const frameBytes = Buffer.byteLength(frameJson);
-				const queued = (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
-					`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
-					FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
-					request.targetIdentity,
-				))!;
+				const queued =
+					request.owed === true
+						? undefined
+						: (await executor.get<{ row_count: SqliteValue; byte_count: SqliteValue }>(
+								`SELECT COUNT(*) AS row_count, COALESCE(SUM(COALESCE(frame_bytes, LENGTH(frame_json))), 0) AS byte_count
+								FROM ${table} WHERE target_identity = ? AND ${UNDELIVERED}`,
+								request.targetIdentity,
+							))!;
 				if (
-					Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
-					Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES
+					queued !== undefined &&
+					(Number(queued.row_count) >= OUTBOX_TARGET_MAX_ROWS ||
+						Number(queued.byte_count) + frameBytes > OUTBOX_TARGET_MAX_BYTES)
 				) {
 					return { status: "full", limit: OUTBOX_TARGET_MAX_ROWS, byteLimit: OUTBOX_TARGET_MAX_BYTES } as const;
 				}
@@ -251,6 +255,16 @@ export async function openSqlOutboxStore(options: IntercomBrokerStateOptions): P
 				);
 				return { status: "released" } as const;
 			});
+		},
+
+		async releaseClaimsOf(claimantId) {
+			const { changes } = await database.run(
+				`UPDATE ${table} SET state = 'queued', claimant_id = NULL, claim_token = NULL, claim_renewed_at = NULL,
+					saving_at = NULL
+				WHERE state = 'claimed' AND claimant_id = ?`,
+				claimantId,
+			);
+			return changes;
 		},
 
 		markDelivered(claim) {

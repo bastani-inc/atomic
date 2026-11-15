@@ -55,9 +55,9 @@
 	},
 	{
 		"type": "index",
-		"name": "intercom_restoring_reservations_wake_requested",
+		"name": "intercom_restoring_reservations_wake",
 		"tbl_name": "intercom_restoring_reservations",
-		"sql": "CREATE INDEX intercom_restoring_reservations_wake_requested ON intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
+		"sql": "CREATE INDEX intercom_restoring_reservations_wake ON intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
 	},
 	{
 		"type": "index",
@@ -139,9 +139,9 @@
 	},
 	{
 		"type": "index",
-		"name": "team_intercom_restoring_reservations_wake_requested",
+		"name": "team_intercom_restoring_reservations_wake",
 		"tbl_name": "team_intercom_restoring_reservations",
-		"sql": "CREATE INDEX team_intercom_restoring_reservations_wake_requested ON team_intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
+		"sql": "CREATE INDEX team_intercom_restoring_reservations_wake ON team_intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
 	},
 	{
 		"type": "index",
@@ -195,7 +195,7 @@
 		"type": "table",
 		"name": "intercom_pending_asks",
 		"tbl_name": "intercom_pending_asks",
-		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",
@@ -267,7 +267,7 @@
 		"type": "table",
 		"name": "team_intercom_pending_asks",
 		"tbl_name": "team_intercom_pending_asks",
-		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
+		"sql": "CREATE TABLE team_intercom_pending_asks(\n\t\t\t\t\"order\" INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\t\t\tsender_session_id TEXT NOT NULL,\n\t\t\t\ttarget_session_id TEXT NOT NULL,\n\t\t\t\tmessage_id TEXT NOT NULL, park_owner TEXT, park_key TEXT, replied INTEGER, ended_at INTEGER,\n\t\t\t\tUNIQUE(sender_session_id, target_session_id, message_id)\n\t\t\t)"
 	},
 	{
 		"type": "table",

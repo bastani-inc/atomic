@@ -24,6 +24,7 @@ export class PendingQuestionIndex {
    */
   useAwayStore(store: AwayAsks, returnAddressOf?: (sessionId: string) => string | undefined): void {
     this.away = store;
+    store.onHeldForReleasedAsker((owner, childName) => this.heldForReleasedAsker(owner, childName));
     if (returnAddressOf !== undefined) this.returnAddressOf = returnAddressOf;
   }
 
@@ -44,8 +45,32 @@ export class PendingQuestionIndex {
   }
 
   private awayAsks(): AwayAsks {
-    this.away ??= new AwayAsks();
+    if (this.away === undefined) {
+      this.away = new AwayAsks();
+      this.away.onHeldForReleasedAsker((owner, childName) => this.heldForReleasedAsker(owner, childName));
+    }
     return this.away;
+  }
+
+  private heldForReleasedAsker: (ownerSessionId: string, childName: string) => void = () => {};
+
+  /** #4992: told when a reply or failure is held for a released subagent, so its owner wakes it. */
+  onHeldForReleasedAsker(listener: (ownerSessionId: string, childName: string) => void): void {
+    this.heldForReleasedAsker = listener;
+  }
+
+  /** #4992: the released subagent proving itself by `returnAddress` is kept by its owner while it holds no session. */
+  keepReleasedAsker(returnAddress: string | undefined, ownerSessionId: string, childName: string): void {
+    if (returnAddress !== undefined) this.awayAsks().keepReleasedAsker(returnAddress, ownerSessionId, childName);
+  }
+
+  forgetReleasedAsker(returnAddress: string | undefined): void {
+    this.away?.forgetReleasedAsker(returnAddress);
+  }
+
+  /** #4992: whether a reply or failure is held, durably, for the released subagent the owner keeps as `childName`. */
+  hasHeldForReleasedAsker(childName: string, ownerSessionId: string): boolean {
+    return this.away?.hasHeldForReleasedAsker(ownerSessionId, childName) ?? false;
   }
 
   /**
@@ -212,6 +237,8 @@ export class PendingQuestionIndex {
   }
 
   parkTarget(targetSessionId: string, childName: string, ownerSessionId: string): void {
+    // #4992: the link outlives this broker, and covers the asks to the subagent whose asker is away.
+    this.awayAsks().park(ownerSessionId, childName, targetSessionId);
     // #4829: a parked route keeps its durable row: it is still waiting for its released recipient.
     const questions = this.removeForTarget(targetSessionId);
     if (questions.length === 0) return;
@@ -239,6 +266,56 @@ export class PendingQuestionIndex {
     }
     this.forgetLive(result);
     return result;
+  }
+
+  /**
+   * #4992: the owner left, or dropped `childName`: the kept asks to its released subagents (an away asker's, or any
+   * after a broker restart) fail, each with a message held for its asker. Returns them, to write a connected asker's.
+   */
+  failParkedKept(
+    ownerSessionId: string,
+    childName?: string,
+  ): Array<HeldAwayMessage & { readonly askerReturnAddress: string }> {
+    return this.awayAsks().failParked(
+      ownerSessionId,
+      childName,
+      (name, targetSessionId) => `Session "${name || targetSessionId}" ended before replying`,
+      "ended",
+    );
+  }
+
+  /**
+   * #5101: sessions that are routable but whose routes this broker has not restored yet (their registration is still
+   * completing), each with the replies waiting on that restoration. A reply that no route authorizes yet waits here
+   * instead of being refused, and is decided again once the routes are restored.
+   */
+  private readonly restoring = new Map<string, { readonly token: object; readonly waiters: Array<() => void> }>();
+
+  /** #5101: `sessionId` is routable before its routes are restored; returns the token that ends this restoration. */
+  beginRestoring(sessionId: string): object {
+    const token = {};
+    const previous = this.restoring.get(sessionId);
+    this.restoring.set(sessionId, { token, waiters: previous?.waiters ?? [] });
+    return token;
+  }
+
+  /** #5101: the restoration `token` began is over (done, or abandoned): what waited on it is decided again. */
+  finishRestoring(sessionId: string, token: object): void {
+    const restoring = this.restoring.get(sessionId);
+    if (restoring?.token !== token) return;
+    this.restoring.delete(sessionId);
+    for (const decideAgain of restoring.waiters) decideAgain();
+  }
+
+  /**
+   * #5101: when `sessionId`'s routes are still being restored, run `decideAgain` once they are (or the restoration is
+   * abandoned) and return true; otherwise return false, and the caller decides now.
+   */
+  whenRestored(sessionId: string, decideAgain: () => void): boolean {
+    const restoring = this.restoring.get(sessionId);
+    if (restoring === undefined) return false;
+    restoring.waiters.push(decideAgain);
+    return true;
   }
 
   record(senderSessionId: string, targetSessionId: string, messageId: string): void {

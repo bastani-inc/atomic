@@ -13,3 +13,10 @@ const DELIVERY_FAILURE_REASON_CODES: ReadonlySet<string> = new Set<DeliveryFailu
 export function isDeliveryFailureReasonCode(value: string): value is DeliveryFailureReasonCode {
 	return DELIVERY_FAILURE_REASON_CODES.has(value);
 }
+
+/**
+ * #5101, #4997: why a reply no route authorizes yet is refused, as `route_unavailable` (not final): its ask's route is
+ * still being restored, or the broker that may keep it is unavailable. The same reply may be authorized shortly.
+ */
+export const ROUTE_UNAVAILABLE_REASON =
+	"No route Intercom can reach authorizes this reply yet: the ask's route is still being restored, or the broker that may keep it is unavailable. Try again shortly.";
