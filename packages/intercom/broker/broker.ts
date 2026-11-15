@@ -456,6 +456,9 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    this.pendingQuestions.failToConnectedAskerWhen((question, returnAddress) =>
+      this.isConnectedAs(question.senderSessionId, returnAddress),
+    );
     // #4829: a released subagent's asks outlive this broker too; the next one keeps them for the subagent's return.
     this.releasedAskerReplies.persistWith({
       kept: (question) => this.pendingQuestions.writeLive(question),
@@ -1869,10 +1872,9 @@ class IntercomBroker {
           // Multi-node S5: frames written while registration waited for the presence lease follow `registered`.
           flushHeldWrites(socket, held);
           // #4751: a session back under its id takes up the asks it sent or was sent before it went away.
-          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) => {
-            const session = this.sessions.get(sessionId);
-            return session !== undefined && (returnAddress === "" || session.registrationReturnAddress === returnAddress);
-          });
+          this.pendingQuestions.restoreDormant(id, rejoined?.registrationReturnAddress, (sessionId, returnAddress) =>
+            this.isConnectedAs(sessionId, returnAddress),
+          );
           // What was held for it while it was away (replies, failed asks) is delivered once: a recipient that confirms
           // saves releases each when saved, and its inbox shows a redelivered copy only once.
           const returnAddress = rejoined?.registrationReturnAddress;
@@ -3246,6 +3248,12 @@ class IntercomBroker {
       reason,
       ...(reasonCode === undefined ? {} : { reasonCode }),
     });
+  }
+
+  /** Whether `sessionId` is connected and proves the kept return address (an empty one proves nothing to match). */
+  private isConnectedAs(sessionId: string, returnAddress: string): boolean {
+    const session = this.sessions.get(sessionId);
+    return session !== undefined && (returnAddress === "" || session.registrationReturnAddress === returnAddress);
   }
 
   private failParkedQuestions(questions: readonly PendingQuestion[], peerName?: string): void {
