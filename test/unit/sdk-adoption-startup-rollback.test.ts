@@ -211,3 +211,35 @@ test("failed startup of a released-owner adoption restores the paused run under 
 	assert.equal(handle?.completedCheckpoints, 1);
 	assert.equal(f.store.runs()[0], f.source);
 });
+
+test("an abort during the adoption claim restores the released run's paused status and owner (#5149)", async () => {
+	const claimed = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const backend = await createMemoryTestBackend();
+	const claim = backend.commitWorkflowStatusTransition.bind(backend);
+	const rolledBack = Promise.withResolvers<boolean>();
+	let calls = 0;
+	backend.commitWorkflowStatusTransition = async (...args) => {
+		const accepted = await claim(...args);
+		calls += 1;
+		if (calls === 1) {
+			claimed.resolve();
+			await release.promise;
+		} else rolledBack.resolve(accepted);
+		return accepted;
+	};
+	const f = await fixture(backend, { status: "paused", releasedModelOwner: "old-session", ownerLiveness: "alive" });
+	const controller = new AbortController();
+	const reason = new Error("abort adoption");
+	const pending = resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch((error) => error);
+	await claimed.promise;
+	controller.abort(reason);
+	release.resolve();
+	assert.equal(await pending, reason);
+	assert.equal(await rolledBack.promise, true);
+	const handle = f.backend.getWorkflow(f.id);
+	assert.equal(handle?.status, "paused");
+	assert.equal(handle?.modelOwner, "old-session");
+	assert.equal(handle?.releasedModelOwner, "old-session");
+	assert.equal(f.deps.jobs.has(f.id), false);
+});

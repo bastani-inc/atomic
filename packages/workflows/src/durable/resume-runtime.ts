@@ -367,7 +367,7 @@ async function resumeDurableWorkflowClaimed(
 	};
 	const sourceSnapshot = toolContinuation?.source ?? deps.baseRunOpts.store?.run(resolved.workflowId);
 	let adoptedClaimUpdatedAt: number | undefined;
-	const rollbackStartup = async (onRestored?: () => void): Promise<boolean> => {
+	const rollbackStartup = async (onRestored?: () => void, restoreOwner = false): Promise<boolean> => {
 		if (adopting) {
 			const current = backend.getWorkflow(resolved.workflowId);
 			if (adoptedClaimUpdatedAt === undefined || current?.modelOwner !== requestedOwner) return false;
@@ -378,6 +378,8 @@ async function resumeDurableWorkflowClaimed(
 				handle.pendingPrompts,
 				handle.resumable,
 				adoptedClaimUpdatedAt,
+				restoreOwner ? handle.modelOwner : undefined,
+				restoreOwner ? handle.releasedModelOwner : undefined,
 			);
 			if (restored) onRestored?.();
 			return restored;
@@ -411,8 +413,19 @@ async function resumeDurableWorkflowClaimed(
 				resolved.updatedAt,
 				adopting ? requestedOwner : undefined,
 			);
-			if (claimed && adopting) adoptedClaimUpdatedAt = backend.getWorkflow(resolved.workflowId)?.updatedAt;
-			if (claimed && !adopting && deps.signal?.aborted) await rollbackStartup();
+			if (claimed && adopting) {
+				const adopted = backend.getWorkflow(resolved.workflowId);
+				// #5149: only a run still as this claim left it is rolled back later, so a write that landed first stays.
+				if (
+					adopted?.status === "running" &&
+					adopted.modelOwner === requestedOwner &&
+					adopted.pendingPrompts === handle.pendingPrompts &&
+					adopted.resumable === handle.resumable
+				)
+					adoptedClaimUpdatedAt = adopted.updatedAt;
+			}
+			// #5149: an aborted adoption is rolled back too, restoring its status and its previous owner.
+			if (claimed && deps.signal?.aborted) await rollbackStartup(undefined, true);
 			deps.signal?.throwIfAborted();
 		} finally {
 			unsettled.delete(resolved.workflowId);
