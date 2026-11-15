@@ -352,6 +352,42 @@ export function deferMessagesInterleavedWithToolBatch<TMessage extends AgentMess
 }
 
 /**
+ * Move a cut back so it never separates a tool call from its results.
+ *
+ * `cut` is the index of the first kept item. When an item at or after it answers a call
+ * that an assistant message before it made (the cut falls after some results, or at a
+ * message admitted while the batch was running), the cut moves back to that assistant
+ * message so the whole batch stays together. Items before `floor` are never considered.
+ */
+export function toolBatchCutStart<TItem>(
+	items: readonly TItem[],
+	cut: number,
+	messagesOf: (item: TItem) => readonly AgentMessage[],
+	floor = 0,
+): number {
+	// The calls of the last assistant message before the cut; only a toolUse turn admitted any.
+	let owner = cut;
+	let calls = new Set<string | undefined>();
+	for (let index = floor; index < cut; index++) {
+		for (const message of messagesOf(items[index])) {
+			if (message.role !== "assistant") continue;
+			owner = index;
+			calls = new Set(
+				message.stopReason === "toolUse" ? collectAssistantToolCalls(message).map((call) => call.id) : [],
+			);
+		}
+	}
+	// A result for one of those calls after the cut, before the next assistant message, belongs with them.
+	for (let index = cut; index < items.length; index++) {
+		for (const message of messagesOf(items[index])) {
+			if (message.role === "assistant") return cut;
+			if (calls.has(getToolResultCallId(message))) return owner;
+		}
+	}
+	return cut;
+}
+
+/**
  * Enforce the provider's tool-pairing invariant on a converted message list.
  *
  * A provider rejects orphaned/duplicate `tool_result` blocks and any later turn
@@ -507,5 +543,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 			}
 		})
 		.filter((m) => m !== undefined);
-	return repairOrphanToolResults(converted);
+	// The same ordering as the live request path: a message admitted while a tool batch
+	// was running follows the batch, so it never turns a later real result into an orphan.
+	return repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(uniquifyToolCallIds(converted)));
 }
