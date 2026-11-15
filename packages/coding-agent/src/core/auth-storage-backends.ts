@@ -11,7 +11,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join } from "path";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import { getAgentDir } from "../config.js";
 import { normalizePath } from "../utils/paths.ts";
@@ -19,6 +19,7 @@ import { stripBom } from "../utils/text.ts";
 import type { AuthStorageData } from "./auth-storage.ts";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";
 import { releaseLock, releaseLockSync } from "./lock-release.ts";
+import { guardLockRemoval } from "./lock-takeover.ts";
 import { type LockWait, waitForLock, waitForLockSync } from "./lock-wait.ts";
 
 export type LockResult<T> = {
@@ -52,6 +53,12 @@ const AUTH_FILE_LOCK_WAIT_MS = 30_000;
  * this process, so a lock it holds asynchronously stops being refreshed and would be taken over as stale.
  */
 const AUTH_FILE_SYNC_LOCK_WAIT_MS = 200;
+/** proper-lockfile's default stale window, which a lock given no `stale` option has. */
+const DEFAULT_LOCK_STALE_MS = 10_000;
+/** How old the auth.json lock must be before a synchronous save judges it left by a killed process. */
+const AUTH_FILE_SYNC_LOCK_STALE_MS = DEFAULT_LOCK_STALE_MS;
+/** How old the auth.json lock must be before an asynchronous save or a deletion judges it left by a killed process. */
+const AUTH_FILE_ASYNC_LOCK_STALE_MS = 30_000;
 const AUTH_FILE_LOCK_POLL_MIN_MS = 10;
 /** Low enough that a waiter which has backed off still competes with the processes polling at the minimum. */
 const AUTH_FILE_LOCK_POLL_MAX_MS = 50;
@@ -64,6 +71,19 @@ const REALPATH_ATTEMPTS = 20;
  * Bun's realpath can fail with ENOENT while another process renames the target into place, so ENOENT is retried
  * while the path still exists.
  */
+/**
+ * The path whose lock guards auth.json at `path`: the resolved file, or, before auth.json exists, its name in the
+ * resolved directory, so a first save is locked as well (#5161).
+ */
+function resolveAuthLockPath(path: string): string {
+	try {
+		return resolveExistingAuthPath(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT" || existsSync(path)) throw error;
+		return join(realpathSync(dirname(path)), basename(path));
+	}
+}
+
 function resolveExistingAuthPath(path: string): string {
 	for (let attempt = 1; ; attempt++) {
 		try {
@@ -206,11 +226,18 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		}
 	}
 
+	/**
+	 * Creates an empty auth.json when there is none. The create is exclusive, so it never replaces a file another
+	 * process has just saved credentials to (#5161).
+	 */
 	private ensureFileExists(): void {
-		if (!existsSync(this.authPath)) {
-			writeFileSync(this.authPath, "{}", AUTH_FILE_WRITE_OPTIONS);
-			chmodSync(this.authPath, 0o600);
+		try {
+			writeFileSync(this.authPath, "{}", { ...AUTH_FILE_WRITE_OPTIONS, flag: "wx" });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+			throw error;
 		}
+		chmodSync(this.authPath, 0o600);
 	}
 
 	private getRetryableLockErrorCode(error: unknown): "ELOCKED" | "EPERM" | undefined {
@@ -230,9 +257,10 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		signal: AbortSignal | undefined,
 	): Promise<() => Promise<void>> {
 		return waitForLock(
-			() => lockfile.lock(path, { ...options, retries: 0 }),
+			(fs) => lockfile.lock(path, { ...options, retries: 0, fs }),
 			{
 				lockPath: `${path}.lock`,
+				staleMs: options.stale ?? DEFAULT_LOCK_STALE_MS,
 				holderWaitMs: PROVIDER_LOCK_WAIT_MS,
 				contentionWaitMs: PROVIDER_LOCK_CONTENTION_WAIT_MS,
 				pollMinMs: PROVIDER_LOCK_POLL_MIN_MS,
@@ -254,17 +282,18 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 	/** Takes the lock of the auth file `path`, waiting while other processes save to it (see {@link waitForLockSync}). */
 	private acquireLockSyncWithRetry(path: string): () => void {
 		// Lock the resolved file so symlinked aliases of auth.json share one lock (pi #11655).
-		const resolved = resolveExistingAuthPath(path);
+		const resolved = resolveAuthLockPath(path);
 		return waitForLockSync(
-			() => lockfile.lockSync(resolved, { realpath: false }),
-			this.authFileLockWait(resolved, AUTH_FILE_SYNC_LOCK_WAIT_MS, () => true),
+			(fs) => lockfile.lockSync(resolved, { realpath: false, stale: AUTH_FILE_SYNC_LOCK_STALE_MS, fs }),
+			this.authFileLockWait(resolved, AUTH_FILE_SYNC_LOCK_WAIT_MS, AUTH_FILE_SYNC_LOCK_STALE_MS, () => true),
 		);
 	}
 
 	/** How a save waits for the lock of the resolved auth file `path`; `retryEperm` decides whether a Windows EPERM is retried. */
-	private authFileLockWait(path: string, holderWaitMs: number, retryEperm: () => boolean): LockWait {
+	private authFileLockWait(path: string, holderWaitMs: number, staleMs: number, retryEperm: () => boolean): LockWait {
 		return {
 			lockPath: `${path}.lock`,
+			staleMs,
 			holderWaitMs,
 			pollMinMs: AUTH_FILE_LOCK_POLL_MIN_MS,
 			pollMaxMs: AUTH_FILE_LOCK_POLL_MAX_MS,
@@ -362,19 +391,27 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 		const releases: Array<{ path: string; release: () => Promise<void> }> = [];
 		try {
 			for (const path of paths) {
-				releases.push({
-					path,
-					// Lock the resolved file so symlinked aliases share one lock (pi #11655).
-					release: await lockfile.lock(resolveExistingAuthPath(path), {
-						realpath: false,
-						// Keep layered-file deletion below the logout RPC's 30-second
-						// deadline even if every auth path is actively locked. A caller
-						// then receives the actionable lock error instead of an abandoned
-						// request that poisons the engine's ordinary command lane.
-						retries: AUTH_DELETE_LOCK_RETRY_OPTIONS,
-						stale: 30000,
-					}),
-				});
+				// Lock the resolved file so symlinked aliases share one lock (pi #11655).
+				const resolved = resolveExistingAuthPath(path);
+				// A stale lock is removed only under the takeover mutex, while it is still stale (#5161).
+				const guard = guardLockRemoval(`${resolved}.lock`, AUTH_FILE_ASYNC_LOCK_STALE_MS);
+				try {
+					releases.push({
+						path,
+						release: await lockfile.lock(resolved, {
+							realpath: false,
+							// Keep layered-file deletion below the logout RPC's 30-second
+							// deadline even if every auth path is actively locked. A caller
+							// then receives the actionable lock error instead of an abandoned
+							// request that poisons the engine's ordinary command lane.
+							retries: AUTH_DELETE_LOCK_RETRY_OPTIONS,
+							stale: AUTH_FILE_ASYNC_LOCK_STALE_MS,
+							fs: guard.fs,
+						}),
+					});
+				} finally {
+					guard.done();
+				}
 			}
 			for (const path of paths) {
 				const data = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as AuthStorageData;
@@ -393,18 +430,12 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 
 		let release: (() => void) | undefined;
 		try {
-			if (existsSync(this.authPath)) {
-				release = this.acquireLockSyncWithRetry(this.authPath);
-			}
+			// The lock is taken even before auth.json exists, so a first save never overwrites another process's (#5161).
+			release = this.acquireLockSyncWithRetry(this.authPath);
 			const current = this.readMergedAuth();
 			const { result, next } = fn(current);
 			if (next !== undefined) {
-				if (!existsSync(this.authPath)) {
-					this.ensureFileExists();
-				}
-				if (!release) {
-					release = this.acquireLockSyncWithRetry(this.authPath);
-				}
+				this.ensureFileExists();
 				this.writeAtomic(next);
 			}
 			return result;
@@ -435,17 +466,23 @@ export class FileAuthStorageBackend implements AuthStorageBackend {
 			// Lock the resolved file so symlinked aliases share one lock (pi #11655).
 			const resolved = resolveExistingAuthPath(this.authPath);
 			release = await waitForLock(
-				() =>
+				(fs) =>
 					lockfile.lock(resolved, {
 						realpath: false,
 						retries: 0,
-						stale: 30_000,
+						stale: AUTH_FILE_ASYNC_LOCK_STALE_MS,
+						fs,
 						onCompromised: (err) => {
 							lockCompromised = true;
 							lockCompromisedError = err;
 						},
 					}),
-				this.authFileLockWait(resolved, AUTH_FILE_LOCK_WAIT_MS, () => ++epermRetries <= 5),
+				this.authFileLockWait(
+					resolved,
+					AUTH_FILE_LOCK_WAIT_MS,
+					AUTH_FILE_ASYNC_LOCK_STALE_MS,
+					() => ++epermRetries <= 5,
+				),
 			);
 
 			throwIfCompromised();

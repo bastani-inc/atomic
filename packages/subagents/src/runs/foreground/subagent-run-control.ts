@@ -185,8 +185,15 @@ async function stopHostChild(
 	// A typed resumable stop: its parent is told it is paused and awaiting resume, never that it ended.
 	const cancelled = await host.cancelTask(taskId, status === "quit" ? "quit" : "pause");
 	if (!cancelled.ok) {
+		takeSubagentChildStop(taskId);
 		unparkRunWorktree(record.runId, record.index);
 		return cancelled.error.message;
+	}
+	// It settled on its own before the stop reached it: nothing takes the stop, and its worktree is not stopped (#5172).
+	if (cancelled.value.decision === "already-settled") {
+		takeSubagentChildStop(taskId);
+		unparkRunWorktree(record.runId, record.index);
+		return undefined;
 	}
 	// A child cancelled while still queued never starts, so nothing else records how it stopped.
 	const queued = stopQueuedSubagentChild(taskId);

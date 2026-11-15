@@ -17,6 +17,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
+import { clearLockHolder, recordLockHolder, takeOverDeadHolder } from "./lock-holder.ts";
 import { releaseLockSync } from "./lock-release.ts";
 import { waitForLockSync } from "./lock-wait.ts";
 import { renameReplacing } from "./rename-retry.ts";
@@ -30,6 +31,8 @@ import type { Settings, SettingsFieldOrigin, SettingsLayer, SettingsScope, Setti
 const SETTINGS_LOCK_WAIT_MS = 200;
 const SETTINGS_LOCK_POLL_MIN_MS = 10;
 const SETTINGS_LOCK_POLL_MAX_MS = 50;
+/** How old a settings lock must be before it is judged left by a process that cannot be proven dead. */
+const SETTINGS_LOCK_STALE_MS = 10_000;
 
 /** A rename that cannot replace the file at all: it is a mount point (EBUSY), or on another device (EXDEV). */
 const UNREPLACEABLE_FILE_CODES: ReadonlySet<string> = new Set(["EBUSY", "EXDEV"]);
@@ -100,6 +103,15 @@ export function writeSettingsFile(path: string, content: string): SettingsFileWr
 	}
 }
 
+function parsesAsJson(content: string): boolean {
+	try {
+		parseJsonFileContent(content);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
@@ -145,23 +157,39 @@ export class FileSettingsStorage implements SettingsStorage {
 		return undefined;
 	}
 
-	/** Takes the lock of the settings file `path`, waiting while other processes save to it (see {@link waitForLockSync}). */
+	/**
+	 * Takes the lock of the settings file `path`, waiting while other processes save to it (see {@link waitForLockSync}).
+	 * A lock whose holder is proven dead is taken over at once (#5161), and this process is named as the holder.
+	 */
 	private acquireLockSyncWithRetry(path: string): () => void {
-		return waitForLockSync(() => lockfile.lockSync(path, { realpath: false }), {
-			lockPath: `${path}.lock`,
-			holderWaitMs: SETTINGS_LOCK_WAIT_MS,
-			pollMinMs: SETTINGS_LOCK_POLL_MIN_MS,
-			pollMaxMs: SETTINGS_LOCK_POLL_MAX_MS,
-			retryable: (error) => (error as NodeJS.ErrnoException).code === "ELOCKED",
-			stuck: (error) => error as Error,
-			contended: (error, waitedMs) =>
-				Object.assign(
-					new Error(`Other processes kept saving ${path} for ${Math.round(waitedMs / 1000)} s`, { cause: error }),
-					{
-						code: "ELOCKED",
-					},
-				),
-		});
+		const lockPath = `${path}.lock`;
+		const release = waitForLockSync(
+			(fs) => lockfile.lockSync(path, { realpath: false, stale: SETTINGS_LOCK_STALE_MS, fs }),
+			{
+				lockPath,
+				staleMs: SETTINGS_LOCK_STALE_MS,
+				holderWaitMs: SETTINGS_LOCK_WAIT_MS,
+				pollMinMs: SETTINGS_LOCK_POLL_MIN_MS,
+				pollMaxMs: SETTINGS_LOCK_POLL_MAX_MS,
+				retryable: (error) => (error as NodeJS.ErrnoException).code === "ELOCKED",
+				takeOver: () => takeOverDeadHolder(lockPath),
+				stuck: (error) => error as Error,
+				contended: (error, waitedMs) =>
+					Object.assign(
+						new Error(`Other processes kept saving ${path} for ${Math.round(waitedMs / 1000)} s`, {
+							cause: error,
+						}),
+						{
+							code: "ELOCKED",
+						},
+					),
+			},
+		);
+		recordLockHolder(lockPath);
+		return () => {
+			clearLockHolder(lockPath);
+			release();
+		};
 	}
 
 	private readMergedSettings(readPaths: string[]): string | undefined {
@@ -182,16 +210,31 @@ export class FileSettingsStorage implements SettingsStorage {
 		return found ? JSON.stringify(merged, null, 2) : undefined;
 	}
 
+	/**
+	 * Reads each settings file of `scope` without the write lock (#5161): saves replace a file whole with a rename, so a
+	 * read sees the last complete file, and a lock left by a killed process never stops a read. Only a file written in
+	 * place, because it cannot be replaced, may be read halfway; a read that does not parse is repeated under the lock,
+	 * and when the lock cannot be had, the file as read stands and its parse error is reported.
+	 */
 	readLayers(scope: SettingsScope): SettingsLayer[] {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const readPaths = scope === "global" ? this.globalReadPaths : this.projectReadPaths;
-		const release = existsSync(path) ? this.acquireLockSyncWithRetry(path) : undefined;
-		try {
-			return readPaths
+		const read = () =>
+			readPaths
 				.filter((readPath) => existsSync(readPath))
 				.map((readPath) => ({ path: readPath, content: readFileSync(readPath, "utf-8") }));
+		const layers = read();
+		if (layers.every(({ content }) => parsesAsJson(content)) || !existsSync(path)) return layers;
+		let release: () => void;
+		try {
+			release = this.acquireLockSyncWithRetry(path);
+		} catch {
+			return layers;
+		}
+		try {
+			return read();
 		} finally {
-			release?.();
+			releaseLockSync(release, path);
 		}
 	}
 
