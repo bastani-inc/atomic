@@ -447,10 +447,6 @@ function endInFlightWork(
 		}
 		if (stage.endedAt === undefined) {
 			stage.endedAt = endedAt;
-			if (stage.pausedAt !== undefined) {
-				stage.pausedDurationMs = accumulatePausedDurationMs(stage.pausedDurationMs, stage.pausedAt, endedAt);
-				stage.pausedAt = undefined;
-			}
 			stage.durationMs = elapsedStageMs(stage, endedAt);
 		}
 		delete stage.awaitingInputSince;
