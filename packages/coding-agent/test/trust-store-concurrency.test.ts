@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +27,9 @@ const DECISIONS_PER_WRITER = 100;
 const BACKGROUND_WRITERS = 6;
 const BLUEPRINT_BUILDS = 40;
 const TRUST_MODULE = fileURLToPath(new URL("../src/core/trust-manager.ts", import.meta.url));
+
+// Permission bits do not deny root, and Windows ignores them.
+const posixNonRoot = process.platform === "win32" || process.getuid?.() === 0 ? it.skip : it;
 
 let sandbox: string;
 let agentDir: string;
@@ -199,6 +211,58 @@ describe("trust store under concurrent sessions (#4952)", () => {
 		assert.equal(capture.warnings.length, 1);
 		assert.match(capture.warnings[0]!.message, /trust\.json/);
 		assert.match(capture.warnings[0]!.message, /treated as empty/);
+		assert.equal((capture.warnings[0] as Error & { code?: string }).code, "ATOMIC_TRUST_STORE_CORRUPT");
+	});
+
+	it("reports a trust.json that is not a map of decisions and reads it as empty (#4952)", async () => {
+		const cases = [
+			{ content: "[]", reason: /expected an object/ },
+			{ content: JSON.stringify({ [getProjectTrustPath(sandbox)]: "yes" }), reason: /must be true, false, or null/ },
+		];
+		for (const { content, reason } of cases) {
+			const dir = mkdtempSync(join(sandbox, "agent-"));
+			writeFileSync(join(dir, "trust.json"), content);
+			const capture = captureWarnings();
+			try {
+				assert.equal(new ProjectTrustStore(dir).get(sandbox), null);
+				await waitForWarnings();
+			} finally {
+				capture.stop();
+			}
+			assert.equal(capture.warnings.length, 1);
+			assert.match(capture.warnings[0]!.message, reason);
+		}
+	});
+
+	posixNonRoot("reads an unreadable trust.json as empty but refuses to save over it (#4952)", async () => {
+		const project = join(sandbox, "project");
+		writeFileSync(trustPath, JSON.stringify({ [getProjectTrustPath(project)]: true }));
+		const before = readFileSync(trustPath, "utf8");
+		chmodSync(trustPath, 0o000);
+		const store = new ProjectTrustStore(agentDir);
+		const capture = captureWarnings();
+		try {
+			assert.equal(store.get(project), null);
+			assert.throws(() => store.set(join(sandbox, "other"), false), { code: "EACCES" });
+			await waitForWarnings();
+		} finally {
+			capture.stop();
+			chmodSync(trustPath, 0o600);
+		}
+
+		assert.equal(capture.warnings.length, 1);
+		assert.equal(readFileSync(trustPath, "utf8"), before);
+	});
+
+	posixNonRoot("fails a save at once when the trust lock cannot be created (#4952)", () => {
+		chmodSync(agentDir, 0o500);
+		try {
+			const started = Date.now();
+			assert.throws(() => new ProjectTrustStore(agentDir).set(join(sandbox, "project"), true), { code: "EACCES" });
+			assert.ok(Date.now() - started < 1_000);
+		} finally {
+			chmodSync(agentDir, 0o700);
+		}
 	});
 
 	it("saves a decision over a truncated trust.json (#4952)", async () => {
@@ -235,7 +299,12 @@ describe("trust store under concurrent sessions (#4952)", () => {
 			const store = new ProjectTrustStore(agentDir);
 			const release = lockfile.lockSync(dirname(trustPath), { realpath: false, lockfilePath: `${trustPath}.lock` });
 			try {
-				assert.throws(() => store.set(join(sandbox, "project"), true), /trust\.json.*locked by another process/);
+				assert.throws(
+					() => store.set(join(sandbox, "project"), true),
+					(error: Error & { cause?: { code?: string } }) =>
+						/trust\.json is locked by another process \(waited 5 s\)/.test(error.message) &&
+						error.cause?.code === "ELOCKED",
+				);
 			} finally {
 				release();
 			}

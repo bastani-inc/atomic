@@ -6,7 +6,7 @@ import { afterEach, beforeEach, it, vi } from "vitest";
 import { getProjectTrustPath, ProjectTrustStore } from "../src/core/trust-manager.ts";
 
 /** While set, the next write of trust data stops halfway, as a writer killed mid-write would leave it. */
-const crash = vi.hoisted(() => ({ armed: false, fired: false }));
+const crash = vi.hoisted(() => ({ armed: false, fired: false, written: 0.5 }));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -14,7 +14,8 @@ vi.mock("node:fs", async (importOriginal) => {
 		if (crash.armed && typeof data === "string") {
 			crash.armed = false;
 			crash.fired = true;
-			actual.writeFileSync(file, data.slice(0, Math.floor(data.length / 2)), options);
+			if (crash.written > 0)
+				actual.writeFileSync(file, data.slice(0, Math.floor(data.length * crash.written)), options);
 			throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
 		}
 		actual.writeFileSync(file, data, options);
@@ -28,6 +29,7 @@ beforeEach(() => {
 	agentDir = realpathSync(mkdtempSync(join(tmpdir(), "atomic-trust-crash-")));
 	crash.armed = false;
 	crash.fired = false;
+	crash.written = 0.5;
 });
 
 afterEach(() => {
@@ -47,5 +49,19 @@ it("keeps the previous trust.json intact when a write stops halfway (#4952)", ()
 	assert.equal(readFileSync(join(agentDir, "trust.json"), "utf8"), before);
 	assert.deepEqual(JSON.parse(before), { [getProjectTrustPath(kept)]: true });
 	assert.equal(store.get(kept), true);
+	assert.deepEqual(readdirSync(agentDir).sort(), ["trust.json"]);
+});
+
+it("reports the write's own error when it fails before creating any file (#4952)", () => {
+	const store = new ProjectTrustStore(agentDir);
+	store.set(join(agentDir, "kept"), true);
+	const before = readFileSync(join(agentDir, "trust.json"), "utf8");
+
+	crash.armed = true;
+	crash.written = 0;
+	assert.throws(() => store.set(join(agentDir, "interrupted"), false), /ENOSPC/);
+	assert.equal(crash.fired, true);
+
+	assert.equal(readFileSync(join(agentDir, "trust.json"), "utf8"), before);
 	assert.deepEqual(readdirSync(agentDir).sort(), ["trust.json"]);
 });

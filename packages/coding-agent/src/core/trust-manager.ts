@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { canonicalizePath, getHomeDir, pathsEqual, resolvePath } from "../utils/paths.ts";
+import { renameReplacing } from "./settings-storage.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -110,40 +111,11 @@ export const TRUST_LOCK_WAIT_MS = 5_000;
 const TRUST_LOCK_POLL_MIN_MS = 10;
 const TRUST_LOCK_POLL_MAX_MS = 250;
 
-/**
- * How long a read or a rename retries Windows sharing errors while another process replaces trust.json. Windows can
- * refuse to open or replace a file for a moment while another handle to it closes.
- */
-const TRUST_FILE_SHARING_RETRY_MS = 2_000;
-const WINDOWS_SHARING_CODES: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
-
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
 function sleepSync(ms: number): void {
 	// Callers of the trust store are synchronous; block this thread without spinning the CPU.
 	Atomics.wait(sleeper, 0, 0, ms);
-}
-
-function errorCode(error: unknown): string | undefined {
-	return error instanceof Error && "code" in error ? String(error.code) : undefined;
-}
-
-function isWindowsSharingError(error: unknown): boolean {
-	return process.platform === "win32" && WINDOWS_SHARING_CODES.has(errorCode(error) ?? "");
-}
-
-/** Runs `fn`, retrying Windows sharing errors with backoff until {@link TRUST_FILE_SHARING_RETRY_MS} pass. */
-function retryWindowsSharing<T>(fn: () => T): T {
-	const deadline = Date.now() + TRUST_FILE_SHARING_RETRY_MS;
-	for (let pollMs = TRUST_LOCK_POLL_MIN_MS; ; pollMs = Math.min(pollMs * 2, TRUST_LOCK_POLL_MAX_MS)) {
-		try {
-			return fn();
-		} catch (error) {
-			const remainingMs = deadline - Date.now();
-			if (!isWindowsSharingError(error) || remainingMs <= 0) throw error;
-			sleepSync(Math.min(pollMs, remainingMs));
-		}
-	}
 }
 
 /** A trust.json that exists but is not a valid trust store. */
@@ -167,9 +139,9 @@ function reportCorruptTrustFile(path: string, error: Error): void {
 function readTrustFileStrict(path: string): TrustFile {
 	let content: string;
 	try {
-		content = retryWindowsSharing(() => readFileSync(path, "utf-8"));
+		content = readFileSync(path, "utf-8");
 	} catch (error) {
-		if (errorCode(error) === "ENOENT") return {};
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
 		throw error;
 	}
 
@@ -235,8 +207,8 @@ function writeTrustFile(path: string, data: TrustFile): void {
 	const target = existsSync(path) ? realpathSync(path) : path;
 	const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
 	try {
-		writeFileSync(temporary, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
-		retryWindowsSharing(() => renameSync(temporary, target));
+		writeFileSync(temporary, `${JSON.stringify(sorted, null, 2)}\n`);
+		renameReplacing(temporary, target);
 	} catch (error) {
 		rmSync(temporary, { force: true });
 		throw error;
@@ -255,8 +227,9 @@ function acquireTrustLockSync(path: string): () => void {
 		try {
 			return lockfile.lockSync(trustDir, { realpath: false, lockfilePath: `${path}.lock` });
 		} catch (error) {
-			const code = errorCode(error);
-			if (code !== "ELOCKED" && !isWindowsSharingError(error)) throw error;
+			const code = (error as NodeJS.ErrnoException).code;
+			// Windows reports a lock directory another process is creating or removing as EPERM, as for auth.json.
+			if (code !== "ELOCKED" && !(code === "EPERM" && process.platform === "win32")) throw error;
 			const remainingMs = deadline - Date.now();
 			if (remainingMs <= 0) {
 				throw new Error(
