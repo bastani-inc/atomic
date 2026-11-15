@@ -299,12 +299,12 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			const database = await scope.open();
 			await createReferencingTables(database);
 			await SqlSnapshotBlobStore.open(database);
+			await write(database, EARLY_WRITES);
 			// What a build before #4922 left: version 2, and the session references without the pin columns.
 			await database.exec(
 				"ALTER TABLE snapshot_session_refs DROP COLUMN degraded_from; ALTER TABLE snapshot_session_refs DROP COLUMN degraded_since",
 			);
 			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version = 3", SNAPSHOT_BLOB_DOMAIN);
-			await write(database, EARLY_WRITES);
 			const upgraded = await SqlSnapshotBlobStore.open(database);
 			const columns = await database.all(
 				"SELECT column_name FROM information_schema.columns WHERE table_name = 'snapshot_session_refs' AND column_name LIKE 'degraded%' ORDER BY column_name",
@@ -331,7 +331,7 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			assert.equal(installed.length, 15);
 
 			// Forget that the triggers were installed, as a database migrated by a build before them would.
-			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version = 2", SNAPSHOT_BLOB_DOMAIN);
+			await database.run("DELETE FROM atomic_migrations WHERE domain = ? AND version >= 2", SNAPSHOT_BLOB_DOMAIN);
 			await database.run("DELETE FROM snapshot_index_sources");
 			const again = await SqlSnapshotBlobStore.open(database);
 			await SqlSnapshotBlobStore.open(database);
