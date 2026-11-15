@@ -905,6 +905,58 @@ describe("control of a stage while it waits released (#4309)", () => {
 		assert.deepEqual(names(rig.log, "followUp#2"), []);
 		assert.deepEqual(names(rig.log, "resume#"), ["resume#2:c1"]);
 	});
+
+	test("a held steer the reopened session rejects fails the turn, yet callers waiting for the session go on and the rest of the held input still reaches it (#5156)", async () => {
+		const refused = new Error("steer refused");
+		const { rig, turn } = await waitingRig({
+			customize: (number, log) =>
+				number === 2
+					? {
+							async steer(text: string) {
+								log.push(`steer#2:${text}`);
+								if (text === "first") throw refused;
+							},
+						}
+					: {},
+		});
+		await rig.ctx.steer("first");
+		await rig.ctx.followUp("second");
+		await rig.ctx.steer("third");
+		const caller = rig.ctx.setModel({ id: "other-model" } as never);
+
+		rig.ci.finish("c1");
+
+		assert.equal(await rejection(turn), refused);
+		assert.deepEqual(await settles(caller, EVENTUALLY_MS), { done: true, value: undefined });
+		assert.deepEqual(
+			rig.log.filter((entry) => /^(steer|followUp|setModel|rehydrated)/.test(entry)),
+			["steer#2:first", "followUp#2:second:undefined", "steer#2:third", "rehydrated:tool", "setModel#2:other-model"],
+		);
+	});
+
+	test("every held input the reopened session rejects is reported, not only the first (#5156)", async () => {
+		const refusals = [new Error("first refused"), new Error("second refused")];
+		const { rig, turn } = await waitingRig({
+			customize: (number) => {
+				let index = 0;
+				return number === 2
+					? {
+							async steer() {
+								throw refusals[index++];
+							},
+						}
+					: {};
+			},
+		});
+		await rig.ctx.steer("first");
+		await rig.ctx.steer("second");
+
+		rig.ci.finish("c1");
+
+		const error = await rejection(turn);
+		assert.ok(error instanceof AggregateError);
+		assert.deepEqual(error.errors, refusals);
+	});
 });
 
 /** The session store's own failure while it is unreachable, as its adapter reports it. */
