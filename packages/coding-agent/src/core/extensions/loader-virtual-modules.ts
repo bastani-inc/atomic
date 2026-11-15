@@ -671,9 +671,10 @@ async function importExtensionModule(
 	});
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
 	// The runtime would keep a JavaScript entry it loads itself until the process exits, so jiti's transform
-	// evaluates it instead, as on every reload (#4988).
+	// evaluates it instead, as on every reload (#4988). Installed builtin bundles cannot change while Atomic runs,
+	// so they keep loading natively, with nothing to transpile.
 	const importEntry = () =>
-		isReloadableScriptPath(importPath)
+		isReloadableScriptPath(importPath) && !isNativeBuiltinExtensionPath(extensionPath)
 			? evaluateReloadableScript(jiti, importPath)
 			: jiti.import(specifier, { default: true });
 	// Transformed evaluations are the loads whose repeat cost is the Windows
