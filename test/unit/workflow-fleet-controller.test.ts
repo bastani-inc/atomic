@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { resolveRunJournal } from "../../packages/workflows/src/durable/journal/resolution.js";
 import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
@@ -317,6 +317,118 @@ test.skipIf(process.platform === "win32")(
 	},
 );
 
+/** Starts a worker host of the shared journal that records its events; stopped after the test. */
+async function workerHost(hostId: string, providerId?: string) {
+	const events: WorkflowWorkerHostEvent[] = [];
+	const host = await startWorkflowWorkerHost({
+		journal: selection(),
+		agentDir: join(directory, `host-${hostId}`),
+		maxWorkers: 1,
+		hostId,
+		...(providerId === undefined ? {} : { providerId }),
+		restore: false,
+		onEvent: (event) => events.push(event),
+	});
+	hosts.push(host);
+	return { host, events };
+}
+
+test.skipIf(process.platform === "win32")(
+	"a drained worker that restarts under a new host id on the same provider instance stays drained until the instance is removed (#4803)",
+	async () => {
+		let allowRemoval!: () => void;
+		const removal = new Promise<void>((resolve) => {
+			allowRemoval = resolve;
+		});
+		const removing: string[] = [];
+		const removed: string[] = [];
+		// The provider's instance outlives its container: removing it waits until the restarted worker came up.
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return removed.includes("pod-1") ? [] : [{ id: "pod-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain(id) {
+				removing.push(id);
+				await removal;
+				removed.push(id);
+			},
+		};
+		const first = await workerHost("h1", "pod-1");
+		const other = await workerHost("h-other", "pod-2");
+		await controller(provisioner, [], { idleDrainMs: 0 });
+		await first.host.closed;
+		assert.deepEqual(first.events, [{ kind: "drain-requested" }]);
+		await until("the instance's removal to start", () => removing.length > 0);
+		// The container restarts on the drained instance and registers under a new host id.
+		const restarted = await workerHost("h2", "pod-1");
+		// A host reads drain requests with its first report, within a second of starting.
+		await until("the restarted host to be asked to drain", () => restarted.events.length > 0, 10_000);
+		await restarted.host.closed;
+		assert.deepEqual(restarted.events, [{ kind: "drain-requested" }]);
+		assert.deepEqual(other.events, [], "a host on another provider instance keeps serving");
+		allowRemoval();
+		const store = await openStore();
+		await until("the drain request to be cleared", async () => (await store.snapshot()).drains.length === 0);
+		assert.deepEqual(removed, ["pod-1"]);
+		assert.deepEqual(other.events, []);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker that restarts while its instance is still being deleted stays drained until the provider stops listing it (#4803)",
+	async () => {
+		let deleted = false;
+		const removing: string[] = [];
+		// The provider accepts the removal at once, as a delete with --no-wait does, and lists the instance until it is gone.
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return deleted ? [] : [{ id: "vm-1", state: "running", since: 0 }];
+			},
+			async scaleTo() {},
+			async drain(id) {
+				removing.push(id);
+			},
+		};
+		const first = await workerHost("h1", "vm-1");
+		await controller(provisioner, [], { idleDrainMs: 0 });
+		await first.host.closed;
+		await until("the instance's removal to be requested", () => removing.length > 0);
+		await sleep(3 * TICK_MS);
+		const store = await openStore();
+		assert.deepEqual((await store.snapshot()).drains, [{ host: "h1", providerId: "vm-1" }]);
+		const restarted = await workerHost("h2", "vm-1");
+		await until("the restarted host to be asked to drain", () => restarted.events.length > 0, 10_000);
+		assert.deepEqual(restarted.events, [{ kind: "drain-requested" }]);
+		await restarted.host.closed;
+		deleted = true;
+		await until("the drain request to be cleared", async () => (await store.snapshot()).drains.length === 0);
+	},
+);
+
+test.skipIf(process.platform === "win32")(
+	"a drain request reaches the host id it names, and a host without a provider id only by its host id (#4803)",
+	async () => {
+		const store = await openStore();
+		assert.deepEqual(await store.acquire("A", undefined, 60_000), { held: true, epoch: 1 });
+		assert.equal(await store.requestDrain({ holder: "A", epoch: 1 }, "h1", "vm-1"), true);
+		const sameHost = await workerHost("h1");
+		const otherHost = await workerHost("h2");
+		const otherInstance = await workerHost("h3", "vm-2");
+		await sameHost.host.closed;
+		assert.deepEqual(sameHost.events, [{ kind: "drain-requested" }]);
+		await until(
+			"the other hosts to register",
+			async () => (await store.snapshot()).hosts.filter((host) => host.host !== "h1").length === 2,
+		);
+		// Each host reads drain requests with its first report.
+		await sleep(1_500);
+		assert.deepEqual([otherHost.events, otherInstance.events], [[], []]);
+	},
+);
+
 test.skipIf(process.platform === "win32")(
 	"a controller that loses its lease during a slow provider call aborts it and makes no further call (#4768)",
 	async () => {
@@ -513,6 +625,75 @@ test("joinHosts matches provider hosts to registered hosts by provider id or hos
 	]);
 });
 
+test("joinHosts takes the live host of an instance whose worker restarted under a new host id, with the children of both (#4803)", () => {
+	const [joined, unregistered] = joinHosts(
+		[
+			{ id: "pod-1", state: "running", since: 1 },
+			{ id: "pod-5", hostId: "h5", state: "running", since: 5 },
+		],
+		{
+			roots: [],
+			hosts: [
+				{ host: "h1", providerId: "pod-1", live: false, leased: 1 },
+				{ host: "h2", providerId: "pod-1", live: true, leased: 2 },
+				{ host: "h3", providerId: "pod-3", live: true, leased: 4 },
+			],
+			drains: [{ host: "h1", providerId: "pod-1" }],
+			leased: new Map([
+				["h1", 1],
+				["h2", 2],
+				["h3", 4],
+				["h5", 1],
+			]),
+		},
+	);
+	assert.deepEqual(joined, {
+		view: { id: "pod-1", state: "running", since: 1, registered: true, leased: 3, draining: true },
+		hostId: "h2",
+		drainHosts: ["h1"],
+	});
+	assert.deepEqual(
+		unregistered,
+		{
+			view: { id: "pod-5", state: "running", since: 5, registered: false, leased: 1, draining: false },
+			hostId: "h5",
+			drainHosts: [],
+		},
+		"a host the provider names holds its children while it is not registered",
+	);
+});
+
+test.skipIf(process.platform === "win32")(
+	"the controller forgets the drain of an instance its provider no longer lists, so a new instance with that id serves (#4803)",
+	async () => {
+		const store = await openStore();
+		assert.deepEqual(await store.acquire("other", undefined, 60_000), { held: true, epoch: 1 });
+		assert.equal(await store.requestDrain({ holder: "other", epoch: 1 }, "h-gone", "vm-gone"), true);
+		assert.equal(await store.requestDrain({ holder: "other", epoch: 1 }, "h-kept", "vm-kept"), true);
+		await store.release({ holder: "other", epoch: 1 });
+		const provisioner: WorkerHostProvisioner = {
+			kind: "fake",
+			async list() {
+				return [
+					{ id: "vm-kept", state: "pending", since: Date.now() },
+					{ id: "vm-new", state: "pending", since: Date.now() },
+				];
+			},
+			async scaleTo() {},
+			// The listed instance drained already: its removal starts, and never ends within the test.
+			drain: (id) => {
+				removing.push(id);
+				return new Promise<never>(() => {});
+			},
+		};
+		const removing: string[] = [];
+		await controller(provisioner);
+		await until("the listed instance's removal to start", () => removing.length > 0);
+		assert.deepEqual(removing, ["vm-kept"]);
+		assert.deepEqual((await store.snapshot()).drains, [{ host: "h-kept", providerId: "vm-kept" }]);
+	},
+);
+
 test.skipIf(process.platform === "win32")(
 	"status follows the lease: starting, active with its epoch and plan, standby, then stopped and released at once (#4768)",
 	async () => {
@@ -611,7 +792,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a worker host refuses an empty providerId, and otherwise reports the one ATOMIC_WORKER_PROVIDER_ID gives (#4768)",
+	"a worker host refuses an empty providerId, and otherwise reports ATOMIC_PROVIDER_ID, or its pod name on Kubernetes (#4803)",
 	async () => {
 		for (const providerId of ["", 7])
 			await assert.rejects(
@@ -626,38 +807,34 @@ test.skipIf(process.platform === "win32")(
 					return true;
 				},
 			);
-		const previous = process.env.ATOMIC_WORKER_PROVIDER_ID;
 		const store = await openStore();
 		try {
-			process.env.ATOMIC_WORKER_PROVIDER_ID = "vm-env";
-			const fromEnv = await startWorkflowWorkerHost({
-				journal: selection(),
-				agentDir: join(directory, "env"),
-				maxWorkers: 1,
-				hostId: "h-env",
-				restore: false,
-			});
-			hosts.push(fromEnv);
-			process.env.ATOMIC_WORKER_PROVIDER_ID = "";
-			const unset = await startWorkflowWorkerHost({
-				journal: selection(),
-				agentDir: join(directory, "unset"),
-				maxWorkers: 1,
-				hostId: "h-unset",
-				restore: false,
-			});
-			hosts.push(unset);
-			await until("both hosts to register", async () => (await store.snapshot()).hosts.length === 2);
+			vi.stubEnv("KUBERNETES_SERVICE_HOST", "");
+			vi.stubEnv("HOSTNAME", "pod-env");
+			vi.stubEnv("ATOMIC_PROVIDER_ID", "vm-env");
+			await workerHost("h-env");
+			vi.stubEnv("ATOMIC_PROVIDER_ID", "");
+			await workerHost("h-unset");
+			vi.stubEnv("KUBERNETES_SERVICE_HOST", "10.0.0.1");
+			await workerHost("h-pod");
+			vi.stubEnv("ATOMIC_PROVIDER_ID", "vm-env");
+			await workerHost("h-env-on-pod");
+			await workerHost("h-given", "vm-given");
+			await until("the hosts to register", async () => (await store.snapshot()).hosts.length === 5);
 			assert.deepEqual(
 				(await store.snapshot()).hosts.map((host) => [host.host, host.providerId]),
 				[
 					["h-env", "vm-env"],
+					["h-env-on-pod", "vm-env"],
+					["h-given", "vm-given"],
+					["h-pod", "pod-env"],
 					["h-unset", undefined],
 				],
 			);
 		} finally {
-			if (previous === undefined) delete process.env.ATOMIC_WORKER_PROVIDER_ID;
-			else process.env.ATOMIC_WORKER_PROVIDER_ID = previous;
+			vi.unstubAllEnvs();
 		}
+		// Five hosts stopping at once on one file database can outlast the hook's timeout: stop them one by one.
+		for (const host of hosts.splice(0)) await host.stop();
 	},
 );

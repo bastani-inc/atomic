@@ -71,11 +71,13 @@ interface Stream {
  * `reset-before` / `reset-after`: the connection is reset before the request runs, or after it ran and committed.
  * `closed-before`: the connection is closed without an answer before the request runs. `busy`: the request's first
  * statement fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
- * a batch runs as its conditions say.
+ * a batch runs as its conditions say. `stream-busy`: the request fails as a whole with `SQLITE_BUSY`, which ends its
+ * stream and rolls back the stream's open transaction.
  */
 export type FakeLibsqlFault =
 	| { readonly kind: "expired" }
 	| { readonly kind: "busy" }
+	| { readonly kind: "stream-busy" }
 	| { readonly kind: "result-error"; readonly code: string }
 	| { readonly kind: "reset-before" }
 	| { readonly kind: "reset-after" }
@@ -313,6 +315,10 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 				message: "The stream has expired due to inactivity",
 				code: "STREAM_EXPIRED",
 			});
+		}
+		if (fault?.kind === "stream-busy") {
+			if (existing !== undefined) expire(existing);
+			return answer(response, 400, { message: "database is locked", code: "SQLITE_BUSY" });
 		}
 		const stream: Stream = existing ?? { baton: `baton-${++nextBaton}`, sqls: new Map(), lastActive: 0 };
 		stream.lastActive = performance.now();

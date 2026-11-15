@@ -4,6 +4,13 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed an Intercom ask that never failed when, with multi-node routing, its recipient on another broker ended without replying. The asker now gets one "Your ask <id> to <name> failed" message, as on a single broker, also when it was away and comes back, and `pending` no longer lists the ask. A recipient whose owner released it keeps its asks open as before ([#4842](https://github.com/bastani-inc/atomic/issues/4842))
+- Fixed a released subagent's ask that, with multi-node routing, could no longer be answered or failed 10 minutes after the release. Its question is now kept as long as other asks of an away session, so a late reply still reaches the subagent through its owner, and a recipient that ends fails the ask once, through the owner ([#4852](https://github.com/bastani-inc/atomic/issues/4852))
+- Fixed sends to a session that reconnected to the same broker before its old connection was noticed gone being queued for up to 20 seconds instead of delivered, with multi-node routing: the old connection leaving no longer ends the live session's presence ([#4842](https://github.com/bastani-inc/atomic/issues/4842))
+- Fixed a `workflow:` target with many `**` segments stalling the shared Intercom broker for every session on the machine: stage patterns now match in time proportional to pattern length times stage depth, and a `workflow:` target longer than 1024 characters or with more than 64 segments is refused with an error that states the limit ([#4843](https://github.com/bastani-inc/atomic/issues/4843))
+
 ## [0.9.87] - 2026-11-14
 
 Asks from released subagents no longer vanish when their recipient comes and goes.

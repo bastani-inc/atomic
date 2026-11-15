@@ -10,7 +10,7 @@ export interface ProvisionedHost {
 	readonly id: string;
 	/**
 	 * The Atomic worker host id it registered with, when the provider knows it. A host started with the environment
-	 * variable `ATOMIC_WORKER_PROVIDER_ID` set to `id` registers it itself, which is the usual way to match the two.
+	 * variable `ATOMIC_PROVIDER_ID` set to `id` registers it itself, which is the usual way to match the two.
 	 */
 	readonly hostId?: string;
 	readonly state: "pending" | "running" | "draining" | "stopped" | "failed";
