@@ -528,7 +528,7 @@ export class SettingsManager {
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
 				const value = snapshotSettings[field];
-				if (modifiedNestedFields.has(field) && (value === undefined || typeof value === "object")) {
+				if (modifiedNestedFields.has(field)) {
 					const nestedModified = modifiedNestedFields.get(field)!;
 					const inMemoryNested = nestedEntries(field, value);
 					const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };

@@ -76,6 +76,28 @@ describe("each settings file is validated on its own (#5049)", () => {
 		assert.equal(manager.getCompactionEnabled(), false);
 	});
 
+	test("a wrong-typed .pi value is reported naming the .pi file, even when .atomic sets it too (#5049)", () => {
+		const manager = projectManager({ extensions: ["./good.ts"] }, { extensions: "./bad.ts" });
+
+		assert.deepEqual(manager.getProjectSettings().extensions, ["./good.ts"]);
+		assert.deepEqual(
+			manager.drainErrors().map(({ path }) => path),
+			[piProjectPath],
+		);
+	});
+
+	test("an unreadable .pi file is reported naming the .pi file (#5049)", () => {
+		writeJson(atomicProjectPath, { theme: "dark" });
+		writeFileSync(piProjectPath, "{ not json");
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.deepEqual(
+			manager.drainErrors().map(({ scope, path }) => ({ scope, path })),
+			[{ scope: "project", path: piProjectPath }],
+		);
+	});
+
 	test("a wrong-typed ~/.atomic/agent value falls through to ~/.pi/agent (#5049)", () => {
 		const manager = globalLayeredManager({ themes: 7 }, { themes: ["./pi-theme.json"] });
 
@@ -201,6 +223,32 @@ describe("nested setters keep other processes' nested keys (#5049)", () => {
 		assert.deepEqual(readJson(globalPath).warnings, {});
 	});
 
+	test("removing the only thinking level removes the setting from the file (#5049)", async () => {
+		const manager = SettingsManager.create(projectDir, agentDir);
+		manager.setModelThinkingLevel("openai", "gpt-a", "high");
+		await manager.flush();
+
+		manager.removeModelThinkingLevel("openai", "gpt-a");
+		await manager.flush();
+
+		assert.equal(Object.hasOwn(readJson(globalPath), "modelThinkingLevels"), false);
+	});
+
+	test("list-form workflow paths stay a list unless another process added keys (#5049)", async () => {
+		const stale = SettingsManager.create(projectDir, agentDir);
+		const manager = SettingsManager.create(projectDir, agentDir);
+		manager.setWorkflowPaths(["./b"]);
+		await manager.flush();
+		assert.deepEqual(readJson(globalPath).workflows, ["./b"]);
+
+		manager.setAutoAdvanceAfterSteer(false);
+		await manager.flush();
+		stale.setWorkflowPaths(["./a"]);
+		await stale.flush();
+
+		assert.deepEqual(readJson(globalPath).workflows, { paths: ["./a"], autoAdvanceAfterSteer: false });
+	});
+
 	test("project workflow setters keep another process's project workflow keys (#5049)", async () => {
 		writeJson(atomicProjectPath, { workflows: { journal: { memory: true } } });
 		const first = SettingsManager.create(projectDir, agentDir);
@@ -249,6 +297,15 @@ describe("applyOverrides last for the run (#5049)", () => {
 
 		manager.setWorkflowPaths(["./wf"]);
 		assert.deepEqual(manager.getWorkflowPaths(), ["./wf"]);
+	});
+
+	test("replacing a whole object setting replaces its override (#5049)", () => {
+		const manager = SettingsManager.inMemory();
+		manager.applyOverrides({ storage: { path: "./override.db" } });
+
+		manager.setStorage({ path: "./chosen.db" });
+
+		assert.deepEqual(manager.getSettings().storage, { path: "./chosen.db" });
 	});
 
 	test("overrides survive reload and prepared reloads (#5049)", async () => {
@@ -310,6 +367,7 @@ describe("wrong-typed values are reported again after being fixed (#5049)", () =
 		const manager = SettingsManager.create(projectDir, agentDir);
 		assert.equal(manager.drainErrors().length, 1);
 
+		await manager.reload();
 		await manager.reload();
 		assert.equal(manager.drainErrors().length, 0, "an unchanged file is not reported twice");
 
