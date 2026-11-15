@@ -49,7 +49,12 @@ import type {
 	WorktreeSnapshotSettings,
 	WorktreeUnrestored,
 } from "../worktree-snapshot/types.ts";
-import { blueprintBuildShared, handOverBuildTimings, holdToolsUntilBuilt } from "./blueprint/barrier.ts";
+import {
+	type BlueprintBuildResult,
+	blueprintBuildShared,
+	handOverBuildTimings,
+	holdToolsUntilBuilt,
+} from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
 import {
 	BLUEPRINT_BUILDING_CONTEXT,
@@ -531,12 +536,27 @@ async function prepareResume(
 			.filter((root) => isInside(storeDir, root)),
 	);
 	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
-		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
-		const report = building.then(async (blueprints) => {
-			await buildSettled(opened.sessionManager);
-			return blueprintBuildReport(blueprints);
+		// The build can be stopped when the process ends before it does (#4748): its steps' process trees end with it,
+		// what ran is recorded, and the ledger keeps the worktrees unbuilt for the next resume.
+		const stopping = new AbortController();
+		const signal =
+			options.signal === undefined ? stopping.signal : AbortSignal.any([options.signal, stopping.signal]);
+		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, { ...options, signal });
+		const result = building.then(
+			async (blueprints): Promise<BlueprintBuildResult> => {
+				await buildSettled(opened.sessionManager);
+				return { report: blueprintBuildReport(blueprints), notices: blueprints.notices };
+			},
+			async (error: unknown): Promise<BlueprintBuildResult> => {
+				await buildSettled(opened.sessionManager).catch(() => undefined);
+				const message = `Blueprint build stopped before it finished (${error instanceof Error ? error.message : String(error)}); the next resume builds the restored worktree again.`;
+				return { report: message, notices: [{ type: "warning", message }] };
+			},
+		);
+		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), result, {
+			roots: restoredNow,
+			stop: (reason) => stopping.abort(reason),
 		});
-		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), report);
 		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
 		return {
 			status: "ready",

@@ -868,7 +868,7 @@ Response:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false, "notices": []}}
 ```
 
-`notices` lists the warnings the resume earned, such as a [blueprint](/guides/resume-on-any-machine) build that was Partial, each as `{"type": "warning", "message": "..."}`. A client that shows resume warnings shows them once. A switch that restores a worktree answers once the worktree is restored; its blueprint build goes on behind the first turn, every tool call waits for it, and the first such call reports how the build went. Set `resume.waitForBlueprint` to `"prompt"` to answer only after the build ([details](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
+`notices` lists the warnings the resume earned, such as a [blueprint](/guides/resume-on-any-machine) build that was Partial, each as `{"type": "warning", "message": "..."}`. A client that shows resume warnings shows them once. A switch that restores a worktree answers once the worktree is restored. Its blueprint build goes on behind the first turn: every tool call and `bash` command in that worktree, also those of a later `new_session` there, waits for it, the first such tool call reports how the build went to the agent, and a `blueprint_build_finished` event tells the client, with the build's warnings. Closing stdin stops a build that is still running; the next resume builds the worktree again. Set `resume.waitForBlueprint` to `"prompt"` to answer only after the build ([details](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
 
 If an extension cancelled the switch:
 ```json
@@ -1170,6 +1170,7 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `summarization_retry_attempt_start` | Retried summarization request starts |
 | `summarization_retry_finished` | Summarization retry loop completes |
 | `extension_error` | Extension threw an error |
+| `blueprint_build_finished` | The blueprint build of a resumed session's restored worktree ended; `notices` lists its warnings, empty when it finished cleanly |
 
 ### agent_start
 

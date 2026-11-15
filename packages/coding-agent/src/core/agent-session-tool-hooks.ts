@@ -16,7 +16,12 @@ import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
-import { awaitBlueprintReady, blueprintBuildPending, holdToolsUntilBuilt } from "./resume/blueprint/barrier.ts";
+import {
+	awaitBlueprintReady,
+	type BlueprintBuildSubject,
+	blueprintBuildPending,
+	holdToolsUntilBuilt,
+} from "./resume/blueprint/barrier.ts";
 import { sessionBlobOutput } from "./session-tool-output.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
@@ -118,7 +123,19 @@ function keepBlueprintReport(
 		return;
 	}
 	const sessionId = session.sessionManager.getSessionId();
-	if (!blueprintBuildPending(sessionId)) holdToolsUntilBuilt(sessionId, Promise.resolve(report));
+	if (!blueprintBuildPending(blueprintSubject(session))) holdToolsUntilBuilt(sessionId, Promise.resolve(report));
+}
+
+/**
+ * The session as a waiter for blueprint builds: by its id, and by the directories it works in, so a session that a new
+ * session, fork or switch opened in a worktree that is still being built waits for that build too (#4748).
+ */
+export function blueprintSubject(session: Pick<AgentSession, "sessionManager">): BlueprintBuildSubject {
+	const manager = session.sessionManager;
+	return {
+		sessionId: manager.getSessionId(),
+		roots: [manager.getCwd(), ...manager.getWorktreeRootMappings().map((mapping) => mapping.to)],
+	};
 }
 
 /**
@@ -131,10 +148,10 @@ async function waitForBlueprintBuild(
 	signal: AbortSignal | undefined,
 	waited: WaitedBuild,
 ): Promise<{ block: true; reason: string } | undefined> {
-	const sessionId = session.sessionManager.getSessionId();
-	if (!blueprintBuildPending(sessionId)) return undefined;
+	const subject = blueprintSubject(session);
+	if (!blueprintBuildPending(subject)) return undefined;
 	try {
-		waited.report = await awaitBlueprintReady(sessionId, signal);
+		waited.report = await awaitBlueprintReady(subject, signal);
 	} catch {
 		return { block: true, reason: "Interrupted while waiting for the environment build of this resumed session." };
 	}

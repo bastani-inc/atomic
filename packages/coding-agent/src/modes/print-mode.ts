@@ -14,9 +14,10 @@ import type { ToolDefinition } from "../core/extensions/types.ts";
 import type { CustomMessage } from "../core/messages.ts";
 import { formatModelLabel } from "../core/model-label.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
-import { blueprintBuildSettled } from "../core/resume/blueprint/barrier.ts";
+import { blueprintBuildsSettled, onBlueprintBuildFinished } from "../core/resume/blueprint/barrier.ts";
 import { serviceTierWarnings } from "../core/service-tier-warnings.ts";
 import { ranOnModelLine } from "../core/tasks/completion.js";
+import { reportDiagnostics } from "../main-stdio.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 import { toJsonEvent } from "./json-event.ts";
 
@@ -159,6 +160,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	registerSignalHandlers();
+	// A resumed session's blueprint build may run behind its first turn (#4748): its warnings reach the user once it
+	// ends, as a resume that waits shows them, and a JSON run emits the build's end as an event.
+	const stopAnnouncing = onBlueprintBuildFinished((finished) => {
+		if (mode === "json") writeRawStdout(`${JSON.stringify(finished)}\n`);
+		else reportDiagnostics(finished.notices);
+	});
 
 	const promptWithScopedCommandSuppression = async (
 		text: string,
@@ -336,9 +343,10 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		console.error(error instanceof Error ? error.message : String(error));
 		return 1;
 	} finally {
-		// A resumed session's blueprint build may still run behind its first turn (#4748): the run ends once it settled,
-		// so it never leaves the restored worktree half built.
-		await blueprintBuildSettled(session.sessionManager.getSessionId());
+		// A blueprint build may still run behind the first turn (#4748), also for a session opened since in its worktree:
+		// the run ends once every build it started has settled, so it never leaves a restored worktree half built.
+		await blueprintBuildsSettled();
+		stopAnnouncing();
 		// Keep the signal handlers until disposal is done: without one, a signal would kill the
 		// process mid-dispose.
 		await disposeRuntime();

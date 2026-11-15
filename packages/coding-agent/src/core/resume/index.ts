@@ -6,7 +6,14 @@ export {
 	type RunActionOptions,
 	runAction,
 } from "./blueprint/actions.ts";
-export { awaitBlueprintReady, blueprintBuildPending, blueprintBuildSettled } from "./blueprint/barrier.ts";
+export {
+	awaitBlueprintReady,
+	type BlueprintBuildFinished,
+	type BlueprintBuildNotice,
+	blueprintBuildPending,
+	blueprintBuildSettled,
+	onBlueprintBuildFinished,
+} from "./blueprint/barrier.ts";
 export {
 	BLUEPRINT_FULL_BUILD_MAX_AGE_MS,
 	type BlueprintBuildConfig,

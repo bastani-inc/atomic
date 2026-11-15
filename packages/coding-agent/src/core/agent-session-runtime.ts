@@ -20,6 +20,7 @@ import type {
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { ModelFallbackReason } from "./model-resolver-types.ts";
 import type { AuthStatus } from "./provider-composer.ts";
+import { blueprintBuildsRunning, stopBlueprintBuilds } from "./resume/blueprint/barrier.ts";
 import type { ResumeEntryPoint } from "./resume/errors.ts";
 import { RESUME_CATALOG_TIMEOUT_MS, resumeLookupError, withResumeLookupDeadline } from "./resume/not-found.ts";
 import {
@@ -935,7 +936,11 @@ export class AgentSessionRuntime {
 		this.endedBySignal = options?.fromSignal === true;
 		// Every graceful exit path (quit, signals, RPC shutdown, print mode) disposes the runtime before exiting.
 		const oauthDrainDeadline = Date.now() + OAUTH_SHUTDOWN_DRAIN_MS;
-		const current = this.disposeCurrentSession(this.quitEvent());
+		// A blueprint build still running behind a resumed session's first turn stops with the process, process tree
+		// included, and records what ran before its session closes (#4748); the next resume builds it again.
+		const current = blueprintBuildsRunning()
+			? stopBlueprintBuilds().then(() => this.disposeCurrentSession(this.quitEvent()))
+			: this.disposeCurrentSession(this.quitEvent());
 		void current.catch(() => {});
 		this.closing = (async () => {
 			await drainSessionWork(this);
