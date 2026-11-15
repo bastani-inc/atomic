@@ -157,6 +157,12 @@ export interface OutboxEnqueueRequest {
 	readonly digest: string;
 	/** Written verbatim to the recipient; its `message.id` is the row's message id. */
 	readonly frame: OutboxFrame;
+	/**
+	 * #4992: a failure the broker owes the recipient for one of its open asks. It is queued past the recipient's
+	 * `OUTBOX_TARGET_MAX_ROWS` and `OUTBOX_TARGET_MAX_BYTES`: it is small, there is at most one per open ask, and
+	 * refusing it would leave the ask waiting forever.
+	 */
+	readonly owed?: boolean;
 }
 
 export interface OutboxRow {
@@ -515,6 +521,7 @@ export type PendingAskClearResult =
 	| { readonly status: "cleared" }
 	| { readonly status: "no-match" }
 	| InvalidStateInput;
+export type PendingAskMarkResult = { readonly status: "marked" } | { readonly status: "no-match" } | InvalidStateInput;
 export type PendingAskPruneResult = { readonly status: "pruned"; readonly removed: number } | InvalidStateInput;
 export type PendingAskListResult = { readonly status: "listed"; readonly asks: PendingAsk[] } | InvalidStateInput;
 export type PendingAskTakeResult = { readonly status: "taken"; readonly asks: PendingAsk[] } | InvalidStateInput;
@@ -544,11 +551,21 @@ export interface PendingAskStore {
 	/** Only the exact reverse route of a recorded ask matches. */
 	matchesReply(route: ReplyRoute): Promise<PendingAskMatchResult>;
 	clearReply(route: ReplyRoute): Promise<PendingAskClearResult>;
+	/**
+	 * #4992: a reply to the ask is queued: its route stays, so the reply is still authorized when it is delivered, but
+	 * the ask is answered: `listForTarget` and `listParked` no longer return it, so it does not also fail.
+	 */
+	markReplied(route: ReplyRoute): Promise<PendingAskMarkResult>;
 	pruneSender(senderSessionId: string): Promise<PendingAskPruneResult>;
 	/** The sender's asks, in insertion order, without removing them. */
 	listForSender(senderSessionId: string): Promise<PendingAskListResult>;
 	/** Remove and return the asks addressed to this target, in insertion order. */
 	takeForTarget(targetSessionId: string): Promise<PendingAskTakeResult>;
+	/**
+	 * #4992: the unanswered asks addressed to this target, in insertion order, without removing them: each is removed
+	 * with `clearReply` only once its asker's failure is delivered or queued.
+	 */
+	listForTarget(targetSessionId: string): Promise<PendingAskListResult>;
 	/**
 	 * #4386: the target is a subagent its owner released: keep its asks, still matching replies from it, for its
 	 * owner instead of removing them.
@@ -558,6 +575,20 @@ export interface PendingAskStore {
 	rebindParked(park: PendingAskPark, targetSessionId: string): Promise<PendingAskRebindResult>;
 	/** Remove and return the owner's parked asks, of every subagent or only of the one reserved under `reservationKey`. */
 	takeParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskTakeResult>;
+	/** #4992: the owner's unanswered parked asks, as `takeParked` selects them, without removing them. */
+	listParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
+	/**
+	 * #4992: the target ended: its unanswered asks are marked ended, durably, before their askers are told, and returned
+	 * as `listForTarget` would. An ask stays marked until `clearReply` removes it or `unmarkEnded` keeps only its route,
+	 * so another broker finishes what a broker that stopped meanwhile left (`listEnded`).
+	 */
+	endForTarget(targetSessionId: string): Promise<PendingAskListResult>;
+	/** #4992: as `endForTarget`, for the owner's parked asks, as `listParked` selects them. */
+	endParked(ownerSessionId: string, reservationKey?: string): Promise<PendingAskListResult>;
+	/** #4992: the unanswered asks marked ended more than `olderThanMs` ago, by store clock, oldest first. */
+	listEnded(olderThanMs: number): Promise<PendingAskListResult>;
+	/** #4992: the ended ask's failure is queued; its route stays only to authorize that failure when it is delivered. */
+	unmarkEnded(route: ReplyRoute): Promise<PendingAskMarkResult>;
 }
 
 /**
@@ -730,6 +761,18 @@ export interface KnownSessionState extends KnownSession {
 }
 
 export type KnownSessionRecordResult = { readonly status: "recorded" } | InvalidStateInput;
+/**
+ * Which return address an Intercom session id is bound to: `""` for a session that registered with none. `bound`
+ * means `returnAddress` holds the id (it is the requester's own, or the id was free); `refused` names the other one.
+ */
+export type KnownSessionBindResult =
+	| { readonly status: "bound" }
+	| { readonly status: "refused"; readonly returnAddress: string }
+	| InvalidStateInput;
+export type KnownSessionBindingResult =
+	| { readonly status: "bound"; readonly returnAddress: string }
+	| { readonly status: "unbound" }
+	| InvalidStateInput;
 export type KnownSessionLookupResult =
 	| { readonly status: "found"; readonly sessions: KnownSessionState[] }
 	| InvalidStateInput;
@@ -743,8 +786,41 @@ export interface KnownSessionStore {
 	 * name equals it case-insensitively (`toLowerCase`), in first-record order.
 	 */
 	lookup(target: string, retentionMs: number): Promise<KnownSessionLookupResult>;
-	/** Delete records last recorded more than `olderThanMs` ago; returns the count. */
+	/**
+	 * Bind the Intercom id `intercomSessionId` to the return address of the session registering under it (`""` when it
+	 * gave none), unless another return address has held it within `retentionMs`, and reset the binding's age. In multi-node mode an id carries
+	 * authority: it is granted, and delivered to, only the session it is bound to. An id with no binding yet is bound
+	 * first to the return address its earliest known-session record has, so a record kept from before bindings existed
+	 * still holds it.
+	 */
+	bind(intercomSessionId: string, returnAddress: string, retentionMs: number): Promise<KnownSessionBindResult>;
+	/** The return address the id is bound to, if a binding recorded within `retentionMs` holds it. */
+	binding(intercomSessionId: string, retentionMs: number): Promise<KnownSessionBindingResult>;
+	/** Delete records and bindings last recorded more than `olderThanMs` ago; returns the count of records. */
 	prune(olderThanMs: number): Promise<number>;
+}
+
+/** The return address a delivery identity (`deliveryTargetIdentity`) names; none for a session that gave none. */
+export function returnAddressOf(identity: string): string | undefined {
+	try {
+		const parsed = JSON.parse(identity) as unknown;
+		return Array.isArray(parsed) && parsed[0] === "return" && typeof parsed[1] === "string" ? parsed[1] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Whether the Intercom id `sessionId` is bound to `returnAddress` (`undefined` for none), or to no session at all. In
+ * multi-node mode a presence or record under an id bound to another return address is not that session.
+ */
+export async function holdsSessionId(
+	knownSessions: Pick<KnownSessionStore, "binding">,
+	sessionId: string,
+	returnAddress: string | undefined,
+): Promise<boolean> {
+	const bound = await knownSessions.binding(sessionId, KNOWN_SESSION_RETENTION_MS);
+	return bound.status !== "bound" || bound.returnAddress === (returnAddress ?? "");
 }
 
 /** One broker's view of the shared Intercom state. */
