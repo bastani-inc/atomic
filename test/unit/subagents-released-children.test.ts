@@ -27,9 +27,11 @@ import {
 	decideReleasedChildWake,
 	forwardDetachedResults,
 	handleReleasedChildWakes,
+	interruptedByRestart,
 	lateToolResultMessage,
 	pendingToolCalls,
 	planReleasedChildWake,
+	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_STILL_RUNNING_RESULT,
 	subagentReleasePolicy,
@@ -74,6 +76,23 @@ test("results for every pending call alone continue the turn with no prompt (#43
 		lateMessages: [],
 		skipPrompt: true,
 	});
+});
+
+test("only a child an earlier process released waiting on calls has those calls interrupted by the restart (#4848)", () => {
+	const earlier = { ownerGeneration: "earlier-process" };
+	const waiting = [
+		{ toolCallId: "bash-1", toolName: "bash" },
+		{ toolCallId: "ask-1", toolName: "intercom", replyWait: { questionId: "q", deadline: 1, from: "peer" } },
+	];
+	const lost = interruptedByRestart({ ...earlier, waitingOn: waiting });
+	assert.deepEqual([lost("bash-1"), lost("ask-1")], [true, false], "a question's reply still arrives");
+	assert.equal(
+		interruptedByRestart({ waitingOn: waiting, ownerGeneration: SUBAGENT_OWNER_GENERATION })("bash-1"),
+		false,
+	);
+	// A run's record resets what it waits on; a child that waits on nothing lost nothing to the restart.
+	for (const record of [{ ...earlier, waitingOn: [] }, earlier, { waitingOn: [] }])
+		assert.equal(interruptedByRestart(record)("bash-1"), false, JSON.stringify(record));
 });
 
 test("a partial result marks the other pending calls still running and still needs no prompt (#4326)", () => {

@@ -91,7 +91,8 @@ function releasedByEarlierProcess(record: SubagentChildRecord): boolean {
 export function interruptedByRestart(
 	record: Pick<SubagentChildRecord, "waitingOn" | "ownerGeneration">,
 ): (toolCallId: string) => boolean {
-	if (record.waitingOn === undefined || record.ownerGeneration === SUBAGENT_OWNER_GENERATION) return () => false;
+	// A child waiting on nothing, such as one whose run reset what it waits on, lost nothing to the restart.
+	if (!record.waitingOn?.length || record.ownerGeneration === SUBAGENT_OWNER_GENERATION) return () => false;
 	const questions = new Set(
 		record.waitingOn.flatMap((call) => (call.replyWait === undefined ? [] : [call.toolCallId])),
 	);
