@@ -9,7 +9,7 @@
  * was taken for closes in this process, and at exit.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
 	closeSync,
 	fsyncSync,
@@ -17,7 +17,7 @@ import {
 	mkdirSync,
 	openSync,
 	readFileSync,
-	rmdirSync,
+	renameSync,
 	rmSync,
 	statSync,
 	utimesSync,
@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { putBack, takeTakeoverMutex } from "./lock-takeover.ts";
 import { processStartToken } from "./process-start-token.ts";
 import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 
@@ -32,8 +33,6 @@ import { SessionAlreadyOpenError } from "./session-manager-errors.js";
 const HEARTBEAT_MS = 15_000;
 /** How old the heartbeat of a claim of another host may be before the claim no longer counts. */
 const STALE_MS = 4 * HEARTBEAT_MS;
-/** How long a takeover may hold the takeover lock before another process breaks it as left by a dead one. */
-const TAKEOVER_LOCK_STALE_MS = 10_000;
 /** Attempts to claim a session whose claims keep changing hands under this process. */
 const MAX_ATTEMPTS = 100;
 /** How long a claim waits before it looks again while another process takes a dead claim over. */
@@ -124,29 +123,38 @@ function linkClaim(path: string, record: ClaimRecord): boolean {
 	}
 }
 
+/** Whether the claim read from `path` is still the dead one with `token` that was judged. */
+function stillDead(claim: ReturnType<typeof readClaim>, token: string | undefined): boolean {
+	if (claim === undefined || claim.record?.token !== token) return false;
+	return claim.record === undefined || !holderRuns(claim.record, claim.ageMs);
+}
+
 /**
- * Removes the claim at `path` when it is still the one with `token` that was found dead. Takeovers take turns under a
- * lock directory, so one never removes a claim another takeover just linked.
+ * Removes the claim at `path` when it is still the one with `token` that was found dead. Takeovers take turns under
+ * the takeover mutex, an advisory lock the kernel releases when its holder dies (#5193), and the whole removal runs
+ * while it is held: the claim is judged again inside it and moved aside, and removed only when the moved record is the
+ * dead one. A claim moved that is not is linked back only while no claim is in its place, never replacing one. A mutex
+ * held elsewhere is contention: the caller looks again.
  */
 function removeDeadClaim(path: string, token: string | undefined): void {
-	const lock = `${path}.takeover`;
-	try {
-		mkdirSync(lock);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		try {
-			// A process that died while taking a claim over leaves the lock behind.
-			if (Date.now() - statSync(lock).mtimeMs > TAKEOVER_LOCK_STALE_MS) rmdirSync(lock);
-			else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TAKEOVER_WAIT_MS);
-		} catch {
-			// Released or broken by another process meanwhile.
-		}
+	const mutex = takeTakeoverMutex(path, TAKEOVER_WAIT_MS);
+	if (mutex === undefined) {
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TAKEOVER_WAIT_MS);
 		return;
 	}
 	try {
-		if (readClaim(path)?.record?.token === token) rmSync(path, { force: true });
+		if (!stillDead(readClaim(path), token) || !mutex.owned()) return;
+		const aside = `${path}.${randomUUID()}.dead`;
+		try {
+			renameSync(path, aside);
+		} catch {
+			// Gone meanwhile: the next attempt links a claim in its place.
+			return;
+		}
+		if (readClaim(aside)?.record?.token === token) rmSync(aside, { force: true });
+		else putBack(aside, path);
 	} finally {
-		rmdirSync(lock);
+		mutex.release();
 	}
 }
 

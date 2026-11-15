@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	utimesSync,
@@ -16,8 +17,11 @@ import { afterEach, beforeEach, describe, it } from "vitest";
 import { HOLDER_TEMP_STALE_MS } from "../src/core/lock-holder.ts";
 import {
 	guardLockRemoval,
+	putBack,
 	removeStaleLock,
+	setNativeLocksForTesting,
 	TAKEOVER_MUTEX_STALE_MS,
+	takeoverLockPath,
 	takeoverMutexPath,
 	takeTakeoverMutex,
 } from "../src/core/lock-takeover.ts";
@@ -37,6 +41,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	setNativeLocksForTesting(undefined);
 	rmSync(directory, { recursive: true, force: true });
 });
 
@@ -89,7 +94,22 @@ describe("removing a stale lock (#5161)", () => {
 		assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
 	});
 
-	it("keeps a stale lock while another process holds the takeover mutex (#5161)", () => {
+	it("keeps a stale lock while another takeover holds the advisory mutex (#5193)", () => {
+		staleLock(lockPath);
+		const mutex = takeTakeoverMutex(lockPath);
+		assert.ok(mutex);
+		try {
+			removeStaleLock(lockPath, STALE_MS);
+			assert.equal(existsSync(lockPath), true);
+		} finally {
+			mutex.release();
+		}
+		removeStaleLock(lockPath, STALE_MS);
+		assert.equal(existsSync(lockPath), false, "once the mutex is released, the stale lock is removed");
+	});
+
+	it("without the native lock, keeps a stale lock while another process holds the takeover mutex (#5161)", () => {
+		setNativeLocksForTesting(null);
 		staleLock(lockPath);
 		mkdirSync(takeoverMutexPath(lockPath));
 		removeStaleLock(lockPath, STALE_MS);
@@ -211,7 +231,9 @@ function mutexOf(owner: Record<string, unknown> | undefined, ageMs = 0): void {
 	utimesSync(mutex, at, at);
 }
 
-describe("the takeover mutex (#5161)", () => {
+describe("the directory takeover mutex, without the native lock (#5161)", () => {
+	beforeEach(() => setNativeLocksForTesting(null));
+
 	it("is owned by the process that took it until it gives it up (#5161)", () => {
 		const mutex = takeTakeoverMutex(lockPath);
 		assert.ok(mutex);
@@ -280,5 +302,107 @@ describe("the takeover mutex (#5161)", () => {
 		mutexOf({ host: hostname(), pid: exitedPid(), id: "dead" });
 		removeStaleLock(lockPath, STALE_MS);
 		assert.equal(existsSync(lockPath), false, "a dead owner's mutex does not stop the removal");
+	});
+});
+
+describe("the advisory takeover mutex (#5193)", () => {
+	it("is held by one taker at a time until released, and its file is kept (#5193)", () => {
+		const mutex = takeTakeoverMutex(lockPath);
+		assert.ok(mutex);
+		assert.equal(mutex.owned(), true);
+		assert.equal(takeTakeoverMutex(lockPath, 0), undefined, "a held mutex is not taken again");
+		mutex.release();
+		assert.equal(mutex.owned(), false);
+		mutex.release();
+		assert.equal(existsSync(takeoverLockPath(lockPath)), true, "the lock file is never removed");
+		assert.equal(existsSync(takeoverMutexPath(lockPath)), false, "no directory mutex is made");
+		const again = takeTakeoverMutex(lockPath, 0);
+		assert.ok(again, "a released mutex is taken at once");
+		again.release();
+	});
+
+	it("waits for a held mutex only as long as it is given (#5193)", () => {
+		const mutex = takeTakeoverMutex(lockPath);
+		assert.ok(mutex);
+		try {
+			const started = Date.now();
+			assert.equal(takeTakeoverMutex(lockPath, 100), undefined);
+			const waited = Date.now() - started;
+			assert.ok(waited >= 90 && waited < 5_000, `waited ${waited} ms`);
+		} finally {
+			mutex.release();
+		}
+	});
+
+	it("is not stopped by a takeover directory an earlier version left behind (#5193)", () => {
+		mutexOf({ host: hostname(), pid: process.pid, id: "earlier" });
+		const mutex = takeTakeoverMutex(lockPath, 0);
+		assert.ok(mutex);
+		mutex.release();
+	});
+
+	it("is not taken when its file cannot be opened (#5193)", () => {
+		assert.equal(takeTakeoverMutex(join(directory, "gone", "settings.json.lock"), 0), undefined);
+	});
+
+	it("without the native lock, warns once and takes the directory mutex (#5193)", async () => {
+		// Warnings earlier tests raised are delivered first.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		setNativeLocksForTesting(null);
+		const warnings: string[] = [];
+		const listen = (warning: Error) => warnings.push(warning.message);
+		process.on("warning", listen);
+		try {
+			const first = takeTakeoverMutex(lockPath);
+			assert.ok(first);
+			assert.equal(existsSync(takeoverMutexPath(lockPath)), true);
+			first.release();
+			takeTakeoverMutex(lockPath)?.release();
+			await new Promise((resolve) => setImmediate(resolve));
+		} finally {
+			process.off("warning", listen);
+		}
+		assert.equal(warnings.filter((message) => message.includes("#5193")).length, 1);
+	});
+});
+
+describe("putting back a moved item that is not the one judged (#5193)", () => {
+	it("links a file back only while nothing is at its path (#5193)", () => {
+		const path = join(directory, "claim.json");
+		const aside = `${path}.moved.dead`;
+		writeFileSync(aside, "live");
+		assert.equal(putBack(aside, path), true);
+		assert.equal(readFileSync(path, "utf8"), "live");
+		assert.equal(existsSync(aside), false);
+		writeFileSync(aside, "moved");
+		assert.equal(putBack(aside, path), false, "a file at the path is never replaced");
+		assert.equal(readFileSync(path, "utf8"), "live");
+		assert.equal(readFileSync(aside, "utf8"), "moved");
+	});
+
+	it("renames a directory back only while nothing is at its path (#5193)", () => {
+		const aside = `${lockPath}.moved.dead`;
+		mkdirSync(aside);
+		const moved = lockHolder(aside);
+		assert.equal(putBack(aside, lockPath), true);
+		assert.equal(lockHolder(lockPath), moved);
+		assert.equal(existsSync(aside), false);
+		mkdirSync(aside);
+		assert.equal(putBack(aside, lockPath), false, "an empty directory at the path is never replaced");
+		assert.equal(lockHolder(lockPath), moved);
+		assert.equal(existsSync(aside), true);
+	});
+
+	it("leaves a directory aside without the native rename (#5193)", () => {
+		setNativeLocksForTesting(null);
+		const aside = `${lockPath}.moved.dead`;
+		mkdirSync(aside);
+		assert.equal(putBack(aside, lockPath), false);
+		assert.equal(existsSync(aside), true);
+		assert.equal(existsSync(lockPath), false);
+	});
+
+	it("puts back nothing that is gone (#5193)", () => {
+		assert.equal(putBack(join(directory, "missing.dead"), lockPath), false);
 	});
 });

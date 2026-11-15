@@ -1,22 +1,88 @@
 import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	linkSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { createModuleRequire } from "../utils/module-require.ts";
 import { processStartToken } from "./process-start-token.ts";
 
 /*
- * Every removal of another process's proper-lockfile lock goes through one mutex per lock (#5161): the takeover of a
- * lock whose holder is proven dead, and proper-lockfile's own removal of a stale lock. Each checks again, inside the
- * mutex, that the lock is still the one it judged, so a lock another process took since is never removed.
+ * Every removal of another process's lock goes through one mutex per lock (#5161): the takeover of a lock whose
+ * holder is proven dead, and proper-lockfile's own removal of a stale lock. Each checks again, inside the mutex, that
+ * the lock is still the one it judged, so a lock another process took since is never removed.
+ *
+ * The mutex is an operating-system advisory lock on a file beside the lock (#5193): `flock` on Unix, `LockFileEx` on
+ * Windows, through the native module. The kernel releases it when its holder dies, so no process ever judges another's
+ * mutex stale, and a pause or a crash can never admit two holders. Without the native lock, as with a native module
+ * built before it, the mutex is a directory whose owner is judged as before, with a one-time warning.
  */
 
-/** How old a takeover mutex that names no owner must be before it is judged left by a killed process. */
+/** How old a directory takeover mutex that names no owner must be before it is judged left by a killed process. */
 export const TAKEOVER_MUTEX_STALE_MS = 10_000;
 
-/** The directory that serializes takeovers of the lock at `lockPath`. */
+/** How long a taker waits for the advisory lock while another process holds it: a takeover takes milliseconds. */
+export const TAKEOVER_MUTEX_WAIT_MS = 250;
+
+/** The directory that serializes takeovers of the lock at `lockPath` without the native advisory lock. */
 export function takeoverMutexPath(lockPath: string): string {
 	return `${lockPath}.takeover`;
+}
+
+/**
+ * The file whose advisory lock serializes takeovers of the lock at `lockPath`. It is never removed: a process that
+ * removed it could leave one holder locking the removed file while another locks a new one.
+ */
+export function takeoverLockPath(lockPath: string): string {
+	return `${lockPath}.takeover.lock`;
+}
+
+/** The native module's advisory lock and no-replace rename (#5193). */
+export interface NativeLocks {
+	tryAdvisoryLock(path: string, waitMs: number): { release(): void } | null;
+	renameNoReplace(from: string, to: string): boolean;
+}
+
+let nativeLocks: NativeLocks | null | undefined;
+let warnedFallback = false;
+
+/** The native module's locks, or null where the module or those bindings (added in #5193) are missing. */
+function locks(): NativeLocks | null {
+	if (nativeLocks === undefined) {
+		try {
+			const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as Partial<NativeLocks>;
+			nativeLocks =
+				typeof binding.tryAdvisoryLock === "function" && typeof binding.renameNoReplace === "function"
+					? (binding as NativeLocks)
+					: null;
+		} catch {
+			nativeLocks = null;
+		}
+	}
+	return nativeLocks;
+}
+
+/** Replaces the native locks for a test: null as without the native module, undefined to load them again. */
+export function setNativeLocksForTesting(value: NativeLocks | null | undefined): void {
+	nativeLocks = value;
+	warnedFallback = false;
+}
+
+function warnFallback(): void {
+	if (warnedFallback) return;
+	warnedFallback = true;
+	process.emitWarning(
+		"The native module has no advisory file lock; lock takeovers use a directory mutex instead, which a paused process can lose (#5193).",
+	);
 }
 
 /** The file inside a takeover mutex that names the process owning it. */
@@ -82,7 +148,10 @@ function readMutexOwner(mutexPath: string): MutexOwner | undefined {
 
 /** A takeover mutex this process took. */
 export interface TakeoverMutex {
-	/** Whether this process still owns the mutex: checked just before a lock is moved or removed. */
+	/**
+	 * Whether this process still owns the mutex: checked just before a lock is moved or removed. An advisory lock is
+	 * owned until it is released; only a directory mutex can be lost.
+	 */
 	owned(): boolean;
 	/** Gives the mutex up, when this process still owns it. */
 	release(): void;
@@ -116,11 +185,64 @@ function removeStaleMutex(mutexPath: string): boolean {
 }
 
 /**
- * Takes the takeover mutex of the lock at `lockPath`: creates its directory and names this process as its owner.
- * Undefined while another process holds it. A mutex whose owner is proven dead is removed, as is one that names no
- * owner once it is {@link TAKEOVER_MUTEX_STALE_MS} old; a live owner keeps its mutex however long it holds it.
+ * Takes the takeover mutex of the lock at `lockPath` (#5193): the advisory lock of {@link takeoverLockPath}, waiting
+ * up to `waitMs` while another process holds it. Undefined while another process holds it, or when its file cannot be
+ * opened. The lock is held on an open file until released, and the kernel releases it when this process dies.
+ * Without the native lock, the directory mutex of {@link takeDirectoryMutex} is taken instead.
  */
-export function takeTakeoverMutex(lockPath: string): TakeoverMutex | undefined {
+export function takeTakeoverMutex(
+	lockPath: string,
+	waitMs: number = TAKEOVER_MUTEX_WAIT_MS,
+): TakeoverMutex | undefined {
+	const native = locks();
+	if (native === null) {
+		warnFallback();
+		return takeDirectoryMutex(lockPath);
+	}
+	let lock: { release(): void } | null;
+	try {
+		lock = native.tryAdvisoryLock(takeoverLockPath(lockPath), waitMs);
+	} catch {
+		return undefined;
+	}
+	if (lock === null) return undefined;
+	let held = true;
+	return {
+		owned: () => held,
+		release: () => {
+			if (!held) return;
+			held = false;
+			lock.release();
+		},
+	};
+}
+
+/**
+ * Puts `aside`, moved from `path` and found not to be the item judged, back at `path` only while nothing is there,
+ * never replacing anything (#5193): a file is linked back, a directory renamed back without replacing. True when it
+ * is back; otherwise it is left aside, as is a directory without the native rename.
+ */
+export function putBack(aside: string, path: string): boolean {
+	try {
+		if (statSync(aside).isDirectory()) {
+			const native = locks();
+			return native?.renameNoReplace(aside, path) === true;
+		}
+		linkSync(aside, path);
+		rmSync(aside, { force: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Takes the directory takeover mutex of the lock at `lockPath`, without the native advisory lock: creates its
+ * directory and names this process as its owner. Undefined while another process holds it. A mutex whose owner is
+ * proven dead is removed, as is one that names no owner once it is {@link TAKEOVER_MUTEX_STALE_MS} old; a live owner
+ * keeps its mutex however long it holds it.
+ */
+function takeDirectoryMutex(lockPath: string): TakeoverMutex | undefined {
 	const path = takeoverMutexPath(lockPath);
 	const owner: MutexOwner = {
 		host: hostname(),
