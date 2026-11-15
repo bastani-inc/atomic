@@ -507,6 +507,12 @@ export interface InputReceipt {
  */
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
+/**
+ * Sends SIGKILL to every running supervised command's whole process tree at once, for a host about to exit without
+ * closing its task owners (#5057). Their cleanup still completes as usual. On Windows, Job objects already end them.
+ */
+export declare function killSupervisedProcessTrees(): void
+
 /** A single match in the content. */
 export interface Match {
   /** 1-indexed line number. */

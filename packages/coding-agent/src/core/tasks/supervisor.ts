@@ -845,11 +845,25 @@ export function taskHostStateSizesForTesting(owner: OwnerLease) {
 	};
 }
 
+/** The native binding, once a supervisor has loaded it. */
+let nativeBinding: typeof native | undefined;
+
 function createNativeSupervisor(): native.TaskSupervisor {
 	// Keep loading separate from `new`: type-assertion erasure in the build
 	// must not move construction onto createModuleRequire instead of the class.
 	const binding = createModuleRequire(import.meta.url)("@bastani/atomic-natives") as typeof native;
+	nativeBinding = binding;
 	return new binding.TaskSupervisor();
+}
+
+/**
+ * Ends every supervised shell's whole process tree at once, for a host about to exit without closing its task owners,
+ * as a crash does (#5057). Best effort: it never throws, and does nothing before any supervisor exists.
+ */
+export function killSupervisedProcessTrees(): void {
+	try {
+		nativeBinding?.killSupervisedProcessTrees();
+	} catch {}
 }
 
 export class TaskSupervisor {

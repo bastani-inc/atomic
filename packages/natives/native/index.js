@@ -860,6 +860,7 @@ module.exports.grep = nativeBinding.grep
 module.exports.GrepOutputMode = nativeBinding.GrepOutputMode
 module.exports.hasMatch = nativeBinding.hasMatch
 module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
+module.exports.killSupervisedProcessTrees = nativeBinding.killSupervisedProcessTrees
 module.exports.OwnerCloseCause = nativeBinding.OwnerCloseCause
 module.exports.search = nativeBinding.search
 module.exports.TerminationCause = nativeBinding.TerminationCause

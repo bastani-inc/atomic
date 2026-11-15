@@ -1,4 +1,5 @@
 import { findExtensionStackMatches } from "../../core/crash-log.ts";
+import { killSupervisedProcessTrees } from "../../core/tasks/supervisor.ts";
 import { terminateInteractiveEngine } from "../interactive-engine/extension-ui-bridge.ts";
 import { isRpcRequestAcceptedFailure } from "../rpc/rpc-transport-error.ts";
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
@@ -133,6 +134,7 @@ InteractiveModeBase.prototype.emergencyTerminalExit = function (this: Interactiv
 	this.isShuttingDown = true;
 	this.unregisterSignalHandlers();
 	killTrackedDetachedChildren();
+	killSupervisedProcessTrees();
 	// The terminal is gone. Do not run normal shutdown because TUI and
 	// extension cleanup can write restore sequences and re-trigger EIO.
 	process.exit(129);
@@ -152,6 +154,7 @@ InteractiveModeBase.prototype.uncaughtCrash = function (this: InteractiveModeBas
 	try {
 		killTrackedDetachedChildren();
 	} catch {}
+	killSupervisedProcessTrees();
 	try {
 		this.ui.stop();
 	} catch {}

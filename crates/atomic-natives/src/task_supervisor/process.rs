@@ -11,7 +11,11 @@ use std::{
 };
 mod input;
 pub use input::*;
+#[cfg(unix)]
+mod guardian;
 mod resource;
+#[cfg(unix)]
+mod session;
 mod spool;
 #[cfg(windows)]
 mod windows;
@@ -496,7 +500,6 @@ impl Actor {
 					};
 					spawn
 						.arg(command.intent.command.process_text())
-						.process_group(0)
 						.stdin(Stdio::piped())
 						.stdout(Stdio::piped())
 						.stderr(Stdio::piped());
@@ -518,6 +521,18 @@ impl Actor {
 					}
 					if let Some(env) = &command.intent.env {
 						spawn.envs(env.iter().map(|(key, value)| (key, value.process_text())));
+					}
+					// A session of its own, whose ID is the leader's PID: cleanup ends every process left in it,
+					// including descendants that moved to another process group (#5057). Host death is the
+					// guardian's (see `guardian`), not PR_SET_PDEATHSIG's: that fires when the spawning thread
+					// ends, which would kill a leader whose failed cleanup must keep it owned and reapable.
+					unsafe {
+						spawn.pre_exec(|| {
+							if libc::setsid() < 0 {
+								return Err(io::Error::last_os_error());
+							}
+							Ok(())
+						});
 					}
 					let mut child = spawn.spawn().map_err(explain_spawn_error)?;
 					let stdin = child.stdin.take().unwrap();
@@ -553,6 +568,8 @@ impl Actor {
 		};
 		let pid = child.id() as libc::pid_t;
 		command.process_group.store(pid, Ordering::Release);
+		// Pipe and PTY commands both lead a session of their own; killed if the host dies first (#5057).
+		guardian::watch(pid);
 		// Opened while the leader is unreaped, so its PID still names this command's group.
 		let mut group = ProcessGroup::new(pid);
 		#[cfg(all(test, target_os = "linux"))]
@@ -709,6 +726,7 @@ impl Actor {
 				if gone && ((stdout_eof && stderr_eof) || setup_failure.is_some()) {
 					// Confirmed gone: an earlier refused TERM left nothing behind to clean up.
 					cleanup_failure = None;
+					guardian::unwatch(pid);
 					break;
 				}
 				if !killed && !gone && stop.elapsed() >= command.termination_grace() {
@@ -855,8 +873,14 @@ struct FailedProcess {
 #[cfg(unix)]
 impl FailedProcess {
 	fn reaped(&mut self) -> bool {
-		matches!(self.child.try_wait(), Ok(Some(_)))
-			&& process_group_gone(self.child.id() as libc::pid_t).unwrap_or(false)
+		let pid = self.child.id() as libc::pid_t;
+		let reaped = matches!(self.child.try_wait(), Ok(Some(_)))
+			&& process_group_gone(pid).unwrap_or(false)
+			&& session::signal_outside_group(pid, 0).is_ok_and(|members| members == 0);
+		if reaped {
+			guardian::unwatch(pid);
+		}
+		reaped
 	}
 }
 // A failed resource outlives an environment, without an indefinitely blocked
@@ -866,6 +890,13 @@ static FAILED_PROCESSES: Mutex<Vec<FailedProcess>> = Mutex::new(Vec::new());
 #[cfg(unix)]
 pub(super) fn poll_failed_processes() {
 	FAILED_PROCESSES.lock().unwrap().retain_mut(|resource| !resource.reaped());
+}
+/// Sends SIGKILL to every running supervised command's whole process tree at once, for a host about to exit without
+/// closing its task owners (#5057). Their cleanup still completes as usual. On Windows, Job objects already end them.
+#[napi]
+pub fn kill_supervised_process_trees() {
+	#[cfg(unix)]
+	guardian::kill_watched();
 }
 #[cfg(windows)]
 pub(super) fn poll_failed_processes() {
@@ -932,8 +963,16 @@ impl ProcessGroup {
 			pidfd: group_pidfd(pid),
 		}
 	}
-	/// Signals every member, with kill(2)'s result for a group: Ok if any member accepted it.
+	/// Signals every member of the group and every other process of the command's session (#5057), with kill(2)'s
+	/// result for a group: Ok if any member accepted it.
 	fn send(&self, signal: libc::c_int) -> io::Result<()> {
+		let outside = session::signal_outside_group(self.pid, signal)?;
+		match self.send_group(signal) {
+			Err(error) if error.raw_os_error() == Some(libc::ESRCH) && outside > 0 => Ok(()),
+			result => result,
+		}
+	}
+	fn send_group(&self, signal: libc::c_int) -> io::Result<()> {
 		#[cfg(target_os = "linux")]
 		if let Some(pidfd) = &self.pidfd {
 			return signal_group_pidfd(pidfd, signal);
@@ -944,7 +983,7 @@ impl ProcessGroup {
 			Err(io::Error::last_os_error())
 		}
 	}
-	/// True once no process is left in the group, zombies included.
+	/// True once no process is left in the group or the rest of the session, zombies included.
 	fn gone(&self) -> io::Result<bool> {
 		match self.send(0) {
 			Ok(()) => Ok(false),
