@@ -444,6 +444,10 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    this.pendingQuestions.failToConnectedAskerWhen((question, returnAddress) => {
+      const asker = this.sessions.get(question.senderSessionId);
+      return asker !== undefined && (returnAddress === "" || asker.registrationReturnAddress === returnAddress);
+    });
     // #4829: a released subagent's asks outlive this broker too; the next one keeps them for the subagent's return.
     this.releasedAskerReplies.persistWith({
       kept: (question) => this.pendingQuestions.writeLive(question),
