@@ -213,8 +213,12 @@ test("a refusal summary keeps a parallel tool call with all its results in the t
 	const path = session(turns);
 	const { preparation, result, contexts } = await compactAfterRefusal(path);
 	const callEntry = path.at(-5)?.id;
-	assert.equal(preparation.firstKeptEntryId, path.at(-2)?.id, "the planned tail starts at a tool result");
-	assert.equal(result.summaryFirstKeptEntryId, callEntry, "the cut moves back to the assistant that owns it");
+	assert.equal(
+		preparation.firstKeptEntryId,
+		callEntry,
+		"the planned tail starts at the assistant that made the calls",
+	);
+	assert.equal(result.summaryFirstKeptEntryId, callEntry, "the summary keeps the planned cut");
 	const summarised = promptText(contexts[1]);
 	assert.ok(summarised.includes("t3 detail line 19"));
 	assert.ok(!summarised.includes("reading both files"), "the moved-back message is not summarised");
