@@ -1197,6 +1197,7 @@ export { pickWhimsicalWorkingMessage } from "./modes/interactive/whimsical-messa
 export { createChildProcessEnvironment, spawnProcess } from "./utils/child-process.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
+export { redactCredentialShapes } from "./utils/credential-redaction.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export {
 	isSafeFsWatchPathError,
