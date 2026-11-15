@@ -9,7 +9,7 @@
  */
 
 import { getAgentDir } from "@bastani/atomic";
-import { type Api, type Context, type Model, registerApiProvider, streamSimple } from "@bastani/pi-ai/compat";
+import { type Api, type Context, type Model, registerApiProvider, streamSimple } from "@bastani/atomic-ai/compat";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { MODELS, streamGitLabDuo } from "./index.ts";

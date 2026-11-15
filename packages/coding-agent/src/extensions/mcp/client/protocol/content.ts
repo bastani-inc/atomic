@@ -73,7 +73,7 @@ export interface CallToolResult {
 
 /**
  * Tool result content in the shape LLM APIs accept: text and base64 images. Matches the
- * `TextContent` and `ImageContent` types of `@earendil-works/pi-ai`.
+ * `TextContent` and `ImageContent` types of `@bastani/atomic-ai`.
  */
 export type LlmContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 

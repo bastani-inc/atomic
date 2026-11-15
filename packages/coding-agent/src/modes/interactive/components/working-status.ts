@@ -1,4 +1,4 @@
-import { type Component, Text } from "@earendil-works/pi-tui";
+import { type Component, Text } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import {
 	type AtomicWorkingPalette,

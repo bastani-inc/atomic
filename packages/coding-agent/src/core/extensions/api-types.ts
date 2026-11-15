@@ -1,7 +1,7 @@
-import type { Provider } from "@bastani/pi-ai";
-import type { Api, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { KeyId } from "@earendil-works/pi-tui";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Provider } from "@bastani/atomic-ai";
+import type { Api, ImageContent, Model, TextContent } from "@bastani/atomic-ai/compat";
+import type { KeyId } from "@bastani/atomic-tui";
 import type { TSchema } from "typebox";
 import type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
 import type { EventBus } from "../event-bus.js";
@@ -233,7 +233,7 @@ export interface ExtensionAPI {
 	getFlag(name: string): boolean | string | undefined;
 
 	getWorkflowHostModules(): Promise<
-		Record<"@bastani/atomic" | "@bastani/pi-ai" | "@bastani/pi-ai/providers/all", object>
+		Record<"@bastani/atomic" | "@bastani/atomic-ai" | "@bastani/atomic-ai/providers/all", object>
 	>;
 
 	/** Return package-provided workflow files discovered for this session. */

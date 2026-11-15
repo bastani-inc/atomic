@@ -54,8 +54,8 @@ describe("standalone workflow package typing", () => {
 							types: ["bun"],
 							paths: {
 								"@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
-								"@earendil-works/pi-tui": [
-									join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts"),
+								"@bastani/atomic-tui": [
+									join(repoRoot, "node_modules", "@bastani", "atomic-tui", "dist", "index.d.ts"),
 								],
 							},
 						},
@@ -85,7 +85,7 @@ import type {
   OpenClaudeDesignWorkflowOutputs,
 } from "@bastani/workflows/builtin";
 import type { ExtensionUIContext, KeybindingsManager, Theme } from "@bastani/atomic";
-import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, OverlayOptions, TUI } from "@bastani/atomic-tui";
 import type {
   AgentSessionAdapter,
   StageAdapters,

@@ -1,4 +1,4 @@
-import type { Api, AuthCheck, CredentialInfo, Model } from "@bastani/pi-ai";
+import type { Api, AuthCheck, CredentialInfo, Model } from "@bastani/atomic-ai";
 import type { AuthStatus } from "./provider-composer.ts";
 
 export interface ModelRuntimeSnapshot {

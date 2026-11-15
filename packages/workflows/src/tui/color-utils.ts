@@ -2,7 +2,7 @@
  * Color interpolation utilities.
  * cross-ref: spec §5.4.1, v0.x packages/atomic-sdk/src/components/color-utils.ts
  */
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth } from "@bastani/atomic-tui";
 import { BoundedTextCache } from "./text-helpers.js";
 
 const filledBackgroundLines = new BoundedTextCache(1024);

@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import assert from "node:assert/strict";
-import type { EditorTheme } from "@earendil-works/pi-tui";
+import type { EditorTheme } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import {
 	type AgentSession,

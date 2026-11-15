@@ -44,14 +44,14 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-tui": "^1.5.2",
+    "@bastani/atomic-tui": "*",
     "typebox": "*"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
       "optional": true
     },
-    "@earendil-works/pi-tui": {
+    "@bastani/atomic-tui": {
       "optional": true
     }
   }

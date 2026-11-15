@@ -1,5 +1,5 @@
-import { type AnyModel, type ClassifierApi, type ClassifierModel, isModelType } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import { type AnyModel, type ClassifierApi, type ClassifierModel, isModelType } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 
 export type CompactionModelSelection =
 	| { kind: "chat"; fullId: string; model: Model<Api> }

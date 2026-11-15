@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import type { PiExecuteContext } from "../../packages/workflows/src/extension/public-types.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";

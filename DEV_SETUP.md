@@ -24,10 +24,13 @@ npm run build
 ```
 
 `npm run build` is a required one-time step (and again after pulling changes to
-`packages/ai`, `packages/coding-agent`, `crates/`, or `packages/natives/`). It
-builds the vendored `@bastani/pi-ai` package (including a models.dev catalog
-refresh), aliases `node_modules/@earendil-works/pi-ai` onto that workspace copy,
-builds the native N-API module, and builds `@bastani/atomic` with its bundled
+`packages/ai`, `packages/tui`, `packages/agent`, `packages/codemode`,
+`packages/schema`, `packages/telemetry`, `packages/coding-agent`, `crates/`, or
+`packages/natives/`). It compiles Atomic's forks of pi's packages in dependency
+order (`@bastani/atomic-schema`, `@bastani/atomic-telemetry`, `@bastani/atomic-ai`
+including a models.dev catalog refresh, then `@bastani/atomic-tui`,
+`@bastani/atomic-agent-core` and `@bastani/atomic-codemode`), builds the native
+N-API module, and builds `@bastani/atomic` with its bundled
 package assets. The build is incremental: a step whose inputs (sources, lockfile,
 toolchain version and relevant environment) and outputs are unchanged since its
 last successful run is skipped, so a rebuild with nothing changed takes well under
@@ -36,10 +39,9 @@ changes or the fetched snapshot is older than 24 hours; run
 `npm run build -- --force` (or set `ATOMIC_BUILD_FORCE=1`) for a full rebuild
 with a fresh catalog. CI (`CI` set) always builds in full. Step stamps and
 TypeScript build info live in `node_modules/.cache/atomic-build`. `npm ci --ignore-scripts`
-deliberately skips lifecycle scripts (including the `prepare` hook that would
-run the alias), and the workspace packages have no install hooks anyway — only
-published releases ship prebuilt artifacts. Without the pi-ai build, running the
-CLI from source fails with `Cannot find module '@bastani/pi-ai'`.
+deliberately skips lifecycle scripts, and the workspace packages have no install
+hooks anyway — only published releases ship prebuilt artifacts. Without the
+build, running the CLI from source fails with `Cannot find module '@bastani/atomic-ai'`.
 
 **`vitest` now builds it for you when it is missing.** The `globalSetup` in
 `test/global-setup-natives.ts` checks for `packages/natives/native/*.node`
@@ -183,7 +185,7 @@ Run these from the workspace root:
 | Command                    | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
 | `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
-| `npm run build`             | Refresh and compile `@bastani/pi-ai`, alias `@earendil-works/pi-ai` onto it, build the native N-API module, and build `@bastani/atomic` with bundled assets (requires cargo and network); skips unchanged steps, `-- --force` rebuilds everything |
+| `npm run build`             | Compile the forked `@bastani/atomic-*` pi packages (refreshing `@bastani/atomic-ai`'s model catalog), build the native N-API module, and build `@bastani/atomic` with bundled assets (requires cargo and network); skips unchanged steps, `-- --force` rebuilds everything |
 | `npm run build --workspace=@bastani/atomic-natives` | Build only the native N-API module              |
 | `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
 | `npm run typecheck`         | Type-check the workspace                                         |

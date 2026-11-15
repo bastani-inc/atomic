@@ -1,4 +1,4 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { deleteRange, type KeybindingsLike, matchesAction } from "./keybindings-adapter.js";
 import type { PromptCardState } from "./prompt-card-state.js";
 import { matchesKey } from "./text-helpers.js";

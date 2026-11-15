@@ -1,4 +1,4 @@
-import { type Terminal, TuiMainScreen, type TuiStopOptions } from "@earendil-works/pi-tui";
+import { type Terminal, TuiMainScreen, type TuiStopOptions } from "@bastani/atomic-tui";
 import { getAgentDir } from "../../config.js";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 

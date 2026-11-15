@@ -1,4 +1,4 @@
-import type { ScrollView } from "@earendil-works/pi-tui";
+import type { ScrollView } from "@bastani/atomic-tui";
 import { expect, test } from "vitest";
 import {
 	createProductionFullscreenContext,

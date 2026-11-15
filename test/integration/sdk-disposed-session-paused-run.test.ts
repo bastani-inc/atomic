@@ -68,7 +68,7 @@ afterEach(async () => {
  */
 function holdingModelProviderSource(files: { request: string; held: string }): string {
 	return `import { existsSync, writeFileSync } from "node:fs";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 export default function (pi) {
   pi.registerProvider("dispose-paused-fixture", {
     api: "dispose-paused-fixture",

@@ -243,8 +243,14 @@ To share extensions via npm or git as Atomic packages, see [Atomic packages](/pa
 |---------|---------|
 | `@bastani/atomic` | Extension types (`ExtensionAPI`, `ExtensionContext`, events) |
 | `typebox` | Schema definitions for tool parameters |
-| `@bastani/pi-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
-| `@earendil-works/pi-tui` | TUI components for custom rendering |
+| `@bastani/atomic-ai` | AI utilities (`StringEnum` for Google-compatible enums) |
+| `@bastani/atomic-tui` | TUI components for custom rendering |
+| `@bastani/atomic-agent-core` | Agent loop types and helpers |
+| `@bastani/atomic-codemode` | Codemode sandbox and declaration helpers |
+| `@bastani/atomic-schema` | JSON Schema builders and validation |
+| `@bastani/atomic-telemetry` | Telemetry contracts |
+
+Atomic maintains these packages as its own forks of pi's packages. Extensions written for pi keep working: the old names `@earendil-works/pi-ai`, `pi-tui`, `pi-agent-core`, `pi-codemode`, `pi-schema` and `pi-telemetry`, their `@mariozechner/pi-*` equivalents, and `@bastani/pi-ai` resolve to the same modules, including their subpaths. New extensions should import the `@bastani/atomic-*` names.
 
 Registry dependencies work too. Add a `package.json` next to your extension (or in a parent directory), then install dependencies with Bun:
 
@@ -261,7 +267,7 @@ For distributed Atomic packages installed with `atomic install` (npm or git), ru
 A tool's `parameters` can be a TypeBox schema or any plain JSON Schema object. Atomic validates the model's arguments against it, after coercing loosely typed values (for example a numeric string to a number, `"true"` to `true`, `null` in an optional property dropped):
 
 - **TypeBox schemas** are converted and checked by TypeBox, so TypeBox features outside JSON Schema, such as `Type.Refine()` and formats registered with `Format.Set()`, apply. Validation errors use TypeBox's messages.
-- **Plain JSON Schema** (for example an MCP server's tool schema, or a schema from `@earendil-works/pi-schema`'s builders) is coerced and checked by `@earendil-works/pi-schema`. A single value is also wrapped into a one-item array, the `url` and `json-pointer-uri-fragment` formats are checked, and a `$ref` that names nothing rejects only the argument at its place instead of every call. Validation errors use pi-schema's messages, such as `- path: missing` or `- limit: expected number, got string`.
+- **Plain JSON Schema** (for example an MCP server's tool schema, or a schema from `@bastani/atomic-schema`'s builders) is coerced and checked by `@bastani/atomic-schema`. A single value is also wrapped into a one-item array, the `url` and `json-pointer-uri-fragment` formats are checked, and a `$ref` that names nothing rejects only the argument at its place instead of every call. Validation errors use pi-schema's messages, such as `- path: missing` or `- limit: expected number, got string`.
 
 Node.js built-ins (`node:fs`, `node:path`, etc.) are also available.
 

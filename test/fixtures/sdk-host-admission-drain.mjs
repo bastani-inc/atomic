@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick } from "node:timers/promises";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@bastani/atomic";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 
 // #3105: bounded observations of actual built preflight/reload drain, never timeout-as-success.
 assert.equal(process.versions.bun, undefined);

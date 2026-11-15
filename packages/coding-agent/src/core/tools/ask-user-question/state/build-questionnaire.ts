@@ -1,4 +1,4 @@
-import { Input } from "@earendil-works/pi-tui";
+import { Input } from "@bastani/atomic-tui";
 import { getMarkdownTheme, type Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionData } from "../tool/types.js";
 import {

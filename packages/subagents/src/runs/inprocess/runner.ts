@@ -29,6 +29,13 @@ import {
 	sliceHead,
 } from "@bastani/atomic";
 import {
+	type Api,
+	type AssistantMessage,
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Model,
+} from "@bastani/atomic-ai/compat";
+import {
 	type ChildIdentity,
 	type NativeAdmissionResult,
 	type AgentStatus as NativeAgentStatus,
@@ -36,13 +43,6 @@ import {
 	type TerminationCause as NativeTerminationCause,
 	SubagentControl,
 } from "@bastani/atomic-natives";
-import {
-	type Api,
-	type AssistantMessage,
-	clampThinkingLevel,
-	getSupportedThinkingLevels,
-	type Model,
-} from "@bastani/pi-ai/compat";
 import type {
 	ChildCommandTaskOwner,
 	ChildTaskCompletionRoute,

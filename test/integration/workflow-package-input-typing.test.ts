@@ -41,8 +41,8 @@ describe("standalone workflow package input typing", () => {
 							types: ["bun"],
 							paths: {
 								"@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
-								"@earendil-works/pi-tui": [
-									join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts"),
+								"@bastani/atomic-tui": [
+									join(repoRoot, "node_modules", "@bastani", "atomic-tui", "dist", "index.d.ts"),
 								],
 							},
 						},

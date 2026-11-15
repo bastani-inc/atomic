@@ -1,4 +1,4 @@
-import type { Context } from "@bastani/pi-ai/compat";
+import type { Context } from "@bastani/atomic-ai/compat";
 import { createFauxStreamFn } from "./test-harness.js";
 
 type Request = { messages: Array<{ id: number; lines: string[] }> };

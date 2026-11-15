@@ -1,4 +1,4 @@
-import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
+import type { CodemodeJsonSchema } from "@bastani/atomic-codemode";
 
 /**
  * The subschema a local `$ref` (`#`, `#/$defs/Item`, `#/anyOf/0`) names in `root`, or undefined for remote references

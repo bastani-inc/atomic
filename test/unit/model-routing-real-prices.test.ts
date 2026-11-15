@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import type { Api, Model } from "@bastani/pi-ai";
-import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
+import type { Api, Model } from "@bastani/atomic-ai";
+import { getBuiltinModels } from "@bastani/atomic-ai/providers/all";
 import { test } from "vitest";
 import { routingCandidate } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { deriveFastModelVariants } from "../../packages/coding-agent/src/core/fast-model-variants.js";

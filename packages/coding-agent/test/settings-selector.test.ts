@@ -3,8 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import type { Container } from "@earendil-works/pi-tui";
-import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@earendil-works/pi-tui";
+import type { Container } from "@bastani/atomic-tui";
+import { resetCapabilitiesCache, setCapabilities, setKeybindings } from "@bastani/atomic-tui";
 import { beforeAll, expect, test, vi } from "vitest";
 import { isDecisionModelUnavailableError } from "../src/core/decision/errors.js";
 import { createExtensionContext, type ExtensionContextSource } from "../src/core/extensions/runner-context.js";

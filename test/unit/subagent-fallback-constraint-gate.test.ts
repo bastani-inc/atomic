@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { getModel, type Model } from "@bastani/pi-ai/compat";
+import { getModel, type Model } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { modelConstraintsFallbackGate } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 

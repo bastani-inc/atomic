@@ -94,6 +94,7 @@ export const PROVIDER_CREDENTIAL_ENV_VARS: readonly string[] = [
 	// packages/ai/src/auth/oauth: Kimi OAuth hosts and the OAuth callback host.
 	"KIMI_CODE_OAUTH_HOST",
 	"KIMI_OAUTH_HOST",
+	"ATOMIC_OAUTH_CALLBACK_HOST",
 	"PI_OAUTH_CALLBACK_HOST",
 	// packages/coding-agent/src/extensions/llama: llama.cpp server and its Hugging Face token.
 	"LLAMA_BASE_URL",

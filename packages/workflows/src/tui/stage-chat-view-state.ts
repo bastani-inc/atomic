@@ -4,7 +4,7 @@ import {
 	classifyChatCommand,
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
-import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
+import { Editor, type EditorComponent } from "@bastani/atomic-tui";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";
@@ -302,6 +302,8 @@ function createChatHost(ctx: StageChatViewContext, opts: StageChatViewOpts): Cha
 				const handle = liveHandle(ctx);
 				if (!handle) throw new Error("no live handle on this stage");
 				await handle.ensureAttached();
+				// The stage's session can close while it attaches; a command never runs on a closed one (#5168).
+				if (liveHandle(ctx) !== handle) throw new Error("no live handle on this stage");
 				const agentSession = handle.agentSession;
 				// A stage on a local worker runs the command on its session there.
 				if (!agentSession && handle.executeBash !== undefined)

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { TuiInputListener } from "@earendil-works/pi-tui";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
+import type { TuiInputListener } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";

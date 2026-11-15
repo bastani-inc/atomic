@@ -7,7 +7,7 @@ import {
 	type OAuthAuth,
 	type Provider,
 	type RefreshModelsContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { describe, expect, it, vi } from "vitest";
 import { ModelConfig } from "../src/core/model-config.ts";
 import { composeModelProvider, type ProviderConfigInput } from "../src/core/provider-composer.ts";

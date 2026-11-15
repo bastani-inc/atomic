@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it, vi } from "vitest";
 import { getExtensionTranspileCacheDir } from "../src/config.js";
 import type { AgentSession } from "../src/core/agent-session.js";

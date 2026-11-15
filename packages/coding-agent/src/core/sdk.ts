@@ -1,14 +1,14 @@
 import { basename, dirname, join, relative, sep } from "node:path";
-import { getOpenCodeSessionHeaders } from "@bastani/pi-ai";
+import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@bastani/atomic-agent-core";
+import { getOpenCodeSessionHeaders } from "@bastani/atomic-ai";
 import {
 	clampThinkingLevel,
 	type Message,
 	type ProviderHeaders,
 	streamSimple,
 	type Usage,
-} from "@bastani/pi-ai/compat";
-import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
-import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
+import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.js";
@@ -142,7 +142,7 @@ function removeUnownedModelHeaders(
  * const { session } = await createAgentSession();
  *
  * // With explicit model
- * import { getModel } from '@bastani/pi-ai/compat';
+ * import { getModel } from '@bastani/atomic-ai/compat';
  * const { session } = await createAgentSession({
  *   model: getModel('anthropic', 'claude-opus-4-5'),
  *   thinkingLevel: 'high',
@@ -687,7 +687,7 @@ async function constructAgentSession(
 					throw new Error(`No API key found for "${model.provider}"`);
 				}
 				const env = auth.env || streamOptions?.env ? { ...auth.env, ...streamOptions?.env } : undefined;
-				const cacheRetentionEnv = getProviderEnvValue("PI_CACHE_RETENTION", env);
+				const cacheRetentionEnv = getAtomicEnvValue("CACHE_RETENTION", env);
 				// Shared by main chat, workflow stages and subagents; provider capability gates still apply.
 				const cacheRetention =
 					streamOptions?.cacheRetention ??

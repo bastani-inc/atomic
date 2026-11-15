@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
 	BashToolDetails,
@@ -93,8 +93,8 @@ interface ToolResultEventBase {
 	type: "tool_result";
 	toolCallId: string;
 	parentToolCallId?: string;
-	structuredContent?: import("@bastani/pi-ai").JsonValue;
-	usage?: import("@bastani/pi-ai").Usage;
+	structuredContent?: import("@bastani/atomic-ai").JsonValue;
+	usage?: import("@bastani/atomic-ai").Usage;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	isError: boolean;

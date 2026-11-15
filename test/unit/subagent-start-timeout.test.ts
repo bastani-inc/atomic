@@ -10,7 +10,12 @@ import { createHook } from "node:async_hooks";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AssistantMessage, createAssistantMessageEventStream, getModel, type Model } from "@bastani/pi-ai/compat";
+import {
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	getModel,
+	type Model,
+} from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";

@@ -1,4 +1,4 @@
-import { compositeTuiLine, visibleWidth } from "@earendil-works/pi-tui";
+import { compositeTuiLine, visibleWidth } from "@bastani/atomic-tui";
 
 const SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
 const KITTY_IMAGE_PREFIX = "\x1b_G";

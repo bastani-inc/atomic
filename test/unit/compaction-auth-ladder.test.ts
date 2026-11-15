@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { runVerbatimCompaction } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";
 import type { PlannerAuth } from "../../packages/coding-agent/src/core/compaction/compaction-types.js";

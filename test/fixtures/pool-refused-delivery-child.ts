@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { workflow } from "@bastani/atomic/workflows";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";
 import { poolStageOptions } from "./pool-stage-options.js";

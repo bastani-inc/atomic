@@ -5,7 +5,7 @@ import {
 	type Context,
 	createAssistantMessageEventStream,
 	type Model,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { vi } from "vitest";
 import { chatRouter } from "./model-routing.js";
 import { decisionMessage } from "./structured-output.js";

@@ -1,4 +1,4 @@
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 
 /** Warnings a response carries because a requested Fast or Ultrafast tier did not apply. */
 export function serviceTierWarnings(message: AssistantMessage): string[] {

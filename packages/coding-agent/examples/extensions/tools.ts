@@ -11,7 +11,7 @@
 
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@bastani/atomic";
 import { getSettingsListTheme } from "@bastani/atomic";
-import { Container, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
+import { Container, type SettingItem, SettingsList } from "@bastani/atomic-tui";
 
 // State persisted to session
 interface ToolsState {

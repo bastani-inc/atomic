@@ -2,7 +2,7 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@bastani/atomic";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 
 export default function (pi: ExtensionAPI): void {
 	pi.on("tool_result", (event, ctx) => {

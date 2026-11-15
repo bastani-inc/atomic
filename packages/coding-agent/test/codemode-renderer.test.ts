@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { Component, TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import type { ToolRenderContext } from "../src/core/extensions/types.js";
 import { codemodeRenderers } from "../src/extensions/codemode/renderer.js";

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { test, vi } from "vitest";
 import * as builtinPackages from "../src/core/builtin-packages.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";

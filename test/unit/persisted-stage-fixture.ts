@@ -1,5 +1,5 @@
 import type { AgentSession, SessionManager, SessionStore } from "@bastani/atomic";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
 import type { StageAdapters, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { mockSession } from "./executor-shared.js";

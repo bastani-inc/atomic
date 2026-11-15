@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import { readFile as fsReadFile, stat as fsStat } from "node:fs/promises";
 import { join, relative, resolve as resolvePath, sep } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { Text } from "@bastani/atomic-tui";
 import { type Static, Type } from "typebox";
 import { isPathInside } from "../../utils/path-inside.ts";
 import { experimentalToolSamplingProperty } from "../experimental.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
+import { literalPathLike, normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
 import { createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { resolveToCwd } from "./path-utils.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
@@ -76,6 +76,12 @@ export type SearchToolOptions = GrepToolOptions & {
 	contextBefore?: number;
 	contextAfter?: number;
 };
+/** An existing path is used exactly, so `app/[id]/page.tsx` is that file, not the pattern `app/[id]` (#5177). */
+function splitSearchPath(value: string, cwd: string): ReturnType<typeof splitPathLikeGlob> {
+	return existsSync(resolveToCwd(normalizePathLikeInput(value), cwd))
+		? literalPathLike(value)
+		: splitPathLikeGlob(value);
+}
 function delimiterInExistingSearchGlobRoot(value: string, cwd: string): boolean {
 	const selector = splitLineRangeSelector(value);
 	const parsed = splitPathLikeGlob(selector.path);
@@ -102,7 +108,7 @@ function searchPathResolvable(value: string, cwd: string): boolean {
 	return (
 		!!sqlite ||
 		isInternalUrl(selector.path) ||
-		existsSync(resolveToCwd(splitPathLikeGlob(selector.path).basePath, cwd))
+		existsSync(resolveToCwd(splitSearchPath(selector.path, cwd).basePath, cwd))
 	);
 }
 
@@ -225,7 +231,7 @@ function normalizeSearchTargets(pathsValue: string | string[] | undefined, cwd: 
 		if (selector.path.startsWith("local://")) {
 			const sourcePath = resolveInternalSelector(selector.path, cwd);
 			if (sourcePath) {
-				const parsed = splitPathLikeGlob(sourcePath);
+				const parsed = splitSearchPath(sourcePath, cwd);
 				return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
 			}
 		}
@@ -233,7 +239,7 @@ function normalizeSearchTargets(pathsValue: string | string[] | undefined, cwd: 
 			return { path: selector.path, lineRanges: selector.lineRanges, internal: selector.path };
 		if (isResourceSelector(selector.path))
 			throw new Error(`Search resource selectors are not supported by this filesystem backend: ${searchPath}`);
-		const parsed = splitPathLikeGlob(selector.path);
+		const parsed = splitSearchPath(selector.path, cwd);
 		return { path: parsed.basePath, glob: parsed.glob, lineRanges: selector.lineRanges };
 	});
 }

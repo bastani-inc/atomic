@@ -4,7 +4,7 @@
  * moved past anyway is dropped instead of failing the host.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { withDebugLog } from "../../../test/helpers/debug-mode.js";
 import type { ExtensionFactory } from "../src/core/extensions/index.js";

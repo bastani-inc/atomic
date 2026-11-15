@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { afterEach, describe, it } from "vitest";
 import { createHarness, type Harness } from "../harness.js";

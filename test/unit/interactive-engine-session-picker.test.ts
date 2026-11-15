@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type {
 	ExtensionUIContext,

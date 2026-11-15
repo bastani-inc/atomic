@@ -1,4 +1,4 @@
-import type { RgbColor, TerminalColors, TUI } from "@earendil-works/pi-tui";
+import type { RgbColor, TerminalColors, TUI } from "@bastani/atomic-tui";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { SYSTEM_THEME_NAME } from "./system-theme.js";
 import {

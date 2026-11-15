@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@bastani/atomic";
-import { type JsonObject, validateToolArguments } from "@bastani/pi-ai";
+import { type JsonObject, validateToolArguments } from "@bastani/atomic-ai";
 import { Value } from "typebox/value";
 import { test, vi } from "vitest";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/session/errors.js";

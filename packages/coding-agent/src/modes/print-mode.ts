@@ -6,7 +6,7 @@
  * - `pi --mode json "prompt"` - JSON event stream
  */
 
-import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, ImageContent, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import type { AgentSessionEvent } from "../core/agent-session.js";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
 import type { ExtensionError } from "../core/extensions/index.js";

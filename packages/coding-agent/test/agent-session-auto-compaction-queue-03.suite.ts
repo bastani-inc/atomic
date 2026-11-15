@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AssistantMessage, getModel } from "@bastani/pi-ai/compat";
-import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage } from "@bastani/atomic-agent-core";
+import { type AssistantMessage, getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import {

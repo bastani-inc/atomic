@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Message } from "@bastani/pi-ai/compat";
+import type { Message } from "@bastani/atomic-ai/compat";
 import { describe, test } from "vitest";
 import { getFinalOutput } from "../../packages/subagents/src/shared/utils.js";
 

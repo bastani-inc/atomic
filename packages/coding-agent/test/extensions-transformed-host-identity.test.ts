@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { expect, it } from "vitest";
 import { bunExecutable, moduleDir, spawnSyncCollect } from "../../../test/helpers/runtime.js";
@@ -20,7 +20,7 @@ it("first-load transformed extensions share the live host exports", async () => 
 	fs.writeFileSync(
 		entry,
 		`import { SessionManager } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 enum Mode { First }
 export default function (pi) {
@@ -55,7 +55,7 @@ it(
 		fs.writeFileSync(
 			entry,
 			`import { SessionManager } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { value } from "./helper.js";
 export default function (pi) {

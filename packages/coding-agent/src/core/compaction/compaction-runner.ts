@@ -1,3 +1,4 @@
+import type { StreamFn, ThinkingLevel } from "@bastani/atomic-agent-core";
 import type {
 	ClassifierApi,
 	ClassifierContext,
@@ -6,9 +7,8 @@ import type {
 	ClassifierResult,
 	RetryCallbacks,
 	RetryPolicy,
-} from "@bastani/pi-ai";
-import type { Api, Model, Usage } from "@bastani/pi-ai/compat";
-import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai";
+import type { Api, Model, Usage } from "@bastani/atomic-ai/compat";
 import type { SessionEntry } from "../session-manager-types.ts";
 import { planClassifierRanges } from "./classifier-compaction.js";
 import {

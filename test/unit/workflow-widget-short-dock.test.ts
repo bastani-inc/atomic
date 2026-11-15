@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type KeyId, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { type KeyId, matchesKey, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { CustomEditor } from "../../packages/coding-agent/src/modes/interactive/components/custom-editor.js";

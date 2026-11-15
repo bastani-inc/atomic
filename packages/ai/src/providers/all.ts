@@ -38,7 +38,6 @@ import { qwenTokenPlanProvider } from "./qwen-token-plan.ts";
 import { qwenTokenPlanCnProvider } from "./qwen-token-plan-cn.ts";
 import { qwenTokenPlanIndividualProvider } from "./qwen-token-plan-individual.ts";
 import { qwenTokenPlanIndividualCnProvider } from "./qwen-token-plan-individual-cn.ts";
-import { radiusProvider } from "./radius.ts";
 import { togetherProvider } from "./together.ts";
 import { typesafeProvider } from "./typesafe.ts";
 import { vercelAIGatewayProvider } from "./vercel-ai-gateway.ts";
@@ -50,11 +49,9 @@ import { xiaomiTokenPlanSgpProvider } from "./xiaomi-token-plan-sgp.ts";
 import { zaiProvider } from "./zai.ts";
 import { zaiCodingCnProvider } from "./zai-coding-cn.ts";
 
-export { radiusProvider };
 
 /** Providers present in the generated catalog. `KnownProvider` additionally
- * includes purely dynamic providers (e.g. "radius") that have no static
- * catalog entry. */
+ * includes purely dynamic providers that have no static catalog entry. */
 type BuiltinCatalog = typeof MODELS & { "azure-openai-responses": (typeof MODELS)["azure"] };
 type BuiltinImageCatalog = typeof IMAGE_MODELS & { "azure-openai-responses": (typeof IMAGE_MODELS)["azure"] };
 type BuiltinClassifierCatalog = typeof CLASSIFIER_MODELS & {
@@ -181,7 +178,6 @@ export function builtinProviders(): Provider[] {
 		qwenTokenPlanCnProvider(),
 		qwenTokenPlanIndividualProvider(),
 		qwenTokenPlanIndividualCnProvider(),
-		radiusProvider(),
 		togetherProvider(),
 		typesafeProvider(),
 		vercelAIGatewayProvider(),

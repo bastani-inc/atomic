@@ -78,35 +78,42 @@ async function writePackageJson(path: string, packageJson: PackageJson): Promise
 	await writeFileEnsuringDir(path, `${JSON.stringify(packageJson, null, 2)}\n`);
 }
 
+/** Workspaces the shrinkwrap generator reads: the CLI, the native root and Atomic's forked pi packages. */
+const stampedWorkspaces = [
+	"packages/coding-agent",
+	"packages/natives",
+	"packages/ai",
+	"packages/agent",
+	"packages/codemode",
+	"packages/schema",
+	"packages/telemetry",
+	"packages/tui",
+] as const;
+
 async function createStampedShrinkwrapFixture(version: string): Promise<string> {
 	const fixtureRoot = mkdtempSync(join(tmpdir(), "atomic-shrinkwrap-test-"));
 	mkdirSync(join(fixtureRoot, "scripts"), { recursive: true });
-	mkdirSync(join(fixtureRoot, "packages/coding-agent"), { recursive: true });
-	mkdirSync(join(fixtureRoot, "packages/natives"), { recursive: true });
-	mkdirSync(join(fixtureRoot, "packages/ai"), { recursive: true });
 	copyFileSync(
 		"scripts/generate-coding-agent-shrinkwrap.mjs",
 		join(fixtureRoot, "scripts/generate-coding-agent-shrinkwrap.mjs"),
 	);
 	copyFileSync("package-lock.json", join(fixtureRoot, "package-lock.json"));
 
-	const codingAgentPackage = await readPackageJson("packages/coding-agent/package.json");
-	codingAgentPackage.version = version;
-	if (codingAgentPackage.dependencies?.["@bastani/atomic-natives"]) {
-		codingAgentPackage.dependencies["@bastani/atomic-natives"] = version;
+	// A stamped release sets every workspace version and every first-party dependency on one to the release version.
+	const stampedNames = new Set<string>();
+	const manifests = new Map<string, PackageJson>();
+	for (const workspace of stampedWorkspaces) {
+		const packageJson = await readPackageJson(`${workspace}/package.json`);
+		packageJson.version = version;
+		if (packageJson.name) stampedNames.add(packageJson.name);
+		manifests.set(workspace, packageJson);
 	}
-	if (codingAgentPackage.dependencies?.["@bastani/pi-ai"]) {
-		codingAgentPackage.dependencies["@bastani/pi-ai"] = version;
+	for (const [workspace, packageJson] of manifests) {
+		for (const name of Object.keys(packageJson.dependencies ?? {})) {
+			if (stampedNames.has(name) && packageJson.dependencies) packageJson.dependencies[name] = version;
+		}
+		await writePackageJson(join(fixtureRoot, workspace, "package.json"), packageJson);
 	}
-	await writePackageJson(join(fixtureRoot, "packages/coding-agent/package.json"), codingAgentPackage);
-
-	const nativesPackage = await readPackageJson("packages/natives/package.json");
-	nativesPackage.version = version;
-	await writePackageJson(join(fixtureRoot, "packages/natives/package.json"), nativesPackage);
-
-	const piAiPackage = await readPackageJson("packages/ai/package.json");
-	piAiPackage.version = version;
-	await writePackageJson(join(fixtureRoot, "packages/ai/package.json"), piAiPackage);
 	return fixtureRoot;
 }
 

@@ -1,4 +1,4 @@
-import { colorToHex, parseColor } from "@earendil-works/pi-tui";
+import { colorToHex, parseColor } from "@bastani/atomic-tui";
 import type { ColorValue } from "./theme-schema.ts";
 
 export type ColorMode = "truecolor" | "256color";
@@ -32,10 +32,10 @@ export function detectColorMode(): ColorMode {
 
 /**
  * Resolve the color mode for a theme from an explicit `terminal.trueColor` setting, then
- * `PI_TRUE_COLOR=1|0`, then terminal detection.
+ * `ATOMIC_TRUE_COLOR=1|0` (legacy `PI_TRUE_COLOR`), then terminal detection.
  */
 export function resolveColorMode(trueColorSetting: boolean | undefined): ColorMode {
-	const envOverride = process.env.PI_TRUE_COLOR;
+	const envOverride = process.env.ATOMIC_TRUE_COLOR ?? process.env.PI_TRUE_COLOR;
 	const trueColor = trueColorSetting ?? (envOverride === "1" ? true : envOverride === "0" ? false : undefined);
 	if (trueColor === undefined) return detectColorMode();
 	return trueColor ? "truecolor" : "256color";

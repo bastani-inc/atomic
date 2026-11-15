@@ -15,7 +15,7 @@ import {
 	fauxAssistantMessage,
 	fauxToolCall,
 	registerFauxProvider,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { afterAll, beforeAll, describe, test, vi } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { getOwnerTaskStore } from "../../packages/coding-agent/src/core/tasks/owner-store.js";

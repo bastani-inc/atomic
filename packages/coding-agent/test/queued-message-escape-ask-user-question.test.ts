@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { TuiInputListener } from "@earendil-works/pi-tui";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
+import type { TuiInputListener } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { afterEach, describe, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";

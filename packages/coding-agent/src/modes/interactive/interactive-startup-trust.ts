@@ -1,4 +1,4 @@
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { waitForInteractiveEngineProjectTrust } from "../interactive-engine/extension-ui-bridge.ts";
 import type { InteractiveModeBase } from "./interactive-mode-base.ts";
 

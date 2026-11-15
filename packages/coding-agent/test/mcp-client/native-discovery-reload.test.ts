@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { expect, it } from "vitest";
 import { DefaultResourceLoader } from "../../src/core/resource-loader.ts";

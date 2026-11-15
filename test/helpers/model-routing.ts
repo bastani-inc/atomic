@@ -1,4 +1,4 @@
-import { type ClassifierContext, type Context, getCurrentTools, type JsonObject } from "@bastani/pi-ai";
+import { type ClassifierContext, type Context, getCurrentTools, type JsonObject } from "@bastani/atomic-ai";
 import { decisionMessage, messageStream } from "./structured-output.js";
 
 /** Router answers used when a test does not care about the task's needs. */

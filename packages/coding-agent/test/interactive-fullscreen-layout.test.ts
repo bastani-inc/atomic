@@ -1,5 +1,5 @@
-import type { Component } from "@earendil-works/pi-tui";
-import { TuiMainScreen } from "@earendil-works/pi-tui";
+import type { Component } from "@bastani/atomic-tui";
+import { TuiMainScreen } from "@bastani/atomic-tui";
 import { expect, test } from "vitest";
 import {
 	createProductionFullscreenContext,

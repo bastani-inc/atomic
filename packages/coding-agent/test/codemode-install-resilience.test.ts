@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 import { unlinkSync } from 'node:fs';
 process.env.ATOMIC_BUNDLED_BUILD = '1';
 const config = await import(${JSON.stringify(pathToFileURL(join(root, "packages/coding-agent/src/config.ts")).href)});
-const { CodemodeSandbox, loadQuickJSWasm } = await import(${JSON.stringify(pathToFileURL(join(root, "node_modules/@earendil-works/pi-codemode/dist/index.js")).href)});
+const { CodemodeSandbox, loadQuickJSWasm } = await import(${JSON.stringify(pathToFileURL(join(root, "node_modules/@bastani/atomic-codemode/dist/index.js")).href)});
 const worker = config.getCodemodeWorkerUrl();
 assert.equal(worker.protocol, 'data:');
 const wasmPath = config.getQuickJSWasmPath();

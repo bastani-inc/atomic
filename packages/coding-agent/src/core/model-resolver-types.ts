@@ -1,5 +1,5 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 
 export interface ScopedModel {
 	model: Model<Api>;

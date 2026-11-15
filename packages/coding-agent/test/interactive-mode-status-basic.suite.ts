@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { createExtensionRuntime } from "../src/core/extensions/loader.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
@@ -11,7 +11,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { renderLastLine } from "./interactive-mode-status-helpers.ts";
 
 // Upstream pi 0.79.1 also exercises overlay focus restoration with packages/tui's
-// VirtualTerminal harness. Atomic consumes @earendil-works/pi-tui as a dependency
+// VirtualTerminal harness. Atomic consumes @bastani/atomic-tui as a dependency
 // rather than vendoring that test harness, so this suite keeps the equivalent
 // package-level interactive status/autocomplete coverage that can run here.
 describe("InteractiveMode.showStatus", () => {

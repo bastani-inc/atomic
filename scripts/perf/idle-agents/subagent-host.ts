@@ -8,7 +8,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { AgentWakeDispatcher } from "../../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import type { ExtensionContext } from "../../../packages/coding-agent/src/core/extensions/index.js";
 import type { CreateAgentSessionOptions } from "../../../packages/coding-agent/src/core/sdk-types.js";

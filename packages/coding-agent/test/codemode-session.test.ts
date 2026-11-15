@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getCurrentSystemPrompt } from "@bastani/pi-ai";
-import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/pi-ai/compat";
+import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
+import { fauxAssistantMessage, fauxToolCall, getCurrentTools } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 import { createCodemodeExtension } from "../src/extensions/codemode/index.js";

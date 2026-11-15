@@ -42,8 +42,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { CONFIG_DIR_NAME, DynamicBorder, getAgentDir } from "@bastani/atomic";
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { Container, Key, type SelectItem, SelectList, Text } from "@bastani/atomic-tui";
 
 // Preset configuration
 interface Preset {

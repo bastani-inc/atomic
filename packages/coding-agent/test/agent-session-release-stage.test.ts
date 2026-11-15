@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.ts";
 import { SessionManager } from "../src/core/session-manager.ts";

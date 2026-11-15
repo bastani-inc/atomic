@@ -8,7 +8,7 @@ import {
 	omitOptionalNulls,
 	type RetryPolicy,
 	retryAssistantCall,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import type { Static, TSchema } from "typebox";
 import { Check } from "typebox/value";
 import { raceWithAbortSignal } from "../../utils/abort.js";

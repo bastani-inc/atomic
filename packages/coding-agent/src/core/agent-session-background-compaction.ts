@@ -7,8 +7,8 @@
  * compaction remains for the hard threshold and overflow when no result is ready.
  */
 
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import {
 	type AppendedVerbatimBoundary,
 	appendVerbatimBoundary,

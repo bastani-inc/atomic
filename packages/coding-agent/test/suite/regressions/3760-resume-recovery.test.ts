@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Context, fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { type Context, fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, it } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../../src/core/agent-session-persistent-custom-messages.js";
 import {

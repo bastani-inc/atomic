@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Component, Container } from "@earendil-works/pi-tui";
+import { type Component, Container } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, it, vi } from "vitest";
 import type { ToolRenderContext } from "../src/core/extensions/types.js";
 import type { EditToolDetails } from "../src/core/tools/edit.js";

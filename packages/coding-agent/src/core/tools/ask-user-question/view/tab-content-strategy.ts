@@ -1,4 +1,4 @@
-import { type Component, Container, type Input, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, type Input, Spacer, Text } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import { fieldTone, styleFieldTone } from "../state/selectors/field-tone.ts";
 import { formatAnswerScalar } from "../tool/format-answer.ts";

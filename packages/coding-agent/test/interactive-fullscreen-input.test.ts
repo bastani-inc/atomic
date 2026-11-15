@@ -8,7 +8,7 @@ import {
 	TuiAltScreen,
 	TuiMainScreen,
 	VStack,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { selectMovementDelta } from "../../workflows/src/tui/prompt-card-select.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";

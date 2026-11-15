@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { getCurrentSystemPrompt } from "@bastani/pi-ai";
-import { fauxAssistantMessage, type TranscriptContext } from "@bastani/pi-ai/compat";
+import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
+import { fauxAssistantMessage, type TranscriptContext } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.ts";
