@@ -3,6 +3,7 @@ import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { RUN_TIMING_CHECKPOINT_NAME } from "../../packages/workflows/src/durable/run-timing.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
@@ -148,4 +149,40 @@ test("a run that returned blocked does not read as completed when its status wri
 	assert.notEqual(backend.getWorkflow(runId)?.status, "completed");
 	const reopened = await backend.reopen();
 	assert.notEqual(reopened.getWorkflow(runId)?.status, "completed");
+});
+
+test("opening only some runs of a journal writes the refused completed status of those it opens (#5133)", async () => {
+	const backend = await JournalTestBackend.create();
+	setDurableBackend(backend);
+	const commitStatus = backend.commitWorkflowStatus.bind(backend);
+	backend.commitWorkflowStatus = ((...args: Parameters<typeof backend.commitWorkflowStatus>) =>
+		args[1] === "completed"
+			? Promise.reject(
+					new StorageUnavailableError({ adapter: "test", location: "refused" }, new Error("refused") as never),
+				)
+			: commitStatus(...args)) as typeof backend.commitWorkflowStatus;
+	const def = workflow({
+		name: "opened-alone",
+		description: "",
+		inputs: {},
+		outputs: {},
+		run: async (ctx) => {
+			await ctx.tool("work", {}, async () => "done");
+			return {};
+		},
+	}) as WorkflowDefinition;
+	const opened = `opened-alone-${Date.now()}`;
+	const other = `${opened}-other`;
+	for (const runId of [opened, other])
+		await run(def, {}, { runId, store: createStore(), durableBackend: backend }).catch(() => undefined);
+	await backend.close();
+	const journal = await openSqlRunJournal(backend.databasePath);
+	const partial = await JournalDurableBackend.open(journal, { runs: [opened, "no-such-run"] });
+	try {
+		assert.equal(partial.getWorkflow(opened)?.status, "completed");
+		assert.equal((await journal.getRun(opened))?.status, "completed", "the run it opened is written");
+		assert.equal((await journal.getRun(other))?.status, "running", "a run it did not open is left as it was");
+	} finally {
+		await partial.close();
+	}
 });
