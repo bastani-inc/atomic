@@ -548,8 +548,8 @@ describe("intercom name-glob sends need broadcast to reach several sessions (#52
 				);
 				assert.equal(refused.isError, true, to);
 				assert.match(text(refused), /matches 2 sessions/);
-				assert.match(text(refused), /subagent-debugger-aa-1/);
-				assert.match(text(refused), /subagent-debugger-bb-1/);
+				assert.match(text(refused), /\n- subagent-debugger-aa-1 \(/);
+				assert.match(text(refused), /\n- subagent-debugger-bb-1 \(/);
 				assert.match(text(refused), /broadcast: true/);
 				assert.match(text(refused), /Nothing was sent/);
 			}

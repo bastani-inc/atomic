@@ -52,7 +52,7 @@ function listWorktrees(repo: string): ListedWorktree[] {
 /** Where a new branch starts when the launch names no base: HEAD's upstream, or HEAD. */
 function defaultBase(cwd: string): string {
 	const upstream = runGit(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);
-	return upstream.status === 0 && upstream.stdout.trim() ? upstream.stdout.trim() : "HEAD";
+	return upstream.status === 0 ? upstream.stdout.trim() : "HEAD";
 }
 
 function isEmptyDirectory(target: string): boolean {
@@ -60,7 +60,6 @@ function isEmptyDirectory(target: string): boolean {
 }
 
 function withAgentCwd(worktreePath: string, cwdRelative: string): string {
-	if (!cwdRelative) return worktreePath;
 	const nested = path.join(worktreePath, cwdRelative);
 	return fs.existsSync(nested) ? nested : worktreePath;
 }
@@ -72,8 +71,8 @@ function withAgentCwd(worktreePath: string, cwdRelative: string): string {
  * it is. Throws, creating nothing, when the branch is checked out elsewhere or the path holds something else.
  */
 export function ensureNamedWorktree(cwd: string, request: NamedWorktreeRequest): NamedWorktree {
-	const branch = request.branch.trim();
-	if (!branch || runGit(cwd, ["check-ref-format", "--branch", branch]).status !== 0)
+	const branch = request.branch;
+	if (runGit(cwd, ["check-ref-format", "--branch", branch]).status !== 0)
 		throw new Error(`worktree.branch "${request.branch}" is not a valid branch name.`);
 	const cwdRelative = resolveRepoCwdRelative(cwd);
 	const toplevel = path.resolve(runGitChecked(cwd, ["rev-parse", "--show-toplevel"]).trim());

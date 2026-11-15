@@ -62,7 +62,7 @@ const agent: AgentConfig = {
 };
 
 interface Harness {
-	readonly launches: Array<{ task: string; cwd: string | undefined }>;
+	readonly launches: Array<{ task: string; cwd: string | undefined; trackedWorktrees: number }>;
 	readonly records: SubagentChildRecord[];
 	execute(params: SubagentParamsLike): Promise<SubagentToolResult>;
 }
@@ -94,7 +94,7 @@ function makeHarness(cwd: string): Harness {
 		discoverAgents: () => ({ agents: [agent] }),
 		runtime: {
 			runSync: async (_cwd, _agents, name, task, options): Promise<SingleResult> => {
-				launches.push({ task, cwd: options.cwd });
+				launches.push({ task, cwd: options.cwd, trackedWorktrees: trackedRunWorktreeCount() });
 				return { agent: name, task, status: "ok", messages: [], usage, finalOutput: "done" };
 			},
 		},
@@ -150,6 +150,8 @@ test("a single launch with a named worktree creates it, runs the child there, ke
 	assert.equal(recorded?.path, expected, "the child's record names its worktree");
 	assert.equal(recorded?.branch, "feat/named");
 	assert.equal(recorded?.named, true);
+	assert.equal(recorded?.baseCommit, git(repo, "rev-parse", "HEAD"));
+	assert.deepEqual(recorded?.syntheticPaths, []);
 
 	const second = await harness.execute({ ...params, task: "continue" });
 
@@ -176,6 +178,7 @@ test("a named worktree starts from base and at the requested path (#5202)", asyn
 	assert.equal(result.isError, undefined, text(result));
 	assert.equal(harness.launches[0]?.cwd, path);
 	assert.equal(git(path, "rev-parse", "HEAD"), first);
+	assert.equal(existsSync(join(repo, ".atomic")), false, "a worktree elsewhere leaves the repository untouched");
 });
 
 test("a named worktree whose branch is checked out elsewhere is refused before launch (#5202)", async () => {
@@ -185,6 +188,7 @@ test("a named worktree whose branch is checked out elsewhere is refused before l
 	const result = await harness.execute({ agent: "worker", task: "t", worktree: { branch: "main" } });
 
 	assert.equal(result.isError, true);
+	assert.deepEqual(result.details, { mode: "single", results: [] });
 	assert.match(text(result), /branch "main" is already checked out at /);
 	assert.equal(harness.launches.length, 0, "no child starts");
 });
@@ -219,9 +223,31 @@ test("parallel tasks and sibling single calls each get their own named worktree 
 		harness.execute({ agent: "worker", task: "d", worktree: { branch: "task-d" } }),
 	]);
 	for (const sibling of siblings) assert.equal(sibling.isError, undefined, text(sibling));
+	const parallelSiblings = await Promise.all([
+		harness.execute({
+			worktree: { branch: "task-e" },
+			tasks: [
+				{ agent: "worker", task: "e" },
+				{ agent: "worker", task: "f", worktree: { branch: "task-f" } },
+			],
+		}),
+		harness.execute({ worktree: { branch: "task-g" }, tasks: [{ agent: "worker", task: "g" }] }),
+	]);
+	for (const sibling of parallelSiblings) assert.equal(sibling.isError, undefined, text(sibling));
 
 	const cwdOf = (task: string) => harness.launches.find((launch) => launch.task.endsWith(task))?.cwd;
-	for (const name of ["a", "b", "c", "d"])
+	assert.deepEqual(
+		[
+			...new Set(
+				harness.records
+					.filter((record) => record.worktree)
+					.map((record) => `${record.agent}:${record.task}:${record.worktree?.branch}`),
+			),
+		].sort(),
+		["a", "b", "c", "d", "e", "f", "g"].map((name) => `worker:${name}:task-${name}`),
+		"each child's record names its own worktree",
+	);
+	for (const name of ["a", "b", "c", "d", "e", "f", "g"])
 		assert.equal(cwdOf(name), join(repo, ".atomic", "worktrees", `task-${name}`), `task ${name}`);
 });
 
@@ -258,10 +284,25 @@ test("a parallel call's named worktree applies to each task without its own, and
 
 	const mixed = await harness.execute({
 		worktree: true,
-		tasks: [{ agent: "worker", task: "three", worktree: { branch: "mixed" } }],
+		tasks: [
+			{ agent: "worker", task: "three", worktree: { branch: "mixed" } },
+			{ agent: "worker", task: "four" },
+		],
 	});
 	assert.equal(mixed.isError, true);
 	assert.match(text(mixed), /cannot be combined with a task's named worktree/);
+	const isolatedWithCwd = await harness.execute({
+		worktree: true,
+		tasks: [{ agent: "worker", task: "five", cwd: ".." }],
+	});
+	assert.match(
+		text(isolatedWithCwd),
+		/Remove task-level cwd overrides or disable worktree/,
+		"worktree: true is unchanged",
+	);
+	const unknown = await harness.execute({ agent: "nobody", task: "six", worktree: { branch: "unknown" } });
+	assert.equal(unknown.isError, true);
+	assert.match(text(unknown), /Unknown agent/);
 	assert.equal(harness.launches.length, 2);
 });
 
@@ -308,6 +349,7 @@ test("a named worktree is refused for an invalid branch, a path on another branc
 	const harness = makeHarness(repo);
 	const other = join(repo, "..", "other");
 	git(repo, "worktree", "add", "-q", "-b", "other", other);
+	git(repo, "worktree", "add", "-q", "--detach", join(repo, "..", "detached"));
 	const empty = join(repo, "..", "empty");
 	mkdirSync(empty);
 
@@ -336,8 +378,10 @@ test("a named worktree is refused for an invalid branch, a path on another branc
 test("resuming a child in a removed named worktree checks its branch out there again and never tracks it for removal (#5202)", async () => {
 	const repo = makeRepo();
 	const before = trackedRunWorktreeCount();
-	const created = await makeHarness(repo).execute({ agent: "worker", task: "t", worktree: { branch: "resumed" } });
+	const harness = makeHarness(repo);
+	const created = await harness.execute({ agent: "worker", task: "t", worktree: { branch: "resumed" } });
 	assert.equal(created.isError, undefined, text(created));
+	assert.equal(harness.launches[0]?.trackedWorktrees, before + 1, "the run keeps its named worktree while it runs");
 	assert.equal(trackedRunWorktreeCount(), before, "the run forgets its named worktrees once it returns");
 	const path = join(repo, ".atomic", "worktrees", "resumed");
 	writeFileSync(join(path, "work.txt"), "work\n");

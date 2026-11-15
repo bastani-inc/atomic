@@ -148,9 +148,9 @@ export function prepareNamedWorktrees(
 				"worktree: true gives each task a new worktree of its own, so it cannot be combined with a task's named worktree. Use one or the other.",
 			),
 		};
-	if (!topLevel && !tasks.some((task) => task.worktree !== undefined)) return { params };
 	try {
-		if (tasks.length === 0) return { params: withNamedWorktree(params, ensureNamedWorktree(callCwd, topLevel!)) };
+		if (tasks.length === 0)
+			return { params: topLevel ? withNamedWorktree(params, ensureNamedWorktree(callCwd, topLevel)) : params };
 		const { worktree: _topLevel, ...rest } = params;
 		return {
 			params: {

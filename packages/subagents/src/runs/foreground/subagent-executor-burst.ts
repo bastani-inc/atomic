@@ -73,8 +73,8 @@ const SHARED_FIELDS: readonly SharedField[] = [
 ];
 
 /** A named worktree belongs to its call's own children (#5202); only `worktree: true` is shared by the burst. */
-function sharedValue(params: SubagentParamsLike, field: SharedField): unknown {
-	return field === "worktree" ? params.worktree === true : params[field];
+function sharedValue(params: SubagentParamsLike, field: SharedField): SubagentParamsLike[SharedField] {
+	return field === "worktree" && namedWorktree(params) ? undefined : params[field];
 }
 
 /** The named worktree a call's top level gives each of its children without one of their own. */

@@ -65,7 +65,6 @@ export function registerNamedRunWorktrees(
 	runId: string,
 	worktrees: ReadonlyMap<number, NamedWorktree>,
 ): { readonly release: () => void } {
-	if (worktrees.size === 0) return { release: noHold };
 	const records = new Map<number, SubagentChildWorktree>();
 	for (const [index, worktree] of worktrees)
 		records.set(index, {
@@ -79,7 +78,7 @@ export function registerNamedRunWorktrees(
 	namedWorktrees.set(runId, records);
 	return {
 		release() {
-			if (namedWorktrees.get(runId) === records) namedWorktrees.delete(runId);
+			namedWorktrees.delete(runId);
 		},
 	};
 }
@@ -219,12 +218,10 @@ export function resumeRunWorktree(
 ): () => void {
 	// A named worktree is the caller's: put back where it was if it was removed, and never tracked for removal.
 	if (child.worktree?.named) {
-		if (!existsSync(child.worktree.path)) {
-			try {
-				ensureNamedWorktree(child.worktree.repo, { branch: child.worktree.branch, path: child.worktree.path });
-			} catch {
-				// Left missing: resume then reports that the child's working directory no longer exists.
-			}
+		try {
+			ensureNamedWorktree(child.worktree.repo, { branch: child.worktree.branch, path: child.worktree.path });
+		} catch {
+			// Left as it is: resume then reports a working directory that no longer exists.
 		}
 		return noHold;
 	}
