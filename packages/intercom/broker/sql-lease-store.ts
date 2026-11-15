@@ -225,7 +225,6 @@ export async function openSqlBrokerLeaseStore(options: IntercomBrokerStateOption
 			return rows.map(stateFromRow);
 		},
 		async retireHolder(holderId) {
-			if (holderId.length === 0) return 0;
 			const { changes } = await database.run(
 				`UPDATE ${table} SET holder_id = NULL, fencing_token = NULL, subject_json = NULL, renewed_at = NULL
 				WHERE holder_id = ?`,

@@ -358,7 +358,7 @@ export class MultiNodeRouter {
 	private readonly bus: WakeUpBus;
 	private readonly host: MultiNodeHost;
 	private readonly nodeId: string;
-	private readonly instanceKey: string | undefined;
+	private readonly instanceKey: string;
 	private membership: Lease | undefined;
 	private subscription: WakeUpSubscription | undefined;
 	private readonly presence = new Map<BrokerConnectedSession, PresenceEntry>();
@@ -383,7 +383,8 @@ export class MultiNodeRouter {
 		this.host = options.host;
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
-		this.instanceKey = options.instanceKey === undefined ? undefined : `${this.nodeId}:${options.instanceKey}`;
+		// Without a key of its own, no earlier broker can be this one.
+		this.instanceKey = `${this.nodeId}:${options.instanceKey ?? this.brokerId}`;
 	}
 
 	/** Take the membership lease, subscribe to wake-ups and adopt the sessions already connected. */
@@ -2138,7 +2139,7 @@ export class MultiNodeRouter {
 			brokerId: this.brokerId,
 			nodeId: this.nodeId,
 			startedAt: Date.now(),
-			...(this.instanceKey === undefined ? {} : { instanceKey: this.instanceKey }),
+			instanceKey: this.instanceKey,
 		};
 	}
 
@@ -2148,10 +2149,10 @@ export class MultiNodeRouter {
 	 * re-register here from taking their presence, until they go stale; retire them now.
 	 */
 	private async retirePreviousInstances(): Promise<void> {
-		if (this.instanceKey === undefined) return;
+		// It runs before this broker takes its own membership, so every match is an earlier instance.
 		for (const lease of await this.state.leases.listLive("broker", BROKER_LEASE_STALE_AFTER_MS)) {
-			if (lease.holderId === this.brokerId || lease.subject.kind !== "broker") continue;
-			if (lease.subject.instanceKey === this.instanceKey) await this.state.leases.retireHolder(lease.holderId);
+			const { instanceKey } = lease.subject as Partial<BrokerMembershipSubject>;
+			if (instanceKey === this.instanceKey) await this.state.leases.retireHolder(lease.holderId);
 		}
 	}
 

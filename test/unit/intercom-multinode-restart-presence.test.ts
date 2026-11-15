@@ -66,7 +66,10 @@ async function crashedCluster() {
 	await take(membership("other", `${NODE}:/other/broker.sock`), "other");
 	await take(presence("hosted-by-other"), "other");
 
-	const start = async (options: { readonly instanceKey?: string }): Promise<BrokerLeaseStore> => {
+	await take(membership("legacy"), "legacy");
+	await take(presence("hosted-by-legacy"), "legacy");
+
+	const start = async (options: { readonly instanceKey?: string }) => {
 		const leases = await leaseFixture.connect();
 		const state: IntercomBrokerStateStore = {
 			leases,
@@ -96,7 +99,7 @@ async function crashedCluster() {
 			},
 		});
 		cleanups.push(() => router.close());
-		return leases;
+		return { leases, router };
 	};
 	return { start };
 }
@@ -108,7 +111,7 @@ const holderOf = async (leases: BrokerLeaseStore, targetIdentity: string) => {
 
 test("a restarted broker retires its killed instance's leases as it starts, and no other broker's (#5038)", async () => {
 	const { start } = await crashedCluster();
-	const leases = await start({ instanceKey: SOCKET });
+	const { leases } = await start({ instanceKey: SOCKET });
 	assert.equal(await holderOf(leases, "hosted-by-crashed"), "missing");
 	assert.deepEqual(await leases.read({ kind: "broker", brokerId: "crashed" }), { status: "missing" });
 	assert.equal(await holderOf(leases, "hosted-by-other"), "other");
@@ -119,9 +122,22 @@ test("a restarted broker retires its killed instance's leases as it starts, and 
 
 test("a broker on another socket, or without an instance key, leaves a live broker's leases alone (#5038)", async () => {
 	const { start } = await crashedCluster();
-	const elsewhere = await start({ instanceKey: "/elsewhere/broker.sock" });
+	const { leases: elsewhere } = await start({ instanceKey: "/elsewhere/broker.sock" });
 	assert.equal(await holderOf(elsewhere, "hosted-by-crashed"), "crashed");
-	const unkeyed = await start({});
+	assert.equal(await holderOf(elsewhere, "hosted-by-legacy"), "legacy");
+	const { leases: unkeyed, router: first } = await start({});
+	await start({});
 	assert.equal(await holderOf(unkeyed, "hosted-by-crashed"), "crashed");
 	assert.equal(await holderOf(unkeyed, "hosted-by-other"), "other");
+	assert.equal(await holderOf(unkeyed, "hosted-by-legacy"), "legacy");
+	assert.equal((await unkeyed.read({ kind: "broker", brokerId: first.brokerId })).status, "found");
+});
+
+test("a broker started again on the same socket supersedes the instance before it (#5038)", async () => {
+	const { start } = await crashedCluster();
+	const { leases, router: previous } = await start({ instanceKey: "/restarted/broker.sock" });
+	assert.equal((await leases.read({ kind: "broker", brokerId: previous.brokerId })).status, "found");
+	const { router: next } = await start({ instanceKey: "/restarted/broker.sock" });
+	assert.deepEqual(await leases.read({ kind: "broker", brokerId: previous.brokerId }), { status: "missing" });
+	assert.equal((await leases.read({ kind: "broker", brokerId: next.brokerId })).status, "found");
 });
