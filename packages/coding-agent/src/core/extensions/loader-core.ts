@@ -24,7 +24,7 @@ import { createExtensionRuntime } from "./loader-runtime.ts";
 import {
 	type ExtensionCacheToken,
 	loadExtensionModule,
-	staleNativeEsmExtensionWarning,
+	staleRuntimeEvaluatedExtensionWarning,
 	useExtensionCacheCwd,
 } from "./loader-virtual-modules.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
@@ -189,7 +189,7 @@ async function loadExtension(
 			createExtension(extensionPath, resolvedPath),
 		);
 		endTimingSpan(factorySpan);
-		const warning = staleNativeEsmExtensionWarning(resolvedPath);
+		const warning = staleRuntimeEvaluatedExtensionWarning(resolvedPath);
 		return warning ? { extension, error: null, warning } : { extension, error: null };
 	} catch (err) {
 		// Ordinary discovery failures remain diagnostics; failed cleanup must reject creation.

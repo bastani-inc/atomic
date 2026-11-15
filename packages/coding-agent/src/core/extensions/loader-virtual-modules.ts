@@ -642,14 +642,19 @@ interface FileSignature {
 }
 
 /**
- * jiti imports an ESM JavaScript file (`.mjs`, or `.js` in a `"type": "module"`
- * package) natively even on its transformed path, and Node and Bun keep that
- * module for the life of the process. Such an extension keeps its first
- * evaluation until a restart, so its entry file's signature at that evaluation
- * is kept here (one per path) to warn, once per edit, that a reload cannot run
- * the edited code (#4986).
+ * jiti compiles TypeScript, but leaves to the runtime's own module loader the
+ * JavaScript it needs not compile: an ESM file (`.mjs`, or `.js` in a
+ * `"type": "module"` package) and CommonJS (`.cjs`, or `.js` without ESM
+ * syntax). Node and Bun keep such a module for the life of the process, so an
+ * extension whose entry file the runtime evaluated keeps its first evaluation
+ * until a restart. Each entry's signature at its first evaluation is kept here
+ * (one per path), with whether a compiling load left the entry to the runtime,
+ * to warn once per edit that a reload cannot run the edited code (#4986).
  */
-const nativeEsmEntries = new Map<string, { evaluated: FileSignature; warned?: FileSignature }>();
+const evaluatedEntries = new Map<
+	string,
+	{ evaluated: FileSignature; runtimeEvaluated: boolean; warned?: FileSignature }
+>();
 
 function fileSignature(filePath: string): FileSignature | undefined {
 	try {
@@ -664,45 +669,24 @@ function sameSignature(a: FileSignature | undefined, b: FileSignature | undefine
 	return a !== undefined && b !== undefined && a.mtimeMs === b.mtimeMs && a.size === b.size;
 }
 
-/** Mirrors jiti's ESM test: `.mjs`, or `.js` whose nearest package.json declares `"type": "module"`. */
-function isNativeEsmJavaScript(filePath: string): boolean {
-	const extension = path.extname(filePath).toLowerCase();
-	if (extension === ".mjs") return true;
-	if (extension !== ".js") return false;
-	for (let dir = path.dirname(filePath); ; dir = path.dirname(dir)) {
-		let manifest: string;
-		try {
-			manifest = fs.readFileSync(path.join(dir, "package.json"), "utf8");
-		} catch {
-			if (path.dirname(dir) === dir) return false;
-			continue;
-		}
-		try {
-			return (JSON.parse(manifest) as { type?: unknown }).type === "module";
-		} catch {
-			return false;
-		}
-	}
-}
-
-function rememberNativeEsmEntry(extensionPath: string, importPath: string): void {
-	if (nativeEsmEntries.has(extensionPath) || !isNativeEsmJavaScript(importPath)) return;
+function rememberEvaluatedEntry(extensionPath: string, importPath: string): void {
+	if (evaluatedEntries.has(extensionPath)) return;
 	const evaluated = fileSignature(importPath);
-	if (evaluated) nativeEsmEntries.set(extensionPath, { evaluated });
+	if (evaluated) evaluatedEntries.set(extensionPath, { evaluated, runtimeEvaluated: false });
 }
 
 /**
- * A warning for a reload of an ESM JavaScript extension whose entry file changed
- * since this process evaluated it: the runtime still runs the old code. Each
- * edit is reported once.
+ * A warning for a reload of a JavaScript extension the runtime evaluated whose
+ * entry file changed since this process first evaluated it: the runtime still
+ * runs the old code. Each edit is reported once.
  */
-export function staleNativeEsmExtensionWarning(extensionPath: string): string | undefined {
-	const entry = nativeEsmEntries.get(extensionPath);
-	if (!entry) return undefined;
+export function staleRuntimeEvaluatedExtensionWarning(extensionPath: string): string | undefined {
+	const entry = evaluatedEntries.get(extensionPath);
+	if (!entry?.runtimeEvaluated) return undefined;
 	const current = fileSignature(canonicalizePath(extensionPath));
 	if (!current || sameSignature(current, entry.evaluated) || sameSignature(current, entry.warned)) return undefined;
 	entry.warned = current;
-	return 'This ESM JavaScript extension (.mjs, or .js in a package with "type": "module") changed since it was loaded, but its module cannot be re-evaluated in a running process. It still runs the code it was loaded with: restart Atomic to run the edited code.';
+	return 'This JavaScript extension changed since it was loaded, but the runtime keeps the JavaScript modules it loads itself (.mjs, .cjs, and .js that is ESM in a "type": "module" package or CommonJS) until the process exits, so it still runs the code it was loaded with. Restart Atomic to run the edited code, or write the extension in TypeScript, which /reload re-evaluates.';
 }
 
 async function importExtensionModule(
@@ -714,21 +698,26 @@ async function importExtensionModule(
 	const isWindows = process.platform === "win32";
 	const isSingleFileBuild = isBunBinary || isBundledBuild;
 	const createJitiImpl = await getCreateJiti();
+	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
+	// file; extensionPath stays the cache and graph key.
+	const importPath = canonicalizePath(extensionPath);
+	const transformSource = getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir);
+	let entryCompiled = false;
 	const jiti = createJitiImpl(resolutionBaseUrl(import.meta.url), {
 		moduleCache: false,
 		fsCache: false,
-		transform: getTypeScriptSourceSpecifierTransform(createJitiImpl, cacheDir),
+		transform: (options) => {
+			if (options.filename !== undefined && pathsEqual(options.filename, importPath)) entryCompiled = true;
+			return transformSource(options);
+		},
 		...(forceTransformedImports ? { tryNative: false } : {}),
 		// A first native import can fall back to transformation too. Always share
 		// the live host instead of re-evaluating its graph through source aliases.
 		virtualModules: await getVirtualModules(),
 		...(!isSingleFileBuild ? { alias: getAliases() } : {}),
 	});
-	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
-	// file; extensionPath stays the cache and graph key.
-	const importPath = canonicalizePath(extensionPath);
 	const specifier = extensionImportSpecifier(importPath, cacheToken);
-	rememberNativeEsmEntry(extensionPath, importPath);
+	rememberEvaluatedEntry(extensionPath, importPath);
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
@@ -743,6 +732,11 @@ async function importExtensionModule(
 		recordedManifest = recorded.manifest;
 	} else {
 		module = await jiti.import(specifier, { default: true });
+	}
+	// A load that would compile the entry but left it to the runtime evaluated it in the runtime's module cache.
+	if (!jiti.options.tryNative && !entryCompiled) {
+		const entry = evaluatedEntries.get(extensionPath);
+		if (entry) entry.runtimeEvaluated = true;
 	}
 	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
 	// using the transformed path and its retained-evaluation reuse.
