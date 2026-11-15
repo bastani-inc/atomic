@@ -8,6 +8,7 @@ import { isDecisionConfigError } from "./decision/errors.js";
 import { deepMergeSettings } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
+	PackageSource,
 	Settings,
 	SettingsError,
 	SettingsManagerCreateOptions,
@@ -484,6 +485,37 @@ export class SettingsManager {
 		this.enqueueWrite("project", () => {
 			this.persistScopedSettings("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields);
 		});
+	}
+
+	/**
+	 * Replaces the `packages` of one scope with `update(current)`. The write applies `update` again to the packages
+	 * in the settings file, read under its lock, so concurrent processes adding or removing packages keep each other's
+	 * entries. `update` returns undefined to leave the packages unchanged. Returns whether this process's packages changed.
+	 */
+	updatePackages(scope: SettingsScope, update: (packages: PackageSource[]) => PackageSource[] | undefined): boolean {
+		if (scope === "project") this.assertProjectTrustedForWrite();
+		const current = scope === "project" ? this.projectSettings : this.globalSettings;
+		const next = update(current.packages ?? []);
+		if (next === undefined) return false;
+		if (scope === "project") this.projectSettings = { ...this.projectSettings, packages: next };
+		else this.globalSettings = { ...this.globalSettings, packages: next };
+		this.settings = this.mergeEffectiveSettings();
+		if (scope === "project" ? this.projectSettingsLoadError : this.globalSettingsLoadError) return true;
+
+		const persist = (currentPrimary: string | undefined): string | undefined => {
+			const fileSettings = currentPrimary
+				? SettingsManager.migrateSettings(parseJsonFileContent(currentPrimary) as Record<string, unknown>)
+				: {};
+			const filePackages = update(fileSettings.packages ?? []);
+			return filePackages === undefined
+				? undefined
+				: JSON.stringify({ ...fileSettings, packages: filePackages }, null, 2);
+		};
+		this.enqueueWrite(scope, () => {
+			if (this.storage.withPrimaryWriteLock) this.storage.withPrimaryWriteLock(scope, persist);
+			else this.storage.withLock(scope, persist);
+		});
+		return true;
 	}
 
 	async flush(): Promise<void> {
