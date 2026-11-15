@@ -5,6 +5,7 @@ import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensi
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notice.js";
+import { stripTerminalControls } from "../../../utils/ansi.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
@@ -174,8 +175,9 @@ export class CustomMessageComponent extends Container {
 		}
 
 		this.box.addChild(
+			// Raw terminal sequences in the text must not reach the terminal; Atomic styles after parsing (#4889).
 			new Markdown(
-				text,
+				stripTerminalControls(text),
 				0,
 				0,
 				this.markdownTheme,

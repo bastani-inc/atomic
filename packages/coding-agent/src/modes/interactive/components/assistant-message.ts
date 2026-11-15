@@ -1,6 +1,7 @@
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+import { stripTerminalControls } from "../../../utils/ansi.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
@@ -134,15 +135,17 @@ export class AssistantMessageComponent extends Container {
 		// Render content in order
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
-			if (content.type === "text" && content.text.trim()) {
+			// Raw terminal sequences in model text must not reach the terminal; Atomic styles after parsing (#4889).
+			const text = content.type === "text" ? stripTerminalControls(content.text).trim() : "";
+			if (content.type === "text" && text) {
 				// Assistant text messages with no background - trim the text
 				// Set paddingY=0 to avoid extra spacing before tool executions
 				addVisibleChild(
 					markdownBlock(
 						"text",
-						content.text.trim(),
+						text,
 						() =>
-							new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
+							new Markdown(text, this.outputPad, 0, this.markdownTheme, undefined, {
 								transform: createMarkdownTransform(
 									"assistant",
 									() => this.isStreaming,
@@ -159,7 +162,7 @@ export class AssistantMessageComponent extends Container {
 				for (; i < message.content.length; i++) {
 					const thinkingContent = message.content[i];
 					if (thinkingContent.type !== "thinking") break;
-					const thinking = thinkingContent.thinking.trim();
+					const thinking = stripTerminalControls(thinkingContent.thinking).trim();
 					if (thinking) thinkingBlocks.push(thinking);
 				}
 				i--;
