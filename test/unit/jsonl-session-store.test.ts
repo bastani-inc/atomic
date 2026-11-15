@@ -518,15 +518,65 @@ for (const invalid of [
 	});
 }
 
-it("never repairs a torn final line and wraps the parse failure", async () => {
+it("ignores a torn final line, keeps listing the session, and removes the line on the next append (#4993)", async () => {
 	await withStore(async (store, directory) => {
 		const path = join(directory, "torn.jsonl");
-		const content = `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}\n{"type":`;
+		const acknowledged = `${JSON.stringify({ type: "session", ...header })}\n${JSON.stringify(entry)}\n`;
+		const torn = JSON.stringify({ ...entry, id: "torn", name: "x".repeat(4096) }).slice(0, 2048);
+		await writeFile(path, acknowledged + torn);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			const reopened = await JsonlSessionStore.open(directory);
+			try {
+				assert.deepEqual(await reopened.load(header.id), { header, entries: [entry], lastSeq: 1 });
+				assert.deepEqual(
+					(await collect(reopened.list({}))).map((summary) => summary.location),
+					[path],
+				);
+				assert.equal(await readFile(path, "utf8"), acknowledged + torn);
+				const next = { ...entry, id: "next" };
+				assert.deepEqual(await reopened.append(header.id, [next], { expectSeq: 1 }), { lastSeq: 2 });
+				assert.equal(await readFile(path, "utf8"), `${acknowledged}${JSON.stringify(next)}\n`);
+			} finally {
+				await reopened.close();
+			}
+			assert.deepEqual((await store.load(header.id)).entries, [entry, { ...entry, id: "next" }]);
+			const diagnostics = warnings.mock.calls.filter(([warning]) => String(warning).includes(path));
+			assert.equal(diagnostics.length, 1);
+		} finally {
+			warnings.mockRestore();
+		}
+	});
+});
+
+it("removes a torn line another process left after this store loaded the session (#4993)", async () => {
+	await withStore(async (store) => {
+		await store.create(header, [entry]);
+		const path = await location(store);
+		const acknowledged = await readFile(path, "utf8");
+		const foreign = { ...entry, id: "foreign" };
+		await appendFile(path, `${JSON.stringify(foreign)}\n${JSON.stringify({ ...entry, id: "torn" }).slice(0, 20)}`);
+		const warnings = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+		try {
+			assert.deepEqual(await store.append(header.id, [entry], { expectSeq: 2 }), { lastSeq: 3 });
+		} finally {
+			warnings.mockRestore();
+		}
+		assert.equal(
+			await readFile(path, "utf8"),
+			`${acknowledged}${JSON.stringify(foreign)}\n${JSON.stringify(entry)}\n`,
+		);
+		assert.deepEqual((await store.load(header.id)).entries, [entry, foreign, entry]);
+	});
+});
+
+it("still rejects a malformed complete line before the last one (#4993)", async () => {
+	await withStore(async (store, directory) => {
+		const path = join(directory, "malformed.jsonl");
+		const content = `${JSON.stringify({ type: "session", ...header })}\n{"type":\n${JSON.stringify(entry)}\n`;
 		await writeFile(path, content);
-		assert.deepEqual(await store.readHeader(header.id), header);
 		const isUnavailable = (error: Error): boolean => {
 			assert.ok(error instanceof StorageUnavailableError);
-			assert.equal(error.adapter, "jsonl");
 			assert.equal(error.location, directory);
 			assert.ok(error.cause instanceof SyntaxError);
 			return true;
@@ -534,6 +584,23 @@ it("never repairs a torn final line and wraps the parse failure", async () => {
 		await assert.rejects(store.load(header.id), isUnavailable);
 		await assert.rejects(store.append(header.id, [entry], { expectSeq: 1 }), isUnavailable);
 		assert.equal(await readFile(path, "utf8"), content);
+	});
+});
+
+it("reports the sequence in the file, not the cached one, after another process truncates it (#4993)", async () => {
+	await withStore(async (store) => {
+		const entries = [entry, { ...entry, id: "second" }, { ...entry, id: "third" }];
+		await store.create(header, entries);
+		const path = await location(store);
+		const original = await readFile(path, "utf8");
+		await writeFile(path, original.split("\n").slice(0, 2).join("\n").concat("\n"));
+		await assert.rejects(store.append(header.id, [entry], { expectSeq: 3 }), (error: Error) => {
+			assert.ok(error instanceof SessionConflictError);
+			assert.equal(error.expectedSeq, 3);
+			assert.equal(error.actualSeq, 1);
+			assert.match(error.message, /expected 3, actual 1$/);
+			return true;
+		});
 	});
 });
 
@@ -966,7 +1033,8 @@ for (const invalid of ["version", "header", "entry"] as const) {
 			const content =
 				invalid === "header"
 					? "{torn"
-					: `${JSON.stringify({ type: "session", ...header, version: invalid === "version" ? 3 : 4 })}\n{torn`;
+					: // A complete line, so a malformed entry rather than one a crashed writer left unfinished (#4993).
+						`${JSON.stringify({ type: "session", ...header, version: invalid === "version" ? 3 : 4 })}\n{torn\n`;
 			await writeFile(path, content);
 			const reopened = await JsonlSessionStore.open(directory);
 			try {
