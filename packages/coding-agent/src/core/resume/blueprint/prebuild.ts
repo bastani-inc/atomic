@@ -1,7 +1,7 @@
 /**
  * `atomic blueprint prebuild` (#4748): builds a repository ahead of time, in a trusted job such as a default-branch CI
  * run or on a developer's machine, so a later resume claims a ready worktree instead of building one. With `park`, the
- * declared `kind: build` output moves into the seed directory that `atomic blueprint cache-key` names, for a cache
+ * build output that `resume.cache` declares moves into the seed directory that `atomic blueprint cache-key` names, for a cache
  * save; a resume on another machine adopts it.
  */
 
@@ -45,7 +45,7 @@ export interface PrebuildRepositoryOptions {
 	readonly settings: WorktreeSnapshotSettings;
 	/** `snapshots.pool.maxIdlePerRepository`: idle worktrees of the repository kept after the prebuild. */
 	readonly maxIdlePerRepository: number;
-	/** Move the declared `kind: build` output into the seed directory for a cache save. */
+	/** Move the build output `resume.cache` declares into the seed directory for a cache save. */
 	readonly park?: boolean;
 	/** The deprecated `resume.setupCommand`, run as a resume would. */
 	readonly setupCommand?: string;

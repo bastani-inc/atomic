@@ -472,6 +472,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
 			const inputs = entry.payload.inputs;
 			const ts = entry.payload.ts;
 			if (typeof runId === "string" && typeof name === "string" && typeof ts === "number") {
+				// A failed run resumed in place reuses its id: its new start reopens it.
+				ended.delete(runId);
 				started.set(runId, {
 					name,
 					inputs: serializableObjectOrEmpty(inputs),

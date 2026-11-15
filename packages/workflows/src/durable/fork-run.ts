@@ -73,6 +73,7 @@ import {
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
+import { durableStageGroupKey } from "./stage-topology-validation.js";
 import type {
 	DurableCheckpoint,
 	DurableStageCheckpoint,
@@ -797,13 +798,18 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 			checkpoint.kind === "stage" && checkpoint.output !== undefined ? [checkpoint.replayKey] : [],
 		),
 	);
+	const completedGroups = completedStageGroups(prefix);
 	const keep = ({ seq, checkpoint }: CheckpointEvent): boolean => {
 		// An attempt that began after the cut is not part of the fork (#4874).
 		if (seq >= cut) return carryAll && checkpoint.kind === "ui" && workflowAttemptOf(checkpoint) === undefined;
 		if (target === undefined) return true;
 		if (checkpoint.kind === "tool") return checkpoint.name !== RUN_RESULT_CHECKPOINT_NAME;
 		if (checkpoint.kind === "ui") return true;
-		return checkpoint.topology?.boundary !== undefined || completed.has(checkpoint.replayKey);
+		return (
+			checkpoint.topology?.boundary !== undefined ||
+			completed.has(checkpoint.replayKey) ||
+			completedGroups.has(durableStageGroupKey(checkpoint))
+		);
 	};
 	let handleAtCut: DurableWorkflowHandle | undefined;
 	for (const entry of source.entries) {
@@ -821,6 +827,19 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 		),
 		pendingStageMessages: messageHandle.pendingStageMessages ?? [],
 	};
+}
+
+/**
+ * Stage groups, keyed as reconstruction groups them, whose latest topology before the cut is completed. A `ctx.ui`
+ * prompt node completes without an output, so this is what keeps its records next to the answer the fork carries;
+ * without them the tools and stages that follow the prompt name a parent the fork does not have (#4879).
+ */
+function completedStageGroups(prefix: readonly CheckpointEvent[]): ReadonlySet<string> {
+	const status = new Map<string, string | undefined>();
+	for (const { checkpoint } of prefix)
+		if (checkpoint.kind === "stage" && checkpoint.topology !== undefined)
+			status.set(durableStageGroupKey(checkpoint), checkpoint.topology.status);
+	return new Set([...status].flatMap(([key, latest]) => (latest === "completed" ? [key] : [])));
 }
 
 class ForkIdentities {
