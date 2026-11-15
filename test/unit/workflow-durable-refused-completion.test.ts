@@ -3,9 +3,15 @@ import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import {
+	completedRunAttempt,
+	recordRunCompletedCheckpointAsync,
+} from "../../packages/workflows/src/durable/attempt-identity.js";
+import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
 import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { RUN_TIMING_CHECKPOINT_NAME } from "../../packages/workflows/src/durable/run-timing.js";
+import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -185,4 +191,62 @@ test("opening only some runs of a journal writes the refused completed status of
 	} finally {
 		await partial.close();
 	}
+});
+
+test("only a run-end record of a run's timing names the attempt that completed (#5133)", () => {
+	const record = {
+		kind: "tool" as const,
+		workflowId: "w",
+		checkpointId: "run-end:2",
+		name: RUN_TIMING_CHECKPOINT_NAME,
+		argsHash: RUN_TIMING_CHECKPOINT_NAME,
+		output: { completedAttempt: 2 },
+		completedAt: 1,
+	};
+	assert.equal(completedRunAttempt(record), 2);
+	assert.equal(completedRunAttempt({ ...record, checkpointId: "run-timing:5" }), undefined, "another timing record");
+	assert.equal(completedRunAttempt({ ...record, output: null }), undefined);
+	assert.equal(completedRunAttempt({ ...record, output: { completedAttempt: "2" } }), undefined);
+	assert.equal(
+		completedRunAttempt({
+			kind: "stage",
+			workflowId: "w",
+			checkpointId: "run-end:2",
+			name: "s",
+			replayKey: "s",
+			completedAt: 1,
+		} as DurableCheckpoint),
+		undefined,
+		"a stage record under the same id",
+	);
+});
+
+test("a run-end record keeps the run's elapsed time and names its attempt (#5133)", async () => {
+	const committed: DurableCheckpoint[] = [];
+	const backend = (attempt: number | undefined, timing: unknown) =>
+		({
+			...(attempt === undefined ? {} : { workflowAttempt: () => attempt }),
+			getToolOutput: (_workflowId: string, argsHash: string) =>
+				argsHash === RUN_TIMING_CHECKPOINT_NAME ? timing : undefined,
+			commitCheckpoint: async (checkpoint: DurableCheckpoint) => {
+				committed.push(checkpoint);
+			},
+		}) as unknown as DurableWorkflowBackend;
+	await recordRunCompletedCheckpointAsync(backend(2, { elapsedMs: 1234 }), "w");
+	await recordRunCompletedCheckpointAsync(backend(undefined, { elapsedMs: "1234" }), "w");
+	await recordRunCompletedCheckpointAsync(backend(0, null), "w");
+	assert.deepEqual(
+		committed.map((checkpoint) => [
+			checkpoint.checkpointId,
+			checkpoint.kind === "tool" ? [checkpoint.name, checkpoint.argsHash, checkpoint.output] : undefined,
+		]),
+		[
+			[
+				"run-end:2",
+				[RUN_TIMING_CHECKPOINT_NAME, RUN_TIMING_CHECKPOINT_NAME, { elapsedMs: 1234, completedAttempt: 2 }],
+			],
+			["run-end:0", [RUN_TIMING_CHECKPOINT_NAME, RUN_TIMING_CHECKPOINT_NAME, { completedAttempt: 0 }]],
+			["run-end:0", [RUN_TIMING_CHECKPOINT_NAME, RUN_TIMING_CHECKPOINT_NAME, { completedAttempt: 0 }]],
+		],
+	);
 });
