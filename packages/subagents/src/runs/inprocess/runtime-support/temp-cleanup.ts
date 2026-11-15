@@ -9,13 +9,30 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { TEMP_ROOT_DIR } from "../../../shared/types.js";
+import { LEGACY_TEMP_ROOT_DIR } from "../../../shared/types.js";
 
 /**
  * Historical directory name. It must keep matching what earlier versions wrote,
  * or their leftovers become unreachable garbage.
  */
-export const SUBAGENT_RUNTIME_TEMP_DIR = path.join(TEMP_ROOT_DIR, "nested-subagent-events");
+export const SUBAGENT_RUNTIME_TEMP_DIR = path.join(LEGACY_TEMP_ROOT_DIR, "nested-subagent-events");
+
+/**
+ * The legacy root sits at a fixed name in the shared temp directory, so it is
+ * only scanned when it is a real directory this account owns and nobody else
+ * can write to; otherwise its contents may not be ours to delete.
+ */
+function isOwnUnsharedDirectory(dirPath: string): boolean {
+	try {
+		const stat = fs.lstatSync(dirPath);
+		if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+		const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+		if (uid !== undefined && stat.uid !== uid) return false;
+		return process.platform === "win32" || (stat.mode & 0o022) === 0;
+	} catch {
+		return false;
+	}
+}
 
 /** Whether any entry in the tree rooted at filePath has an mtime at or after cutoff, stopping at the first hit. */
 export function hasEntryNewerThan(filePath: string, cutoff: number): boolean {
@@ -65,5 +82,6 @@ function cleanupOldSubdirectories(root: string, maxAgeDays: number): void {
 }
 
 export function cleanupOldSubagentRuntimeDirs(maxAgeDays: number): void {
+	if (!isOwnUnsharedDirectory(LEGACY_TEMP_ROOT_DIR) || !isOwnUnsharedDirectory(SUBAGENT_RUNTIME_TEMP_DIR)) return;
 	cleanupOldSubdirectories(SUBAGENT_RUNTIME_TEMP_DIR, maxAgeDays);
 }

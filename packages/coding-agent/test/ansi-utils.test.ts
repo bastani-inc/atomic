@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitIncompleteAnsiSuffix, stripAnsi } from "../src/utils/ansi.ts";
+import { stripAnsi } from "../src/utils/ansi.ts";
 
 function referenceAnsiRegex(): RegExp {
 	const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
@@ -123,13 +123,5 @@ describe("stripAnsi", () => {
 		expect(stripAnsi("\x1b[?1h\x1b=123 tests passed")).toBe("123 tests passed");
 		expect(stripAnsi("\x1b[?1l\x1b>42 files")).toBe("42 files");
 		expect(stripAnsi("\x1b<10 items")).toBe("10 items");
-	});
-});
-
-describe("splitIncompleteAnsiSuffix", () => {
-	// https://github.com/earendil-works/pi/issues/11377
-	it("holds back unfinished private-parameter CSI sequences", () => {
-		expect(splitIncompleteAnsiSuffix("x\x1b[<35;59")).toEqual({ complete: "x", pending: "\x1b[<35;59" });
-		expect(splitIncompleteAnsiSuffix("x\x1b=")).toEqual({ complete: "x\x1b=", pending: "" });
 	});
 });

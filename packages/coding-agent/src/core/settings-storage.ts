@@ -18,6 +18,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
+import { releaseLockSync } from "./lock-release.ts";
 import { deepMergeSettings } from "./settings-merge.js";
 import type { Settings, SettingsFieldOrigin, SettingsLayer, SettingsScope, SettingsStorage } from "./settings-types.ts";
 
@@ -252,7 +253,7 @@ export class FileSettingsStorage implements SettingsStorage {
 			}
 		} finally {
 			if (release) {
-				release();
+				releaseLockSync(release, path);
 			}
 		}
 	}
@@ -272,7 +273,7 @@ export class FileSettingsStorage implements SettingsStorage {
 				writeSettingsFile(path, next);
 			}
 		} finally {
-			release();
+			releaseLockSync(release, path);
 		}
 	}
 }

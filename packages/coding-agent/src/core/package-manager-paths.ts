@@ -1,20 +1,27 @@
 import { createHash } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { APP_NAME, CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
+import { CONFIG_DIR_NAME, getAgentDir, getAgentDirs, getProjectConfigDirs } from "../config.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { PackageLocationContext, SourceScope } from "./package-manager-types.ts";
+import { ensurePrivateTempDir } from "./tools/session-temp-dir.ts";
 
 export function getHomeDir(): string {
 	return process.env.HOME || homedir();
 }
 
+/**
+ * Where a temporary (`-e`) install lives: below a temp directory only the
+ * current account owns. Throws when that directory exists but cannot be
+ * trusted (another owner, a symlink, or group/other access), so a package
+ * someone else placed there is never resolved or loaded.
+ */
 export function getTemporaryDir(prefix: string, suffix?: string, ref?: string): string {
 	const hash = createHash("sha256")
 		.update(`${prefix}-${suffix ?? ""}${ref ? `@${ref}` : ""}`)
 		.digest("hex")
 		.slice(0, 8);
-	return join(tmpdir(), `${APP_NAME}-extensions`, prefix, hash, suffix ?? "");
+	return join(ensurePrivateTempDir("extensions"), prefix, hash, suffix ?? "");
 }
 
 export function getBaseDirsForScope(context: PackageLocationContext, scope: SourceScope): string[] {
