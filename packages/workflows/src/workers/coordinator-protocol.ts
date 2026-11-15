@@ -9,6 +9,7 @@ import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
+import type { ResolvedCheckpointShipping } from "./public-options.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
 import type { PublishedRun } from "./run-changes.js";
 import type {
@@ -67,6 +68,8 @@ export interface SharedPoolCoordination {
 	readonly host: string;
 	/** Bound work that no capable live host claims within this window fails, typed (the root's coordinator only). */
 	readonly claimWindowMs: number;
+	/** Checkpoint shipping of the root's children (#4768); absent: every checkpoint commits to the shared journal. */
+	readonly checkpointShipping?: ResolvedCheckpointShipping;
 }
 
 interface PoolCoordinatorCommonOptions {

@@ -2654,7 +2654,7 @@ export class SqlPoolQueue {
 }
 
 /** The journal key a checkpoint's event is recorded under. */
-function checkpointKey(checkpoint: DurableCheckpoint): string {
+export function checkpointKey(checkpoint: DurableCheckpoint): string {
 	return JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 }
 
