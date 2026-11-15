@@ -17,6 +17,8 @@ export interface WorktreeInfo {
 	index: number;
 	nodeModulesLinked: boolean;
 	syntheticPaths: string[];
+	/** Setup steps that could not be done, such as copying `.worktreeinclude` files; the worktree works without them. */
+	setupWarnings?: string[];
 }
 interface WorktreeDiff {
 	index: number;
@@ -31,6 +33,8 @@ interface WorktreeDiff {
 	worktreePath: string;
 	/** Why the diff could not be captured; the worktree is then kept with its work (#4876). */
 	captureError?: string;
+	/** The worktree's setup warnings. */
+	setupWarnings?: string[];
 }
 interface WorktreeTaskCwdConflict {
 	index: number;
@@ -396,8 +400,9 @@ function prepareWorktree(
 	baseCommit: string,
 	setupHook: ResolvedWorktreeSetupHook | undefined,
 	agent: string | undefined,
+	warnings: string[],
 ): string[] {
-	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath);
+	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath, warnings);
 	if (setupHook) {
 		syntheticPaths.push(
 			...runWorktreeSetupHook(setupHook, {
@@ -434,6 +439,7 @@ function createSingleWorktree(
 		throw new Error(message);
 	}
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
+	const warnings: string[] = [];
 	try {
 		const syntheticPaths = prepareWorktree(
 			mainRoot,
@@ -445,6 +451,7 @@ function createSingleWorktree(
 			baseCommit,
 			setupHook,
 			agent,
+			warnings,
 		);
 		return {
 			path: worktreePath,
@@ -453,6 +460,7 @@ function createSingleWorktree(
 			index,
 			nodeModulesLinked: syntheticPaths.includes("node_modules"),
 			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
 		};
 	} catch (error) {
 		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
@@ -474,15 +482,21 @@ export function recreateWorktree(
 ): WorktreeInfo {
 	if (fs.existsSync(worktree.path)) {
 		let restored: string[];
+		const warnings: string[] = [];
 		try {
-			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path);
+			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path, warnings);
 		} catch {
 			// The worktree itself is intact: the child resumes in it without the setup that could not be re-applied.
 			return worktree;
 		}
-		if (restored.length === 0) return worktree;
+		if (restored.length === 0 && warnings.length === 0) return worktree;
 		const syntheticPaths = [...new Set([...worktree.syntheticPaths, ...restored])];
-		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+		return {
+			...worktree,
+			nodeModulesLinked: syntheticPaths.includes("node_modules"),
+			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
+		};
 	}
 	runGit(setup.cwd, ["worktree", "prune"]);
 	const branchExists =
@@ -493,6 +507,7 @@ export function recreateWorktree(
 			? ["worktree", "add", worktree.path, worktree.branch]
 			: ["worktree", "add", "-b", worktree.branch, worktree.path, setup.baseCommit],
 	);
+	const warnings: string[] = [];
 	try {
 		const syntheticPaths = prepareWorktree(
 			setup.cwd,
@@ -504,8 +519,15 @@ export function recreateWorktree(
 			setup.baseCommit,
 			resolveWorktreeSetupHook(setup.cwd, options?.setupHook),
 			options?.agent,
+			warnings,
 		);
-		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+		const { setupWarnings: _earlier, ...recreated } = worktree;
+		return {
+			...recreated,
+			nodeModulesLinked: syntheticPaths.includes("node_modules"),
+			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
+		};
 	} catch (error) {
 		// A branch that already existed may hold commits: remove only the worktree.
 		if (branchExists) removeWorktreeCheckout(setup.cwd, worktree);
@@ -585,6 +607,7 @@ function emptyDiff(worktree: WorktreeInfo, agent: string, patchPath: string): Wo
 		deletions: 0,
 		patchPath,
 		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 function parseNumstat(numstat: string): { filesChanged: number; insertions: number; deletions: number } {
@@ -628,6 +651,7 @@ function captureWorktreeDiff(
 		deletions: parsed.deletions,
 		patchPath,
 		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 /**
@@ -717,9 +741,16 @@ export function cleanupWorktrees(setup: WorktreeSetup): void {
 		cleanupSingleWorktree(setup.cwd, worktree);
 	}
 }
+/** A worktree's setup warnings, one line each, naming its task. */
+function setupWarningLines(diffs: WorktreeDiff[]): string[] {
+	return diffs.flatMap((diff) =>
+		(diff.setupWarnings ?? []).map((warning) => `Warning: Task ${diff.index + 1} (${diff.agent}): ${warning}`),
+	);
+}
 export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 	const changed = diffs.filter((diff) => diff.captureError !== undefined || hasWorktreeChanges(diff));
-	if (changed.length === 0) return "";
+	const warnings = setupWarningLines(diffs);
+	if (changed.length === 0 && warnings.length === 0) return "";
 	const lines: string[] = ["=== Worktree Changes ===", ""];
 	for (const diff of changed) {
 		if (diff.captureError !== undefined) {
@@ -738,7 +769,7 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 		}
 		lines.push("");
 	}
-	const patchesDir = path.dirname(changed[0]!.patchPath);
-	lines.push(`Full patches: ${patchesDir}`);
+	if (changed.length > 0) lines.push(`Full patches: ${path.dirname(changed[0]!.patchPath)}`, "");
+	lines.push(...warnings);
 	return lines.join("\n").trimEnd();
 }

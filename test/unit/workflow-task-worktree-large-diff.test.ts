@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
@@ -119,3 +119,25 @@ test("ctx.task with worktree: true and artifacts: false reports no artifacts (#4
 	assert.equal(task.artifacts, undefined);
 	assert.equal(task.warnings, undefined);
 });
+
+// Git for Windows reads a directory as an empty exclude file instead of failing.
+test.skipIf(process.platform === "win32")(
+	"ctx.task with worktree: true runs when .worktreeinclude cannot be read and warns where (#4876)",
+	async () => {
+		const root = makeTempDirectory("atomic-task-include-warning-");
+		roots.push(root);
+		const repo = createScenarioRepository(root);
+		mkdirSync(join(repo, ".worktreeinclude"));
+		let worktree = "";
+		const task = await runWorktreeTask(repo, (cwd) => {
+			worktree = cwd;
+			writeFileSync(join(cwd, "work.txt"), "work\n");
+		});
+		const warning = `.worktreeinclude files were not copied into ${worktree}: could not list .worktreeinclude files:`;
+		assert.equal(task.warnings?.length, 1, `one warning: ${JSON.stringify(task.warnings)}`);
+		assert.ok((task.warnings?.[0] ?? "").startsWith(warning), `the task warns with the worktree: ${task.warnings}`);
+		const artifact = diffArtifact(task);
+		assert.equal(artifact.filesChanged, 1, "the task's work is captured");
+		assert.deepEqual(artifact.setupWarnings, task.warnings, "the diff artifact carries the same warning");
+	},
+);

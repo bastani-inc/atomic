@@ -121,15 +121,27 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 
 	// Git for Windows reads a directory as an empty exclude file instead of failing.
 	test.skipIf(process.platform === "win32")(
-		"a .worktreeinclude git cannot read fails worktree creation with git's reason (#4876)",
+		"a .worktreeinclude git cannot read still creates the worktree and warns with git's reason (#4876)",
 		() => {
 			const root = tempRoot();
 			const result =
 				runtime === "Node"
 					? runBrokenIncludeScenario(root, module)
 					: inBun<BrokenIncludeScenarioResult>("broken", root, module);
-			assert.match(result.error ?? "", /could not list \.worktreeinclude files: .*cannot use \.worktreeinclude/);
-			assert.doesNotMatch(result.error ?? "", /\s$/, "git's reason is trimmed");
+			assert.equal(result.error, undefined, "worktree creation does not fail");
+			assert.equal(result.worktreeCreated, true);
+			assert.equal(result.setupWarnings?.length, 1, `one setup warning: ${JSON.stringify(result.setupWarnings)}`);
+			const warning = result.setupWarnings?.[0] ?? "";
+			assert.ok(warning.includes(result.worktreePath), "the warning names the worktree");
+			assert.match(
+				warning,
+				/\.worktreeinclude files were not copied into .*: could not list \.worktreeinclude files: .*cannot use \.worktreeinclude/,
+			);
+			assert.doesNotMatch(warning, /\s$/, "git's reason is trimmed");
+			assert.ok(
+				result.summary.includes(`Warning: Task 1 (worker): ${warning}`),
+				`the summary carries the warning: ${result.summary}`,
+			);
 		},
 	);
 

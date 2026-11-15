@@ -54,6 +54,10 @@ export interface NoisyHookScenarioResult {
 
 export interface BrokenIncludeScenarioResult {
 	readonly error: string | undefined;
+	readonly worktreePath: string;
+	readonly worktreeCreated: boolean;
+	readonly setupWarnings: readonly string[] | undefined;
+	readonly summary: string;
 }
 
 export interface FailedCaptureScenarioResult {
@@ -273,15 +277,30 @@ export function runNoisyHookScenario(root: string, module: WorktreeModule): Nois
 	}
 }
 
-/** A `.worktreeinclude` git cannot read (a directory): creating a worktree reports it instead of skipping it. */
+/**
+ * A `.worktreeinclude` git cannot read (a directory): the worktree is still created, without the included files, and
+ * its diff and the summary carry a warning.
+ */
 export function runBrokenIncludeScenario(root: string, module: WorktreeModule): BrokenIncludeScenarioResult {
 	const repo = createScenarioRepository(root);
 	mkdirSync(join(repo, ".worktreeinclude"));
 	const api = modules(module);
+	let setup: ReturnType<typeof api.create>;
 	try {
-		api.cleanup(api.create(repo, `broken-${module}`, 1));
-		return { error: undefined };
+		setup = api.create(repo, `broken-${module}`, 1);
 	} catch (error) {
-		return { error: error instanceof Error ? error.message : String(error) };
+		const message = error instanceof Error ? error.message : String(error);
+		return { error: message, worktreePath: "", worktreeCreated: false, setupWarnings: undefined, summary: "" };
 	}
+	const worktreePath = setup.worktrees[0]!.path;
+	const worktreeCreated = existsSync(worktreePath);
+	const diffs = api.diff(setup, ["worker"], join(root, "diffs"));
+	api.cleanup(setup);
+	return {
+		error: undefined,
+		worktreePath,
+		worktreeCreated,
+		setupWarnings: (diffs[0] as { setupWarnings?: string[] } | undefined)?.setupWarnings,
+		summary: api.format(diffs),
+	};
 }

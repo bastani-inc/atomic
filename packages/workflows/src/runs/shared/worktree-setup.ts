@@ -349,8 +349,9 @@ function createSingleWorktree(
 
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
 	const syntheticPaths: string[] = [];
+	const warnings: string[] = [];
 	try {
-		syntheticPaths.push(...performPostCreationSetup(mainRoot, worktreePath, symlinkDirectories));
+		syntheticPaths.push(...performPostCreationSetup(mainRoot, worktreePath, symlinkDirectories, warnings));
 		if (setupHook) {
 			const hookSyntheticPaths = runWorktreeSetupHook(setupHook, {
 				version: 1,
@@ -372,6 +373,7 @@ function createSingleWorktree(
 			index,
 			nodeModulesLinked: syntheticPaths.includes("node_modules"),
 			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
 		};
 	} catch (error) {
 		// Setup can throw after linking a configured directory but before reporting it.

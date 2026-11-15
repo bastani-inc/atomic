@@ -84,11 +84,26 @@ function ignoredAmong(runGit: WorktreeGitRunner, mainRoot: string, candidates: r
 	}
 	return ignored;
 }
-function copyIncludes(runGit: WorktreeGitRunner, mainRoot: string, worktreeRoot: string): void {
-	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return;
+/** The ignored files `.worktreeinclude` names, which a new worktree gets a copy of. */
+function includedFiles(runGit: WorktreeGitRunner, mainRoot: string): string[] {
 	const included = runGit(mainRoot, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"]);
 	if (included.status !== 0) throw new Error(`could not list .worktreeinclude files: ${included.stderr.trim()}`);
-	for (const relativePath of ignoredAmong(runGit, mainRoot, included.stdout.split("\0").filter(Boolean))) {
+	return ignoredAmong(runGit, mainRoot, included.stdout.split("\0").filter(Boolean));
+}
+/**
+ * Copy the files `.worktreeinclude` names into the new worktree. When git cannot list them, the worktree is still set
+ * up, without them, and a warning saying so is returned (#4876).
+ */
+function copyIncludes(runGit: WorktreeGitRunner, mainRoot: string, worktreeRoot: string): string | undefined {
+	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return undefined;
+	let files: string[];
+	try {
+		files = includedFiles(runGit, mainRoot);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return `.worktreeinclude files were not copied into ${worktreeRoot}: ${reason}`;
+	}
+	for (const relativePath of files) {
 		if (hasTrackedPathComponent(runGit, worktreeRoot, relativePath)) continue;
 		const source = path.join(mainRoot, relativePath);
 		const destination = path.join(worktreeRoot, relativePath);
@@ -100,8 +115,18 @@ function copyIncludes(runGit: WorktreeGitRunner, mainRoot: string, worktreeRoot:
 			/* concurrent removal */
 		}
 	}
+	return undefined;
 }
-export function performPostCreationSetup(runGit: WorktreeGitRunner, mainRoot: string, worktreeRoot: string): string[] {
+/**
+ * Set up a new worktree and return the synthetic paths it created. A step that could not be done but is not needed to
+ * work in the worktree adds a message to `warnings` instead of failing the setup.
+ */
+export function performPostCreationSetup(
+	runGit: WorktreeGitRunner,
+	mainRoot: string,
+	worktreeRoot: string,
+	warnings: string[] = [],
+): string[] {
 	const synthetic: string[] = [];
 	if (copySettings(runGit, mainRoot, worktreeRoot, ".atomic/settings.local.json"))
 		synthetic.push(".atomic/settings.local.json");
@@ -122,6 +147,7 @@ export function performPostCreationSetup(runGit: WorktreeGitRunner, mainRoot: st
 			/* optional */
 		}
 	}
-	copyIncludes(runGit, mainRoot, worktreeRoot);
+	const includeWarning = copyIncludes(runGit, mainRoot, worktreeRoot);
+	if (includeWarning !== undefined) warnings.push(includeWarning);
 	return synthetic;
 }

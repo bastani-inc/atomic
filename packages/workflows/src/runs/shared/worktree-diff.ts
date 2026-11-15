@@ -62,6 +62,7 @@ function emptyDiff(index: number, agent: string, worktree: WorktreeInfo, patchPa
 		deletions: 0,
 		patchPath,
 		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 
@@ -111,6 +112,7 @@ function captureWorktreeDiff(
 		deletions: parsed.deletions,
 		patchPath,
 		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 
@@ -161,9 +163,17 @@ export function diffWorktrees(setup: WorktreeSetup, agents: string[], diffsDir: 
 	return diffs;
 }
 
+/** A worktree's setup warnings, one line each, naming its task. */
+function setupWarningLines(diffs: WorktreeDiff[]): string[] {
+	return diffs.flatMap((diff) =>
+		(diff.setupWarnings ?? []).map((warning) => `Warning: Task ${diff.index + 1} (${diff.agent}): ${warning}`),
+	);
+}
+
 export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 	const changed = diffs.filter((diff) => diff.captureError !== undefined || hasWorktreeChanges(diff));
-	if (changed.length === 0) return "";
+	const warnings = setupWarningLines(diffs);
+	if (changed.length === 0 && warnings.length === 0) return "";
 
 	const lines: string[] = ["=== Worktree Changes ===", ""];
 	for (const diff of changed) {
@@ -184,7 +194,7 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 		lines.push("");
 	}
 
-	const patchesDir = path.dirname(changed[0]!.patchPath);
-	lines.push(`Full patches: ${patchesDir}`);
+	if (changed.length > 0) lines.push(`Full patches: ${path.dirname(changed[0]!.patchPath)}`, "");
+	lines.push(...warnings);
 	return lines.join("\n").trimEnd();
 }

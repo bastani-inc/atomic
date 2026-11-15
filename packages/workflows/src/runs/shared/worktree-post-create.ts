@@ -122,11 +122,26 @@ function ignoredAmong(mainRoot: string, candidates: readonly string[]): string[]
 	}
 	return ignored;
 }
-function copyWorktreeIncludes(mainRoot: string, worktreeRoot: string): void {
-	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return;
+/** The ignored files `.worktreeinclude` names, which a new worktree gets a copy of. */
+function includedFiles(mainRoot: string): string[] {
 	const included = runGit(mainRoot, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"]);
 	if (included.status !== 0) throw new Error(`could not list .worktreeinclude files: ${included.stderr.trim()}`);
-	for (const relativePath of ignoredAmong(mainRoot, included.stdout.split("\0").filter(Boolean))) {
+	return ignoredAmong(mainRoot, included.stdout.split("\0").filter(Boolean));
+}
+/**
+ * Copy the files `.worktreeinclude` names into the new worktree. When git cannot list them, the worktree is still set
+ * up, without them, and a warning saying so is returned (#4876).
+ */
+function copyWorktreeIncludes(mainRoot: string, worktreeRoot: string): string | undefined {
+	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return undefined;
+	let files: string[];
+	try {
+		files = includedFiles(mainRoot);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return `.worktreeinclude files were not copied into ${worktreeRoot}: ${reason}`;
+	}
+	for (const relativePath of files) {
 		if (hasTrackedPathComponent(worktreeRoot, relativePath)) continue;
 		const source = path.join(mainRoot, relativePath);
 		const destination = path.join(worktreeRoot, relativePath);
@@ -138,16 +153,23 @@ function copyWorktreeIncludes(mainRoot: string, worktreeRoot: string): void {
 			// A concurrently removed ignored file is harmless.
 		}
 	}
+	return undefined;
 }
 
+/**
+ * Set up a new worktree and return the synthetic paths it created. A step that could not be done but is not needed to
+ * work in the worktree adds a message to `warnings` instead of failing the setup.
+ */
 export function performPostCreationSetup(
 	mainRoot: string,
 	worktreeRoot: string,
 	symlinkDirectories: readonly string[],
+	warnings: string[] = [],
 ): string[] {
 	const syntheticPaths = propagateLocalSettings(mainRoot, worktreeRoot);
 	configureSharedHooksPath(mainRoot);
 	syntheticPaths.push(...symlinkConfiguredDirectories(mainRoot, worktreeRoot, symlinkDirectories));
-	copyWorktreeIncludes(mainRoot, worktreeRoot);
+	const includeWarning = copyWorktreeIncludes(mainRoot, worktreeRoot);
+	if (includeWarning !== undefined) warnings.push(includeWarning);
 	return syntheticPaths;
 }

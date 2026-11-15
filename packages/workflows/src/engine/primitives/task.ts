@@ -151,19 +151,23 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				return preparedTask;
 			});
 			const artifacts = collect();
-			if (artifacts.length === 0) return result;
-			// A worktree whose diff could not be captured is kept; the task's result says where (#4876).
-			const captureWarnings = artifacts.flatMap((artifact) =>
-				artifact.captureError === undefined
-					? []
-					: [
-							`Diff capture failed for task ${name}; its worktree was kept at ${artifact.worktreePath}: ${artifact.captureError}`,
-						],
-			);
+			// A worktree whose diff could not be captured is kept, and setup it could not finish is skipped: the task's
+			// result says so, with the worktree (#4876).
+			const worktreeWarnings = [
+				...(prepared?.setup?.worktrees ?? []).flatMap((worktree) => worktree.setupWarnings ?? []),
+				...artifacts.flatMap((artifact) =>
+					artifact.captureError === undefined
+						? []
+						: [
+								`Diff capture failed for task ${name}; its worktree was kept at ${artifact.worktreePath}: ${artifact.captureError}`,
+							],
+				),
+			];
+			if (artifacts.length === 0 && worktreeWarnings.length === 0) return result;
 			return {
 				...result,
-				artifacts: [...(result.artifacts ?? []), ...artifacts],
-				...(captureWarnings.length === 0 ? {} : { warnings: [...(result.warnings ?? []), ...captureWarnings] }),
+				...(artifacts.length === 0 ? {} : { artifacts: [...(result.artifacts ?? []), ...artifacts] }),
+				...(worktreeWarnings.length === 0 ? {} : { warnings: [...(result.warnings ?? []), ...worktreeWarnings] }),
 			};
 		} finally {
 			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
