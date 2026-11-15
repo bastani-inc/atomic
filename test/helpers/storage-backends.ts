@@ -112,8 +112,13 @@ export const sqliteFileBackend: StorageBackend = {
  */
 const FACADE_SUITE_TABLES = ["children", "parents", "items", "concurrent_items", "integers", "reals", "texts", "blobs"];
 
-/** Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. */
-async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables: boolean): Promise<void> {
+/**
+ * Drops the scope's tables on a shared libSQL server; a table another still references is retried after it. Every
+ * request to the server runs on a connection of its own, so `PRAGMA foreign_keys = OFF` would not reach the drops.
+ * Tables a test leaves behind make every later request to the server slower: sqld loads the whole schema for each
+ * request (#4768).
+ */
+export async function dropLibsqlScope(database: SqliteDatabase, prefix: string, facadeTables = false): Promise<void> {
 	const fixed = facadeTables ? FACADE_SUITE_TABLES : [];
 	const rows = await database.all(
 		`SELECT name FROM sqlite_master WHERE type = 'table' AND (substr(name, 1, length(?)) = ? OR name IN (${fixed.map(() => "?").join(", ")}))`,
