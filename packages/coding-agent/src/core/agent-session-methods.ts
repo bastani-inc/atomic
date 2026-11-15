@@ -39,6 +39,7 @@ import type {
 	PromptDisposition,
 	PromptOptions,
 	QueuedInputDisposition,
+	SessionAbortOptions,
 	SessionRecoveryReport,
 	SessionStats,
 	ToolDefinitionEntry,
@@ -312,7 +313,7 @@ export interface AgentSessionMethodSurface extends AgentSessionQueuePauseControl
 	clearQueue(options?: ClearQueueOptions): ClearedQueue;
 	getSteeringMessages(): readonly string[];
 	getFollowUpMessages(): readonly string[];
-	abort(): Promise<void>;
+	abort(options?: SessionAbortOptions): Promise<void>;
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 

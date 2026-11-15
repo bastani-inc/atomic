@@ -163,6 +163,14 @@ export interface ClearQueueOptions {
 	preserveUnprotectedCustomMessages?: boolean;
 }
 
+export interface SessionAbortOptions {
+	/**
+	 * Hold queued messages before aborting, as `pauseQueuedMessages()` does. A protected notice still queued, such as a
+	 * background task's completion, is then saved by `dispose()` for the next session instead of failing it.
+	 */
+	pauseQueuedMessages?: boolean;
+}
+
 /** Text of queued messages, per lane, in queue order. */
 export interface QueuedTexts {
 	steering: string[];

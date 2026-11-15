@@ -601,8 +601,8 @@ interface AgentSession {
   setBackgroundCompactionEnabled(enabled: boolean): void;
   setBackgroundCompactionThresholdPercent(percent: number): void;
 
-  // Abort current operation
-  abort(): Promise<void>;
+  // Abort current operation; pauseQueuedMessages holds queued messages first
+  abort(options?: { pauseQueuedMessages?: boolean }): Promise<void>;
 
   // Cleanup
   dispose(): Promise<void>;
@@ -612,6 +612,17 @@ interface AgentSession {
 Always `await session.dispose()` in `finally`. Disposal immediately refuses new work, cancels and drains owned operations, settles questions, shuts down extensions and releases session leases. Repeated calls await the same outcome.
 
 A `ShutdownFailed` error contains component failures in `errors`; cleanup still attempts the remaining components. Stores opened by the SDK, including stores created from a `sessionStore` selection, are released after session work and shutdown handlers finish. A failed session initialization releases its acquired store too. Caller-supplied `SessionStore` instances, session managers, databases, and model runtimes retain their caller-managed lifetimes. Close a supplied store or database only after its other users are done. Disposing one session does not close another session's store or a shared journal. Use `abort()` to cancel current work without destroying the session.
+
+To stop a session and then dispose it, call `await session.abort({ pauseQueuedMessages: true })` first. This holds queued messages before the abort, as Esc does in the TUI and the RPC `abort` command does. A completion notice that a background command or task queued during the run then stays queued rather than starting a turn, and `dispose()` saves it, so the next session that opens this one shows it once. A plain `abort()` leaves such a notice queued and lets it start its turn once the run stops; disposing before that turn starts rejects with `ShutdownFailed`, because Atomic will not drop input that may still race the run. `prompt()` holds while paused, so call `resumeQueuedMessages()` before prompting a session you keep.
+
+```typescript
+try {
+  await session.prompt("Refactor the parser");
+} finally {
+  await session.abort({ pauseQueuedMessages: true });
+  await session.dispose();
+}
+```
 
 Captured extension APIs also refuse new execution, mutations and registrations as soon as close or reload begins. Already-admitted `pi.exec()` calls remain part of the awaited drain; provide `signal` or `timeout` when invoking subprocesses that might not finish on their own. `abort()` alone does not retire the API. A rejected transactional reload restores the surviving generation's action admission.
 
