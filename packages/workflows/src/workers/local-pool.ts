@@ -1234,6 +1234,7 @@ export class LocalWorkerPool {
 				this.reconnectingViews.delete(view);
 				handle.receive({ kind: "ended", reason: "stage_finished" });
 				if (this.stageViews.get(view.key) === view) this.stageViews.delete(view.key);
+				this.reportUndelivered(view.key);
 				this.outboxes.delete(view.key);
 				continue;
 			}
@@ -1274,6 +1275,7 @@ export class LocalWorkerPool {
 		for (const [key, outbox] of this.outboxes) {
 			if (this.stageViews.has(key)) continue;
 			if (ended(key)) {
+				this.reportUndelivered(key);
 				this.outboxes.delete(key);
 				continue;
 			}
@@ -1287,6 +1289,30 @@ export class LocalWorkerPool {
 				.then((lease) => lease?.release())
 				.catch(() => {})
 				.finally(() => this.outboxDeliveries.delete(key));
+		}
+	}
+	/**
+	 * Tells the sender of each message in a finished stage's outbox that the stage finished before it was delivered
+	 * (#4884): an `undelivered` notice on the stage, one per message, which the stage chat shows and the parent session
+	 * is told of. A message whose send already failed because the stage finished needs none.
+	 */
+	private reportUndelivered(key: string): void {
+		const store = this.store;
+		const outbox = this.outboxes.get(key);
+		if (store === undefined || outbox === undefined) return;
+		const [runId, stageId] = JSON.parse(key) as [string, string];
+		const stage = store.run(runId)?.stages.find((candidate) => candidate.id === stageId);
+		const known = new Set(stage?.notices?.map((notice) => notice.id));
+		for (const entry of outbox) {
+			const id = `pooled-stage-undelivered:${entry.op}`;
+			if (entry.refused === true || known.has(id)) continue;
+			store.recordStageNotice(runId, stageId, {
+				id,
+				ts: Date.now(),
+				kind: "undelivered",
+				to: entry.text,
+				meta: `Stage "${stage?.name ?? stageId}" finished before this message was delivered.`,
+			});
 		}
 	}
 	/** Lease checks for the handoff, answered from the coordinator's in-order attempt and fence events. */

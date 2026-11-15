@@ -307,7 +307,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		const workflows = state.globalSettings.workflows;
 		state.globalSettings.workflows =
 			Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
-		state.markModified("workflows");
+		state.markModified("workflows", "paths");
 		state.save();
 	},
 
@@ -316,7 +316,7 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		const projectSettings = structuredClone(state.projectSettings);
 		const workflows = projectSettings.workflows;
 		projectSettings.workflows = Array.isArray(workflows) || workflows === undefined ? paths : { ...workflows, paths };
-		state.markProjectModified("workflows");
+		state.markProjectModified("workflows", "paths");
 		state.saveProjectSettings(projectSettings);
 	},
 
@@ -335,12 +335,12 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		if (scope === "project") {
 			const projectSettings = structuredClone(state.projectSettings);
 			projectSettings.workflows = withSetting(projectSettings.workflows);
-			state.markProjectModified("workflows");
+			state.markProjectModified("workflows", "autoAdvanceAfterSteer");
 			state.saveProjectSettings(projectSettings);
 			return;
 		}
 		state.globalSettings.workflows = withSetting(state.globalSettings.workflows);
-		state.markModified("workflows");
+		state.markModified("workflows", "autoAdvanceAfterSteer");
 		state.save();
 	},
 

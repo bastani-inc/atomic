@@ -88,6 +88,24 @@ test("a quit or paused agent row shows it paused and awaiting resume, not stoppe
 	}
 });
 
+test("an agent released while it waits shows released and what it waits on in /tasks, not paused (#5031)", () => {
+	const released: TaskRecord = {
+		...taskRecord("released-child"),
+		execution: {
+			kind: "settled",
+			result: {
+				kind: "cancelled",
+				cause: "pause",
+				released: { waitingOn: [{ toolCallId: "toolu-7", toolName: "bash" }] },
+			},
+		},
+	};
+	const row = plain(new TaskRow(released).render(120));
+	assert.match(row, /released · waiting/);
+	assert.doesNotMatch(row, /paused|awaiting resume|cancelled|killed|stopped/i);
+	assert.deepEqual(taskStatusAppearance(released), { label: "Released · waiting", icon: "∀", color: "muted" });
+});
+
 // RFC #2884: complete projections are not limited to the mounted viewport.
 test("groups retain all tasks, one expansion hint and separate inspector type order", async () => {
 	const fixture = taskFixture();

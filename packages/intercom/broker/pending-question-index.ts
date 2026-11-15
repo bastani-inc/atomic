@@ -38,6 +38,11 @@ export class PendingQuestionIndex {
     for (const question of questions) this.away?.forgetLive(question);
   }
 
+  /** #4996: what `work` writes to the away store is one transaction, not one commit per write. */
+  batch<T>(work: () => T): T {
+    return this.away === undefined ? work() : this.away.batch(work);
+  }
+
   private awayAsks(): AwayAsks {
     this.away ??= new AwayAsks();
     return this.away;
@@ -53,6 +58,15 @@ export class PendingQuestionIndex {
       questions,
       senderReturnAddress ?? ((question) => this.returnAddressOf(question.senderSessionId)),
     );
+  }
+
+  /**
+   * Keep questions whose recipient is away until it is back. Returns those refused because that recipient's away queue
+   * is full; their askers are connected, and are told at once (#4996).
+   */
+  keepDormantForRecipient(questions: readonly PendingQuestion[]): PendingQuestion[] {
+    // #4950: each keeps its asker's return address too, so its failure reaches it even if this broker goes first.
+    return this.awayAsks().keepForAwayRecipient(questions, (question) => this.returnAddressOf(question.senderSessionId));
   }
 
   /** The asker is away now too: its questions kept for an away recipient wait for it under its return address (#4761). */
@@ -263,7 +277,11 @@ export class PendingQuestionIndex {
     this.takeForSender(senderSessionId);
   }
 
-  takeForSender(senderSessionId: string): PendingQuestion[] {
+  /**
+   * `keepLiveRecords`: the caller writes what replaces each question's live record first, then forgets the ones nothing
+   * keeps, so a crash in between loses no ask (a broker adopting both records keeps one).
+   */
+  takeForSender(senderSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending: PendingQuestion[] = [];
     for (const [messageId, routes] of this.questions) {
       const remaining = routes.filter((route) => {
@@ -283,13 +301,14 @@ export class PendingQuestionIndex {
       if (remaining.length === 0) this.parked.delete(key);
       else parked.questions = remaining;
     }
-    this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 
-  takeForTarget(targetSessionId: string): PendingQuestion[] {
+  /** `keepLiveRecords`: as for {@link takeForSender}, the caller forgets them once what replaces them is written. */
+  takeForTarget(targetSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending = this.removeForTarget(targetSessionId);
-    this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 
