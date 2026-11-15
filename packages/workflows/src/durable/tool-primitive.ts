@@ -542,12 +542,9 @@ async function executeLiveToolInvocation<T extends WorkflowSerializableValue>(
 	let callbackCompleted = false;
 	const cancelInvocation = async (cancellation: Error): Promise<never> => {
 		control.noteCancelled();
-		// Cancellation is inspection-only: resume must retry this ordinal.
-		if (
-			returnFailure ||
-			(isWorkflowToolAbortError(cancellation) && cancellation.scope === "node") ||
-			input.runFailing?.() === true
-		) {
+		// Cancellation is inspection-only: resume must retry this ordinal. A call a node abort, or a run's quit or pause
+		// (#4878), stopped keeps its cancelled record.
+		if (returnFailure || isWorkflowToolAbortError(cancellation) || input.runFailing?.() === true) {
 			await recordCancelledToolInspection(live, startedAt, cancellation, attempts);
 		}
 		const endedAt = Date.now();

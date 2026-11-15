@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
 import type { IntercomClient } from "../broker/client.js";
 import type { SessionInfo } from "../types.js";
+import { terminalSafeLabel } from "./terminal-text.js";
 
 function formatKeyLabel(key: string): string {
   return key
@@ -142,8 +143,8 @@ export class ComposeOverlay implements Component {
 
     const lines: string[] = [];
     lines.push(border(`╭${"─".repeat(contentWidth)}╮`));
-    lines.push(row(this.theme.bold(` Send to: ${this.targetLabel}`)));
-    lines.push(row(this.theme.fg("dim", ` ${this.target.cwd} • ${this.target.model}`)));
+    lines.push(row(this.theme.bold(` Send to: ${terminalSafeLabel(this.targetLabel)}`)));
+    lines.push(row(this.theme.fg("dim", ` ${terminalSafeLabel(this.target.cwd)} • ${terminalSafeLabel(this.target.model)}`)));
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
     lines.push(row());
 
