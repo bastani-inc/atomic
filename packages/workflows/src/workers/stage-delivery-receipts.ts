@@ -22,6 +22,19 @@ function queueLengths(event: AgentSessionEvent): Record<QueueName, number> | und
 }
 
 /**
+ * Custom session entry recording that a delivery op's text entered the session. It is not
+ * part of the model's context; a reconnecting handle reads it to redeliver only what a
+ * replacement attempt does not hold (#3996).
+ */
+export const DELIVERY_OP_ENTRY = "atomic-pooled-delivery-op";
+
+/** Which op a user message carries, decided once, and whether its receipt was written with it. */
+interface MessageReceipt {
+	readonly op: DeliveryOpId | undefined;
+	readonly withMessage: boolean;
+}
+
+/**
  * Records, in a stage's own session, which delivery ops have entered it as user messages
  * (#3996), so a replacement attempt that replays the session redelivers only what it lacks.
  *
@@ -41,11 +54,13 @@ export class StageDeliveryReceipts {
 	private prompting?: DeliveryOpId;
 	/** The idle prompt whose user message started, waiting for that message's end. */
 	private prompted?: DeliveryOpId;
+	/** The op each user message carries, decided as its session write is made, or as it ends. */
+	private readonly decided = new WeakMap<object, MessageReceipt>();
 	private readonly unsubscribe: () => void;
 
 	constructor(
-		handle: StageControlHandle,
-		private readonly receipt: (op: DeliveryOpId) => void,
+		private readonly handle: StageControlHandle,
+		private readonly receipt: (op: DeliveryOpId, withMessage: boolean) => void,
 	) {
 		const queued = handle.queuedUserMessages?.();
 		this.queues.steering.length = this.queues.steering.enqueued = queued?.steering.length ?? 0;
@@ -110,16 +125,31 @@ export class StageDeliveryReceipts {
 				this.prompted = this.prompting;
 				this.prompting = undefined;
 			}
+			// The receipt joins the session write of this message, decided as that write is made.
+			const start = event;
+			this.handle.agentSession?.sessionManager.appendWithMessage(start.message, () => {
+				const { op } = this.decide(start.message, true);
+				return op === undefined ? undefined : { customType: DELIVERY_OP_ENTRY, data: { op } };
+			});
 			return;
 		}
 		if (event.type !== "message_end" || event.message.role !== "user") return;
-		if (this.consumed.length > 0) {
-			const op = this.consumed.shift();
-			if (op !== undefined) this.receipt(op);
-			return;
+		const { op, withMessage } = this.decide(event.message, false);
+		if (op !== undefined) this.receipt(op, withMessage);
+	}
+
+	/** The op the user message `input` carries: the next consumed queue item's, or the idle prompt's that started its turn. */
+	private decide(input: object, withMessage: boolean): MessageReceipt {
+		const known = this.decided.get(input);
+		if (known !== undefined) return known;
+		let op: DeliveryOpId | undefined;
+		if (this.consumed.length > 0) op = this.consumed.shift();
+		else {
+			op = this.prompted;
+			this.prompted = undefined;
 		}
-		const op = this.prompted;
-		this.prompted = undefined;
-		if (op !== undefined) this.receipt(op);
+		const decided = { op, withMessage };
+		this.decided.set(input, decided);
+		return decided;
 	}
 }

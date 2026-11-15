@@ -3,6 +3,7 @@ export { MemorySnapshotBlobStore, SqlSnapshotBlobStore, snapshotIndexTables } fr
 export type { SnapshotBlob, SnapshotBlobStore } from "../worktree-snapshot/types.ts";
 export type {
 	FencedPathId,
+	SqliteBatchOptions,
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,

@@ -105,6 +105,19 @@ async function connect(
 	return { client, received };
 }
 
+/**
+ * Wait until the broker has handled `sessionId`'s departure. On Windows a client's `disconnect()` can resolve before the
+ * broker has read its goodbye: the pipe has no half-close, so the client closes once the broker's side has taken the
+ * bytes, not once the broker has handled them. A restart there is a hard kill, which would lose a departure it had not
+ * yet handled.
+ */
+async function untilDeparted(observer: Client, sessionId: string): Promise<void> {
+	await vi.waitFor(
+		async () => assert.ok(!(await observer.listSessions()).some((session) => session.id === sessionId)),
+		WAIT,
+	);
+}
+
 function idOf(client: Client): string {
 	const id = client.sessionId;
 	assert.ok(id);
@@ -225,8 +238,10 @@ test(
 
 		// The recipient goes away, then the child is released, then the broker restarts while both are away.
 		await recipientFirst.client.disconnect({ resumable: true });
+		await untilDeparted(ownerFirst.client, recipientId);
 		await ownerFirst.client.reserveReleasedChildren([{ childName, wake: true }]);
 		await childFirst.client.disconnect({ resumable: true });
+		await untilDeparted(ownerFirst.client, childId);
 		await restartBroker();
 
 		// The recipient comes back under its id and ends.
