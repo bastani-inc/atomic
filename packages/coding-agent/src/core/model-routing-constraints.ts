@@ -95,16 +95,19 @@ export function eligiblePair(
 	pair: ModelRouterOutput,
 	constraints: readonly ModelConstraints[],
 ): boolean {
-	const cost = billedModelCost(model);
-	const rates = [cost, ...(cost.tiers ?? [])];
+	// Only a cost limit reads the price, so a model without catalog pricing still passes every other constraint.
+	const billedRates = () => {
+		const cost = billedModelCost(model);
+		return [cost, ...(cost.tiers ?? [])];
+	};
 	return constraints.every(
 		(c) =>
 			(c.allowedModels === undefined || c.allowedModels.includes(pair.model)) &&
 			(c.allowedProviders === undefined || c.allowedProviders.includes(model.provider)) &&
 			!c.excludedProviders?.includes(model.provider) &&
 			(c.allowedEfforts === undefined || c.allowedEfforts.some((e) => e === pair.effort)) &&
-			(c.maxInputCost === undefined || rates.every((rate) => rate.input <= c.maxInputCost!)) &&
-			(c.maxOutputCost === undefined || rates.every((rate) => rate.output <= c.maxOutputCost!)) &&
+			(c.maxInputCost === undefined || billedRates().every((rate) => rate.input <= c.maxInputCost!)) &&
+			(c.maxOutputCost === undefined || billedRates().every((rate) => rate.output <= c.maxOutputCost!)) &&
 			(c.minContextWindow === undefined || model.contextWindow >= c.minContextWindow) &&
 			(c.requiredInputs === undefined || c.requiredInputs.every((input) => model.input.includes(input))),
 	);

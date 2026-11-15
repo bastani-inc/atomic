@@ -76,3 +76,9 @@ test("a subagent model name keeps the launch rules for whitespace, credentials a
 	assert.equal(resolveCandidateModel("openai/gpt-5.4-mini:low:extreme", registry), undefined);
 	assert.equal(resolveCandidateModel("openai/no-such-model", registry), undefined);
 });
+
+test("constraints without a cost limit never read a model's price, so unpriced models stay eligible (#5046)", () => {
+	const unpriced = { provider: "anthropic", id: "claude-haiku-5", reasoning: true } as Model<Api>;
+	const pair = { model: "anthropic/claude-haiku-5", effort: "low" };
+	assert.equal(eligiblePair(unpriced, pair, [{ allowedModels: ["anthropic/claude-haiku-5"] }]), true);
+});
