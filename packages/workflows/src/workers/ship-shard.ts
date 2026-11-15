@@ -100,6 +100,17 @@ export function shipDigest(payload: string): string {
 }
 
 /**
+ * The attempt accepted a checkpoint under this key before, with another payload: the identity conflict the shared
+ * journal reports for the same case, with its message.
+ */
+export class ShipIdentityConflictError extends Error {
+	override readonly name = "ShipIdentityConflictError";
+	constructor() {
+		super("Pool checkpoint identity conflict");
+	}
+}
+
+/**
  * One shared root's local checkpoint journal on this host (#4768). The host accepts an attempt's checkpoint here only
  * while it holds the attempt's lease, and ships accepted checkpoints to the shared journal under that lease's fences.
  */
@@ -181,7 +192,7 @@ export class ShipShard {
 				key,
 			);
 			if (existing !== undefined) {
-				if (existing.digest !== digest) throw new Error("Pool checkpoint identity conflict");
+				if (existing.digest !== digest) throw new ShipIdentityConflictError();
 				return { localSeq: Number(existing.local_seq), accepted: false };
 			}
 			const inserted = await tx.get<SqliteRow & { local_seq: number }>(
