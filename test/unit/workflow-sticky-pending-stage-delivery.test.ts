@@ -2263,6 +2263,21 @@ describe("pending-stage bridge sticky delivery", () => {
 			parentRunId: ROOT_RUN_ID,
 			parentStageId: "boundary-id",
 		});
+		// Another root's stage that took a message with the same id is no receipt of this root's message.
+		store.recordRunStart({
+			id: testRunId("sticky-other-root"),
+			name: "other",
+			inputs: {},
+			status: "completed" as RunStatus,
+			toolNodes: [],
+			stages: [
+				{
+					...baseStage({ id: "other-id", name: "other", status: "completed", sessionId: "other-session" }),
+					intercomReceipts: { sessionId: "other-session", messageIds: ["sticky-missed"] },
+				},
+			],
+			startedAt: 3,
+		});
 		const backend = await createMemoryTestBackend();
 		await backend.commitWorkflowRegistration({
 			workflowId: ROOT_RUN_ID,
