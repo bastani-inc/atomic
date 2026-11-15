@@ -32,7 +32,7 @@ interface ToolResult {
 interface Tool {
 	execute(
 		id: string,
-		params: { action: string; to?: string; message?: string },
+		params: { action: string; to?: string; message?: string; broadcast?: boolean },
 		signal: AbortSignal | undefined,
 		update: undefined,
 		ctx: object,
@@ -185,7 +185,7 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 
 			const result = await tool.execute(
 				"glob",
-				{ action: "send", to: "subagent-worker-*", message: "scope changed" },
+				{ action: "send", to: "subagent-worker-*", message: "scope changed", broadcast: true },
 				undefined,
 				undefined,
 				contextFor("glob-host"),
@@ -208,7 +208,7 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 
 			const everyone = await tool.execute(
 				"all",
-				{ action: "send", to: "*", message: "to all" },
+				{ action: "send", to: "*", message: "to all", broadcast: true },
 				undefined,
 				undefined,
 				contextFor("glob-host"),
@@ -240,7 +240,7 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 
 			const result = await tool.execute(
 				"partial",
-				{ action: "send", to: "refusal-worker-*", message: "hello" },
+				{ action: "send", to: "refusal-worker-*", message: "hello", broadcast: true },
 				undefined,
 				undefined,
 				contextFor("refusal-host"),
@@ -521,6 +521,89 @@ describe("intercom send to name patterns and subagents (#4752)", () => {
 			assert.equal(result.details?.queued, true);
 			assert.match(text(result), new RegExp(`Message queued for workflow:${runId}/\\*\\*`));
 			assert.deepEqual(routed, [`workflow:${runId}/**`], "the owner routes the pattern once, not per session");
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+});
+
+describe("intercom name-glob sends need broadcast to reach several sessions (#5202)", () => {
+	test(
+		"a glob that matches several sessions is refused without broadcast, listing the matches, and delivered with it (#5202)",
+		async () => {
+			const group = `broadcast-${randomUUID()}`;
+			const sender = await connect("broadcast-lead", { group });
+			const firstInbox: string[] = [];
+			const secondInbox: string[] = [];
+			const first = await connect("subagent-debugger-aa-1", { group, received: firstInbox });
+			const second = await connect("subagent-debugger-bb-1", { group, received: secondInbox });
+			const tool = registerTool(sender);
+
+			for (const to of ["subagent-debugger-*", "*"]) {
+				const refused = await tool.execute(
+					"no-broadcast",
+					{ action: "send", to, message: "to you only" },
+					undefined,
+					undefined,
+					contextFor("broadcast-host"),
+				);
+				assert.equal(refused.isError, true, to);
+				assert.match(text(refused), /matches 2 sessions/);
+				assert.match(text(refused), /subagent-debugger-aa-1/);
+				assert.match(text(refused), /subagent-debugger-bb-1/);
+				assert.match(text(refused), /broadcast: true/);
+				assert.match(text(refused), /Nothing was sent/);
+			}
+
+			const delivered = await tool.execute(
+				"broadcast",
+				{ action: "send", to: "subagent-debugger-*", message: "to everyone", broadcast: true },
+				undefined,
+				undefined,
+				contextFor("broadcast-host"),
+			);
+			assert.equal(delivered.isError, false, text(delivered));
+			assert.deepEqual(
+				delivered.details?.recipients?.map((recipient) => recipient.target).sort(),
+				[first.sessionId, second.sessionId].sort(),
+			);
+			await waitFor(
+				() => firstInbox.length === 1 && secondInbox.length === 1,
+				"both sessions receive the broadcast",
+			);
+			assert.deepEqual(
+				[firstInbox, secondInbox],
+				[["to everyone"], ["to everyone"]],
+				"the refused sends reached no one",
+			);
+		},
+		REAL_BROKER_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a glob that matches exactly one session is delivered without broadcast (#5202)",
+		async () => {
+			const group = `single-${randomUUID()}`;
+			const sender = await connect("single-lead", { group });
+			const inbox: string[] = [];
+			const only = await connect("subagent-debugger-cc-1", { group, received: inbox });
+			await connect("subagent-reviewer-cc-1", { group });
+			const tool = registerTool(sender);
+
+			const result = await tool.execute(
+				"single",
+				{ action: "send", to: "subagent-debugger-*", message: "just you" },
+				undefined,
+				undefined,
+				contextFor("single-host"),
+			);
+
+			assert.equal(result.isError, false, text(result));
+			assert.deepEqual(
+				result.details?.recipients?.map((recipient) => recipient.target),
+				[only.sessionId],
+			);
+			await waitFor(() => inbox.length === 1, "the one match receives the message");
+			assert.deepEqual(inbox, ["just you"]);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
