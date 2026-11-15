@@ -1,11 +1,15 @@
 import { dialectOf, type SqliteRow, validateStoragePrefix } from "@bastani/atomic/storage";
 import type {
 	IntercomBrokerStateOptions,
+	KnownSessionBindingResult,
+	KnownSessionBindResult,
 	KnownSessionLookupResult,
 	KnownSessionRecordResult,
 	KnownSessionState,
 	KnownSessionStore,
 } from "./multinode-state-store.js";
+
+type BindingRow = SqliteRow & { return_address: string };
 
 type KnownRow = SqliteRow & {
 	target_identity: string;
@@ -40,13 +44,15 @@ function stateFromRow(row: KnownRow): KnownSessionState {
 /**
  * S5 amendment (spec §14): `KnownSessionStore` on the shared storage adapter's database, table
  * `<prefix>intercom_known_sessions`. Names are stored as JSON so any text survives; `name_key` holds the
- * `toLowerCase` form the lookup compares.
+ * `toLowerCase` form the lookup compares. Table `<prefix>intercom_session_bindings` binds each Intercom id to the return
+ * address of the session that registered it (`""` for none).
  */
 export async function openSqlKnownSessionStore({
 	database,
 	prefix,
 }: IntercomBrokerStateOptions): Promise<KnownSessionStore> {
 	const table = `${validateStoragePrefix(prefix)}intercom_known_sessions`;
+	const bindings = `${validateStoragePrefix(prefix)}intercom_session_bindings`;
 	const { types, nowMs, greatest } = dialectOf(database);
 	const age = greatest("0", `${nowMs} - recorded_at`);
 	await database.transaction((tx) =>
@@ -68,6 +74,12 @@ export async function openSqlKnownSessionStore({
 			CREATE INDEX IF NOT EXISTS ${table}_atomic_id ON ${table}(atomic_session_id);
 			CREATE INDEX IF NOT EXISTS ${table}_name ON ${table}(name_key);
 			CREATE INDEX IF NOT EXISTS ${table}_recorded ON ${table}(recorded_at);
+			CREATE TABLE IF NOT EXISTS ${bindings}(
+				intercom_session_id TEXT NOT NULL PRIMARY KEY,
+				return_address TEXT NOT NULL,
+				recorded_at ${types.int} NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS ${bindings}_recorded ON ${bindings}(recorded_at);
 		`),
 	);
 
@@ -118,7 +130,53 @@ export async function openSqlKnownSessionStore({
 			);
 			return { status: "found", sessions: rows.map(stateFromRow) };
 		},
+		async bind(intercomSessionId, returnAddress, retentionMs): Promise<KnownSessionBindResult> {
+			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
+			const bound = await database.transaction(
+				async (tx) => {
+					await tx.run(
+						`DELETE FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at > ?`,
+						intercomSessionId,
+						retentionMs,
+					);
+					// A known-session record kept from before bindings existed holds the id for its return address.
+					await tx.run(
+						`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at)
+						 SELECT intercom_session_id, COALESCE(atomic_session_id, ''), ${nowMs} FROM ${table}
+						 WHERE intercom_session_id = ? AND ${age} <= ?
+						 ORDER BY record_order LIMIT 1
+						 ON CONFLICT(intercom_session_id) DO NOTHING`,
+						intercomSessionId,
+						retentionMs,
+					);
+					await tx.run(
+						`INSERT INTO ${bindings}(intercom_session_id, return_address, recorded_at) VALUES (?, ?, ${nowMs})
+						 ON CONFLICT(intercom_session_id) DO UPDATE SET recorded_at = excluded.recorded_at
+						 WHERE ${bindings}.return_address = excluded.return_address`,
+						intercomSessionId,
+						returnAddress,
+					);
+					return tx.get<BindingRow>(
+						`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ?`,
+						intercomSessionId,
+					);
+				},
+				{ concurrency: { kind: "serial", domain: bindings } },
+			);
+			if (bound === undefined || bound.return_address === returnAddress) return { status: "bound" };
+			return { status: "refused", returnAddress: bound.return_address };
+		},
+		async binding(intercomSessionId, retentionMs): Promise<KnownSessionBindingResult> {
+			if (intercomSessionId.length === 0) return { status: "invalid", reason: "empty-session-id" };
+			const bound = await database.get<BindingRow>(
+				`SELECT return_address FROM ${bindings} WHERE intercom_session_id = ? AND ${nowMs} - recorded_at <= ?`,
+				intercomSessionId,
+				retentionMs,
+			);
+			return bound === undefined ? { status: "unbound" } : { status: "bound", returnAddress: bound.return_address };
+		},
 		async prune(olderThanMs): Promise<number> {
+			await database.run(`DELETE FROM ${bindings} WHERE ${nowMs} - recorded_at > ?`, olderThanMs);
 			const { changes } = await database.run(
 				`DELETE FROM ${table} WHERE ${nowMs} - recorded_at > ?`,
 				olderThanMs,
