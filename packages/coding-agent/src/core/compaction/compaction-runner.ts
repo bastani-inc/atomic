@@ -104,7 +104,8 @@ export type CompactionRungResult = CompactedTranscript & {
 	backend?: "planner" | "classifier" | "morph" | "summary";
 	model?: string;
 	summary?: { readFiles: string[]; modifiedFiles: string[] };
-	summaryFirstKeptEntryId?: string;
+	/** The summary's first kept entry; null when it kept no tail. */
+	summaryFirstKeptEntryId?: string | null;
 	summaryTokensBefore?: number;
 	/** Present only on the fresh rung after planning failed: why no planner could rank the lines. */
 	freshReason?: string;
@@ -325,14 +326,14 @@ function summaryResult(
 			rangeCount: 0,
 			tokensBefore: summary.tokensBefore,
 			tokensAfter,
-			percentReduction: summary.tokensBefore > 0 ? 100 * (1 - tokensAfter / summary.tokensBefore) : 0,
+			percentReduction: 100 * (1 - tokensAfter / summary.tokensBefore),
 		},
 		rung: "planned",
 		keptTail: true,
 		backend: "summary",
 		model,
 		summary: { readFiles: summary.readFiles, modifiedFiles: summary.modifiedFiles },
-		...(summary.firstKeptEntryId === null ? {} : { summaryFirstKeptEntryId: summary.firstKeptEntryId }),
+		summaryFirstKeptEntryId: summary.firstKeptEntryId,
 		summaryTokensBefore: summary.tokensBefore,
 		...(usage ? { usage } : {}),
 	};

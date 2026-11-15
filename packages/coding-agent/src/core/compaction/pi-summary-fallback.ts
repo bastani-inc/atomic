@@ -117,12 +117,12 @@ function conversationMessages(entry: ProjectedSessionEntry): AgentMessage[] {
 	return entry.sourceEntry.type === "compaction" ? [] : entry.messages.filter((message) => message.role !== "system");
 }
 
-function leadsWithToolResult(entry: ProjectedSessionEntry): boolean {
-	return conversationMessages(entry)[0]?.role === "toolResult";
+function firstRole(entry: ProjectedSessionEntry): AgentMessage["role"] | undefined {
+	return conversationMessages(entry)[0]?.role;
 }
 
 /**
- * The index the planned tail starts at, or undefined when that entry is not after `start`.
+ * The index the planned tail starts at, or undefined when that entry is not in the history.
  *
  * A tool call is never separated from its results: when the planned tail starts with tool results,
  * the cut moves back to the assistant message that owns them, so the pair stays together in the tail.
@@ -133,17 +133,70 @@ function plannedCutIndex(
 	cut: PiSummaryPlannedCut,
 ): number | undefined {
 	if (cut.firstKeptEntryId === null) return entries.length;
-	const index = entries.findIndex(
-		(entry, position) => position >= start && entry.sourceEntry.id === cut.firstKeptEntryId,
-	);
+	const index = entries.findIndex((entry) => entry.sourceEntry.id === cut.firstKeptEntryId);
 	if (index < 0) return undefined;
-	if (!leadsWithToolResult(entries[index])) return index;
-	let owner = index - 1;
-	while (owner >= start && (conversationMessages(entries[owner]).length === 0 || leadsWithToolResult(entries[owner])))
-		owner--;
-	return owner >= start && conversationMessages(entries[owner]).some((message) => message.role === "assistant")
-		? owner
-		: index;
+	if (firstRole(entries[index]) !== "toolResult") return index;
+	let owner = index;
+	while (owner > start && firstRole(entries[owner]) !== "assistant") owner--;
+	return firstRole(entries[owner]) === "assistant" ? owner : index;
+}
+
+/** Pi's own cut: keep about `keepRecentTokens` of recent context, starting at a message that is not a tool result. */
+function tokenCutIndex(
+	entries: ProjectedSessionEntry[],
+	start: number,
+	settings: PiSummarySettings,
+): number | undefined {
+	const cutPoints: number[] = [];
+	for (let index = start; index < entries.length; index++) {
+		const entry = entries[index];
+		if (
+			entry.sourceEntry.type !== "compaction" &&
+			entry.messages.some((message) => message.role !== "toolResult" && message.role !== "system")
+		)
+			cutPoints.push(index);
+	}
+	if (cutPoints.length === 0) return undefined;
+	let cut = cutPoints[0];
+	let tokens = 0;
+	let exceededBudget = false;
+	for (let index = entries.length - 1; index >= start; index--) {
+		const count = entries[index].messages.reduce((sum, message) => sum + estimatePiTokens(message), 0);
+		if (count === 0) continue;
+		tokens += count;
+		if (tokens >= (settings.keepRecentTokens ?? 20000)) {
+			exceededBudget = true;
+			cut = cutPoints.find((candidate) => candidate >= index) ?? cutPoints[cutPoints.length - 1];
+			break;
+		}
+	}
+	const suffix = entries.slice(cut + 1);
+	const intrinsicallyVisible = (entry: ProjectedSessionEntry): boolean =>
+		entry.sourceEntry.type !== "context_edit" && sessionEntryToContextMessages(entry.sourceEntry).length > 0;
+	const omitted = (entry: ProjectedSessionEntry): boolean =>
+		intrinsicallyVisible(entry) && entry.messages.length === 0;
+	const omittedIds = new Set(suffix.filter(omitted).map((entry) => entry.sourceEntry.id));
+	const externalReplacement = suffix.some(
+		(entry) =>
+			entry.sourceEntry.type === "context_edit" &&
+			entry.sourceEntry.replacement !== null &&
+			!omittedIds.has(entry.sourceEntry.targetId),
+	);
+	if (
+		exceededBudget &&
+		!externalReplacement &&
+		suffix.some(
+			(entry) =>
+				entry.sourceEntry.type === "message" && entry.sourceEntry.message.role === "assistant" && omitted(entry),
+		) &&
+		suffix.every(
+			(entry) => entry.sourceEntry.type !== "compaction" && (!intrinsicallyVisible(entry) || omitted(entry)),
+		)
+	)
+		cut++;
+	while (cut > start && entries[cut - 1].sourceEntry.type !== "compaction" && entries[cut - 1].messages.length === 0)
+		cut--;
+	return cut;
 }
 
 export function preparePiSummaryCompaction(
@@ -218,64 +271,6 @@ export function preparePiSummaryCompaction(
 		fileOps,
 		settings,
 	};
-}
-
-/** Pi's own cut: keep about `keepRecentTokens` of recent context, starting at a message that is not a tool result. */
-function tokenCutIndex(
-	entries: ProjectedSessionEntry[],
-	start: number,
-	settings: PiSummarySettings,
-): number | undefined {
-	const cutPoints: number[] = [];
-	for (let index = start; index < entries.length; index++) {
-		const entry = entries[index];
-		if (
-			entry.sourceEntry.type !== "compaction" &&
-			entry.messages.some((message) => message.role !== "toolResult" && message.role !== "system")
-		)
-			cutPoints.push(index);
-	}
-	if (cutPoints.length === 0) return undefined;
-	let cut = cutPoints[0];
-	let tokens = 0;
-	let exceededBudget = false;
-	for (let index = entries.length - 1; index >= start; index--) {
-		const count = entries[index].messages.reduce((sum, message) => sum + estimatePiTokens(message), 0);
-		if (count === 0) continue;
-		tokens += count;
-		if (tokens >= (settings.keepRecentTokens ?? 20000)) {
-			exceededBudget = true;
-			cut = cutPoints.find((candidate) => candidate >= index) ?? cutPoints[cutPoints.length - 1];
-			break;
-		}
-	}
-	const suffix = entries.slice(cut + 1);
-	const intrinsicallyVisible = (entry: ProjectedSessionEntry): boolean =>
-		entry.sourceEntry.type !== "context_edit" && sessionEntryToContextMessages(entry.sourceEntry).length > 0;
-	const omitted = (entry: ProjectedSessionEntry): boolean =>
-		intrinsicallyVisible(entry) && entry.messages.length === 0;
-	const omittedIds = new Set(suffix.filter(omitted).map((entry) => entry.sourceEntry.id));
-	const externalReplacement = suffix.some(
-		(entry) =>
-			entry.sourceEntry.type === "context_edit" &&
-			entry.sourceEntry.replacement !== null &&
-			!omittedIds.has(entry.sourceEntry.targetId),
-	);
-	if (
-		exceededBudget &&
-		!externalReplacement &&
-		suffix.some(
-			(entry) =>
-				entry.sourceEntry.type === "message" && entry.sourceEntry.message.role === "assistant" && omitted(entry),
-		) &&
-		suffix.every(
-			(entry) => entry.sourceEntry.type !== "compaction" && (!intrinsicallyVisible(entry) || omitted(entry)),
-		)
-	)
-		cut++;
-	while (cut > start && entries[cut - 1].sourceEntry.type !== "compaction" && entries[cut - 1].messages.length === 0)
-		cut--;
-	return cut;
 }
 
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.

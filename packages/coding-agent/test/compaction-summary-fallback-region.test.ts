@@ -3,7 +3,11 @@ import type { Context, Model } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";
 import { prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
-import { type CompactionUrgency, runVerbatimCompaction } from "../src/core/compaction/index.js";
+import {
+	type CompactionUrgency,
+	preparePiSummaryCompaction,
+	runVerbatimCompaction,
+} from "../src/core/compaction/index.js";
 import type { SessionEntry } from "../src/core/session-manager.js";
 import { createFauxStreamFn, type FauxResponseInput, fauxModel } from "./test-harness.js";
 
@@ -83,17 +87,13 @@ const REFUSED_BEFORE_OUTPUT: FauxResponseInput = {
 /** Compact `path` with the real boundary preparation; the planner refuses before output and the summary answers. */
 async function compactAfterRefusal(
 	path: SessionEntry[],
-	options: { model?: Model<any>; urgency?: CompactionUrgency; summary?: string } = {},
+	options: { model?: Model<any>; urgency?: CompactionUrgency; summary?: string; preserveRecent?: number } = {},
 ) {
 	const urgency = options.urgency ?? "recoverable";
-	const preparation = prepareCompactionBoundary(
-		path,
-		DEFAULT_COMPACTION_SETTINGS,
-		{},
-		{
-			allowSmallRegion: urgency === "load_bearing",
-		},
-	);
+	const parameters = options.preserveRecent === undefined ? {} : { preserve_recent: options.preserveRecent };
+	const preparation = prepareCompactionBoundary(path, DEFAULT_COMPACTION_SETTINGS, parameters, {
+		allowSmallRegion: urgency === "load_bearing",
+	});
 	assert.ok(preparation);
 	const summary = options.summary ?? SUMMARY;
 	const { streamFn, state } = createFauxStreamFn([REFUSED_BEFORE_OUTPUT, summary, summary]);
@@ -144,6 +144,28 @@ test("a refusal summary keeps protected spans and replaces exactly the planned r
 	const span = preparation.region.lines.slice(kept.start - 1, kept.end);
 	assert.deepEqual(span, [`[User]: ${KEEP[0]}`, ...KEEP.slice(1)]);
 	assert.equal(result.text, `${span.join("\n")}\n\n${SUMMARY}`, "the span is re-inserted verbatim before the summary");
+	assert.deepEqual(result.ranges, []);
+	assert.deepEqual(result.releasedRanges, []);
+	assert.equal(result.keptTail, true);
+	assert.deepEqual(result.summary, { readFiles: [], modifiedFiles: [] });
+	assert.ok(result.usage);
+	assert.equal(result.summaryTokensBefore, preparation.tokensBefore);
+	const textTokens = Math.ceil(result.text.length / 4);
+	const { stats } = result;
+	assert.deepEqual(
+		{ ...stats, tokensAfter: 0, percentReduction: 0 },
+		{
+			linesBefore: preparation.region.lines.length,
+			linesDeleted: 0,
+			linesKept: result.text.split("\n").length,
+			rangeCount: 0,
+			tokensBefore: preparation.tokensBefore,
+			tokensAfter: 0,
+			percentReduction: 0,
+		},
+	);
+	assert.ok(stats.tokensAfter > textTokens && stats.tokensAfter < textTokens + 10, "the kept tail is counted");
+	assert.equal(stats.percentReduction, 100 * (1 - stats.tokensAfter / stats.tokensBefore));
 	const summarised = promptText(contexts[1]);
 	assert.ok(summarised.includes("t11 detail line 149"), "the whole planned region is summarised");
 	assert.ok(!summarised.includes("latest request"), "the kept tail is not summarised");
@@ -226,4 +248,41 @@ test("a load-bearing run rejects a refusal summary over the window and starts a 
 	assert.ok(result.keptTail);
 	assert.ok(result.stats.tokensAfter <= model.contextWindow, `${result.stats.tokensAfter} tokens fit`);
 	assert.match(result.freshReason ?? "", /context window/);
+});
+
+test("a refusal summary with no planned tail summarises the whole history (#4975)", async () => {
+	const path = session([
+		["user", "Please fix the parser"],
+		["assistant", filler(30, "first")],
+		["user", "latest request"],
+	]);
+	const { preparation, result, contexts } = await compactAfterRefusal(path, { preserveRecent: 0 });
+	assert.equal(preparation.firstKeptEntryId, null);
+	assert.equal(result.backend, "summary");
+	assert.equal(result.summaryFirstKeptEntryId, null);
+	assert.ok(promptText(contexts[1]).includes("latest request"));
+});
+
+test("a recoverable run keeps a refusal summary that is over the window (#4975)", async () => {
+	const turns: Turn[] = [["user", "start"]];
+	for (let index = 0; index < 12; index++)
+		turns.push(["assistant", filler(150, `t${index}`)], ["user", `next ${index}`]);
+	turns.push(["assistant", "done"], ["user", "latest"]);
+	const { result } = await compactAfterRefusal(session(turns), {
+		model: { ...fauxModel, contextWindow: 16000 },
+		summary: `## Goal\n${filler(1000, "summary")}`,
+	});
+	assert.equal(result.backend, "summary");
+	assert.ok(result.stats.tokensAfter > 16000);
+});
+
+test("a refusal summary prepares nothing for a planned cut that is not in the history (#4975)", () => {
+	const path = session([
+		["user", "Please fix the parser"],
+		["assistant", "working"],
+	]);
+	assert.equal(
+		preparePiSummaryCompaction(path, { reserveTokens: 1000 }, undefined, { firstKeptEntryId: "missing" }),
+		undefined,
+	);
 });
