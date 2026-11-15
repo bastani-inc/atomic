@@ -437,6 +437,34 @@ test("a shipped batch, after its attempt's first write, is one request with no r
 	}
 });
 
+test("a batch planned from a read reads as much for many checkpoints as for one, and writes in one request (#4768)", async () => {
+	const f = await fixture();
+	try {
+		const attempt = await f.pool.claim(f.lease, "host/w1", [work], 60_000);
+		assert.ok(attempt);
+		await f.pool.commit(f.lease, attempt, "op-1", { kind: "checkpoint", checkpoint: tool(1) });
+		// A queue that never saw the attempt, as after its host restarted, plans from a read.
+		const shipOn = async (id: string, indexes: number[]) => {
+			const fresh = await openSqlPoolQueue(f.journal);
+			return f.requestsOf(() => fresh.shipBatch(f.lease, attempt, shipBatchOf(id, ...indexes)));
+		};
+		const one = await shipOn("one", [2]);
+		const many = await shipOn(
+			"many",
+			Array.from({ length: 12 }, (_, index) => index + 3),
+		);
+		assert.equal(many.sent.filter((request) => request === "batch").length, 1);
+		assert.equal(
+			many.sent.filter((request) => request === "statement").length,
+			one.sent.filter((request) => request === "statement").length,
+			`reads: one checkpoint ${one.sent.join(", ")}; twelve ${many.sent.join(", ")}`,
+		);
+		assert.equal((await recordedTools(f)).length, 14);
+	} finally {
+		await f.close();
+	}
+});
+
 test("a batch planned without a read is refused when another writer recorded a checkpoint in its scope that it did not see (#4768)", async () => {
 	const f = await fixture();
 	try {
