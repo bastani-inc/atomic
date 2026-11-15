@@ -62,6 +62,12 @@ describe("removing a stale lock (#5161)", () => {
 		assert.equal(existsSync(takeoverMutexPath(lockPath)), true, "another process's mutex is left alone");
 	});
 
+	it("does nothing when the lock's directory is gone, and the mutex cannot be made (#5161)", () => {
+		const missing = join(directory, "gone", "settings.json.lock");
+		assert.doesNotThrow(() => removeStaleLock(missing, STALE_MS));
+		assert.equal(existsSync(join(directory, "gone")), false);
+	});
+
 	it("does nothing for a lock that is already gone (#5161)", () => {
 		removeStaleLock(lockPath, STALE_MS);
 		assert.equal(existsSync(lockPath), false);

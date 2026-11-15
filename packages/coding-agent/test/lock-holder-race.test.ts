@@ -121,7 +121,12 @@ it("removes a takeover mutex left by a killed process once it is stale, then tak
 	mkdirSync(takeoverMutexPath(lockPath));
 	const old = new Date(Date.now() - TAKEOVER_MUTEX_STALE_MS - 1_000);
 	utimesSync(takeoverMutexPath(lockPath), old, old);
+	let heldWhileMoving = false;
+	race.beforeRename = () => {
+		heldWhileMoving = existsSync(takeoverMutexPath(lockPath));
+	};
 	assert.equal(takeOverDeadHolder(lockPath), true);
+	assert.equal(heldWhileMoving, true, "the lock is moved while this process holds a fresh mutex");
 	assert.equal(existsSync(lockPath), false);
 	assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
 });
