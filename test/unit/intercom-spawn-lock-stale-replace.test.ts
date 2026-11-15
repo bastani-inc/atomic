@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 // `readdirSync` and `utimesSync` have no equivalent in test/helpers/runtime.ts: the spawners report readiness as files
 // in one directory, and an abandoned takeover token is backdated.
 import { readdirSync, utimesSync } from "node:fs";
@@ -7,7 +8,11 @@ import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, test } from "vitest";
 import { acquireSpawnLock, releaseSpawnLock, replaceStaleSpawnLock } from "../../packages/intercom/broker/spawn.js";
-import { removeFileIfUnchanged, takeOverStaleLock } from "../../packages/intercom/broker/stale-lock-file.js";
+import {
+	PARKED_FILE_MAX_AGE_MS,
+	removeFileIfUnchanged,
+	takeOverStaleLock,
+} from "../../packages/intercom/broker/stale-lock-file.js";
 import {
 	fileExistsSync,
 	makeTempDirectory,
@@ -167,6 +172,32 @@ describe("stale lock file removal (#5132)", () => {
 		utimesSync(token, abandonedAt, abandonedAt);
 		takeOverStaleLock(path, content, token);
 		assert.equal(fileExistsSync(token), false);
+	});
+
+	test("the next takeover removes files a crashed process left parked, and keeps one a live holder parked just now (#5132)", () => {
+		const { path, content } = staleLock();
+		const parked = (owner: string, parkedAt: number, of = path) => {
+			const file = `${of}.${parkedAt}.${randomUUID()}.stale`;
+			writeTextSync(file, owner);
+			return file;
+		};
+		const dead = "2147483646\n";
+		const live = `${process.pid}\n`;
+		parked(dead, Date.now());
+		parked(dead, Date.now(), `${path}.takeover`);
+		parked(live, Date.now() - PARKED_FILE_MAX_AGE_MS - 1);
+		const justParked = parked(live, Date.now());
+		// A parked file that names no holder is kept until it is old.
+		const unreadable = parked("", Date.now());
+		const unrelated = `${path}.notes`;
+		writeTextSync(unrelated, dead);
+
+		takeOverStaleLock(path, content, `${path}.takeover`);
+		assert.equal(fileExistsSync(path), false);
+		assert.deepEqual(
+			leftovers(path).sort(),
+			[basename(justParked), basename(unreadable), basename(unrelated)].sort(),
+		);
 	});
 
 	test("a takeover token held by a live process blocks the takeover and is left alone (#5132)", () => {
