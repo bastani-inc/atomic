@@ -106,8 +106,11 @@ async function pooledChildWithCollections(collections: number) {
 		vi.restoreAllMocks();
 		return { result, outcomes, written, snapshotCommits };
 	} finally {
+		vi.restoreAllMocks();
 		await pool.close();
 		await backend.close();
+		// The journal closes its read-only connection to the file, which Windows cannot delete while it is open.
+		await journal.close();
 		await database.close();
 	}
 }
@@ -122,7 +125,8 @@ test(
 		assert.equal(written.length, 1, "the tool's checkpoint is written once");
 		const [snapshot] = written[0]!;
 		assert.ok(snapshot, "with its snapshot");
-		const reopened = await SqlRunJournal.open(await openNodeSqliteDatabase(sandbox.path("journal.sqlite")));
+		const database = await openNodeSqliteDatabase(sandbox.path("journal.sqlite"));
+		const reopened = await SqlRunJournal.open(database);
 		try {
 			const stored = new Set(await reopened.snapshotBlobs.listBlobHashes());
 			for (const hash of snapshotBlobHashes(snapshot)) assert.ok(stored.has(hash), hash);
@@ -133,6 +137,7 @@ test(
 			assert.equal(readFileSync(join(restored, "a.txt"), "utf8"), "edited by the child\n");
 		} finally {
 			await reopened.close();
+			await database.close();
 		}
 	},
 	BUDGET.timeoutMs,
