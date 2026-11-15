@@ -1,0 +1,470 @@
+[
+	{
+		"type": "index",
+		"name": "team_wf_runs_pool_activity_version",
+		"tbl_name": "team_wf_runs_pool_activity",
+		"sql": "CREATE INDEX team_wf_runs_pool_activity_version ON team_wf_runs_pool_activity(version)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_resource_permits_active",
+		"tbl_name": "team_wf_runs_resource_permits",
+		"sql": "CREATE INDEX team_wf_runs_resource_permits_active ON team_wf_runs_resource_permits(kind, state, root)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_resource_permits_owner",
+		"tbl_name": "team_wf_runs_resource_permits",
+		"sql": "CREATE INDEX team_wf_runs_resource_permits_owner ON team_wf_runs_resource_permits(owner, state)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_resource_permits_state",
+		"tbl_name": "team_wf_runs_resource_permits",
+		"sql": "CREATE INDEX team_wf_runs_resource_permits_state ON team_wf_runs_resource_permits(state)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_stage_inputs_pending",
+		"tbl_name": "team_wf_runs_stage_inputs",
+		"sql": "CREATE INDEX team_wf_runs_stage_inputs_pending ON team_wf_runs_stage_inputs(work, state)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_work_child",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE UNIQUE INDEX team_wf_runs_work_child ON team_wf_runs_work(root, json_extract(descriptor, '$.childRunId'))"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_work_expiry",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE INDEX team_wf_runs_work_expiry ON team_wf_runs_work(state, expires_at)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_work_ready",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE INDEX team_wf_runs_work_ready ON team_wf_runs_work(root, state, ready_at)"
+	},
+	{
+		"type": "index",
+		"name": "team_wf_runs_work_scope",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE UNIQUE INDEX team_wf_runs_work_scope ON team_wf_runs_work(root, json_extract(descriptor, '$.scope'))"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_pool_activity_version",
+		"tbl_name": "wf_runs_pool_activity",
+		"sql": "CREATE INDEX wf_runs_pool_activity_version ON wf_runs_pool_activity(version)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_resource_permits_active",
+		"tbl_name": "wf_runs_resource_permits",
+		"sql": "CREATE INDEX wf_runs_resource_permits_active ON wf_runs_resource_permits(kind, state, root)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_resource_permits_owner",
+		"tbl_name": "wf_runs_resource_permits",
+		"sql": "CREATE INDEX wf_runs_resource_permits_owner ON wf_runs_resource_permits(owner, state)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_resource_permits_state",
+		"tbl_name": "wf_runs_resource_permits",
+		"sql": "CREATE INDEX wf_runs_resource_permits_state ON wf_runs_resource_permits(state)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_stage_inputs_pending",
+		"tbl_name": "wf_runs_stage_inputs",
+		"sql": "CREATE INDEX wf_runs_stage_inputs_pending ON wf_runs_stage_inputs(work, state)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_work_child",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE UNIQUE INDEX wf_runs_work_child ON wf_runs_work(root, json_extract(descriptor, '$.childRunId'))"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_work_expiry",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE INDEX wf_runs_work_expiry ON wf_runs_work(state, expires_at)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_work_ready",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE INDEX wf_runs_work_ready ON wf_runs_work(root, state, ready_at)"
+	},
+	{
+		"type": "index",
+		"name": "wf_runs_work_scope",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE UNIQUE INDEX wf_runs_work_scope ON wf_runs_work(root, json_extract(descriptor, '$.scope'))"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_fleet_controller",
+		"tbl_name": "team_wf_runs_fleet_controller",
+		"sql": "CREATE TABLE team_wf_runs_fleet_controller(\n\t\t\t\t\tid INTEGER PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL,\n\t\t\t\t\tlease_ms INTEGER NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_fleet_drains",
+		"tbl_name": "team_wf_runs_fleet_drains",
+		"sql": "CREATE TABLE team_wf_runs_fleet_drains(\n\t\thost TEXT PRIMARY KEY, provider_id TEXT, requested_at INTEGER NOT NULL\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_fleet_events",
+		"tbl_name": "team_wf_runs_fleet_events",
+		"sql": "CREATE TABLE team_wf_runs_fleet_events(\n\t\t\t\t\tseq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, target INTEGER, live INTEGER,\n\t\t\t\t\treason TEXT NOT NULL, error TEXT\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool",
+		"tbl_name": "team_wf_runs_pool",
+		"sql": "CREATE TABLE team_wf_runs_pool(root TEXT PRIMARY KEY REFERENCES team_wf_runs(run_id) ON DELETE CASCADE, timeout INTEGER NOT NULL)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_activity",
+		"tbl_name": "team_wf_runs_pool_activity",
+		"sql": "CREATE TABLE team_wf_runs_pool_activity(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, token TEXT NOT NULL,\n\t\t\t\t\truns TEXT NOT NULL, version INTEGER NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_control",
+		"tbl_name": "team_wf_runs_pool_control",
+		"sql": "CREATE TABLE team_wf_runs_pool_control(\n\t\t\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\tstate TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_fence",
+		"tbl_name": "team_wf_runs_pool_fence",
+		"sql": "CREATE TABLE team_wf_runs_pool_fence(reason TEXT)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_hosts",
+		"tbl_name": "team_wf_runs_pool_hosts",
+		"sql": "CREATE TABLE team_wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_meta",
+		"tbl_name": "team_wf_runs_pool_meta",
+		"sql": "CREATE TABLE team_wf_runs_pool_meta(version INTEGER NOT NULL)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_operations",
+		"tbl_name": "team_wf_runs_pool_operations",
+		"sql": "CREATE TABLE team_wf_runs_pool_operations(\n\t\t\t\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\t\tgeneration INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_outbox",
+		"tbl_name": "team_wf_runs_pool_outbox",
+		"sql": "CREATE TABLE team_wf_runs_pool_outbox(\n\t\t\t\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\t\tgeneration INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,\n\t\t\t\t\tevent_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq INTEGER,\n\t\t\t\t\tPRIMARY KEY(work, generation, operation)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_restore_backoffs",
+		"tbl_name": "team_wf_runs_pool_restore_backoffs",
+		"sql": "CREATE TABLE team_wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_root_snapshot",
+		"tbl_name": "team_wf_runs_pool_root_snapshot",
+		"sql": "CREATE TABLE team_wf_runs_pool_root_snapshot(\n\t\t\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs(run_id) ON DELETE CASCADE,\n\t\t\t\tepoch INTEGER NOT NULL, snapshot TEXT NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_session_owners",
+		"tbl_name": "team_wf_runs_pool_session_owners",
+		"sql": "CREATE TABLE team_wf_runs_pool_session_owners(\n\t\t\t\t\tsession TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, replay_key TEXT NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_shared",
+		"tbl_name": "team_wf_runs_pool_shared",
+		"sql": "CREATE TABLE team_wf_runs_pool_shared(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,\n\t\t\t\t\tepoch INTEGER NOT NULL, budget_blocked INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_usage",
+		"tbl_name": "team_wf_runs_pool_usage",
+		"sql": "CREATE TABLE team_wf_runs_pool_usage(\n\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE,\n\t\tgeneration INTEGER NOT NULL, key TEXT NOT NULL,\n\t\tinput REAL NOT NULL, output REAL NOT NULL, cacheread REAL NOT NULL, cachewrite REAL NOT NULL, cost REAL NOT NULL,\n\t\tPRIMARY KEY(work, generation, key)\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_pool_usage_totals",
+		"tbl_name": "team_wf_runs_pool_usage_totals",
+		"sql": "CREATE TABLE team_wf_runs_pool_usage_totals(\n\t\troot TEXT PRIMARY KEY REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\tinput REAL NOT NULL, input_err REAL NOT NULL, output REAL NOT NULL, output_err REAL NOT NULL, cacheread REAL NOT NULL, cacheread_err REAL NOT NULL, cachewrite REAL NOT NULL, cachewrite_err REAL NOT NULL, cost REAL NOT NULL, cost_err REAL NOT NULL\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_resource_limits",
+		"tbl_name": "team_wf_runs_resource_limits",
+		"sql": "CREATE TABLE team_wf_runs_resource_limits(scope TEXT PRIMARY KEY, config TEXT NOT NULL)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_resource_owners",
+		"tbl_name": "team_wf_runs_resource_owners",
+		"sql": "CREATE TABLE team_wf_runs_resource_owners(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL, expires_at INTEGER NOT NULL, boot TEXT)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_resource_permits",
+		"tbl_name": "team_wf_runs_resource_permits",
+		"sql": "CREATE TABLE team_wf_runs_resource_permits(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,\n\t\t\t\troot TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT, root_epoch INTEGER, granted_at INTEGER)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_stage_inputs",
+		"tbl_name": "team_wf_runs_stage_inputs",
+		"sql": "CREATE TABLE team_wf_runs_stage_inputs(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, kind TEXT NOT NULL, op TEXT NOT NULL,\n\t\t\t\t\tpayload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', receipt TEXT,\n\t\t\t\t\tcreated_at INTEGER NOT NULL, settled_at INTEGER,\n\t\t\t\t\tPRIMARY KEY(root, run_id, stage_id, seq), UNIQUE(root, run_id, stage_id, op)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_stage_leases",
+		"tbl_name": "team_wf_runs_stage_leases",
+		"sql": "CREATE TABLE team_wf_runs_stage_leases(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, token INTEGER NOT NULL,\n\t\t\t\t\twork TEXT, generation INTEGER, worker TEXT, epoch INTEGER, seq INTEGER,\n\t\t\t\t\texpires_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(root, run_id, stage_id)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_stage_workspaces",
+		"tbl_name": "team_wf_runs_stage_workspaces",
+		"sql": "CREATE TABLE team_wf_runs_stage_workspaces(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL,\n\t\t\t\t\twork TEXT NOT NULL REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, generation INTEGER NOT NULL,\n\t\t\t\t\thost TEXT NOT NULL, worktree TEXT NOT NULL, binding TEXT, recorded_at INTEGER NOT NULL,\n\t\t\t\t\tPRIMARY KEY(root, run_id, stage_id)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_work",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TABLE team_wf_runs_work(\n\t\t\t\t\tid TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES team_wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\tboundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,\n\t\t\t\t\tstate TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tworker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\trenewed_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tready_at INTEGER NOT NULL, UNIQUE(root, boundary)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "team_wf_runs_work_results",
+		"tbl_name": "team_wf_runs_work_results",
+		"sql": "CREATE TABLE team_wf_runs_work_results(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES team_wf_runs_work(id) ON DELETE CASCADE, result TEXT NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_fleet_controller",
+		"tbl_name": "wf_runs_fleet_controller",
+		"sql": "CREATE TABLE wf_runs_fleet_controller(\n\t\t\t\t\tid INTEGER PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL,\n\t\t\t\t\tlease_ms INTEGER NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_fleet_drains",
+		"tbl_name": "wf_runs_fleet_drains",
+		"sql": "CREATE TABLE wf_runs_fleet_drains(\n\t\thost TEXT PRIMARY KEY, provider_id TEXT, requested_at INTEGER NOT NULL\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_fleet_events",
+		"tbl_name": "wf_runs_fleet_events",
+		"sql": "CREATE TABLE wf_runs_fleet_events(\n\t\t\t\t\tseq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, target INTEGER, live INTEGER,\n\t\t\t\t\treason TEXT NOT NULL, error TEXT\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool",
+		"tbl_name": "wf_runs_pool",
+		"sql": "CREATE TABLE wf_runs_pool(root TEXT PRIMARY KEY REFERENCES wf_runs(run_id) ON DELETE CASCADE, timeout INTEGER NOT NULL)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_activity",
+		"tbl_name": "wf_runs_pool_activity",
+		"sql": "CREATE TABLE wf_runs_pool_activity(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES wf_runs_work(id) ON DELETE CASCADE, token TEXT NOT NULL,\n\t\t\t\t\truns TEXT NOT NULL, version INTEGER NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_control",
+		"tbl_name": "wf_runs_pool_control",
+		"sql": "CREATE TABLE wf_runs_pool_control(\n\t\t\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\tstate TEXT NOT NULL DEFAULT 'running', revision INTEGER NOT NULL DEFAULT 0\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_fence",
+		"tbl_name": "wf_runs_pool_fence",
+		"sql": "CREATE TABLE wf_runs_pool_fence(reason TEXT)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_hosts",
+		"tbl_name": "wf_runs_pool_hosts",
+		"sql": "CREATE TABLE wf_runs_pool_hosts(\n\t\t\t\t\thost TEXT PRIMARY KEY, labels TEXT NOT NULL, git TEXT NOT NULL, restore INTEGER NOT NULL,\n\t\t\t\t\tworkers INTEGER NOT NULL, max_workers INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL,\n\t\t\t\t\troots TEXT NOT NULL DEFAULT '[]', slots_busy INTEGER, draining INTEGER NOT NULL DEFAULT 0, degraded TEXT\n\t\t\t\t, provider_id TEXT)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_meta",
+		"tbl_name": "wf_runs_pool_meta",
+		"sql": "CREATE TABLE wf_runs_pool_meta(version INTEGER NOT NULL)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_operations",
+		"tbl_name": "wf_runs_pool_operations",
+		"sql": "CREATE TABLE wf_runs_pool_operations(\n\t\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\t\tgeneration INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL, receipt TEXT NOT NULL, PRIMARY KEY(work, generation, operation)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_outbox",
+		"tbl_name": "wf_runs_pool_outbox",
+		"sql": "CREATE TABLE wf_runs_pool_outbox(\n\t\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE,\n\t\t\t\t\tgeneration INTEGER NOT NULL, operation TEXT NOT NULL, request TEXT NOT NULL,\n\t\t\t\t\tevent_key TEXT NOT NULL, payload TEXT NOT NULL, last_seq INTEGER,\n\t\t\t\t\tPRIMARY KEY(work, generation, operation)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_restore_backoffs",
+		"tbl_name": "wf_runs_pool_restore_backoffs",
+		"sql": "CREATE TABLE wf_runs_pool_restore_backoffs(\n\t\t\t\t\thost TEXT NOT NULL, binding TEXT NOT NULL, until INTEGER NOT NULL, failure TEXT NOT NULL,\n\t\t\t\t\trecorded_at INTEGER NOT NULL, PRIMARY KEY(host, binding)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_root_snapshot",
+		"tbl_name": "wf_runs_pool_root_snapshot",
+		"sql": "CREATE TABLE wf_runs_pool_root_snapshot(\n\t\t\t\troot TEXT PRIMARY KEY REFERENCES wf_runs(run_id) ON DELETE CASCADE,\n\t\t\t\tepoch INTEGER NOT NULL, snapshot TEXT NOT NULL\n\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_session_owners",
+		"tbl_name": "wf_runs_pool_session_owners",
+		"sql": "CREATE TABLE wf_runs_pool_session_owners(\n\t\t\t\t\tsession TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE, replay_key TEXT NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_shared",
+		"tbl_name": "wf_runs_pool_shared",
+		"sql": "CREATE TABLE wf_runs_pool_shared(\n\t\t\t\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE, config TEXT NOT NULL,\n\t\t\t\t\tepoch INTEGER NOT NULL, budget_blocked INTEGER NOT NULL DEFAULT 0\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_usage",
+		"tbl_name": "wf_runs_pool_usage",
+		"sql": "CREATE TABLE wf_runs_pool_usage(\n\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE,\n\t\tgeneration INTEGER NOT NULL, key TEXT NOT NULL,\n\t\tinput REAL NOT NULL, output REAL NOT NULL, cacheread REAL NOT NULL, cachewrite REAL NOT NULL, cost REAL NOT NULL,\n\t\tPRIMARY KEY(work, generation, key)\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_pool_usage_totals",
+		"tbl_name": "wf_runs_pool_usage_totals",
+		"sql": "CREATE TABLE wf_runs_pool_usage_totals(\n\t\troot TEXT PRIMARY KEY REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\tinput REAL NOT NULL, input_err REAL NOT NULL, output REAL NOT NULL, output_err REAL NOT NULL, cacheread REAL NOT NULL, cacheread_err REAL NOT NULL, cachewrite REAL NOT NULL, cachewrite_err REAL NOT NULL, cost REAL NOT NULL, cost_err REAL NOT NULL\n\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_resource_limits",
+		"tbl_name": "wf_runs_resource_limits",
+		"sql": "CREATE TABLE wf_runs_resource_limits(scope TEXT PRIMARY KEY, config TEXT NOT NULL)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_resource_owners",
+		"tbl_name": "wf_runs_resource_owners",
+		"sql": "CREATE TABLE wf_runs_resource_owners(id TEXT PRIMARY KEY, host TEXT NOT NULL, pid INTEGER NOT NULL, expires_at INTEGER NOT NULL, boot TEXT)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_resource_permits",
+		"tbl_name": "wf_runs_resource_permits",
+		"sql": "CREATE TABLE wf_runs_resource_permits(ticket INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT UNIQUE NOT NULL,\n\t\t\t\troot TEXT NOT NULL, holder TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, owner TEXT, attempt TEXT, process_identity TEXT, root_epoch INTEGER, granted_at INTEGER)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_stage_inputs",
+		"tbl_name": "wf_runs_stage_inputs",
+		"sql": "CREATE TABLE wf_runs_stage_inputs(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE, kind TEXT NOT NULL, op TEXT NOT NULL,\n\t\t\t\t\tpayload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', receipt TEXT,\n\t\t\t\t\tcreated_at INTEGER NOT NULL, settled_at INTEGER,\n\t\t\t\t\tPRIMARY KEY(root, run_id, stage_id, seq), UNIQUE(root, run_id, stage_id, op)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_stage_leases",
+		"tbl_name": "wf_runs_stage_leases",
+		"sql": "CREATE TABLE wf_runs_stage_leases(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL, token INTEGER NOT NULL,\n\t\t\t\t\twork TEXT, generation INTEGER, worker TEXT, epoch INTEGER, seq INTEGER,\n\t\t\t\t\texpires_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(root, run_id, stage_id)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_stage_workspaces",
+		"tbl_name": "wf_runs_stage_workspaces",
+		"sql": "CREATE TABLE wf_runs_stage_workspaces(\n\t\t\t\t\troot TEXT NOT NULL, run_id TEXT NOT NULL, stage_id TEXT NOT NULL,\n\t\t\t\t\twork TEXT NOT NULL REFERENCES wf_runs_work(id) ON DELETE CASCADE, generation INTEGER NOT NULL,\n\t\t\t\t\thost TEXT NOT NULL, worktree TEXT NOT NULL, binding TEXT, recorded_at INTEGER NOT NULL,\n\t\t\t\t\tPRIMARY KEY(root, run_id, stage_id)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_work",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TABLE wf_runs_work(\n\t\t\t\t\tid TEXT PRIMARY KEY, root TEXT NOT NULL REFERENCES wf_runs_pool(root) ON DELETE CASCADE,\n\t\t\t\t\tboundary TEXT NOT NULL, descriptor TEXT NOT NULL, fingerprint TEXT NOT NULL,\n\t\t\t\t\tstate TEXT NOT NULL DEFAULT 'ready', generation INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tworker TEXT, epoch INTEGER NOT NULL DEFAULT 0, expires_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\trenewed_at INTEGER NOT NULL DEFAULT 0,\n\t\t\t\t\tready_at INTEGER NOT NULL, UNIQUE(root, boundary)\n\t\t\t\t)"
+	},
+	{
+		"type": "table",
+		"name": "wf_runs_work_results",
+		"tbl_name": "wf_runs_work_results",
+		"sql": "CREATE TABLE wf_runs_work_results(\n\t\t\t\t\twork TEXT PRIMARY KEY REFERENCES wf_runs_work(id) ON DELETE CASCADE, result TEXT NOT NULL\n\t\t\t\t)"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_fence_abort",
+		"tbl_name": "team_wf_runs_pool_fence",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_fence_abort BEFORE INSERT ON team_wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence'); END"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_usage_totals_delete",
+		"tbl_name": "team_wf_runs_pool_usage",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_delete AFTER DELETE ON team_wf_runs_pool_usage BEGIN\n\t\tDELETE FROM team_wf_runs_pool_usage_totals WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work);\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_usage_totals_insert",
+		"tbl_name": "team_wf_runs_pool_usage",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_insert AFTER INSERT ON team_wf_runs_pool_usage BEGIN\n\t\tUPDATE team_wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = NEW.work);\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_usage_totals_update",
+		"tbl_name": "team_wf_runs_pool_usage",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_update AFTER UPDATE ON team_wf_runs_pool_usage\n\tWHEN OLD.input IS NOT NEW.input OR OLD.output IS NOT NEW.output OR OLD.cacheread IS NOT NEW.cacheread OR OLD.cachewrite IS NOT NEW.cachewrite OR OLD.cost IS NOT NEW.cost OR OLD.work IS NOT NEW.work BEGIN\n\t\tUPDATE team_wf_runs_pool_usage_totals SET input = input + (-OLD.input), input_err = input_err + CASE WHEN abs(input) > abs((-OLD.input)) THEN (input - (input + (-OLD.input))) + (-OLD.input) ELSE ((-OLD.input) - (input + (-OLD.input))) + input END, output = output + (-OLD.output), output_err = output_err + CASE WHEN abs(output) > abs((-OLD.output)) THEN (output - (output + (-OLD.output))) + (-OLD.output) ELSE ((-OLD.output) - (output + (-OLD.output))) + output END, cacheread = cacheread + (-OLD.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((-OLD.cacheread)) THEN (cacheread - (cacheread + (-OLD.cacheread))) + (-OLD.cacheread) ELSE ((-OLD.cacheread) - (cacheread + (-OLD.cacheread))) + cacheread END, cachewrite = cachewrite + (-OLD.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((-OLD.cachewrite)) THEN (cachewrite - (cachewrite + (-OLD.cachewrite))) + (-OLD.cachewrite) ELSE ((-OLD.cachewrite) - (cachewrite + (-OLD.cachewrite))) + cachewrite END, cost = cost + (-OLD.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((-OLD.cost)) THEN (cost - (cost + (-OLD.cost))) + (-OLD.cost) ELSE ((-OLD.cost) - (cost + (-OLD.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = OLD.work);\n\t\tUPDATE team_wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM team_wf_runs_work WHERE id = NEW.work);\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "team_wf_runs_pool_usage_totals_work_delete",
+		"tbl_name": "team_wf_runs_work",
+		"sql": "CREATE TRIGGER team_wf_runs_pool_usage_totals_work_delete BEFORE DELETE ON team_wf_runs_work BEGIN\n\t\tDELETE FROM team_wf_runs_pool_usage_totals WHERE root = OLD.root;\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_fence_abort",
+		"tbl_name": "wf_runs_pool_fence",
+		"sql": "CREATE TRIGGER wf_runs_pool_fence_abort BEFORE INSERT ON wf_runs_pool_fence BEGIN SELECT RAISE(ABORT, 'atomic-pool-fence'); END"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_usage_totals_delete",
+		"tbl_name": "wf_runs_pool_usage",
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_delete AFTER DELETE ON wf_runs_pool_usage BEGIN\n\t\tDELETE FROM wf_runs_pool_usage_totals WHERE root = (SELECT root FROM wf_runs_work WHERE id = OLD.work);\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_usage_totals_insert",
+		"tbl_name": "wf_runs_pool_usage",
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_insert AFTER INSERT ON wf_runs_pool_usage BEGIN\n\t\tUPDATE wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = NEW.work);\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_usage_totals_update",
+		"tbl_name": "wf_runs_pool_usage",
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_update AFTER UPDATE ON wf_runs_pool_usage\n\tWHEN OLD.input IS NOT NEW.input OR OLD.output IS NOT NEW.output OR OLD.cacheread IS NOT NEW.cacheread OR OLD.cachewrite IS NOT NEW.cachewrite OR OLD.cost IS NOT NEW.cost OR OLD.work IS NOT NEW.work BEGIN\n\t\tUPDATE wf_runs_pool_usage_totals SET input = input + (-OLD.input), input_err = input_err + CASE WHEN abs(input) > abs((-OLD.input)) THEN (input - (input + (-OLD.input))) + (-OLD.input) ELSE ((-OLD.input) - (input + (-OLD.input))) + input END, output = output + (-OLD.output), output_err = output_err + CASE WHEN abs(output) > abs((-OLD.output)) THEN (output - (output + (-OLD.output))) + (-OLD.output) ELSE ((-OLD.output) - (output + (-OLD.output))) + output END, cacheread = cacheread + (-OLD.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((-OLD.cacheread)) THEN (cacheread - (cacheread + (-OLD.cacheread))) + (-OLD.cacheread) ELSE ((-OLD.cacheread) - (cacheread + (-OLD.cacheread))) + cacheread END, cachewrite = cachewrite + (-OLD.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((-OLD.cachewrite)) THEN (cachewrite - (cachewrite + (-OLD.cachewrite))) + (-OLD.cachewrite) ELSE ((-OLD.cachewrite) - (cachewrite + (-OLD.cachewrite))) + cachewrite END, cost = cost + (-OLD.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((-OLD.cost)) THEN (cost - (cost + (-OLD.cost))) + (-OLD.cost) ELSE ((-OLD.cost) - (cost + (-OLD.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = OLD.work);\n\t\tUPDATE wf_runs_pool_usage_totals SET input = input + (NEW.input), input_err = input_err + CASE WHEN abs(input) > abs((NEW.input)) THEN (input - (input + (NEW.input))) + (NEW.input) ELSE ((NEW.input) - (input + (NEW.input))) + input END, output = output + (NEW.output), output_err = output_err + CASE WHEN abs(output) > abs((NEW.output)) THEN (output - (output + (NEW.output))) + (NEW.output) ELSE ((NEW.output) - (output + (NEW.output))) + output END, cacheread = cacheread + (NEW.cacheread), cacheread_err = cacheread_err + CASE WHEN abs(cacheread) > abs((NEW.cacheread)) THEN (cacheread - (cacheread + (NEW.cacheread))) + (NEW.cacheread) ELSE ((NEW.cacheread) - (cacheread + (NEW.cacheread))) + cacheread END, cachewrite = cachewrite + (NEW.cachewrite), cachewrite_err = cachewrite_err + CASE WHEN abs(cachewrite) > abs((NEW.cachewrite)) THEN (cachewrite - (cachewrite + (NEW.cachewrite))) + (NEW.cachewrite) ELSE ((NEW.cachewrite) - (cachewrite + (NEW.cachewrite))) + cachewrite END, cost = cost + (NEW.cost), cost_err = cost_err + CASE WHEN abs(cost) > abs((NEW.cost)) THEN (cost - (cost + (NEW.cost))) + (NEW.cost) ELSE ((NEW.cost) - (cost + (NEW.cost))) + cost END WHERE root = (SELECT root FROM wf_runs_work WHERE id = NEW.work);\n\tEND"
+	},
+	{
+		"type": "trigger",
+		"name": "wf_runs_pool_usage_totals_work_delete",
+		"tbl_name": "wf_runs_work",
+		"sql": "CREATE TRIGGER wf_runs_pool_usage_totals_work_delete BEFORE DELETE ON wf_runs_work BEGIN\n\t\tDELETE FROM wf_runs_pool_usage_totals WHERE root = OLD.root;\n\tEND"
+	}
+]

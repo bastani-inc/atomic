@@ -81,7 +81,8 @@ function publishedUnder(path, root) {
 		typeof path === "string" &&
 		typeof root === "string" &&
 		path.startsWith(`${root}/`) &&
-		!path.slice(root.length + 1).startsWith(".staging-")
+		// Staging worktrees, `.s-<id>` and earlier versions' `.staging-<id>`, are never published (#5139).
+		!path.slice(root.length + 1).startsWith(".")
 	);
 }
 

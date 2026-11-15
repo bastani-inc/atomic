@@ -3,6 +3,7 @@ pub mod fs_cache;
 pub mod glob;
 mod glob_util;
 pub mod grep;
+pub mod process_start;
 pub mod pty;
 pub mod subagent_control;
 pub mod task;

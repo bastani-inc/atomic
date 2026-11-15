@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { APP_NAME } from "../config.js";
 import { getBuiltinPackageLocations } from "../core/builtin-packages.ts";
-import { isTeamProfileConfigError } from "../core/storage/errors.js";
+import { describeStorageFailure, isTeamProfileConfigError } from "../core/storage/errors.js";
 import {
 	checkSharedDatabaseArguments,
 	checkTeamPrefix,
@@ -580,14 +580,14 @@ function formatter(json: boolean): (event: string, fields?: Readonly<Record<stri
 				].join(" ");
 }
 
-/** Problems a setup error lists, one per line: the shared pool's own, or else the error's message. */
+/** Problems a setup error lists, one per line: the shared pool's own, or else the error's message and its cause. */
 function setupLines(error: Error): string[] {
 	const problems = (
 		error as {
 			readonly problems?: readonly { readonly subject: string; readonly code: string; readonly hint: string }[];
 		}
 	).problems;
-	if (error.name !== "SharedPoolSetupError" || problems === undefined) return [error.message];
+	if (error.name !== "SharedPoolSetupError" || problems === undefined) return [describeStorageFailure(error)];
 	return [
 		`Worker host setup is incomplete:`,
 		...problems.map((problem) => `  - ${problem.subject} (${problem.code}): ${problem.hint}`),
@@ -693,7 +693,7 @@ async function start(
 		// An idle exit drained without a signal; its failure, if any, is the host's own and already stopped it.
 		await stopping;
 	} catch (caught) {
-		error(line("failed", { error: `${(caught as Error).name}: ${(caught as Error).message}` }));
+		error(line("failed", { error: `${(caught as Error).name}: ${describeStorageFailure(caught as Error)}` }));
 		return 1;
 	} finally {
 		signals.off("SIGTERM", onSignal);

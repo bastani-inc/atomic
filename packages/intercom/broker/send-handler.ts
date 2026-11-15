@@ -23,6 +23,7 @@ import { isVerticalBypass, sameGroup } from "./group-isolation.js";
 import { sessionGroups, sessionsShareGroup } from "./group-membership.js";
 import { HELD_FOR_AWAY_ASKER_TARGET } from "./held-reply-targets.js";
 import { PendingQuestionIndex } from "./pending-question-index.js";
+import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { isAgentRecipient, NON_AGENT_RECIPIENT_REFUSAL } from "../recipient-purpose.js";
 
 export interface BrokerConnectedSession {
@@ -175,6 +176,12 @@ function wireMessageId(value: unknown): string {
   return typeof id === "string" ? id : "unknown";
 }
 
+
+/**
+ * #5101: the longest a reply waits for a peer's routes to be restored before it is refused as retryable. A broker
+ * completes a registration, and so restores its routes, within its presence bound (5 s).
+ */
+export const ROUTE_RESTORATION_WAIT_MS = 5_000;
 
 /** Validate and route one wire-level send request. */
 export function handleBrokerSend(
@@ -669,6 +676,54 @@ export function handleBrokerSend(
 		message.replyTo !== undefined &&
 		pendingQuestions.matchesReply(fromSession.info.id, target.info.id, message.replyTo);
 	if (requirePendingReply && !correlatedReply) {
+		// #5101: a peer back on this broker whose routes it has not restored yet (its registration is still completing)
+		// may hold this reply's route. The reply waits for that restoration and is decided again; one still waiting when
+		// the bound passes is refused as retryable, never as unauthorized.
+		let refused = false;
+		let bound: ReturnType<typeof setTimeout> | undefined;
+		const decideAgain = (): void => {
+			if (refused) return;
+			clearTimeout(bound);
+			handleBrokerSend(
+				socket,
+				clientMessage,
+				currentId,
+				sessions,
+				deliveredMessages,
+				write,
+				supervisorCache,
+				pendingQuestions,
+				routePendingStage,
+				resolveLiveWorkflowStage,
+				canControlLiveWorkflowStage,
+				resolveLegacyWorkflowStageTarget,
+				writeConfirmed,
+				isNonAgentWorkflowTarget,
+				holdForRestoringRecipient,
+				receipts,
+				routeRemote,
+				canPeekGroup,
+				routeReleasedAskerReply,
+				resolveWorkflowStageAlias,
+			);
+		};
+		if (
+			pendingQuestions.whenRestored(target.info.id, decideAgain) ||
+			pendingQuestions.whenRestored(fromSession.info.id, decideAgain)
+		) {
+			bound = setTimeout(() => {
+				refused = true;
+				write(socket, {
+					type: "delivery_failed",
+					messageId: message.id,
+					attemptId,
+					reason: ROUTE_UNAVAILABLE_REASON,
+					routeUnavailable: true,
+				});
+			}, ROUTE_RESTORATION_WAIT_MS);
+			bound.unref();
+			return;
+		}
 		write(socket, {
 			type: "delivery_failed",
 			messageId: message.id,
@@ -775,6 +830,8 @@ export function handleBrokerSend(
     const outbound = messageFrameFor(target, fromSession.info, message, supervisorSend ? "supervisor" : undefined);
     const failDelivery = (): void => {
 	  if (reservation === "recorded") deliveredMessages.forget(message.id, signature);
+	  // #5095: the reply was never written, so its ask is still unanswered.
+	  if (message.replyTo !== undefined) pendingQuestions.unmarkReplied(fromSession.info.id, target.info.id, message.replyTo);
       write(socket, {
         type: "delivery_failed",
         messageId: message.id,
@@ -883,10 +940,15 @@ export function handleBrokerSend(
       if (message.replyTo !== undefined && pendingQuestions.clearReply(fromSession.info.id, recipient.info.id, message.replyTo)) {
         deliveredMessages.settleQuestion(message.replyTo);
       }
+      if (message.replyTo !== undefined)
+        pendingQuestions.releaseHeldFailures(message.replyTo, fromSession.info.id, recipient.registrationReturnAddress);
       if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, recipient.info.id);
       notify({ type: "delivered", messageId: message.id, attemptId: senderAttemptId });
     };
     const senderWaiting: ReceiptSender = { socket, ...(attemptId === undefined ? {} : { attemptId }) };
+    // #5095: from here the reply is on its way: its ask is answered, so the replier ending before the asker saves the
+    // reply does not also fail it. The asker's save clears its route as before.
+    if (message.replyTo !== undefined) pendingQuestions.markReplied(fromSession.info.id, target.info.id, message.replyTo);
     if (confirmsSaves && receipts !== undefined) {
       receipts.await(
         {
@@ -900,6 +962,10 @@ export function handleBrokerSend(
           hold: (waiting, timeoutMs) => {
             write(waiting.socket, { type: "send_held", messageId: message.id, attemptId: waiting.attemptId, timeoutMs });
           },
+          // #5095: a reply its asker never saved did not answer the ask.
+          ...(message.replyTo === undefined
+            ? {}
+            : { lapse: () => pendingQuestions.unmarkReplied(fromSession.info.id, target.info.id, message.replyTo as string) }),
         },
         senderWaiting,
       );

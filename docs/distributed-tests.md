@@ -63,7 +63,9 @@ are looked up on `PATH`; `az` is called only once it is found:
    SHA-256 on each. Concurrent cache writers use separate staging files and atomically publish one complete entry
    without overwriting an entry another run is using.
 4. Starts `sqld` (`v0.24.33`, digest-pinned) as a primary and a replica with namespaces, JWT authentication and
-   replication over mutual TLS, behind a TLS gateway on each database VM's private address.
+   replication over mutual TLS, behind a TLS gateway on each database VM's private address. The primary runs with
+   `--checkpoint-interval-s 60`: without it, v0.24.33 can stop taking writes under concurrent writers
+   (tursodatabase/libsql#2286, #4790), and no sqld release fixes that yet.
 5. Runs the security gate. Any failure aborts the run before a scenario starts and tears everything down.
 6. Runs the selected suites and chaos profiles, then checks the invariants.
 7. Tears down in `finally` and proves absence with `az` queries. `--keep` skips teardown, except after a failed security

@@ -1,16 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import lockfile from "proper-lockfile";
 import { failureDebugFields, reportDebug } from "../debug.ts";
+import { processStartToken } from "../process-start-token.ts";
 import { isWorkspaceRestoreError } from "./errors.ts";
 import { nulFields, runGit } from "./git.ts";
 import { canonicalizeWorktreePath } from "./paths.ts";
 import { isDeniedSnapshotPath } from "./policy.ts";
 import { type RepositoryId, sharedRepositoryIdOf, sharedRepositoryIdsOf } from "./repository-identity.ts";
 import { pooledWorktreeStore, resetPooledWorktree, verifyWorktree } from "./restore.ts";
+import { lockShared, sharedClockNow } from "./shared-clock.ts";
 import type { SnapshotBlobStore, WorktreeRestoreWarning, WorktreeSnapshot, WorktreeSnapshotSettings } from "./types.ts";
 
 /**
@@ -157,30 +157,20 @@ const leaseHolds = new WeakMap<WorktreeLease, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
 /** Names this host in lease names, so a process on the same host can tell whether a lease's holder still runs. */
 const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
-/**
- * When process `pid` of this host started, as `sha12` of the boot and the process's start time since boot, so a later
- * process given the same id is told apart (#4990); undefined where that cannot be read: without Linux's `/proc`, or
- * once the process is gone.
- */
-export function processStartToken(pid: number): string | undefined {
-	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		// Fields after the command name, which may hold spaces and parentheses: the start time is the 22nd field.
-		const started = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
-		const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-		if (started === undefined || !/^\d+$/.test(started) || boot === "") return undefined;
-		return createHash("sha256").update(`${boot}\n${started}`).digest("hex").slice(0, 12);
-	} catch {
-		return undefined;
-	}
-}
 
-const PROCESS_START = processStartToken(process.pid);
+export { processStartToken };
+
+let processLease: string | undefined;
 /**
  * Names this process's leases: its host and pid, a random part, as the pid alone could be reused by a later process,
- * and when this process started, where that can be read (#4990).
+ * and when this process started, where that can be read (#4990, #5141). Read once, on first use.
  */
-const PROCESS_LEASE = `${HOST}-${process.pid}-${randomUUID().slice(0, 8)}${PROCESS_START === undefined ? "" : `-${PROCESS_START}`}`;
+function ownLease(): string {
+	if (processLease !== undefined) return processLease;
+	const started = processStartToken(process.pid);
+	processLease = `${HOST}-${process.pid}-${randomUUID().slice(0, 8)}${started === undefined ? "" : `-${started}`}`;
+	return processLease;
+}
 /**
  * A lease name after the record's: the holder's host and pid, and when the holder started. Leases written before
  * #4830 name no host, and those written before #4990 no start.
@@ -190,8 +180,8 @@ const LEASE_NAME = /^([0-9a-f]{12})-(\d+)-[0-9a-f]{8}(?:-([0-9a-f]{12}))?\.lease
 /**
  * Whether the lease named `name` belongs to a process of this host that still runs (#4830): a holder stalled for
  * minutes may still write to its slot. A process this one may not signal runs too. A lease that names when its holder
- * started belongs to a process of that id that started then, never to a later one given the id (#4990). A lease of
- * another host, or one naming no host, is judged by its age alone.
+ * started belongs to a process of that id that started then, never to a later one given the id (#4990), on Windows too
+ * (#5141). A lease of another host, or one naming no host, is judged by its age alone.
  */
 function holderRuns(name: string, age: number): boolean {
 	const lease = LEASE_NAME.exec(name);
@@ -227,7 +217,7 @@ async function exists(path: string): Promise<boolean> {
  * lock another process holds for a while, as when a slot's record is briefly being written.
  */
 function lockPath(path: string, wait: boolean, onLost?: () => void): Promise<() => Promise<void>> {
-	return lockfile.lock(path, {
+	return lockShared(path, {
 		realpath: false,
 		stale: LEASE_STALE_MS,
 		update: LEASE_UPDATE_MS,
@@ -282,8 +272,8 @@ async function withSlotLock<T>(file: string, wait: boolean, action: (lock: SlotL
 	const token = randomUUID();
 	let named = false;
 	try {
-		await writeFile(`${lockTokenFile(file)}.${PROCESS_LEASE}.tmp`, token, { mode: 0o600 });
-		await rename(`${lockTokenFile(file)}.${PROCESS_LEASE}.tmp`, lockTokenFile(file));
+		await writeFile(`${lockTokenFile(file)}.${ownLease()}.tmp`, token, { mode: 0o600 });
+		await rename(`${lockTokenFile(file)}.${ownLease()}.tmp`, lockTokenFile(file));
 		named = true;
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-lock-token-failed", { file, ...failureDebugFields(error) });
@@ -306,7 +296,7 @@ async function withSlotLock<T>(file: string, wait: boolean, action: (lock: SlotL
  * Until {@link giveBackRecord} or {@link putRecord}, the slot has no record: no hold, claim or eviction takes it.
  */
 async function takeRecord(file: string, expected: PoolSlotRecord): Promise<string | undefined> {
-	const taken = `${file}.${PROCESS_LEASE}.taken`;
+	const taken = `${file}.${ownLease()}.taken`;
 	try {
 		await rename(file, taken);
 	} catch (error) {
@@ -340,7 +330,7 @@ async function giveBackRecord(file: string, taken: string): Promise<void> {
  * wrote one meanwhile; resolves to false, writing nothing, when one did, whose record stands (#4991).
  */
 async function putRecord(file: string, taken: string, record: PoolSlotRecord): Promise<boolean> {
-	const temporary = `${file}.${PROCESS_LEASE}.tmp`;
+	const temporary = `${file}.${ownLease()}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	try {
 		await link(temporary, file);
@@ -368,7 +358,7 @@ function lockLostError(file: string): NodeJS.ErrnoException {
  * share it. Losing the lock marks `held` compromised. Ending the lease removes its lock even once it was compromised.
  */
 async function leaseSlot(file: string, held: Pick<HeldSlot, "compromised">): Promise<() => Promise<void>> {
-	const lease = `${file}.${PROCESS_LEASE}.lease`;
+	const lease = `${file}.${ownLease()}.lease`;
 	const unlock = await lockPath(lease, false, () => {
 		held.compromised = true;
 	});
@@ -390,14 +380,17 @@ async function takeSlot(file: string, owner: PoolOwner, record: PoolSlotRecord):
  */
 async function otherLeases(file: string, grace: boolean): Promise<number> {
 	const prefix = `${basename(file)}.`;
-	const own = `${basename(file)}.${PROCESS_LEASE}.lease.lock`;
+	const own = `${basename(file)}.${ownLease()}.lease.lock`;
 	let live = 0;
+	// Ages are measured by the clock of the filesystem holding the leases, which their holders stamp refreshes in, so a
+	// holder on a host whose clock is off is judged by when it last refreshed its lease (#5050).
+	const now = await sharedClockNow(dirname(file));
 	for (const name of await readdir(dirname(file))) {
 		if (!name.startsWith(prefix) || !name.endsWith(".lease.lock") || name === own) continue;
 		const lock = join(dirname(file), name);
 		let age: number;
 		try {
-			age = Date.now() - (await stat(lock)).mtimeMs;
+			age = now - (await stat(lock)).mtimeMs;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") live++;
 			continue;
@@ -444,7 +437,7 @@ async function stillHolds(file: string, storeDir: string, held: HeldSlot): Promi
 }
 
 async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> {
-	const temporary = `${file}.${PROCESS_LEASE}.tmp`;
+	const temporary = `${file}.${ownLease()}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	await rename(temporary, file);
 }
@@ -507,7 +500,7 @@ export async function admitPooledWorktree(admission: PoolAdmission, owner: PoolO
 	}
 	const directory = join(storeDir, "pool", repository);
 	await mkdir(directory, { recursive: true });
-	const unlockRepository = await lockfile.lock(directory, {
+	const unlockRepository = await lockShared(directory, {
 		realpath: false,
 		stale: LEASE_STALE_MS,
 		update: LEASE_UPDATE_MS,

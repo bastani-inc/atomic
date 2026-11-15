@@ -1,3 +1,4 @@
+import { sliceHead } from "@bastani/atomic";
 export type ReviewNextAction =
   | "implementation"
   | "pull-request"
@@ -219,7 +220,7 @@ const PREVIEW_LIMIT = 500;
 function rawTextPreview(rawText: string): string | undefined {
   const trimmed = rawText.trim();
   if (trimmed.length === 0) return undefined;
-  return trimmed.slice(0, PREVIEW_LIMIT);
+  return sliceHead(trimmed, PREVIEW_LIMIT);
 }
 
 export function parseFailureDiagnostics(

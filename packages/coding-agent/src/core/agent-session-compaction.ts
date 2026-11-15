@@ -236,6 +236,7 @@ export async function planVerbatimCompaction(
 			: {}),
 		retry: this.settingsManager.getRetrySettings(),
 		callbacks: createSummarizationRetryCallbacks(this, { source: "compaction", reason: options.reason }),
+		onUsage: (usage) => this._emit({ type: "compaction_usage", reason: options.reason, usage }),
 	};
 	let fromExtension = false;
 	let compacted:
@@ -302,6 +303,7 @@ export async function planVerbatimCompaction(
 			preferredProvider: model.provider,
 			sessionThinkingLevel: this.thinkingLevel,
 			isFallbackModelAllowed: this._isFallbackModelAllowed,
+			blockedModels: this._fallbackBlockedModels,
 		};
 		const run = await runVerbatimCompaction(preparation, model, {
 			...plan,

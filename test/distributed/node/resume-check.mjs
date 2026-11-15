@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Checks published restored worktrees. A `.staging-*` directory is not a worktree used for resume. */
+/** Checks published restored worktrees. A staging directory, `.s-*` or an earlier `.staging-*`, is not a worktree used for resume. */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
@@ -18,7 +18,7 @@ export function checkPublishedWorktrees(root, git) {
 	if (!existsSync(root)) return { clean: true, incomplete: [], staging: [] };
 	const entries = readdirSync(root, { withFileTypes: true });
 	const staging = entries
-		.filter((entry) => entry.isDirectory() && entry.name.startsWith(".staging-"))
+		.filter((entry) => entry.isDirectory() && entry.name.startsWith("."))
 		.map((entry) => entry.name);
 	const incomplete = entries
 		.filter((entry) => !staging.includes(entry.name))

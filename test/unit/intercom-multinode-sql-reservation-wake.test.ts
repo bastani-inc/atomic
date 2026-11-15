@@ -10,6 +10,7 @@ import {
 import { borrowedDatabase } from "../../packages/intercom/broker/open-broker-state.js";
 import { releasedReservationKey } from "../../packages/intercom/broker/released-children.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
+import { interceptingDatabase } from "../helpers/intercepting-database.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
 
 const TABLE = "intercom_restoring_reservations";
@@ -85,18 +86,16 @@ function failingAlter(
 	const alters: string[] = [];
 	return {
 		alters,
-		database: {
-			...borrowed,
-			all: (async (sql: string, ...params: never[]) =>
-				staleColumns && /table_info/i.test(sql) ? [] : borrowed.all(sql, ...params)) as SqliteDatabase["all"],
-			exec: async (sql) => {
+		database: interceptingDatabase(borrowed, {
+			all: async (sql, params, next) => (staleColumns && /table_info/i.test(sql) ? [] : next(sql, ...params)),
+			exec: async (sql, next) => {
 				if (sql.startsWith("ALTER TABLE")) {
 					alters.push(sql);
 					throw failure();
 				}
-				return borrowed.exec(sql);
+				return next(sql);
 			},
-		},
+		}),
 	};
 }
 
@@ -115,7 +114,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		}
 		const indexes = await indexesOf(database);
 		const child = indexes.find((index) => index.name === `${TABLE}_child`);
-		const wakeRequested = indexes.find((index) => index.name === `${TABLE}_wake_requested`);
+		const wakeRequested = indexes.find((index) => index.name === `${TABLE}_wake`);
 		assert.match(child?.sql ?? "", /\(child_target\) WHERE end_json IS NULL$/);
 		assert.match(wakeRequested?.sql ?? "", /\(owner_broker_id\) WHERE wake_requested = 1$/);
 	});
@@ -143,8 +142,8 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		assert.equal(read.status === "active" && read.reservation.wake, false);
 		assert.deepEqual(await store.requestWake("legacy"), { status: "not-wakeable" });
 		assert.deepEqual(
-			(await indexesOf(database)).map((index) => index.name).filter((name) => name.endsWith("_wake_requested")),
-			[`${TABLE}_wake_requested`],
+			(await indexesOf(database)).map((index) => index.name).filter((name) => name.startsWith(`${TABLE}_wake`)),
+			[`${TABLE}_wake`],
 		);
 	});
 
@@ -162,13 +161,12 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		const borrowed = borrowedDatabase(database);
 		const alters: string[] = [];
 		await openSqlRestoringReservationStore({
-			database: {
-				...borrowed,
-				exec: async (sql) => {
+			database: interceptingDatabase(borrowed, {
+				exec: async (sql, next) => {
 					if (sql.startsWith("ALTER TABLE")) alters.push(sql);
-					return borrowed.exec(sql);
+					return next(sql);
 				},
-			},
+			}),
 			prefix: "",
 		});
 		assert.deepEqual(alters, [

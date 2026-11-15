@@ -10,6 +10,7 @@ import { registerPendingStageIntercomBridge } from "../../packages/workflows/src
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { sleep } from "../helpers/runtime.js";
 import { configureTestStoreBackend } from "../helpers/store-backend.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
 import { createPersistedStageFixture } from "../unit/persisted-stage-fixture.js";
@@ -1376,4 +1377,83 @@ test("a released subagent woken and released again while its recipient is away f
 	assert.equal(failures.length, 1);
 	assert.ok(String(failures[0]?.content).startsWith(`Your ask ${askId} to recipient-away-released-twice-4765 failed`));
 	assert.match((await resumed.call({ action: "pending" })).content[0]?.text ?? "", /No unresolved/);
+});
+
+/** A recipient driven directly, so it can send its asker a reply and a failure for the same ask in any order. */
+async function rawRecipient(name: string) {
+	const client = new IntercomClient(randomUUID(), { acknowledgesReceipt: true });
+	const received: string[] = [];
+	client.on("message", (_from: object, message: { id: string }) => {
+		received.push(message.id);
+		client.acknowledgeReceived(message.id);
+	});
+	await client.connect({
+		name,
+		model: "m",
+		cwd: repoRoot,
+		pid: process.pid,
+		startedAt: Date.now(),
+		lastActivity: Date.now(),
+	});
+	cleanups.push(() => client.disconnect().catch(() => undefined));
+	return { client, received };
+}
+
+/** The asker asks the raw recipient and waits until it has the question; returns the ask's id. */
+async function askRaw(
+	asker: Session,
+	recipient: Awaited<ReturnType<typeof rawRecipient>>,
+	to: string,
+): Promise<string> {
+	const asked = await asker.call({ action: "ask", to, message: "which port?", wait: { kind: "background" } });
+	assert.equal(asked.isError, false, asked.content[0]?.text);
+	const askId = String(asked.details.askId);
+	await until(() => recipient.received.includes(askId), "the recipient receives the question");
+	return askId;
+}
+
+test("a failure that arrives for an ask already answered is not shown (#5095)", async () => {
+	const asker = await started({ name: "asker-answered-then-failed" });
+	const recipient = await rawRecipient("recipient-answered-then-failed");
+	const askId = await askRaw(asker, recipient, "recipient-answered-then-failed");
+	const askerId = String((await asker.call({ action: "status" })).content[0]?.text.match(/Session ID: (\S+)/)?.[1]);
+
+	const replied = await recipient.client.send(askerId, {
+		text: "port 8080",
+		replyTo: askId,
+		requirePendingReply: true,
+		expectedRecipientId: askerId,
+	});
+	assert.equal(replied.delivered, true, replied.reason);
+	await until(() => asker.cards(/^Reply to your ask/).length > 0, "the reply arrives");
+	const failed = await recipient.client.send(askerId, {
+		messageId: `ended:${askId}`,
+		text: "ended",
+		replyTo: askId,
+		replyError: "ended before replying",
+	});
+	assert.equal(failed.delivered, true, failed.reason);
+	await sleep(SHORT_BUDGET_MS);
+
+	assert.equal(asker.cards(/^Reply to your ask/).length, 1);
+	assert.deepEqual(asker.cards(/ended before replying/), [], "the answered ask has one outcome: its reply");
+});
+
+test("a failure that follows another failure of the same ask is still shown (#5095)", async () => {
+	const asker = await started({ name: "asker-failed-twice" });
+	const recipient = await rawRecipient("recipient-failed-twice");
+	const askId = await askRaw(asker, recipient, "recipient-failed-twice");
+	const askerId = String((await asker.call({ action: "status" })).content[0]?.text.match(/Session ID: (\S+)/)?.[1]);
+
+	for (const reason of ["refused first", "ended second"]) {
+		const failed = await recipient.client.send(askerId, {
+			messageId: `${reason.replace(" ", "-")}:${askId}`,
+			text: reason,
+			replyTo: askId,
+			replyError: reason,
+		});
+		assert.equal(failed.delivered, true, failed.reason);
+		await until(() => asker.cards(new RegExp(reason)).length > 0, `the "${reason}" failure is shown`);
+	}
+	assert.equal(asker.cards(/^Your ask .* failed/).length, 2);
 });
