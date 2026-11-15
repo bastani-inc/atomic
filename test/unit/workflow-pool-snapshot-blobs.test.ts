@@ -4,8 +4,12 @@ import { afterEach, beforeEach, test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
 import { collectSnapshotGarbage } from "../../packages/coding-agent/src/core/worktree-snapshot/garbage.ts";
 import type { WorktreeSnapshot } from "../../packages/coding-agent/src/core/worktree-snapshot/types.ts";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
+import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/pool-remote-journal.js";
 import { openSqlPoolQueue, type PoolWork } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import type { WorkflowSerializableObject } from "../../packages/workflows/src/shared/types.js";
 import { DispatchSnapshots } from "../../packages/workflows/src/workers/dispatch-snapshot.js";
 import { claimedWithStoredSnapshot } from "../../packages/workflows/src/workers/pool-coordinator.js";
@@ -163,4 +167,39 @@ test("a root dispatches a snapshot only while its journal still holds every blob
 		[["WorkspaceSnapshotError", "blobs-collected"]],
 	);
 	assert.equal(await new DispatchSnapshots({ blobs: undefined, unavailable: () => {} }).stored(gone), gone);
+});
+
+test("a pool in another database than its root's journal neither holds nor queues by blobs it does not keep (#5077)", async () => {
+	const durable = new MemoryRunJournal({ adapter: "remote", location: "memory" });
+	await durable.createRun({ runId: "root", name: "root", cwd: directory, createdAt: 0, status: "running" });
+	const acquired = await durable.acquire("root", "holder");
+	if (acquired.status !== "acquired") assert.fail("No root lease");
+	const { lease } = acquired;
+	const coordination = await openSqlRunJournal(join(directory, "pool.sqlite"));
+	closers.push(() => coordination.close());
+	const remote = new PoolRemoteJournal(durable, sqlPoolStorage(coordination)!);
+	await remote.mirror(lease);
+	const queue = await openSqlPoolQueue(coordination, remote);
+	await queue.initialize(lease, 60_000);
+	const elsewhere = syntheticSnapshot("elsewhere", [textBlob("kept in the root's journal").hash]);
+	const { work, boundary } = carrying(elsewhere, "remote");
+
+	assert.equal(await queue.holdRootSnapshot(lease, elsewhere), true);
+	assert.deepEqual((await queue.enqueue(lease, work, boundary)).execution.workspaceSnapshot, elsewhere);
+});
+
+test("a root that holds no snapshot holds nothing, and a claim checks only work that carries one (#5077)", async () => {
+	const { queue, lease, database, stored } = await rootPool();
+	assert.equal(await queue.holdRootSnapshot(lease, undefined), true);
+	const work = { ...carrying(stored, "deleted").work, id: "deleted" } as unknown as PoolWork;
+	assert.equal(
+		(await queue.dropWorkSnapshot(work)).execution.workspaceSnapshot,
+		undefined,
+		"a claimed work row deleted meanwhile is not an error",
+	);
+	assert.deepEqual(await database.all("SELECT id FROM wf_runs_work"), []);
+	const rootJournal = await SqlRunJournal.open(await openNodeSqliteDatabase(join(directory, "root.sqlite")));
+	closers.push(() => rootJournal.close());
+	const bare = { ...work, execution: {} } as PoolWork;
+	assert.equal(await claimedWithStoredSnapshot(queue, bare, rootJournal.snapshotBlobs), bare);
 });

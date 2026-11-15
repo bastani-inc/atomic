@@ -709,9 +709,8 @@ export class SqlPoolQueue {
 		assertWorkflowSerializableObject(descriptor.execution, "Pool execution");
 		assertWorkflowSerializableObject(boundary, "Pool boundary");
 		validateCheckpointInvocationFingerprint(boundary);
-		const queuedJson = serializeJson({ ...descriptor });
 		const payload = serializeJson(boundary);
-		const fingerprint = workFingerprint(JSON.parse(queuedJson), JSON.parse(payload));
+		const fingerprint = workFingerprint(JSON.parse(serializeJson({ ...descriptor })), JSON.parse(payload));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, boundary.kind, boundary.checkpointId]);
 		// A journal in another database takes the boundary's start first, as its own idempotent write: a crash before the
 		// work row below leaves a start with no work, which the root's resume enqueues again and finds already recorded.
@@ -721,7 +720,7 @@ export class SqlPoolQueue {
 			// Work carries its root's snapshot only while every blob of it is stored (#5077): the child of work queued
 			// without one restores as for a capture that was unavailable, never from a snapshot it cannot restore.
 			const queued = await this.withStoredSnapshot(tx, descriptor);
-			const json = queued === descriptor ? queuedJson : serializeJson({ ...queued });
+			const json = serializeJson({ ...queued });
 			const previous = await tx.get<WorkRow>(
 				`SELECT * FROM ${this.work} WHERE root = ? AND (boundary = ? OR json_extract(descriptor, '$.scope') = ? OR json_extract(descriptor, '$.childRunId') = ?)`,
 				lease.runId,
