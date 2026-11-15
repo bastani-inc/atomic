@@ -104,6 +104,7 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinationCounters } from "./pool-coordination-stats.js";
 import { openDurableJournal, type PoolDurableJournal, poolWorkerEnvironment } from "./pool-journal.js";
+import { IdleClaimPauses } from "./pool-wake-ups.js";
 import { configurePooledWatchTrace, tracePooledWatch } from "./pooled-watch-trace.js";
 import { appendProcessLog, logFailureOf } from "./process-log.js";
 import type {
@@ -658,7 +659,7 @@ export class PoolCoordinator {
 	private recoveryTimer?: NodeJS.Timeout;
 	/** The shared pool's wake-ups from its journal (#5103), and the idle workers' pauses they end. */
 	private poolReady?: StorageNotificationSubscription;
-	private readonly readyWaiters = new Set<() => void>();
+	private readonly idlePauses = new IdleClaimPauses(SHARED_IDLE_CLAIM_MS);
 	private flushTimer?: NodeJS.Timeout;
 	private lastFlushAt = 0;
 	private batchSequence = 0;
@@ -1193,29 +1194,14 @@ export class PoolCoordinator {
 		// worker asks for work at once, and the root settles what another host's worker ended, instead of at their polls.
 		if (this.options?.shared === undefined || this.journal === undefined) return;
 		this.poolReady = listenPoolReady(this.journal, (root) => {
-			if (root !== undefined && root !== this.root) return;
-			if (root === undefined) for (const wake of [...this.readyWaiters]) wake();
-			else this.readyWaiters.values().next().value?.();
-			if (this.satellite !== undefined) return;
+			this.idlePauses.wake(root, this.root);
+			if (this.satellite !== undefined || (root !== undefined && root !== this.root)) return;
 			const recoverNow = () => {
 				this.nextRecoveryAt = 0;
 				recover();
 			};
 			if (this.recovering === undefined) recoverNow();
 			else void this.recovering.finally(recoverNow);
-		});
-	}
-
-	/** An idle worker of a shared pool waits this long before it asks again, or until its root's work changes (#5103). */
-	private idleClaimPause(): Promise<void> {
-		return new Promise((resolve) => {
-			const wake = () => {
-				clearTimeout(timer);
-				this.readyWaiters.delete(wake);
-				resolve();
-			};
-			const timer = setTimeout(wake, SHARED_IDLE_CLAIM_MS);
-			this.readyWaiters.add(wake);
 		});
 	}
 
@@ -2597,7 +2583,7 @@ export class PoolCoordinator {
 						if (claimed === undefined) {
 							// An idle worker of a shared pool asks again only after a pause: the workers of every host ask the
 							// same journal, a network away (#4310).
-							if (options.shared !== undefined) await this.idleClaimPause();
+							if (options.shared !== undefined) await this.idlePauses.pause();
 							return undefined;
 						}
 						slot.work = claimed.work;

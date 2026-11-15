@@ -40,6 +40,7 @@ import {
 } from "./placement-errors.js";
 import { PoolCoordinator } from "./pool-coordinator.js";
 import { poolDurableJournal, poolHostId, poolStateDirectory } from "./pool-journal.js";
+import { hostWakeUps } from "./pool-wake-ups.js";
 import { processContainmentAvailable } from "./public-pool.js";
 import { RestoreBackoff } from "./restore-backoff.js";
 import { sharedJournalSelection, sharedSelectionProblems } from "./shared-setup.js";
@@ -268,9 +269,8 @@ class WorkerHost implements WorkflowWorkerHost {
 	/** When each root last gave up its workers, by `performance.now()`: it waits behind the roots it gave them to. */
 	private readonly yielded = new Map<string, number>();
 	private readonly timer: NodeJS.Timeout;
-	/** Wake-ups from a journal on Postgres when a root's work becomes ready (#5103), and when the last one polled. */
+	/** Wake-ups from a journal on Postgres when a root's work becomes ready (#5103). */
 	private readonly poolReady: StorageNotificationSubscription | undefined;
-	private wokenAt = Number.NEGATIVE_INFINITY;
 	private polling?: Promise<void>;
 	private stopping?: Promise<void>;
 	private draining = false;
@@ -314,13 +314,14 @@ class WorkerHost implements WorkflowWorkerHost {
 		this.timer = setInterval(() => this.tick(), HOST_POLL_MS);
 		// A root this host does not serve yet is attached to at once rather than at the next poll; a served root's own
 		// satellite hears its wake-ups itself.
-		this.poolReady = listenPoolReady(journal, (root) => {
-			if (root !== undefined && this.satellites.has(root)) return;
-			const now = performance.now();
-			if (now - this.wokenAt < HOST_WAKE_MIN_INTERVAL_MS) return;
-			this.wokenAt = now;
-			this.tick();
-		});
+		this.poolReady = listenPoolReady(
+			journal,
+			hostWakeUps(
+				(root) => this.satellites.has(root),
+				() => this.tick(),
+				HOST_WAKE_MIN_INTERVAL_MS,
+			),
+		);
 	}
 
 	private emit(event: WorkflowWorkerHostEvent): void {
