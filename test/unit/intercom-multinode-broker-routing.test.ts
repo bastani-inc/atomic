@@ -40,6 +40,7 @@ import { releasedReservationKey } from "../../packages/intercom/broker/released-
 import { RESTORING_RECIPIENT_HOLD_MS } from "../../packages/intercom/broker/restoring-recipients.js";
 import {
 	type BrokerConnectedSession,
+	deliveryTargetIdentity,
 	handleBrokerSend,
 	type SendClientMessage,
 } from "../../packages/intercom/broker/send-handler.js";
@@ -1891,3 +1892,274 @@ test(
 	},
 	2 * CROSS_NODE_WAIT_MS,
 );
+
+/** An ask from `asker` that `recipient`, on `recipientNode`, saved: its route is in the shared store. */
+async function savedAsk(
+	askerNode: Node,
+	asker: BrokerConnectedSession,
+	recipientNode: Node,
+	recipient: BrokerConnectedSession,
+) {
+	const ask = message({ expectsReply: true });
+	askerNode.send(asker, recipient.info.id, ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	recipientNode.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+	return ask;
+}
+
+function failuresOf(session: BrokerConnectedSession, askId: string) {
+	return framesOf(session).filter(
+		(frame) => frame.type === "message" && frame.message.replyTo === askId && frame.message.replyError !== undefined,
+	);
+}
+
+/** Owner and its released subagent on b, asker on a: the asker's ask to the subagent is parked for the owner. */
+async function parkedAskScene() {
+	const [a, b] = await cluster();
+	// Not the default group: the failure is authorized by the subagent's own group, as its sends were.
+	const asker = await a!.connect("asker", { group: "crew" });
+	const owner = await b!.connect("owner", { group: "crew" });
+	const child = await b!.connect("child", { group: "crew", supervisorId: owner.info.id });
+	const ask = await savedAsk(a!, asker, b!, child);
+	b!.sessions.delete(child.info.id);
+	b!.router.sessionLeft(child, { ownerSessionId: owner.info.id, childName: "child" });
+	await vi.waitFor(async () =>
+		assert.deepEqual(await a!.opened.state.pendingAsks.listParked(owner.info.id), {
+			status: "listed",
+			asks: [{ senderSessionId: asker.info.id, targetSessionId: child.info.id, messageId: ask.id }],
+		}),
+	);
+	assert.deepEqual(failuresOf(asker, ask.id), [], "a released subagent's ask is still open");
+	return { a: a!, b: b!, asker, owner, child, ask };
+}
+
+async function toldOnce(scene: Awaited<ReturnType<typeof parkedAskScene>>): Promise<void> {
+	const failure = await waitFor(() => failuresOf(scene.asker, scene.ask.id)[0]);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.id, `ended:${scene.ask.id}`);
+	assert.equal(failure.message.replyError, 'Session "child" ended before replying');
+	assert.deepEqual(failure.from, {
+		id: scene.child.info.id,
+		name: "child",
+		group: "crew",
+		groups: ["crew"],
+		cwd: "",
+		model: "",
+		pid: 0,
+		startedAt: 0,
+		lastActivity: failure.from.lastActivity,
+	});
+	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+	assert.equal(failuresOf(scene.asker, scene.ask.id).length, 1, "told once");
+	await vi.waitFor(async () =>
+		assert.deepEqual(await scene.a.opened.state.pendingAsks.listParked(scene.owner.info.id), {
+			status: "listed",
+			asks: [],
+		}),
+	);
+}
+
+test("an ask parked for a released subagent fails once for its asker on another node when the owner ends (#4992)", async () => {
+	const scene = await parkedAskScene();
+	scene.b.leave(scene.owner);
+	await toldOnce(scene);
+});
+
+test("an ask parked for a released subagent fails once for its asker on another node when the owner goes away (#4992)", async () => {
+	const scene = await parkedAskScene();
+	scene.b.sessions.delete(scene.owner.info.id);
+	scene.b.router.sessionLeft(scene.owner, undefined, false);
+	await toldOnce(scene);
+});
+
+test("an ask parked for a released subagent fails once for its asker on another node when the owner drops the subagent (#4992)", async () => {
+	const scene = await parkedAskScene();
+	scene.b.router.restoringReleased(releasedReservationKey("child"), scene.owner.info.id);
+	await toldOnce(scene);
+});
+
+test(
+	"a recipient that ends fails an away asker's ask even when the asker's queue is full (#4992)",
+	async () => {
+		const [a, b] = await cluster();
+		const returnAddress = randomUUID();
+		const asker = await a!.connect("asker", { returnAddress });
+		const recipient = await b!.connect("recipient");
+		const ask = await savedAsk(a!, asker, b!, recipient);
+		a!.sessions.delete(asker.info.id);
+		a!.router.sessionLeft(asker, undefined, false);
+		await waitOffline(b!, asker);
+		// The away asker's queue reaches its cap.
+		const filler = (id: string) =>
+			b!.opened.state.outbox.enqueue({
+				targetIdentity: deliveryTargetIdentity(asker),
+				originBrokerId: b!.name,
+				digest: id,
+				frame: { type: "message", from: recipient.info, message: { id, timestamp: 1, content: { text: id } } },
+			});
+		const queued: string[] = [];
+		for (let index = 0; index < OUTBOX_TARGET_MAX_ROWS; index++) {
+			const id = `filler-${index}`;
+			assert.equal((await filler(id)).status, "inserted");
+			queued.push(id);
+		}
+		assert.equal((await filler("one-too-many")).status, "full");
+
+		b!.leave(recipient);
+		// The ask's route ends only once its failure is queued.
+		await vi.waitFor(
+			async () =>
+				assert.deepEqual(
+					await a!.opened.state.pendingAsks.matchesReply({
+						replySenderSessionId: recipient.info.id,
+						replyTargetSessionId: asker.info.id,
+						replyTo: ask.id,
+					}),
+					{ status: "no-match" },
+				),
+			{ timeout: CROSS_NODE_WAIT_MS },
+		);
+		const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
+		await waitFor(() => (failuresOf(back, ask.id).length > 0 ? true : undefined), 3 * CROSS_NODE_WAIT_MS);
+		const delivered = framesOf(back).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : []));
+		assert.deepEqual(
+			delivered.filter((id) => id.startsWith("filler-")),
+			queued,
+			"every queued message is still delivered",
+		);
+		assert.equal(failuresOf(back, ask.id).length, 1);
+	},
+	4 * CROSS_NODE_WAIT_MS,
+);
+
+test(
+	"a recipient that turns terminal fails an away asker's ask even when the asker's queue is full (#4992)",
+	async () => {
+		const [a, b] = await cluster();
+		const returnAddress = randomUUID();
+		const asker = await a!.connect("asker", { returnAddress });
+		const child = await b!.connect("child");
+		const ask = await savedAsk(a!, asker, b!, child);
+		a!.sessions.delete(asker.info.id);
+		a!.router.sessionLeft(asker, undefined, false);
+		await waitOffline(b!, asker);
+		for (let index = 0; index < OUTBOX_TARGET_MAX_ROWS; index++) {
+			const id = `filler-${index}`;
+			const queued = await b!.opened.state.outbox.enqueue({
+				targetIdentity: deliveryTargetIdentity(asker),
+				originBrokerId: b!.name,
+				digest: id,
+				frame: { type: "message", from: child.info, message: { id, timestamp: 1, content: { text: id } } },
+			});
+			assert.equal(queued.status, "inserted");
+		}
+
+		child.info.replyCapability = "terminal";
+		b!.router.sessionUpdated(child);
+		await vi.waitFor(
+			async () => {
+				const row = await b!.opened.state.outbox.read(`terminal:${ask.id}`);
+				assert.equal(row.status === "found" && row.row.targetIdentity, deliveryTargetIdentity(asker));
+			},
+			{ timeout: CROSS_NODE_WAIT_MS },
+		);
+		const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
+		await waitFor(() => (failuresOf(back, ask.id).length > 0 ? true : undefined), 3 * CROSS_NODE_WAIT_MS);
+		const failures = failuresOf(back, ask.id);
+		assert.equal(failures.length, 1);
+		const failure = failures[0]!;
+		assert.ok(failure.type === "message");
+		assert.equal(failure.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
+	},
+	4 * CROSS_NODE_WAIT_MS,
+);
+
+test("an ask whose replier ends right after replying gets only the reply on another node (#4992)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const replier = await b!.connect("replier");
+	const ask = await savedAsk(a!, asker, b!, replier);
+	const answer = message({ replyTo: ask.id, content: { text: "port 8080" } });
+	b!.send(replier, asker.info.id, answer, { requirePendingReply: true });
+	b!.leave(replier);
+	const replied = await waitFor(() => messageFrames(asker, answer.id)[0]);
+	assert.equal(replied.type, "message");
+	await new Promise((resolve) => setTimeout(resolve, 20 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(failuresOf(asker, ask.id), [], "the reply is the ask's only outcome");
+});
+
+test("an away asker of a child that turned terminal and then ended gets only the terminal failure (#4992)", async () => {
+	const [a, b] = await cluster();
+	const returnAddress = randomUUID();
+	const asker = await a!.connect("asker", { returnAddress });
+	const child = await b!.connect("child");
+	const ask = await savedAsk(a!, asker, b!, child);
+	a!.sessions.delete(asker.info.id);
+	a!.router.sessionLeft(asker, undefined, false);
+	await waitOffline(b!, asker);
+	child.info.replyCapability = "terminal";
+	b!.router.sessionUpdated(child);
+	await vi.waitFor(async () => {
+		const row = await b!.opened.state.outbox.read(`terminal:${ask.id}`);
+		assert.equal(row.status, "found");
+	});
+	b!.leave(child);
+	await vi.waitFor(async () =>
+		assert.deepEqual(await a!.opened.state.pendingAsks.listForTarget(child.info.id), { status: "listed", asks: [] }),
+	);
+	assert.deepEqual(await b!.opened.state.outbox.read(`ended:${ask.id}`), { status: "missing" }, "not failed again");
+	const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
+	await waitFor(() => (failuresOf(back, ask.id).length > 0 ? true : undefined));
+	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(
+		failuresOf(back, ask.id).map((frame) => (frame.type === "message" ? frame.message.replyError : undefined)),
+		[TERMINAL_CHILD_ASK_REFUSAL],
+	);
+});
+
+test("a recipient that is only away keeps the asks from another node open (#4992)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const recipient = await b!.connect("recipient");
+	const ask = await savedAsk(a!, asker, b!, recipient);
+	b!.sessions.delete(recipient.info.id);
+	b!.router.sessionLeft(recipient, undefined, false);
+	await waitOffline(a!, recipient);
+	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(failuresOf(asker, ask.id), []);
+	assert.deepEqual(
+		await a!.opened.state.pendingAsks.matchesReply({
+			replySenderSessionId: recipient.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask.id,
+		}),
+		{ status: "match" },
+	);
+	assert.deepEqual(await a!.opened.state.pendingAsks.listEnded(0), { status: "listed", asks: [] });
+});
+
+test("an ask parked for a subagent Intercom no longer knows fails as sent by its session id when the owner ends (#4992)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const owner = await b!.connect("owner");
+	const forgotten = randomUUID();
+	const ask = { senderSessionId: asker.info.id, targetSessionId: forgotten, messageId: randomUUID() };
+	await b!.opened.state.pendingAsks.record(ask);
+	await b!.opened.state.pendingAsks.parkForTarget(forgotten, {
+		ownerSessionId: owner.info.id,
+		reservationKey: releasedReservationKey("forgotten"),
+	});
+	b!.leave(owner);
+	const failure = await waitFor(() => failuresOf(asker, ask.messageId)[0]);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, `Session "${forgotten}" ended before replying`);
+	assert.deepEqual(failure.from, {
+		id: forgotten,
+		cwd: "",
+		model: "",
+		pid: 0,
+		startedAt: 0,
+		lastActivity: failure.from.lastActivity,
+	});
+});

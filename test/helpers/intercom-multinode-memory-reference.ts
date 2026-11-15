@@ -627,6 +627,8 @@ interface PendingAskEntry {
 	targetSessionId: string;
 	readonly messageId: string;
 	park?: PendingAskPark;
+	replied?: true;
+	endedAt?: number;
 }
 
 const plainAsk = (entry: PendingAskEntry): PendingAsk => ({
@@ -656,6 +658,12 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 				ask.senderSessionId === route.replyTargetSessionId &&
 				ask.messageId === route.replyTo,
 		);
+	const endWhere = (selects: (ask: PendingAskEntry) => boolean) => {
+		const now = Date.now();
+		const ended = asks.filter((ask) => selects(ask) && ask.replied === undefined);
+		for (const ask of ended) ask.endedAt ??= now;
+		return { status: "listed" as const, asks: ended.map(plainAsk) };
+	};
 	return {
 		async record(ask) {
 			if (ask.senderSessionId.length === 0 || ask.targetSessionId.length === 0) return invalid("empty-session-id");
@@ -681,6 +689,14 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			asks.splice(index, 1);
 			return { status: "cleared" };
 		},
+		async markReplied(route) {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const index = reverseOf(route);
+			if (index < 0) return { status: "no-match" };
+			asks[index]!.replied = true;
+			return { status: "marked" };
+		},
 		async pruneSender(senderSessionId) {
 			if (senderSessionId.length === 0) return invalid("empty-session-id");
 			const before = asks.length;
@@ -701,6 +717,15 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			asks.splice(0, asks.length, ...asks.filter((ask) => ask.targetSessionId !== targetSessionId));
 			return { status: "taken", asks: taken.map(plainAsk) };
 		},
+		async listForTarget(targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			return {
+				status: "listed",
+				asks: asks
+					.filter((ask) => ask.targetSessionId === targetSessionId && ask.replied === undefined)
+					.map(plainAsk),
+			};
+		},
 		async parkForTarget(targetSessionId, park) {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
@@ -717,7 +742,8 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			if (targetSessionId.length === 0) return invalid("empty-session-id");
 			const bad = invalidPark(park);
 			if (bad !== undefined) return bad;
-			const rebound = asks.filter(parkedBy(park.ownerSessionId, park.reservationKey));
+			const parked = parkedBy(park.ownerSessionId, park.reservationKey);
+			const rebound = asks.filter((ask) => parked(ask) && ask.endedAt === undefined);
 			const result = rebound.map((ask) => ({
 				...plainAsk(ask),
 				targetSessionId,
@@ -736,6 +762,44 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			const taken = asks.filter(matches);
 			asks.splice(0, asks.length, ...asks.filter((ask) => !matches(ask)));
 			return { status: "taken", asks: taken.map(plainAsk) };
+		},
+		async endForTarget(targetSessionId) {
+			if (targetSessionId.length === 0) return invalid("empty-session-id");
+			return endWhere((ask) => ask.targetSessionId === targetSessionId);
+		},
+		async endParked(ownerSessionId, reservationKey) {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			return endWhere(parkedBy(ownerSessionId, reservationKey));
+		},
+		async listEnded(olderThanMs) {
+			const now = Date.now();
+			return {
+				status: "listed",
+				asks: asks
+					.filter(
+						(ask) => ask.endedAt !== undefined && ask.replied === undefined && now - ask.endedAt >= olderThanMs,
+					)
+					.sort((left, right) => left.endedAt! - right.endedAt!)
+					.map(plainAsk),
+			};
+		},
+		async unmarkEnded(route) {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			const index = reverseOf(route);
+			if (index < 0) return { status: "no-match" };
+			delete asks[index]!.endedAt;
+			return { status: "marked" };
+		},
+		async listParked(ownerSessionId, reservationKey) {
+			if (ownerSessionId.length === 0) return invalid("empty-session-id");
+			if (reservationKey !== undefined && reservationKey.length === 0) return invalid("empty-reservation-key");
+			const parked = parkedBy(ownerSessionId, reservationKey);
+			return {
+				status: "listed",
+				asks: asks.filter((ask) => parked(ask) && ask.replied === undefined).map(plainAsk),
+			};
 		},
 	};
 }

@@ -120,7 +120,8 @@ async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string)
  * None once the owner dropped it or left, another owner reserved its name, or it is gone, as for a route on the
  * asker's own broker.
  */
-async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
+/** The owner that holds the released asker now, where a reply to its question goes; none once it no longer holds it. */
+export async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
 	const read = await state.reservations.read(releasedReservationKey(ask.childName));
 	if (read.status === "active") {
 		const { reservation } = read;
@@ -274,26 +275,25 @@ export interface ReleasedTarget {
 
 /**
  * #4386: asks addressed to a departing session end with it, unless its owner released it: those are parked for the
- * owner, still answerable by the subagent, until it registers again on any node. A departing owner's parked asks end
- * with it, as its local parked questions do. Returns the asks that ended with it, whose askers must be told (#4842).
+ * owner, still answerable by the subagent, until it registers again on any node. Returns the asks that ended with it,
+ * whose askers must be told (#4842). #4992: they are still recorded, marked ended: each is removed once its failure is
+ * queued.
  */
 export async function settleAsksToDeparted(
 	state: Pick<IntercomBrokerStateStore, "pendingAsks">,
 	sessionId: string,
 	released: ReleasedTarget | undefined,
 ): Promise<PendingAsk[]> {
-	let ended: PendingAsk[] = [];
-	if (released === undefined) {
-		const taken = await state.pendingAsks.takeForTarget(sessionId);
-		if (taken.status === "taken") ended = taken.asks;
-	} else {
+	if (released !== undefined) {
 		await state.pendingAsks.parkForTarget(sessionId, {
 			ownerSessionId: released.ownerSessionId,
 			reservationKey: releasedReservationKey(released.childName),
 		});
+		return [];
 	}
-	await state.pendingAsks.takeParked(sessionId);
-	return ended;
+	// #4992: marked ended first, so another broker tells their askers should this one stop before it does.
+	const ended = await state.pendingAsks.endForTarget(sessionId);
+	return ended.status === "listed" ? ended.asks : [];
 }
 
 /** A released subagent registering again under the capability its owner issued. */
