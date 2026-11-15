@@ -65,6 +65,8 @@ describe("git sources that do not name their own install directory (#5055)", () 
 	it("keeps parsing sources whose names merely contain dots (#5055)", () => {
 		assert.equal(parseGitUrl("git:localhost/alice/.dotfiles")?.path, "alice/.dotfiles");
 		assert.equal(parseGitUrl("https://localhost/alice/tool.v2.git")?.path, "alice/tool.v2");
+		assert.equal(parseGitUrl("https://localhost/alice/tool.gitx")?.path, "alice/tool.gitx");
+		assert.equal(parseGitUrl("https://localhost/alice/tool//")?.path, "alice/tool");
 	});
 
 	it("leaves other installed packages in place when such a source is installed (#5055)", async () => {
@@ -97,26 +99,48 @@ describe("git sources that do not name their own install directory (#5055)", () 
 		}
 	});
 
-	it("leaves another repository's checkout alone when a differently cased source maps onto it (#5055)", async () => {
-		// On a case-insensitive filesystem, alice/TOOL opens the checkout of alice/tool.
+	/** A checkout of `origin` at the install directory of `localhost/alice/TOOL`. */
+	function checkoutAtToolSlot(origin: string): string {
 		const checkout = join(agentDir, "git", "localhost", "alice", "TOOL");
 		mkdirSync(checkout, { recursive: true });
 		git(["init"], checkout);
-		git(["remote", "add", "origin", "https://localhost/alice/tool"], checkout);
+		git(["remote", "add", "origin", origin], checkout);
 		writeFileSync(join(checkout, "package.json"), "{}");
-		const source = "https://localhost/alice/TOOL";
-		const mismatch = /https:\/\/localhost\/alice\/tool.*https:\/\/localhost\/alice\/TOOL/;
+		return checkout;
+	}
 
-		const settingsManager = SettingsManager.inMemory();
-		settingsManager.setPackages([source]);
-		const manager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+	it("leaves another repository's checkout alone when a differently cased source maps onto it (#5055)", async () => {
+		// On a case-insensitive filesystem, alice/TOOL opens the checkout of alice/tool.
+		for (const origin of ["https://localhost/alice/tool", "git@localhost:alice/tool"]) {
+			const checkout = checkoutAtToolSlot(origin);
+			const source = "https://localhost/alice/TOOL";
+			const mismatch = new RegExp(`${origin}.*https://localhost/alice/TOOL`);
+			const settingsManager = SettingsManager.inMemory();
+			settingsManager.setPackages([source]);
+			const manager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
 
-		await assert.rejects(manager.install(source), mismatch);
-		await assert.rejects(manager.update(source), mismatch);
-		await assert.rejects(manager.remove(source), mismatch);
+			await assert.rejects(manager.install(source), mismatch);
+			await assert.rejects(manager.update(source), mismatch);
+			await assert.rejects(manager.remove(source), mismatch);
 
-		assert.ok(existsSync(join(checkout, "package.json")));
-		assert.equal(git(["remote", "get-url", "origin"], checkout), "https://localhost/alice/tool");
+			assert.ok(existsSync(join(checkout, "package.json")));
+			assert.equal(git(["remote", "get-url", "origin"], checkout), origin);
+			rmSync(checkout, { recursive: true, force: true });
+		}
+	});
+
+	it("removes a checkout whose origin the user pointed at another repository (#5055)", async () => {
+		for (const origin of [
+			"https://mirror.example/alice/tool",
+			"https://localhost/bob/tool",
+			join(tempDir, "remote"),
+		]) {
+			const checkout = checkoutAtToolSlot(origin);
+
+			await createManager().remove("https://localhost/alice/TOOL");
+
+			assert.equal(existsSync(checkout), false, origin);
+		}
 	});
 
 	it("does not replace a directory that holds another package's checkout (#5055)", async () => {

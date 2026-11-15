@@ -114,10 +114,7 @@ function buildGitSource(args: { repo: string; host: string; path: string; ref?: 
 	if (args.path.startsWith("/")) {
 		return null;
 	}
-	const normalizedPath = args.path
-		.replace(/\/+$/, "")
-		.replace(/\.git$/, "")
-		.replace(/^\/+/, "");
+	const normalizedPath = args.path.replace(/\/+$/, "").replace(/\.git$/, "");
 	if (!args.host || !normalizedPath || normalizedPath.split("/").length < 2) {
 		return null;
 	}

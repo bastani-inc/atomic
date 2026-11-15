@@ -302,7 +302,6 @@ async function assertCheckoutOfSource(
 		rethrowGitProvisionError(error);
 		return;
 	}
-	if (!origin) return;
 	const installed = parseGitUrl(origin.startsWith("git@") ? `git:${origin}` : origin);
 	const sameSlot =
 		installed?.host.toLowerCase() === source.host.toLowerCase() &&
