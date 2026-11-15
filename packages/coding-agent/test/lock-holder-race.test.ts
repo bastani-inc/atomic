@@ -44,9 +44,8 @@ vi.mock("node:fs", async (importOriginal) => {
 	return { ...actual, default: { ...actual, renameSync, mkdirSync }, renameSync, mkdirSync };
 });
 
-const { lockHolderPath, takeOverDeadHolder, takeoverMutexPath, TAKEOVER_MUTEX_STALE_MS } = await import(
-	"../src/core/lock-holder.ts"
-);
+const { lockHolderPath, takeOverDeadHolder } = await import("../src/core/lock-holder.ts");
+const { takeoverMutexPath, TAKEOVER_MUTEX_STALE_MS } = await import("../src/core/lock-takeover.ts");
 const { lockHolder } = await import("../src/core/lock-wait.ts");
 
 let directory: string;

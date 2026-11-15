@@ -31,6 +31,8 @@ import type { Settings, SettingsFieldOrigin, SettingsLayer, SettingsScope, Setti
 const SETTINGS_LOCK_WAIT_MS = 200;
 const SETTINGS_LOCK_POLL_MIN_MS = 10;
 const SETTINGS_LOCK_POLL_MAX_MS = 50;
+/** How old a settings lock must be before it is judged left by a process that cannot be proven dead. */
+const SETTINGS_LOCK_STALE_MS = 10_000;
 
 /** A rename that cannot replace the file at all: it is a mount point (EBUSY), or on another device (EXDEV). */
 const UNREPLACEABLE_FILE_CODES: ReadonlySet<string> = new Set(["EBUSY", "EXDEV"]);
@@ -161,22 +163,28 @@ export class FileSettingsStorage implements SettingsStorage {
 	 */
 	private acquireLockSyncWithRetry(path: string): () => void {
 		const lockPath = `${path}.lock`;
-		const release = waitForLockSync(() => lockfile.lockSync(path, { realpath: false }), {
-			lockPath,
-			holderWaitMs: SETTINGS_LOCK_WAIT_MS,
-			pollMinMs: SETTINGS_LOCK_POLL_MIN_MS,
-			pollMaxMs: SETTINGS_LOCK_POLL_MAX_MS,
-			retryable: (error) => (error as NodeJS.ErrnoException).code === "ELOCKED",
-			takeOver: () => takeOverDeadHolder(lockPath),
-			stuck: (error) => error as Error,
-			contended: (error, waitedMs) =>
-				Object.assign(
-					new Error(`Other processes kept saving ${path} for ${Math.round(waitedMs / 1000)} s`, { cause: error }),
-					{
-						code: "ELOCKED",
-					},
-				),
-		});
+		const release = waitForLockSync(
+			(fs) => lockfile.lockSync(path, { realpath: false, stale: SETTINGS_LOCK_STALE_MS, fs }),
+			{
+				lockPath,
+				staleMs: SETTINGS_LOCK_STALE_MS,
+				holderWaitMs: SETTINGS_LOCK_WAIT_MS,
+				pollMinMs: SETTINGS_LOCK_POLL_MIN_MS,
+				pollMaxMs: SETTINGS_LOCK_POLL_MAX_MS,
+				retryable: (error) => (error as NodeJS.ErrnoException).code === "ELOCKED",
+				takeOver: () => takeOverDeadHolder(lockPath),
+				stuck: (error) => error as Error,
+				contended: (error, waitedMs) =>
+					Object.assign(
+						new Error(`Other processes kept saving ${path} for ${Math.round(waitedMs / 1000)} s`, {
+							cause: error,
+						}),
+						{
+							code: "ELOCKED",
+						},
+					),
+			},
+		);
 		recordLockHolder(lockPath);
 		return () => {
 			clearLockHolder(lockPath);

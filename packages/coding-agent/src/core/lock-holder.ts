@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { takeTakeoverMutex } from "./lock-takeover.ts";
 import { lockHolder } from "./lock-wait.ts";
 import { processStartToken } from "./process-start-token.ts";
 import { renameReplacing } from "./rename-retry.ts";
@@ -84,43 +85,6 @@ function holderMayRun(record: LockHolderRecord): boolean {
 	const started = record.started === undefined ? undefined : processStartToken(record.pid);
 	if (started !== undefined) return started === record.started;
 	return processAlive(record.pid);
-}
-
-/** How old a takeover mutex must be before it is judged left by a killed process and removed. */
-export const TAKEOVER_MUTEX_STALE_MS = 10_000;
-
-/** The directory that serializes takeovers of the lock at `lockPath`. */
-export function takeoverMutexPath(lockPath: string): string {
-	return `${lockPath}.takeover`;
-}
-
-/**
- * Takes the takeover mutex of the lock at `lockPath` by creating its directory; its release, or undefined while
- * another process holds it. One left by a killed process is removed once it is {@link TAKEOVER_MUTEX_STALE_MS} old.
- */
-function takeTakeoverMutex(lockPath: string): (() => void) | undefined {
-	const path = takeoverMutexPath(lockPath);
-	const release = () => {
-		try {
-			rmdirSync(path);
-		} catch {
-			// Removed as stale by another process; nothing is left to release.
-		}
-	};
-	try {
-		mkdirSync(path);
-		return release;
-	} catch {
-		const stats = statSync(path, { throwIfNoEntry: false });
-		if (stats === undefined || Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return undefined;
-	}
-	release();
-	try {
-		mkdirSync(path);
-		return release;
-	} catch {
-		return undefined;
-	}
 }
 
 /**

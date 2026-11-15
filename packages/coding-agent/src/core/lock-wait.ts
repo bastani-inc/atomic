@@ -1,4 +1,6 @@
+import type * as nodeFs from "node:fs";
 import { statSync } from "node:fs";
+import { guardLockRemoval } from "./lock-takeover.ts";
 
 /** How long any lock wait lasts in all while the lock keeps changing hands, unless its caller says otherwise. */
 export const LOCK_CONTENTION_WAIT_MS = 120_000;
@@ -7,6 +9,12 @@ export const LOCK_CONTENTION_WAIT_MS = 120_000;
 export interface LockWait {
 	/** The lock directory proper-lockfile creates: a new holder creates a new one. */
 	readonly lockPath: string;
+	/**
+	 * The stale window proper-lockfile is given for this lock. Its removal of a lock it judged stale goes through the
+	 * file system the attempt is given, which removes the lock only while it is still stale, under the takeover mutex
+	 * (#5161).
+	 */
+	readonly staleMs: number;
 	/** How long one holder may keep the lock before the wait fails with {@link LockWait.stuck}. */
 	readonly holderWaitMs: number;
 	/** How long the wait lasts in all while the lock keeps changing hands, before it fails with {@link LockWait.contended}. */
@@ -98,27 +106,47 @@ function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
 
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
-/** Takes a lock with `acquire`, waiting synchronously as {@link LockWait} describes while other processes hold it. */
-export function waitForLockSync<T>(acquire: () => T, wait: LockWait): T {
+/** The file system each attempt passes to proper-lockfile as its `fs` option. */
+export type LockFileSystem = typeof nodeFs;
+
+/**
+ * Takes a lock with `acquire`, waiting synchronously as {@link LockWait} describes while other processes hold it.
+ * `acquire` passes the file system it is given to proper-lockfile as its `fs` option.
+ */
+export function waitForLockSync<T>(acquire: (fs: LockFileSystem) => T, wait: LockWait): T {
 	const waiter = new LockWaiter(wait);
-	for (;;) {
-		try {
-			return acquire();
-		} catch (error) {
-			Atomics.wait(sleeper, 0, 0, waiter.next(error));
+	const guard = guardLockRemoval(wait.lockPath, wait.staleMs);
+	try {
+		for (;;) {
+			try {
+				return acquire(guard.fs);
+			} catch (error) {
+				Atomics.wait(sleeper, 0, 0, waiter.next(error));
+			}
 		}
+	} finally {
+		guard.done();
 	}
 }
 
 /** {@link waitForLockSync} for an asynchronous `acquire`; `signal` stops the wait. */
-export async function waitForLock<T>(acquire: () => Promise<T>, wait: LockWait, signal?: AbortSignal): Promise<T> {
+export async function waitForLock<T>(
+	acquire: (fs: LockFileSystem) => Promise<T>,
+	wait: LockWait,
+	signal?: AbortSignal,
+): Promise<T> {
 	const waiter = new LockWaiter(wait);
-	for (;;) {
-		signal?.throwIfAborted();
-		try {
-			return await acquire();
-		} catch (error) {
-			await delay(waiter.next(error), signal);
+	const guard = guardLockRemoval(wait.lockPath, wait.staleMs);
+	try {
+		for (;;) {
+			signal?.throwIfAborted();
+			try {
+				return await acquire(guard.fs);
+			} catch (error) {
+				await delay(waiter.next(error), signal);
+			}
 		}
+	} finally {
+		guard.done();
 	}
 }
