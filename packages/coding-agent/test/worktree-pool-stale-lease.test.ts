@@ -434,6 +434,7 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 			x,
 		);
 	const file = () => join(storeDir(), "pool", repository, "0.json");
+	const recordOfFile = () => JSON.parse(readFileSync(file(), "utf8")) as PoolSlotRecord;
 	const leases = () =>
 		readdirSync(join(storeDir(), "pool", repository)).filter((name) => name.endsWith(".lease.lock"));
 	/** Writes slot 0's record as another process would, changing `fields`. */
@@ -481,6 +482,8 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 		const second = await holdRestoredWorktree(storeDir(), first.path, x);
 		assert.ok(second);
 		assert.equal(await confirmPooledWorktreeLease(second), true);
+		assert.equal(await recordPooledWorktreeState(second, state), true);
+		assert.deepEqual(recordOfFile().lastState, state);
 		assert.equal(await releaseRestoredWorktree(second), true);
 		assert.equal(await confirmPooledWorktreeLease(second), false);
 		rewrite({ holder: y });
@@ -499,9 +502,12 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 		assert.equal(existsSync(file()), false);
 	});
 
-	test("a record with a tenancy that is not a string names no owner (#4830)", async () => {
+	test("a record with a tenancy that is not a string names no owner; one written before #4830 has none (#4830)", async () => {
 		const lease = await admit();
 		await releaseRestoredWorktree(lease);
+		const { tenancy: _, ...earlier } = recordOfFile();
+		writeFileSync(file(), JSON.stringify(earlier));
+		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: x, held: false });
 		rewrite({ tenancy: 7 as unknown as string });
 		assert.deepEqual(await pooledWorktreeHolder(storeDir(), lease.path), { owner: null, held: false });
 	});
@@ -569,6 +575,10 @@ describe("checks of a pooled worktree's lease (#4830)", () => {
 			assert.deepEqual(unavailable, []);
 			assert.equal(s1.getEntries().length, entries + 2);
 			assert.equal(existsSync(lock), true);
+			// The lease taken again is an ordinary one: later checks keep it.
+			await turn("third\n");
+			assert.deepEqual(unavailable, []);
+			assert.equal(s1.getEntries().length, entries + 3);
 			const again = await resumeSessionWorktree(s1, pool());
 			assert.equal(again.status, "verified");
 		},
