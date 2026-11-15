@@ -141,9 +141,10 @@ describe("collection cost follows the number of snapshots, never the number of j
 		}
 		const [before, after] = measured as [(typeof measured)[0], (typeof measured)[0]];
 
-		// The full scan the reference index replaces reads every event and entry: 40,025 rows at 20,000 events.
-		assert.deepEqual(summary(before.fullScan), { statements: 7, rows: 425, transactions: 1 });
-		assert.deepEqual(summary(after.fullScan), { statements: 85, rows: 40_025, transactions: 1 });
+		// The full scan the reference index replaces reads every event and entry: 40,026 rows at 20,000 events, with
+		// the schema version row the session load checks (#5065).
+		assert.deepEqual(summary(before.fullScan), { statements: 8, rows: 426, transactions: 1 });
+		assert.deepEqual(summary(after.fullScan), { statements: 86, rows: 40_026, transactions: 1 });
 		// Collection checks the index twice, pages through the 7 aged blobs nothing retains and deletes them, in one
 		// batch, at either length.
 		for (const { collection } of measured) {
