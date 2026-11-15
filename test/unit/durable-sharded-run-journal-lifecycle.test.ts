@@ -1363,3 +1363,30 @@ test("recording a saved status says whether it was recorded, and refuses a stale
 		await catalog.close();
 	}
 });
+
+test("a retried run creation that finds its run records the seeded status in the catalog, not the header's (#5168)", async () => {
+	const journal = await open();
+	const catalog = Reflect.get(journal, "catalog") as JournalCatalog;
+	const place = catalog.place.bind(catalog);
+	let failNamedPlace = true;
+	Reflect.set(catalog, "place", async (entry: Parameters<JournalCatalog["place"]>[0]) => {
+		if ("status" in entry && entry.status !== undefined && failNamedPlace) {
+			failNamedPlace = false;
+			throw new JournalCatalogError({
+				code: "write-failed",
+				catalogPath: catalog.path,
+				phase: "placing-run",
+				runId: entry.runId,
+			});
+		}
+		return place(entry);
+	});
+	const header = { runId: "seeded", name: "wf", cwd: "/p", createdAt: 1, status: "running" };
+	const seeds = [{ event: { type: "StatusChanged", payload: { status: "paused" } } as never }];
+	await assert.rejects(journal.createRunWithEvents(header, seeds));
+	assert.equal(await journal.createRunWithEvents(header, seeds), "exists");
+	assert.equal((await catalog.locate("seeded"))?.run.status, "paused");
+	const later = [{ event: { type: "StatusChanged", payload: { status: "completed" } } as never }];
+	assert.equal(await journal.createRunWithEvents(header, later), "exists");
+	assert.equal((await catalog.locate("seeded"))?.run.status, "paused", "a placed run keeps its catalog status");
+});
