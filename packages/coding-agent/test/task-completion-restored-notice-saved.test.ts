@@ -95,6 +95,8 @@ describe("restored task completion notices are acknowledged only once saved", ()
 			assert.equal(harness.session.isStreaming, true);
 			session.getAgentTaskHost();
 			await session._taskCompletionOutbox!.flushRestored();
+			// A second flush during the turn does not admit the notice that waits to be saved again.
+			await session._taskCompletionOutbox!.flushRestored();
 
 			// A crash now leaves exactly what the file holds.
 			assertOwedOrShownOnce(await SessionManager.open(manager.getSessionFile()!, dir, root));
@@ -187,6 +189,56 @@ describe("restored task completion notices are acknowledged only once saved", ()
 
 		assert.equal(await outbox.flushRestored(), 1);
 		assert.deepEqual(admitted, []);
+		assert.deepEqual(restoredDelivered, [COMPLETION_ID]);
+		assert.equal(pendingTaskCompletionIntents(session).length, 0);
+	});
+
+	test("a notice saved after its acknowledgement failed is acknowledged by the next flush, not shown again (#5047)", async () => {
+		const session = await SessionManager.create(new MemorySessionStore(), process.cwd());
+		await session.appendCustomEntry("task-completion-intent", intent);
+		const appendCustomEntry = session.appendCustomEntry.bind(session);
+		let failAck = true;
+		session.appendCustomEntry = async (customType, data) => {
+			if (customType === "task-completion-ack" && failAck) {
+				failAck = false;
+				throw new Error("disk full");
+			}
+			return appendCustomEntry(customType, data);
+		};
+		const save = Promise.withResolvers<void>();
+		const admitted: string[] = [];
+		const restoredDelivered: string[] = [];
+		const outbox = new TaskCompletionOutbox(
+			session,
+			() => true,
+			async (envelope) => {
+				admitted.push(envelope.completionId);
+				return { saved: save.promise };
+			},
+			() => {},
+			() => true,
+			(envelope) => restoredDelivered.push(envelope.completionId),
+		);
+
+		await outbox.flushRestored();
+		assert.equal(pendingTaskCompletionIntents(session).length, 1);
+		await session.appendCustomMessageEntry(
+			TASK_COMPLETION_MESSAGE_TYPE,
+			"notice",
+			true,
+			undefined,
+			undefined,
+			undefined,
+			COMPLETION_ID,
+		);
+		save.resolve();
+		await vi.waitFor(() => assert.equal(failAck, false));
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(pendingTaskCompletionIntents(session).length, 1);
+		assert.deepEqual(restoredDelivered, []);
+
+		assert.equal(await outbox.flushRestored(), 1);
+		assert.deepEqual(admitted, [COMPLETION_ID]);
 		assert.deepEqual(restoredDelivered, [COMPLETION_ID]);
 		assert.equal(pendingTaskCompletionIntents(session).length, 0);
 	});

@@ -291,12 +291,14 @@ export class TaskCompletionOutbox {
 				if (!this.canAdmit()) continue;
 				const admitted = noticeSaved ? undefined : await this.admit(envelope, restored);
 				if (admitted !== undefined) {
-					this.saving.add(envelope.completionId);
-					this.restored.delete(envelope.completionId);
-					void admitted.saved.then(
-						() => this.acknowledge(envelope, restored),
-						() => this.saving.delete(envelope.completionId),
-					);
+					const { completionId } = envelope;
+					this.saving.add(completionId);
+					this.restored.delete(completionId);
+					void admitted.saved
+						.then(() => this.acknowledge(envelope, restored))
+						// The notice is saved: a later flush acknowledges it without admitting it again.
+						.catch(() => restored && this.restored.add(completionId))
+						.finally(() => this.saving.delete(completionId));
 					continue;
 				}
 				await this.acknowledge(envelope, restored);
@@ -308,35 +310,24 @@ export class TaskCompletionOutbox {
 
 	/** Whether this session already holds the intent, and the notice, of a completion. */
 	private saved(completionId: string): { persisted: boolean; noticeSaved: boolean } {
-		let persisted = false;
-		let noticeSaved = false;
-		for (const entry of this.session.getEntries()) {
-			if (
+		const entries = this.session.getEntries();
+		const persisted = entries.some(
+			(entry) =>
 				entry.type === "custom" &&
 				entry.customType === "task-completion-intent" &&
-				(entry.data as TaskCompletionEnvelope | undefined)?.completionId === completionId
-			)
-				persisted = true;
-			else if (
+				(entry.data as TaskCompletionEnvelope | undefined)?.completionId === completionId,
+		);
+		const noticeSaved = entries.some(
+			(entry) =>
 				entry.type === "custom_message" &&
 				entry.customType === TASK_COMPLETION_MESSAGE_TYPE &&
-				entry.stageAdmissionKey === completionId
-			)
-				noticeSaved = true;
-		}
+				entry.stageAdmissionKey === completionId,
+		);
 		return { persisted, noticeSaved };
 	}
 
 	private async acknowledge(envelope: TaskCompletionEnvelope, restored: boolean): Promise<void> {
-		try {
-			await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
-		} catch {
-			// The intent stays pending; its saved notice keeps a later delivery from showing it twice.
-			this.saving.delete(envelope.completionId);
-			if (restored) this.restored.add(envelope.completionId);
-			return;
-		}
-		this.saving.delete(envelope.completionId);
+		await this.session.appendCustomEntry("task-completion-ack", { completionId: envelope.completionId });
 		this.entries.delete(envelope.completionId);
 		this.restored.delete(envelope.completionId);
 		if (restored) this.restoredDelivered(envelope);
