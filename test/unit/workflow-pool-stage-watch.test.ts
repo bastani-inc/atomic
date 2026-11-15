@@ -506,6 +506,36 @@ test("per-stage pause and resume go through the airlock, and wait while the pool
 });
 
 /**
+ * A stage session's manager that keeps its custom entries in `entries`: a receipt joined to a user message is written
+ * when `write` saves that message, as a real session writes both in one store write.
+ */
+function sessionWritingReceipts(entries: { type: string; customType?: string; data?: { op: string } }[]) {
+	const companions = new Map<object, () => { customType: string; data?: unknown } | undefined>();
+	/** Receipts written apart from their message, in a write of their own. */
+	const separate: string[] = [];
+	return {
+		separate,
+		manager: {
+			getEntries: () => entries,
+			appendWithMessage(message: object, companion: () => { customType: string; data?: unknown } | undefined) {
+				companions.set(message, companion);
+			},
+			async appendCustomEntry(customType: string, data: { op: string }) {
+				separate.push(data.op);
+				entries.push({ type: "custom", customType, data });
+				return "entry";
+			},
+		},
+		write(message: object) {
+			const companion = companions.get(message)?.();
+			companions.delete(message);
+			if (companion !== undefined)
+				entries.push({ type: "custom", customType: companion.customType, data: companion.data as { op: string } });
+		},
+	};
+}
+
+/**
  * A worker-side stage whose session queues steers and follow-ups and publishes each queue
  * change, as a real session does, and whose test consumes queued items on demand.
  */
@@ -515,8 +545,15 @@ function queuingStage(streaming: boolean) {
 	const entries: { type: string; customType?: string; data?: { op: string } }[] = [];
 	const publish = () =>
 		stage.emit({ type: "queue_update", steering: [...queues.steering], followUp: [...queues.followUp] } as never);
-	const userMessage = (type: "message_start" | "message_end", text: string) =>
-		stage.emit({ type, message: { role: "user", content: [{ type: "text", text }], timestamp: 1 } } as never);
+	const session = sessionWritingReceipts(entries);
+	let started: object | undefined;
+	const userMessage = (type: "message_start" | "message_end", text: string) => {
+		if (type === "message_start") started = { role: "user", content: [{ type: "text", text }], timestamp: 1 };
+		const message = started!;
+		// As a real session does, the message ends for listeners only once its session write landed.
+		if (type === "message_end") session.write(message);
+		stage.emit({ type, message } as never);
+	};
 	const handle: StageControlHandle = {
 		...stage.handle,
 		get status() {
@@ -543,26 +580,29 @@ function queuingStage(streaming: boolean) {
 			queues.followUp.push(text);
 			publish();
 		},
-		agentSession: {
-			sessionManager: {
-				getEntries: () => entries,
-				async appendCustomEntry(customType: string, data: { op: string }) {
-					entries.push({ type: "custom", customType, data });
-					return "entry";
-				},
-			},
-		} as never,
+		agentSession: { sessionManager: session.manager } as never,
 	};
 	return {
 		stage,
 		handle,
 		receipts: () => entries.map((entry) => entry.data?.op),
+		/** Receipts the session wrote apart from their message. */
+		separateReceipts: () => [...session.separate],
 		/** The session takes the next item of one queue into its transcript. */
 		consume(queue: "steering" | "followUp") {
 			const text = queues[queue].shift()!;
 			publish();
 			userMessage("message_start", text);
 			userMessage("message_end", text);
+		},
+		/** The session takes every item of one queue at once, then each enters its transcript in turn. */
+		consumeAll(queue: "steering" | "followUp") {
+			const texts = queues[queue].splice(0);
+			publish();
+			for (const text of texts) {
+				userMessage("message_start", text);
+				userMessage("message_end", text);
+			}
 		},
 		endPrompt() {
 			userMessage("message_end", "Please review the staged change");
@@ -595,6 +635,76 @@ test("a delivery is receipted by where it went, not by its text: only the consum
 	const reopened = sent.find((message) => message.kind === "stage-command-result" && message.commandId === 9);
 	assert.ok(reopened?.kind === "stage-command-result");
 	assert.deepEqual(reopened.snapshot?.deliveredOps, ["fix-the-bug", "fix"]);
+});
+
+test("each delivery's receipt is written in its user message's own session write, and announced once that write landed (#4839)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = queuingStage(true);
+	registry.register(stage.handle);
+	openWatch(watches);
+	const receipted = () =>
+		events()
+			.filter(({ event }) => (event.type as string) === "atomic_pooled_delivery_receipt")
+			.map(({ event }) => (event as never as { op: string }).op);
+	await deliver(sent, watches, 2, "op-first", "steer");
+	await deliver(sent, watches, 3, "op-second", "steer");
+	// Text another sender queued directly: its user message carries no op of this worker.
+	await stage.handle.followUp("not-from-the-root");
+	stage.consume("followUp");
+	assert.deepEqual(stage.receipts(), [], "a message no delivery sent gets no receipt");
+	// The session takes both steers at once; each user message then enters its transcript in turn.
+	stage.consumeAll("steering");
+	assert.deepEqual(stage.receipts(), ["op-first", "op-second"]);
+	assert.deepEqual(stage.separateReceipts(), [], "no receipt needed a write of its own");
+	await sleep(80);
+	assert.deepEqual(receipted(), ["op-first", "op-second"]);
+});
+
+test("a receipt that could not join its message's write reaches the watcher only once its own write landed, and never when it failed (#4839)", async () => {
+	const { registry, sent, watches, events } = airlock();
+	const stage = queuingStage(true);
+	const writes: { op: string; done: PromiseWithResolvers<string> }[] = [];
+	registry.register({
+		...stage.handle,
+		get status() {
+			return stage.handle.status;
+		},
+		// A session that writes these messages without the receipts joined to them.
+		agentSession: {
+			sessionManager: {
+				getEntries: () => [],
+				appendWithMessage() {},
+				appendCustomEntry(_customType: string, data: { op: string }) {
+					const done = Promise.withResolvers<string>();
+					writes.push({ op: data.op, done });
+					return done.promise;
+				},
+			},
+		} as never,
+	});
+	openWatch(watches);
+	const receipted = () =>
+		events()
+			.filter(({ event }) => (event.type as string) === "atomic_pooled_delivery_receipt")
+			.map(({ event }) => (event as never as { op: string }).op);
+	await deliver(sent, watches, 2, "op-lands", "steer");
+	await deliver(sent, watches, 3, "op-refused", "followUp");
+	stage.consume("steering");
+	stage.consume("followUp");
+	assert.deepEqual(
+		writes.map((write) => write.op),
+		["op-lands", "op-refused"],
+	);
+	await sleep(80);
+	assert.deepEqual(receipted(), [], "no receipt reaches the watcher while its write is in flight");
+	writes[1]!.done.reject(new Error("refused"));
+	writes[0]!.done.resolve("entry");
+	await sleep(80);
+	assert.deepEqual(
+		receipted(),
+		["op-lands"],
+		"a refused receipt is never announced, so the root sends the text again",
+	);
 });
 
 test("an idle prompt is receipted once, even when template expansion changes its text (#3996)", async () => {
@@ -905,6 +1015,7 @@ test("a resume message whose turn starts after resume() returns is still receipt
 	);
 	const stage = streamingStage("agent");
 	const entries: { type: string; customType?: string; data?: { op: string } }[] = [];
+	const session = sessionWritingReceipts(entries);
 	registry.register({
 		...stage.handle,
 		get status() {
@@ -915,15 +1026,7 @@ test("a resume message whose turn starts after resume() returns is still receipt
 		async resume(message?: string) {
 			return message === undefined ? undefined : "prompt";
 		},
-		agentSession: {
-			sessionManager: {
-				getEntries: () => entries,
-				async appendCustomEntry(customType: string, data: { op: string }) {
-					entries.push({ type: "custom", customType, data });
-					return "entry";
-				},
-			},
-		} as never,
+		agentSession: { sessionManager: session.manager } as never,
 	});
 	openWatch(watches);
 	watches.serve({
@@ -937,13 +1040,10 @@ test("a resume message whose turn starts after resume() returns is still receipt
 	// The resume answers before its turn starts.
 	while (!sent.some((message) => message.kind === "stage-command-result" && message.commandId === 2)) await sleep(1);
 	assert.deepEqual(entries, [], "nothing is receipted before the message enters the session");
-	const user = (type: "message_start" | "message_end") =>
-		stage.emit({
-			type,
-			message: { role: "user", content: [{ type: "text", text: "carry on" }], timestamp: 1 },
-		} as never);
-	user("message_start");
-	user("message_end");
+	const message = { role: "user", content: [{ type: "text", text: "carry on" }], timestamp: 1 };
+	stage.emit({ type: "message_start", message } as never);
+	session.write(message);
+	stage.emit({ type: "message_end", message } as never);
 	assert.deepEqual(
 		entries.map((entry: { data?: { op: string } }) => entry.data?.op),
 		["op-resume"],
