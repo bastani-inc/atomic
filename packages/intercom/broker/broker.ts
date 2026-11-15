@@ -5,8 +5,9 @@ import "./bounded-stderr-install.js";
 import "./announce-on-import.js";
 import net from "net";
 import { chmodSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from "fs";
+import { hostname } from "os";
 import { dirname } from "path";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { createMessageReader, type JsonWireValue } from "./framing.js";
 import {
   clientHostsSessions,
@@ -2974,6 +2975,8 @@ class IntercomBroker {
           try {
             this.multiNode = await MultiNodeRouter.start({
               ...opened,
+              // #4997: the same across this broker's restarts on this host, as its away-ask store is.
+              home: createHash("sha256").update(`${hostname()}\0${INTERCOM_DIR}`).digest("hex").slice(0, 32),
               host: {
                 sessions: this.sessions,
                 write: writeMessageIfOpen,

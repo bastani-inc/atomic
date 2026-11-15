@@ -81,6 +81,11 @@ export interface BrokerMembershipSubject {
 	/** Host label for diagnostics and future direct forwarding; not used for routing. */
 	readonly nodeId: string;
 	readonly startedAt: number;
+	/**
+	 * #4997: the broker's durable state on its host, the same across its restarts: a broker that crashed and is not back
+	 * under the same home may keep ask routes no other broker has. Absent from older brokers.
+	 */
+	readonly home?: string;
 }
 
 /** Recipient presence: which broker currently hosts the recipient's socket. */

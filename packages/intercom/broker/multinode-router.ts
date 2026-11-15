@@ -27,6 +27,7 @@ import {
 	KNOWN_SESSION_RETENTION_MS,
 	type KnownSession,
 	type KnownSessionState,
+	type BrokerMembershipSubject,
 	type Lease,
 	type LeaseState,
 	OUTBOX_BACKUP_POLL_INTERVAL_MS,
@@ -94,6 +95,12 @@ export { readSharedStorageSetting } from "./shared-storage-setting.js";
 export const MULTI_NODE_OUTCOME_POLL_INTERVAL_MS = 5_000;
 export { OFFLINE_SESSION_TARGET };
 /** A send for another node while the shared database cannot be reached (spec §8, "Database unavailable"). */
+/** #4997: a broker that renewed its membership within this long, and has missed its renewals since, is down. */
+const ROUTE_HOLDER_DOWN_WINDOW_MS = 10 * 60_000;
+/** #4997: a broker that has not renewed its membership within this long has missed a renewal. */
+const BROKER_UNRESPONSIVE_AFTER_MS = (3 * BROKER_LEASE_RENEW_INTERVAL_MS) / 2;
+export const ROUTE_UNAVAILABLE_REASON =
+	"No route Intercom can reach authorizes this reply yet: the broker that may keep the ask's route is unavailable. Try again shortly.";
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;
@@ -196,6 +203,8 @@ export interface MultiNodeRouterOptions {
 	readonly host: MultiNodeHost;
 	readonly brokerId?: string;
 	readonly nodeId?: string;
+	/** #4997: this broker's durable state on its host (`BrokerMembershipSubject.home`). */
+	readonly home?: string;
 }
 
 interface Inflight {
@@ -354,6 +363,52 @@ function sharesGroup(groups: ReadonlySet<string>, sender: SessionInfo): boolean 
 
 export class MultiNodeRouter {
 	readonly brokerId: string;
+	private readonly home: string | undefined;
+
+	private membershipSubject(): BrokerMembershipSubject {
+		return {
+			kind: "broker",
+			brokerId: this.brokerId,
+			nodeId: this.nodeId,
+			startedAt: Date.now(),
+			...(this.home === undefined ? {} : { home: this.home }),
+		};
+	}
+
+	/**
+	 * #4997: whether a broker that may keep ask routes no other broker has is down: it renewed its membership within
+	 * `ROUTE_HOLDER_DOWN_WINDOW_MS` but has missed its renewals since, and no broker is back under its home.
+	 */
+	private async routeHolderDown(): Promise<boolean> {
+		const [recent, responsive] = await Promise.all([
+			this.state.leases.listLive("broker", ROUTE_HOLDER_DOWN_WINDOW_MS),
+			this.state.leases.listLive("broker", BROKER_UNRESPONSIVE_AFTER_MS),
+		]);
+		const homeOf = (lease: LeaseState) => (lease.subject.kind === "broker" ? lease.subject.home : undefined);
+		const answering = new Set(responsive.map((lease) => lease.holderId));
+		const homesBack = new Set(responsive.map(homeOf));
+		return recent.some((lease) => {
+			const home = homeOf(lease);
+			return home !== undefined && !answering.has(lease.holderId) && !homesBack.has(home);
+		});
+	}
+
+	/**
+	 * A reply no ask route authorizes: refused, as retryable while a broker that may keep its route is down (#4997).
+	 */
+	private async refuseUnauthorizedReply(request: RemoteSendRequest): Promise<void> {
+		if (!(await this.routeHolderDown().catch(() => false))) {
+			this.fail(request, "Pending question route does not authorize this public reply");
+			return;
+		}
+		this.host.write(request.socket, {
+			type: "delivery_failed",
+			messageId: request.message.id,
+			attemptId: request.attemptId,
+			reason: ROUTE_UNAVAILABLE_REASON,
+			routeUnavailable: true,
+		});
+	}
 	private readonly state: IntercomBrokerStateStore;
 	private readonly bus: WakeUpBus;
 	private readonly host: MultiNodeHost;
@@ -382,6 +437,7 @@ export class MultiNodeRouter {
 		this.host = options.host;
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
+		this.home = options.home;
 		this.host.pendingQuestions.onAnswered((question) => this.answeredHere(question));
 	}
 
@@ -389,7 +445,7 @@ export class MultiNodeRouter {
 	static async start(options: MultiNodeRouterOptions): Promise<MultiNodeRouter> {
 		const router = new MultiNodeRouter(options);
 		const acquired = await router.state.leases.acquire(
-			{ kind: "broker", brokerId: router.brokerId, nodeId: router.nodeId, startedAt: Date.now() },
+			router.membershipSubject(),
 			router.brokerId,
 			BROKER_LEASE_STALE_AFTER_MS,
 		);
@@ -1235,6 +1291,23 @@ export class MultiNodeRouter {
 	 * its peers were on different brokers, or kept while one was away, has its route in the shared state. Both peers are
 	 * here now, so the route becomes this broker's own, and the shared one is settled, so the ask has one outcome.
 	 */
+	/**
+	 * #4997: a reply to a session here that no route authorizes, here or in the shared state, while a broker that may
+	 * keep its ask's route is down, is refused as retryable rather than by the local path's final refusal. True when
+	 * the reply was answered.
+	 */
+	private async routeUnreachable(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<boolean> {
+		const replyTo = request.message.replyTo;
+		if (!request.requirePendingReply || replyTo === undefined) return false;
+		if (this.host.pendingQuestions.matchesReply(request.from.info.id, target.info.id, replyTo)) return false;
+		// A retry of a reply already delivered here is answered by the local path.
+		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
+			return false;
+		if (!(await this.routeHolderDown().catch(() => false))) return false;
+		await this.refuseUnauthorizedReply(request);
+		return true;
+	}
+
 	private async adoptSharedRouteWithin(request: RemoteSendRequest, target: BrokerConnectedSession): Promise<void> {
 		const late = { abandoned: false };
 		const adopted = this.adoptSharedRoute(request, target, late);
@@ -1524,6 +1597,7 @@ export class MultiNodeRouter {
 			const moved = await Promise.race([released, expired]);
 			if (moved !== "expired" && moved !== undefined && (await this.routeReleasedReply(request, moved))) return;
 			await this.adoptSharedRouteWithin(request, target);
+			if (await this.routeUnreachable(request, target)) return;
 			request.notFound();
 		} finally {
 			clearTimeout(bound);
@@ -1623,7 +1697,7 @@ export class MultiNodeRouter {
 				})
 			).status === "match";
 		if (request.requirePendingReply && !correlatedReply) {
-			this.fail(request, "Pending question route does not authorize this public reply");
+			await this.refuseUnauthorizedReply(request);
 			return;
 		}
 		const verticalReply =
@@ -2395,7 +2469,7 @@ export class MultiNodeRouter {
 		}
 		if (this.membership === undefined) {
 			const acquired = await this.state.leases.acquire(
-				{ kind: "broker", brokerId: this.brokerId, nodeId: this.nodeId, startedAt: Date.now() },
+				this.membershipSubject(),
 				this.brokerId,
 				BROKER_LEASE_STALE_AFTER_MS,
 			);
