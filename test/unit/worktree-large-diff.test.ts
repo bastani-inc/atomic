@@ -7,7 +7,7 @@ import {
 	type BrokenIncludeScenarioResult,
 	type FailedCaptureScenarioResult,
 	type LargeDiffScenarioResult,
-	type ManyFilesScenarioResult,
+	MANY_FILES,
 	type NoisyHookScenarioResult,
 	runBrokenIncludeScenario,
 	runFailedCaptureScenario,
@@ -35,7 +35,7 @@ function tempRoot(): string {
 }
 
 function inBun<T>(
-	scenario: "large" | "failed" | "include" | "many" | "hook" | "broken",
+	scenario: "large" | "failed" | "include" | "hook" | "broken",
 	root: string,
 	module: WorktreeModule,
 ): T {
@@ -97,25 +97,32 @@ describe.each(cases)("$module worktrees under $runtime", ({ runtime, module }) =
 		assert.equal(result.notIncludedCopied, false, "an ignored file .worktreeinclude does not name stays out");
 	});
 
-	test("a worktree change of so many files that its numstat is over 1 MiB is saved in full (#4876)", () => {
-		const root = tempRoot();
-		const result =
-			runtime === "Node" ? runManyFilesScenario(root, module) : inBun<ManyFilesScenarioResult>("many", root, module);
-		assert.ok(result.numstatBytes > 1024 * 1024, "the numstat is over the 1 MiB output cap");
-		assert.match(result.summary, /Task 1 \(many\): 11000 files changed, \+11000 -0/);
-		assert.equal(result.patchApplied, true, "the patch applies to a clean checkout");
-		assert.equal(result.filesRestored, 11_000, "the patch restores every file");
-		assert.equal(result.worktreeRemoved, true, "the captured worktree is removed");
-	});
+	// Writing thousands of files is slow on Windows; the git runner and its buffer are the same under Bun.
+	test.runIf(runtime === "Node")(
+		"a worktree change of so many files that its numstat is over 1 MiB is saved in full (#4876)",
+		{ timeout: 120_000 },
+		() => {
+			const result = runManyFilesScenario(tempRoot(), module);
+			assert.ok(result.numstatBytes > 1024 * 1024, "the numstat is over the 1 MiB output cap");
+			assert.match(result.summary, /Task 1 \(many\): 9000 files changed, \+9000 -0/);
+			assert.equal(result.patchApplied, true, "the patch applies to a clean checkout");
+			assert.equal(result.filesRestored, MANY_FILES, "the patch restores every file");
+			assert.equal(result.worktreeRemoved, true, "the captured worktree is removed");
+		},
+	);
 
-	test("a .worktreeinclude git cannot read fails worktree creation with git's reason (#4876)", () => {
-		const root = tempRoot();
-		const result =
-			runtime === "Node"
-				? runBrokenIncludeScenario(root, module)
-				: inBun<BrokenIncludeScenarioResult>("broken", root, module);
-		assert.match(result.error ?? "", /could not list \.worktreeinclude files: .*cannot use \.worktreeinclude/);
-	});
+	// Git for Windows reads a directory as an empty exclude file instead of failing.
+	test.skipIf(process.platform === "win32")(
+		"a .worktreeinclude git cannot read fails worktree creation with git's reason (#4876)",
+		() => {
+			const root = tempRoot();
+			const result =
+				runtime === "Node"
+					? runBrokenIncludeScenario(root, module)
+					: inBun<BrokenIncludeScenarioResult>("broken", root, module);
+			assert.match(result.error ?? "", /could not list \.worktreeinclude files: .*cannot use \.worktreeinclude/);
+		},
+	);
 
 	// The hook is a POSIX shell script; Windows runs hooks only as executables.
 	test.skipIf(process.platform === "win32")(

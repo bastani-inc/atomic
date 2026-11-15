@@ -211,15 +211,17 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	return { ignoredListingBytes: Buffer.byteLength(listing), envCopied, includedFilesCopied, notIncludedCopied };
 }
 
-/** A worktree change of 11,000 files, whose numstat and stat each list to over 1 MiB. */
+/** A worktree change of 9,000 files, whose numstat and stat each list to over 1 MiB. */
+export const MANY_FILES = 9_000;
 export function runManyFilesScenario(root: string, module: WorktreeModule): ManyFilesScenarioResult {
 	const repo = createScenarioRepository(root);
 	const api = modules(module);
 	const setup = api.create(repo, `many-${module}`, 1);
 	// A long directory name makes the listing large from fewer files; paths stay under Windows' 260 characters.
-	const directory = join(setup.worktrees[0]!.path, `generated-${"y".repeat(90)}`);
+	const directoryName = `generated-${"y".repeat(100)}`;
+	const directory = join(setup.worktrees[0]!.path, directoryName);
 	mkdirSync(directory);
-	for (let file = 0; file < 11_000; file++) writeFileSync(join(directory, `f-${file}.txt`), `${file}\n`);
+	for (let file = 0; file < MANY_FILES; file++) writeFileSync(join(directory, `f-${file}.txt`), `${file}\n`);
 	git(setup.worktrees[0]!.path, ["add", "-A"]);
 	const numstat = git(setup.worktrees[0]!.path, ["diff", "--cached", "--numstat", "HEAD"]);
 	const diffs = api.diff(setup, ["many"], join(root, "diffs"));
@@ -228,8 +230,8 @@ export function runManyFilesScenario(root: string, module: WorktreeModule): Many
 	git(repo, ["worktree", "add", "--detach", clean, "HEAD"]);
 	const applied = spawnSync("git", ["-C", clean, "apply", diffs[0]!.patchPath], { encoding: "utf-8" });
 	let filesRestored = 0;
-	for (let file = 0; file < 11_000; file++) {
-		const restored = join(clean, `generated-${"y".repeat(90)}`, `f-${file}.txt`);
+	for (let file = 0; file < MANY_FILES; file++) {
+		const restored = join(clean, directoryName, `f-${file}.txt`);
 		if (existsSync(restored) && readFileSync(restored, "utf-8") === `${file}\n`) filesRestored++;
 	}
 	return {

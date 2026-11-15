@@ -3,7 +3,6 @@ import {
 	runBrokenIncludeScenario,
 	runFailedCaptureScenario,
 	runLargeDiffScenario,
-	runManyFilesScenario,
 	runNoisyHookScenario,
 	runWorktreeIncludeScenario,
 	type WorktreeModule,
@@ -13,7 +12,6 @@ const scenarios = {
 	large: runLargeDiffScenario,
 	failed: runFailedCaptureScenario,
 	include: runWorktreeIncludeScenario,
-	many: runManyFilesScenario,
 	hook: runNoisyHookScenario,
 	broken: runBrokenIncludeScenario,
 } as const;
