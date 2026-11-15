@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test, vi } from "vitest";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
-import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { observeSqlPoolTransactions, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { FLEET_DRAIN_TIMEOUT_MS, SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
 import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
@@ -702,6 +702,24 @@ test("a host that reads a drain naming it is draining for the controller at once
 		assert.equal(await f.store.bootHold("vm-1", undefined, new Set(["h1"])), "draining");
 		assert.equal(await f.shared.drainRequested("h2", "vm-2"), false);
 		assert.equal(await f.store.bootHold("vm-2", undefined, new Set(["h2"])), "occupied", "a host not asked serves");
+	} finally {
+		await f.close();
+	}
+});
+
+test("a host that reads drains takes the write lock only when a drain names it (#5072)", async () => {
+	const f = await fixture();
+	try {
+		await f.report("h1", "vm-1");
+		let writes = 0;
+		observeSqlPoolTransactions(f.journal, () => writes++);
+		const shared = await SqlSharedPool.open(f.journal, f.queue);
+		writes = 0;
+		assert.equal(await shared.drainRequested("h1", "vm-1"), false);
+		assert.equal(writes, 0, "a poll that finds no drain writes nothing");
+		await seedDrain(f.store, "other", "vm-1");
+		assert.equal(await shared.drainRequested("h1", "vm-1"), true);
+		assert.equal(writes, 1, "a poll that finds a drain marks the host draining in one write");
 	} finally {
 		await f.close();
 	}
