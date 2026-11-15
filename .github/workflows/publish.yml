@@ -48,8 +48,10 @@ jobs:
       npm-tag: ${{ steps.verify.outputs.npm-tag }}
     steps:
       # Check out the requested source and require it to be the tag's commit. Every
-      # job that builds or packages code then checks out `outputs.sha`, so what is
-      # published is exactly the commit verified here.
+      # job that builds or packages code then checks out the tag and requires it to
+      # still be `outputs.sha`, so what is published is exactly the commit verified here.
+      # Actions caches are saved only when github.ref is a tag, whose cache scope no
+      # other ref restores; a dispatch from a branch would write that branch's scope.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SOURCE_REF }}
@@ -58,6 +60,7 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+          no-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Verify tag commit identity
         id: verify
         shell: bash
@@ -172,11 +175,19 @@ jobs:
       # Release checkout does not use the Namespace git mirror.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.integrity.outputs.sha }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Require the verified tag commit
+        shell: bash
+        env:
+          VERIFIED_SHA: ${{ needs.integrity.outputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          [[ "$head" == "$VERIFIED_SHA" ]] || { echo "Tag $RELEASE_TAG resolves to $head, not verified commit $VERIFIED_SHA" >&2; exit 1; }
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+          no-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -455,12 +466,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.integrity.outputs.sha }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Require the verified tag commit
+        shell: bash
+        env:
+          VERIFIED_SHA: ${{ needs.integrity.outputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          [[ "$head" == "$VERIFIED_SHA" ]] || { echo "Tag $RELEASE_TAG resolves to $head, not verified commit $VERIFIED_SHA" >&2; exit 1; }
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+          no-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -479,7 +498,8 @@ jobs:
       # Same staging as test.yml's release-archive job: Bun's own fetch of a compile
       # target runtime has run at ~45 KB/s on these runners. Every tarball, restored or
       # downloaded, is checked against the registry's sha512 before its runtime is used.
-      # A tag-scoped save only serves re-runs of this release.
+      # A tag-scoped save only serves re-runs of this release; dispatches from a
+      # branch never save (see the integrity job).
       - name: Restore Bun compile target tarballs
         id: bun-target
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -494,7 +514,7 @@ jobs:
           BUN_COMPILE_PLATFORMS: linux-x64
         run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
       - name: Save Bun compile target tarballs
-        if: steps.bun-target.outputs.cache-hit != 'true'
+        if: startsWith(github.ref, 'refs/tags/') && steps.bun-target.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/bun-compile-target-tarballs
@@ -539,12 +559,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.integrity.outputs.sha }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Require the verified tag commit
+        shell: bash
+        env:
+          VERIFIED_SHA: ${{ needs.integrity.outputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          [[ "$head" == "$VERIFIED_SHA" ]] || { echo "Tag $RELEASE_TAG resolves to $head, not verified commit $VERIFIED_SHA" >&2; exit 1; }
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+          no-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -579,7 +607,7 @@ jobs:
           BUN_COMPILE_PLATFORMS: windows-x64 windows-arm64
         run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
       - name: Save Bun compile target tarballs
-        if: steps.bun-target.outputs.cache-hit != 'true'
+        if: startsWith(github.ref, 'refs/tags/') && steps.bun-target.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/bun-compile-target-tarballs
@@ -648,12 +676,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.integrity.outputs.sha }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Require the verified tag commit
+        shell: bash
+        env:
+          VERIFIED_SHA: ${{ needs.integrity.outputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          [[ "$head" == "$VERIFIED_SHA" ]] || { echo "Tag $RELEASE_TAG resolves to $head, not verified commit $VERIFIED_SHA" >&2; exit 1; }
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+          no-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -684,7 +720,7 @@ jobs:
           BUN_COMPILE_PLATFORMS: ${{ matrix.platform }}
         run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
       - name: Save Bun compile target tarballs
-        if: steps.bun-target.outputs.cache-hit != 'true'
+        if: startsWith(github.ref, 'refs/tags/') && steps.bun-target.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/bun-compile-target-tarballs
@@ -720,12 +756,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.integrity.outputs.sha }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Require the verified tag commit
+        shell: bash
+        env:
+          VERIFIED_SHA: ${{ needs.integrity.outputs.sha }}
+        run: |
+          head=$(git rev-parse HEAD)
+          [[ "$head" == "$VERIFIED_SHA" ]] || { echo "Tag $RELEASE_TAG resolves to $head, not verified commit $VERIFIED_SHA" >&2; exit 1; }
       - id: bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+          no-cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -769,7 +813,7 @@ jobs:
           BUN_COMPILE_PLATFORMS: darwin-arm64 darwin-x64 linux-x64 linux-arm64 linux-x64-musl linux-arm64-musl
         run: bun run scripts/prefetch-bun-compile-targets.ts "$TARBALL_DIR" $BUN_COMPILE_PLATFORMS
       - name: Save Bun compile target tarballs
-        if: steps.bun-target.outputs.cache-hit != 'true'
+        if: startsWith(github.ref, 'refs/tags/') && steps.bun-target.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/bun-compile-target-tarballs
