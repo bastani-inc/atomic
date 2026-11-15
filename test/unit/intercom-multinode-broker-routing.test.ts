@@ -1974,3 +1974,45 @@ test(
 	},
 	4 * CROSS_NODE_WAIT_MS,
 );
+
+test(
+	"a recipient that turns terminal fails an away asker's ask even when the asker's queue is full (#4992)",
+	async () => {
+		const [a, b] = await cluster();
+		const returnAddress = randomUUID();
+		const asker = await a!.connect("asker", { returnAddress });
+		const child = await b!.connect("child");
+		const ask = await savedAsk(a!, asker, b!, child);
+		a!.sessions.delete(asker.info.id);
+		a!.router.sessionLeft(asker, undefined, false);
+		await waitOffline(b!, asker);
+		for (let index = 0; index < OUTBOX_TARGET_MAX_ROWS; index++) {
+			const id = `filler-${index}`;
+			const queued = await b!.opened.state.outbox.enqueue({
+				targetIdentity: deliveryTargetIdentity(asker),
+				originBrokerId: b!.name,
+				digest: id,
+				frame: { type: "message", from: child.info, message: { id, timestamp: 1, content: { text: id } } },
+			});
+			assert.equal(queued.status, "inserted");
+		}
+
+		child.info.replyCapability = "terminal";
+		b!.router.sessionUpdated(child);
+		await vi.waitFor(
+			async () => {
+				const row = await b!.opened.state.outbox.read(`terminal:${ask.id}`);
+				assert.equal(row.status === "found" && row.row.targetIdentity, deliveryTargetIdentity(asker));
+			},
+			{ timeout: CROSS_NODE_WAIT_MS },
+		);
+		const back = await a!.connect("asker", { returnAddress, id: asker.info.id });
+		await waitFor(() => (failuresOf(back, ask.id).length > 0 ? true : undefined), 3 * CROSS_NODE_WAIT_MS);
+		const failures = failuresOf(back, ask.id);
+		assert.equal(failures.length, 1);
+		const failure = failures[0]!;
+		assert.ok(failure.type === "message");
+		assert.equal(failure.message.replyError, TERMINAL_CHILD_ASK_REFUSAL);
+	},
+	4 * CROSS_NODE_WAIT_MS,
+);

@@ -120,7 +120,8 @@ async function ownerOfSession(state: ReleasedReplyState, ownerSessionId: string)
  * None once the owner dropped it or left, another owner reserved its name, or it is gone, as for a route on the
  * asker's own broker.
  */
-async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
+/** The owner that holds the released asker now, where a reply to its question goes; none once it no longer holds it. */
+export async function ownerOfAsker(state: ReleasedReplyState, ask: ReleasedAsk): Promise<ReleasedReplyOwner | undefined> {
 	const read = await state.reservations.read(releasedReservationKey(ask.childName));
 	if (read.status === "active") {
 		const { reservation } = read;

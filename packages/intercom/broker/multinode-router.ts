@@ -47,6 +47,7 @@ import {
 	decideReleasedAskerReply,
 	isReleasedReplyCandidate,
 	keepReleasedAsks,
+	ownerOfAsker,
 	ownerOfReleasedReplyRow,
 	type ReleasedRegistration,
 	type ReleasedReplyDelivery,
@@ -543,24 +544,34 @@ export class MultiNodeRouter {
 				replyError: reason,
 				content: { text: reason },
 			};
-			const request = { from: target, message, target: ask.askerSessionId, supervisorSend: false };
-			const decision = await decideReleasedAskerReply(this.state, request, ask);
-			if (decision?.kind !== "deliver") continue;
-			const { owner, frame } = decision;
-			const enqueued = await this.state.outbox
-				.enqueue({
-					targetIdentity: owner.identity,
-					originBrokerId: this.brokerId,
-					digest: crossNodeDigest(JSON.stringify(frame)),
-					frame,
-					// #4992: owed to the subagent's open question, so its owner's full queue does not refuse it.
-					owed: true,
-				})
-				.catch((error: Error) => this.reopenAfter(decision, error));
-			if (enqueued.status === "invalid" || enqueued.status === "full") await this.reopenQuestion(decision);
+			const owner = await ownerOfAsker(this.state, ask);
+			if (owner === undefined) continue;
+			const frame: ReleasedAskerReplyFrame = {
+				type: "released_child_reply",
+				childName: ask.childName,
+				replyTo: ask.questionId,
+				from: target.info,
+				message,
+			};
+			// #4992: queued before its question is claimed. The owner's broker hands it over only while it holds the
+			// question (`releasedReplyHandoffRefusal`), so a broker that stops before the claim still has it delivered, and
+			// a reply that claimed the question first has it refused. Owed to the open question, so a full queue takes it.
+			const enqueued = await this.state.outbox.enqueue({
+				targetIdentity: owner.identity,
+				originBrokerId: this.brokerId,
+				digest: crossNodeDigest(JSON.stringify(frame)),
+				frame,
+				owed: true,
+			});
+			if (enqueued.status === "invalid" || enqueued.status === "full") continue;
 			if (enqueued.status === "inserted" && owner.hostBrokerId !== undefined) {
 				await this.bus.publish({ brokerId: owner.hostBrokerId, reason: "outbox", version: enqueued.row.sequence });
 			}
+			await this.state.releasedAsks.claim({
+				questionId: ask.questionId,
+				replierSessionId: ask.replierSessionId,
+				replyMessageId: message.id,
+			});
 		}
 	}
 
