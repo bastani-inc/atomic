@@ -10,7 +10,11 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import type { ProvisionedHost, WorkerHostProvisioner } from "../../packages/workflows/src/workers/autoscaler.js";
-import { FleetController, type WorkflowFleetEvent } from "../../packages/workflows/src/workers/fleet-controller.js";
+import {
+	FleetController,
+	joinHosts,
+	type WorkflowFleetEvent,
+} from "../../packages/workflows/src/workers/fleet-controller.js";
 import { makeLibsqlDirectory, removeLibsqlDirectory } from "../helpers/libsql-cleanup.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { sleep } from "../helpers/runtime.js";
@@ -361,7 +365,11 @@ test("a host that registers after the snapshot is not removed for a boot timeout
 	const spy = vi.spyOn(SqlFleetStore.prototype, "snapshot").mockImplementation(async function (this: SqlFleetStore) {
 		const taken = await snapshot.call(this);
 		// The host boots and registers right after the second tick read the registry, which times its boot out.
-		if (++snapshots === 2) await f.report("h1", "vm-1");
+		if (++snapshots === 2) {
+			await f.report("h1", "vm-1");
+			// A host the provider names by host id registers without a provider id.
+			await f.report("h2");
+		}
 		return taken;
 	});
 	try {
@@ -369,8 +377,13 @@ test("a host that registers after the snapshot is not removed for a boot timeout
 		f.controller(
 			{
 				kind: "fake",
-				async list() {
-					return [{ id: "vm-1", state: "running", since: 0 }];
+				async list(): Promise<readonly ProvisionedHost[]> {
+					const listed: ProvisionedHost[] = [
+						{ id: "vm-1", state: "running", since: 0 },
+						{ id: "vm-2", hostId: "h2", state: "running", since: 0 },
+						{ id: "vm-3", state: "running", since: 0 },
+					];
+					return listed.filter((provided) => !removed.includes(provided.id));
 				},
 				async scaleTo() {},
 				async drain(id) {
@@ -378,12 +391,51 @@ test("a host that registers after the snapshot is not removed for a boot timeout
 				},
 			},
 			[],
-			{ bootTimeoutMs: 1 },
+			{ bootTimeoutMs: 1, minHosts: 3 },
 		);
 		await sleep(5 * TICK_MS);
-		assert.deepEqual(removed, []);
+		assert.deepEqual(removed, ["vm-3"], "only the instance whose host never registered is removed");
 	} finally {
 		spy.mockRestore();
 		await f.close();
 	}
+});
+
+test("joinHosts says a drain is over only once no host on the instance is registered, or its latest drain timed out (#5072)", () => {
+	const listed = [
+		{ id: "vm-a", state: "draining" as const, since: 0 },
+		{ id: "vm-b", state: "draining" as const, since: 0 },
+		{ id: "vm-c", state: "running" as const, since: 0 },
+		{ id: "vm-d", state: "running" as const, since: 0 },
+		{ id: "vm-e", state: "running" as const, since: 0 },
+	];
+	const joined = joinHosts(listed, {
+		roots: [],
+		hosts: [
+			{ host: "ha", providerId: "vm-a", live: true, leased: 0 },
+			{ host: "hc", providerId: "vm-c", live: false, leased: 0 },
+			{ host: "hd", providerId: "vm-d", live: false, leased: 0 },
+			{ host: "he", providerId: "vm-e", live: true, leased: 0 },
+		],
+		drains: [
+			{ host: "hc", providerId: "vm-c", agoMs: FLEET_DRAIN_TIMEOUT_MS },
+			{ host: "hc2", providerId: "vm-c", agoMs: 0 },
+			{ host: "hd", providerId: "vm-d", agoMs: FLEET_DRAIN_TIMEOUT_MS },
+			{ host: "he", providerId: "vm-e", agoMs: 0 },
+		],
+		leased: new Map(),
+	});
+	assert.deepEqual(
+		joined.map((entry) => [entry.view.id, entry.view.drained]),
+		[
+			// The provider drains vm-a itself, and its host is still registered.
+			["vm-a", false],
+			// The provider drains vm-b, and no host on it is registered.
+			["vm-b", true],
+			// A drain carried to vm-c's restarted host just now restarts the wait.
+			["vm-c", false],
+			["vm-d", true],
+			["vm-e", false],
+		],
+	);
 });
