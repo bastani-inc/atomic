@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
@@ -21,6 +21,7 @@ import {
 	TOOL_RESULTS_SUBDIR,
 } from "../src/core/tools/tool-limits.js";
 import { isToolDetachmentError } from "../src/index.js";
+import { isPathInside } from "../src/utils/path-inside.js";
 import {
 	detachedResult,
 	harnessPool,
@@ -244,7 +245,7 @@ describe("where a result is spilled (#4309)", () => {
 		assert.ok(saved?.role === "toolResult");
 		const path = /Full output saved to: (.+)\n/.exec(getMessageText(saved))?.[1];
 		assert.ok(path !== undefined, "the result names its file");
-		assert.equal(relative(join(manager.getSessionDir(), TOOL_RESULTS_SUBDIR), path).startsWith(".."), false);
+		assert.equal(isPathInside(join(manager.getSessionDir(), TOOL_RESULTS_SUBDIR), path), true);
 	});
 });
 
