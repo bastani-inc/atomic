@@ -30,8 +30,17 @@ export interface PiSummarySettings {
 	reserveTokens: number;
 	keepRecentTokens?: number;
 }
+/**
+ * The boundary the verbatim planner prepared. When given, the summary covers exactly that region
+ * instead of choosing its own cut by `keepRecentTokens` (#4975).
+ */
+export interface PiSummaryPlannedCut {
+	/** First entry of the planned kept tail, or null when no tail is kept. */
+	firstKeptEntryId: string | null;
+}
 export interface PiSummaryPreparation {
-	firstKeptEntryId: string;
+	/** First kept entry, or null when the whole history is summarised. */
+	firstKeptEntryId: string | null;
 	messagesToSummarize: AgentMessage[];
 	turnPrefixMessages: AgentMessage[];
 	previousSummary?: string;
@@ -42,9 +51,11 @@ export interface PiSummaryPreparation {
 }
 export interface PiSummaryResult {
 	summary: string;
-	firstKeptEntryId: string;
+	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	tokensAfter: number;
+	/** Estimated tokens of the entries kept after the summary. */
+	keptTailTokens: number;
 	readFiles: string[];
 	modifiedFiles: string[];
 	usage: Usage;
@@ -106,10 +117,40 @@ function conversationMessages(entry: ProjectedSessionEntry): AgentMessage[] {
 	return entry.sourceEntry.type === "compaction" ? [] : entry.messages.filter((message) => message.role !== "system");
 }
 
+function leadsWithToolResult(entry: ProjectedSessionEntry): boolean {
+	return conversationMessages(entry)[0]?.role === "toolResult";
+}
+
+/**
+ * The index the planned tail starts at, or undefined when that entry is not after `start`.
+ *
+ * A tool call is never separated from its results: when the planned tail starts with tool results,
+ * the cut moves back to the assistant message that owns them, so the pair stays together in the tail.
+ */
+function plannedCutIndex(
+	entries: ProjectedSessionEntry[],
+	start: number,
+	cut: PiSummaryPlannedCut,
+): number | undefined {
+	if (cut.firstKeptEntryId === null) return entries.length;
+	const index = entries.findIndex(
+		(entry, position) => position >= start && entry.sourceEntry.id === cut.firstKeptEntryId,
+	);
+	if (index < 0) return undefined;
+	if (!leadsWithToolResult(entries[index])) return index;
+	let owner = index - 1;
+	while (owner >= start && (conversationMessages(entries[owner]).length === 0 || leadsWithToolResult(entries[owner])))
+		owner--;
+	return owner >= start && conversationMessages(entries[owner]).some((message) => message.role === "assistant")
+		? owner
+		: index;
+}
+
 export function preparePiSummaryCompaction(
 	pathEntries: SessionEntry[],
 	settings: PiSummarySettings,
 	cwd?: string,
+	plannedCut?: PiSummaryPlannedCut,
 ): PiSummaryPreparation | undefined {
 	if (pathEntries.at(-1)?.type === "compaction") return undefined;
 	const projection = buildSessionProjection(pathEntries);
@@ -125,6 +166,66 @@ export function preparePiSummaryCompaction(
 	);
 	const previous = previousIndex >= 0 ? entries[previousIndex].sourceEntry : undefined;
 	const start = previousIndex >= 0 ? previousIndex + 1 : 0;
+	const cut = plannedCut ? plannedCutIndex(entries, start, plannedCut) : tokenCutIndex(entries, start, settings);
+	if (cut === undefined) return undefined;
+	let turnStart = -1;
+	if (!plannedCut && !startsTurn(entries[cut])) {
+		for (let index = cut; index >= start; index--)
+			if (startsTurn(entries[index])) {
+				turnStart = index;
+				break;
+			}
+	}
+	const messagesToSummarize = entries.slice(start, turnStart >= 0 ? turnStart : cut).flatMap(conversationMessages);
+	const turnPrefixMessages = turnStart >= 0 ? entries.slice(turnStart, cut).flatMap(conversationMessages) : [];
+	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
+	const fileOps = createFileOps();
+	if (
+		previous?.type === "compaction" &&
+		!previous.fromHook &&
+		previous.details &&
+		typeof previous.details === "object"
+	) {
+		const previousDetails =
+			"summary" in previous.details &&
+			typeof previous.details.summary === "object" &&
+			previous.details.summary !== null
+				? previous.details.summary
+				: previous.details;
+		for (const [key, target] of [
+			["readFiles", fileOps.read],
+			["modifiedFiles", fileOps.edited],
+		] as const) {
+			if (key in previousDetails) {
+				const files = (previousDetails as { readFiles?: string[]; modifiedFiles?: string[] })[key];
+				if (Array.isArray(files))
+					for (const file of files) if (typeof file === "string") target.add(normalizeFileOpPath(file, cwd));
+			}
+		}
+	}
+	for (const message of [...messagesToSummarize, ...turnPrefixMessages])
+		extractFileOpsFromMessage(message, fileOps, cwd);
+	return {
+		firstKeptEntryId: cut < entries.length ? entries[cut].sourceEntry.id : null,
+		messagesToSummarize,
+		turnPrefixMessages,
+		previousSummary: previous?.type === "compaction" ? previous.summary : undefined,
+		tokensBefore: estimateProjectedContextTokens(projection, pathEntries).tokens,
+		keptTailTokens: entries
+			.slice(cut)
+			.flatMap((entry) => entry.messages)
+			.reduce((sum, message) => sum + estimatePiTokens(message), 0),
+		fileOps,
+		settings,
+	};
+}
+
+/** Pi's own cut: keep about `keepRecentTokens` of recent context, starting at a message that is not a tool result. */
+function tokenCutIndex(
+	entries: ProjectedSessionEntry[],
+	start: number,
+	settings: PiSummarySettings,
+): number | undefined {
 	const cutPoints: number[] = [];
 	for (let index = start; index < entries.length; index++) {
 		const entry = entries[index];
@@ -174,56 +275,7 @@ export function preparePiSummaryCompaction(
 		cut++;
 	while (cut > start && entries[cut - 1].sourceEntry.type !== "compaction" && entries[cut - 1].messages.length === 0)
 		cut--;
-	let turnStart = -1;
-	if (!startsTurn(entries[cut])) {
-		for (let index = cut; index >= start; index--)
-			if (startsTurn(entries[index])) {
-				turnStart = index;
-				break;
-			}
-	}
-	const messagesToSummarize = entries.slice(start, turnStart >= 0 ? turnStart : cut).flatMap(conversationMessages);
-	const turnPrefixMessages = turnStart >= 0 ? entries.slice(turnStart, cut).flatMap(conversationMessages) : [];
-	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
-	const fileOps = createFileOps();
-	if (
-		previous?.type === "compaction" &&
-		!previous.fromHook &&
-		previous.details &&
-		typeof previous.details === "object"
-	) {
-		const previousDetails =
-			"summary" in previous.details &&
-			typeof previous.details.summary === "object" &&
-			previous.details.summary !== null
-				? previous.details.summary
-				: previous.details;
-		for (const [key, target] of [
-			["readFiles", fileOps.read],
-			["modifiedFiles", fileOps.edited],
-		] as const) {
-			if (key in previousDetails) {
-				const files = (previousDetails as { readFiles?: string[]; modifiedFiles?: string[] })[key];
-				if (Array.isArray(files))
-					for (const file of files) if (typeof file === "string") target.add(normalizeFileOpPath(file, cwd));
-			}
-		}
-	}
-	for (const message of [...messagesToSummarize, ...turnPrefixMessages])
-		extractFileOpsFromMessage(message, fileOps, cwd);
-	return {
-		firstKeptEntryId: entries[cut].sourceEntry.id,
-		messagesToSummarize,
-		turnPrefixMessages,
-		previousSummary: previous?.type === "compaction" ? previous.summary : undefined,
-		tokensBefore: estimateProjectedContextTokens(projection, pathEntries).tokens,
-		keptTailTokens: entries
-			.slice(cut)
-			.flatMap((entry) => entry.messages)
-			.reduce((sum, message) => sum + estimatePiTokens(message), 0),
-		fileOps,
-		settings,
-	};
+	return cut;
 }
 
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
@@ -316,9 +368,9 @@ export async function runPiSummaryFallback(
 	entries: SessionEntry[],
 	settings: PiSummarySettings,
 	planner: BorrowedPlanner,
-	options: RangePlannerOptions & { signal?: AbortSignal; cwd?: string },
+	options: RangePlannerOptions & { signal?: AbortSignal; cwd?: string; plannedCut?: PiSummaryPlannedCut },
 ): Promise<PiSummaryResult> {
-	const preparation = preparePiSummaryCompaction(entries, settings, options.cwd);
+	const preparation = preparePiSummaryCompaction(entries, settings, options.cwd, options.plannedCut);
 	if (!preparation) throw new Error("No compactable history for pi summary fallback");
 	const model = plannerRequestModel(planner);
 	const summarize = async (
@@ -420,6 +472,7 @@ export async function runPiSummaryFallback(
 		firstKeptEntryId: preparation.firstKeptEntryId,
 		tokensBefore: preparation.tokensBefore,
 		tokensAfter: Math.ceil(summary.length / 4) + preparation.keptTailTokens,
+		keptTailTokens: preparation.keptTailTokens,
 		readFiles,
 		modifiedFiles,
 		usage,

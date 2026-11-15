@@ -33,7 +33,7 @@ import {
 import { normalizeKeepContextShare, releaseKeepContextSpans } from "./keep-context-release.js";
 import type { CompactionModelSelection } from "./model-resolver.js";
 import { planMorphRanges } from "./morph-compaction.js";
-import { runPiSummaryFallback } from "./pi-summary-fallback.js";
+import { type PiSummaryResult, runPiSummaryFallback } from "./pi-summary-fallback.js";
 import type { TerminalPlannerOutcome } from "./planner-outcome.js";
 import {
 	MALFORMED_OUTPUT_MESSAGE,
@@ -49,6 +49,7 @@ import {
 } from "./range-planner-diagnostics.js";
 import { type PlannerAttempt, planWithRefusalRecovery } from "./refusal-recovery.js";
 import { keepTargetForView, nextTrimOffset, rebaseTrimmedRanges, trimRegionHead } from "./region-trimming.js";
+import { contiguousRanges } from "./utils.ts";
 import { widenToWholeContextStats } from "./whole-context-stats.js";
 
 export interface CompactionPlanOptions {
@@ -274,6 +275,65 @@ function plannedResult(
 		model,
 		...(plannerModel ? { plannerModel } : {}),
 		keptTail: true,
+		...(usage ? { usage } : {}),
+	};
+}
+
+/**
+ * First region line of the messages a summary kept in its tail beyond the planned one: the assistant
+ * message whose tool results start the planned tail, and those results. Its spans stay in the tail.
+ */
+function movedTailStartLine(region: NumberedRegion): number {
+	const spans = region.messageSpans ?? [];
+	for (let index = spans.length - 1; index >= 0; index--) if (spans[index].role !== "tool") return spans[index].start;
+	return 1;
+}
+
+/**
+ * The policy-refusal summary as a rung result (#4975). The summary replaces the planned region, and
+ * the region's protected `<keepContext>` spans are re-inserted verbatim ahead of it, oldest first.
+ * Protection is capped at its share of the context window as on the fresh rung, releasing whole
+ * spans in the documented order.
+ */
+function summaryResult(
+	preparation: VerbatimCompactionPreparation,
+	summary: PiSummaryResult,
+	hardInputLimit: number,
+	model: string,
+	usage: Usage | undefined,
+): CompactionRungResult {
+	const region = fitProtectionToWindow(preparation, hardInputLimit, true);
+	const tailStart =
+		summary.firstKeptEntryId === preparation.firstKeptEntryId ? Number.POSITIVE_INFINITY : movedTailStartLine(region);
+	const keptRanges = contiguousRanges(region.protectedLineNumbers ?? new Set<number>()).filter(
+		(range) => range.start < tailStart,
+	);
+	const text = [
+		...keptRanges.map((range) => region.lines.slice(range.start - 1, range.end).join("\n")),
+		summary.summary,
+	].join("\n\n");
+	const tokensAfter = Math.ceil(text.length / 4) + summary.keptTailTokens;
+	return {
+		text,
+		ranges: [],
+		keptRanges,
+		releasedRanges: (region.releasedRanges ?? []).map((range) => ({ ...range })),
+		stats: {
+			linesBefore: region.lines.length,
+			linesDeleted: 0,
+			linesKept: text.split("\n").length,
+			rangeCount: 0,
+			tokensBefore: summary.tokensBefore,
+			tokensAfter,
+			percentReduction: summary.tokensBefore > 0 ? 100 * (1 - tokensAfter / summary.tokensBefore) : 0,
+		},
+		rung: "planned",
+		keptTail: true,
+		backend: "summary",
+		model,
+		summary: { readFiles: summary.readFiles, modifiedFiles: summary.modifiedFiles },
+		...(summary.firstKeptEntryId === null ? {} : { summaryFirstKeptEntryId: summary.firstKeptEntryId }),
+		summaryTokensBefore: summary.tokensBefore,
 		...(usage ? { usage } : {}),
 	};
 }
@@ -541,6 +601,15 @@ async function runCompactionLadder(
 		return untilAborted(request.resolveAuth(candidate, timeLimit.signal), timeLimit.signal);
 	};
 	const hardInputLimit = hardInputLimitFor(model);
+	// A load-bearing caller cannot use a result that still does not fit: the ladder continues to the
+	// next model or the fresh context window instead (#4975).
+	const exceedsHardLimit = (result: CompactionRungResult): TerminalPlannerOutcome | undefined =>
+		request.urgency === "load_bearing" && result.stats.tokensAfter > hardInputLimit
+			? {
+					kind: "providerError",
+					message: `Compaction result of ${result.stats.tokensAfter} tokens does not fit the ${hardInputLimit}-token context window`,
+				}
+			: undefined;
 
 	// A region below the planner minimum cannot be made rankable by changing
 	// models, so no planner is invoked. Only a load-bearing caller can reach a
@@ -669,31 +738,18 @@ async function runCompactionLadder(
 				const summary = await runPiSummaryFallback(request.summaryEntries, preparation.settings, planner, {
 					...plannerOptions,
 					cwd: request.cwd,
+					plannedCut: { firstKeptEntryId: preparation.firstKeptEntryId },
 				});
-				return {
-					text: summary.summary,
-					ranges: [],
-					keptRanges: [],
-					releasedRanges: [],
-					stats: {
-						linesBefore: preparation.region.lines.length,
-						linesDeleted: 0,
-						linesKept: summary.summary.split("\n").length,
-						rangeCount: 0,
-						tokensBefore: summary.tokensBefore,
-						tokensAfter: summary.tokensAfter,
-						percentReduction:
-							summary.tokensBefore > 0 ? 100 * (1 - summary.tokensAfter / summary.tokensBefore) : 0,
-					},
-					rung: "planned",
-					keptTail: true,
-					backend: "summary",
-					model: `${planner.model.provider}/${planner.model.id}`,
-					summary: { readFiles: summary.readFiles, modifiedFiles: summary.modifiedFiles },
-					summaryFirstKeptEntryId: summary.firstKeptEntryId,
-					summaryTokensBefore: summary.tokensBefore,
-					...(plannerUsage ? { usage: plannerUsage } : {}),
-				};
+				const result = summaryResult(
+					preparation,
+					summary,
+					hardInputLimit,
+					`${planner.model.provider}/${planner.model.id}`,
+					plannerUsage,
+				);
+				const overLimit = exceedsHardLimit(result);
+				if (!overLimit) return result;
+				lastTerminal = overLimit;
 			} catch (error) {
 				if (signal?.aborted) throw new Error("Compaction cancelled");
 				lastTerminal = { kind: "providerError", message: error instanceof Error ? error.message : String(error) };
