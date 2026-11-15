@@ -69,7 +69,7 @@ const KILLED_STAGE = {
 } as const;
 
 describe("a run that ends killed or cancelled ends the work it had in flight (#4875)", () => {
-	test("killing a run fails each in-flight stage as killed and leaves finished, blocked and unstarted stages alone (#4875)", () => {
+	test("killing a run fails each in-flight stage as killed and leaves finished, blocked, paused, unstarted and boundary stages alone (#4875)", () => {
 		const store = storeWith([
 			stage("running", "running"),
 			stage("asking", "awaiting_input", { awaitingInputSince: 2_000 }),
@@ -78,11 +78,12 @@ describe("a run that ends killed or cancelled ends the work it had in flight (#4
 			stage("done", "completed", { endedAt: 2_000, durationMs: 1_000 }),
 			stage("blocked", "blocked"),
 			stage("queued", "pending"),
+			stage("boundary", "running", { workflowChildRun: { alias: "child", workflow: "child", runId: "child" } }),
 		]);
 
 		assert.equal(store.recordRunEnd("run", "killed", undefined, "workflow killed by test"), true);
 
-		for (const id of ["running", "asking", "paused", "suspended"]) {
+		for (const id of ["running", "asking", "suspended"]) {
 			const ended = stageOf(store, id);
 			assert.deepEqual(
 				{
@@ -101,18 +102,20 @@ describe("a run that ends killed or cancelled ends the work it had in flight (#4
 		}
 		assert.equal(stageOf(store, "running").durationMs, 9_000);
 		assert.equal(stageOf(store, "asking").awaitingInputSince, undefined);
-		const paused = stageOf(store, "paused");
-		assert.equal(paused.pausedAt, undefined);
-		assert.equal(paused.pausedDurationMs, 7_500);
-		assert.equal(paused.durationMs, 1_500);
 		assert.deepEqual(
-			["done", "blocked", "queued"].map((id) => [stageOf(store, id).status, stageOf(store, id).endedAt]),
+			["done", "blocked", "paused", "queued", "boundary"].map((id) => [
+				stageOf(store, id).status,
+				stageOf(store, id).endedAt,
+			]),
 			[
 				["completed", 2_000],
 				["blocked", undefined],
+				["paused", undefined],
 				["pending", undefined],
+				["running", undefined],
 			],
 		);
+		assert.equal(stageOf(store, "boundary").workflowChildRun?.runId, "child");
 	});
 
 	test("a killed run without an error fails its stages with 'workflow killed' and keeps an end they already have (#4875)", () => {
@@ -181,10 +184,9 @@ describe("a run that ends killed or cancelled ends the work it had in flight (#4
 		store.recordRunEnd("run", "killed");
 
 		assert.ok(changes.length > 0);
-		for (const change of changes)
-			assert.deepEqual(
-				change?.map((entry) => entry.runId),
-				["run"],
-			);
+		for (const change of changes) {
+			assert.ok(change !== undefined && change.length > 0, "every change is scoped to a run");
+			assert.ok(change.every((entry) => entry.runId === "run"));
+		}
 	});
 });

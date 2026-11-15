@@ -204,8 +204,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				context.rejectPrompt(pending.id, `atomic-workflows: run ${runId} ended before prompt resolved`);
 			}
 			context.rejectAllStagePrompts(runId, run, `atomic-workflows: run ${runId} ended before prompt resolved`);
-			if (status === "killed" || status === "cancelled") endInFlightWork(context, run, status, endedAt, error);
-			context.bumpAndNotify({ runId });
+			context.batch(() => {
+				if (status === "killed" || status === "cancelled") endInFlightWork(context, run, status, endedAt, error);
+				context.bumpAndNotify({ runId });
+			});
 			return true;
 		},
 
@@ -409,17 +411,14 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 	};
 }
 
-const IN_FLIGHT_STAGE_STATUSES: ReadonlySet<StageStatus> = new Set([
-	"running",
-	"awaiting_input",
-	"paused",
-	"suspended",
-]);
+// A paused stage keeps showing that it was paused when its run ends (#2891).
+const IN_FLIGHT_STAGE_STATUSES: ReadonlySet<StageStatus> = new Set(["running", "awaiting_input", "suspended"]);
 
 /**
  * Ends the work a killed or cancelled run still had in flight (#4875): its stages fail as killed or skip as
  * cancelled, and its running tool calls are cancelled, so no surface shows a stopped run as still working. Finished,
- * blocked and never-started stages keep their state. A nested child run ends its own work when it ends.
+ * blocked, paused and never-started stages keep their state, and so does a workflow boundary: a nested child run
+ * ends its own work, and its boundary, when it ends.
  */
 function endInFlightWork(
 	context: StoreContext,
@@ -429,7 +428,8 @@ function endInFlightWork(
 	error?: string,
 ): void {
 	for (const stage of run.stages) {
-		if (!IN_FLIGHT_STAGE_STATUSES.has(stage.status)) continue;
+		// A workflow boundary stays linked to its child run, which ends it when the child itself ends.
+		if (!IN_FLIGHT_STAGE_STATUSES.has(stage.status) || stage.workflowChildRun !== undefined) continue;
 		if (status === "killed") {
 			const message = error ?? "workflow killed";
 			Object.assign(stage, {
