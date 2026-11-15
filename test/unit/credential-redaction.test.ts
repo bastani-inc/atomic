@@ -437,6 +437,11 @@ describe("credential field variants", () => {
 			"\u001b[1mSET-COOKIE\u001b[0m: \u001b[32msid=[redacted]\u001b[0m; Max-Age=60",
 		);
 		assert.equal(redactCredentialShapes("cookies: 3 eaten"), "cookies: 3 eaten");
+		assert.equal(
+			redactCredentialShapes("Cookie: flag; x= v  ; y=; z=w"),
+			"Cookie: flag; x=[redacted]  ; y=; z=[redacted]",
+		);
+		assert.equal(redactCredentialShapes("Cookie:a=b"), "Cookie:a=[redacted]");
 	});
 
 	test("an escaped quote inside an escaped JSON value does not end it", () => {
