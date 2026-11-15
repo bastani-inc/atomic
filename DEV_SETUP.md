@@ -28,7 +28,14 @@ npm run build
 builds the vendored `@bastani/pi-ai` package (including a models.dev catalog
 refresh), aliases `node_modules/@earendil-works/pi-ai` onto that workspace copy,
 builds the native N-API module, and builds `@bastani/atomic` with its bundled
-package assets. `npm ci --ignore-scripts`
+package assets. The build is incremental: a step whose inputs (sources, lockfile,
+toolchain version and relevant environment) and outputs are unchanged since its
+last successful run is skipped, so a rebuild with nothing changed takes well under
+a second. The models.dev catalog is therefore refreshed only when `packages/ai`
+changes or the fetched snapshot is older than 24 hours; run
+`npm run build -- --force` (or set `ATOMIC_BUILD_FORCE=1`) for a full rebuild
+with a fresh catalog. CI (`CI` set) always builds in full. Step stamps and
+TypeScript build info live in `node_modules/.cache/atomic-build`. `npm ci --ignore-scripts`
 deliberately skips lifecycle scripts (including the `prepare` hook that would
 run the alias), and the workspace packages have no install hooks anyway — only
 published releases ship prebuilt artifacts. Without the pi-ai build, running the
@@ -176,7 +183,7 @@ Run these from the workspace root:
 | Command                    | Description                                                      |
 | -------------------------- | ---------------------------------------------------------------- |
 | `npm ci --ignore-scripts`   | Install from `package-lock.json`                                 |
-| `npm run build`             | Refresh and compile `@bastani/pi-ai`, alias `@earendil-works/pi-ai` onto it, build the native N-API module, and build `@bastani/atomic` with bundled assets (requires cargo and network) |
+| `npm run build`             | Refresh and compile `@bastani/pi-ai`, alias `@earendil-works/pi-ai` onto it, build the native N-API module, and build `@bastani/atomic` with bundled assets (requires cargo and network); skips unchanged steps, `-- --force` rebuilds everything |
 | `npm run build --workspace=@bastani/atomic-natives` | Build only the native N-API module              |
 | `npm run check`             | Typecheck plus the published-shrinkwrap check                    |
 | `npm run typecheck`         | Type-check the workspace                                         |
