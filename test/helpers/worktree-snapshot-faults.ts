@@ -2,8 +2,9 @@ import type * as ChildProcess from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { PathLike } from "node:fs";
 import { constants } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
+import { isPathInside } from "../../packages/coding-agent/src/utils/path-inside.js";
 
 /**
  * Faults injected where the snapshot code reads files or starts Git, so a failure that needs `chmod`, a symbolic link
@@ -23,8 +24,7 @@ export function systemError(code: string, syscall: string, path: string): NodeJS
 
 /** Whether `path` is `directory` or a path inside it. */
 export function isSameOrWithin(directory: string, path: string): boolean {
-	const inside = relative(resolve(directory), resolve(path));
-	return inside === "" || (!inside.startsWith("..") && !isAbsolute(inside));
+	return isPathInside(resolve(directory), resolve(path));
 }
 
 /** One filesystem call that fails for one path, with the error code Node would give. */
