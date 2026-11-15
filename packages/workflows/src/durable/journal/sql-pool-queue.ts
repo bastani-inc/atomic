@@ -1778,6 +1778,10 @@ export class SqlPoolQueue {
 					};
 				}
 				const work = fromRow(plan.row);
+				// The root's checkpoints, read once for the whole batch: each checkpoint validates against them and those
+				// before it in the batch.
+				const view = await plan.source.read(read, this.journal.events);
+				const source: PoolCheckpointSource = { read: async () => view };
 				const rows: { key: string; payload: string; chunks: readonly Uint8Array[] }[] = [];
 				for (const event of parsed) {
 					const checkpoint = event.checkpoint;
@@ -1793,7 +1797,7 @@ export class SqlPoolQueue {
 						lease.runId,
 						work,
 						{ kind: "checkpoint", checkpoint },
-						recorded.length === 0 ? plan.source : withRecorded(plan.source, recorded),
+						recorded.length === 0 ? source : withRecorded(source, recorded),
 					);
 					if (checkpoint.completedAt > Math.max(plan.now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 						throw new Error("Pool checkpoint timestamp is in the future");
