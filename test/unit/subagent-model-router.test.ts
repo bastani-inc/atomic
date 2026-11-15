@@ -1112,3 +1112,41 @@ test("total routing failure never degrades to a current chat model outside model
 		return true;
 	});
 });
+
+const builtinWithThinking: AgentConfig = { ...agent, source: "builtin", thinking: "high" };
+
+test("a builtin agent's thinking override keeps the call's provider lists over the modelRouting settings (#5046)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionChatModel, reasoningModel]);
+	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
+	f.ctx.getModelRouting = () => ({ excludedProviders: ["second-provider"] });
+	const route = await routeSubagentModel({
+		ctx: f.ctx,
+		agent: builtinWithThinking,
+		task: "Fix the approved defect",
+		modelConstraints: { allowedProviders: ["second-provider"] },
+	});
+	assert.equal(route.modelOverride, "second-provider/reasoner:high");
+	assert.equal(route.allowsCandidate("second-provider/reasoner:low"), true);
+	assert.equal(route.allowsCandidate("decision-test/chat"), false, "the call allows only second-provider");
+});
+
+test("a builtin agent's fallback gate uses the call's provider lists, not the modelRouting settings (#5046)", async () => {
+	const f = await fixture();
+	vi.spyOn(f.ctx.modelRegistry, "getAvailable").mockReturnValue([decisionChatModel, reasoningModel]);
+	vi.spyOn(f.ctx.modelRegistry, "getAll").mockReturnValue([decisionChatModel, reasoningModel]);
+	f.infer.mockImplementation(chatRouter(() => "second-provider/reasoner"));
+	f.ctx.getModelRouting = () => ({ allowedProviders: ["second-provider"] });
+	for (const routed of [builtinWithThinking, agent]) {
+		const route = await routeSubagentModel({
+			ctx: f.ctx,
+			agent: routed,
+			task: "Fix the approved defect",
+			modelConstraints: { allowedProviders: ["decision-test", "second-provider"] },
+		});
+		assert.equal(route.modelOverride.startsWith("second-provider/reasoner"), true, routed.source);
+		assert.equal(route.allowsCandidate("decision-test/chat"), true, routed.source);
+		assert.equal(route.allowsModel(decisionChatModel), true, routed.source);
+	}
+});

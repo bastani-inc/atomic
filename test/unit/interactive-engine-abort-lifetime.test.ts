@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { ENGINE_SHUTDOWN_GRACE_MS } from "../../packages/coding-agent/src/modes/rpc/rpc-client-process.ts";
 import { bunExecutable, moduleDir, sleep, spawnSyncCollect } from "../helpers/runtime.js";
 
 const serialTest = process.platform === "win32" ? test.sequential.skip : test.sequential;
@@ -116,11 +117,11 @@ serialTest(
 				// live and only `abort` is exempt.
 				await assert.rejects(() => client.getState(), /Timeout waiting for response to get_state/);
 
-				// Arm termination while the child is frozen; resuming first lets its queued
-				// abort response race ahead of the explicit stop on a loaded host.
-				const stop = client.stop();
-				resume();
-				await stop;
+				// Stop the child while it is still frozen. A resumed child can answer the queued
+				// abort before it handles SIGTERM, and the stop delivers a frame the child already
+				// sent, so the abort would resolve. Frozen, it ignores SIGTERM: the stop waits out
+				// the engine's shutdown grace and then kills it, so the child never answers.
+				await client.stop();
 				await abort;
 				assert.equal(settled, "rejected", "explicit stop must settle the pending abort");
 				assert.match(rejection?.message ?? "", /Agent process stopped/);
@@ -132,5 +133,6 @@ serialTest(
 			rmSync(agentDir, { recursive: true, force: true });
 		}
 	},
-	REAL_CLI_ENGINE_TIMEOUT_MS,
+	// The frozen child ignores SIGTERM, so stopping it costs the engine's whole shutdown grace.
+	REAL_CLI_ENGINE_TIMEOUT_MS + ENGINE_SHUTDOWN_GRACE_MS,
 );

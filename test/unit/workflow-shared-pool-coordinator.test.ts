@@ -898,3 +898,51 @@ test(
 	},
 	COORDINATOR_TEST_TIMEOUT_MS,
 );
+
+test(
+	"a worker host whose provider instance was asked to drain claims no child, before it has read the drain (#5072)",
+	async () => {
+		const f = await fixture("shared-coordinator-drained-instance", { workspace: binding });
+		const restored = join(f.directory, "restored");
+		mkdirSync(restored);
+		const child = await loadWorkerDefinition({
+			path: childPath,
+			exportName: "boundChild",
+			digest: await definitionDigest(childPath),
+		});
+		const { parent } = await fanOut(1)(child as never);
+		const storage = sqlPoolStorage(f.hostJournal)!;
+		const drains = `${storage.tables.runs}_fleet_drains`;
+		// A worker on vm-1 was asked to drain; this host restarted there under a new host id.
+		await storage.transaction((tx) =>
+			tx.run(`INSERT INTO ${drains}(host, provider_id, requested_at) VALUES ('host-old', 'vm-1', 0)`),
+		);
+		const execution = run(
+			parent,
+			{},
+			{ runId: "root", cwd: f.directory, store: createStore(), durableBackend: f.backend },
+		);
+		let host: PoolCoordinator | undefined;
+		try {
+			const root = await f.root();
+			host = await satellite(f, root, { providerId: "vm-1", restore: async () => restored });
+			await sleep(1_500);
+			assert.deepEqual(f.claims(), [], "a host on a drained instance claims nothing");
+			assert.equal((await f.shared.stats("root")).ready, 1);
+			// Once the drain is gone, as when the instance was removed and its id reused, the host claims again.
+			await storage.transaction((tx) => tx.run(`DELETE FROM ${drains}`));
+			const result = await execution;
+			assert.equal(result.status, "completed", JSON.stringify(result));
+			assert.deepEqual(
+				f.claims().map(([claimer]) => claimer),
+				["host-b"],
+			);
+		} finally {
+			await host?.stopSatellite();
+			await host?.shutdown();
+			await execution.catch(() => {});
+			await f.close();
+		}
+	},
+	COORDINATOR_TEST_TIMEOUT_MS,
+);
