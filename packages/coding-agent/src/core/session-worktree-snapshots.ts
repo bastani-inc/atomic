@@ -57,6 +57,7 @@ import {
 	verifyWorktree,
 } from "./worktree-snapshot/restore.ts";
 import { adoptPrebuiltSeed } from "./worktree-snapshot/seeds.ts";
+import { keepSessionSnapshotCommit, releaseSessionSnapshotRefs } from "./worktree-snapshot/session-refs.ts";
 import type {
 	SnapshotBlob,
 	SnapshotBlobStore,
@@ -177,6 +178,7 @@ export class SessionWorktreeSnapshotRecorder {
 						undefined,
 						captureMs,
 					);
+					await keepLatestSnapshotCommit(this.deps.sessionManager, root, result.snapshot);
 				} else if (result.status === "unavailable") {
 					this.report(result.reason);
 				}
@@ -214,6 +216,52 @@ export class SessionWorktreeSnapshotRecorder {
 		if (!reason) throw error;
 		this.report(reason);
 	}
+}
+
+/**
+ * Keeps the commit of `snapshot`, the session's latest of the checkout at `root`, reachable from the session's ref in
+ * that repository, so `git gc` does not prune it and resume still recognises the checkout (#4923). The ref of each
+ * checkout the session's work in `root` came from through restores is released, as retention releases its snapshot.
+ */
+async function keepLatestSnapshotCommit(
+	sessionManager: SessionManager,
+	root: string,
+	snapshot: WorktreeSnapshot,
+): Promise<void> {
+	const sessionId = sessionManager.getSessionId();
+	await keepSessionSnapshotCommit(sessionId, root, snapshot.snapshot);
+	await releaseSessionSnapshotRefs(sessionId, restoredLineage(root, sessionManager.getWorktreeRootMappings()));
+}
+
+/**
+ * The other checkouts that restores connect `root` to: walking the mappings newest first, each one the work in a
+ * connected checkout was restored from or moved to.
+ */
+function restoredLineage(root: string, mappings: readonly WorktreeRootMapping[]): string[] {
+	const connected = new Set([resolve(root)]);
+	for (const mapping of [...mappings].reverse()) {
+		const from = resolve(mapping.from);
+		const to = resolve(mapping.to);
+		if (connected.has(from) || connected.has(to)) connected.add(from).add(to);
+	}
+	connected.delete(resolve(root));
+	return [...connected];
+}
+
+/**
+ * Deletes session `sessionId` from `store`, then the refs that kept its snapshot commits in the repositories of the
+ * checkouts it recorded on this node (#4923). Rejects as `store.delete` does; releasing the refs never fails it.
+ */
+export async function deleteSessionWithSnapshotRefs(
+	store: Pick<SessionStore, "load" | "delete">,
+	sessionId: string,
+): Promise<void> {
+	const roots = await store.load(sessionId).then(
+		({ entries }) => entries.flatMap((entry) => (entry.type === "worktree_snapshot" ? [entry.root] : [])),
+		() => [],
+	);
+	await store.delete(sessionId);
+	await releaseSessionSnapshotRefs(sessionId, new Set(roots));
 }
 
 async function nearestExisting(directory: string): Promise<string> {
