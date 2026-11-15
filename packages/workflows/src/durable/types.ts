@@ -172,6 +172,8 @@ export interface DurableToolCheckpoint {
 	readonly worktreeSnapshots?: readonly WorktreeSnapshot[];
 	/** Graph topology; reserved run-level checkpoints have no graph node. */
 	readonly topology?: DurableToolTopology;
+	/** The run's attempt this record was written in; absent before the run's first resume (#4874). */
+	readonly attempt?: number;
 }
 
 /** A `ctx.ui.*` user response cached durably. */
@@ -314,6 +316,8 @@ export interface DurableStageCheckpoint {
 	 * holds them: a resume continues the stage's turn from them instead of running the calls again.
 	 */
 	readonly waitResults?: readonly import("../shared/stage-wait.js").StageWaitToolResult[];
+	/** The run's attempt this record was written in; absent before the run's first resume (#4874). */
+	readonly attempt?: number;
 }
 
 /**

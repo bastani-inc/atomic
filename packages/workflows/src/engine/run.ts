@@ -9,6 +9,7 @@ import {
 	withWorktreeRestoreNotices,
 	withWorktreeRootMappings,
 } from "@bastani/atomic";
+import { beginDurableWorkflowAttempt } from "../durable/attempt-identity.js";
 import { type DurableWorkflowBackend, pendingStageMessagesForDurableRun } from "../durable/backend.js";
 import type { DurableChildInvocation } from "../durable/boundary-topology.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -33,6 +34,7 @@ import {
 	latestStageSessionCheckpoints,
 } from "../durable/stage-primitive.js";
 import { availableStoreDurableBackendOverride, bindStoreDurableBackend } from "../durable/store-backend.js";
+import { recordUnconsumedToolFrontier } from "../durable/tool-failure-checkpoint.js";
 import { createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import type { DurableStageCheckpoint } from "../durable/types.js";
 import { transitionDurableWorkflowStatus } from "../durable/workflow-status-transition.js";
@@ -772,6 +774,13 @@ async function executeRun(
 		assertSuccessfulCompletion: () => {
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
 			assertFrontierConsumed();
+		},
+		recordRefusedCompletion: async (error) => {
+			const frontier = unconsumedToolFrontier(
+				opts.continuation,
+				error instanceof Error ? error.message : String(error),
+			);
+			if (frontier !== undefined) await recordUnconsumedToolFrontier(durableBackend, runId, frontier.argsHash);
 		},
 	});
 	const checkpointIdGenerator = createCheckpointIdGenerator();
@@ -1557,6 +1566,8 @@ async function executeRun(
 			} else {
 				await durableBackend.commitWorkflowStatus(runId, "running");
 			}
+			// Before this attempt writes anything, so each of its records is told from an earlier attempt's (#4874).
+			await beginDurableWorkflowAttempt(durableBackend, runId);
 		}
 		durableRootAdmitted = true;
 		if (dispatcher?.prepare !== undefined)
@@ -1747,6 +1758,8 @@ async function executeRun(
 			),
 		);
 		const rejectedToolFrontier = unconsumedToolFrontier(opts.continuation, selectedMetadata.errorMessage);
+		if (rejectedToolFrontier !== undefined)
+			await recordUnconsumedToolFrontier(durableBackend, runId, rejectedToolFrontier.argsHash);
 		const failedToolNodeId =
 			rejectedToolFrontier?.id ??
 			(selectedMetadata.failedStageId === undefined && selectedMetadata.failureDisposition !== "terminal_killed"

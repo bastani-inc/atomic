@@ -18,6 +18,7 @@ import type {
 	WorkflowTaskResult,
 	WorkflowThinkingLevel,
 } from "../shared/types.js";
+import { durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
 import { activeStageTopology, durableStageCheckpointMetadata } from "./stage-topology.js";
@@ -55,7 +56,11 @@ export async function recordStageCheckpoint(
 		? {
 				kind: "stage",
 				workflowId: deps.workflowId,
-				checkpointId: stageMetadataCheckpointId(replayKey, stage),
+				checkpointId: stageMetadataCheckpointId(
+					replayKey,
+					stage,
+					durableWorkflowAttempt(deps.backend, deps.workflowId),
+				),
 				name: stage.name,
 				replayKey,
 				completedAt: stage.endedAt ?? Date.now(),
@@ -101,7 +106,9 @@ export async function recordStageSessionCheckpoint(
 		current !== undefined &&
 		current.sessionId === stage.sessionId &&
 		current.startedAt === stage.startedAt &&
-		stageSessionDurationBucket(current.durationMs) === stageSessionDurationBucket(durationMs)
+		stageSessionDurationBucket(current.durationMs) === stageSessionDurationBucket(durationMs) &&
+		// A later attempt that reopens the session records it again: that record is what says the attempt reached it.
+		(current.attempt ?? 0) === (durableWorkflowAttempt(deps.backend, deps.workflowId) ?? 0)
 	)
 		return false;
 	const checkpoint: DurableStageCheckpoint = {
@@ -112,6 +119,7 @@ export async function recordStageSessionCheckpoint(
 			stage,
 			durationMs,
 			options?.force === true ? checkpointNow : undefined,
+			durableWorkflowAttempt(deps.backend, deps.workflowId),
 		),
 		name: stage.name,
 		replayKey,
@@ -988,11 +996,13 @@ function latestStageRecordAt(backend: DurableWorkflowBackend, workflowId: string
  * wait and the results a waiting stage was woken with are part of the record's identity, so a change to either in the
  * same millisecond is a new record; the same record written again in that millisecond is one record (#4309).
  */
+/** `attempt`: the run's attempt while it has one, so a later attempt's record is its own (#4874). */
 function stageSessionCheckpointId(
 	replayKey: string,
 	stage: StageSnapshot,
 	durationMs: number,
 	forcedAt: number | undefined,
+	attempt: number | undefined,
 ): string {
 	return `${stableCheckpointId("stage-session", replayKey)}:${durableHash({
 		sessionId: stage.sessionId ?? "",
@@ -1001,19 +1011,22 @@ function stageSessionCheckpointId(
 		...(stage.wait === undefined ? {} : { wait: stage.wait }),
 		...(stage.waitResults === undefined ? {} : { waitResults: stage.waitResults }),
 		...(forcedAt === undefined ? {} : { forcedAt }),
+		...(attempt === undefined ? {} : { attempt }),
 	})}`;
 }
 
 export function cachedStageId(runId: string, replayKey: string): string {
 	return `durable-${durableHash({ runId, replayKey })}`;
 }
-function stageMetadataCheckpointId(replayKey: string, stage: StageSnapshot): string {
+/** `attempt`: the run's attempt while it has one, so a later attempt's record is its own (#4874). */
+function stageMetadataCheckpointId(replayKey: string, stage: StageSnapshot, attempt: number | undefined): string {
 	return `${stableCheckpointId("stage-meta", replayKey)}:${durableHash({
 		stageId: stage.id,
 		status: stage.status,
 		endedAt: stage.endedAt ?? 0,
 		durationMs: stage.durationMs ?? 0,
 		result: stage.result ?? "",
+		...(attempt === undefined ? {} : { attempt }),
 	})}`;
 }
 

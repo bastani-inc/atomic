@@ -1,8 +1,9 @@
 import type { ToolNodeSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { checkpointAttempt, durableWorkflowAttempt } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { workflowToolFailure } from "./tool-outcome.js";
-import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableStageRunTopology } from "./types.js";
+import { DURABLE_TOOL_TOPOLOGY_VERSION, type DurableStageRunTopology, type DurableToolCheckpoint } from "./types.js";
 
 export interface ThrowingToolFailureCheckpointInput {
 	readonly workflowId: string;
@@ -34,7 +35,9 @@ export async function recordThrowingToolFailure(
 	await input.backend.commitAdditiveCheckpointBestEffort({
 		kind: "tool",
 		workflowId: input.workflowId,
-		checkpointId: `tool-failure:${identity.argsHash}:${input.nextCheckpointId()}`,
+		// The id counter restarts with each attempt; the attempt keeps a later attempt's failure from being dropped as
+		// a repeat of an earlier one (#4874).
+		checkpointId: `tool-failure:${identity.argsHash}:${attemptIdPart(input.backend, input.workflowId)}${input.nextCheckpointId()}`,
 		name: identity.name,
 		...(identity.args !== undefined ? { args: identity.args } : {}),
 		...(identity.source !== undefined ? { source: identity.source } : {}),
@@ -55,4 +58,36 @@ export async function recordThrowingToolFailure(
 		},
 	});
 	return { message, failedAt };
+}
+
+function attemptIdPart(backend: DurableWorkflowBackend, workflowId: string): string {
+	const attempt = durableWorkflowAttempt(backend, workflowId);
+	return attempt === undefined ? "" : `a${attempt}:`;
+}
+
+/**
+ * Record, in the run's current attempt, the failed tool a resumed attempt had to reach first and ended without
+ * reaching (#4874). The live run keeps that tool as it failed; recording it again keeps the durable view the same and
+ * keeps the tool the frontier the next resume starts from. A run without attempts already shows it.
+ */
+export async function recordUnconsumedToolFrontier(
+	backend: DurableWorkflowBackend,
+	workflowId: string,
+	argsHash: string,
+): Promise<void> {
+	const attempt = durableWorkflowAttempt(backend, workflowId);
+	if (attempt === undefined) return;
+	let latest: DurableToolCheckpoint | undefined;
+	for (const checkpoint of backend.listCheckpoints(workflowId)) {
+		if (checkpoint.kind !== "tool" || checkpoint.argsHash !== argsHash || checkpoint.topology === undefined) continue;
+		if (latest === undefined || checkpoint.completedAt >= latest.completedAt) latest = checkpoint;
+	}
+	if (latest === undefined || latest.throwingFailureError === undefined || checkpointAttempt(latest) === attempt)
+		return;
+	const { attempt: _attempt, ...failure } = latest;
+	await backend.commitAdditiveCheckpointBestEffort({
+		...failure,
+		checkpointId: `tool-failure:${argsHash}:a${attempt}:frontier`,
+		completedAt: Math.max(Date.now(), latest.completedAt + 1),
+	});
 }
