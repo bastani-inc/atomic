@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { cancelReasonText } from "../../packages/coding-agent/src/core/tasks/cancel-reason.js";
 import {

@@ -3,11 +3,8 @@
  * to pi-ai once provider lists are offered there.
  */
 
-/** Id of the Radius provider. */
-export const RADIUS_PROVIDER_ID = "radius";
-
 /** Ids of the preferred partner providers, most preferred first. */
-export const PREFERRED_PROVIDER_IDS: readonly string[] = [RADIUS_PROVIDER_ID, "openrouter"];
+export const PREFERRED_PROVIDER_IDS: readonly string[] = ["openrouter"];
 
 /** Whether the provider is a preferred partner. */
 export function isPreferredProvider(providerId: string): boolean {

@@ -1,4 +1,4 @@
-import type { ProviderHeaders } from "@bastani/pi-ai/compat";
+import type { ProviderHeaders } from "@bastani/atomic-ai/compat";
 import { describe, expect, it } from "vitest";
 import { mergeHeaders } from "../src/core/model-runtime-streaming.ts";
 

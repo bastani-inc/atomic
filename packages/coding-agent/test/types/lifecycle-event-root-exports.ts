@@ -1,4 +1,4 @@
-import type { AssistantMessageEvent } from "@bastani/pi-ai/compat";
+import type { AssistantMessageEvent } from "@bastani/atomic-ai/compat";
 import type {
 	UIPromptEndEvent as CoreUIPromptEndEvent,
 	UIPromptKind as CoreUIPromptKind,

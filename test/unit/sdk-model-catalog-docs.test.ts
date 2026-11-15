@@ -4,7 +4,7 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { Credential, CredentialInfo, CredentialStore, ModelsStore, ModelsStoreEntry } from "@bastani/pi-ai";
+import type { Credential, CredentialInfo, CredentialStore, ModelsStore, ModelsStoreEntry } from "@bastani/atomic-ai";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 import { REMOTE_CATALOG_REFRESH_INTERVAL_MS } from "../../packages/coding-agent/src/core/remote-catalog-provider.js";

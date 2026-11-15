@@ -7,7 +7,7 @@
  * committed is decided here.
  */
 
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import type { CompactionEntry, CustomEntry, SessionEntry } from "../session-manager-types.ts";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 import {

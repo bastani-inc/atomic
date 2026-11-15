@@ -1,5 +1,5 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { StreamFn, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import type { CompactionRunRequest } from "../src/core/compaction/compaction-runner.ts";
 import type { BorrowedPlanner, PlannerAuth } from "../src/core/compaction/compaction-types.ts";
 import { resolvePlannerRequest } from "../src/core/compaction/range-planner.ts";

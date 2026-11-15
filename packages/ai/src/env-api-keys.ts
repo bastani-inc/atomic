@@ -90,7 +90,6 @@ const apiKeyEnvMap: Record<string, string | readonly string[]> = {
 	groq: "GROQ_API_KEY",
 	cerebras: "CEREBRAS_API_KEY",
 	xai: "XAI_API_KEY",
-	radius: "RADIUS_API_KEY",
 	typesafe: "TYPESAFE_API_KEY",
 	morph: "MORPH_API_KEY",
 	openrouter: "OPENROUTER_API_KEY",

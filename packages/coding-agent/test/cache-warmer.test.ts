@@ -5,7 +5,7 @@ import {
 	isCacheWarmingReplayable,
 	type Model,
 	type TranscriptContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, describe, it, vi } from "vitest";
 import {
 	CacheWarmer,

@@ -1,7 +1,7 @@
 import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from "node:path";
-import type { ImageContent, ModelImageResizeOptions, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import type { ImageContent, ModelImageResizeOptions, TextContent } from "@bastani/atomic-ai/compat";
+import { Text } from "@bastani/atomic-tui";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "fs/promises";
 import { type Static, Type } from "typebox";

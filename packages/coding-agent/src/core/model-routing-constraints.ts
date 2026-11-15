@@ -1,4 +1,4 @@
-import { type Api, getServiceTierCost, type Model, type ModelCost } from "@bastani/pi-ai";
+import { type Api, getServiceTierCost, type Model, type ModelCost } from "@bastani/atomic-ai";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
 

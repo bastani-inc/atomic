@@ -12,7 +12,7 @@ import {
 	Spacer,
 	Text,
 	type TUI,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import { editInExternalEditor, resolveExternalEditorCommand } from "../external-editor.ts";
 import { getEditorTheme, theme } from "../theme/theme.js";

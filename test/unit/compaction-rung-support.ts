@@ -4,8 +4,8 @@
  * Kept out of `*.test.ts` so `bun test test/unit` does not treat it as a suite.
  */
 
-import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@bastani/pi-ai/compat";
-import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { StreamFn, ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@bastani/atomic-ai/compat";
 import { DEFAULT_COMPACTION_SETTINGS } from "../../packages/coding-agent/src/core/compaction/compaction.js";
 import { setKeptTailTokenEstimate } from "../../packages/coding-agent/src/core/compaction/compaction-boundary.js";
 import type { CompactionRunRequest } from "../../packages/coding-agent/src/core/compaction/compaction-runner.js";

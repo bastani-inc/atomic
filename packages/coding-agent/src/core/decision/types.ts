@@ -1,4 +1,4 @@
-import type { Api, Model, RetryPolicy } from "@bastani/pi-ai";
+import type { Api, Model, RetryPolicy } from "@bastani/atomic-ai";
 import type { DecisionModelSelectionOptions } from "../structured-output/types.js";
 import type { JsonObject } from "../tools/structured-output.ts";
 

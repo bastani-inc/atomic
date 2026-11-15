@@ -215,7 +215,6 @@ Atomic connects through installed CLIs, MCP servers, APIs, scripts, and custom e
   <a href="https://openrouter.ai/"><img src="assets/readme-badges/providers/openrouter.svg" alt="OpenRouter provider badge for Atomic"></a>
   <a href="https://www.kimi.com/code"><img src="assets/readme-badges/providers/kimi.svg" alt="Kimi provider badge for Atomic"></a>
   <a href="https://x.ai/api"><img src="assets/readme-badges/providers/xai.svg" alt="xAI provider badge for Atomic"></a>
-  <a href="https://radius.pi.dev/"><img src="assets/readme-badges/providers/radius.svg" alt="Radius provider badge for Atomic"></a>
   <a href="https://www.ant-ling.com/en/"><img src="assets/readme-badges/providers/ant-ling.svg" alt="Ant Ling provider badge for Atomic"></a>
   <a href="https://azure.microsoft.com/en-us/products/ai-services/openai-service"><img src="assets/readme-badges/providers/azure-openai.svg" alt="Azure OpenAI provider badge for Atomic"></a>
   <a href="https://aws.amazon.com/bedrock/"><img src="assets/readme-badges/providers/amazon-bedrock.svg" alt="Amazon Bedrock provider badge for Atomic"></a>

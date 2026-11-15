@@ -1,4 +1,4 @@
-import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text } from "@bastani/atomic-tui";
 import type { ToolDefinition } from "../../core/extensions/types.ts";
 import {
 	getTextOutput,

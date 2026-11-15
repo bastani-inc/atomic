@@ -1,6 +1,6 @@
-import { anthropicAssistantReplayContent } from "@bastani/pi-ai/api/anthropic-assistant-content";
-import { isProducedByModel } from "@bastani/pi-ai/api/transform-messages";
-import type { Api, AssistantMessage, Message, Model } from "@bastani/pi-ai/compat";
+import { anthropicAssistantReplayContent } from "@bastani/atomic-ai/api/anthropic-assistant-content";
+import { isProducedByModel } from "@bastani/atomic-ai/api/transform-messages";
+import type { Api, AssistantMessage, Message, Model } from "@bastani/atomic-ai/compat";
 
 type JsonObject = Record<string, unknown>;
 

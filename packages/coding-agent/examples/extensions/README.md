@@ -128,7 +128,7 @@ For isolation setup and limitations, see [Run Atomic in an isolated environment]
 | Extension | Description |
 |-----------|-------------|
 | `custom-provider-anthropic/` | Custom Anthropic provider with OAuth support and custom streaming implementation |
-| `custom-provider-gitlab-duo/` | GitLab Duo provider using `@bastani/pi-ai`'s built-in Anthropic/OpenAI streaming via proxy |
+| `custom-provider-gitlab-duo/` | GitLab Duo provider using `@bastani/atomic-ai`'s built-in Anthropic/OpenAI streaming via proxy |
 
 ### External Dependencies
 

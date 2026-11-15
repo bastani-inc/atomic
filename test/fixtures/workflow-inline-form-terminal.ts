@@ -1,4 +1,4 @@
-import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.js";
 import { renderInlineCard } from "../../packages/workflows/src/tui/inline-form-card.js";
 import { InlineFormEditor } from "../../packages/workflows/src/tui/inline-form-editor.js";

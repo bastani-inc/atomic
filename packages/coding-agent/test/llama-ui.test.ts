@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { type Component, setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, it, vi } from "vitest";
 import type { ExtensionCommandContext } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";

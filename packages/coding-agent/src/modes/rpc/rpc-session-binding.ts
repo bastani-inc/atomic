@@ -1,4 +1,4 @@
-import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import type { AgentSessionInternalSurface } from "../../core/agent-session-methods.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";

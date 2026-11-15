@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { JsonObject } from "@bastani/pi-ai";
+import type { JsonObject } from "@bastani/atomic-ai";
 import { type TSchema, Type } from "typebox";
 import { test, vi } from "vitest";
 import { generateStructuredOutput } from "../../packages/coding-agent/src/core/structured-output/index.js";

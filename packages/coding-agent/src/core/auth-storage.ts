@@ -9,7 +9,7 @@ import {
 	type CredentialInfo,
 	type CredentialStore,
 	normalizeProviderId,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { join } from "path";
 import { isDeepStrictEqual } from "util";
 import { getAgentConfigPaths, getAgentDir } from "../config.js";

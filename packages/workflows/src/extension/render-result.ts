@@ -12,7 +12,7 @@
  */
 
 import type { SerializedJournalStoreError } from "@bastani/atomic/storage";
-import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { wrapTextWithAnsi } from "@bastani/atomic-tui";
 import type { ForkErrorCode } from "../durable/fork-errors.js";
 import type { SharedPoolStats } from "../durable/journal/sql-shared-pool.js";
 import type { WorkflowForkedFrom } from "../durable/types.js";

@@ -3,9 +3,9 @@ export { Type } from "typebox";
 
 // Core only, side-effect free: no generated catalogs, no provider factories,
 // no api-registry, no OAuth implementations, no compat. Provider factories
-// live under "@bastani/pi-ai/providers/*", API implementations under
-// "@bastani/pi-ai/api/*", the old global API under
-// "@bastani/pi-ai/compat".
+// live under "@bastani/atomic-ai/providers/*", API implementations under
+// "@bastani/atomic-ai/api/*", the old global API under
+// "@bastani/atomic-ai/compat".
 export type { AnthropicEffort, AnthropicOptions, AnthropicThinkingDisplay } from "./api/anthropic-messages.ts";
 export type { AzureOpenAIResponsesOptions } from "./api/azure-openai-responses.ts";
 export type { BedrockOptions, BedrockThinkingDisplay } from "./api/bedrock-converse-stream.ts";

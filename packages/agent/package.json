@@ -1,0 +1,62 @@
+{
+	"name": "@bastani/atomic-agent-core",
+	"version": "0.0.0",
+	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE",
+		"NOTICE.md"
+	],
+	"scripts": {
+		"clean": "node ../../scripts/package-files.mjs clean dist",
+		"build": "tsc -p tsconfig.build.json",
+		"test": "vitest --run",
+		"prepublishOnly": "npm run build"
+	},
+	"dependencies": {
+		"@bastani/atomic-ai": "0.0.0",
+		"@bastani/atomic-schema": "0.0.0"
+	},
+	"keywords": [
+		"ai",
+		"agent",
+		"llm",
+		"transport",
+		"state-management"
+	],
+	"author": "Mario Zechner",
+	"license": "MIT",
+	"contributors": [
+		"Bastani, Inc."
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/bastani-inc/atomic.git",
+		"directory": "packages/agent"
+	},
+	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/agent#readme",
+	"bugs": {
+		"url": "https://github.com/bastani-inc/atomic/issues"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"devDependencies": {
+		"@types/node": "24.12.4",
+		"vitest": "4.1.12"
+	}
+}

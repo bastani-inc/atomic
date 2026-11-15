@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { terminalSafeText } from "./ui/terminal-text.js";
 
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;

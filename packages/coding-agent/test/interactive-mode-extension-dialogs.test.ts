@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, Container, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Text } from "@bastani/atomic-tui";
 import { beforeAll, describe, it, vi } from "vitest";
 import type { HostCustomUiStateListener } from "../src/core/extensions/types.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";

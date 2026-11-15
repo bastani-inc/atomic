@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { getKeybindings, setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { getReadmePath } from "../src/config.ts";
 import type { ToolDefinition } from "../src/core/extensions/types.ts";

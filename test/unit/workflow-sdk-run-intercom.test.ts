@@ -281,7 +281,7 @@ test("standalone Intercom queues a future nested-stage send and settles it befor
 });
 
 test("the default run() session adapter gives a stage working builtin Intercom (#3863)", async () => {
-	const { fauxAssistantMessage, fauxToolCall, registerFauxProvider } = await import("@bastani/pi-ai/compat");
+	const { fauxAssistantMessage, fauxToolCall, registerFauxProvider } = await import("@bastani/atomic-ai/compat");
 	const { Type } = await import("typebox");
 	const { InMemoryCodingAgentModelsStore } = await import("../../packages/coding-agent/src/core/models-store.js");
 	const { AuthStorage, ModelRuntime, SettingsManager } = await import("../../packages/coding-agent/src/index.js");

@@ -1,4 +1,4 @@
-import type { AuthOperationOptions, CredentialStore } from "@bastani/pi-ai";
+import type { AuthOperationOptions, CredentialStore } from "@bastani/atomic-ai";
 import { describe, expect, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { RuntimeCredentials } from "../src/core/runtime-credentials.ts";

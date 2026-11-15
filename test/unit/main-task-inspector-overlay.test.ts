@@ -10,7 +10,7 @@ import {
 	Text,
 	VStack,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import type { AgentSession } from "../../packages/coding-agent/src/core/agent-session.js";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.js";

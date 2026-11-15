@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterAll, beforeAll, test } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { TerminalColors, TUI } from "@earendil-works/pi-tui";
+import type { TerminalColors, TUI } from "@bastani/atomic-tui";
 import { afterEach, test, vi } from "vitest";
 import { detectStartupTheme } from "../src/cli/startup-ui.js";
 import { SettingsManager } from "../src/core/settings-manager.js";

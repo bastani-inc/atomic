@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { builtinModels } from "@bastani/pi-ai/providers/all";
+import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import { describe, test } from "vitest";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";
 

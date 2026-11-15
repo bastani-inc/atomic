@@ -1,5 +1,5 @@
 import { getMarkdownTheme } from "@bastani/atomic";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, Spacer, Text } from "@bastani/atomic-tui";
 import { type DisplayItem, formatToolCall, formatUsageStats, getDisplayItems, getFinalOutput } from "./display.js";
 import type { SingleResult, SubagentDetails } from "./types.js";
 

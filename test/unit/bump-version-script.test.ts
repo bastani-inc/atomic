@@ -88,8 +88,16 @@ function createFixtureRoot(): string {
 		name: "@fixture/alpha",
 		version: "0.1.0",
 		private: true,
-		dependencies: { "@bastani/pi-ai": "0.1.0" },
+		dependencies: {
+			"@bastani/atomic-ai": "0.1.0",
+			"@bastani/atomic-agent-core": "0.1.0",
+			"@bastani/atomic-codemode": "0.1.0",
+			"@bastani/atomic-schema": "0.1.0",
+			"@bastani/atomic-telemetry": "0.1.0",
+			"@bastani/atomic-tui": "0.1.0",
+		},
 		optionalDependencies: { "@bastani/atomic-natives-linux-x64-musl": "0.1.0" },
+		peerDependencies: { "@bastani/atomic-tui": "*" },
 	});
 	writeJson(join(root, "packages", "beta", "package.json"), {
 		name: "@fixture/beta",
@@ -102,7 +110,7 @@ function createFixtureRoot(): string {
 	);
 	writeFileSync(
 		join(root, "packages", "ai", "src", "utils", "version.ts"),
-		'// The @bastani/pi-ai package version. scripts/bump-version.ts keeps it in sync with package.json.\nexport const PI_AI_VERSION = "0.1.0";\n',
+		'// The @bastani/atomic-ai package version. scripts/bump-version.ts keeps it in sync with package.json.\nexport const PI_AI_VERSION = "0.1.0";\n',
 	);
 	writeFileSync(
 		join(root, "crates", "native", "Cargo.toml"),
@@ -146,7 +154,7 @@ if (bindingPackageVersion !== '0.1.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHE
 			"packages/alpha": {
 				name: "@fixture/alpha",
 				version: "0.1.0",
-				dependencies: { "@bastani/atomic-natives": "0.1.0", "@bastani/pi-ai": "0.1.0", "third-party": "9.9.9" },
+				dependencies: { "@bastani/atomic-natives": "0.1.0", "@bastani/atomic-ai": "0.1.0", "third-party": "9.9.9" },
 				optionalDependencies: {
 					"@bastani/atomic-natives-linux-x64-gnu": "0.1.0",
 					"@bastani/atomic-natives-linux-x64-musl": "0.1.0",
@@ -194,7 +202,17 @@ describe("scripts/bump-version.ts", () => {
 			assert.equal(rootPackageJson.dependencies?.["@bastani/atomic-natives"], "1.2.3-alpha.1");
 			const alphaPackageJson = readJson(join(root, "packages", "alpha", "package.json"));
 			assert.equal(alphaPackageJson.version, "1.2.3-alpha.1");
-			assert.equal(alphaPackageJson.dependencies?.["@bastani/pi-ai"], "1.2.3-alpha.1");
+			for (const name of [
+				"@bastani/atomic-ai",
+				"@bastani/atomic-agent-core",
+				"@bastani/atomic-codemode",
+				"@bastani/atomic-schema",
+				"@bastani/atomic-telemetry",
+				"@bastani/atomic-tui",
+			]) {
+				assert.equal(alphaPackageJson.dependencies?.[name], "1.2.3-alpha.1", name);
+			}
+			assert.equal(alphaPackageJson.peerDependencies?.["@bastani/atomic-tui"], "*");
 			assert.equal(
 				alphaPackageJson.optionalDependencies?.["@bastani/atomic-natives-linux-x64-musl"],
 				"1.2.3-alpha.1",
@@ -217,7 +235,7 @@ describe("scripts/bump-version.ts", () => {
 			assert.match(nativeIndex, /bindingPackageVersion !== '1\.2\.3-alpha\.1'/);
 			assert.match(nativeIndex, /expected 1\.2\.3-alpha\.1 but got \$\{bindingPackageVersion\}/);
 			assert.doesNotMatch(nativeIndex, /0\.1\.0/);
-			// pi-ai reports its version in the User-Agent from a constant, not package.json.
+			// atomic-ai reports its version in the User-Agent from a constant, not package.json.
 			assert.match(
 				readFileSync(join(root, "packages", "ai", "src", "utils", "version.ts"), "utf8"),
 				/export const PI_AI_VERSION = "1\.2\.3-alpha\.1";\n$/,
@@ -236,7 +254,7 @@ describe("scripts/bump-version.ts", () => {
 				"1.2.3-alpha.1",
 			);
 			assert.equal(lock.packages["packages/alpha"]?.dependencies?.["@bastani/atomic-natives"], "1.2.3-alpha.1");
-			assert.equal(lock.packages["packages/alpha"]?.dependencies?.["@bastani/pi-ai"], "1.2.3-alpha.1");
+			assert.equal(lock.packages["packages/alpha"]?.dependencies?.["@bastani/atomic-ai"], "1.2.3-alpha.1");
 			assert.equal(
 				lock.packages["packages/alpha"]?.optionalDependencies?.["@bastani/atomic-natives-linux-x64-gnu"],
 				"1.2.3-alpha.1",

@@ -5,7 +5,7 @@ import {
 	matchesKey as piMatchesKey,
 	truncateToWidth as piTruncateToWidth,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 
 export { Key, visibleWidth };
 

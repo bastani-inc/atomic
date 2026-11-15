@@ -1,4 +1,4 @@
-import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/pi-ai";
+import type { ModelsRefreshOptions, ModelsRefreshResult } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INTERACTIVE_MODEL_REFRESH_TIMEOUT_MS } from "../src/core/model-refresh-timeout.ts";
 import type { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";

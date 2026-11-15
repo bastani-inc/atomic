@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { registerFauxProvider } from "@bastani/pi-ai/compat";
-import { getKeybindings, setKeybindings, type Terminal } from "@earendil-works/pi-tui";
+import { registerFauxProvider } from "@bastani/atomic-ai/compat";
+import { getKeybindings, setKeybindings, type Terminal } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { ENV_OFFLINE } from "../../packages/coding-agent/src/config.ts";
 import {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";

@@ -1,12 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { AssistantMessage, ToolCall, ToolResultMessage } from "@bastani/pi-ai/compat";
 import type {
 	AfterToolCallResult,
 	AgentEvent,
 	AgentMessage,
 	AgentTool,
 	AgentToolResult,
-} from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-agent-core";
+import type { AssistantMessage, ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";

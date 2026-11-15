@@ -1,4 +1,4 @@
-import { getCapabilities, Marked, type Token } from "@earendil-works/pi-tui";
+import { getCapabilities, Marked, type Token } from "@bastani/atomic-tui";
 import { type AnsiTheme, type MermaidArt, render, toAnsi } from "lovely-mermaid";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../../../core/settings-manager.ts";

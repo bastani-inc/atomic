@@ -1,5 +1,5 @@
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../bash-executor.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { BashOperations } from "../tools/bash.js";
@@ -35,8 +35,8 @@ export interface ToolResultEventResult {
 	details?: unknown;
 	isError?: boolean;
 	/** Content replacement without this field drops machine-readable data to prevent redaction leaks. */
-	structuredContent?: import("@bastani/pi-ai").JsonValue;
-	usage?: import("@bastani/pi-ai").Usage;
+	structuredContent?: import("@bastani/atomic-ai").JsonValue;
+	usage?: import("@bastani/atomic-ai").Usage;
 }
 
 export interface MessageEndEventResult {

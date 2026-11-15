@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join, resolve } from "node:path";
-import type { Model } from "@bastani/pi-ai/compat";
+import type { Model } from "@bastani/atomic-ai/compat";
 import { describe, it } from "vitest";
 import { resolveModelScopeFromModels } from "../src/core/model-resolver.js";
 import { applyNamePatterns, applyPatterns } from "../src/core/package-manager-resource-patterns.js";

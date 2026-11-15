@@ -207,7 +207,7 @@ const piMessagesModel: Model<"pi-messages"> = {
 	id: "auto",
 	name: "Auto",
 	api: "pi-messages",
-	provider: "radius",
+	provider: "custom-gateway",
 	baseUrl: "https://gateway.test/v1",
 	reasoning: false,
 	input: ["text"],

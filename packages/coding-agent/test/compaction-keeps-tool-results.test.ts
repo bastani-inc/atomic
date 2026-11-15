@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Context } from "@bastani/pi-ai/compat";
+import type { Context } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { generateBranchSummary } from "../src/core/compaction/branch-summarization.js";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";

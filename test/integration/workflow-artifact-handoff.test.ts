@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import { Type } from "typebox";
 import { test } from "vitest";
 import type { StageAdmittedCustomMessage } from "../../packages/coding-agent/src/core/messages.js";

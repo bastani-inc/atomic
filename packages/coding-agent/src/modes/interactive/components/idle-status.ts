@@ -1,4 +1,4 @@
-import type { Component, Container } from "@earendil-works/pi-tui";
+import type { Component, Container } from "@bastani/atomic-tui";
 
 /** Width-filling placeholder that lets clear-on-shrink erase a former multi-line loader. */
 export class IdleStatus implements Component {

@@ -3,7 +3,7 @@
  * `<jiti> restored-task-notice-host.ts <root> <sessionDir>`. Prints one JSON line `{ file }` once the restored intent
  * has been flushed while the turn's tool call still runs, then waits forever.
  */
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import type { AgentSessionInternalSurface } from "../../src/core/agent-session-methods.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";

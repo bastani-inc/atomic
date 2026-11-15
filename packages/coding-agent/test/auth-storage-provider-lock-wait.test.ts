@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
-import type { Credential } from "@bastani/pi-ai";
+import type { Credential } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { makeTempDirectory, removeTempDirectory } from "../../../test/helpers/runtime.ts";
 import { TEST_TIMEOUT_MS } from "../../../test/helpers/test-timeout.ts";

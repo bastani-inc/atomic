@@ -1,5 +1,5 @@
 import { dirname, join } from "node:path";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { TestSqliteDatabase } from "../../packages/coding-agent/test/helpers/sqlite.js";

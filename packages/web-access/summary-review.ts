@@ -1,5 +1,5 @@
-import type { ProviderHeaders } from "@bastani/pi-ai";
-import { getModel, type Message, type Model } from "@bastani/pi-ai/compat";
+import type { ProviderHeaders } from "@bastani/atomic-ai";
+import { getModel, type Message, type Model } from "@bastani/atomic-ai/compat";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { QueryResultData } from "./storage.js";
 

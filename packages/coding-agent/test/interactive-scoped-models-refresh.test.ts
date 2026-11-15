@@ -1,5 +1,5 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
+import { setKeybindings, type TUI } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import type { ScopedModelsSelectorComponent } from "../src/modes/interactive/components/scoped-models-selector.ts";

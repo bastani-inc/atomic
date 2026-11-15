@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { getSupportedThinkingLevels } from "@bastani/pi-ai/compat";
-import { getBuiltinModels } from "@bastani/pi-ai/providers/all";
+import { getSupportedThinkingLevels } from "@bastani/atomic-ai/compat";
+import { getBuiltinModels } from "@bastani/atomic-ai/providers/all";
 import { test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { resolveCliModel } from "../../packages/coding-agent/src/core/model-resolver.ts";

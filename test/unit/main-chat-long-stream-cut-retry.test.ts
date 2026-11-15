@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { GitHubCopilotStreamAttempt, recordGitHubCopilotFailure } from "@bastani/pi-ai";
-import type { Api, AssistantMessage, Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { GitHubCopilotStreamAttempt, recordGitHubCopilotFailure } from "@bastani/atomic-ai";
+import type { Api, AssistantMessage, Model } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { _processAgentEvent } from "../../packages/coding-agent/src/core/agent-session-events.js";
 import {

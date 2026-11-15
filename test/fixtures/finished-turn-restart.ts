@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, registerFauxProvider } from "@bastani/atomic-ai/compat";
 // From the package, not `packages/coding-agent/src/index.js`: the stage adapter loads `@bastani/atomic` for its
 // sessions, so the source barrel would load a second copy of the coding agent through jiti, about 870 more modules
 // and most of a Node child's start-up.

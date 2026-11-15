@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 import { StorageUnavailableError } from "../src/core/storage/session/errors.js";

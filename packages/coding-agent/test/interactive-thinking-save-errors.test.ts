@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { setKeybindings, type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { beforeAll, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { SessionManager } from "../src/core/session-manager.ts";

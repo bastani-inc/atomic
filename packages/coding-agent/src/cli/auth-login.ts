@@ -1,5 +1,5 @@
-import type { AuthInteraction, AuthPrompt, AuthType, Provider } from "@bastani/pi-ai";
-import { replaceControlCharacters } from "@earendil-works/pi-tui";
+import type { AuthInteraction, AuthPrompt, AuthType, Provider } from "@bastani/atomic-ai";
+import { replaceControlCharacters } from "@bastani/atomic-tui";
 import { APP_NAME, getAuthPath } from "../config.js";
 import { CredentialSynchronizationError, type ModelRuntime } from "../core/model-runtime.js";
 import { isOAuthLoginCancelled } from "../core/oauth-login.ts";

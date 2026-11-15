@@ -9,7 +9,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import type { HostInputFormField, HostInputFormRequest } from "../../../core/extensions/ui-types.js";
 import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.js";

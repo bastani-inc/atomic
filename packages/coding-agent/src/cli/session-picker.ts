@@ -2,7 +2,7 @@
  * TUI session selector for --resume flag
  */
 
-import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen } from "@bastani/atomic-tui";
 import { getAgentDir } from "../config.js";
 import { KeybindingsManager } from "../core/keybindings.ts";
 import type { SessionInfo, SessionListProgress } from "../core/session-manager.ts";

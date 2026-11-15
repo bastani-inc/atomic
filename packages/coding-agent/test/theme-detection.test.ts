@@ -1,4 +1,4 @@
-import type { TerminalColors } from "@earendil-works/pi-tui";
+import type { TerminalColors } from "@bastani/atomic-tui";
 import { describe, expect, it } from "vitest";
 import {
 	detectTerminalBackgroundFromEnv,

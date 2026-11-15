@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { bindOwnerTaskStore, ChatSessionHost, type ChatSessionHostStyle } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import { type EditorTheme, setKeybindings, TuiMainScreen, ProcessTerminal } from "@earendil-works/pi-tui";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
+import { type EditorTheme, setKeybindings, TuiMainScreen, ProcessTerminal } from "@bastani/atomic-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { taskFixture, taskValue } from "../helpers/task-projection.js";
 import { createStageSkillFixture } from "./stage-chat-skill-session.js";

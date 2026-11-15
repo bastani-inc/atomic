@@ -7,7 +7,7 @@ import {
 	getSupportedThinkingLevels,
 	isModelType,
 	type Model,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { getDocsPath } from "../config.js";
 import { decide, decideWithModel } from "./decision/decide.js";
 import type { ModelRegistry } from "./model-registry.ts";

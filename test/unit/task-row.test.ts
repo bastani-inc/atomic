@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { setKeybindings, visibleWidth } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import type { TaskId, TaskRecord, TaskResult } from "../../packages/coding-agent/src/core/tasks/contracts.js";
