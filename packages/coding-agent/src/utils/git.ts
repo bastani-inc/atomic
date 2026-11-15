@@ -26,6 +26,20 @@ export type GitSource = {
 	pinned: boolean;
 };
 
+/** Strips leading "/" characters in one linear pass (no regex backtracking on long slash runs). */
+function trimLeadingSlashes(value: string): string {
+	let start = 0;
+	while (start < value.length && value.charCodeAt(start) === 47) start++;
+	return value.slice(start);
+}
+
+/** Strips trailing "/" characters in one linear pass (no regex backtracking on long slash runs). */
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+	return value.slice(0, end);
+}
+
 function splitRef(url: string): { repo: string; ref?: string } {
 	const scpLikeMatch = url.match(/^git@([^:]+):(.+)$/);
 	if (scpLikeMatch) {
@@ -44,15 +58,16 @@ function splitRef(url: string): { repo: string; ref?: string } {
 	if (url.includes("://")) {
 		try {
 			const parsed = new URL(url);
-			const pathWithMaybeRef = parsed.pathname.replace(/^\/+/, "");
+			const pathWithMaybeRef = trimLeadingSlashes(parsed.pathname);
 			const refSeparator = pathWithMaybeRef.indexOf("@");
 			if (refSeparator < 0) return { repo: url };
 			const repoPath = pathWithMaybeRef.slice(0, refSeparator);
 			const ref = pathWithMaybeRef.slice(refSeparator + 1);
 			if (!repoPath || !ref) return { repo: url };
 			parsed.pathname = `/${repoPath}`;
+			const serialized = parsed.toString();
 			return {
-				repo: parsed.toString().replace(/\/$/, ""),
+				repo: serialized.endsWith("/") ? serialized.slice(0, -1) : serialized,
 				ref,
 			};
 		} catch {
@@ -114,7 +129,8 @@ function buildGitSource(args: { repo: string; host: string; path: string; ref?: 
 	if (args.path.startsWith("/")) {
 		return null;
 	}
-	const normalizedPath = args.path.replace(/\/+$/, "").replace(/\.git$/, "");
+	const withoutSlashes = trimTrailingSlashes(args.path);
+	const normalizedPath = withoutSlashes.endsWith(".git") ? withoutSlashes.slice(0, -".git".length) : withoutSlashes;
 	if (!args.host || !normalizedPath || normalizedPath.split("/").length < 2) {
 		return null;
 	}
@@ -154,7 +170,7 @@ function parseGenericGitUrl(url: string): GitSource | null {
 		try {
 			const parsed = new URL(repoWithoutRef);
 			host = parsed.hostname;
-			path = parsed.pathname.replace(/^\/+/, "");
+			path = trimLeadingSlashes(parsed.pathname);
 		} catch {
 			return null;
 		}
