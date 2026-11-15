@@ -1298,7 +1298,7 @@ export class IntercomClient extends EventEmitter {
 		) {
 			throw new Error("Invalid delivery_failed message");
 		}
-		// #4997: carried apart from the wire `reasonCode`, so older clients, which validate it, are not refused it.
+		// #4997, #5101: carried apart from the wire `reasonCode`, so older clients, which validate it, are not refused it.
 		const routeUnavailable = brokerMessage.routeUnavailable === true && reasonCode === undefined;
 		const result: SendResult = {
 			id: messageId,

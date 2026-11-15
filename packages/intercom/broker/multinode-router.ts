@@ -45,6 +45,7 @@ import {
 	returnAddressOf,
 } from "./multinode-state-store.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
+import { ROUTE_UNAVAILABLE_REASON } from "./delivery-failure-reason.js";
 import { UNCERTAIN_RECEIPT_REASON } from "./recipient-receipts.js";
 import {
 	decideReleasedAskerReply,
@@ -102,8 +103,6 @@ export { OFFLINE_SESSION_TARGET };
 const ROUTE_HOLDER_DOWN_WINDOW_MS = 10 * 60_000;
 /** #4997: a broker that has not renewed its membership within this long has missed a renewal. */
 const BROKER_UNRESPONSIVE_AFTER_MS = (3 * BROKER_LEASE_RENEW_INTERVAL_MS) / 2;
-export const ROUTE_UNAVAILABLE_REASON =
-	"No route Intercom can reach authorizes this reply yet: the broker that may keep the ask's route is unavailable. Try again shortly.";
 export const SHARED_STORAGE_UNAVAILABLE_REASON =
 	"Session not found on this node, and Intercom could not reach the shared storage database to look for it on other nodes. Try again once the database is available.";
 const MAX_HELD_SENDS = 256;

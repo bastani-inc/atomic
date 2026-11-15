@@ -28,7 +28,12 @@ export {
 	type WriterQueueStats,
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";
-export { renderStorageIdentifiers, validateStoragePrefix } from "./prefix.js";
+export {
+	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
+	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
+	renderStorageIdentifiers,
+	validateStoragePrefix,
+} from "./prefix.js";
 export * from "./provider.js";
 export * from "./run-journal.js";
 export { assertStorageSchemaVersion } from "./schema.js";

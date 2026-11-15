@@ -55,9 +55,9 @@
 	},
 	{
 		"type": "index",
-		"name": "intercom_restoring_reservations_wake_requested",
+		"name": "intercom_restoring_reservations_wake",
 		"tbl_name": "intercom_restoring_reservations",
-		"sql": "CREATE INDEX intercom_restoring_reservations_wake_requested ON intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
+		"sql": "CREATE INDEX intercom_restoring_reservations_wake ON intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
 	},
 	{
 		"type": "index",
@@ -145,9 +145,9 @@
 	},
 	{
 		"type": "index",
-		"name": "team_intercom_restoring_reservations_wake_requested",
+		"name": "team_intercom_restoring_reservations_wake",
 		"tbl_name": "team_intercom_restoring_reservations",
-		"sql": "CREATE INDEX team_intercom_restoring_reservations_wake_requested ON team_intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
+		"sql": "CREATE INDEX team_intercom_restoring_reservations_wake ON team_intercom_restoring_reservations(owner_broker_id) WHERE wake_requested = 1"
 	},
 	{
 		"type": "index",

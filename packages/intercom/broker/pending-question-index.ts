@@ -333,6 +333,40 @@ export class PendingQuestionIndex {
     );
   }
 
+  /**
+   * #5101: sessions that are routable but whose routes this broker has not restored yet (their registration is still
+   * completing), each with the replies waiting on that restoration. A reply that no route authorizes yet waits here
+   * instead of being refused, and is decided again once the routes are restored.
+   */
+  private readonly restoring = new Map<string, { readonly token: object; readonly waiters: Array<() => void> }>();
+
+  /** #5101: `sessionId` is routable before its routes are restored; returns the token that ends this restoration. */
+  beginRestoring(sessionId: string): object {
+    const token = {};
+    const previous = this.restoring.get(sessionId);
+    this.restoring.set(sessionId, { token, waiters: previous?.waiters ?? [] });
+    return token;
+  }
+
+  /** #5101: the restoration `token` began is over (done, or abandoned): what waited on it is decided again. */
+  finishRestoring(sessionId: string, token: object): void {
+    const restoring = this.restoring.get(sessionId);
+    if (restoring?.token !== token) return;
+    this.restoring.delete(sessionId);
+    for (const decideAgain of restoring.waiters) decideAgain();
+  }
+
+  /**
+   * #5101: when `sessionId`'s routes are still being restored, run `decideAgain` once they are (or the restoration is
+   * abandoned) and return true; otherwise return false, and the caller decides now.
+   */
+  whenRestored(sessionId: string, decideAgain: () => void): boolean {
+    const restoring = this.restoring.get(sessionId);
+    if (restoring === undefined) return false;
+    restoring.waiters.push(decideAgain);
+    return true;
+  }
+
   record(senderSessionId: string, targetSessionId: string, messageId: string): void {
     const routes = this.questions.get(messageId) ?? [];
     if (routes.some((route) => route.senderSessionId === senderSessionId && route.targetSessionId === targetSessionId)) return;

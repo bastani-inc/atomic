@@ -172,9 +172,9 @@ export type DeliveryFailureReasonCode =
 	| IntercomRecipientGoneErrorCode
 	| "not_hosted_by_connection"
 	/**
-	 * #4997: a reply no route this broker or the shared state knows authorizes, while a broker that may keep its ask's
-	 * route is down: it may be authorized once that broker is back. Carried as `delivery_failed.routeUnavailable`, not
-	 * as the wire `reasonCode`, which older clients validate against the codes they know.
+	 * #4997, #5101: a reply no route authorizes yet, while its ask's route is still being restored or a broker that may
+	 * keep it is down: it may be authorized shortly. Carried as `delivery_failed.routeUnavailable`, not as the wire
+	 * `reasonCode`, which older clients validate against the codes they know.
 	 */
 	| "route_unavailable";
 
@@ -529,7 +529,7 @@ export type BrokerMessage =
 			reason: string;
 			reasonCode?: DeliveryFailureReasonCode;
 			attemptId?: string;
-			/** #4997: the refusal may not be final (`route_unavailable`); older clients ignore it. */
+			/** #4997, #5101: the refusal may not be final (`route_unavailable`); older clients ignore it. */
 			routeUnavailable?: true;
 			/** #4386: the typed refusal of a reply to a released subagent; its `code` equals `reasonCode`. */
 			error?: SerializedIntercomReleasedReplyError | SerializedIntercomHostedSessionError;

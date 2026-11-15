@@ -159,6 +159,11 @@ const PID_PATH = getBrokerPidPath();
 const SOCKET_REPLACEMENT_LOCK_PATH = getBrokerSocketReplacementLockPath();
 
 const PENDING_STAGE_MESSAGE_TIMEOUT_MS = 10_000;
+/**
+ * #5096: delay before retrying a delivered-message delete that failed, e.g. while another broker held the write lock.
+ * A delete waits only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a retry costs the broker milliseconds.
+ */
+const PENDING_FORGET_RETRY_MS = 1_000;
 const LISTEN_ATTEMPTS = 5;
 const LISTEN_RETRY_DELAY_MS = 100;
 const SOCKET_OWNERSHIP_CHECK_MS = 1_000;
@@ -442,6 +447,48 @@ class IntercomBroker {
 
   private get deliveredMessages(): DeliveredMessageCache {
     return this.openDeliveredMessages();
+  }
+  /** #5096: reservations whose delete failed, by message ID, retried until the delete lands. */
+  private pendingForgets = new Map<string, string>();
+  private pendingForgetTimer: NodeJS.Timeout | null = null;
+
+  /**
+   * Remove a reservation after a proven non-delivery without letting a failed delete escape (#5096).
+   *
+   * `forget` is a durable SQLite DELETE that throws while another connection holds the write lock or the disk fails.
+   * Its callers include timer callbacks and socket close handlers, where a throw is an uncaughtException that ends
+   * the broker, and outcome paths whose sender must still hear `delivery_failed`. A failed delete is logged and
+   * retried later, so a stale reservation does not keep refusing the sender's retry as uncertain. The delete waits
+   * only `FORGET_BUSY_TIMEOUT_MS` for the lock, so a held lock does not stall the broker. Callers write the sender's
+   * outcome first; the sender's retry is handled only after this synchronous delete, and a failed one is retried
+   * before the ID is looked up again.
+   */
+  private forgetDelivered(messageId: string, signature: string): void {
+    this.pendingForgets.delete(messageId);
+    try {
+      this.deliveredMessages.forget(messageId, signature);
+    } catch (error) {
+      this.pendingForgets.set(messageId, signature);
+      console.error(
+        `Intercom broker could not forget delivered message ${messageId}; retrying: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      this.schedulePendingForgets();
+    }
+  }
+
+  /** Retry a failed delete for `messageId` before its ID is looked up or reserved again. */
+  private retryPendingForget(messageId: string): void {
+    const signature = this.pendingForgets.get(messageId);
+    if (signature !== undefined) this.forgetDelivered(messageId, signature);
+  }
+
+  private schedulePendingForgets(): void {
+    if (this.pendingForgetTimer !== null || this.shuttingDown) return;
+    this.pendingForgetTimer = setTimeout(() => {
+      this.pendingForgetTimer = null;
+      for (const messageId of [...this.pendingForgets.keys()]) this.retryPendingForget(messageId);
+    }, PENDING_FORGET_RETRY_MS);
+    this.pendingForgetTimer.unref?.();
   }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
@@ -1401,6 +1448,7 @@ class IntercomBroker {
 			return;
 		}
 		const targetIdentity = deliveryTargetIdentity(target);
+		this.retryPendingForget(pending.messageId);
 		const deliveredMatch = this.deliveredMessages.lookupForTarget(
 			pending.messageId,
 			pending.signature,
@@ -1582,13 +1630,13 @@ class IntercomBroker {
 		}
 		if (!writeMessageIfOpen(target.socket, frame)) {
 			if (confirmsSaves) this.receipts.drop(pending.messageId);
-			if (reservation === "recorded") this.deliveredMessages.forget(pending.messageId, pending.signature);
 			writeMessageIfOpen(pending.senderSocket, {
 				type: "delivery_failed",
 				messageId: pending.messageId,
 				...(pending.attemptId ? { attemptId: pending.attemptId } : {}),
 				reason: "Session not found",
 			});
+			if (reservation === "recorded") this.forgetDelivered(pending.messageId, pending.signature);
 			return;
 		}
 		if (!confirmsSaves) finish(target, sender);
@@ -1687,6 +1735,7 @@ class IntercomBroker {
 			routeGroup,
 		].join(":");
 		const signature = buildMessageSendSignature(logicalTarget, message, clientMessage.capability);
+		this.retryPendingForget(message.id);
 		const deliveredMatch = this.deliveredMessages.lookup(message.id, signature);
 		if (deliveredMatch === "match") {
 			writeMessageIfOpen(socket, { type: "delivered", messageId: message.id, ...(attemptId === undefined ? {} : { attemptId }) });
@@ -1779,13 +1828,13 @@ class IntercomBroker {
 			const pending = this.pendingStageNotificationAcknowledgments.get(requestId);
 			if (pending === undefined) return;
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
-			this.deliveredMessages.forget(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
 				pending.attemptId,
 				"Recipient did not acknowledge the pending-stage notification",
 			);
+			this.forgetDelivered(pending.messageId, pending.signature);
 		}, PENDING_STAGE_MESSAGE_TIMEOUT_MS);
 		this.pendingStageNotificationAcknowledgments.set(requestId, {
 			ownerSessionId: currentId,
@@ -1810,7 +1859,7 @@ class IntercomBroker {
 			clearTimeout(timeout);
 			this.pendingStageNotificationAcknowledgments.delete(requestId);
 			this.failPendingStageNotification(socket, message.id, attemptId, "Session not found");
-			this.deliveredMessages.forget(message.id, signature);
+			this.forgetDelivered(message.id, signature);
 		}
 	}
 
@@ -1837,13 +1886,13 @@ class IntercomBroker {
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
 		if (!delivered) {
-			this.deliveredMessages.forget(pending.messageId, pending.signature);
 			this.failPendingStageNotification(
 				pending.senderSocket,
 				pending.messageId,
 				pending.attemptId,
 				"Recipient did not admit the pending-stage notification",
 			);
+			this.forgetDelivered(pending.messageId, pending.signature);
 			return;
 		}
 		let accepted: ReturnType<DeliveredMessageCache["accept"]>;
@@ -2028,10 +2077,17 @@ class IntercomBroker {
         if (presence === undefined) completeRegistration();
         else {
           holdWrites(socket);
+          // #5101: routable now, but its routes are restored only as its registration completes; a reply that only a
+          // restored route would authorize waits for that rather than being refused.
+          const restoring = this.pendingQuestions.beginRestoring(id);
           void presence.then(() => {
             const held = releaseHeldWrites(socket);
-            if (this.sessions.get(id) === rejoined) completeRegistration(held);
-            else discardHeldWrites(held);
+            try {
+              if (this.sessions.get(id) === rejoined) completeRegistration(held);
+              else discardHeldWrites(held);
+            } finally {
+              this.pendingQuestions.finishRestoring(id, restoring);
+            }
           });
         }
   }
@@ -3666,14 +3722,15 @@ class IntercomBroker {
 		if (pending.ownerSessionId !== sessionId && pending.recipientSessionId !== sessionId) continue;
 		clearTimeout(pending.timeout);
 		this.pendingStageNotificationAcknowledgments.delete(requestId);
-		this.deliveredMessages.forget(pending.messageId, pending.signature);
-		if (pending.ownerSessionId === sessionId) continue;
-		this.failPendingStageNotification(
-			pending.senderSocket,
-			pending.messageId,
-			pending.attemptId,
-			"Recipient disconnected before acknowledging the pending-stage notification",
-		);
+		if (pending.ownerSessionId !== sessionId) {
+			this.failPendingStageNotification(
+				pending.senderSocket,
+				pending.messageId,
+				pending.attemptId,
+				"Recipient disconnected before acknowledging the pending-stage notification",
+			);
+		}
+		this.forgetDelivered(pending.messageId, pending.signature);
 	}
 	for (const [target, registration] of this.liveWorkflowStageRoutes) {
 		if (registration.sessionId === sessionId) this.liveWorkflowStageRoutes.delete(target);
@@ -3747,6 +3804,8 @@ class IntercomBroker {
     this.receipts.clear();
 	for (const pending of this.pendingStageNotificationAcknowledgments.values()) clearTimeout(pending.timeout);
 	this.pendingStageNotificationAcknowledgments.clear();
+	if (this.pendingForgetTimer !== null) clearTimeout(this.pendingForgetTimer);
+	this.pendingForgetTimer = null;
 	this.deliveredMessageCache?.close();
     // The watchdog thread ends while this broker's pipe still answers its probes. On Windows, process.exit waits for
     // that thread, and the thread for its probe's connection: one made after the pipe server closed, while a session's
