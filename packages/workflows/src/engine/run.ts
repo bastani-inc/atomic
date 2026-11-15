@@ -779,6 +779,7 @@ async function executeRun(
 		assertSuccessfulCompletion: () => {
 			if (cachedStageFailure !== undefined) throw cachedStageFailure;
 			assertFrontierConsumed();
+			replayIndex.assertProvisionalParentsAdmitted();
 		},
 		recordRefusedCompletion: async (error) => {
 			const frontier = unconsumedToolFrontier(
@@ -1001,6 +1002,7 @@ async function executeRun(
 				(node) => node.id === opts.continuation?.resumeFromToolNodeId,
 			),
 			retryToolNodes: opts.continuation?.retryToolNodes,
+			admitToolNode: (node) => replayIndex.admitToolNode(node),
 			toolControls,
 			toolAdmission,
 			budget,
@@ -1647,7 +1649,10 @@ async function executeRun(
 		while (scheduler.isRunPaused()) await waitForRunRelease();
 		ownController.signal.throwIfAborted();
 		const returned = classifyReturnedRunStatus(result, runSnapshot);
-		if (returned.status === "completed") assertFrontierConsumed();
+		if (returned.status === "completed") {
+			assertFrontierConsumed();
+			replayIndex.assertProvisionalParentsAdmitted();
+		}
 		const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
 		// Durable identity must reach its terminal state even if the session journal fails.
 		if (opts.parentRun === undefined) {
