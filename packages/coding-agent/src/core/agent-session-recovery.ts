@@ -5,10 +5,12 @@ import {
 	pendingProtectedStreamingCustomMessages,
 	recoverProtectedStreamingCustomMessages,
 } from "./agent-session-persistent-custom-messages.ts";
+import { isSubagentChildSession } from "./agent-session-tasks.ts";
 import type { SessionRecoveryReport } from "./agent-session-types.js";
 import type { SessionRecoveryReason } from "./extensions/index.js";
 import { assertSessionOpen, sessionGenerationClosing, trackSessionWork } from "./session-lifecycle-work.ts";
 import { pendingTaskCompletionIntents } from "./tasks/completion.js";
+import { recordTasksInterruptedByRestart } from "./workflow-stage-parked-tasks.ts";
 
 export const SESSION_RECOVERY_NOTICE_TYPE = "session-recovery-notice";
 export const SESSION_RECOVERY_REPLAY_TYPE = "session-recovery-replay";
@@ -81,8 +83,12 @@ async function recover(session: AgentSession, reason: SessionRecoveryReason): Pr
 		);
 	}
 
+	// The shells of a stage that an earlier process released, whose completions died with it (#5079).
+	if (!isClosing(session) && session._workflowStageAdmission !== undefined && !isSubagentChildSession(session))
+		await recordTasksInterruptedByRestart(session.sessionManager, session._workflowStageAdmission.attemptId);
 	if (!isClosing(session) && pendingTaskCompletionIntents(session.sessionManager).length > 0) {
 		session.getAgentTaskHost();
+		session._taskCompletionOutbox?.adoptSavedIntents();
 		report.completions = (await session._taskCompletionOutbox?.flushRestored()) ?? 0;
 	}
 
