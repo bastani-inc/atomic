@@ -18,10 +18,25 @@ import type {
 import { dropWrongTypedSettings, type InvalidSettingValue, invalidSettingMessage } from "./settings-validation.ts";
 import { ownedSettingsManagers, recordSettingsWrite, settingsWriteOwner } from "./settings-write-ownership.ts";
 
+/** A wrong-typed value removed from one settings file, with that file's path when the storage is file-backed. */
+interface InvalidLayerValue extends InvalidSettingValue {
+	path?: string;
+}
+
 interface SettingsLoad {
 	settings: Settings;
-	invalid: InvalidSettingValue[];
+	invalid: InvalidLayerValue[];
 	error: Error | null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A nested setting as an object of its keys; list-form `workflows` is its `paths`. */
+function nestedEntries(field: keyof Settings, value: unknown): Record<string, unknown> {
+	if (field === "workflows" && Array.isArray(value)) return { paths: value };
+	return isPlainObject(value) ? value : {};
 }
 
 export class SettingsManager {
@@ -45,6 +60,8 @@ export class SettingsManager {
 	private errors: SettingsError[];
 	/** Wrong-typed values already reported, so a reload of an unchanged file does not report them again. */
 	private reportedInvalidSettings = new Set<string>();
+	/** `applyOverrides` calls, in order; they apply over the loaded settings for the rest of the run. */
+	private overrides: Settings[] = [];
 
 	private constructor(
 		storage: SettingsStorage,
@@ -69,7 +86,10 @@ export class SettingsManager {
 	}
 
 	private mergeEffectiveSettings(): Settings {
-		return deepMergeSettings(this.globalSettings, this.projectSettings);
+		return this.overrides.reduce(
+			(settings, overrides) => deepMergeSettings(settings, overrides),
+			deepMergeSettings(this.globalSettings, this.projectSettings),
+		);
 	}
 
 	/** Create a SettingsManager that loads from files */
@@ -99,7 +119,7 @@ export class SettingsManager {
 				error: globalLoad.error,
 			});
 		} else {
-			initialErrors.push(...SettingsManager.validateLoadedSettings(storage, "global", globalLoad));
+			initialErrors.push(...SettingsManager.validateLoadedSettings("global", globalLoad));
 		}
 		if (projectLoad.error) {
 			initialErrors.push({
@@ -108,7 +128,7 @@ export class SettingsManager {
 				error: projectLoad.error,
 			});
 		} else {
-			initialErrors.push(...SettingsManager.validateLoadedSettings(storage, "project", projectLoad));
+			initialErrors.push(...SettingsManager.validateLoadedSettings("project", projectLoad));
 		}
 
 		return new SettingsManager(
@@ -134,23 +154,38 @@ export class SettingsManager {
 		storage: SettingsStorage,
 		scope: SettingsScope,
 		projectTrusted = true,
-	): { settings: Settings; invalid: InvalidSettingValue[] } {
+	): { settings: Settings; invalid: InvalidLayerValue[] } {
 		if (scope === "project" && !projectTrusted) {
 			return { settings: {}, invalid: [] };
 		}
 
+		// Each file is validated and migrated on its own, highest precedence first, then merged from the lowest up.
+		const invalid: InvalidLayerValue[] = [];
+		const layers = SettingsManager.readLayers(storage, scope).map(({ path, content }) => {
+			let settings: Parameters<typeof dropWrongTypedSettings>[0];
+			try {
+				settings = parseJsonFileContent(content) as Parameters<typeof dropWrongTypedSettings>[0];
+			} catch (error) {
+				if (path !== undefined && error instanceof Error) (error as Error & { path?: string }).path = path;
+				throw error;
+			}
+			for (const value of dropWrongTypedSettings(settings)) {
+				invalid.push({ ...value, path: path ?? storage.getFieldPath?.(scope, value.setting) });
+			}
+			return SettingsManager.migrateSettings(settings);
+		});
+		const settings = layers.reduceRight<Settings>((merged, layer) => deepMergeSettings(merged, layer), {});
+		return { settings, invalid };
+	}
+
+	private static readLayers(storage: SettingsStorage, scope: SettingsScope): { path?: string; content: string }[] {
+		if (storage.readLayers) return storage.readLayers(scope);
 		let content: string | undefined;
 		storage.withLock(scope, (current) => {
 			content = current;
 			return undefined;
 		});
-
-		if (!content) {
-			return { settings: {}, invalid: [] };
-		}
-		const settings = parseJsonFileContent(content) as Parameters<typeof dropWrongTypedSettings>[0];
-		const invalid = dropWrongTypedSettings(settings);
-		return { settings: SettingsManager.migrateSettings(settings), invalid };
+		return content ? [{ content }] : [];
 	}
 
 	private static tryLoadFromStorage(
@@ -166,15 +201,11 @@ export class SettingsManager {
 		}
 	}
 
-	private static validateLoadedSettings(
-		storage: SettingsStorage,
-		scope: SettingsScope,
-		load: SettingsLoad,
-	): SettingsError[] {
+	private static validateLoadedSettings(scope: SettingsScope, load: SettingsLoad): SettingsError[] {
 		const invalid = load.invalid.map(
 			(value): SettingsError => ({
 				scope,
-				path: storage.getFieldPath?.(scope, value.setting),
+				path: value.path,
 				error: new Error(invalidSettingMessage(value)),
 				invalidKey: value.key,
 			}),
@@ -187,15 +218,23 @@ export class SettingsManager {
 		return `${scope}\0${path}\0${error.message}`;
 	}
 
-	/** Record load-time validation errors, skipping wrong-typed values this manager already reported. */
+	/**
+	 * Record load-time validation errors, skipping wrong-typed values this manager already reported. A reported value
+	 * that is no longer in the scope is forgotten, so it is reported again if it comes back.
+	 */
 	private recordValidationErrors(scope: SettingsScope, load: SettingsLoad): void {
-		for (const error of SettingsManager.validateLoadedSettings(this.storage, scope, load)) {
+		const present = new Set<string>();
+		for (const error of SettingsManager.validateLoadedSettings(scope, load)) {
 			if (error.invalidKey !== undefined) {
 				const identity = SettingsManager.invalidSettingIdentity(error);
+				present.add(identity);
 				if (this.reportedInvalidSettings.has(identity)) continue;
 				this.reportedInvalidSettings.add(identity);
 			}
 			this.errors.push(error);
+		}
+		for (const identity of this.reportedInvalidSettings) {
+			if (identity.startsWith(`${scope}\0`) && !present.has(identity)) this.reportedInvalidSettings.delete(identity);
 		}
 	}
 
@@ -360,6 +399,7 @@ export class SettingsManager {
 			this.projectTrusted,
 		);
 		candidate.reportedInvalidSettings = new Set(this.reportedInvalidSettings);
+		candidate.overrides = [...this.overrides];
 		await candidate.reload();
 		return {
 			settingsManager: candidate,
@@ -380,12 +420,16 @@ export class SettingsManager {
 		this.projectSettingsLoadError = candidate.projectSettingsLoadError;
 		this.errors = candidate.errors;
 		this.reportedInvalidSettings = candidate.reportedInvalidSettings;
+		this.overrides = candidate.overrides;
 	}
 
-	/** Apply additional overrides on top of current settings */
+	/**
+	 * Apply additional overrides on top of current settings. They are never saved, and they keep applying over the
+	 * loaded settings after setting writes, `reload()` and project trust changes for the rest of the run.
+	 */
 	applyOverrides(overrides: Partial<Settings>): void {
-		const migrated = SettingsManager.migrateSettings(structuredClone(overrides) as Record<string, unknown>);
-		this.settings = deepMergeSettings(this.settings, migrated);
+		this.overrides.push(SettingsManager.migrateSettings(structuredClone(overrides) as Record<string, unknown>));
+		this.settings = this.mergeEffectiveSettings();
 	}
 
 	/** Mark a global field as modified during this session */
@@ -471,15 +515,21 @@ export class SettingsManager {
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
 				const value = snapshotSettings[field];
-				if (modifiedNestedFields.has(field) && typeof value === "object" && value !== null) {
+				if (modifiedNestedFields.has(field) && (value === undefined || typeof value === "object")) {
 					const nestedModified = modifiedNestedFields.get(field)!;
-					const baseNested = (currentFileSettings[field] as Record<string, unknown>) ?? {};
-					const inMemoryNested = value as Record<string, unknown>;
-					const mergedNested = { ...baseNested };
+					const inMemoryNested = nestedEntries(field, value);
+					const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };
 					for (const nestedKey of nestedModified) {
 						mergedNested[nestedKey] = inMemoryNested[nestedKey];
 					}
-					(mergedSettings as Record<string, unknown>)[field] = mergedNested;
+					const keys = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
+					// Keep list-form workflow paths a list, and drop an object the setter removed once nothing is left in it.
+					(mergedSettings as Record<string, unknown>)[field] =
+						Array.isArray(value) && keys.length === 1 && keys[0] === "paths"
+							? mergedNested.paths
+							: value === undefined && keys.length === 0
+								? undefined
+								: mergedNested;
 				} else {
 					(mergedSettings as Record<string, unknown>)[field] = value;
 				}

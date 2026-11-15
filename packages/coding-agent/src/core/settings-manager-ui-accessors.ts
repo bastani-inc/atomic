@@ -328,8 +328,9 @@ const uiAccessors: SettingsManagerUiAccessors = {
 
 	setWarnings(warnings) {
 		const state = settingsInternals(this);
+		const keys = new Set([...Object.keys(state.globalSettings.warnings ?? {}), ...Object.keys(warnings)]);
 		state.globalSettings.warnings = { ...warnings };
-		state.markModified("warnings");
+		for (const key of keys) state.markModified("warnings", key);
 		state.save();
 	},
 };
