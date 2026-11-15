@@ -8,6 +8,7 @@ import {
 	withResourceAdmission,
 } from "@bastani/atomic";
 import { type SessionStore, StorageProvider } from "@bastani/atomic/storage";
+import { WORKFLOW_ATTEMPT_CHECKPOINT_PREFIX } from "../durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { sqlPoolStorage } from "../durable/journal/internal.js";
 import { type CheckpointSelection, JournalDurableBackend } from "../durable/journal/journal-backend.js";
@@ -201,8 +202,11 @@ function failablePrompts(store: Store): WorkerStagePrompts["fail"] {
 
 type Request = WorkerRequest extends infer T ? (T extends WorkerRequest ? Omit<T, "id"> : never) : never;
 
-/** The root's checkpoints a worker keeps in memory while it holds no attempt: none. */
-const NO_CHECKPOINTS: CheckpointSelection = { ids: [], prefixes: [] };
+/**
+ * The root's checkpoints a worker keeps in memory while it holds no attempt: only the root's attempt records, so the
+ * checkpoints it commits carry the root's attempt (#4874).
+ */
+const NO_CHECKPOINTS: CheckpointSelection = { ids: [], prefixes: [WORKFLOW_ATTEMPT_CHECKPOINT_PREFIX] };
 
 /**
  * The root's checkpoints an attempt reads: its child's own, which all carry the child's scope, and the child's boundary
@@ -210,7 +214,10 @@ const NO_CHECKPOINTS: CheckpointSelection = { ids: [], prefixes: [] };
  * them, stays in the journal.
  */
 function attemptCheckpoints(scope: string): CheckpointSelection {
-	return { ids: [`boundary-start:${scope}`], prefixes: [`${scope}:`, `boundary-terminal:${scope}:`] };
+	return {
+		ids: [`boundary-start:${scope}`],
+		prefixes: [`${scope}:`, `boundary-terminal:${scope}:`, WORKFLOW_ATTEMPT_CHECKPOINT_PREFIX],
+	};
 }
 
 /**
@@ -454,6 +461,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 		"getStageSession",
 		"listCheckpoints",
 		"nestedSnapshotVersion",
+		"workflowAttempt",
 		"checkpointScopeReleased",
 		"getWorkflow",
 		"getLoadableWorkflow",
@@ -503,7 +511,8 @@ async function runWorker(start: WorkerStart): Promise<void> {
 						options?: { readonly signal?: AbortSignal },
 					) => {
 						options?.signal?.throwIfAborted();
-						await write({ kind: "checkpoint", checkpoint });
+						// Stamped with the root's attempt as the root's own backend stamps its checkpoints (#4874).
+						await write({ kind: "checkpoint", checkpoint: reader.stampAttempt(checkpoint) });
 						return true;
 					};
 				if (typeof key === "string" && reads.has(key)) {
@@ -721,7 +730,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			// A heartbeat the journal's outage refused keeps the attempt while its lease lasts; the next one that gets through
 			// renews it (#4768). Past the lease, another worker may hold the child, so the attempt ends as fenced.
 			leaseRenewedAt = performance.now();
-			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, async () => {
+			const beat = async () => {
 				try {
 					offerControl(
 						(await request({ kind: "heartbeat", reports: usageReports() }, undefined, true)) as PoolControl,
@@ -733,7 +742,11 @@ async function runWorker(start: WorkerStart): Promise<void> {
 					replies.attemptFenced = true;
 					failPulse(workerRefusal(error as Error, { workId: work.id, generation: work.generation }).error);
 				}
-			});
+			};
+			// The first heartbeat confirms the claim before the child runs: only a confirmed claim counts as one of the
+			// child's attempts, so one whose answer this worker never got, or that it died before taking up, does not (#5034).
+			await beat();
+			const heartbeat = startWorkerHeartbeat(start.heartbeatMs, beat);
 			const activity = setInterval(() => {
 				stageWatches?.sweep();
 				publish();

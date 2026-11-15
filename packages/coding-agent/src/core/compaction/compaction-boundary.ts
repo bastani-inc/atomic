@@ -39,6 +39,30 @@ interface VisibleEntry {
 }
 
 const keptTailTokensByPreparation = new WeakMap<VerbatimCompactionPreparation, number>();
+const keptTailFitTokensByPreparation = new WeakMap<VerbatimCompactionPreparation, number>();
+
+/**
+ * Tokens `estimateTokens` misses for text outside ASCII. Its chars/4 rate fits English, but dense
+ * text such as CJK costs about one token per character, up to four times the estimate (#4977).
+ */
+function denseTextSurcharge(message: AgentMessage): number {
+	if (estimateTokens(message) === 0) return 0;
+	const serialized = JSON.stringify((message as { content?: unknown }).content ?? "") ?? "";
+	let dense = 0;
+	for (let index = 0; index < serialized.length; index++) {
+		if (serialized.charCodeAt(index) > 0x7f) dense++;
+	}
+	return Math.ceil((dense * 3) / 4);
+}
+
+/**
+ * An upper bound on the kept tail's cost, for deciding whether it fits a window: the tail estimate
+ * plus a token for every dense character it counted as a quarter. A preparation without a
+ * registered bound uses the tail estimate.
+ */
+export function getKeptTailFitTokenEstimate(preparation: VerbatimCompactionPreparation): number {
+	return keptTailFitTokensByPreparation.get(preparation) ?? getKeptTailTokenEstimate(preparation);
+}
 
 /**
  * Return the independently estimated cost of the protected tail.
@@ -78,6 +102,7 @@ export function hasKeptTailTokenEstimate(preparation: VerbatimCompactionPreparat
  */
 export function setKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation, estimate: number): void {
 	keptTailTokensByPreparation.set(preparation, Math.max(0, estimate));
+	keptTailFitTokensByPreparation.delete(preparation);
 }
 
 function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {
@@ -273,9 +298,11 @@ export function prepareCompactionBoundary(
 		parameters,
 		settings,
 	};
-	keptTailTokensByPreparation.set(
+	const tailTokens = tailMessages.reduce((sum, item) => sum + estimateTokens(item.message), 0);
+	keptTailTokensByPreparation.set(preparation, tailTokens);
+	keptTailFitTokensByPreparation.set(
 		preparation,
-		tailMessages.reduce((sum, item) => sum + estimateTokens(item.message), 0),
+		tailMessages.reduce((sum, item) => sum + denseTextSurcharge(item.message), tailTokens),
 	);
 	return preparation;
 }

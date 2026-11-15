@@ -928,7 +928,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	 * boundaries are, share one journal transaction instead of one each, so work queued behind a burst of them waits for
 	 * one commit rather than for every one in turn (#4174).
 	 */
-	commitCheckpoint(checkpoint: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void> {
+	commitCheckpoint(recorded: DurableCheckpoint, options?: { readonly signal?: AbortSignal }): Promise<void> {
+		const checkpoint = this.projection.stampAttempt(recorded);
 		if (options?.signal?.aborted)
 			return Promise.reject(
 				new JournalOperationAbortedError(
@@ -1281,6 +1282,13 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/** One stage checkpoint by id, for callers that would otherwise scan `listCheckpoints` per lookup. */
 	getStageCheckpoint(runId: string, checkpointId: string) {
 		return this.projection.getStageCheckpoint(runId, checkpointId);
+	}
+	workflowAttempt(runId: string): number {
+		return this.projection.workflowAttempt(runId);
+	}
+	/** A checkpoint as this backend commits it, stamped with its run's attempt (#4874). */
+	stampAttempt(checkpoint: DurableCheckpoint): DurableCheckpoint {
+		return this.projection.stampAttempt(checkpoint);
 	}
 	nestedSnapshotVersion(runId: string) {
 		return this.projection.nestedSnapshotVersion(runId);

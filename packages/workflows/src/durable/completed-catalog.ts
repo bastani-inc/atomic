@@ -7,6 +7,7 @@ import type { RunSnapshot, StageSnapshot, ToolNodeSnapshot } from "../shared/sto
 import { boundedToolPayload, boundedToolPayloadRecord, boundedToolText } from "../shared/tool-payload-bounds.js";
 import type { WorkflowInputValues, WorkflowSerializableValue } from "../shared/types.js";
 import { poolSessionStore } from "../workers/pool-session-store.js";
+import { attemptReachedCheckpoints } from "./attempt-identity.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { CheckpointCatalogIndex } from "./completed-catalog-index.js";
 import {
@@ -325,7 +326,7 @@ export function durableNestedRunCatalog(
 		rootWorkflowId,
 		handle.name,
 		handle.updatedAt,
-		ACTIVE_INSPECTION_RECONSTRUCTION,
+		NESTED_CATALOG_RECONSTRUCTION,
 		(scope) => backend.checkpointScopeReleased?.(rootWorkflowId, scope) === true,
 	).filter((run) => run.id !== rootWorkflowId);
 	const catalog = nestedRunCatalog(runs, checkpoints);
@@ -482,21 +483,29 @@ interface ReconstructionPolicy {
 	readonly requireTerminal: boolean;
 	readonly retainActive: boolean;
 	readonly failOnUnreachable: boolean;
+	/**
+	 * Whether the root shows only the nodes its latest attempt reached (#4874). A nested run catalog keeps every root
+	 * boundary: a resumed attempt looks a cached child up there before its replay is recorded.
+	 */
+	readonly rootReach: boolean;
 }
 
 const COMPLETED_RECONSTRUCTION: ReconstructionPolicy = {
 	requireTerminal: true,
 	retainActive: false,
 	failOnUnreachable: false,
+	rootReach: true,
 };
 const ACTIVE_INSPECTION_RECONSTRUCTION: ReconstructionPolicy = {
 	requireTerminal: false,
 	retainActive: true,
 	failOnUnreachable: true,
+	rootReach: true,
 };
+const NESTED_CATALOG_RECONSTRUCTION: ReconstructionPolicy = { ...ACTIVE_INSPECTION_RECONSTRUCTION, rootReach: false };
 
 function runSnapshotsFromCheckpoints(
-	checkpoints: readonly DurableCheckpoint[],
+	recorded: readonly DurableCheckpoint[],
 	rootRunId: string,
 	rootRunName: string,
 	fallbackCompletedAt: number,
@@ -504,6 +513,8 @@ function runSnapshotsFromCheckpoints(
 	/** Whether the records of the root child boundary scope `scope` are left out of `checkpoints` on purpose. */
 	releasedChildScope?: (scope: string) => boolean,
 ): RunSnapshot[] {
+	// Each run as the attempt it was last executed in left it; a history without attempts as it is (#4874).
+	const checkpoints = attemptReachedCheckpoints(recorded, rootRunId, { rootReach: policy.rootReach });
 	const index = new CheckpointCatalogIndex(checkpoints);
 	if (!validBoundaryRecordSet(index, policy.requireTerminal)) return [];
 	const stageRecords = index.stages;

@@ -94,28 +94,45 @@ export function createFallbackPlannerBorrower(context: FallbackPlannerContext): 
 			// Advance before any work: this list position is spent either way.
 			walk.nextIndex += 1;
 
-			const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
-			if (!candidate) continue;
-			if (`${candidate.model.provider}/${candidate.model.id}` === context.selectedModelId) continue;
-			// Resolve the budget first: the identity depends on the effective
-			// reasoning level, which inheritance may supply.
-			const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
-			const key = fallbackKey(candidate.model, budget.reasoning);
-			if (attempted.has(key) || walk.consumed.has(key)) continue;
-			walk.consumed.add(key);
-
-			let auth: PlannerAuth | undefined;
 			try {
-				auth = await resolveAuth(candidate.model);
+				const planner = await borrowCandidate(context, walk, entry, attempted, resolveAuth);
+				if (planner) return planner;
 			} catch {
-				// A candidate whose credentials cannot be resolved is simply unusable.
-				auth = undefined;
+				// A candidate whose lookup throws, such as a corrupt auth store, is skipped like an
+				// unresolvable one, so later candidates and the fresh rung stay reachable (#4977).
 			}
-			if (!auth) continue;
-			if (context.isFallbackModelAllowed && !context.isFallbackModelAllowed(candidate.model, budget.reasoning))
-				continue;
-			return { model: candidate.model, budget, auth };
 		}
 		return undefined;
 	};
+}
+
+/** Resolve one configured entry to a usable planner, or `undefined` when it is unusable. */
+async function borrowCandidate(
+	context: FallbackPlannerContext,
+	walk: FallbackPlannerWalk,
+	entry: string,
+	attempted: ReadonlySet<string>,
+	resolveAuth: (model: Model<Api>) => Promise<PlannerAuth | undefined>,
+): Promise<BorrowedPlanner | undefined> {
+	const candidate = resolveFallbackModel(entry, context.registry, context.preferredProvider);
+	if (!candidate) return undefined;
+	if (`${candidate.model.provider}/${candidate.model.id}` === context.selectedModelId) return undefined;
+	// Resolve the budget first: the identity depends on the effective
+	// reasoning level, which inheritance may supply.
+	const budget = resolvePlannerRequest(candidate.model, context.sessionThinkingLevel, candidate.thinkingLevel);
+	const key = fallbackKey(candidate.model, budget.reasoning);
+	if (attempted.has(key) || walk.consumed.has(key)) return undefined;
+	walk.consumed.add(key);
+
+	let auth: PlannerAuth | undefined;
+	try {
+		auth = await resolveAuth(candidate.model);
+	} catch {
+		// A candidate whose credentials cannot be resolved is simply unusable.
+		auth = undefined;
+	}
+	if (!auth) return undefined;
+	if (context.isFallbackModelAllowed && !context.isFallbackModelAllowed(candidate.model, budget.reasoning))
+		return undefined;
+	return { model: candidate.model, budget, auth };
 }
