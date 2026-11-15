@@ -707,6 +707,18 @@ describe("secret redaction (#4768)", () => {
 		);
 	});
 
+	test("quoted and segment-named values are redacted exactly in CLI output", () => {
+		const cases: [string, string][] = [
+			['token: "abc', 'token: "[redacted]'],
+			["token='x'", "token='[redacted]'"],
+			['a_token: ""', 'a_token: "[redacted]"'],
+			["X_SIG=a", "X_SIG=[redacted]"],
+			["xSignature=a", "xSignature=[redacted]"],
+			["sigma=1 mysig=1", "sigma=1 mysig=1"],
+		];
+		for (const [text, redacted] of cases) assert.equal(redactSecrets(text, [], {}), redacted, text);
+	});
+
 	test("long names and quoted values with spaces are redacted in CLI output", () => {
 		const secret = "Zq9vR2mXw7LpT4kN";
 		assert.equal(redactSecrets(`${"X".repeat(130)}_TOKEN=${secret}`, [], {}), `${"X".repeat(130)}_TOKEN=[redacted]`);

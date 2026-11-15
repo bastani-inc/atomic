@@ -113,13 +113,13 @@ function camelCasePrefix(input: string, index: number): string {
 /**
  * Whether `value`, a field's value after its separator, holds a secret: a quoted or escaped value always does; an
  * unquoted one unless it is a literal, a number after a quoted name, or (for names other than passwords) a code
- * identifier, followed by nothing but punctuation.
+ * identifier, followed by nothing but closing punctuation.
  */
 function holdsSecret(value: string, quotedName: boolean, password: boolean): boolean {
 	if (/^["'\\]/u.test(value)) return true;
 	const first = /^[^\s,;)}\]]*/u.exec(value)![0];
 	const rest = value.slice(first.length).trim();
-	if (rest !== "" && !/^[,;)}\]]/u.test(rest)) return true;
+	if (!/^[,;)}\]]*$/u.test(rest)) return true;
 	if (LITERAL.test(first)) return false;
 	if (quotedName && /^-?\d+(?:\.\d+)?$/u.test(first)) return false;
 	return password || !CODE_IDENTIFIER.test(first);
@@ -181,7 +181,9 @@ function indentation(line: string): number {
 const BLOCK: Redaction = (match) => {
 	const input = match.input;
 	const lineStart = input.lastIndexOf("\n", match.index) + 1;
-	const keyIndent = indentation(input.slice(lineStart, match.index));
+	const prefix = input.slice(lineStart, match.index);
+	// The key's own column: after the indentation and any YAML list markers (`- password: |`).
+	const keyIndent = /^[ \t-]*$/u.test(prefix) ? prefix.length : indentation(prefix);
 	const headerEnd = match.index + match[0].length;
 	let end = headerEnd;
 	for (let lineBreak = input.indexOf("\n", headerEnd); lineBreak !== -1; ) {
@@ -232,8 +234,8 @@ function cookieValues(input: string, from: number, end: number, setCookie: boole
 		if (nameEnd < end && input[nameEnd] === "=") {
 			let valueEnd = nameEnd + 1;
 			if (input[valueEnd] === '"') {
-				valueEnd = input.indexOf('"', valueEnd + 1);
-				valueEnd = valueEnd === -1 || valueEnd >= end ? end : valueEnd;
+				const closing = input.slice(valueEnd + 1, end).indexOf('"');
+				valueEnd = closing === -1 ? end : valueEnd + 1 + closing;
 				if (first || !setCookie) values.push([nameEnd + 2, valueEnd]);
 				if (valueEnd < end) valueEnd++;
 			} else {
@@ -279,8 +281,8 @@ const COOKIE_VALUES: Redaction = (match) => {
 	const lineEnd = input.indexOf("\n", from);
 	let end = lineEnd === -1 ? input.length : lineEnd;
 	if (quote !== "") {
-		const closing = input.indexOf(quote, from);
-		if (closing !== -1 && closing < end) end = closing;
+		const closing = input.slice(from, end).indexOf(quote);
+		if (closing !== -1) end = from + closing;
 	}
 	return cookieValues(input, from, end, match[1] !== undefined).map(([start, valueEnd]) => ({
 		start: start - match.index,
@@ -295,7 +297,7 @@ const CREDENTIAL_OPTION = new RegExp(
 	"giu",
 );
 /** A MySQL-style password joined to `-p`: quoted, or unquoted and holding a digit or a symbol. */
-const JOINED_PASSWORD_OPTION = new RegExp(String.raw`(?<=\s)-p(?:${QUOTED_VALUE}|[^\s'"]{6,})`, "gu");
+const JOINED_PASSWORD_OPTION = new RegExp(String.raw`(?<!\S)-p(?:${QUOTED_VALUE}|[^\s'"]{6,})`, "gu");
 /** `curl -u user:password` and `--user user:password`. */
 const USER_OPTION = /(?<![\w-])(?:-u|--user)(?:=|[ \t]+)["']?[^\s:"']+:[^\s"']+/gu;
 /** A netrc entry: `login user password secret`, on one line or several. */

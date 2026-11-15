@@ -772,3 +772,115 @@ describe("configured multi-line secrets", () => {
 		assert.equal(redact(`leaked MIIEowIBAAKCAQEA${PLAIN_SECRET}`), "leaked [redacted]");
 	});
 });
+
+describe("credential redaction boundaries", () => {
+	const cases: readonly (readonly [string, string])[] = [
+		[`nextPageToken: ${PLAIN_SECRET}`, `nextPageToken: ${PLAIN_SECRET}`],
+		[`pageToken=${PLAIN_SECRET}`, `pageToken=${PLAIN_SECRET}`],
+		[`myNextToken: ${PLAIN_SECRET}`, "myNextToken: [redacted]"],
+		['token: "abc"', "token: [redacted]"],
+		["token: string;", "token: string;"],
+		["token: null)", "token: null)"],
+		['"token": 12,', '"token": 12,'],
+		["token: 12", "token: [redacted]"],
+		['"password": -1.5,', '"password": -1.5,'],
+		["password: -1.5", "password: [redacted]"],
+		["password: null, really", "password: [redacted]"],
+		["openaiKey: abcd123", "openaiKey: abcd123"],
+		["openaiKey: abcd1234", "openaiKey: [redacted]"],
+		["openaiKey: abcdefgh", "openaiKey: abcdefgh"],
+		['openaiKey: "abc 1234"', 'openaiKey: "abc 1234"'],
+		["openaiKey: abcd-efgh", "openaiKey: [redacted]"],
+		['openaiKey="abcd1234"', "openaiKey= [redacted]"],
+		["primaryKey: abcd1234", "primaryKey: abcd1234"],
+		["password: |\n  a\n\n  b\nnext: x", "password: |\n  [redacted]\nnext: x"],
+		["password: |\r\n  a\r\nnext: x", "password: |\n  [redacted]\r\nnext: x"],
+		["password: |\n  a", "password: |\n  [redacted]"],
+		["password: |\nnext: x", "password: |\nnext: x"],
+		["- password: >\n    a\n  b: c", "- password: >\n    [redacted]\n  b: c"],
+		["  Cookie: a=b", "  Cookie: a=[redacted]"],
+		["* cookie: a=b", "* cookie: a=[redacted]"],
+		["< set-cookie: a=b", "< set-cookie: a=[redacted]"],
+		["x > Cookie: a=b", "x > Cookie: a=b"],
+		[`${"x".repeat(50)} Cookie: a=b`, `${"x".repeat(50)} Cookie: a=b`],
+		["`Cookie: a=b` c=d", "`Cookie: a=[redacted]` c=d"],
+		["Cookie: a=1;b=2", "Cookie: a=[redacted];b=[redacted]"],
+		["Cookie: a=;b= ", "Cookie: a=;b= "],
+		['Cookie: a="x y"; b=2', 'Cookie: a="[redacted]"; b=[redacted]'],
+		['Cookie: a="xyz', 'Cookie: a="[redacted]'],
+		["Set-Cookie: a=1, b=2", "Set-Cookie: a=[redacted], b=[redacted]"],
+		["Set-Cookie: a=1,b=2", "Set-Cookie: a=[redacted],b=[redacted]"],
+		["Set-Cookie: a=1; Path=/, x; b=2", "Set-Cookie: a=[redacted]; Path=/, x; b=2"],
+		["Cookie: flag; a=1", "Cookie: flag; a=[redacted]"],
+		['--password "a b" x', '--password "[redacted]" x'],
+		['--password "abc', '--password "[redacted]'],
+		[`-p"${PLAIN_SECRET}"`, '-p"[redacted]"'],
+		["x -pabc123", "x -p[redacted]"],
+		["x -pabcdef", "x -pabcdef"],
+		[`x -p'${PLAIN_SECRET}`, "x -p'[redacted]"],
+		[`--user=bob:${PLAIN_SECRET}`, "--user=bob:[redacted]"],
+		[`-u 'bob:${PLAIN_SECRET}'`, "-u 'bob:[redacted]'"],
+		[`login bob\n  password ${PLAIN_SECRET}\n`, "login bob\n  password [redacted]\n"],
+	];
+
+	test("each credential form is redacted exactly to its value", () => {
+		for (const [input, expected] of cases)
+			assert.equal(redactCredentialShapes(input), expected, JSON.stringify(input));
+	});
+});
+
+describe("URL user info boundaries", () => {
+	test("encoded user info is removed only when its password is not a port", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			["x=https%3A%2F%2Fuser%3A1234%2F5678%40host", "x=https%3A%2F%2Fuser%3A1234%2F5678%40host"],
+			["x=https%3A%2F%2Fuser%3Aab%2Fcd%40host%2Fp", "x=https%3A%2F%2Fhost%2Fp"],
+			["x=https%3A%2F%2Fuser%3Aab%3Fcd%40host", "x=https%3A%2F%2Fhost"],
+			["x=https%3A%2F%2Fuser%3Aab%23cd%40host", "x=https%3A%2F%2Fhost"],
+			["x=https%3A%2F%2Fu%3Aab%40h%2Fp%40q", "x=https%3A%2F%2Fh%2Fp%40q"],
+			["x=https%3A%2F%2Fab%2Fcd%40host", "x=https%3A%2F%2Fab%2Fcd%40host"],
+			["x=https%3A%2F%2Fuser%3A%25%2Fx%40host", "x=https%3A%2F%2Fhost"],
+			["x=https%3A%2F%2Fuser%3A12%25%2Fx%40host", "x=https%3A%2F%2Fhost"],
+			["x=https%3A%2F%2Fuser%3A12%2F%25x%40host", "x=https%3A%2F%2Fuser%3A12%2F%25x%40host"],
+			["a=https%3A%2F%2Fu%3Ap%40h b=https%3A%2F%2Fv%3Aq%40i", "a=https%3A%2F%2Fh b=https%3A%2F%2Fi"],
+			["x=%3A%2F%2Fu%3A%40h%3A%2F%2Fw", "x=%3A%2F%2Fh%3A%2F%2Fw"],
+		];
+		for (const [input, expected] of cases) assert.equal(redactUrlCredentials(input), expected, input);
+		const encoded = "x=https%3A%2F%2Fu%3Ap%40h";
+		assert.equal(redactUrlCredentials(encoded, "server-url"), encoded);
+	});
+
+	test("raw user info before a delimiter is removed only before a host", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			["https://[::1]/a@b.c/x", "https://[::1]/a@b.c/x"],
+			["https:///a@b.c/x", "https:///a@b.c/x"],
+			["https://user.name/x@host.com/y", "https://user.name/x@host.com/y"],
+			["https://user:12/x@ho.st/y", "https://ho.st/y"],
+			["https://us.er:12/x@ho.st/y", "https://us.er:12/x@ho.st/y"],
+			["https://a:b/c://d@e.f/g", "https://a:b/c://e.f/g"],
+			["https://ab/cd@/x", "https://ab/cd@/x"],
+			["https://ab:12/cd@host/x", "https://ab:12/cd@host/x"],
+			["https://ab/cd@host", "https://ab/cd@host"],
+		];
+		for (const [input, expected] of cases) assert.equal(redactUrlCredentials(input), expected, input);
+	});
+});
+
+describe("configured secret encodings", () => {
+	test("standard and URL-safe base64 of a configured secret are redacted at every alignment", () => {
+		const secret = "~~~???>>>~~~";
+		const redact = configuredSecretRedactor([secret]);
+		for (const prefix of ["", "a", "ab"]) {
+			const bytes = Buffer.from(`${prefix}${secret}`);
+			for (const encoding of ["base64", "base64url"] as const) {
+				const encoded = bytes.toString(encoding);
+				assert.ok(/[+/_-]/u.test(encoded), encoded);
+				assert.ok(redact(encoded).includes("[redacted]"), `${encoding} ${prefix}: ${redact(encoded)}`);
+			}
+		}
+	});
+
+	test("a configured secret shorter than the minimum is not redacted", () => {
+		assert.equal(configuredSecretRedactor(["abc"], { minLength: 6 })("abc abcabc"), "abc abcabc");
+		assert.equal(configuredSecretRedactor(["  abcdef  "], { minLength: 6 })("x abcdef"), "x [redacted]");
+	});
+});
