@@ -6,7 +6,12 @@
  */
 
 import { redactUrlCredentials } from "@bastani/atomic";
-import { SHARED_STORAGE_JOIN_HINT } from "@bastani/atomic/storage";
+import {
+	isPostgresUrl,
+	LIBSQL_ADAPTER_PACKAGE,
+	POSTGRES_ADAPTER_PACKAGE,
+	SHARED_STORAGE_JOIN_HINT,
+} from "@bastani/atomic/storage";
 import type { PooledStageInputKind } from "./stage-input-kind.js";
 import type { WorkspaceBinding } from "./workspace-binding.js";
 
@@ -229,11 +234,13 @@ export const sharedPoolProblems = {
 			fields: { selection, ...(location === undefined ? {} : { location }) },
 		};
 	},
-	adapterUnavailable(module: string): SharedPoolSetupProblem {
+	/** The adapter `module` cannot be loaded; `url` is the database it was selected for, whose scheme names the package. */
+	adapterUnavailable(module: string, url?: string): SharedPoolSetupProblem {
+		const adapter = url !== undefined && isPostgresUrl(url) ? POSTGRES_ADAPTER_PACKAGE : LIBSQL_ADAPTER_PACKAGE;
 		return {
 			code: "storage-adapter-unavailable",
 			subject: `the storage adapter ${module}, which cannot be loaded`,
-			hint: "Install it with `atomic install npm:@bastani/atomic-storage-libsql`, or fix the adapter path.",
+			hint: `Install it with \`atomic install npm:${adapter}\`, or fix the adapter path.`,
 			fields: { module },
 		};
 	},

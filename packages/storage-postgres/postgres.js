@@ -100,6 +100,34 @@ function connectionUrl(url) {
 }
 
 /**
+ * The `sslmode` values whose TLS options the adapter sets itself, as libpq reads them, rather than as pg does, which
+ * checks the host name for each of them: `verify-ca` checks the certificate's CA but not its host name, and `prefer`
+ * and `allow` encrypt without checking the certificate (pg cannot fall back to an unencrypted connection, so neither
+ * does). `require` checks the certificate and its host name, as `verify-full` does.
+ * @type {ReadonlySet<string>}
+ */
+const LIBPQ_SSL_MODES = new Set(["allow", "prefer", "require", "verify-ca"]);
+
+/**
+ * The client configuration of `url`, with the TLS options its `sslmode` asks for. A URL with `uselibpqcompat` is left
+ * to pg, which reads `sslmode` as libpq does then.
+ * @param {typeof import("pg-connection-string").parseIntoClientConfig} parseUrl
+ * @param {string} url
+ */
+function clientConfig(parseUrl, url) {
+	const parsed = new URL(url);
+	const mode = parsed.searchParams.get("sslmode");
+	if (mode === null || !LIBPQ_SSL_MODES.has(mode) || parsed.searchParams.has("uselibpqcompat")) return parseUrl(url);
+	// Parsed as verify-full, the TLS options pg builds for every mode here, without pg's warning that it checks them all.
+	parsed.searchParams.set("sslmode", "verify-full");
+	const connection = parseUrl(parsed.href);
+	const ssl = /** @type {import("node:tls").ConnectionOptions} */ (connection.ssl);
+	if (mode === "verify-ca") ssl.checkServerIdentity = () => undefined;
+	else if (mode !== "require") ssl.rejectUnauthorized = false;
+	return connection;
+}
+
+/**
  * @param {string} field
  * @param {unknown} value
  * @param {number} fallback
@@ -348,7 +376,7 @@ export async function openPostgresDatabase(options) {
 	}
 
 	// The URL is parsed here rather than passed as `connectionString`, whose empty password would replace `password`.
-	const connection = parseUrl(connectionString);
+	const connection = clientConfig(parseUrl, connectionString);
 	delete connection.password;
 
 	/** Every password the pool was given, so the redactor can remove them from failures. */

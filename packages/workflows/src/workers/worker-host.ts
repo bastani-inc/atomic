@@ -9,7 +9,7 @@ import {
 	resolveGitSync,
 	restoreRunWorktree,
 } from "@bastani/atomic";
-import type { StorageSelection } from "@bastani/atomic/storage";
+import { isPostgresUrl, type StorageSelection } from "@bastani/atomic/storage";
 import { openSelectedRunJournal } from "../durable/journal/resolution.js";
 import type { SharedPoolFleet } from "../durable/journal/shared-pool-types.js";
 import { classifySharedStoreHealth, withinStatusBudget } from "../durable/journal/shared-store-health.js";
@@ -769,11 +769,9 @@ export async function readWorkflowWorkerFleet(
 	const selection = sharedJournalSelection(options.journal, { agentDir });
 	const [first, ...rest] = await sharedSelectionProblems(selection, agentDir);
 	if (first !== undefined) throw new SharedPoolSetupError("worker-host", [first, ...rest]);
+	const adapterSelection = selection as Extract<StorageSelection, { kind: "adapter" }>;
 	const read = async (): Promise<SharedPoolFleet> => {
-		const journal = await openSelectedRunJournal(
-			selection as Extract<StorageSelection, { kind: "adapter" }>,
-			agentDir,
-		);
+		const journal = await openSelectedRunJournal(adapterSelection, agentDir);
 		let fleet: SharedPoolFleet | undefined;
 		try {
 			// This journal serves the read alone, so it probes the store with a write that changes nothing (#4768).
@@ -805,7 +803,13 @@ export async function readWorkflowWorkerFleet(
 		return {
 			hosts: [],
 			roots: [],
-			fleet: { store: classifySharedStoreHealth({ hostsRegistered: false, readFailure: error as Error }) },
+			fleet: {
+				store: classifySharedStoreHealth({
+					hostsRegistered: false,
+					readFailure: error as Error,
+					...(isPostgresUrl(String(adapterSelection.options?.url)) ? { adapter: "postgres" } : {}),
+				}),
+			},
 		};
 	}
 }

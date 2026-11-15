@@ -15,6 +15,11 @@ import {
 	type WorkerHostModule,
 	type WorkerHostOptions,
 } from "../../packages/coding-agent/src/cli/worker-command.js";
+import {
+	StorageConfigError,
+	StorageError,
+	StorageUnavailableError,
+} from "../../packages/coding-agent/src/core/storage/errors.js";
 import { LIBSQL_ADAPTER_PACKAGE } from "../../packages/coding-agent/src/core/storage/selection.js";
 import { createWorkerHostProvisioner } from "../../packages/workflows/src/workers/provisioners/index.js";
 import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
@@ -845,6 +850,69 @@ test(
 			"Roots: 0",
 			"Scaling: wants 0 hosts (0 workers) for 0 children, 0 queued; 0 hosts live, 0 busy and 0 idle slots",
 		]);
+	},
+	REAL_PACKAGE_TIMEOUT_MS,
+);
+
+test("worker commands show the cause of a storage failure, with its code, after the store's message (#5113)", async () => {
+	const tls = Object.assign(
+		new Error("Hostname/IP does not match certificate's altnames: IP: 10.0.0.3 is not in the cert's list"),
+		{
+			code: "ERR_TLS_CERT_ALTNAME_INVALID",
+		},
+	);
+	const failure = new StorageUnavailableError(
+		{ adapter: "postgres", location: "postgresql://atomic@10.0.0.3/atomic?sslmode=verify-full" },
+		new StorageError(tls.message, { cause: tls }),
+	);
+	const expected =
+		"Storage unavailable: postgres at postgresql://atomic@10.0.0.3/atomic?sslmode=verify-full: Hostname/IP does not match certificate's altnames: IP: 10.0.0.3 is not in the cert's list (ERR_TLS_CERT_ALTNAME_INVALID)";
+	const database = ["--db", "postgresql://atomic@10.0.0.3/atomic", "--password-file", tokenFile];
+	const start = await run(["start", ...database], async () => fakeModule({ setup: failure }).module);
+	assert.equal(start.code, 1);
+	assert.deepEqual(start.err, [expected]);
+	const status = await run(["status", ...database], async () => ({
+		...fakeModule().module,
+		readWorkflowWorkerFleet: async () => {
+			throw failure;
+		},
+	}));
+	assert.equal(status.code, 1);
+	assert.deepEqual(status.err, [expected]);
+
+	const auth = new StorageConfigError("sdk", "auth", "auth-unavailable", "Install @azure/identity");
+	const unauthenticated = await run(
+		["start", ...database],
+		async () =>
+			fakeModule({
+				setup: new StorageUnavailableError(
+					{ adapter: "postgres", location: "postgresql://atomic@db/atomic" },
+					auth,
+				),
+			}).module,
+	);
+	assert.deepEqual(unauthenticated.err, [
+		"Storage unavailable: postgres at postgresql://atomic@db/atomic: Invalid storage configuration: auth (auth-unavailable). Install @azure/identity",
+	]);
+});
+
+test(
+	"worker setup names the PostgreSQL adapter to install for a postgres:// --db (#5113)",
+	async () => {
+		const agentDir = join(root, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const err: string[] = [];
+		const code = await runWorkerCommand(
+			["status", "--db", "postgresql://atomic@db.example.com/atomic", "--password-file", tokenFile],
+			{ cwd: root, agentDir, log: () => {}, error: (line) => err.push(line) },
+		);
+		assert.equal(code, 1);
+		assert.equal(err[0], "Worker host setup is incomplete:");
+		assert.match(
+			err[1] ?? "",
+			/^ {2}- the storage adapter @bastani\/atomic-storage-postgres, .*\(storage-adapter-unavailable\)/,
+		);
+		assert.match(err[1] ?? "", /Install it with `atomic install npm:@bastani\/atomic-storage-postgres`/);
 	},
 	REAL_PACKAGE_TIMEOUT_MS,
 );

@@ -553,3 +553,17 @@ test("an error carries only what it was given: no cause own property without one
 	const staleCopy = acrossProcesses(stale) as StaleStageLeaseError;
 	assert.equal((staleCopy.cause as Error).message, "lease taken");
 });
+
+test("an unloadable adapter's install hint names the package for its database URL's scheme (#5113)", () => {
+	for (const [url, adapter] of [
+		["postgres://atomic@db.example.com/atomic", "@bastani/atomic-storage-postgres"],
+		["postgresql://atomic@db.example.com/atomic", "@bastani/atomic-storage-postgres"],
+		["libsql://pool.example.turso.io", "@bastani/atomic-storage-libsql"],
+		["https://pool.example.com", "@bastani/atomic-storage-libsql"],
+	] as const)
+		assert.equal(
+			sharedPoolProblems.adapterUnavailable("adapter", url).hint,
+			`Install it with \`atomic install npm:${adapter}\`, or fix the adapter path.`,
+			url,
+		);
+});

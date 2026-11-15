@@ -242,6 +242,29 @@ export function describeStorageError(error: Error | object | string | undefined)
 /** How far guards and the serializer follow `cause`, so a cyclic or very deep chain stays bounded. */
 const MAX_STORAGE_CAUSE_DEPTH = 8;
 
+/**
+ * A storage failure as a command shows it: the first line of its message, then of its innermost cause's when the
+ * message does not already hold it, and the innermost code along its causes, such as a TLS error's code, a SQLSTATE
+ * or a configuration error's reason. Adapters redact their causes, so nothing here needs redacting again.
+ */
+export function describeStorageFailure(error: Error): string {
+	const firstLine = (text: string): string => text.split("\n", 1)[0]!.trim();
+	let innermost: Error = error;
+	let code: string | undefined;
+	let current = error.cause;
+	for (let depth = 0; depth < MAX_STORAGE_CAUSE_DEPTH && current instanceof Error; depth++) {
+		innermost = current;
+		const named = current as Error & { readonly code?: string | number; readonly reason?: string };
+		const label = current instanceof StorageConfigError ? named.reason : named.code;
+		if (typeof label === "string") code = label;
+		current = current.cause;
+	}
+	const message = firstLine(error.message);
+	const cause = firstLine(innermost.message);
+	const text = innermost === error || message.includes(cause) ? message : `${message}: ${cause}`;
+	return code === undefined || text.includes(code) ? text : `${text} (${code})`;
+}
+
 export type StorageWriteLockTimeoutCode = "write-lock-timeout";
 /** Where the writer was when it gave up: behind older writers in the queue, or first in line and trying the lock. */
 export type StorageWriteLockWaitPhase = "queued" | "acquiring";

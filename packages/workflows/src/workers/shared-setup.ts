@@ -58,7 +58,8 @@ export async function sharedSelectionProblems(
 		await loadStorageAdapter(selection.module, { agentDir, domain: "journal" });
 	} catch (error) {
 		if (!(error instanceof StorageAdapterLoadError)) throw error;
-		problems.push(sharedPoolProblems.adapterUnavailable(selection.module));
+		const url = selection.options?.url;
+		problems.push(sharedPoolProblems.adapterUnavailable(selection.module, typeof url === "string" ? url : undefined));
 	}
 	for (const [secret, ref] of Object.entries(selection.secrets ?? {})) {
 		if ("env" in ref) {
