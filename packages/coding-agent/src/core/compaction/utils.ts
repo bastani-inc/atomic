@@ -107,7 +107,7 @@ const TOOL_RESULT_MAX_CHARS = 2000;
  * Truncate text to a maximum character length for summarization.
  * Keeps the beginning and appends a truncation marker.
  */
-function truncateForSummary(text: string, maxChars: number): string {
+export function truncateForSummary(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
 	const truncatedChars = text.length - maxChars;
 	return `${sliceHead(text, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;

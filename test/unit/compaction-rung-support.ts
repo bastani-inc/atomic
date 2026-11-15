@@ -169,9 +169,7 @@ export function borrowed(
 export function registryOf(models: Model<Api>[], unauthenticated: string[] = []) {
 	const authenticated = (model: Model<Api>) => !unauthenticated.includes(model.id);
 	return {
-		getAvailableSnapshot: () => models.filter(authenticated),
-		getModel: (provider: string, id: string) =>
-			models.find((model) => model.provider === provider && model.id === id),
+		getModels: () => models,
 		hasConfiguredAuth: (provider: string) =>
 			models.some((model) => model.provider === provider && authenticated(model)),
 	};

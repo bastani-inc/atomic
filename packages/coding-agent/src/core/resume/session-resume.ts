@@ -6,8 +6,11 @@ import { failureDebugFields, reportDebug } from "../debug.ts";
 import type { SessionManager } from "../session-manager.ts";
 import {
 	currentWorktreeSnapshots,
+	formatLapsedPinNotice,
 	formatMissingRecordNotice,
 	holdSessionWorktrees,
+	lapsedDegradedRestores,
+	latestRestoreTargets,
 	type MissingSnapshotRecord,
 	mapRestoredPath,
 	missingSnapshotRecords,
@@ -32,6 +35,7 @@ import {
 	pooledWorktreeHolder,
 	type WorktreePoolSettings,
 } from "../worktree-snapshot/pool.ts";
+import { sameRemote } from "../worktree-snapshot/repository-identity.ts";
 import {
 	defaultWorktreeSnapshotStoreDir,
 	type VerifyWorktreeOptions,
@@ -164,10 +168,11 @@ export interface SessionSnapshotMatch {
 /** The latest snapshot of the checkout the session works in, the same one #4245's resume verifies. */
 export function latestSessionSnapshot(
 	sessionManager: Pick<SessionManager, "getCwd" | "getWorktreeRootMappings" | "getLatestWorktreeSnapshots">,
+	snapshots: ReadonlyMap<string, WorktreeSnapshot> = sessionManager.getLatestWorktreeSnapshots(),
 ): SessionSnapshotMatch | undefined {
 	const cwd = mapRestoredPath(sessionManager.getCwd(), sessionManager.getWorktreeRootMappings());
 	let match: SessionSnapshotMatch | undefined;
-	for (const [root, snapshot] of sessionManager.getLatestWorktreeSnapshots()) {
+	for (const [root, snapshot] of snapshots) {
 		if (isInside(root, cwd) && (!match || root.length > match.root.length)) match = { root, snapshot, cwd };
 	}
 	return match;
@@ -207,7 +212,10 @@ async function reuseLaunchCheckout(
 	// A pooled worktree another session owns holds that session's work, even when it matches (#4748).
 	if (await pooledWorktreeOwnedElsewhere(resolveStoreDir(options), root, sessionId)) return undefined;
 	const { remotes } = await readRepositoryConfig(root, options.signal);
-	if (!remotes.some((remote) => match.snapshot.remotes.includes(remote))) return undefined;
+	// The same repository spelled another way, SSH or HTTPS, with or without `.git`, is still the session's (#4913).
+	if (!remotes.some((remote) => match.snapshot.remotes.some((recorded) => sameRemote(remote, recorded)))) {
+		return undefined;
+	}
 	let matches = true;
 	try {
 		await verifyWorktree(match.snapshot, root, { settings: options.settings, signal: options.signal });
@@ -405,7 +413,11 @@ async function prepareResume(
 		const unchanged = await describeBlueprintsInPlace(sessionManager, storeDir, options);
 		return { status: "ready", sessionManager, notices: [], blueprintNotices: [], blueprintContext: unchanged };
 	}
-	const notices: ResumeNotice[] = [];
+	// A partial restore pinned for longer than its retention no longer holds its snapshot (#4922).
+	const notices: ResumeNotice[] = lapsedDegradedRestores(sessionManager).map((lapsed) => ({
+		type: "warning",
+		message: formatLapsedPinNotice(lapsed),
+	}));
 	const checkoutCount = currentWorktreeSnapshots(sessionManager).size;
 	options.onProgress?.(
 		`Checking ${checkoutCount === 1 ? "1 checkout" : `${checkoutCount} checkouts`} against the session's snapshots`,
@@ -429,7 +441,8 @@ async function prepareResume(
 		partialOnce ??= partialRestores(sessionManager, options);
 		return partialOnce;
 	};
-	const match = latestSessionSnapshot(sessionManager);
+	// A checkout restored only partly is compared with the snapshot it lacks, which stays its restore target (#4922).
+	const match = latestSessionSnapshot(sessionManager, latestRestoreTargets(sessionManager));
 	let git: GitProbe | undefined;
 	let reused: WorktreeRootMapping | undefined;
 	let needsRestore: boolean;
@@ -1120,8 +1133,9 @@ async function checkoutsWorkedHere(
 		if (!existsSync(isInside(root, cwd) ? cwd : root)) continue;
 		const holder = await pooledWorktreeHolder(storeDir, root);
 		if (holder !== "unpooled") {
-			// Slots share their repository's object store, so only the pool record tells whose work a slot holds.
-			const owned = holder.owner?.kind === "session" && holder.owner.id === sessionId;
+			// Slots share their repository's object store, so only the pool record tells whose work a slot holds, and a
+			// slot the session could not hold, or lost while stalled, is not its to continue in (#4830).
+			const owned = !(await pooledWorktreeOwnedElsewhere(storeDir, root, sessionId));
 			if (owned && !partial.has(resolve(root))) own.add(root);
 			continue;
 		}
