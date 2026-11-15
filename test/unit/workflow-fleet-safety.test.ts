@@ -464,10 +464,12 @@ test("an instance whose worker died after registering is removed for its boot ti
 		await f.report("h1", "vm-1");
 		await f.sql(`UPDATE ${PREFIX}wf_runs_pool_hosts SET heartbeat_at = heartbeat_at - 3600000 WHERE host = 'h1'`);
 		const removed: string[] = [];
+		let lists = 0;
 		f.controller(
 			{
 				kind: "fake",
 				async list() {
+					lists++;
 					return removed.includes("vm-1") ? [] : [{ id: "vm-1", state: "running", since: 0 }];
 				},
 				async scaleTo() {},
@@ -478,7 +480,16 @@ test("an instance whose worker died after registering is removed for its boot ti
 			[],
 			{ bootTimeoutMs: 200, minHosts: 1 },
 		);
-		await sleep(30 * TICK_MS);
+		// Ticks, not time: under load thirty ticks' worth of time held too few ticks to time the boot out.
+		await vi.waitFor(() => assert.ok(removed.length > 0, "the instance is removed for its boot timeout"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
+		const listsAtRemoval = lists;
+		await vi.waitFor(() => assert.ok(lists >= listsAtRemoval + 3, "three more ticks list the instances"), {
+			timeout: FLEET_TICKS_WAIT_MS,
+			interval: 10,
+		});
 		assert.deepEqual(removed, ["vm-1"]);
 	} finally {
 		await f.close();
