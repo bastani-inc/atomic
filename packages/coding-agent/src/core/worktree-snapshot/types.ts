@@ -163,6 +163,34 @@ export interface WorktreeRootMapping {
 	readonly restoredAt: string;
 	/** Present when `to` holds less than the snapshot: what it holds and what is missing (#4733). */
 	readonly degraded?: WorktreeDegradedRestore;
+	/**
+	 * Present when this restore of the snapshot followed a partial restore of it that the session worked in (#4922): that
+	 * work, and whether this restore put it on top of the snapshot.
+	 */
+	readonly degradedWork?: WorktreeDegradedWork;
+}
+
+/**
+ * The work a session did in a partly restored worktree, from what the partial restore put there to its latest snapshot
+ * there, as a later full restore of the snapshot found it (#4922).
+ */
+export interface WorktreeDegradedWork {
+	/** The latest snapshot of the partly restored worktree. */
+	readonly snapshotId: string;
+	/** The partly restored worktree, on the machine where the work was done. */
+	readonly root: string;
+	/**
+	 * `applied`: the work is in the restored worktree, on top of the snapshot. `kept`: it does not apply on top of the
+	 * snapshot, and the commit `commit` (ref `ref`) of the restored worktree's repository holds it, as changes from the
+	 * tree `base`. `unavailable`: it could not be read on this machine, for `reason`.
+	 */
+	readonly outcome: "applied" | "kept" | "unavailable";
+	/** The files the work changed, where they could be listed. */
+	readonly paths: readonly string[];
+	readonly base?: string;
+	readonly commit?: string;
+	readonly ref?: string;
+	readonly reason?: string;
 }
 
 /**

@@ -1189,6 +1189,27 @@ function snapshotPatches(
 	);
 }
 
+/**
+ * Makes `snapshot`'s commit and tree objects of this host's shared object store for its repository, as a restore does,
+ * without writing a worktree, and resolves with the store's path (#4922). Rejects with the restore's typed failures,
+ * such as `blob-missing` or `commits-unavailable`, and `invalid-snapshot` for a record that fails the security checks.
+ */
+export async function storeSnapshotTree(
+	snapshot: WorktreeSnapshot,
+	options: Pick<RestoreWorktreeSnapshotOptions, "blobs" | "storeDir" | "signal">,
+): Promise<string> {
+	const binding: WorkspaceBinding = { ...snapshot, remotes: [...snapshot.remotes] };
+	assertUsableSnapshotRecord(binding, snapshot);
+	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
+	const patches = await snapshotPatches(snapshot, options.blobs);
+	return withScratchDirectory(async (scratch) => {
+		const store = objectStorePath(storeDir, snapshot.remotes);
+		const git: GitRunOptions = { cwd: scratch, signal: options.signal, env: { GIT_DIR: store } };
+		await storeSnapshotObjects(git, store, binding, snapshot, patches, options.blobs, scratch);
+		return store;
+	});
+}
+
 export interface ResetPooledWorktreeOptions {
 	readonly storeDir: string;
 	readonly blobs?: SnapshotBlobStore;
