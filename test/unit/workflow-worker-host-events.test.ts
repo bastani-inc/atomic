@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, test } from "vitest";
+import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 import { MemoryRunJournal } from "../../packages/workflows/src/durable/journal/memory-run-journal.js";
 import { readSharedPoolFleet } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
 import {
@@ -36,6 +37,13 @@ const EMPTY_SCALING = {
 const libsql = fileURLToPath(new URL("../../packages/storage-libsql/libsql.js", import.meta.url));
 /** A failed poll waits out the storage facade's transient retries (about 4 s) before it fails. */
 const OUTAGE_TEST_TIMEOUT_MS = 60_000;
+/**
+ * How long a server keeps a stream an outage cut, and the write lock its open transaction holds, unless the client
+ * closes it: far longer than the recovery the test expects. Real sqld keeps an idle stream 10 s.
+ */
+const CUT_STREAM_TTL_MS = 60_000;
+/** How soon after the database is reachable again a host reports recovered: a poll's retry wait and a few calls. */
+const HOST_RECOVERY_BOUND_MS = 10_000;
 
 let directory: string;
 beforeEach(() => {
@@ -198,6 +206,60 @@ test.skipIf(process.platform === "win32")(
 			assert.equal("degraded" in (await host.stats()), false, "a recovered host is no longer degraded");
 		} finally {
 			proxy.restore();
+			await host.stop();
+			await proxy.close();
+			await database.close();
+		}
+	},
+	OUTAGE_TEST_TIMEOUT_MS,
+);
+
+test.skipIf(process.platform === "win32")(
+	"a worker host recovers within HOST_RECOVERY_BOUND_MS after an outage that cut a stream holding the write lock (#5114)",
+	async () => {
+		const database = await startFakeLibsqlServer({ streamTtlMs: CUT_STREAM_TTL_MS });
+		const proxy = await startOutageProxy(new URL(database.url));
+		const events: WorkflowWorkerHostEvent[] = [];
+		const host = await startWorkflowWorkerHost({
+			journal: journal(proxy.url),
+			agentDir: join(directory, "agent"),
+			maxWorkers: 1,
+			hostId: "host-cut-lock",
+			restore: false,
+			onEvent: (event) => events.push(event),
+		});
+		// Another connection of the host's process, such as a running child's journal, mid-transaction when the outage
+		// starts: the server keeps its stream and the write lock until the client closes the stream.
+		const other = await openLibsqlDatabase({ url: proxy.url });
+		try {
+			await until("the host to register", () => {
+				const row = database.database.prepare("SELECT COUNT(*) AS count FROM acme_wf_runs_pool_hosts").get() as
+					| { count: number }
+					| undefined;
+				return Number(row?.count ?? 0) === 1;
+			});
+			await other.exec("CREATE TABLE IF NOT EXISTS child_steps(n INTEGER NOT NULL)");
+			await assert.rejects(
+				other.transaction(async (tx) => {
+					await tx.run("INSERT INTO child_steps VALUES (1)");
+					proxy.cut();
+					await tx.run("INSERT INTO child_steps VALUES (2)");
+				}),
+			);
+			await until("a degraded poll", () => events.some((event) => event.kind === "degraded"));
+			proxy.restore();
+			const restoredAt = Date.now();
+			await until(
+				"the host to recover",
+				() => events.some((event) => event.kind === "recovered"),
+				HOST_RECOVERY_BOUND_MS,
+			);
+			assert.ok(Date.now() - restoredAt <= HOST_RECOVERY_BOUND_MS + 100);
+			const rows = database.database.prepare("SELECT COUNT(*) AS count FROM child_steps").get() as { count: number };
+			assert.equal(Number(rows.count), 0, "the cut transaction rolled back");
+		} finally {
+			proxy.restore();
+			await other.close();
 			await host.stop();
 			await proxy.close();
 			await database.close();

@@ -135,6 +135,15 @@ const BUSY_RETRY_BASE_MS = 20;
 /** The largest bound on that wait. */
 const BUSY_RETRY_MAX_MS = 1000;
 
+/**
+ * How long queued calls wait while the call ahead of them does not settle before they fail without running (#5114). The facade
+ * runs one call at a time, so a call that cannot complete, such as one waiting on a write lock a server keeps for a
+ * stream an outage cut, would otherwise hold every call queued behind it, priority calls such as a worker host's
+ * heartbeat included. A call queued behind it fails with `StorageUnavailableError` instead, having written nothing,
+ * and its caller retries it as it retries any outage.
+ */
+export const STORAGE_QUEUED_CALL_MAX_WAIT_MS = 60_000;
+
 /** How long the facade waits after the failed run `attempt` (1-based) before it runs the call again. */
 function transientRetryDelayMs(attempt: number): number {
 	const jitter = 1 + STORAGE_TRANSIENT_RETRY_JITTER * (2 * Math.random() - 1);
@@ -262,20 +271,38 @@ class CallQueue {
 	}
 }
 
+interface QueuedCall {
+	run(): Promise<void>;
+	fail(error: Error): void;
+}
+
 /**
  * Runs operations one at a time, in call order within each lane: an operation of the priority lane runs before every
- * waiting operation of the normal lane. A failed operation does not stop the ones queued after it.
+ * waiting operation of the normal lane. A failed operation does not stop the ones queued after it. When the running
+ * operation has not settled `STORAGE_QUEUED_CALL_MAX_WAIT_MS` after the first of the waiting ones was queued, or after
+ * the operation before it settled, every waiting operation fails with `stalled()` without running.
  */
 class LaneQueue {
-	private readonly normal: (() => Promise<void>)[] = [];
-	private readonly priority: (() => Promise<void>)[] = [];
+	private readonly normal: QueuedCall[] = [];
+	private readonly priority: QueuedCall[] = [];
 	private running = false;
 	private idle: (() => void)[] = [];
+	private watchdog?: ReturnType<typeof setTimeout>;
+
+	private readonly stalled: () => Error;
+
+	constructor(stalled: () => Error) {
+		this.stalled = stalled;
+	}
 
 	push<T>(operation: () => Promise<T>, priority = false): Promise<T> {
 		return new Promise<T>((resolve, reject) => {
-			(priority ? this.priority : this.normal).push(() => Promise.resolve().then(operation).then(resolve, reject));
+			(priority ? this.priority : this.normal).push({
+				run: () => Promise.resolve().then(operation).then(resolve, reject),
+				fail: reject,
+			});
 			this.next();
+			if (this.priority.length + this.normal.length > 0) this.watch();
 		});
 	}
 
@@ -295,10 +322,25 @@ class LaneQueue {
 		}
 		this.running = true;
 		// Started on a later microtask, as a promise chain starts it, never inside the call that queued it.
-		void operation().finally(() => {
+		void operation.run().finally(() => {
+			// The queue moved on: the operations still waiting get a full wait behind the next one.
+			clearTimeout(this.watchdog);
+			this.watchdog = undefined;
 			this.running = false;
 			this.next();
+			if (this.running && this.priority.length + this.normal.length > 0) this.watch();
 		});
+	}
+
+	/** Fails the waiting operations once the running one has not settled for a full wait since they began waiting. */
+	private watch(): void {
+		if (this.watchdog !== undefined) return;
+		this.watchdog = setTimeout(() => {
+			this.watchdog = undefined;
+			for (const waiting of this.priority.splice(0).concat(this.normal.splice(0))) waiting.fail(this.stalled());
+		}, STORAGE_QUEUED_CALL_MAX_WAIT_MS);
+		// A stuck call ahead of the queue never keeps the process alive on its own.
+		this.watchdog.unref?.();
 	}
 }
 
@@ -309,7 +351,14 @@ class DriverDatabase implements SqliteDatabase {
 	/** Fenced transactions a concurrent driver runs outside the queue; closing waits for them. */
 	private readonly concurrent = new Set<Promise<unknown>>();
 	private readonly redact: (text: string) => string;
-	private readonly queue = new LaneQueue();
+	private readonly queue = new LaneQueue(
+		() =>
+			new StorageUnavailableError(
+				this.descriptor,
+				undefined,
+				`the call waited ${STORAGE_QUEUED_CALL_MAX_WAIT_MS / 1000} seconds behind an earlier call that has not settled, and did not run; nothing was written, retry it`,
+			),
+	);
 	private closePromise?: Promise<void>;
 	/** End the waits before calls run again, when closing begins during them. */
 	private readonly wakeRetries = new Set<() => void>();

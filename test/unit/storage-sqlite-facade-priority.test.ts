@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
-import { createSqliteDatabase, type SqliteDriverResult, type SqliteStatement } from "@bastani/atomic/storage";
-import { test } from "vitest";
+import {
+	createSqliteDatabase,
+	type SqliteDriverResult,
+	type SqliteStatement,
+	STORAGE_QUEUED_CALL_MAX_WAIT_MS,
+	StorageUnavailableError,
+} from "@bastani/atomic/storage";
+import { test, vi } from "vitest";
 
 const EMPTY: SqliteDriverResult = { columns: [], rows: [], changes: 0 };
 
@@ -150,4 +156,53 @@ test("closing waits for the call that is running before it closes the driver (#4
 	release();
 	await Promise.all([running, closing]);
 	assert.deepEqual(order, ["slow", "close"]);
+});
+
+test("a call queued behind one that never settles fails without running once that call has run STORAGE_QUEUED_CALL_MAX_WAIT_MS, and the queue serves calls again once it settles (#5114)", async () => {
+	vi.useFakeTimers();
+	try {
+		const ran: string[] = [];
+		let settle!: () => void;
+		const database = createSqliteDatabase({
+			descriptor: { adapter: "stuck", location: "memory" },
+			async execute(sql) {
+				if (sql === "stuck")
+					await new Promise<void>((resolve) => {
+						settle = resolve;
+					});
+				ran.push(sql);
+				return EMPTY;
+			},
+			executeMultiple() {},
+			beginTransaction: () => assert.fail("no transaction"),
+			async batch(statements: readonly SqliteStatement[]) {
+				ran.push(statements.map((statement) => statement.sql).join("+"));
+				return statements.map(() => EMPTY);
+			},
+			close() {},
+		});
+		const stuck = database.run("stuck");
+		const renewal = database.batch!([{ sql: "renewal", params: [] }], { priority: true });
+		const write = database.run("write");
+		const failures = [renewal, write].map((call) =>
+			call.then(
+				() => assert.fail("ran behind a stuck call"),
+				(error: unknown) => error,
+			),
+		);
+		await vi.advanceTimersByTimeAsync(STORAGE_QUEUED_CALL_MAX_WAIT_MS - 1);
+		assert.deepEqual(ran, [], "the calls wait while the call ahead of them may still settle");
+		await vi.advanceTimersByTimeAsync(1);
+		for (const failure of await Promise.all(failures)) {
+			assert.ok(failure instanceof StorageUnavailableError, String(failure));
+			assert.match(failure.message, /did not run/);
+		}
+		settle();
+		await stuck;
+		await database.batch!([{ sql: "next", params: [] }], { priority: true });
+		assert.deepEqual(ran, ["stuck", "next"]);
+		await database.close();
+	} finally {
+		vi.useRealTimers();
+	}
 });
