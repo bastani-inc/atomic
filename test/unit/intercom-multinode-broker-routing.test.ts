@@ -2016,3 +2016,17 @@ test(
 	},
 	4 * CROSS_NODE_WAIT_MS,
 );
+
+test("an ask whose replier ends right after replying gets only the reply on another node (#4992)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const replier = await b!.connect("replier");
+	const ask = await savedAsk(a!, asker, b!, replier);
+	const answer = message({ replyTo: ask.id, content: { text: "port 8080" } });
+	b!.send(replier, asker.info.id, answer, { requirePendingReply: true });
+	b!.leave(replier);
+	const replied = await waitFor(() => messageFrames(asker, answer.id)[0]);
+	assert.equal(replied.type, "message");
+	await new Promise((resolve) => setTimeout(resolve, 20 * BUS_POLL_INTERVAL_MS));
+	assert.deepEqual(failuresOf(asker, ask.id), [], "the reply is the ask's only outcome");
+});

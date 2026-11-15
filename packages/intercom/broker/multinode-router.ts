@@ -690,7 +690,7 @@ export class MultiNodeRouter {
 			await (away ? Promise.resolve() : this.state.pendingAsks.pruneSender(sessionId).then(() => undefined))
 				.then(async () => {
 					// #4992: the replies it sent before it left are queued first, so the asks they answer do not fail.
-					await Promise.all([...(this.routingReplies.get(sessionId) ?? [])]);
+					await Promise.all([...(this.routingReplies.get(sessionId) ?? []), this.serials.get(`reply:${sessionId}`)]);
 					// #4842: a terminal session's remaining routes are the failures it already sent; they are not sent again.
 					if (!away && session.info.replyCapability === "terminal" && released === undefined) {
 						await this.state.pendingAsks.takeForTarget(sessionId);
