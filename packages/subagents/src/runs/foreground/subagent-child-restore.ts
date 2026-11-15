@@ -537,8 +537,7 @@ async function relaunchChild(
 		sessionManager && !fresh
 			? savedToolResultIds(sessionManager, [...(latest.heldToolResults ?? []), ...(resume?.toolResults ?? [])])
 			: [];
-	if (saved.length > 0)
-		await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
+	await clearSubagentChildHeldToolResults(deps.pi, record.owner.sessionId, record.childId, saved);
 	const unsaved = (results: readonly DetachedToolResult[]) =>
 		results.filter((result) => !saved.includes(result.toolCallId));
 	const childOptions = ctx.getChildSessionOptions?.({ tools: agent.tools });

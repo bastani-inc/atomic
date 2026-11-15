@@ -832,13 +832,10 @@ export async function holdInterruptedStillRunningCalls(
 		const tracked = latest.stillRunning ?? [];
 		const interrupted = tracked.filter((call) => call.ownerGeneration !== generation);
 		if (interrupted.length === 0) return undefined;
-		const held = latest.heldToolResults ?? [];
 		return {
 			...latest,
-			heldToolResults: withHeldToolResults(
-				held,
-				interrupted.filter((call) => !held.some((result) => result.toolCallId === call.toolCallId)).map(resultOf),
-			),
+			// A result that arrived for the call meanwhile is kept over its interrupted one.
+			heldToolResults: withHeldToolResults(latest.heldToolResults, interrupted.map(resultOf)),
 			stillRunning: tracked.filter((call) => call.ownerGeneration === generation),
 		};
 	});

@@ -25,8 +25,10 @@ import { SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT } from "../../packages/subagent
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { bindReleasedChildWakes } from "../../packages/subagents/src/runs/foreground/released-child-wakes.js";
 import {
+	interruptedStillRunningResult,
 	lateToolResultMessage,
 	SUBAGENT_INTERRUPTED_BY_RESTART_RESULT,
+	SUBAGENT_OWNER_GENERATION,
 	SUBAGENT_RELEASE_AFTER_MS,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	SUBAGENT_STILL_RUNNING_RESULT,
@@ -35,6 +37,7 @@ import { registerRunWorktrees, runWorktreeRecord } from "../../packages/subagent
 import { observeSubagentChildRecord } from "../../packages/subagents/src/runs/foreground/subagent-child-card-state.js";
 import {
 	createSubagentChildRecordSink,
+	holdInterruptedStillRunningCalls,
 	readSubagentChildRecords,
 	recordSubagentChildHeldToolResults,
 	recordSubagentChildStatus,
@@ -98,7 +101,7 @@ interface Harness {
 	original: OriginalLaunch;
 	originalGate?: PromiseWithResolvers<void>;
 	/** Holds a woken run open, before ("before-save") or after ("after-save") its results are saved, until resolved. */
-	wokenGate?: { gate: PromiseWithResolvers<void>; at: "before-save" | "after-save" };
+	wokenGate?: { gate: PromiseWithResolvers<void>; at: "before-start" | "before-save" | "after-save" };
 	/** The calls the original launch is released waiting on. */
 	releasedWaits: readonly SubagentChildWaitingCall[];
 	/** When set, a woken run that is not stopped ends in an error, before it reports the results it saved. */
@@ -275,6 +278,23 @@ function harness(options: { stage?: boolean; sessionManager?: SessionManager } =
 				options.taskExecution?.toolResultsSaved?.(results.map((result) => result.toolCallId));
 			};
 			const woken = state.wokenGate;
+			if (woken?.at === "before-start") {
+				// Stopped before its session sent anything: what it was given stays unread, as the runner reports it.
+				await new Promise<void>((resolve) => {
+					void woken.gate.promise.then(resolve);
+					options.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return {
+					agent: agentName,
+					task,
+					exitCode: 1,
+					status: "interrupted",
+					interrupted: true,
+					messages: [],
+					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+					pendingMessages: [task, ...(rest.resumeFollowUps ?? [])],
+				} as SingleResult;
+			}
 			if (woken) {
 				if (woken.at === "after-save") saveResults();
 				const out = await runSync(parentCwd, agents, agentName, task, {
@@ -1100,7 +1120,7 @@ async function wokenByResult(
 	h: Harness,
 	runId: string,
 	result: DetachedToolResult,
-	at: "before-save" | "after-save",
+	at: "before-start" | "before-save" | "after-save",
 ): Promise<{ record: SubagentChildRecord; gate: PromiseWithResolvers<void> }> {
 	const record = await releasedChild(h, runId);
 	await endSessionOnPendingCall(record, h.releasedWaits);
@@ -1249,6 +1269,7 @@ test("a call a wake answered still running is reported interrupted when Atomic r
 	assert.ok(run);
 
 	assert.deepEqual(run.options.resumeToolResults, [waitResult("ci-1 green"), interruptedDeploy()]);
+	assert.deepEqual(run.options.stillRunning, [], "deploy-2 is no longer tracked once it is reported interrupted");
 });
 
 test("a call a wake answered still running is reported interrupted when Atomic restarts after the woken child saved its results (#5014)", async () => {
@@ -1393,4 +1414,98 @@ test("a late result the child already read as a message is not given to it again
 
 	assert.doesNotMatch(told(run), /deploy now/);
 	assert.deepEqual(h.latest(record.childId)?.heldToolResults ?? [], []);
+});
+
+test("a restart turns only the calls an earlier owner process told still running into held interrupted results, keeping any real result (#5014)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "convert-still-running");
+	const current = { toolCallId: "build-4", toolName: "wait_for_build", ownerGeneration: "this-process" };
+	const lint: DetachedToolResult = { ...waitResult("lint clean"), ...LINT_CALL };
+	const marked: SubagentChildRecord = {
+		...record,
+		heldToolResults: [lint],
+		stillRunning: [
+			{ ...DEPLOY_CALL, ownerGeneration: "earlier-process" },
+			{ ...LINT_CALL, ownerGeneration: "earlier-process" },
+			current,
+		],
+	};
+	await appendRecord(h, marked);
+	observeSubagentChildRecord(marked);
+
+	const held = await holdInterruptedStillRunningCalls(
+		h.deps.pi,
+		record.owner.sessionId,
+		record.childId,
+		"this-process",
+		interruptedStillRunningResult,
+	);
+
+	assert.deepEqual(held?.heldToolResults, [lint, interruptedDeploy()]);
+	assert.deepEqual(held?.stillRunning, [current]);
+	assert.equal(
+		await holdInterruptedStillRunningCalls(
+			h.deps.pi,
+			record.owner.sessionId,
+			record.childId,
+			"this-process",
+			interruptedStillRunningResult,
+		),
+		undefined,
+		"nothing is written once nothing is left to report",
+	);
+});
+
+test("a wake keeps tracking the calls the child was told are still running until their results reach it (#5014)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "track-still-running");
+	await endSessionOnPendingCall(record, [WAIT_CALL, LINT_CALL]);
+	const build = { toolCallId: "build-4", toolName: "wait_for_build" } as const;
+	const tracked: SubagentChildRecord = {
+		...record,
+		stillRunning: [
+			{ ...DEPLOY_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION },
+			{ ...build, ownerGeneration: SUBAGENT_OWNER_GENERATION },
+		],
+	};
+	await appendRecord(h, tracked);
+	observeSubagentChildRecord(tracked);
+	const deployed: DetachedToolResult = { ...waitResult("deployed"), ...DEPLOY_CALL };
+
+	const run = await restored(h, record.childId, {
+		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		toolResults: [waitResult("ci-1 green"), deployed],
+		promptless: true,
+	});
+
+	assert.deepEqual(run.stillRunning, [
+		{ ...build, ownerGeneration: SUBAGENT_OWNER_GENERATION },
+		{ ...LINT_CALL, ownerGeneration: SUBAGENT_OWNER_GENERATION },
+	]);
+	assert.deepEqual(h.latest(record.childId)?.stillRunning, run.stillRunning);
+});
+
+test("a late result a woken child was stopped before reading reaches it once when resumed (#5012)", async () => {
+	const h = harness();
+	const record = await releasedChild(h, "late-unread");
+	await endSessionOnPendingCall(record);
+	await saveIntoTranscript(record, [stillRunning]);
+	const late = waitResult("/deploy now");
+	await recordSubagentChildHeldToolResults(h.deps.pi, record.owner.sessionId, record.childId, [late]);
+	h.wokenGate = { gate: Promise.withResolvers<void>(), at: "before-start" };
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, record.childId, {
+		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
+		toolResults: [late],
+		promptless: true,
+	});
+	assert.equal(outcome.kind, "restored", JSON.stringify(outcome));
+	assert.ok(outcome.kind === "restored");
+	await h.waitForLatest(record.childId, (latest) => latest.state === "running" && latest.taskId === outcome.taskId);
+
+	await stopThenResume(h, record.childId, "pause");
+
+	const run = h.runs.at(-1);
+	assert.ok(run);
+	const message = lateToolResultMessage(late);
+	assert.equal(told({ ...run.options, task: run.task }).split(JSON.stringify(message).slice(1, -1)).length - 1, 1);
 });

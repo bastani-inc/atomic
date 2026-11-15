@@ -614,8 +614,6 @@ export async function runAgentTask(input: {
 				);
 			const childId = subagentChildId(runId, index);
 			const wokenWith = input.options.wakeToolResultIds ?? [];
-			// What its run saved into its transcript; a stop before the save leaves the rest held for its resume (#5012).
-			const savedResults = new Set<string>();
 			// Results answering no pending call reach it as follow-ups, which a stop keeps as its pending messages.
 			const answeredByTurn = new Set((input.options.resumeToolResults ?? []).map((result) => result.toolCallId));
 			const clearDelivered = (toolCallIds: readonly string[]) => {
@@ -668,10 +666,8 @@ export async function runAgentTask(input: {
 								};
 								recordChild("running");
 							},
-							toolResultsSaved: (toolCallIds) => {
-								for (const toolCallId of toolCallIds) savedResults.add(toolCallId);
-								void clearDelivered(toolCallIds);
-							},
+							// What its session saved is cleared at once; a stop leaves the rest held for its resume (#5012).
+							toolResultsSaved: (toolCallIds) => void clearDelivered(toolCallIds),
 							onExecution: (execution) => {
 								executionBound = true;
 								trackChildClosing(childId, execution.cleanup);
@@ -759,9 +755,7 @@ export async function runAgentTask(input: {
 					const settled = released || !ownerClosed();
 					if (settled && (released || child.status === "ok")) void clearDelivered(wokenWith);
 					else if (settled && (stoppedByControl || stoppedByStagePause))
-						void clearDelivered(
-							wokenWith.filter((toolCallId) => savedResults.has(toolCallId) || !answeredByTurn.has(toolCallId)),
-						);
+						void clearDelivered(wokenWith.filter((toolCallId) => !answeredByTurn.has(toolCallId)));
 					input.onTerminal?.(child);
 					if (
 						ownerSessionId !== undefined &&
