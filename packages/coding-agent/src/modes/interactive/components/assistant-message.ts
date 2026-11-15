@@ -1,7 +1,7 @@
 import type { AssistantMessage } from "@bastani/pi-ai/compat";
 import { type Component, Container, Markdown, type MarkdownTheme, Spacer, Text } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
-import { stripTerminalControls } from "../../../utils/ansi.ts";
+import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 

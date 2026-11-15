@@ -5,7 +5,7 @@ import type { MarkdownTransformer, MessageRenderer } from "../../../core/extensi
 import type { CustomMessage } from "../../../core/messages.ts";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../../../core/tasks/completion.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE } from "../../../core/tasks/heartbeat-notice.js";
-import { stripTerminalControls } from "../../../utils/ansi.ts";
+import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { keyHint, keyText } from "./keybinding-hints.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
