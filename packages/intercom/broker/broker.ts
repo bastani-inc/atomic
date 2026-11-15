@@ -2068,10 +2068,17 @@ class IntercomBroker {
         if (presence === undefined) completeRegistration();
         else {
           holdWrites(socket);
+          // #5101: routable now, but its routes are restored only as its registration completes; a reply that only a
+          // restored route would authorize waits for that rather than being refused.
+          const restoring = this.pendingQuestions.beginRestoring(id);
           void presence.then(() => {
             const held = releaseHeldWrites(socket);
-            if (this.sessions.get(id) === rejoined) completeRegistration(held);
-            else discardHeldWrites(held);
+            try {
+              if (this.sessions.get(id) === rejoined) completeRegistration(held);
+              else discardHeldWrites(held);
+            } finally {
+              this.pendingQuestions.finishRestoring(id, restoring);
+            }
           });
         }
   }
