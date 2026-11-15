@@ -694,6 +694,9 @@ function pendingAskStore(asks: PendingAskEntry[], settled: Set<string>): Pending
 			asks.splice(index, 1);
 			return { status: "cleared" };
 		},
+		async isSettled(route) {
+			return settled.has(settledKey(route.replyTargetSessionId, route.replySenderSessionId, route.replyTo));
+		},
 		async releaseRoute(route) {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;

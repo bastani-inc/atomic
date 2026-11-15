@@ -133,6 +133,10 @@ export async function openSqlPendingAskStore({
 				return changes === 0 ? ({ status: "no-match" } as const) : ({ status: "cleared" } as const);
 			});
 		},
+		async isSettled(route): Promise<boolean> {
+			if (invalidRoute(route) !== undefined) return false;
+			return (await database.get(`SELECT 1 AS found FROM ${settled} WHERE ${reverseRoute}`, ...reverseParams(route))) !== undefined;
+		},
 		async releaseRoute(route): Promise<PendingAskClearResult> {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;

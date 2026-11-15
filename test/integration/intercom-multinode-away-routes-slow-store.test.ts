@@ -376,3 +376,44 @@ test(
 	},
 	REAL_BROKERS_TEST_TIMEOUT_MS,
 );
+
+test(
+	"a reply a second after the broker keeping its ask's only route crashed is refused as retryable, not for good (#4997)",
+	async () => {
+		const askId = randomUUID();
+		const log = outcomeLog(askId);
+		const { asker, recipient } = await askOnOneBroker(log, askId);
+		const ids = { asker: asker.sessionId, recipient: recipient.sessionId };
+		await harness.stopBroker("b", "SIGKILL");
+		const onA = (session: TwoBrokerClient, sessionId: string, watch: boolean) =>
+			harness.connect("a", session.name, {
+				group: session.group,
+				returnAddress: session.returnAddress,
+				preferredSessionId: sessionId,
+				...(watch ? { beforeConnect: (client: TwoBrokerClient) => log.watch(client) } : {}),
+			});
+		const askerOnA = await onA(asker, ids.asker, true);
+		const recipientOnA = await onA(recipient, ids.recipient, false);
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000));
+
+		const refused = await reply(recipientOnA, ids.asker, askId);
+
+		assert.equal(refused.delivered, false);
+		assert.equal(refused.reasonCode, "route_unavailable", refused.reason);
+		await harness.startBroker("b");
+		await vi.waitFor(
+			async () => {
+				const replied = await reply(recipientOnA, ids.asker, askId);
+				assert.equal(replied.delivered, true, replied.reason);
+			},
+			{ timeout: WAIT.timeout, interval: 500 },
+		);
+		await vi.waitFor(() => assert.deepEqual(log.outcomes, ["reply"]), WAIT);
+		// Answered: a further reply to it is refused for good, while the crashed broker's leases may still name them.
+		const again = await reply(recipientOnA, ids.asker, askId);
+		assert.equal(again.delivered, false);
+		assert.notEqual(again.reasonCode, "route_unavailable", again.reason);
+		for (const client of [recipientOnA, askerOnA]) await harness.disconnect(client);
+	},
+	REAL_BROKERS_TEST_TIMEOUT_MS,
+);

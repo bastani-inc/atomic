@@ -568,6 +568,8 @@ export interface PendingAskStore {
 	 * a route was still recorded, so `record` does not record it again.
 	 */
 	clearReply(route: ReplyRoute): Promise<PendingAskClearResult>;
+	/** #4997: whether the ask was answered or failed (`clearReply`) within `SETTLED_ASK_RETENTION_MS`. */
+	isSettled(route: ReplyRoute): Promise<boolean>;
 	/** #4997: the ask's route moves to one broker's own routes: it is removed without settling the ask. */
 	releaseRoute(route: ReplyRoute): Promise<PendingAskClearResult>;
 	/**

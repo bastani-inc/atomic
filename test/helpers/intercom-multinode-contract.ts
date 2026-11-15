@@ -1201,6 +1201,8 @@ export function registerPendingAskStoreConformance(
 			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "recorded" });
 			assert.deepEqual(await b.clearReply(reply("target", "sender", "q1")), { status: "cleared" });
 			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "settled" });
+			assert.equal(await b.isSettled(reply("target", "sender", "q1")), true);
+			assert.equal(await b.isSettled(reply("target", "other-sender", "q1")), false);
 			assert.deepEqual(await b.matchesReply(reply("target", "sender", "q1")), { status: "no-match" });
 			// Settled even with no route recorded: another broker answered it from its own routes.
 			assert.deepEqual(await a.clearReply(reply("target", "sender", "q2")), { status: "no-match" });
@@ -1210,6 +1212,7 @@ export function registerPendingAskStoreConformance(
 			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
 			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "cleared" });
 			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "no-match" });
+			assert.equal(await a.isSettled(reply("target", "sender", "q3")), false);
 			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
 		},
 	);

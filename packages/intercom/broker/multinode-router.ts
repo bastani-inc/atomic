@@ -399,8 +399,37 @@ export class MultiNodeRouter {
 	/**
 	 * A reply no ask route authorizes: refused, as retryable while a broker that may keep its route is down (#4997).
 	 */
-	private async refuseUnauthorizedReply(request: RemoteSendRequest): Promise<void> {
-		if (!(await this.routeHolderDown().catch(() => false))) {
+	/**
+	 * #4997: whether the ask's route may be kept by a broker this one cannot reach: not answered or failed already, and
+	 * either both the asker and the replier were last present on one other broker (a route between them lives there
+	 * even before that broker is noticed down), or a broker that may keep routes is down (`routeHolderDown`).
+	 */
+	private async routeMayBeElsewhere(
+		request: RemoteSendRequest,
+		askerSessionId: string,
+		askerIdentity: string,
+	): Promise<boolean> {
+		const replyTo = request.message.replyTo;
+		if (replyTo === undefined) return false;
+		const route = { replySenderSessionId: request.from.info.id, replyTargetSessionId: askerSessionId, replyTo };
+		if (await this.state.pendingAsks.isSettled(route)) return false;
+		const holderOf = async (targetIdentity: string) => {
+			const read = await this.state.leases.read({ kind: "presence", targetIdentity });
+			return read.status === "found" ? read.lease.holderId : undefined;
+		};
+		const [askerHolder, replierHolder] = await Promise.all([
+			holderOf(askerIdentity),
+			holderOf(deliveryTargetIdentity(request.from)),
+		]);
+		if (askerHolder !== undefined && askerHolder !== this.brokerId && askerHolder === replierHolder) return true;
+		return this.routeHolderDown();
+	}
+
+	private async refuseUnauthorizedReply(
+		request: RemoteSendRequest,
+		asker: { readonly sessionId: string; readonly identity: string },
+	): Promise<void> {
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) {
 			this.fail(request, "Pending question route does not authorize this public reply");
 			return;
 		}
@@ -1365,8 +1394,9 @@ export class MultiNodeRouter {
 		// A retry of a reply already delivered here is answered by the local path.
 		if (this.host.deliveredMessages.lookupForTarget(request.message.id, request.signature, deliveryTargetIdentity(target)) !== "miss")
 			return false;
-		if (!(await this.routeHolderDown().catch(() => false))) return false;
-		await this.refuseUnauthorizedReply(request);
+		const asker = { sessionId: target.info.id, identity: deliveryTargetIdentity(target) };
+		if (!(await this.routeMayBeElsewhere(request, asker.sessionId, asker.identity).catch(() => false))) return false;
+		await this.refuseUnauthorizedReply(request, asker);
 		return true;
 	}
 
@@ -1764,7 +1794,7 @@ export class MultiNodeRouter {
 				})
 			).status === "match";
 		if (request.requirePendingReply && !correlatedReply) {
-			await this.refuseUnauthorizedReply(request);
+			await this.refuseUnauthorizedReply(request, { sessionId: target.sessionId, identity: target.identity });
 			return;
 		}
 		const verticalReply =
