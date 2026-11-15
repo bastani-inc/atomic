@@ -10,6 +10,7 @@ import {
 	workflowAttemptOf,
 } from "../../packages/workflows/src/durable/attempt-identity.js";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
+import { recordUnconsumedToolFrontier } from "../../packages/workflows/src/durable/tool-failure-checkpoint.js";
 import {
 	DURABLE_BOUNDARY_TOPOLOGY_VERSION,
 	DURABLE_STAGE_TOPOLOGY_VERSION,
@@ -298,5 +299,53 @@ describe("the records of the attempt each run last ran in (#4874)", () => {
 			kept([first, marker(1), second]).filter((id) => id.startsWith("prompt:")),
 			[second.checkpointId],
 		);
+	});
+});
+
+describe("a tool frontier a resumed attempt never reached (#4874)", () => {
+	async function backendWith(...checkpoints: DurableCheckpoint[]) {
+		const backend = await createMemoryTestBackend();
+		await backend.commitWorkflowRegistration({
+			workflowId: ROOT,
+			name: ROOT,
+			inputs: {},
+			createdAt: 1,
+			status: "running",
+		});
+		for (const checkpoint of checkpoints) await backend.commitCheckpoint(checkpoint);
+		return backend;
+	}
+	const failure = (attempt: number): DurableToolCheckpoint => ({
+		...tool("t1", attempt),
+		checkpointId: `tool-failure:t1:${attempt}`,
+		output: null,
+		throwingFailureError: "boom",
+	});
+	const frontierRecords = (backend: DurableWorkflowBackend) =>
+		backend.listCheckpoints(ROOT).filter((checkpoint) => checkpoint.checkpointId.endsWith(":frontier"));
+
+	test("is recorded again in the attempt that ended without reaching it (#4874)", async () => {
+		const backend = await backendWith(stage("s1", 0), failure(0), tool("other", 0), marker(1));
+		await recordUnconsumedToolFrontier(backend, ROOT, "t1");
+		const [record, ...more] = frontierRecords(backend);
+		assert.deepEqual(more, []);
+		assert.ok(record?.kind === "tool");
+		assert.equal(record.checkpointId, "tool-failure:t1:a1:frontier");
+		assert.equal(record.attempt, 1);
+		assert.equal(record.argsHash, "t1");
+		assert.equal(record.throwingFailureError, "boom");
+		assert.ok(record.completedAt >= failure(0).completedAt);
+	});
+
+	test("is not recorded without attempts, when the attempt already recorded it, or when it was never recorded (#4874)", async () => {
+		const legacy = await backendWith(failure(0));
+		await recordUnconsumedToolFrontier(legacy, ROOT, "t1");
+		assert.deepEqual(frontierRecords(legacy), []);
+		const current = await backendWith(stage("s1", 0), marker(1), failure(1));
+		await recordUnconsumedToolFrontier(current, ROOT, "t1");
+		assert.deepEqual(frontierRecords(current), []);
+		const unknown = await backendWith(stage("s1", 0), marker(1));
+		await recordUnconsumedToolFrontier(unknown, ROOT, "t1");
+		assert.deepEqual(frontierRecords(unknown), []);
 	});
 });

@@ -332,6 +332,22 @@ describe("forking a resumed run (#4874)", () => {
 		);
 	});
 
+	test("a whole-run fork of a resumed run reads as its source's latest attempt (#4874)", async () => {
+		const h = await harness({ kind: "fail", at: "child" }, "attempt-fork-whole");
+		await h.resume({ kind: "exit", after: "s1" });
+		const { runId } = await forkDurableRun(h.backend, {
+			source: "sdk",
+			runId: h.runId,
+			cwd: tmpdir(),
+			carryMessages: "all",
+			definition: definitions(h.behaviour).parent,
+		});
+		const source = durableWorkflowRunSnapshots(h.backend, h.backend.getWorkflow(h.runId)!);
+		const fork = durableWorkflowRunSnapshots(h.backend, h.backend.getWorkflow(runId)!);
+		assert.deepEqual(graph(fork, runId), graph(source, h.runId));
+		assert.deepEqual(stageNames(fork[0]), ["s1"]);
+	});
+
 	test("a forked run resumed from its fork point reads durably as it ran live (#4874)", async () => {
 		const h = await harness({ kind: "fail", at: "s2" }, "attempt-fork-run");
 		await h.resume({ kind: "complete" });
