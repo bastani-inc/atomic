@@ -16,7 +16,7 @@ import { initTheme } from "../src/modes/interactive/theme/theme.js";
 import { IsolatedInteractiveRuntime } from "../src/modes/interactive-engine/isolated-runtime.js";
 import { createRpcCommandHandler } from "../src/modes/rpc/rpc-command-handler.js";
 import { createEngineHostPair, type EngineHostPair } from "./helpers/in-process-engine-pair.js";
-import { normalizeRenderedOutput } from "./interactive-mode-status-helpers.js";
+import { renderAll } from "./interactive-mode-status-helpers.js";
 import { createShowLoadedResourcesThis } from "./interactive-mode-status-resources-helpers.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
@@ -83,7 +83,13 @@ function renderReloadDiagnostics(runtimeHost: AgentSessionRuntime | object): str
 	mode.formatDiagnostics = (diagnostics: Array<{ path?: string; message: string }>) =>
 		diagnostics.map((diagnostic) => `${diagnostic.path}: ${diagnostic.message}`).join("\n");
 	(InteractiveMode as any).prototype.showLoadedResources.call(mode, { force: false, showDiagnosticsWhenQuiet: true });
-	return normalizeRenderedOutput(mode.chatContainer).trim();
+	// Keep the path's own separators: normalizeRenderedOutput would rewrite a Windows path's backslashes.
+	return renderAll(mode.chatContainer, 220)
+		.replace(/\u001b\[[0-9;]*m/g, "")
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.join("\n")
+		.trim();
 }
 
 const TWICE_REGISTERED_TOOL_EXTENSION = `
