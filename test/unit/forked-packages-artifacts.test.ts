@@ -80,7 +80,7 @@ test("forked pi packages are versionless workspaces that Atomic depends on exact
 		assert.equal(manifest.version, "0.0.0", workspace);
 		for (const name of names) {
 			// The published CLI pins each fork at its own release version; bundled extensions take the host's copy.
-			const range = workspace === "packages/coding-agent" ? manifest.version : "*";
+			const range: string | undefined = workspace === "packages/coding-agent" ? manifest.version : "*";
 			assert.equal(
 				manifest.dependencies?.[name] ?? manifest.peerDependencies?.[name],
 				range,
