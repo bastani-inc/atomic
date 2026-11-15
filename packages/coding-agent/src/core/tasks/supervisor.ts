@@ -858,12 +858,10 @@ function createNativeSupervisor(): native.TaskSupervisor {
 
 /**
  * Ends every supervised shell's whole process tree at once, for a host about to exit without closing its task owners,
- * as a crash does (#5057). Best effort: it never throws, and does nothing before any supervisor exists.
+ * as a crash does (#5057). Does nothing before any supervisor exists, so a crash handler can always call it.
  */
 export function killSupervisedProcessTrees(): void {
-	try {
-		nativeBinding?.killSupervisedProcessTrees();
-	} catch {}
+	nativeBinding?.killSupervisedProcessTrees();
 }
 
 export class TaskSupervisor {

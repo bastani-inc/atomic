@@ -40,6 +40,12 @@ async function waitFor(predicate: () => boolean, ms: number) {
 	return predicate();
 }
 
+test("a crash before any supervisor exists exits without failing in the crash handler (#5057)", async () => {
+	vi.resetModules();
+	const fresh = await import("../../../src/core/tasks/supervisor.ts");
+	assert.doesNotThrow(() => fresh.killSupervisedProcessTrees());
+});
+
 afterEach(() => {
 	vi.restoreAllMocks();
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
