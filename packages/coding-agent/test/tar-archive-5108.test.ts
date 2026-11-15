@@ -115,6 +115,10 @@ describe("malformed tar PAX headers (#5108)", () => {
 		assert.equal(await parser.parse(withPax("5 a=\nx")), "Invalid PAX header in t.tar");
 	});
 
+	it("refuses trailing PAX bytes with no length separator even when they end in a newline (#5108)", async () => {
+		assert.equal(await parser.parse(withPax("5 a=\n2\n")), "Invalid PAX header in t.tar");
+	});
+
 	it("refuses a zero-length PAX record (#5108)", async () => {
 		assert.equal(await parser.parse(withPax("0 a=\n")), "Invalid PAX header in t.tar");
 	});
@@ -127,8 +131,9 @@ describe("malformed tar PAX headers (#5108)", () => {
 		assert.equal(await parser.parse(withPax("9 a=\n")), "Invalid PAX header in t.tar");
 	});
 
-	it("refuses a non-numeric PAX length (#5108)", async () => {
-		assert.equal(await parser.parse(withPax("x5 a=\n")), "Invalid PAX header in t.tar");
+	it("refuses a PAX length that is not a plain decimal number (#5108)", async () => {
+		for (const records of ["x6 a=\n", "06 a=\n", "7e0 a=\n", " 6 a=\n"])
+			assert.equal(await parser.parse(withPax(records)), "Invalid PAX header in t.tar", JSON.stringify(records));
 	});
 
 	it("still reads well-formed PAX records (#5108)", async () => {
