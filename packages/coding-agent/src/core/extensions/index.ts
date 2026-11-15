@@ -18,6 +18,7 @@ export type {
 	ToolNamespace,
 	ToolRendererResolver,
 	ToolRenderers,
+	ToolScriptAccess,
 } from "./tool-types.ts";
 /**
  * Extension system for lifecycle events and custom tools.
