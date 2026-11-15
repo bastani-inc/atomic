@@ -16,8 +16,9 @@ afterEach(() => setDurableBackend(undefined));
 
 // #3038: a completed prompt replays its recorded answer, and recovery without it fails before any later step runs.
 // #4941: the answer is recorded with the prompt's completion, so a missing UI checkpoint still recovers from it; a
-// journal from before that (`missing-ui`, `mismatched-ui`), whose run recorded steps after the prompt, still fails.
-test.each(["valid", "answer-in-completion", "missing-ui", "mismatched-ui"] as const)(
+// journal from before that recovers from its UI checkpoint (`legacy-with-ui`), and without it (`missing-ui`,
+// `mismatched-ui`), since its run recorded steps after the prompt, still fails.
+test.each(["valid", "answer-in-completion", "legacy-with-ui", "missing-ui", "mismatched-ui"] as const)(
 	"public durable prompt/tool recovery (%s)",
 	async (mode) => {
 		let backend = await createMemoryTestBackend();
@@ -65,7 +66,8 @@ test.each(["valid", "answer-in-completion", "missing-ui", "mismatched-ui"] as co
 					// As written before answers were recorded with completions.
 					const { promptAnswer: _answer, ...legacy } = checkpoint;
 					await incomplete.commitCheckpoint(legacy);
-				} else if (checkpoint.kind !== "ui") await incomplete.commitCheckpoint(checkpoint);
+				} else if (checkpoint.kind !== "ui" || mode === "legacy-with-ui")
+					await incomplete.commitCheckpoint(checkpoint);
 				else if (mode === "mismatched-ui")
 					await incomplete.commitCheckpoint({ ...checkpoint, promptHash: "different-prompt" });
 			}
@@ -102,6 +104,10 @@ test.each(["valid", "answer-in-completion", "missing-ui", "mismatched-ui"] as co
 			assert.equal(replay.replayed, true);
 			assert.deepEqual(stageTimingFields(replay), stageTimingFields(prompt));
 			assert.equal(replay.pendingPrompt, undefined);
+			if (mode === "legacy-with-ui")
+				for (const checkpoint of backend.listCheckpoints(original.runId))
+					if (checkpoint.kind === "stage" && checkpoint.topology?.stageId === prompt.id)
+						assert.equal(checkpoint.promptAnswer, undefined, "a legacy completion is recorded again as it was");
 		}
 		assert.equal(receipts, 1);
 		assert.equal(attempts, 3);
