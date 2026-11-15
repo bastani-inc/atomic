@@ -1,0 +1,399 @@
+import type { ProviderRateLimitObservation, ProviderRequestGate } from "@bastani/atomic";
+import type { RateAcquireOutcome, RateBucketShape, SqlRateBuckets } from "../durable/journal/sql-rate-buckets.js";
+import type { FleetRateLimit, FleetRateLimits } from "./fleet-rate-types.js";
+
+export type { FleetRateLimit, FleetRateLimits } from "./fleet-rate-types.js";
+
+/**
+ * Fleet-wide model rate limits (#4768): every host of a shared pool draws a model call's tokens from one GCRA bucket
+ * per provider or `provider/model` scope in the shared journal, and shares 429 cooldowns there. A host's coordinator
+ * takes tokens in prefetched batches and hands them to its workers over IPC, so the journal sees about one acquire per
+ * batch. When the journal does not answer within {@link FLEET_RATE_STORE_TIMEOUT_MS}, the host meters on a local bucket
+ * at its share of the rate instead, so a model call never waits on the journal beyond that.
+ */
+
+/** The longest a model call waits on the journal for a token before the host meters locally. */
+export const FLEET_RATE_STORE_TIMEOUT_MS = 1_000;
+
+/** After the journal failed or was slow, how long a host meters locally before it asks the journal again. */
+export const FLEET_RATE_STORE_RETRY_MS = 5_000;
+
+/** How often a host reads shared cooldowns and the count of live hosts. */
+export const FLEET_RATE_POLL_MS = 1_000;
+
+/** Ten seconds' worth of requests, and at least one. */
+export function defaultBurst(requestsPerMinute: number): number {
+	return Math.max(1, Math.ceil(requestsPerMinute / 6));
+}
+
+/** The bucket a limit describes. */
+export function bucketShape(limit: FleetRateLimit): RateBucketShape {
+	return { intervalMs: 60_000 / limit.requestsPerMinute, burst: limit.burst ?? defaultBurst(limit.requestsPerMinute) };
+}
+
+/** Why `limits` is not valid `workers.rateLimits`, or undefined when it is. */
+export function fleetRateLimitsProblem(limits: unknown): string | undefined {
+	if (typeof limits !== "object" || limits === null || Array.isArray(limits))
+		return "an object of limits by provider or provider/model";
+	for (const [scope, limit] of Object.entries(limits)) {
+		const slash = scope.indexOf("/");
+		if (scope.trim() === "" || slash === 0 || slash === scope.length - 1)
+			return `"${scope}" is not a provider id or provider/model`;
+		if (typeof limit !== "object" || limit === null) return `${scope} needs { requestsPerMinute }`;
+		const { requestsPerMinute, burst, prefetch } = limit as Record<string, unknown>;
+		if (typeof requestsPerMinute !== "number" || !Number.isFinite(requestsPerMinute) || requestsPerMinute <= 0)
+			return `${scope}.requestsPerMinute must be a positive number`;
+		for (const [name, value] of [
+			["burst", burst],
+			["prefetch", prefetch],
+		] as const)
+			if (value !== undefined && (!Number.isSafeInteger(value) || (value as number) < 1))
+				return `${scope}.${name} must be a positive integer`;
+	}
+	return undefined;
+}
+
+/** The configured scopes a call to `provider`'s `model` draws from: the provider's, then the model's. */
+export function rateScopesFor(scopes: Iterable<string>, provider: string, model: string): string[] {
+	const configured = new Set(scopes);
+	return [provider, `${provider}/${model}`].filter((scope) => configured.has(scope));
+}
+
+/** The scope an observation covers, as rate limits name it. */
+export function observationScope(observation: ProviderRateLimitObservation): string {
+	return observation.model === undefined ? observation.provider : `${observation.provider}/${observation.model}`;
+}
+
+/** A cooldown as an observation workers apply, ending `remainingMs` from `now`. */
+export function cooldownObservation(
+	scope: string,
+	remainingMs: number,
+	now = Date.now(),
+): ProviderRateLimitObservation {
+	const slash = scope.indexOf("/");
+	const untilEpochMs = Math.ceil(now + remainingMs);
+	return slash < 0
+		? { provider: scope, kind: "cooldown", untilEpochMs }
+		: { provider: scope.slice(0, slash), model: scope.slice(slash + 1), kind: "cooldown", untilEpochMs };
+}
+
+/** A token bucket in this process (GCRA), on its clock: the store's own rule, for when the store does not answer. */
+export class LocalGcra {
+	private tat = 0;
+	private readonly shape: RateBucketShape;
+	constructor(shape: RateBucketShape) {
+		this.shape = shape;
+	}
+
+	/** Takes `count` tokens and returns 0, or takes none and returns how long until one is free. */
+	take(now: number, count = 1): number {
+		const { intervalMs, burst } = this.shape;
+		const next = Math.max(this.tat, now) + count * intervalMs;
+		if (next - now <= burst * intervalMs) {
+			this.tat = next;
+			return 0;
+		}
+		return Math.max(1, Math.ceil(Math.max(this.tat, now) + intervalMs - burst * intervalMs - now));
+	}
+
+	/** Gives back `count` tokens taken but not used. */
+	refund(count = 1): void {
+		this.tat -= count * this.shape.intervalMs;
+	}
+}
+
+interface ScopeState {
+	readonly shape: RateBucketShape;
+	readonly prefetch: number;
+	/** Tokens taken from the store and not handed out yet, usable until `expiresAt`. */
+	tokens: number;
+	expiresAt: number;
+	/** Until when the store said no token is free. */
+	waitUntil: number;
+	/** Whether this process gave the store the scope's shape. */
+	shaped: boolean;
+	/** The store acquire in flight, resolving to whether it answered; concurrent requests of the scope share it. */
+	fetching?: Promise<boolean>;
+	/** The local bucket while the store does not answer, and when to ask the store again. */
+	local?: LocalGcra;
+	retryStoreAt: number;
+}
+
+export type FleetRateLimitMode = "store" | "local-fallback";
+
+export interface FleetRateLimiterOptions {
+	readonly store: SqlRateBuckets;
+	readonly limits: FleetRateLimits;
+	readonly shareCooldowns: boolean;
+	/** This host's workers for the root: the default prefetch is half of them. */
+	readonly slots: number;
+	/** Shared cooldowns read from the store, to apply as limits on this host. */
+	readonly applyCooldowns: (observations: readonly ProviderRateLimitObservation[]) => void;
+	/** Internal, tests only. */
+	readonly timeoutMs?: number;
+	readonly retryStoreMs?: number;
+	readonly pollMs?: number;
+}
+
+/** A host coordinator's view of the fleet's buckets for one root. */
+export class FleetRateLimiter {
+	private readonly scopes = new Map<string, ScopeState>();
+	private liveHosts = 1;
+	private pollTimer?: NodeJS.Timeout;
+	private polling?: Promise<void>;
+	private closed = false;
+	private readonly timeoutMs: number;
+	private readonly retryStoreMs: number;
+	private readonly options: FleetRateLimiterOptions;
+
+	constructor(options: FleetRateLimiterOptions) {
+		this.options = options;
+		this.timeoutMs = options.timeoutMs ?? FLEET_RATE_STORE_TIMEOUT_MS;
+		this.retryStoreMs = options.retryStoreMs ?? FLEET_RATE_STORE_RETRY_MS;
+		for (const [scope, limit] of Object.entries(options.limits)) {
+			const shape = bucketShape(limit);
+			this.scopes.set(scope, {
+				shape,
+				prefetch: Math.min(shape.burst, limit.prefetch ?? Math.max(1, Math.ceil(options.slots / 2))),
+				tokens: 0,
+				expiresAt: 0,
+				waitUntil: 0,
+				shaped: false,
+				retryStoreAt: 0,
+			});
+		}
+	}
+
+	/** The scopes a worker asks tokens of. */
+	get rateScopes(): readonly string[] {
+		return [...this.scopes.keys()];
+	}
+
+	/** `"local-fallback"` while any scope meters locally because the store did not answer. */
+	get mode(): FleetRateLimitMode {
+		for (const state of this.scopes.values()) if (state.local !== undefined) return "local-fallback";
+		return "store";
+	}
+
+	/** Starts reading shared cooldowns and live hosts. */
+	start(): void {
+		const tick = () => {
+			if (this.closed) return;
+			this.polling = this.poll().finally(() => {
+				this.polling = undefined;
+				if (!this.closed) this.pollTimer = setTimeout(tick, this.options.pollMs ?? FLEET_RATE_POLL_MS).unref();
+			});
+		};
+		tick();
+	}
+
+	async close(): Promise<void> {
+		this.closed = true;
+		clearTimeout(this.pollTimer);
+		await this.polling;
+	}
+
+	/** Reads shared cooldowns, applied when the root shares them, and how many hosts the local fallback divides by. */
+	async poll(): Promise<void> {
+		try {
+			const { cooldowns, liveHosts } = await this.options.store.poll();
+			this.liveHosts = Math.max(1, liveHosts);
+			if (this.options.shareCooldowns && cooldowns.length > 0) {
+				const now = Date.now();
+				this.options.applyCooldowns(cooldowns.map((c) => cooldownObservation(c.scope, c.remainingMs, now)));
+			}
+		} catch {
+			// The store is unreachable: the last count stands, and cooldowns stay shared between this host's processes.
+		}
+	}
+
+	/** Shares a 429 cooldown this host recorded with every host of the fleet, when the root shares cooldowns. */
+	shareCooldown(observation: ProviderRateLimitObservation): void {
+		if (!this.options.shareCooldowns || observation.kind !== "cooldown") return;
+		const remainingMs = observation.untilEpochMs - Date.now();
+		if (remainingMs <= 0) return;
+		// Best effort: a host that cannot reach the store still holds its own processes back.
+		void this.options.store.cooldown(observationScope(observation), remainingMs).catch(() => {});
+	}
+
+	/**
+	 * Takes one token of each configured scope a call to `provider`'s `model` draws from, and returns 0; or takes none
+	 * and returns how long the call waits before it asks again. Never waits on the store beyond the timeout.
+	 */
+	async acquire(provider: string, model: string): Promise<number> {
+		const taken: ScopeState[] = [];
+		for (const scope of rateScopesFor(this.scopes.keys(), provider, model)) {
+			const state = this.scopes.get(scope)!;
+			const waitMs = await this.take(scope, state);
+			if (waitMs > 0) {
+				for (const held of taken) this.refund(held);
+				return waitMs;
+			}
+			taken.push(state);
+		}
+		return 0;
+	}
+
+	private refund(state: ScopeState): void {
+		if (state.local !== undefined) state.local.refund();
+		else state.tokens++;
+	}
+
+	private async take(scope: string, state: ScopeState): Promise<number> {
+		let now = Date.now();
+		if (state.tokens > 0 && state.expiresAt <= now) state.tokens = 0;
+		if (state.tokens > 0) {
+			state.tokens--;
+			return 0;
+		}
+		if (state.waitUntil > now) return state.waitUntil - now;
+		if (state.local !== undefined) {
+			// Metering locally: the store is asked again in the background, and takes over once it answers.
+			if (state.fetching === undefined && now >= state.retryStoreAt) this.startFetch(scope, state);
+			return this.takeLocally(state, now);
+		}
+		const answered = await within(state.fetching ?? this.startFetch(scope, state), this.timeoutMs);
+		now = Date.now();
+		if (answered !== "done") return this.takeLocally(state, now);
+		if (state.tokens > 0) {
+			state.tokens--;
+			return 0;
+		}
+		return Math.max(1, state.waitUntil - now);
+	}
+
+	/**
+	 * Asks the store for the scope's next batch. Answered, it ends the local fallback; failed or slower than the
+	 * timeout, it starts or keeps the fallback and the store is asked again after the retry wait. A slow request that
+	 * answers later still keeps its tokens, so nothing the store granted is lost.
+	 */
+	private startFetch(scope: string, state: ScopeState): Promise<boolean> {
+		const fetching: Promise<boolean> = this.fetch(scope, state).then(
+			() => {
+				state.local = undefined;
+				if (state.fetching === fetching) state.fetching = undefined;
+				return true;
+			},
+			() => {
+				if (state.fetching === fetching) state.fetching = undefined;
+				this.fallBack(state);
+				return false;
+			},
+		);
+		state.fetching = fetching;
+		const timer = setTimeout(() => {
+			if (state.fetching !== fetching) return;
+			// No longer waited on: the next ask after the retry wait sends a request of its own.
+			state.fetching = undefined;
+			this.fallBack(state);
+		}, this.timeoutMs);
+		timer.unref?.();
+		void fetching.then(() => clearTimeout(timer));
+		return fetching;
+	}
+
+	private fallBack(state: ScopeState): void {
+		state.retryStoreAt = Date.now() + this.retryStoreMs;
+		this.localBucket(state);
+	}
+
+	/** The scope's local bucket: this host's share of the fleet's rate, the rate divided by the live hosts. */
+	private localBucket(state: ScopeState): LocalGcra {
+		state.local ??= new LocalGcra({
+			intervalMs: state.shape.intervalMs * Math.max(1, this.liveHosts),
+			burst: state.shape.burst,
+		});
+		return state.local;
+	}
+
+	private takeLocally(state: ScopeState, now: number): number {
+		return this.localBucket(state).take(now);
+	}
+
+	private async fetch(scope: string, state: ScopeState): Promise<void> {
+		let count = state.prefetch;
+		for (let tries = 0; tries < 2; tries++) {
+			const outcome: RateAcquireOutcome = await this.options.store.acquire(
+				scope,
+				count,
+				state.shaped ? undefined : state.shape,
+			);
+			state.shaped = true;
+			const now = Date.now();
+			if (outcome.granted > 0) {
+				state.tokens += outcome.granted;
+				state.expiresAt = now + Math.max(1_000, state.shape.burst * state.shape.intervalMs);
+				state.waitUntil = 0;
+				return;
+			}
+			if (!("waitMs" in outcome)) return;
+			// Fewer tokens than asked may fit now: ask for those once.
+			if (outcome.waitMs === 0 && outcome.fits < count) {
+				count = outcome.fits;
+				continue;
+			}
+			state.waitUntil = now + Math.max(1, outcome.waitMs);
+			return;
+		}
+	}
+}
+
+/** What `promise`, whether the store answered, settled to within `ms`, or `"timeout"`. */
+async function within(promise: Promise<boolean>, ms: number): Promise<"done" | "failed" | "timeout"> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			promise.then((answered) => (answered ? ("done" as const) : ("failed" as const))),
+			new Promise<"timeout">((resolve) => {
+				timer = setTimeout(() => resolve("timeout"), ms);
+				timer.unref?.();
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** The longest one wait between two asks for a token. */
+const GATE_MAX_WAIT_MS = 60_000;
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		const abort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason ?? new Error("Provider request aborted"));
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", abort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", abort, { once: true });
+	});
+}
+
+/**
+ * The gate a pooled worker's model calls wait on (#4768): a call to a configured scope asks the coordinator for a token,
+ * through `ask`, and waits as long as the reply says before asking again. A coordinator that cannot answer lets the call
+ * go: the fleet's limit never fails a call.
+ */
+export function fleetRateGate(
+	scopes: readonly string[],
+	ask: (provider: string, model: string) => Promise<unknown>,
+): ProviderRequestGate {
+	return async (provider, model, signal) => {
+		if (rateScopesFor(scopes, provider, model).length === 0) return;
+		for (;;) {
+			signal?.throwIfAborted();
+			let waitMs: number;
+			try {
+				const reply = await ask(provider, model);
+				waitMs = typeof reply === "number" && Number.isFinite(reply) && reply > 0 ? reply : 0;
+			} catch {
+				return;
+			}
+			if (waitMs === 0) return;
+			await sleep(Math.min(waitMs, GATE_MAX_WAIT_MS), signal);
+		}
+	};
+}

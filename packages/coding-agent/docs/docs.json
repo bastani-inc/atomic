@@ -171,7 +171,19 @@
               "rpc/extension-ui",
               "rpc/examples",
               "json",
-              "tui"
+              "tui",
+              {
+                "group": "Libraries",
+                "pages": [
+                  "libraries",
+                  "libraries/ai",
+                  "libraries/tui",
+                  "libraries/agent-core",
+                  "libraries/codemode",
+                  "libraries/schema",
+                  "libraries/telemetry"
+                ]
+              }
             ]
           }
         ]

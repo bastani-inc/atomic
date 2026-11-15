@@ -636,6 +636,7 @@ export {
 	type ProviderRateLimitObservation,
 	type ProviderRateLimitSnapshot,
 	type ProviderRequestBudget,
+	type ProviderRequestGate,
 	providerCooldownMs,
 	providerIdForModel,
 	providerRateLimitObservations,
@@ -643,6 +644,7 @@ export {
 	providerRetryHint,
 	providerUnavailableMs,
 	recordProviderRateLimit,
+	setProviderRequestGate,
 } from "./core/provider-rate-limits.js";
 export type {
 	DefaultResourceLoaderInheritanceSnapshot,

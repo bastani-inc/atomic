@@ -1,7 +1,7 @@
 {
 	"name": "@bastani/atomic-telemetry",
 	"version": "0.0.0",
-	"description": "Vendor-neutral telemetry contracts and typed schema utilities for pi",
+	"description": "Atomic's vendor-neutral telemetry contracts, typed schemas and reference contexts",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -37,7 +37,8 @@
 	"keywords": [
 		"telemetry",
 		"tracing",
-		"observability"
+		"observability",
+		"atomic"
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
@@ -52,7 +53,7 @@
 		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/telemetry"
 	},
-	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/telemetry#readme",
+	"homepage": "https://docs.bastani.ai/libraries/telemetry",
 	"bugs": {
 		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
