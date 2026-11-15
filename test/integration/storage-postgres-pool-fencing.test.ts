@@ -11,6 +11,7 @@ import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-
 import { isStaleLeaseError, type Lease } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
+import { syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
 import { type StorageBackendScope, storageBackends } from "../helpers/storage-backends.js";
 
 /**
@@ -376,6 +377,28 @@ describe.skipIf(postgres.skipReason !== undefined)("the worker pool's fenced wri
 		const peer = await openSqlPoolQueue(await SqlRunJournal.open(other, { prefix: scope.prefix }));
 		await peer.complete(lease, attempt, { runId: attempt.childRunId, status: "completed" });
 		assert.equal((await pool.inspect("root"))[0]!.state, "completed");
+	});
+
+	test("a commit that records a worktree snapshot waits for snapshot garbage collection, and one without does not (#5102)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
+		const kept = textBlob("committed patch");
+		await journal.snapshotBlobs.putBlobs([kept]);
+		const snapshot = syntheticSnapshot("stored", [kept.hash]);
+		// Garbage collection runs as a serial transaction over the whole database, as `collectSnapshotGarbage` does.
+		const collection = await holding(other, (tx) => tx.all("SELECT 1"), true);
+		const plain = pool.commit(lease, attempt, "plain", { kind: "checkpoint", checkpoint: toolCheckpoint(item, 0) });
+		assert.equal(await pendingAfter(plain), false, "a commit without snapshots goes ahead");
+		await plain;
+		const carrying = pool.commit(lease, attempt, "carrying", {
+			kind: "checkpoint",
+			checkpoint: { ...toolCheckpoint(item, 1), worktreeSnapshots: [snapshot] } as DurableToolCheckpoint,
+		});
+		const waited = await pendingAfter(carrying);
+		collection.release();
+		await collection.done;
+		await carrying;
+		assert.equal(waited, true, "a commit recording a snapshot waits until collection ends");
 	});
 
 	test("the pool's fenced writes are counted and watched like its other writes (#5102)", async () => {

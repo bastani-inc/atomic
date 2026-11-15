@@ -49,6 +49,11 @@ describe("sqliteLocationPath", () => {
 		assert.equal(sqliteLocationPath(""), undefined);
 	});
 
+	test("reads the path a Windows long-path form names, which Atomic opens long paths by (#5139)", () => {
+		assert.equal(sqliteLocationPath("\\\\?\\C:\\Users\\u\\journal.sqlite"), "C:\\Users\\u\\journal.sqlite");
+		assert.equal(sqliteLocationPath("\\\\?\\UNC\\server\\share\\j.sqlite"), "\\\\server\\share\\j.sqlite");
+	});
+
 	test("reads the file a SQLite URI filename, file URL or Buffer names", () => {
 		assert.equal(sqliteLocationPath("file:/home/u/journal.sqlite?mode=ro#part"), "/home/u/journal.sqlite");
 		assert.equal(sqliteLocationPath("file://localhost/home/u/a%20b.sqlite"), "/home/u/a b.sqlite");

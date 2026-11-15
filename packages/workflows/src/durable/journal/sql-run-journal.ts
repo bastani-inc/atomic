@@ -207,11 +207,15 @@ export class SqlRunJournal implements RunJournal {
 					}),
 			// A database that locks rows (PostgreSQL) runs the pool's audited hot paths as fenced transactions (#5102).
 			...(batch === undefined && locksRows(this.dialect)
-				? { fenced: (statements, audit) => this.operation(() => this.fencedWrite(statements, audit)) }
+				? {
+						fenced: (statements, audit, excludesSerial) =>
+							this.operation(() => this.fencedWrite(statements, audit, excludesSerial)),
+					}
 				: {}),
 			read: (body) => this.operation(() => this.readSnapshot(body)),
 			withAppendGuard: (guard, action) => this.appendGuard.run(guard, action),
 			tables: this.tables,
+			snapshotBlobs,
 			dialect: this.dialect,
 			adapter: database.descriptor.adapter,
 			...(database.notifications === undefined ? {} : { notifications: database.notifications }),
@@ -227,7 +231,11 @@ export class SqlRunJournal implements RunJournal {
 	 * held only while the server runs them and commits. A failed statement fails the write with its own error, the first
 	 * in order; the ones after it fail only because it did.
 	 */
-	private async fencedWrite(statements: readonly SqliteStatement[], audit: FencedPathId): Promise<SqliteRow[][]> {
+	private async fencedWrite(
+		statements: readonly SqliteStatement[],
+		audit: FencedPathId,
+		excludesSerial = false,
+	): Promise<SqliteRow[][]> {
 		let answers: Promise<PromiseSettledResult<SqliteRow[]>[]> | undefined;
 		const firstFailure = async () =>
 			(await answers)?.find((answer): answer is PromiseRejectedResult => answer.status === "rejected")?.reason;
@@ -236,7 +244,10 @@ export class SqlRunJournal implements RunJournal {
 				async (tx) => {
 					answers = Promise.allSettled(statements.map((statement) => tx.all(statement.sql, ...statement.params)));
 				},
-				{ ...JOURNAL_WRITE_TRANSACTION, concurrency: { kind: "fenced", audit } },
+				{
+					...JOURNAL_WRITE_TRANSACTION,
+					concurrency: excludesSerial ? { kind: "fenced", audit, excludesSerial } : { kind: "fenced", audit },
+				},
 			);
 		} catch (error) {
 			throw (await firstFailure()) ?? error;

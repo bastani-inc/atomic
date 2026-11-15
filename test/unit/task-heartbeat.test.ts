@@ -510,7 +510,7 @@ test.runIf(process.platform !== "win32")(
 );
 
 test("a workflow stage's tasks heartbeat through its current session after replacement, and stop when the stage pauses", async () => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"], shouldAdvanceTime: true });
 	const boundary = new WorkflowStageAdmissionBoundary();
 	boundary.bindTaskIdentity(randomUUID(), "run", "stage");
 	const sessionDelivery = () => {

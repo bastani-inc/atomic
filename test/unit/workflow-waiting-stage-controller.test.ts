@@ -1312,7 +1312,7 @@ describe("a release and a reopening that race (#4309)", () => {
 
 	test("a message sent while the idle scan is still releasing the stage reaches it after the release, never leaving it waiting with a live session (#4309)", async () => {
 		const IDLE_THRESHOLD_MS = 1_000;
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
 		const releaser = new StageIdleReleaser((key, error) => assert.fail(`${key} could not release: ${String(error)}`));
 		try {
 			const disposing = Promise.withResolvers<void>();

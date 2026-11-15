@@ -5,6 +5,7 @@ import {
 	type SqliteRow,
 	type SqliteStatement,
 	type SqliteTransactionOptions,
+	type SqlSnapshotBlobStore,
 	type StorageDialect,
 	type StorageNotificationSubscription,
 	type StorageNotifications,
@@ -102,6 +103,8 @@ export interface SqlPoolBatchOptions {
 	 * `fenced` transaction. Without it, such a database runs the write in a `serial` transaction, as before (#5102).
 	 */
 	readonly audit?: FencedPathId;
+	/** The fenced write also excludes whole-database serial transactions (`TransactionConcurrency`). */
+	readonly excludesSerial?: boolean;
 }
 
 /**
@@ -119,6 +122,7 @@ export function locksRows(dialect: StorageDialect): boolean {
 export type SqlPoolFencedWrite = (
 	statements: readonly SqliteStatement[],
 	audit: FencedPathId,
+	excludesSerial?: boolean,
 ) => Promise<SqliteRow[][]>;
 
 export interface SqlPoolStorage {
@@ -146,6 +150,8 @@ export interface SqlPoolStorage {
 	read<T>(body: (executor: SqliteExecutor) => Promise<T>): Promise<T>;
 	withAppendGuard<T>(guard: JournalAppendGuard, action: () => Promise<T>): Promise<T>;
 	readonly tables: Readonly<{ runs: string; events: string; leases: string }>;
+	/** The journal database's snapshot blob table, which the work a pool queues carries snapshots of (#5077). */
+	readonly snapshotBlobs?: SqlSnapshotBlobStore;
 	/** The SQL dialect of the journal's database: the pool's statements ask it for what differs between engines. */
 	readonly dialect: StorageDialect;
 	/** The database's adapter, as its descriptor names it, such as `"libsql"` or `"postgres"`. */
@@ -231,7 +237,12 @@ export function registerSqlPoolStorage(journal: RunJournal, storage: SqlPoolStor
 		...(batch === undefined
 			? {}
 			: { batch: (statements, options) => writes.watch(() => batch(statements, options)) }),
-		...(fenced === undefined ? {} : { fenced: (statements, audit) => writes.watch(() => fenced(statements, audit)) }),
+		...(fenced === undefined
+			? {}
+			: {
+					fenced: (statements, audit, excludesSerial) =>
+						writes.watch(() => fenced(statements, audit, excludesSerial)),
+				}),
 	});
 }
 
@@ -278,9 +289,9 @@ export function observeSqlPoolTransactions(journal: RunJournal, observe: () => v
 		...(fenced === undefined
 			? {}
 			: {
-					fenced: (statements, audit) => {
+					fenced: (statements, audit, excludesSerial) => {
 						observe();
-						return fenced(statements, audit);
+						return fenced(statements, audit, excludesSerial);
 					},
 				}),
 		...(batch === undefined

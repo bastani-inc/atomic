@@ -30,9 +30,10 @@ const FENCED_PATHS = {
 	/** `SqlPoolQueue.commit` of a checkpoint or a session: the event takes the run's next sequence under its run row. */
 	"pool-commit": {
 		fences: [
+			"the database-wide serial lock, shared, only when the checkpoint records worktree snapshots (before every row lock)",
 			"root lease row FOR KEY SHARE",
 			"attempt's work row FOR UPDATE",
-			"root run row FOR UPDATE (FOR SHARE without an event), then pool control",
+			"root run row FOR UPDATE (FOR SHARE without an event), then pool control and the snapshots' stored blobs",
 			"root usage totals row",
 		],
 		conformance: "32 concurrent writers commit one event per key with a dense sequence (#5102)",

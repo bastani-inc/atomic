@@ -323,6 +323,9 @@ export async function setupSqld(
 		role === "primary"
 			? `--grpc-listen-addr ${host.ip}:${replicationPort} --grpc-tls --grpc-ca-cert-file ${SECRETS}/ca.pem --grpc-cert-file ${SECRETS}/host.pem --grpc-key-file ${SECRETS}/host.key`
 			: `--primary-grpc-url https://${primaryIp}:${replicationPort} --primary-grpc-tls --primary-grpc-ca-cert-file ${SECRETS}/ca.pem --primary-grpc-cert-file ${SECRETS}/host.pem --primary-grpc-key-file ${SECRETS}/host.key`;
+	// sqld 0.24.33 can stop taking writes under concurrent writers unless the primary checkpoints its WAL on a timer
+	// (tursodatabase/libsql#2286, #4790); no sqld release fixes it yet.
+	const checkpoint = role === "primary" ? "--checkpoint-interval-s 60" : "";
 	const script = `
 echo "${sqldDigest}  ${REMOTE_ROOT}/sqld" | sha256sum -c --quiet
 chmod 755 ${REMOTE_ROOT}/sqld
@@ -336,7 +339,7 @@ sudo tee /etc/systemd/system/adt-sqld.service >/dev/null <<UNIT
 Description=atomic-distributed-test sqld (${role})
 [Service]
 User=${host.user}
-ExecStart=${REMOTE_ROOT}/sqld --db-path /var/lib/adt-sqld/data --http-listen-addr 127.0.0.1:8080 --admin-listen-addr 127.0.0.1:9090 ${tls} --enable-namespaces --disable-default-namespace --auth-jwt-key-file ${SECRETS}/jwt.pub --no-welcome
+ExecStart=${REMOTE_ROOT}/sqld --db-path /var/lib/adt-sqld/data --http-listen-addr 127.0.0.1:8080 --admin-listen-addr 127.0.0.1:9090 ${tls} ${checkpoint} --enable-namespaces --disable-default-namespace --auth-jwt-key-file ${SECRETS}/jwt.pub --no-welcome
 Restart=no
 UNIT
 sudo tee /etc/systemd/system/adt-gateway.service >/dev/null <<UNIT

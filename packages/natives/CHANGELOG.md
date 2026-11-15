@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `processCreationTime(pid)`: on Windows, the creation time of a running process, as the decimal count of 100-nanosecond intervals since 1601 UTC; `null` for a process that is gone or cannot be queried, and on other platforms ([#5141](https://github.com/bastani-inc/atomic/issues/5141)).
+
 ## [0.9.72] - 2026-11-08
 
 ### Added
