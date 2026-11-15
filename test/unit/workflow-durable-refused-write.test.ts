@@ -76,7 +76,10 @@ function definitions(shape: Shape, plan: { current: Plan }): { parent: WorkflowD
 			await ctx.stage("s1").prompt("s1");
 			if (shape === "full") {
 				assert.equal(await ctx.ui.confirm("go on?"), true);
-				await ctx.tool("t1", {}, async () => "t1");
+				await ctx.tool("t1", {}, async () => {
+					toolRuns.t1 += 1;
+					return "t1";
+				});
 				await ctx.tool("t2", {}, t2);
 				await ctx.stage("s2").prompt("s2");
 				await ctx.workflow(child);
@@ -93,6 +96,9 @@ function definitions(shape: Shape, plan: { current: Plan }): { parent: WorkflowD
 	}) as WorkflowDefinition;
 	return { parent, child };
 }
+
+/** How often the full workflow's tool t1 ran, across every run of the current test. */
+const toolRuns = { t1: 0 };
 
 const settled = (status: string) => (status === "cached" || status === "replayed" ? "completed" : status);
 
@@ -147,7 +153,12 @@ async function waitEnded(runId: string): Promise<RunSnapshot> {
 async function runWithRefusal(
 	refusal: Refusal,
 	plans: readonly Plan[],
-	options: { readonly shape?: Shape; readonly restart?: boolean } = {},
+	options: {
+		readonly shape?: Shape;
+		readonly restart?: boolean;
+		/** Also refuse, once, the write of the run's failed status in the refused attempt. */
+		readonly refuseFailedStatus?: boolean;
+	} = {},
 ): Promise<{
 	refused: string | undefined;
 	errors: readonly string[];
@@ -155,12 +166,15 @@ async function runWithRefusal(
 	views: readonly { readonly live: unknown; readonly durable: unknown }[];
 	/** The failed stage each failed attempt named. */
 	failedStages: readonly (string | undefined)[];
+	/** The run's durable status after each failed attempt. */
+	durableStatuses: readonly (string | undefined)[];
 }> {
 	const shape = options.shape ?? "full";
 	let attempt = 0;
 	let commits = 0;
 	let refused: string | undefined;
 	let refusedCount = 0;
+	let statusRefused = false;
 	const instrument = (opened: JournalTestBackend): JournalTestBackend => {
 		const commit = opened.commitCheckpoint.bind(opened);
 		opened.commitCheckpoint = ((checkpoint: DurableCheckpoint, signal?: { readonly signal?: AbortSignal }) => {
@@ -181,6 +195,24 @@ async function runWithRefusal(
 			}
 			return commit(checkpoint, signal);
 		}) as typeof opened.commitCheckpoint;
+		const commitStatus = opened.commitWorkflowStatus.bind(opened);
+		opened.commitWorkflowStatus = ((...args: Parameters<typeof opened.commitWorkflowStatus>) => {
+			if (
+				options.refuseFailedStatus === true &&
+				args[1] === "failed" &&
+				attempt === refusal.attempt &&
+				!statusRefused
+			) {
+				statusRefused = true;
+				return Promise.reject(
+					new StorageUnavailableError(
+						{ adapter: "test", location: "refused" },
+						new Error("journal refused") as never,
+					),
+				);
+			}
+			return commitStatus(...args);
+		}) as typeof opened.commitWorkflowStatus;
 		setDurableBackend(opened);
 		return opened;
 	};
@@ -221,6 +253,7 @@ async function runWithRefusal(
 	const errors: string[] = [];
 	const views: { live: unknown; durable: unknown }[] = [];
 	const failedStages: (string | undefined)[] = [];
+	const durableStatuses: (string | undefined)[] = [];
 	const where = () => `refused ${refused ?? "nothing"} in attempt ${attempt}`;
 	/** Resume `runId` until it completes, from attempt `first`, with a durable view after every attempt. */
 	const complete = async (runId: string, first: number, plans: readonly Plan[]): Promise<void> => {
@@ -230,6 +263,7 @@ async function runWithRefusal(
 			assert.notEqual(durableGraph(backend, runId), undefined, `${where()}: the run has a durable view`);
 			if (live !== undefined) views.push({ live: liveGraph(runId), durable: durableGraph(backend, runId) });
 			if (live !== undefined && live.status !== "completed") {
+				durableStatuses.push(backend.getWorkflow(runId)?.status);
 				const failedStageId = live.failedStageId;
 				failedStages.push(live.stages.find((stage) => stage.id === failedStageId)?.name);
 			}
@@ -297,7 +331,7 @@ async function runWithRefusal(
 	const reopened = await backend.reopen();
 	assert.deepEqual(durableGraph(reopened, runId), expected, `${where()}: the reopened durable view is the live one`);
 	await forkCheck(reopened);
-	return { refused, errors, views, failedStages };
+	return { refused, errors, views, failedStages, durableStatuses };
 }
 
 /** The attempts of a fork of the completed run are numbered from here. */
@@ -356,6 +390,22 @@ describe("a refused durable write leaves the run inspectable and resumable (#502
 			];
 			const { refused } = await runWithRefusal({ attempt, prefix: "tool-failure:", times: 2 }, plans, { restart });
 			assert.match(refused ?? "", /^tool-failure:/, `attempt ${attempt}, restart ${restart}`);
+			store.clear();
+		}
+	});
+
+	test("a run whose failed status write is refused resumes without running its completed nodes again (#5027)", async () => {
+		for (const restart of [false, true]) {
+			toolRuns.t1 = 0;
+			const { refused, errors, durableStatuses } = await runWithRefusal(
+				{ attempt: 0, prefix: "no-such-record:" },
+				[{ failT2: true, failS2: false }],
+				{ restart, refuseFailedStatus: true },
+			);
+			assert.equal(refused, undefined);
+			assert.match(errors[0] ?? "", /planned t2 failure/);
+			assert.equal(durableStatuses[0], "running", "the refused failed status leaves the run running");
+			assert.equal(toolRuns.t1, 1, `t1 replays from its record (restart ${restart})`);
 			store.clear();
 		}
 	});
