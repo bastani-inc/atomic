@@ -11,7 +11,13 @@ use std::{
 };
 mod input;
 pub use input::*;
+#[cfg(target_os = "linux")]
+mod cgroup;
+#[cfg(unix)]
+mod guardian;
 mod resource;
+#[cfg(unix)]
+mod session;
 mod spool;
 #[cfg(windows)]
 mod windows;
@@ -477,6 +483,11 @@ impl Actor {
 	fn run_command(&self, runner: &RunnerLease, command: &CommandTask) {
 		use std::os::unix::process::CommandExt;
 		use std::process::{Command, Stdio};
+		// A delegated cgroup v2 child, where there is one, that the pipe leader enters before exec (#5057).
+		#[cfg(target_os = "linux")]
+		let cgroup = cgroup::Cgroup::create();
+		#[cfg(target_os = "linux")]
+		let procs = cgroup.as_ref().map(|(_, procs)| std::os::fd::AsRawFd::as_raw_fd(procs));
 		let spawned = (|| -> io::Result<SpawnedProcess> {
 			match command.intent.terminal {
 				CommandTerminal::Pty { columns, rows } => {
@@ -496,7 +507,6 @@ impl Actor {
 					};
 					spawn
 						.arg(command.intent.command.process_text())
-						.process_group(0)
 						.stdin(Stdio::piped())
 						.stdout(Stdio::piped())
 						.stderr(Stdio::piped());
@@ -518,6 +528,22 @@ impl Actor {
 					}
 					if let Some(env) = &command.intent.env {
 						spawn.envs(env.iter().map(|(key, value)| (key, value.process_text())));
+					}
+					// A session of its own, whose ID is the leader's PID: cleanup ends every process left in it,
+					// including descendants that moved to another process group (#5057). Host death is the
+					// guardian's (see `guardian`), not PR_SET_PDEATHSIG's: that fires when the spawning thread
+					// ends, which would kill a leader whose failed cleanup must keep it owned and reapable.
+					unsafe {
+						spawn.pre_exec(move || {
+							if libc::setsid() < 0 {
+								return Err(io::Error::last_os_error());
+							}
+							#[cfg(target_os = "linux")]
+							if let Some(procs) = procs {
+								cgroup::Cgroup::enter(procs);
+							}
+							Ok(())
+						});
 					}
 					let mut child = spawn.spawn().map_err(explain_spawn_error)?;
 					let stdin = child.stdin.take().unwrap();
@@ -555,6 +581,23 @@ impl Actor {
 		command.process_group.store(pid, Ordering::Release);
 		// Opened while the leader is unreaped, so its PID still names this command's group.
 		let mut group = ProcessGroup::new(pid);
+		#[cfg(target_os = "linux")]
+		if let Some((cgroup, procs)) = cgroup {
+			drop(procs);
+			// The pipe leader moved in before exec, so every descendant is in it; a PTY leader moves in now.
+			let complete = matches!(child, ProcessResource::Pipe(_));
+			if (complete && cgroup.holds(pid)) || (!complete && cgroup.attach(pid)) {
+				group.tree = std::mem::replace(&mut group.tree, session::Tree::new(pid))
+					.with_cgroup(cgroup, complete);
+			} else {
+				cgroup.remove();
+			}
+		}
+		// Pipe and PTY commands both lead a session of their own; killed if the host dies first (#5057).
+		#[cfg(target_os = "linux")]
+		guardian::watch(pid, group.tree.cgroup().map(|cgroup| cgroup.path().to_path_buf()));
+		#[cfg(not(target_os = "linux"))]
+		guardian::watch(pid, None);
 		#[cfg(all(test, target_os = "linux"))]
 		if command.group_by_number {
 			group.pidfd = None;
@@ -687,7 +730,16 @@ impl Actor {
 				// which an open-ended quarantine must never probe or signal (#4338).
 				if status.is_some() && !group_gone {
 					group_gone = match command.probe_group(&group) {
-						Ok(gone) => gone,
+						Ok(gone) => {
+							if gone {
+								// Empty for good: from now on its session ID may lead an unrelated session.
+								group.forget();
+							} else if killed {
+								// A member a scan missed when the KILL went out, for example one that forked meanwhile.
+								group.tree.signal_outside_group(libc::SIGKILL);
+							}
+							gone
+						},
 						Err(error) => {
 							// Darwin also returns EPERM for zombie-only groups after the
 							// leader is reaped. Other parents may still be reaping members.
@@ -855,8 +907,14 @@ struct FailedProcess {
 #[cfg(unix)]
 impl FailedProcess {
 	fn reaped(&mut self) -> bool {
-		matches!(self.child.try_wait(), Ok(Some(_)))
-			&& process_group_gone(self.child.id() as libc::pid_t).unwrap_or(false)
+		let pid = self.child.id() as libc::pid_t;
+		let reaped = matches!(self.child.try_wait(), Ok(Some(_)))
+			&& process_group_gone(pid).unwrap_or(false)
+			&& (0..3).all(|_| session::signal_outside_group(pid, 0) == 0);
+		if reaped {
+			guardian::unwatch(pid);
+		}
+		reaped
 	}
 }
 // A failed resource outlives an environment, without an indefinitely blocked
@@ -866,6 +924,13 @@ static FAILED_PROCESSES: Mutex<Vec<FailedProcess>> = Mutex::new(Vec::new());
 #[cfg(unix)]
 pub(super) fn poll_failed_processes() {
 	FAILED_PROCESSES.lock().unwrap().retain_mut(|resource| !resource.reaped());
+}
+/// Sends SIGKILL to every running supervised command's whole process tree at once, for a host about to exit without
+/// closing its task owners (#5057). Their cleanup still completes as usual. On Windows, Job objects already end them.
+#[napi]
+pub fn kill_supervised_process_trees() {
+	#[cfg(unix)]
+	guardian::kill_watched();
 }
 #[cfg(windows)]
 pub(super) fn poll_failed_processes() {
@@ -920,6 +985,8 @@ struct ProcessGroup {
 	reaped: bool,
 	#[cfg(target_os = "linux")]
 	pidfd: Option<std::os::fd::OwnedFd>,
+	/// The rest of the command's session (#5057).
+	tree: session::Tree,
 }
 #[cfg(unix)]
 impl ProcessGroup {
@@ -930,10 +997,19 @@ impl ProcessGroup {
 			reaped: false,
 			#[cfg(target_os = "linux")]
 			pidfd: group_pidfd(pid),
+			tree: session::Tree::new(pid),
 		}
 	}
-	/// Signals every member, with kill(2)'s result for a group: Ok if any member accepted it.
+	/// Signals every member of the group and every other process of the command's session (#5057), with kill(2)'s
+	/// result for a group: Ok if any member accepted it.
 	fn send(&self, signal: libc::c_int) -> io::Result<()> {
+		let outside = self.tree.signal_outside_group(signal);
+		match self.send_group(signal) {
+			Err(error) if error.raw_os_error() == Some(libc::ESRCH) && outside > 0 => Ok(()),
+			result => result,
+		}
+	}
+	fn send_group(&self, signal: libc::c_int) -> io::Result<()> {
 		#[cfg(target_os = "linux")]
 		if let Some(pidfd) = &self.pidfd {
 			return signal_group_pidfd(pidfd, signal);
@@ -944,12 +1020,20 @@ impl ProcessGroup {
 			Err(io::Error::last_os_error())
 		}
 	}
-	/// True once no process is left in the group, zombies included.
+	/// True once no process is left in the group or the rest of the session, zombies included.
 	fn gone(&self) -> io::Result<bool> {
-		match self.send(0) {
+		match self.send_group(0) {
 			Ok(()) => Ok(false),
-			Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(true),
+			Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(self.tree.members() == 0),
 			Err(error) => Err(error),
+		}
+	}
+	/// Stops watching the session for host death and removes its cgroup, once it is confirmed empty.
+	fn forget(&self) {
+		guardian::unwatch(self.pid);
+		#[cfg(target_os = "linux")]
+		if let Some(cgroup) = self.tree.cgroup() {
+			cgroup.remove();
 		}
 	}
 }
@@ -3003,5 +3087,103 @@ mod tests {
 		assert!(open_max_spawn_error(&ebadf(), 20, 10_240).is_none());
 		let other = io::Error::from_raw_os_error(libc::ENOENT);
 		assert!(open_max_spawn_error(&other, 10_236, 10_240).is_none());
+	}
+	/// A process leading a session of its own, as an unrelated session that reuses a stale watched session ID would.
+	#[cfg(target_os = "linux")]
+	struct Victim(std::process::Child);
+	#[cfg(target_os = "linux")]
+	impl Victim {
+		fn start() -> Self {
+			use std::os::unix::process::CommandExt;
+			let mut command = std::process::Command::new("sleep");
+			command.arg("30");
+			unsafe {
+				command.pre_exec(|| {
+					libc::setsid();
+					Ok(())
+				});
+			}
+			Self(command.spawn().unwrap())
+		}
+		fn pid(&self) -> libc::pid_t {
+			self.0.id() as libc::pid_t
+		}
+		fn alive(&mut self) -> bool {
+			matches!(self.0.try_wait(), Ok(None))
+		}
+	}
+	#[cfg(target_os = "linux")]
+	impl Drop for Victim {
+		fn drop(&mut self) {
+			let _ = self.0.kill();
+			let _ = self.0.wait();
+		}
+	}
+	#[cfg(target_os = "linux")]
+	fn exits_within(victim: &mut Victim, within: Duration) -> bool {
+		let deadline = Instant::now() + within;
+		while victim.alive() {
+			if Instant::now() >= deadline {
+				return false;
+			}
+			std::thread::sleep(PROCESS_POLL);
+		}
+		true
+	}
+	// #5057: a session ID names an unrelated session once its own empties and its leader's PID is reused. The guardian
+	// that outlives a dead host must never kill a session whose leader is not the process it was told to watch.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn guardian_spares_a_session_whose_leader_pid_now_names_another_process_5057() {
+		let mut victim = Victim::start();
+		guardian::testing::guardian_after_host_death(victim.pid(), Some("1"));
+		assert!(
+			!exits_within(&mut victim, Duration::from_millis(300)),
+			"the guardian killed an unrelated session"
+		);
+		guardian::testing::guardian_after_host_death(victim.pid(), None);
+		assert!(
+			exits_within(&mut victim, PROCESS_SHUTDOWN_GRACE),
+			"the guardian spared the session it watched"
+		);
+	}
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn crash_kill_spares_a_session_whose_leader_pid_now_names_another_process_5057() {
+		let mut victim = Victim::start();
+		let start = session::start_time(victim.pid()).unwrap();
+		guardian::testing::crash_kill(victim.pid(), start + 1);
+		let spared = !exits_within(&mut victim, Duration::from_millis(300));
+		guardian::testing::crash_kill(victim.pid(), start);
+		let killed = exits_within(&mut victim, PROCESS_SHUTDOWN_GRACE);
+		assert!(spared, "the crash kill reached an unrelated session");
+		assert!(killed, "the crash kill spared the session it watched");
+	}
+	// #5057: a command whose session emptied while a process that left it (setsid) still holds its output stays
+	// quarantined; its session ID must stop being watched at once, not when the output closes.
+	#[cfg(target_os = "linux")]
+	#[test]
+	fn a_quarantined_command_stops_being_watched_once_its_session_is_empty_5057() {
+		let (actor, owner) = command_owner();
+		let dir =
+			std::env::temp_dir().join(format!("atomic-unwatch-{}-{}", std::process::id(), actor.id));
+		std::fs::create_dir(&dir).unwrap();
+		actor
+			.start_command(&owner, pipe_intent(&escaped_holder(&dir, "exit 0")), "unwatch".into())
+			.unwrap();
+		let _holder = Holder::read(&dir);
+		let record = settled_record(&actor, &owner);
+		let command = actor.state.lock().unwrap().owners[0].tasks[0].command.clone().unwrap();
+		let session = command.process_group.load(Ordering::Acquire);
+		let deadline = Instant::now() + PROCESS_SHUTDOWN_GRACE;
+		while guardian::watching(session) && Instant::now() < deadline {
+			std::thread::sleep(PROCESS_POLL);
+		}
+		let watched = guardian::watching(session);
+		std::fs::write(dir.join("release"), "").unwrap();
+		actor.shutdown();
+		let _ = std::fs::remove_dir_all(&dir);
+		assert!(matches!(record.cleanup, Cleanup::Quarantined { .. }), "{record:?}");
+		assert!(!watched, "an empty session stayed watched while its output was held open");
 	}
 }

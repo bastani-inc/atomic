@@ -82,10 +82,10 @@ test("opening an initialized journal takes no write lock; a new one is initializ
 		const second = await SqlRunJournal.open(counted);
 		await second.close();
 		assert.equal(counts.transaction, 1, "an initialized journal opens without a transaction");
-		await database.run("UPDATE wf_meta SET schema_version = 2");
+		await database.run("UPDATE wf_meta SET schema_version = 3");
 		await assert.rejects(SqlRunJournal.open(counted), (error: Error) => {
 			assert.ok(error instanceof JournalSchemaVersionError);
-			assert.deepEqual([error.domain, error.found, error.supported], ["journal", 2, 1]);
+			assert.deepEqual([error.domain, error.found, error.supported], ["journal", 3, 2]);
 			return true;
 		});
 		assert.equal(counts.transaction, 1, "an unsupported version is refused without a transaction");

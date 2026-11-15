@@ -664,7 +664,7 @@ test("a version 1 pool journal migrates: renewal rows go, requests become digest
 		const seq =
 			Number((await f.database.get("SELECT MAX(seq) AS seq FROM wf_events WHERE run_id = 'root'"))?.seq) + 1;
 		await f.database.run(
-			"INSERT INTO wf_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			"root",
 			seq,
 			f.lease.epoch,
@@ -697,7 +697,7 @@ test("a version 1 pool journal migrates: renewal rows go, requests become digest
 		const resumed = await openSqlPoolQueue(journal);
 		const projection = await JournalDurableBackend.open(journal, { ownsJournal: false });
 		try {
-			assert.equal((await database.get("SELECT version FROM wf_runs_pool_meta"))?.version, 2);
+			assert.equal((await database.get("SELECT version FROM wf_runs_pool_meta"))?.version, 3);
 			const operations = await database.all("SELECT operation, request FROM wf_runs_pool_operations ORDER BY rowid");
 			assert.deepEqual(
 				operations.map((row) => row.operation),

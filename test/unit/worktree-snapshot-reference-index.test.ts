@@ -147,7 +147,7 @@ async function writeRandomHistory(seed: number, { restores = false, dangling = f
 					lease.runId,
 				);
 				await database.run(
-					"INSERT INTO wf_events VALUES (?, ?, ?, ?, ?, ?, ?)",
+					"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 					lease.runId,
 					Number(row!.seq) + 1,
 					lease.epoch,
@@ -328,7 +328,7 @@ test("a checkpoint payload SQLite cannot parse is stored and references nothing,
 	});
 	const lease = await startRun(journal, "run-1");
 	await database.run(
-		"INSERT INTO wf_events VALUES (?, 2, ?, NULL, 'CheckpointRecorded', ?, 0)",
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, 2, ?, NULL, 'CheckpointRecorded', ?, 0)",
 		"run-1",
 		lease.epoch,
 		'{"kind":"tool","worktreeSnapshots":[{"chain":[{"patch":"x"}',

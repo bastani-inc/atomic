@@ -79,6 +79,7 @@ export async function createRuntimeForMode(
 	hasInlineExtensionFactories: boolean,
 	parsed: Args,
 	resources: InteractiveEngineResourcePaths,
+	interactive: boolean,
 ): Promise<AgentSessionRuntime> {
 	isolateInteractiveHost &&= canIsolateSessionStore(sessionManager.getSessionStore());
 	if (isolateInteractiveHost && hasInlineExtensionFactories) {
@@ -86,7 +87,7 @@ export async function createRuntimeForMode(
 			"Interactive engine isolation cannot serialize inline extension factories; load the extension from a module path instead.",
 		);
 	}
-	const localRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager });
+	const localRuntime = await createAgentSessionRuntime(createRuntime, { cwd, agentDir, sessionManager, interactive });
 	if (!isolateInteractiveHost) return localRuntime;
 	return createIsolatedInteractiveRuntime({ localRuntime, createRuntime, parsed, sessionManager, resources });
 }

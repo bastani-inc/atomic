@@ -48,7 +48,7 @@ const SCHEMA_FIXTURE = join(moduleDir(import.meta.url), "../fixtures/portable-sq
  * The tables and indexes this slice owns. The snapshot blob tables and the triggers on the journal tables belong to the
  * snapshot blob store.
  */
-const OWNED_TABLE = /^(team_)?(wf_(meta|runs|events|leases)|intercom_.*)$/;
+const OWNED_TABLE = /^(team_)?(wf_(meta|runs|events|leases|event_chunks)|intercom_.*)$/;
 
 async function openEveryOwnedStore(db: SqliteDatabase): Promise<void> {
 	await (await SqlRunJournal.open(db)).close();
@@ -138,7 +138,7 @@ test("a one-request appendMany past the last sequence writes nothing and leaves 
 	const source = await database();
 	const { journal, lease } = await heldJournal(batchingFacade(source));
 	await source.run(
-		"INSERT INTO wf_events VALUES (?, ?, ?, NULL, 'RunStarted', 'null', 0)",
+		"INSERT INTO wf_events(run_id, seq, epoch, key, type, payload, at) VALUES (?, ?, ?, NULL, 'RunStarted', 'null', 0)",
 		header.runId,
 		Number.MAX_SAFE_INTEGER,
 		lease.epoch,
