@@ -59,6 +59,7 @@
         "packages/intercom",
         "test/fixtures/intercom-0.9.71",
         "test/fixtures/intercom-0.9.77-alpha.1",
+        "test/fixtures/snapshot-store-0.9.87",
         "test/fixtures/intercom-0.9.88-pre-5067"
     ]
 }
