@@ -16,9 +16,9 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { requestBrokerShutdown } = await import("../../packages/intercom/broker/broker-stop.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
-const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } = await import(
-	"../../packages/intercom/broker/crash-points.js"
-);
+const { UNCERTAIN_RECEIPT_REASON } = await import("../../packages/intercom/broker/recipient-receipts.js");
+const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_FAILED, DEPARTURE_ASKS_TO_IT_TAKEN } =
+	await import("../../packages/intercom/broker/crash-points.js");
 
 type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
@@ -331,6 +331,95 @@ test(
 			"the asker is told once",
 		);
 		assert.equal(outcomes(askerBack, questionId)[0]?.failed, true);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a recipient that ends into a broker crash sends its connected asker nothing the crash undoes: the asker gets one outcome (#4996)",
+	async () => {
+		await restartBroker(RESTARTS[0].stop, { crashAt: DEPARTURE_ASKS_TO_IT_FAILED });
+		const crashing = broker;
+		assert.ok(crashing !== undefined);
+		const crashed = new Promise<void>((resolveExit) => crashing.once("exit", () => resolveExit()));
+		const label = `ended-into-crash-${randomUUID().slice(0, 8)}`;
+		const asker = { name: `asker-${label}`, returnAddress: randomUUID() };
+		const recipient = { name: `recipient-${label}`, returnAddress: randomUUID() };
+		const askerFirst = await connect(asker.name, asker);
+		const recipientFirst = await connect(recipient.name, recipient);
+		const askerId = idOf(askerFirst.client);
+		const recipientId = idOf(recipientFirst.client);
+		const questionId = randomUUID();
+		const asked = await askerFirst.client.send(recipient.name, {
+			messageId: questionId,
+			text: "which port?",
+			expectsReply: true,
+		});
+		assert.equal(asked.delivered, true, asked.reason);
+		await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
+		// The recipient ends; the broker crashes after deciding the ask failed, before that decision is saved.
+		await recipientFirst.client.disconnect();
+		await crashed;
+		await startBroker();
+
+		// The next broker never learned the recipient ended: it is away, and back, it answers.
+		const askerBack = await reconnect({ ...asker, id: askerId });
+		const recipientBack = await reconnect({ ...recipient, id: recipientId });
+		const replyId = randomUUID();
+		const replied = await recipientBack.client.send(askerId, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: askerId,
+		});
+		assert.equal(replied.delivered, true, replied.reason);
+		await vi.waitFor(() => assert.equal(outcomes(askerBack, questionId).length, 1), WAIT);
+		await sleep(SETTLE_MS);
+		assert.deepEqual(
+			[...outcomes(askerFirst, questionId), ...outcomes(askerBack, questionId)],
+			[{ id: replyId, failed: false }],
+			"the asker was not told of a failure the crash undid",
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a replier whose reply waits on an owner that ends into a broker crash is not told it failed (#4996)",
+	async () => {
+		await restartBroker(RESTARTS[0].stop, { crashAt: DEPARTURE_ASKS_TO_IT_FAILED });
+		const crashing = broker;
+		assert.ok(crashing !== undefined);
+		const crashed = new Promise<void>((resolveExit) => crashing.once("exit", () => resolveExit()));
+		const { child, recipientSession, ownerSession, questionId } = await releasedSubagentAsks(
+			`owner-ends-into-crash-${randomUUID().slice(0, 8)}`,
+		);
+		// The owner is handed the reply for its released subagent and has not confirmed saving it when it ends.
+		const handedOff: string[] = [];
+		ownerSession.client.on("released_child_reply", (notice: { replyTo: string }) => handedOff.push(notice.replyTo));
+		const reply = recipientSession.client
+			.send(child.id, {
+				messageId: randomUUID(),
+				text: "port 8080",
+				replyTo: questionId,
+				requirePendingReply: true,
+				expectedRecipientId: child.id,
+			})
+			.then(
+				(result) => result.reason ?? "",
+				(error: Error) => error.message,
+			);
+		await vi.waitFor(() => assert.deepEqual(handedOff, [questionId]), WAIT);
+		// Its departure would tell the replier the reply's receipt is uncertain; the broker crashes before saving it.
+		await ownerSession.client.disconnect();
+		await crashed;
+		assert.doesNotMatch(
+			await reply,
+			new RegExp(UNCERTAIN_RECEIPT_REASON.slice(0, 40)),
+			"told of a failure the crash undid",
+		);
+		await startBroker();
 	},
 	REAL_BROKER_TEST_TIMEOUT_MS,
 );
