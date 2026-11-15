@@ -85,6 +85,8 @@ test.skipIf(process.platform === "win32")(
 			assert.equal(flush.mock.calls.length >= 1, true, "the child reached its enqueue");
 			assert.match(failure ?? "", /Local worker pool is closed/);
 			assert.equal(enqueue.mock.calls.length, 0, "the closed pool's coordinator never receives the enqueue");
+			// Only the enqueue is refused: the closed pool still tells its coordinator to close, and its close succeeds.
+			await pool.close();
 		} finally {
 			await pool.close().catch(() => {});
 			await backend.close();
