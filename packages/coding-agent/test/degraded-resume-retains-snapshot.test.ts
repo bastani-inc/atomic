@@ -180,6 +180,12 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 			),
 		);
 		assert.ok(onC.notices.some((notice) => notice.message.includes("(from-b.txt)")));
+		assert.ok(
+			!onC.notices.some(
+				(notice) => notice.message.includes("not recorded yet") || notice.message.includes("restored only partly"),
+			),
+			"recorded at once, the carried-over work needs no warning (#5009)",
+		);
 		const recorded = onC.sessionManager.getLatestWorktreeSnapshots().get(c.to)!;
 		assert.notEqual(recorded.id, a.snapshot.id, "the merged worktree is recorded at once");
 		const stored = new Set(await onC.sessionManager.getSessionStore().snapshotBlobs!.listBlobHashes());
@@ -608,6 +614,7 @@ describe("the pin ends only once the carried-over work is recorded (#5009)", () 
 		const d = onD.sessionManager.getWorktreeRootMappings().at(-1)!;
 		assert.equal(readFileSync(join(d.to, "work.txt"), "utf8"), "uncommitted work\n");
 		assert.equal(d.degradedWork?.outcome, "kept");
+		assert.ok(!onD.notices.some((notice) => notice.message.includes("restored only partly")));
 		assert.equal(
 			await sandbox.git(d.to, "show", `${d.degradedWork!.ref!}:work.txt`),
 			"a different work.txt on machine B",
@@ -636,10 +643,23 @@ describe("the pin ends only once the carried-over work is recorded (#5009)", () 
 		);
 		const latest = onC.sessionManager.getLatestWorktreeSnapshots().get(c.to)!;
 		rmSync(c.to, { recursive: true, force: true });
-		const onD = ready(await prepareSessionResume(onC.sessionManager, options("machine-d")));
+		// A machine that can restore nothing keeps naming the kept work.
+		renameSync(sandbox.path("repo.git"), sandbox.path("remote-gone"));
+		const onE = ready(await prepareSessionResume(onC.sessionManager, options("machine-e")));
+		const left = snapshotEntries(onE.sessionManager).at(-1)!;
+		assert.ok(left.unrestored !== undefined);
+		assert.equal(left.degradedFrom, work.id);
+		renameSync(sandbox.path("remote-gone"), sandbox.path("repo.git"));
+		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+		const stillKept = new Set(await blobs.listBlobHashes());
+		assert.ok(snapshotBlobHashes(work).every((hash) => stillKept.has(hash)));
+
+		const onD = ready(await prepareSessionResume(onE.sessionManager, options("machine-d")));
 		const d = onD.sessionManager.getWorktreeRootMappings().at(-1)!;
 		assert.equal(d.snapshotId, latest.id, "the checkout continues from its latest snapshot");
 		assert.equal(readFileSync(join(d.to, "from-c.txt"), "utf8"), "done on machine C\n");
+		assert.equal(snapshotEntries(onD.sessionManager).at(-1)?.degradedFrom, work.id);
+		assert.ok(!onD.notices.some((notice) => notice.message.includes("restored only partly")));
 
 		assert.deepEqual(await discardDegradedRestore(onD.sessionManager, { settings }), [d.to]);
 		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });

@@ -543,13 +543,17 @@ function checkoutRecords(
 		const original = originalRoot(entry.root, mappings);
 		const previous = checkouts.get(original)?.pin;
 		let pin: DegradedRestorePin | undefined;
-		const carried = entry.restore?.degraded === undefined ? entry.restore?.degradedWork : undefined;
-		if (entry.degradedFrom !== undefined && carried?.snapshotId === entry.degradedFrom) {
+		const carried = entry.restore?.degradedWork;
+		if (
+			entry.degradedFrom !== undefined &&
+			carried?.snapshotId === entry.degradedFrom &&
+			carried.outcome !== "unavailable"
+		) {
 			// A full restore that carried the work over keeps that work until the merged worktree is recorded (#5009).
 			pin = {
 				snapshotId: entry.snapshotId,
 				since: entry.timestamp,
-				...(previous?.base === undefined ? {} : { base: previous.base }),
+				base: previous?.base,
 				lapsed: isLapsed(entry.timestamp, now),
 				work: entry.degradedFrom,
 				...(carried.outcome === "kept" ? { kept: true } : {}),
@@ -594,25 +598,20 @@ function captureDegradedFrom(pin: DegradedRestorePin | undefined, snapshotId: st
 /**
  * Records again the checkouts whose full restore carried the work of a partly restored worktree over but whose merged
  * worktree a capture has not recorded yet (#5009), where that worktree is still here holding the restored snapshot's
- * commit. Recording it ends the pin. A checkout that cannot be recorded keeps its pin; the reason goes to the debug log.
+ * commit; a worktree that is not here fails its capture, which changes nothing. Recording it ends the pin. A checkout that cannot be recorded keeps its pin; the reason goes to the debug log.
  */
 export async function recordPendingCarriedWork(
 	sessionManager: SessionManager,
-	options: { readonly settings: WorktreeSnapshotSettings; readonly storeDir?: string; readonly signal?: AbortSignal },
+	options: { readonly settings: WorktreeSnapshotSettings; readonly storeDir: string; readonly signal?: AbortSignal },
 ): Promise<void> {
-	const blobs = sessionManager.getSessionStore().snapshotBlobs;
-	if (blobs === undefined || !options.settings.enabled) return;
 	const mappings = sessionManager.getWorktreeRootMappings();
 	const records = sessionManager.getWorktreeSnapshotRecords();
-	const storeDir = resolve(options.storeDir ?? defaultWorktreeSnapshotStoreDir());
 	for (const [original, checkout] of checkoutRecords(sessionManager, mappings)) {
 		const pin = checkout.pin;
-		if (pin?.work === undefined || pin.kept || pin.lapsed || checkout.latest !== pin.snapshotId) continue;
-		const restored = records.get(pin.snapshotId);
+		if (pin?.work === undefined || pin.kept || pin.lapsed) continue;
 		const root = mapRestoredPath(original, mappings);
-		if (restored === undefined || !existsSync(root)) continue;
-		if (await pooledWorktreeOwnedElsewhere(storeDir, root, sessionManager.getSessionId())) continue;
-		await recordCarriedWork(sessionManager, root, restored.head, options);
+		if (await pooledWorktreeOwnedElsewhere(options.storeDir, root, sessionManager.getSessionId())) continue;
+		await recordCarriedWork(sessionManager, root, records.get(pin.snapshotId)?.head, options);
 	}
 }
 
@@ -1079,7 +1078,7 @@ export async function resumeSessionWorktree(
 			};
 			mappings.push(mapping);
 			if (restoredFrom !== snapshot) pinnedTo.set(mapping, snapshot.id);
-			else if (keptWork !== undefined && degradedWork === undefined) pinnedTo.set(mapping, keptWork);
+			else if (keptWork !== undefined) pinnedTo.set(mapping, keptWork);
 			if (lease) {
 				leases.set(mapping, lease);
 				admitted.add(lease.repository);
