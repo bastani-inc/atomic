@@ -40,7 +40,12 @@ import {
 } from "../types.js";
 import { locksRows, poolReadyChannel, poolSessionPrefix, type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
-import { PoolCheckpointIndex, type PoolCheckpointRead, type PoolCheckpointSource } from "./pool-checkpoint-index.js";
+import {
+	PoolCheckpointIndex,
+	type PoolCheckpointRead,
+	type PoolCheckpointSource,
+	withRecorded,
+} from "./pool-checkpoint-index.js";
 import { guardedPoolWrite, poolFenceSchema, poolWriteBatch } from "./pool-guarded-write.js";
 import {
 	applyPoolSession,
@@ -316,6 +321,24 @@ export interface PoolCommitReceipt {
 	readonly seq?: number;
 	readonly at: number;
 	readonly lastSeq?: number;
+	/**
+	 * The checkpoint is recorded in the host's local journal and not yet in the root's (#4768): the attempt reads it from
+	 * its own view until it is shipped.
+	 */
+	readonly local?: true;
+}
+/** Checkpoints of one attempt that a worker host ships to the root's journal in one request (#4768). */
+export interface PoolShipBatch {
+	/** The batch's content address: the same checkpoints of the same attempt are always the same batch. */
+	readonly id: string;
+	/** The host that ships it, as the ledger and the attempt's watermark record it. */
+	readonly host: string;
+	readonly events: readonly {
+		readonly localSeq: number;
+		readonly key: string;
+		/** The checkpoint's JSON, as the host accepted it. */
+		readonly payload: string;
+	}[];
 }
 /**
  * The audited fenced paths of the pool's hot writes (#5102): on PostgreSQL each runs as one fenced transaction whose
@@ -1647,6 +1670,170 @@ export class SqlPoolQueue {
 		if (recorded !== undefined)
 			this.checkpoints.recordOwn(lease.runId, recorded.seq, recorded.key, recorded.checkpoint);
 		return receipt;
+	}
+	/**
+	 * The tables a shipping root's hosts record their batches in (#4768): the ledger of delivered batches, and each
+	 * attempt's highest shipped point. Created on first use, since only a root that ships checkpoints needs them.
+	 */
+	private shipTables: Promise<void> | undefined;
+	private ensureShipTables(): Promise<void> {
+		const { int } = this.dialect.types;
+		const runs = this.journal.runs;
+		this.shipTables ??= this.transaction(async (tx) => {
+			await tx.exec(`
+				CREATE TABLE IF NOT EXISTS ${runs}_ship_batches(
+					batch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
+					generation ${int} NOT NULL, worker TEXT, epoch ${int} NOT NULL, host TEXT NOT NULL,
+					first_local_seq ${int} NOT NULL, last_local_seq ${int} NOT NULL, events ${int} NOT NULL,
+					shipped_at ${int} NOT NULL${this.dialect.rowOrderColumn}
+				);
+				CREATE INDEX IF NOT EXISTS ${runs}_ship_batches_work ON ${runs}_ship_batches(work, generation);
+				CREATE TABLE IF NOT EXISTS ${runs}_ship_watermarks(
+					work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
+					host TEXT NOT NULL, last_local_seq ${int} NOT NULL, last_event_key TEXT NOT NULL,
+					shipped_at ${int} NOT NULL${this.dialect.rowOrderColumn}
+				);
+			`);
+		}).catch((error) => {
+			this.shipTables = undefined;
+			throw error;
+		});
+		return this.shipTables;
+	}
+	/**
+	 * Records an attempt's batch of checkpoints, which its host accepted in its local journal, in the root's journal
+	 * (#4768): in one request, under the same fences as a commit of each (the root's lease, the attempt's work lease,
+	 * the root's status), each validated against the root's checkpoints and those before it in the batch. A batch is
+	 * delivered once: its id in the ledger means it was, so a retry after a lost answer writes nothing. A checkpoint the
+	 * root holds already with the same payload is not recorded again; with another payload it is an identity conflict.
+	 * Refused with {@link StaleWorkLeaseError}, writing nothing, once another attempt owns the work.
+	 */
+	async shipBatch(lease: Lease, token: WorkLease, batch: PoolShipBatch): Promise<void> {
+		lease = snapshotLease(lease);
+		token = { ...token };
+		if (batch.events.length === 0) return;
+		if (this.remote) throw new Error("A pool whose root journal is in another database does not ship checkpoints");
+		validateText("key", batch.id);
+		await this.ensureShipTables();
+		const runs = this.journal.runs;
+		const parsed = batch.events.map((event) => ({
+			...event,
+			checkpoint: JSON.parse(event.payload) as DurableCheckpoint,
+		}));
+		for (const event of parsed)
+			if (checkpointKey(event.checkpoint) !== event.key) throw new Error("Pool checkpoint identity conflict");
+		const checkpoints = this.checkpoints.begin(lease.runId);
+		let recorded: { readonly seq: number; readonly key: string; readonly checkpoint: DurableCheckpoint }[] = [];
+		await guardedPoolWrite<void>(
+			this.storage,
+			async (read) => {
+				recorded = [];
+				const state = await this.attemptState(read, lease, token, `ship:${batch.id}`, undefined, checkpoints);
+				const shipped = await read.get(`SELECT 1 AS shipped FROM ${runs}_ship_batches WHERE batch = ?`, batch.id);
+				if (shipped !== undefined) return { done: undefined };
+				const { now, status } = state;
+				const row = this.currentOf(state.work, lease, token);
+				if (row.epoch !== lease.epoch) throw staleWork(lease, token, "epoch-mismatch");
+				if (row.expires_at < now) throw staleWork(lease, token, "expired");
+				if (status !== "running" && !(status === "paused" && state.control === "paused"))
+					throw staleWork(lease, token, "root-not-running");
+				const work = fromRow(row);
+				const head = state.recorded.head;
+				const write: CommitWrite = {
+					fences: [
+						this.rootFence(lease),
+						this.attemptFence(lease, token, true),
+						...this.admitsFences(lease, "update"),
+						{
+							sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${runs}_ship_batches WHERE batch = ?)`,
+							params: [batch.id],
+						},
+					],
+					writes: [],
+				};
+				let source: PoolCheckpointSource = checkpoints;
+				let added = 0;
+				for (const event of parsed) {
+					const checkpoint = event.checkpoint;
+					const existing = await this.eventPayload(read, lease.runId, event.key);
+					if (existing !== undefined) {
+						if (!isRecordedCheckpoint(existing, event.payload))
+							throw new Error("Pool checkpoint identity conflict");
+						continue;
+					}
+					await validatePoolMutation(
+						read,
+						this.storage,
+						lease.runId,
+						work,
+						{ kind: "checkpoint", checkpoint },
+						source,
+					);
+					if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
+						throw new Error("Pool checkpoint timestamp is in the future");
+					assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
+					if (poolCheckpointUsage(checkpoint) !== undefined)
+						throw new Error("A pool checkpoint that bills usage is committed, not shipped");
+					added++;
+					const entry = { seq: head + added, key: event.key, checkpoint };
+					recorded.push(entry);
+					source = withRecorded(checkpoints, recorded);
+					write.fences.push({
+						sql: `SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM ${this.journal.events} WHERE run_id = ? AND key = ?)`,
+						params: [lease.runId, event.key],
+					});
+					write.writes.push(
+						...this.eventWrites(
+							lease.runId,
+							undefined,
+							lease.epoch,
+							event.key,
+							event.payload,
+							this.now,
+							[],
+							checkpoint,
+							await this.keepsWhole(read, event.payload),
+						),
+					);
+				}
+				if (added > 0) {
+					journalCounter(lease.runId, "seq", head + added, "overflow");
+					write.fences.push(this.scopeFence(lease, work.scope, head, []));
+				}
+				const first = batch.events[0]!;
+				const last = batch.events.at(-1)!;
+				write.writes.push(
+					{
+						sql: `INSERT INTO ${runs}_ship_batches(batch, work, generation, worker, epoch, host, first_local_seq, last_local_seq, events, shipped_at)
+						VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${this.now})`,
+						params: [
+							batch.id,
+							token.id,
+							token.generation,
+							token.worker,
+							token.epoch,
+							batch.host,
+							first.localSeq,
+							last.localSeq,
+							batch.events.length,
+						],
+					},
+					{
+						sql: `INSERT INTO ${runs}_ship_watermarks(work, generation, host, last_local_seq, last_event_key, shipped_at)
+						VALUES (?, ?, ?, ?, ?, ${this.now})
+						ON CONFLICT(work) DO UPDATE SET generation = excluded.generation, host = excluded.host,
+							last_local_seq = excluded.last_local_seq, last_event_key = excluded.last_event_key,
+							shipped_at = excluded.shipped_at`,
+						params: [token.id, token.generation, batch.host, last.localSeq, last.key],
+					},
+				);
+				return { ...write, result: () => undefined };
+			},
+			COMMIT,
+		);
+		// Only now has the write committed what validation read. The recorded events' sequences are not read back: the
+		// index reads them at its next catch-up.
+		checkpoints.commit();
 	}
 	/**
 	 * A checkpoint commit planned without a read, for a batched write's first try: from the attempt's work row as this

@@ -1066,7 +1066,15 @@ If no live host that serves the root and can restore a binding claims a bound ch
 | `maxBatch` | 1 to 1 000 | 64 | The most checkpoints one shipment carries. |
 | `maxLagMs` | 1 000 to 600 000 | 30 000 | How far a host's shipping may fall behind before it claims no new children. |
 
-In this release a host still ships each checkpoint before the step returns, so runs behave exactly as with `"sync"`. Session transcripts and checkpoints that carry worktree snapshots always commit to the shared journal directly. A host whose local journal fails, for example on a full disk, commits that child's checkpoints to the shared journal from then on and reports it as a pool health warning. A resume may change the setting.
+A step returns once its host has recorded the checkpoint locally, and the host ships its children's checkpoints in batches in the background. It ships everything a child recorded before the child completes, before a pause or quit takes effect, and before the host stops. A delivery that fails is retried while children keep running. A host whose oldest unshipped checkpoint has waited longer than `maxLagMs` claims no new children until it catches up.
+
+These always commit to the shared journal directly, after anything the child recorded before them:
+
+- session transcripts;
+- checkpoints that carry worktree snapshots;
+- checkpoints that bill model usage, so the root's budget sees spending as it happens.
+
+If a host dies, its children replay elsewhere from their last shipped checkpoint, so steps since then may run again, as after any crash. A host that lost its child's lease has its late batches refused, and its unshipped checkpoints are dropped. A host whose local journal fails, for example on a full disk, commits that child's checkpoints to the shared journal from then on and reports it as a pool health warning. A resume may change the setting.
 
 A worker host checks its setup once, before it opens anything, and reports every missing piece together in one `SharedPoolSetupError`: a journal that is not selected through a storage adapter, an adapter that does not load, a secret whose environment variable or file is missing, or a `restore` function on a host where git is not installed and Atomic cannot download a portable one (the error's `cause` is the `GitUnavailableError` from `resolveGit()`, and the problem's `hint` says how to install git). The error's `hint` says how to fix each one, for example `atomic team join <url> --token-file <path>` to join a machine to shared storage, or `atomic install npm:@bastani/atomic-storage-libsql`. A host with a `restore` function uses the git `resolveGit()` from `@bastani/atomic` resolves, downloading a portable git when the machine has none; pass `git: { path, env }` to run another git instead. A host without one never downloads git: without git it starts, reports `restore: false` in its stats, and takes bound work only where its tree is warm. Starting a root with shared placement fails the same way, in one `SharedPoolSetupError` with operation `shared-placement`, before its journal opens: a journal other machines cannot open, an adapter that does not load, or a missing secret.
 

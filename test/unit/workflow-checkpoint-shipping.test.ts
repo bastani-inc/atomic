@@ -9,6 +9,7 @@ import type { RunOpts } from "../../packages/workflows/src/runs/foreground/execu
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import {
 	CheckpointShipping,
+	type ShipDelivery,
 	type ShippingFallback,
 	shippableCheckpoint,
 } from "../../packages/workflows/src/workers/checkpoint-shipping.js";
@@ -207,42 +208,132 @@ function sharedCommit(outcome: { receipt?: PoolCommitReceipt; failure?: Error } 
 	};
 }
 
-test("a shipped checkpoint is accepted locally, then committed to the shared journal, then forgotten (#4768)", async () => {
+/**
+ * A shared journal as a fake delivery sees it: the keys each delivered batch recorded, once each, and the batches it
+ * took. `failWith` fails the next deliveries until it is cleared.
+ */
+function fakeShared() {
+	const recorded: string[] = [];
+	const batches = new Set<string>();
+	const state: { failWith?: Error } = {};
+	const deliver: ShipDelivery = async (_attempt, batch) => {
+		if (state.failWith) throw state.failWith;
+		if (batches.has(batch.id)) return;
+		batches.add(batch.id);
+		for (const event of batch.events) if (!recorded.includes(event.key)) recorded.push(event.key);
+	};
+	return { recorded, batches, state, deliver };
+}
+
+const SHIPPING = { intervalMs: 60_000, maxBatch: 2, maxLagMs: 1_000 } as const;
+
+function shippingOf(
+	local: ShipShard,
+	deliver: ShipDelivery,
+	extra: { readonly onFallback?: (fallback: ShippingFallback) => void; readonly now?: () => number } = {},
+): CheckpointShipping {
+	const shipping = new CheckpointShipping(local, { ...SHIPPING, host: "host", deliver, ...extra });
+	opened.push(shipping);
+	return shipping;
+}
+
+const keyOf = (id: string) => JSON.stringify(["CheckpointRecorded", "tool", `scope:${id}`]);
+
+test("a shippable checkpoint is acknowledged from the local journal and reaches the shared journal when shipped (#4768)", async () => {
 	const { shard: local } = await shard();
-	const shipping = new CheckpointShipping(local);
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
 	await shipping.hold(LEASE, LEASE_MS);
-	const shared = sharedCommit();
-	assert.deepEqual(await shipping.commit(LEASE, checkpoint("a"), shared.commit), { seq: 7, at: 1 });
-	assert.equal(shared.calls.length, 1);
+	const direct = sharedCommit();
+	const receipt = await shipping.commit(LEASE, checkpoint("a"), direct.commit);
+	assert.equal(receipt.local, true);
+	assert.equal(direct.calls.length, 0, "nothing was committed to the shared journal directly");
+	assert.deepEqual(shared.recorded, [], "and nothing is shipped before its time");
+	await shipping.flush(LEASE);
+	assert.deepEqual(shared.recorded, [keyOf("a")]);
 	assert.deepEqual(await local.pending(LEASE), []);
-	// A mutation that does not ship goes straight to the shared journal, which still refuses or accepts it.
-	const session = sharedCommit({ receipt: { at: 2, lastSeq: 3 } });
+	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
+});
+
+test("a batch ships once maxBatch checkpoints wait, in the order they were accepted (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	for (const id of ["a", "b", "c"]) await shipping.commit(LEASE, checkpoint(id), sharedCommit().commit);
+	await shipping.flushAll();
+	assert.deepEqual(shared.recorded, ["a", "b", "c"].map(keyOf));
+	assert.equal(shared.batches.size, 2, "three checkpoints with maxBatch 2 ship as two batches");
+});
+
+test("a mutation that does not ship commits only after what the attempt accepted before it is shipped (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	let shippedBefore: string[] | undefined;
+	const session = async () => {
+		shippedBefore = [...shared.recorded];
+		return { at: 2, lastSeq: 3 };
+	};
 	assert.deepEqual(
 		await shipping.commit(
 			LEASE,
 			{ kind: "session-append", sessionId: "s", entries: [], expectSeq: 0 } as PoolMutation,
-			session.commit,
+			session,
 		),
 		{ at: 2, lastSeq: 3 },
 	);
+	assert.deepEqual(shippedBefore, [keyOf("a")]);
 });
 
-test("a stale attempt is refused before anything reaches the shared journal (#4768)", async () => {
+test("a stale attempt is refused before anything reaches either journal (#4768)", async () => {
 	const { shard: local } = await shard();
-	const shipping = new CheckpointShipping(local);
-	const shared = sharedCommit();
-	await refused(shipping.commit(LEASE, checkpoint("a"), shared.commit), "missing");
-	assert.equal(shared.calls.length, 0);
-});
-
-test("the shared journal refusing the attempt fences its local journal (#4768)", async () => {
-	const { shard: local } = await shard();
-	const shipping = new CheckpointShipping(local);
-	await shipping.hold(LEASE, LEASE_MS);
-	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
-	await assert.rejects(shipping.commit(LEASE, checkpoint("a"), sharedCommit({ failure: stale }).commit), stale);
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	const direct = sharedCommit();
+	await refused(shipping.commit(LEASE, checkpoint("a"), direct.commit), "missing");
+	assert.equal(direct.calls.length, 0);
 	assert.deepEqual(await local.pending(LEASE), []);
-	await refused(shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit), "missing");
+});
+
+test("the shared journal refusing a batch fences the attempt: its unshipped checkpoints are dropped and its next commit refused (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	const stale = new StaleWorkLeaseError({ root: ROOT, workId: LEASE.id, generation: 1, reason: "superseded" });
+	shared.state.failWith = stale;
+	await assert.rejects(shipping.flush(LEASE), stale);
+	assert.deepEqual(await local.pending(LEASE), []);
+	shared.state.failWith = undefined;
+	await assert.rejects(shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit), stale);
+	assert.deepEqual(shared.recorded, []);
+});
+
+test("a delivery that fails is retried while commits go on, and a host lagging past maxLagMs claims nothing (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	const unreachable = new Error("shared store unreachable");
+	shared.state.failWith = unreachable;
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await assert.rejects(shipping.flush(LEASE), unreachable);
+	clock.now = 500;
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
+	assert.deepEqual(shipping.status(), { pending: 2, lagMs: 500, error: unreachable });
+	assert.equal(shipping.lagging(), false);
+	clock.now = SHIPPING.maxLagMs + 1;
+	assert.equal(shipping.lagging(), true, "the oldest checkpoint waited past maxLagMs");
+	shared.state.failWith = undefined;
+	await shipping.flushAll();
+	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
+	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
+	assert.equal(shipping.lagging(), false);
 });
 
 test("a local journal that fails, such as on a full disk, sends the attempt to the shared journal and says so once (#4768)", async () => {
@@ -251,32 +342,48 @@ test("a local journal that fails, such as on a full disk, sends the attempt to t
 	const local = await ShipShard.open(join(directory, "shard.sqlite"), ROOT);
 	opened.push(local);
 	const fallbacks: ShippingFallback[] = [];
-	const shipping = new CheckpointShipping(local, (fallback) => fallbacks.push(fallback));
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { onFallback: (fallback) => fallbacks.push(fallback) });
 	await shipping.hold(LEASE, LEASE_MS);
 	const full = Object.assign(new Error("database or disk is full"), { code: "ERR_SQLITE_ERROR", errcode: 13 });
 	local.accept = async () => {
 		throw full;
 	};
-	const shared = sharedCommit();
-	assert.deepEqual(await shipping.commit(LEASE, checkpoint("a"), shared.commit), { seq: 7, at: 1 });
-	assert.deepEqual(await shipping.commit(LEASE, checkpoint("b"), shared.commit), { seq: 7, at: 1 });
-	assert.equal(shared.calls.length, 2, "both checkpoints were committed to the shared journal");
+	const direct = sharedCommit();
+	assert.deepEqual(await shipping.commit(LEASE, checkpoint("a"), direct.commit), { seq: 7, at: 1 });
+	assert.deepEqual(await shipping.commit(LEASE, checkpoint("b"), direct.commit), { seq: 7, at: 1 });
+	assert.equal(direct.calls.length, 2, "both checkpoints were committed to the shared journal");
 	assert.equal(shipping.isSyncOnly(LEASE.id), true);
 	assert.deepEqual(fallbacks, [{ workId: LEASE.id, error: full }]);
 	// A new attempt of the work ships again.
-	shipping.release(LEASE.id);
+	await shipping.release(LEASE.id);
 	assert.equal(shipping.isSyncOnly(LEASE.id), false);
 });
 
 test("a key the attempt recorded with another payload is an identity conflict, not a fall back (#4768)", async () => {
 	const { shard: local } = await shard();
 	const fallbacks: ShippingFallback[] = [];
-	const shipping = new CheckpointShipping(local, (fallback) => fallbacks.push(fallback));
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver, { onFallback: (fallback) => fallbacks.push(fallback) });
 	await shipping.hold(LEASE, LEASE_MS);
 	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
-	await local.accept(ROOT, LEASE, JSON.stringify(["CheckpointRecorded", "tool", "scope:b"]), "{}", 1);
-	const shared = sharedCommit();
-	await assert.rejects(shipping.commit(LEASE, checkpoint("b"), shared.commit), /Pool checkpoint identity conflict/);
-	assert.equal(shared.calls.length, 0);
+	await local.accept(ROOT, LEASE, keyOf("b"), "{}", 1);
+	const direct = sharedCommit();
+	await assert.rejects(shipping.commit(LEASE, checkpoint("b"), direct.commit), /Pool checkpoint identity conflict/);
+	assert.equal(direct.calls.length, 0);
 	assert.deepEqual(fallbacks, []);
+});
+
+test("a checkpoint that bills model usage commits, so the root's budget sees it at once (#4768)", () => {
+	const billed = {
+		kind: "checkpoint",
+		checkpoint: {
+			...toolCheckpoint("a"),
+			kind: "stage",
+			output: "done",
+			modelAttempts: [{ model: "m", usage: { input: 1, output: 1 } }],
+			topology: { run: { runId: "child" }, stageId: "s" },
+		},
+	} as unknown as PoolMutation;
+	assert.equal(shippableCheckpoint(billed), false);
 });

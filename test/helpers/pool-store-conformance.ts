@@ -284,6 +284,55 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			}
 		});
 
+		test("a host's shipped batch records each checkpoint once, a retried batch nothing, and a replaced attempt's batch is fenced (#4768)", async (f) => {
+			await f.pool.enqueue(f.lease, work, boundary);
+			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);
+			assert.ok(attempt);
+			const item = { work, boundary };
+			const events = [1, 2, 3].map((step, index) => {
+				const shipped = toolCheckpointOf(item, step);
+				return {
+					localSeq: index + 1,
+					key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", shipped.checkpointId]),
+					payload: JSON.stringify(shipped),
+				};
+			});
+			const batch = { id: "batch-1", host: "host-A", events };
+			const journal = await f.peer();
+			const host = await openSqlPoolQueue(journal);
+			await host.shipBatch(f.lease, attempt, batch);
+			await f.pool.shipBatch(f.lease, attempt, batch);
+			// The child's boundary start and its three shipped checkpoints.
+			await assertDenseEvents(f, 4);
+			const ledger = await f.database.all<{ events: number }>(
+				`SELECT events FROM ${f.table("wf_runs_ship_batches")}`,
+			);
+			assert.deepEqual(
+				ledger.map((row) => Number(row.events)),
+				[3],
+			);
+			await host.releaseExited(f.lease, attempt);
+			const next = await host.claim(f.lease, "replacement-worker", [definition], 60_000);
+			assert.ok(next);
+			const late = toolCheckpointOf(item, 4);
+			await assert.rejects(
+				f.pool.shipBatch(f.lease, attempt, {
+					id: "batch-late",
+					host: "host-A",
+					events: [
+						{
+							localSeq: 4,
+							key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", late.checkpointId]),
+							payload: JSON.stringify(late),
+						},
+					],
+				}),
+				staleWorkLease({ workId: attempt.id, generation: attempt.generation }),
+			);
+			// The child's boundary start and its three shipped checkpoints.
+			await assertDenseEvents(f, 4);
+		});
+
 		test("a completed child keeps its result and fences later writes", async (f) => {
 			await f.pool.enqueue(f.lease, work, boundary);
 			const attempt = await f.pool.claim(f.lease, "worker", [definition], 60_000);

@@ -289,6 +289,9 @@ test.skipIf(process.platform === "win32")(
 			} finally {
 				await local.close();
 			}
+			const batches = await s.query(`SELECT host, events FROM ${PREFIX}wf_runs_ship_batches`);
+			assert.ok(batches.length > 0, "the shared journal's ledger records the shipped batches");
+			assert.ok(batches.every((batch) => Number(batch.events) >= 1));
 		} finally {
 			removeTempDirectory(s.directory);
 		}

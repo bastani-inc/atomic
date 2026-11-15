@@ -383,6 +383,7 @@ async function runWorker(start: WorkerStart): Promise<void> {
 			})) as unknown as PoolCommitReceipt;
 		},
 		catchUp: () => reader.catchUpWorkflow(start.root),
+		noteLocal: (checkpoint) => reader.noteRecordedCheckpoint(checkpoint),
 	});
 	const reads = new Set([
 		"getToolOutput",

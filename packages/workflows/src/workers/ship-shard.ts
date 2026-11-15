@@ -29,6 +29,47 @@ export interface ShipEvent {
 	readonly at: number;
 }
 
+/** A sealed batch: its content address and its checkpoints, in the order the host accepted them. */
+export interface ShipBatchRows {
+	readonly id: string;
+	readonly events: readonly ShipEvent[];
+}
+
+type ShipEventRow = SqliteRow & {
+	local_seq: number;
+	work: string;
+	generation: number;
+	epoch: number;
+	event_key: string;
+	payload: string;
+	digest: string;
+	at: number;
+};
+
+function shipEventOf(row: ShipEventRow): ShipEvent {
+	return {
+		localSeq: Number(row.local_seq),
+		work: row.work,
+		generation: Number(row.generation),
+		epoch: Number(row.epoch),
+		key: row.event_key,
+		payload: row.payload,
+		digest: row.digest,
+		at: Number(row.at),
+	};
+}
+
+/** A batch's content address: the root, the attempt, and each checkpoint's key and digest, in order. */
+export function shipBatchId(
+	root: string,
+	lease: Pick<AttemptLease, "id" | "generation">,
+	events: readonly Pick<ShipEvent, "key" | "digest">[],
+): string {
+	return createHash("sha256")
+		.update(JSON.stringify([root, lease.id, lease.generation, events.map((event) => [event.key, event.digest])]))
+		.digest("hex");
+}
+
 /** The attempt's lease as the host last renewed it: what a local commit is checked against. */
 interface HeldLease {
 	readonly lease: AttemptLease;
@@ -159,35 +200,81 @@ export class ShipShard {
 	}
 
 	/** The attempt's accepted checkpoints not shipped yet, in the order the host accepted them. */
-	async pending(lease: Pick<AttemptLease, "id" | "generation">, limit = 1_000): Promise<ShipEvent[]> {
-		const rows = await this.database.all<
-			SqliteRow & {
-				local_seq: number;
-				work: string;
-				generation: number;
-				epoch: number;
-				event_key: string;
-				payload: string;
-				digest: string;
-				at: number;
-			}
-		>(
-			`SELECT local_seq, work, generation, epoch, event_key, payload, digest, at FROM ship_events
-			WHERE work = ? AND generation = ? ORDER BY local_seq LIMIT ?`,
+	pending(lease: Pick<AttemptLease, "id" | "generation">, limit = 1_000): Promise<ShipEvent[]> {
+		return this.rows(
+			this.database,
+			`WHERE work = ? AND generation = ? ORDER BY local_seq LIMIT ?`,
 			lease.id,
 			lease.generation,
 			limit,
 		);
-		return rows.map((row) => ({
-			localSeq: Number(row.local_seq),
-			work: row.work,
-			generation: Number(row.generation),
-			epoch: Number(row.epoch),
-			key: row.event_key,
-			payload: row.payload,
-			digest: row.digest,
-			at: Number(row.at),
-		}));
+	}
+
+	/**
+	 * The attempt's next batch to ship, up to `maxBatch` checkpoints in the order the host accepted them, or undefined
+	 * when nothing is left. A batch is sealed once: until it is shipped, the same checkpoints are the same batch, under
+	 * the same id, however often it is asked for, so a retry after a lost answer is recognised as delivered.
+	 */
+	async seal(lease: Pick<AttemptLease, "id" | "generation">, maxBatch: number): Promise<ShipBatchRows | undefined> {
+		return this.database.transaction(async (tx) => {
+			const sealed = await tx.get<SqliteRow & { batch: string }>(
+				`SELECT batch FROM ship_events WHERE work = ? AND generation = ? AND batch IS NOT NULL ORDER BY local_seq LIMIT 1`,
+				lease.id,
+				lease.generation,
+			);
+			if (sealed !== undefined) {
+				const events = await this.rows(tx, `WHERE batch = ? ORDER BY local_seq`, sealed.batch);
+				return { id: sealed.batch, events };
+			}
+			const events = await this.rows(
+				tx,
+				`WHERE work = ? AND generation = ? ORDER BY local_seq LIMIT ?`,
+				lease.id,
+				lease.generation,
+				maxBatch,
+			);
+			if (events.length === 0) return undefined;
+			const id = shipBatchId(this.root, lease, events);
+			await tx.run(
+				`UPDATE ship_events SET batch = ? WHERE work = ? AND generation = ? AND local_seq BETWEEN ? AND ?`,
+				id,
+				lease.id,
+				lease.generation,
+				events[0]!.localSeq,
+				events.at(-1)!.localSeq,
+			);
+			return { id, events };
+		});
+	}
+
+	/** How many checkpoints of the attempt the host holds unshipped. */
+	async pendingCount(lease: Pick<AttemptLease, "id" | "generation">): Promise<number> {
+		const row = await this.database.get<SqliteRow & { n: number }>(
+			`SELECT COUNT(*) AS n FROM ship_events WHERE work = ? AND generation = ?`,
+			lease.id,
+			lease.generation,
+		);
+		return Number(row?.n ?? 0);
+	}
+
+	/** Every attempt that has checkpoints left to ship, as the local journal holds them. */
+	async attemptsWithPending(): Promise<{ readonly id: string; readonly generation: number }[]> {
+		const rows = await this.database.all<SqliteRow & { work: string; generation: number }>(
+			`SELECT DISTINCT work, generation FROM ship_events`,
+		);
+		return rows.map((row) => ({ id: row.work, generation: Number(row.generation) }));
+	}
+
+	private async rows(
+		executor: Pick<SqliteDatabase, "all">,
+		where: string,
+		...params: (string | number)[]
+	): Promise<ShipEvent[]> {
+		const rows = await executor.all<ShipEventRow>(
+			`SELECT local_seq, work, generation, epoch, event_key, payload, digest, at FROM ship_events ${where}`,
+			...params,
+		);
+		return rows.map(shipEventOf);
 	}
 
 	/** The shared journal holds the attempt's checkpoints up to `localSeq`: the host forgets them. */
