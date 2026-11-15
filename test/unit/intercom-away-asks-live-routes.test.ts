@@ -314,3 +314,24 @@ test("a recipient's end reports which kept asks it held for their askers and whi
 	assert.deepEqual(outcome, { failed: [toRecipient("asker", "q-held")], live: [toRecipient("child", "q-live")] });
 	assert.equal(store.question("q-live", "recipient"), undefined);
 });
+
+test("asks kept for an away peer are kept once, as movable when they may follow it to another broker (#4997)", () => {
+	const path = fileIn();
+	const first = broker(path);
+	first.record("asker", "recipient", "moves");
+	first.record("asker", "recipient", "stays");
+	const taken = first.takeForTarget("recipient", { keepLiveRecords: true });
+	first.keepDormant(taken, undefined, (question) => question.messageId === "moves");
+
+	const restarted = broker(path);
+	assert.deepEqual(restarted.movableDormant(), [
+		{ messageId: "moves", senderSessionId: "asker", targetSessionId: "recipient" },
+	]);
+	assert.deepEqual(
+		restarted
+			.restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient"))
+			.map((question) => question.messageId)
+			.sort(),
+		["moves", "stays"],
+	);
+});

@@ -29,7 +29,9 @@ export {
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";
 export {
+	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
 	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
+	POSTGRES_POOL_SESSION_PREFIX,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 	renderStorageIdentifiers,
 	validateStoragePrefix,
@@ -41,10 +43,12 @@ export {
 	getTeamProfile,
 	type InMemorySecretRef,
 	inMemorySecret,
+	isPostgresUrl,
 	joinTeam,
 	LIBSQL_ADAPTER_PACKAGE,
 	LOCAL_SESSIONS_STORAGE,
 	leaveTeam,
+	POSTGRES_ADAPTER_PACKAGE,
 	REDACTED_SECRET,
 	type StorageInputSelection,
 	type StorageSettingsSelection,

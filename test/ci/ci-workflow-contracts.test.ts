@@ -211,12 +211,10 @@ test("workspace selectors precede the run verb so Bun cannot rewrite them", asyn
 	}
 });
 
-test("root build emits the packed Atomic package after its prerequisites", async () => {
+test("root build runs the incremental build orchestrator", async () => {
+	// Step order and invalidation are covered by scripts/build-stamps.test.mjs.
 	const manifest = (await readJson(join(root, "package.json"))) as { scripts: Record<string, string> };
-	assert.equal(
-		manifest.scripts.build,
-		"npm --workspace=@bastani/pi-ai run build && node scripts/alias-pi-ai.mjs && npm --workspace=@bastani/atomic-natives run build && npm --workspace=@bastani/atomic run build",
-	);
+	assert.equal(manifest.scripts.build, "node scripts/build.mjs");
 });
 
 test("typecheck aliases the local pi-ai build before compiling dependents", async () => {

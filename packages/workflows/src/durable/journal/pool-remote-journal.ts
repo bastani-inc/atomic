@@ -67,7 +67,7 @@ export class PoolRemoteJournal {
 			if (state === undefined) await tx.run(`DELETE FROM ${leases} WHERE run_id = ?`, root);
 			else
 				await tx.run(
-					`INSERT INTO ${leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, ?, ?, CAST(unixepoch('subsec') * 1000 AS INTEGER) - ?)
+					`INSERT INTO ${leases}(run_id, holder_id, epoch, renewed_at) VALUES (?, ?, ?, ${this.storage.dialect.nowMs} - ?)
 					ON CONFLICT(run_id) DO UPDATE SET holder_id = excluded.holder_id, epoch = excluded.epoch, renewed_at = excluded.renewed_at`,
 					root,
 					state.holderId,
