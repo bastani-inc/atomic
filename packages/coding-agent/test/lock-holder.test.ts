@@ -91,11 +91,12 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 		assert.equal(takeOverDeadHolder(lockPath), false);
 		writeRecord({ host: hostname(), pid: process.pid, lock });
 		assert.equal(takeOverDeadHolder(lockPath), false, "a live pid without a recorded start is a live holder");
+		const exited = exitedPid();
 		for (const malformed of [
-			{ host: hostname(), pid: "1", lock },
-			{ host: hostname(), pid: exitedPid() },
-			{ pid: exitedPid(), lock },
-			{ host: hostname(), pid: exitedPid(), started: 1, lock },
+			{ host: hostname(), pid: String(exited), lock },
+			{ host: hostname(), pid: exited, started: 1, lock },
+			{ host: hostname(), pid: exited },
+			{ pid: exited, lock },
 		]) {
 			writeRecord(malformed);
 			assert.equal(takeOverDeadHolder(lockPath), false, JSON.stringify(malformed));
@@ -105,6 +106,32 @@ describe("taking over the lock of a dead holder (#5161)", () => {
 		rmSync(lockHolderPath(lockPath));
 		assert.equal(takeOverDeadHolder(lockPath), false, "a lock without a holder record waits to go stale");
 		assert.equal(existsSync(lockPath), true);
+	});
+
+	it("takes over a lock whose exited holder recorded no start (#5161)", () => {
+		mkdirSync(lockPath);
+		writeRecord({ host: hostname(), pid: exitedPid(), lock: lockHolder(lockPath) });
+		assert.equal(takeOverDeadHolder(lockPath), true);
+		assert.equal(existsSync(lockPath), false);
+	});
+
+	it("keeps a lock whose holder this process may not signal, which still runs (#5161)", (context) => {
+		if (process.platform === "win32" || process.getuid?.() === 0) context.skip();
+		mkdirSync(lockPath);
+		writeRecord({ host: hostname(), pid: 1, lock: lockHolder(lockPath) });
+		assert.equal(takeOverDeadHolder(lockPath), false);
+		assert.equal(existsSync(lockPath), true);
+	});
+
+	it("leaves no temporary file when the holder cannot be named (#5161)", () => {
+		mkdirSync(lockPath);
+		mkdirSync(join(lockHolderPath(lockPath), "occupied"), { recursive: true });
+		recordLockHolder(lockPath);
+		assert.deepEqual(readdirSync(directory).sort(), [
+			"settings.json",
+			"settings.json.lock",
+			"settings.json.lock.holder",
+		]);
 	});
 
 	it("keeps a lock taken after the dead holder's, which the record does not name (#5161)", () => {
@@ -163,6 +190,7 @@ describe("unreadable settings that decide project trust (#5161)", () => {
 			const error = manager.getGlobalSettingsLoadError();
 			assert.ok(error);
 			assert.doesNotMatch(error.message, /already being held/);
+			assert.equal((error as Error & { path?: string }).path, settingsPath);
 		} finally {
 			release();
 		}

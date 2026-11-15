@@ -23,14 +23,6 @@ export function lockHolderPath(lockPath: string): string {
 	return `${lockPath}.holder`;
 }
 
-let ownStart: string | undefined | null = null;
-
-/** When this process started, read once. */
-function ownStartToken(): string | undefined {
-	if (ownStart === null) ownStart = processStartToken(process.pid);
-	return ownStart;
-}
-
 /**
  * Names this process as the holder of the lock directory at `lockPath`, which it has just taken. Best effort: a lock
  * whose holder is not named is only taken over once it is stale.
@@ -38,7 +30,12 @@ function ownStartToken(): string | undefined {
 export function recordLockHolder(lockPath: string): void {
 	const lock = lockHolder(lockPath);
 	if (lock === undefined) return;
-	const record: LockHolderRecord = { host: hostname(), pid: process.pid, started: ownStartToken(), lock };
+	const record: LockHolderRecord = {
+		host: hostname(),
+		pid: process.pid,
+		started: processStartToken(process.pid),
+		lock,
+	};
 	const path = lockHolderPath(lockPath);
 	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	try {
@@ -61,8 +58,8 @@ export function clearLockHolder(lockPath: string): void {
 function readHolderRecord(lockPath: string): LockHolderRecord | undefined {
 	try {
 		const record = JSON.parse(readFileSync(lockHolderPath(lockPath), "utf8")) as Partial<LockHolderRecord>;
-		if (typeof record.host !== "string" || !Number.isSafeInteger(record.pid) || typeof record.lock !== "string")
-			return undefined;
+		// A host or lock that is not a string never matches this host or a lock directory, so only these are checked.
+		if (!Number.isSafeInteger(record.pid)) return undefined;
 		if (record.started !== undefined && typeof record.started !== "string") return undefined;
 		return record as LockHolderRecord;
 	} catch {

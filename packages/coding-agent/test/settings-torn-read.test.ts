@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, it, vi } from "vitest";
@@ -43,4 +43,17 @@ it("rereads under the lock a settings file read halfway through an in-place writ
 	assert.equal(manager.getGlobalSettingsLoadError(), null);
 	assert.equal(manager.getDefaultProjectTrust(), "always");
 	assert.equal(torn.reads, 2);
+	assert.equal(existsSync(`${settingsPath}.lock`), false, "the lock taken for the reread is released");
+});
+
+it("reads a settings file that parses once, without rereading it under the lock (#5161)", () => {
+	const agentDir = join(directory, "agent");
+	mkdirSync(agentDir, { recursive: true });
+	const settingsPath = join(agentDir, "settings.json");
+	writeFileSync(settingsPath, JSON.stringify({ defaultProjectTrust: "always" }));
+	torn.path = settingsPath;
+	torn.reads = 1;
+	const manager = SettingsManager.create(join(directory, "project"), agentDir, { projectTrusted: false });
+	assert.equal(manager.getDefaultProjectTrust(), "always");
+	assert.equal(torn.reads, 2, "read once");
 });
