@@ -4,6 +4,10 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Google Gemini, Google Vertex, Amazon Bedrock and Azure OpenAI Responses streams ignoring `streamDeadlineMs`: a stream that stalls after its first event is now cut at the deadline, closes its connection, and fails with the retryable "stream deadline exceeded" error so retry and model fallback run instead of the turn hanging ([#4904](https://github.com/bastani-inc/atomic/issues/4904))
+
 ## [0.9.85] - 2026-11-13
 
 Dropped connections are retried automatically.
