@@ -1,5 +1,6 @@
 import { Container, Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
 import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
+import { stripTerminalControls } from "../../../utils/ansi.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { createMarkdownTransform } from "./markdown-transform.ts";
 
@@ -47,8 +48,9 @@ export class UserMessageComponent extends Container {
 	private rebuild(): void {
 		this.clear();
 		this.addChild(
+			// Raw terminal sequences in the text must not reach the terminal; Atomic styles after parsing (#4889).
 			new Markdown(
-				this.text,
+				stripTerminalControls(this.text),
 				this.outputPad,
 				1,
 				this.markdownTheme,

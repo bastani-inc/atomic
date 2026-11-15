@@ -24,6 +24,7 @@ import {
 	McpOAuthProvider,
 	type McpOAuthState,
 	type McpOAuthStateStore,
+	MemoryOAuthStateStore,
 	type OAuthCallback,
 	type OAuthCallbackPage,
 	OAuthCallbackServer,
@@ -479,8 +480,9 @@ async function listenForCallback(
 
 /**
  * Sign in to an MCP server. Uses the stored refresh token when possible; otherwise runs the browser
- * authorization code flow. Tokens are saved to `store`. Aborting `signal` stops the sign-in at any
- * step with `McpSignInCancelledError`; requests to the authorization server are also time-limited.
+ * authorization code flow. The client and tokens are saved to `store` once the sign-in completes.
+ * Aborting `signal` stops the sign-in at any step with `McpSignInCancelledError`; requests to the
+ * authorization server are also time-limited.
  */
 export async function signInMcpServer(options: {
 	serverUrl: string;
@@ -502,22 +504,30 @@ export async function signInMcpServer(options: {
 		callbackOptions.port ?? (registered ? Number(new URL(registered).port) || undefined : undefined);
 	const callback = await listenForCallback(callbackOptions, preferredPort, callbackOptions.port !== undefined);
 	const redirectUrl = callbackOptions.fixedRedirectUrl ?? callback.redirectUrl;
-	try {
-		if (stored) {
-			const next: McpOAuthState = { ...stored };
-			// Every sign-in gets a fresh `state` parameter.
-			delete next.oauthState;
-			// A registered client cannot use another redirect URI, and its tokens belong to it.
-			if (!settings.clientId && !registeredRedirectUrls(stored.clientInformation).includes(redirectUrl)) {
-				delete next.clientInformation;
-				delete next.tokens;
-				delete next.tokensExpireAt;
-			}
-			await store.save(next);
+	// The sign-in works on its own copy of the state, so overlapping sign-ins to the server (for example
+	// in two sessions) each keep their client, PKCE verifier, and `state` parameter. Only a completed
+	// sign-in saves its client and tokens, and a failed one leaves the stored ones alone.
+	const pending = new MemoryOAuthStateStore();
+	if (stored) {
+		const next: McpOAuthState = { ...stored };
+		// Every sign-in gets a fresh `state` parameter and PKCE verifier.
+		delete next.oauthState;
+		delete next.codeVerifier;
+		// A registered client cannot use another redirect URI, and its tokens belong to it.
+		if (!settings.clientId && !registeredRedirectUrls(stored.clientInformation).includes(redirectUrl)) {
+			delete next.clientInformation;
+			delete next.tokens;
+			delete next.tokensExpireAt;
 		}
-
+		pending.save(next);
+	}
+	const complete = async () => {
+		const { oauthState: _state, codeVerifier: _verifier, ...credentials } = pending.load() ?? { serverUrl };
+		await store.save(credentials);
+	};
+	try {
 		let authorizationUrl: URL | undefined;
-		const provider = createProvider(serverUrl, store, settings, redirectUrl, (url) => {
+		const provider = createProvider(serverUrl, pending, settings, redirectUrl, (url) => {
 			authorizationUrl = url;
 		});
 		const flow = {
@@ -535,7 +545,7 @@ export async function signInMcpServer(options: {
 		};
 		// A refresh keeps the granted scope; a server asking for more needs the browser flow.
 		const skipRefresh = stepUp;
-		if ((await authorizeMcp(provider, { ...flow, skipRefresh })) === "AUTHORIZED") return;
+		if ((await authorizeMcp(provider, { ...flow, skipRefresh })) === "AUTHORIZED") return await complete();
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 
 		const state = await provider.state();
@@ -549,6 +559,7 @@ export async function signInMcpServer(options: {
 			signal,
 		);
 		await authorizeMcp(provider, { ...flow, authorizationCode: code, iss });
+		await complete();
 	} catch (error) {
 		// Aborted requests fail with the signal's reason; report them as the cancellation they are.
 		if (signal?.aborted) throw new McpSignInCancelledError();
