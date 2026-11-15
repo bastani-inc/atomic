@@ -416,6 +416,7 @@ describe("DefaultPackageManager git update", () => {
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
 			rmSync(cachedDir, { recursive: true, force: true });
+			mkdirSync(join(cachedDir, ".git"), { recursive: true });
 			mkdirSync(join(cachedDir, "pi-extensions"), { recursive: true });
 			writeFileSync(
 				join(cachedDir, "package.json"),
@@ -464,6 +465,7 @@ describe("DefaultPackageManager git update", () => {
 			const extensionFile = join(cachedDir, "pi-extensions", "session-breakdown.ts");
 
 			rmSync(cachedDir, { recursive: true, force: true });
+			mkdirSync(join(cachedDir, ".git"), { recursive: true });
 			mkdirSync(join(cachedDir, "pi-extensions"), { recursive: true });
 			writeFileSync(
 				join(cachedDir, "package.json"),
@@ -474,10 +476,12 @@ describe("DefaultPackageManager git update", () => {
 			const executedCommands: string[] = [];
 			const managerWithInternals = packageManager as unknown as {
 				runCommand: (command: string, args: string[], options?: { cwd?: string }) => Promise<void>;
+				runCommandCapture: (command: string, args: string[], options?: { cwd?: string }) => Promise<string>;
 			};
 			managerWithInternals.runCommand = async (command, args) => {
 				executedCommands.push(`${commandName(command)} ${args.join(" ")}`);
 			};
+			managerWithInternals.runCommandCapture = async () => "pinned-head";
 
 			await packageManager.resolveExtensionSources([pinnedSource], { temporary: true });
 
