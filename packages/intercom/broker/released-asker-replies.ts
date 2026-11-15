@@ -1,5 +1,6 @@
 import { ASK_REPLY_TIMEOUT_MS } from "../retry-policy.js";
-import type { PendingQuestion } from "./pending-question-index.js";
+import type { SessionInfo } from "../types.js";
+import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { normalizeReservationTarget } from "./released-children.js";
 
 const DEFAULT_MAX_ROUTES = 10_000;
@@ -324,4 +325,62 @@ export class ReleasedAskerReplies {
 		removeFrom(this.byChild, entry.childKey, entry);
 		if (entry.ownerSessionId !== undefined) removeFrom(this.byOwner, entry.ownerSessionId, entry);
 	}
+}
+
+/**
+ * #4996: a released subagent's ask whose reply route the broker had no room for fails to the subagent, once: through its
+ * owner, which is woken for it, or, with no owner yet, held for it under its own return address.
+ */
+export function failRefusedReleasedAsk(
+	route: RefusedReleasedAskerRoute,
+	broker: {
+		readonly pendingQuestions: PendingQuestionIndex;
+		readonly replier: SessionInfo | undefined;
+		readonly askerReturnAddress: string | undefined;
+		readonly wake: (wake: { readonly ownerSessionId: string; readonly childName: string }) => void;
+	},
+	now = Date.now(),
+): void {
+	const question = {
+		messageId: route.questionId,
+		senderSessionId: route.askerSessionId,
+		targetSessionId: route.replierSessionId,
+	};
+	// Kept for an away recipient too, it would otherwise be answered or failed a second time.
+	broker.pendingQuestions.forgetDormant(question);
+	const from: SessionInfo = broker.replier ?? {
+		id: route.replierSessionId,
+		cwd: "",
+		model: "",
+		pid: 0,
+		startedAt: 0,
+		lastActivity: now,
+	};
+	const message = {
+		id: `released-routes-full:${route.questionId}`,
+		timestamp: now,
+		replyTo: route.questionId,
+		replyError: RELEASED_REPLY_ROUTES_FULL_REASON,
+		content: { text: RELEASED_REPLY_ROUTES_FULL_REASON },
+	};
+	if (route.ownerSessionId !== undefined) {
+		broker.pendingQuestions.holdForReleasedChild(route.childName, route.ownerSessionId, {
+			askerSessionId: route.askerSessionId,
+			from,
+			message,
+		});
+		broker.wake({ ownerSessionId: route.ownerSessionId, childName: route.childName });
+		return;
+	}
+	if (broker.askerReturnAddress === undefined || broker.askerReturnAddress === "") {
+		console.error(
+			`Intercom broker could not tell released subagent "${route.childName}" that its ask ${route.questionId} failed: ${RELEASED_REPLY_ROUTES_FULL_REASON}`,
+		);
+		return;
+	}
+	broker.pendingQuestions.holdForAwayAsker(
+		{ ...question, senderReturnAddress: broker.askerReturnAddress },
+		from,
+		message,
+	);
 }
