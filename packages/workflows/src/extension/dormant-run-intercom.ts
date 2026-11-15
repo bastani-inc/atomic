@@ -8,7 +8,11 @@ import {
 	workflowInvocationGroupRefusal,
 	workflowInvocationIntercomGroup,
 } from "../shared/intercom-group.js";
-import { queueStageMessage, queueStickyStageMessage } from "../shared/pending-stage-delivery.js";
+import {
+	pendingStageQueueRefusal,
+	queueStageMessage,
+	queueStickyStageMessage,
+} from "../shared/pending-stage-delivery.js";
 import { workflowPendingStageRouteCapability } from "../shared/pending-stage-route-capability.js";
 import { isAddressableStageStatus } from "../shared/pending-stage-status.js";
 import { type SessionEntry, scanInFlightRuns } from "../shared/persistence-restore.js";
@@ -418,11 +422,8 @@ function queueRefusal(
 	target: string,
 	runGroup: string,
 ): DormantMessageResult {
-	if (result.reason === "capacity")
-		return {
-			outcome: "refused",
-			reason: `Pending stage message queue is full (limit ${result.limit}) for ${target}`,
-		};
+	const capacityRefusal = pendingStageQueueRefusal(result, target);
+	if (capacityRefusal !== undefined) return { outcome: "refused", reason: capacityRefusal };
 	if (result.reason === "message_id_conflict")
 		return {
 			outcome: "refused",
