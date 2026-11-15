@@ -1365,14 +1365,61 @@ async function restoreDegradedValidated(
 			// check its HEAD and keep the checkout, recording the tree it holds.
 			verify: "head",
 		});
-		if (measured === degraded.tree) return { path, degraded, warnings };
+		const folded = await caseFoldedPaths(git, degraded.tree, path);
+		if (measured === degraded.tree && folded.length === 0) return { path, degraded, warnings };
 		// This host's checkout filters changed files: record what the worktree holds, and which files differ.
-		const differing = nulFields(
-			(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git)).stdout,
-		);
-		const missingPaths = [...new Set([...degraded.missingPaths, ...differing])].sort();
+		const differing =
+			measured === degraded.tree
+				? []
+				: nulFields(
+						(await runGit(["diff-tree", "-r", "-z", "--name-only", "--no-renames", degraded.tree, measured], git))
+							.stdout,
+					);
+		const missingPaths = [...new Set([...degraded.missingPaths, ...differing, ...folded])].sort();
 		return { path, degraded: { ...degraded, tree: measured, missingPaths }, warnings };
 	});
+}
+
+/**
+ * The paths of `tree` that differ from another only in case (`dir/b.txt` and `Dir/b.txt`) where the worktree at `root`
+ * lacks one of them under its own spelling: a case-insensitive file system holds one file for them all, so none can be
+ * relied on (#4932).
+ */
+async function caseFoldedPaths(git: GitRunOptions, tree: string, root: string): Promise<string[]> {
+	const groups = new Map<string, string[]>();
+	for (const path of nulFields((await runGit(["ls-tree", "-r", "-z", "--name-only", tree], git)).stdout)) {
+		const key = path.toLowerCase();
+		groups.set(key, [...(groups.get(key) ?? []), path]);
+	}
+	const listings = new Map<string, Promise<Set<string>>>();
+	const names = (directory: string) => {
+		let listing = listings.get(directory);
+		if (listing === undefined) {
+			listing = readdir(join(root, directory)).then(
+				(entries) => new Set(entries),
+				() => new Set<string>(),
+			);
+			listings.set(directory, listing);
+		}
+		return listing;
+	};
+	const spelledAsRecorded = async (path: string) => {
+		const parts = path.split("/");
+		for (let index = 0; index < parts.length; index++) {
+			if (!(await names(parts.slice(0, index).join("/"))).has(parts[index]!)) return false;
+		}
+		return true;
+	};
+	const folded: string[] = [];
+	for (const group of groups.values()) {
+		if (group.length < 2) continue;
+		for (const path of group) {
+			if (await spelledAsRecorded(path)) continue;
+			folded.push(...group);
+			break;
+		}
+	}
+	return folded;
 }
 
 /** The commits `snapshot` recorded as not pushed: its bundle's, else those its omissions name, else its `HEAD`. */
