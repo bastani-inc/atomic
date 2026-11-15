@@ -202,17 +202,24 @@ export class AwayAsks {
 	}
 
 	/**
-	 * Keep questions whose asker or recipient is away until it is back. `senderReturnAddress`: the away asker's own
-	 * session, so a reply is not held for an asker that is already back under another Intercom id.
+	 * Keep questions whose asker or recipient is away until it is back. `senderReturnAddress`: the asker's own session,
+	 * so a reply is not held for an asker that is already back under another Intercom id. #4950: a live asker's is kept
+	 * too, resolved per question, so its failure still reaches it should this broker go before its departure.
 	 */
-	keep(questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
+	keep(
+		questions: readonly PendingQuestion[],
+		senderReturnAddress?: string | ((question: PendingQuestion) => string | undefined),
+	): void {
 		if (questions.length === 0) return;
 		const insert = this.statement(
 			"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, kept_at) VALUES (?, ?, ?, ?, ?)",
 		);
 		const at = this.now();
-		for (const question of questions)
-			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, senderReturnAddress ?? "", at);
+		for (const question of questions) {
+			const returnAddress =
+				typeof senderReturnAddress === "function" ? senderReturnAddress(question) : senderReturnAddress;
+			insert.run(question.messageId, question.senderSessionId, question.targetSessionId, returnAddress ?? "", at);
+		}
 		this.purge();
 	}
 
@@ -327,7 +334,9 @@ export class AwayAsks {
 
 	/**
 	 * The recipient `target` ended, or can no longer answer: each kept question to it becomes a failed-ask message held
-	 * for its away asker. Returns the questions failed.
+	 * for its away asker. #4950: a question whose asker is connected is returned in `live` for the broker to fail on its
+	 * route; one whose asker kept no return address and is not connected stays kept (it ages out), never dropped
+	 * unseen. Returns the questions held for their askers.
 	 */
 	failForTarget(
 		target: SessionInfo,
@@ -335,11 +344,13 @@ export class AwayAsks {
 		idPrefix: string,
 		failedElsewhere: (question: PendingQuestion) => boolean,
 		targetReturnAddress = "",
-	): PendingQuestion[] {
+		askerConnected: (question: PendingQuestion, returnAddress: string) => boolean,
+	): { failed: PendingQuestion[]; live: PendingQuestion[] } {
 		const rows = this.statement(
 			`SELECT message_id, sender_session_id, sender_return_address FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT} ORDER BY kept_at`,
 		).all(target.id, targetReturnAddress);
 		const failed: PendingQuestion[] = [];
+		const live: PendingQuestion[] = [];
 		for (const row of rows) {
 			const question = {
 				messageId: String(row.message_id),
@@ -347,10 +358,18 @@ export class AwayAsks {
 				targetSessionId: target.id,
 			};
 			const returnAddress = typeof row.sender_return_address === "string" ? row.sender_return_address : "";
-			// A recipient's own asks to an away session keep no asker identity: only an away asker learns of the end.
+			if (askerConnected(question, returnAddress)) {
+				live.push(question);
+				this.forget(question);
+				continue;
+			}
+			// An asker that kept no return address cannot be told while away: its question waits until it ages out.
 			if (returnAddress === "") continue;
 			// #4765: a released subagent's owner is handed this failure on its own route, which wakes the subagent.
-			if (failedElsewhere(question)) continue;
+			if (failedElsewhere(question)) {
+				this.forget(question);
+				continue;
+			}
 			failed.push(question);
 			this.hold({ ...question, senderReturnAddress: returnAddress }, target, {
 				// Unguessable, so no other session can name it.
@@ -361,11 +380,7 @@ export class AwayAsks {
 				content: { text: reason },
 			});
 		}
-		this.statement(`DELETE FROM away_questions WHERE target_session_id = ? AND ${PROVEN_RECIPIENT}`).run(
-			target.id,
-			targetReturnAddress,
-		);
-		return failed;
+		return { failed, live };
 	}
 
 	/**

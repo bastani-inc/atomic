@@ -277,6 +277,8 @@ export interface Extension {
 	commands: Map<string, RegisteredCommand>;
 	flags: Map<string, ExtensionFlag>;
 	shortcuts: Map<KeyId, ExtensionShortcut>;
+	/** Tool names this extension registered more than once; the last registration of each is used. */
+	duplicateToolNames?: Set<string>;
 }
 
 /** Result of loading extensions. */
