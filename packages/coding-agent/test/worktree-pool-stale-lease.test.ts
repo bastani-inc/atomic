@@ -110,7 +110,7 @@ async function runChild(name: string, source: string): Promise<{ child: Child; f
 	const child = spawn(bunExecutable(), [script], { stdio: ["pipe", "pipe", "inherit"] });
 	const exited = new Promise((resolve) => child.once("exit", resolve));
 	cleanups.push(async () => {
-		child.kill("SIGCONT");
+		// SIGKILL ends a stopped child too, and is the one signal here Windows knows.
 		child.kill("SIGKILL");
 		await exited;
 	});
