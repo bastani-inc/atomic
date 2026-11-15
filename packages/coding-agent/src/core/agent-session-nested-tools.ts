@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { type ToolCall, validateToolArguments } from "@bastani/pi-ai";
 import type { ToolResultMessage } from "@bastani/pi-ai/compat";
 import { type AgentTool, runToolCall } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
@@ -13,9 +14,34 @@ export function getParentToolCallId(): string | undefined {
 }
 
 export function getCallableTools(session: AgentSession, active = new Set(session.getActiveToolNames())): AgentTool[] {
-	return [...session._toolRegistry.values()].filter((tool) => {
-		const exposure = session.getToolDefinition(tool.name)?.exposure ?? "direct";
-		return exposure === "codemode" || exposure === "deferred" || (exposure === "direct" && active.has(tool.name));
+	return [...session._toolRegistry.values()].flatMap((tool): AgentTool[] => {
+		const definition = session.getToolDefinition(tool.name);
+		const exposure = definition?.exposure ?? "direct";
+		if (exposure === "codemode" || exposure === "deferred" || (exposure === "direct" && active.has(tool.name)))
+			return [tool];
+		const access = definition?.scriptAccess;
+		if (exposure !== "model-only" || !access || !active.has(tool.name)) return [];
+		// Scripts reach a model-only tool only through its script access: its description, output and refusals.
+		// A refused call fails after validation and before permission hooks, so nobody is asked to approve it.
+		const scriptTool: AgentTool = {
+			...tool,
+			description: access.description,
+			outputSchema: access.outputSchema,
+			prepareArguments: (args) => {
+				const prepared = tool.prepareArguments ? tool.prepareArguments(args) : args;
+				const refusal = access.refuse(
+					validateToolArguments(scriptTool, {
+						type: "toolCall",
+						id: "",
+						name: tool.name,
+						arguments: prepared as ToolCall["arguments"],
+					}),
+				);
+				if (refusal !== undefined) throw new Error(refusal);
+				return prepared;
+			},
+		};
+		return [scriptTool];
 	});
 }
 
