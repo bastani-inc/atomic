@@ -268,14 +268,6 @@ export class ShipShard {
 		return Number(row?.n ?? 0);
 	}
 
-	/** Every attempt that has checkpoints left to ship, as the local journal holds them. */
-	async attemptsWithPending(): Promise<{ readonly id: string; readonly generation: number }[]> {
-		const rows = await this.database.all<SqliteRow & { work: string; generation: number }>(
-			`SELECT DISTINCT work, generation FROM ship_events`,
-		);
-		return rows.map((row) => ({ id: row.work, generation: Number(row.generation) }));
-	}
-
 	private async rows(
 		executor: Pick<SqliteDatabase, "all">,
 		where: string,

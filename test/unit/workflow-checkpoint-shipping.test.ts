@@ -4,6 +4,7 @@ import { afterEach, test } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
 import type { PoolCommitReceipt } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { StaleLeaseError } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor-types.js";
 import { StaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
@@ -21,7 +22,7 @@ import {
 } from "../../packages/workflows/src/workers/public-options.js";
 import { activatePublicPool, refusedResourceChanges } from "../../packages/workflows/src/workers/public-pool.js";
 import { ShipShard, shipShardPath } from "../../packages/workflows/src/workers/ship-shard.js";
-import { makeTempDirectory, removeTempDirectory } from "../helpers/runtime.js";
+import { makeTempDirectory, removeTempDirectory, sleep } from "../helpers/runtime.js";
 
 const ROOT = "root-4768";
 const LEASE = { id: "work-1", generation: 1, worker: "host/1", epoch: 3 } as const;
@@ -540,4 +541,121 @@ test("an attempt released while the shared store stays unreachable is reported, 
 		(await local.pending(LEASE)).map((event) => event.key),
 		[keyOf("a")],
 	);
+});
+
+test("a started host ships on its interval without a flush, and stops when closed (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = new CheckpointShipping(local, {
+		...SHIPPING,
+		intervalMs: 20,
+		host: "host",
+		deliver: shared.deliver,
+	});
+	opened.push(shipping);
+	shipping.start();
+	shipping.start();
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	for (let waited = 0; shared.recorded.length === 0 && waited < 5_000; waited += 10) await sleep(10);
+	assert.deepEqual(shared.recorded, [keyOf("a")]);
+	await shipping.close();
+	await shipping.close();
+	await shipping.hold(LEASE, LEASE_MS);
+	const batches = shared.batches.size;
+	await sleep(100);
+	assert.equal(shared.batches.size, batches, "a closed host ships nothing more");
+});
+
+test("filling maxBatch ships the attempt's checkpoints at once, without waiting for the interval (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await sleep(50);
+	assert.deepEqual(shared.recorded, [], "one checkpoint waits for the interval");
+	await shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit);
+	for (let waited = 0; shared.recorded.length < 2 && waited < 5_000; waited += 10) await sleep(10);
+	assert.deepEqual(shared.recorded, ["a", "b"].map(keyOf));
+	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
+});
+
+test("a refused root lease fences the attempt, and only that attempt's generation (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const shipping = shippingOf(local, shared.deliver);
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	shared.state.failWith = new StaleLeaseError(ROOT, 1, 2);
+	await assert.rejects(shipping.flush(LEASE), (error: unknown) => {
+		assert.ok(error instanceof StaleWorkLeaseError);
+		assert.equal(error.reason, "fenced");
+		assert.equal(error.workId, LEASE.id);
+		assert.ok(error.cause instanceof StaleLeaseError);
+		return true;
+	});
+	assert.deepEqual(shipping.status(), { pending: 0, lagMs: 0 });
+	await assert.rejects(shipping.commit(LEASE, checkpoint("b"), sharedCommit().commit), StaleWorkLeaseError);
+	// The work's next attempt on this host starts unfenced.
+	shared.state.failWith = undefined;
+	const next = { ...LEASE, generation: 2 };
+	await shipping.hold(next, LEASE_MS);
+	await shipping.commit(next, checkpoint("c"), sharedCommit().commit);
+	await shipping.flush(LEASE);
+	assert.deepEqual(shared.recorded, [], "a flush of another generation ships nothing");
+	await shipping.flush(next);
+	assert.deepEqual(shared.recorded, [keyOf("c")]);
+});
+
+test("flushing every attempt ships each one, and reports the first failure after trying them all (#4768)", async () => {
+	const { shard: local } = await shard();
+	const shared = fakeShared();
+	const other = { ...LEASE, id: "work-2" };
+	const failing = new Error("work-1 unreachable");
+	const shipping = shippingOf(local, async (attempt, batch) => {
+		if (attempt.id === LEASE.id) throw failing;
+		await shared.deliver(attempt, batch);
+	});
+	await shipping.hold(LEASE, LEASE_MS);
+	await shipping.hold(other, LEASE_MS);
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	await shipping.commit(other, checkpoint("b"), sharedCommit().commit);
+	await assert.rejects(shipping.flushAll(), failing);
+	assert.deepEqual(shared.recorded, [keyOf("b")]);
+	assert.equal(shipping.status().pending, 1);
+});
+
+test("a host is lagging only once its oldest checkpoint waited longer than maxLagMs (#4768)", async () => {
+	const { shard: local, clock } = await shard();
+	const shipping = shippingOf(local, async () => {}, { now: () => clock.now });
+	await shipping.hold(LEASE, LEASE_MS);
+	clock.now = 100;
+	await shipping.commit(LEASE, checkpoint("a"), sharedCommit().commit);
+	clock.now = 100 + SHIPPING.maxLagMs;
+	assert.deepEqual(shipping.status(), { pending: 1, lagMs: SHIPPING.maxLagMs });
+	assert.equal(shipping.lagging(), false);
+	clock.now += 1;
+	assert.equal(shipping.lagging(), true);
+});
+
+test("a sealed batch stays the same batch until it is shipped, and later checkpoints wait for the next (#4768)", async () => {
+	const { shard: local } = await shard();
+	await local.hold(LEASE, LEASE_MS);
+	await local.accept(ROOT, LEASE, "k1", "{}", 1);
+	await local.accept(ROOT, LEASE, "k2", "{}", 1);
+	const sealed = await local.seal(LEASE, 10);
+	assert.ok(sealed);
+	await local.accept(ROOT, LEASE, "k3", "{}", 1);
+	const again = await local.seal(LEASE, 10);
+	assert.deepEqual(again, sealed);
+	assert.equal(await local.pendingCount(LEASE), 3);
+	await local.shipped(LEASE, sealed.events.at(-1)!.localSeq);
+	const next = await local.seal(LEASE, 10);
+	assert.deepEqual(
+		next?.events.map((event) => event.key),
+		["k3"],
+	);
+	assert.notEqual(next?.id, sealed.id);
+	assert.equal(await local.seal({ id: "unknown", generation: 1 }, 10), undefined);
 });
