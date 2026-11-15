@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, test } from "vitest";
 import type { DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import type { PoolMutation } from "../../packages/workflows/src/durable/journal/pool-mutations.js";
@@ -407,7 +407,9 @@ test("a checkpoint that bills model usage commits, so the root's budget sees it 
 test("each root of each shared journal has a local journal of its own on the host (#4768)", () => {
 	const path = shipShardPath("/state", "journal", ROOT);
 	assert.equal(path, shipShardPath("/state", "journal", ROOT));
-	assert.match(path, /^\/state\/ship\/[0-9a-f]{24}\/[0-9a-f]{32}\.sqlite$/);
+	assert.equal(dirname(dirname(path)), join("/state", "ship"));
+	assert.match(basename(dirname(path)), /^[0-9a-f]{24}$/);
+	assert.match(basename(path), /^[0-9a-f]{32}\.sqlite$/);
 	assert.notEqual(path, shipShardPath("/state", "journal", "other-root"));
 	assert.notEqual(path, shipShardPath("/state", "other-journal", ROOT));
 });
