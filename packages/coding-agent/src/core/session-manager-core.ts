@@ -26,7 +26,7 @@ import {
 	createWorktreeSnapshotEntry,
 	getEntriesWithoutHeader,
 } from "./session-manager-entries.ts";
-import { SessionEntryError } from "./session-manager-errors.js";
+import { SessionDeletedError, SessionEntryError } from "./session-manager-errors.js";
 import {
 	buildContextEntries,
 	buildSessionIndex,
@@ -62,6 +62,7 @@ import {
 	generateId,
 	validateSessionFileEntries,
 } from "./session-manager-validation.ts";
+import { assertSessionNotOpenElsewhere, holdSessionOpenMarker } from "./session-open-markers.ts";
 import { listSessionStore } from "./session-store-list.js";
 import {
 	assertSessionBlobStore,
@@ -73,10 +74,19 @@ import {
 	takeInlineToolOutput,
 } from "./session-tool-output.ts";
 import { adoptInlineSnapshotBlobs, deleteSessionWithSnapshotRefs } from "./session-worktree-snapshots.ts";
-import { SessionBlobError, type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
+	isStorageTransientError,
+	SessionBlobError,
+	type StorageFailureCause,
+	StoragePayloadTooLargeError,
+	StorageRollbackError,
+} from "./storage/errors.js";
+import {
+	SessionConflictError,
 	SessionFormatVersionError,
 	SessionIdMismatchError,
+	SessionInvalidTextError,
+	SessionInvalidTimestampError,
 	type SessionJsonValue,
 	SessionNotFoundError,
 	StorageUnavailableError,
@@ -86,6 +96,24 @@ import { MemorySessionStore, markPrivateMemorySessionStore } from "./storage/ses
 import type { SessionBlob, SessionRecordHeader, SessionSnapshot, SessionStore } from "./storage/session/types.js";
 import { WorkspaceConfigError } from "./worktree-snapshot/errors.ts";
 import type { WorktreeRootMapping, WorktreeSnapshot, WorktreeUnrestored } from "./worktree-snapshot/types.ts";
+
+/**
+ * Whether a failed append certainly wrote nothing, so the store need not be read back (#4970): the storage layer
+ * says so, or the store refused the entries or was closed before writing.
+ */
+function wroteNothing(error: unknown): boolean {
+	return (
+		(isStorageTransientError(error) && error.outcome === "not-applied") ||
+		error instanceof SessionInvalidTextError ||
+		error instanceof SessionInvalidTimestampError ||
+		error instanceof StoragePayloadTooLargeError ||
+		// The session store's and the database's closed-store errors.
+		(error instanceof Error && error.name === "StoreClosedError")
+	);
+}
+
+/** How many times one append reads the store's new tail and tries again before its failure stands (#4970). */
+const MAX_APPEND_RECONCILES = 3;
 
 async function resolveSessionStore(cwd: string): Promise<SessionStore> {
 	// Selection loads settings and tools, which depend on the completed session module.
@@ -106,6 +134,15 @@ export class SessionManager {
 	private cwd: string;
 	private store: SessionStore;
 	private lastSeq = 0;
+	/** Ids of entries an append of unknown outcome may have saved, that no read of the store has settled (#4970). */
+	private readonly unconfirmed = new Set<string>();
+	/** The open session was deleted from the store; later entries stay in memory only (#4971). */
+	private deletedFromStore = false;
+	/** How many live sessions run on this manager; while any do, its session is marked open (#4971). */
+	private openHolds = 0;
+	private openMarker:
+		| { readonly sessionId: string; readonly store: SessionStore; readonly release: () => Promise<void> }
+		| undefined;
 	private mutation: Promise<void> = Promise.resolve();
 	/** Custom entries written with a message, in its own store write, by the message they go with. */
 	private readonly messageCompanions = new WeakMap<object, () => MessageCompanionEntry | undefined>();
@@ -142,9 +179,39 @@ export class SessionManager {
 		this.fileEntries = [{ type: "session", ...header }, ...snapshot.entries];
 		this.sessionId = header.id;
 		this.lastSeq = snapshot.lastSeq;
+		this.deletedFromStore = false;
 		this.sessionFile =
 			location ?? (this.store instanceof JsonlSessionStore ? this.store.locationFor(header) : undefined);
 		this._buildIndex();
+		this.syncOpenMarker();
+	}
+
+	/**
+	 * @internal Marks the session this manager has open, and each one it switches to, as open in this process until
+	 * the returned function is called, so that other processes and hosts refuse to delete it (#4971). The returned
+	 * function never rejects; it settles once the mark is removed.
+	 */
+	holdOpen(): () => Promise<void> {
+		this.openHolds++;
+		this.syncOpenMarker();
+		let released = false;
+		return async () => {
+			if (released) return;
+			released = true;
+			this.openHolds--;
+			await this.syncOpenMarker();
+		};
+	}
+
+	private syncOpenMarker(): Promise<void> {
+		const sessionId = this.openHolds > 0 && this.isPersisted() ? this.sessionId : undefined;
+		const marker = this.openMarker;
+		if (marker?.sessionId === sessionId && marker?.store === this.store) return Promise.resolve();
+		this.openMarker =
+			sessionId === undefined
+				? undefined
+				: { sessionId, store: this.store, release: holdSessionOpenMarker(sessionId, { store: this.store }) };
+		return marker?.release() ?? Promise.resolve();
 	}
 
 	private start(options?: NewSessionOptions): string | undefined {
@@ -289,6 +356,7 @@ export class SessionManager {
 		if (sessionId === this.sessionId) {
 			throw new Error(`Cannot delete the session that is currently open: ${sessionId}`);
 		}
+		await assertSessionNotOpenElsewhere(sessionId, { store: this.store });
 		try {
 			await deleteSessionWithSnapshotRefs(this.store, sessionId);
 		} catch (error) {
@@ -371,14 +439,82 @@ export class SessionManager {
 	}
 
 	private async _appendEntries(entries: readonly SessionEntry[]): Promise<void> {
-		const result = await this.store.append(this.sessionId, entries, { expectSeq: this.lastSeq });
-		this.lastSeq = result.lastSeq;
+		// #4971: the session was deleted from its store; that was reported once, and nothing more is saved.
+		if (this.deletedFromStore) return this.applyAppended(entries);
+		for (let attempt = 1; ; attempt++) {
+			const expectSeq = this.lastSeq;
+			try {
+				this.lastSeq = (await this.store.append(this.sessionId, entries, { expectSeq })).lastSeq;
+			} catch (error) {
+				if (error instanceof SessionNotFoundError) {
+					this.deletedFromStore = true;
+					throw new SessionDeletedError(this.sessionId, { cause: error });
+				}
+				if (wroteNothing(error) || attempt > MAX_APPEND_RECONCILES) throw error;
+				const unknown = isStorageTransientError(error) && error.outcome === "unknown";
+				if (await this.reconcileAppend(entries, error, unknown, expectSeq)) return;
+				continue;
+			}
+			this.applyAppended(entries);
+			return;
+		}
+	}
+
+	private applyAppended(entries: readonly SessionEntry[]): void {
 		for (const entry of entries) {
 			this.fileEntries.push(entry);
 			this.byId.set(entry.id, entry);
 			this.historyIndex.appended(entry, this.byId);
 			this.leafId = entry.id;
 		}
+	}
+
+	/**
+	 * #4970: an append failed with an error that does not say it wrote nothing (the connection broke, or a gateway
+	 * answered 5xx, after the server may have committed it) or found the store ahead of `lastSeq`. Reads the store's entries past `lastSeq` and takes them in, in store order, so
+	 * the manager holds what the store holds; entries other than `entries` join the tree without moving the leaf.
+	 * Resolves true when `entries` are among them (they are saved), and false when they are not and the rest are this
+	 * manager's own from an earlier append of unknown outcome (`entries` go on after them). Throws a
+	 * `SessionConflictError` when another writer added entries (or the store reported a conflict it does not show):
+	 * the append fails once, and later appends go on after the new tail. Rethrows `error` when the store cannot be
+	 * read, when its history no longer extends the one this manager holds, or when it shows the failed append wrote
+	 * nothing and the failure is not one that passes.
+	 */
+	private async reconcileAppend(
+		entries: readonly SessionEntry[],
+		error: unknown,
+		unknown: boolean,
+		expectSeq: number,
+	): Promise<boolean> {
+		// Entries of an append that failed for certain are never in the store, so marking them too changes nothing.
+		for (const entry of entries) this.unconfirmed.add(entry.id);
+		let snapshot: SessionSnapshot;
+		try {
+			snapshot = await this.store.load(this.sessionId);
+		} catch {
+			// Still unreadable: the next append, at the same `lastSeq`, finds out whether these entries were saved.
+			throw error;
+		}
+		const start = snapshot.entries.length - (snapshot.lastSeq - this.lastSeq);
+		const lastHeld = this.fileEntries.length > 1 ? this.fileEntries.at(-1)!.id : undefined;
+		if (snapshot.entries[start - 1]?.id !== lastHeld) throw error;
+		const own = new Map(entries.map((entry) => [entry.id, entry]));
+		const tail = snapshot.entries.slice(start).map((entry) => own.get(entry.id) ?? entry);
+		const saved = tail.some((entry) => own.has(entry.id));
+		const foreign = tail.some((entry) => !this.unconfirmed.has(entry.id));
+		const leafId = saved ? entries.at(-1)!.id : this.leafId;
+		this.fileEntries = [...this.fileEntries, ...tail];
+		this._buildIndex();
+		this.leafId = leafId;
+		this.lastSeq = snapshot.lastSeq;
+		if (saved) return true;
+		const conflict = error instanceof SessionConflictError;
+		if (foreign || (conflict && tail.length === 0)) {
+			throw conflict ? error : new SessionConflictError(this.sessionId, expectSeq, this.lastSeq);
+		}
+		// Nothing of ours was written: a failure that passes is tried again, any other stands.
+		if (!unknown && !conflict) throw error;
+		return false;
 	}
 
 	/**

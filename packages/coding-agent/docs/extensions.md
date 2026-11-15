@@ -4,7 +4,7 @@
 
 Extensions are TypeScript modules that extend Atomic's behavior. They can subscribe to lifecycle events, register custom tools callable by the LLM, add commands, and more.
 
-> **Placement for /reload:** Put extensions in `~/.atomic/agent/extensions/` (global) or `.atomic/extensions/` (project-local) for auto-discovery; legacy `.pi` paths remain supported. Use `atomic -e ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`.
+> **Placement for /reload:** Put extensions in `~/.atomic/agent/extensions/` (global) or `.atomic/extensions/` (project-local) for auto-discovery; legacy `.pi` paths remain supported. Use `atomic -e ./path.ts` only for quick tests. Extensions in auto-discovered locations can be hot-reloaded with `/reload`. `/reload` runs the current contents of each extension file and the local modules it imports. The exception is JavaScript that Atomic does not compile: `.mjs` and `.cjs` files, and `.js` files that are ESM in a package with `"type": "module"` or are CommonJS. Node and Bun keep those modules until the process exits, so restart Atomic after editing such an extension; `/reload` warns when it detects the edit. TypeScript extensions reload without a restart.
 
 If `/reload` reports `Reload retiring cleanup failed`, its error includes the extension cleanup cause. The replacement extensions and updated settings remain active, and running workflows and joined Intercom groups stay available. Fix the reported extension cleanup error before reloading again.
 
