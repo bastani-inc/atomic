@@ -52,7 +52,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 	test(
 		"a stage whose call outlasted its threshold is released one threshold after the call ended (#4309)",
 		async () => {
-			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
 			const service = new FakeCiService();
 			let promptEndedAt: number | undefined;
 			let releasedAt: number | undefined;
@@ -64,7 +64,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 				outputs: {},
 				run: async (ctx) => {
 					await ctx.stage("alpha").prompt("plan");
-					promptEndedAt = Date.now();
+					promptEndedAt = performance.now();
 					await released.promise;
 					return {};
 				},
@@ -79,7 +79,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 					releaseWhenWaiting: { afterMs: AFTER_MS },
 					onStageLifecycleEvent: (_runId: string, event: StageLifecycleEvent) => {
 						if (event.type !== "stage_waiting") return;
-						releasedAt = Date.now();
+						releasedAt = performance.now();
 						released.resolve();
 					},
 				},
@@ -102,7 +102,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 	test(
 		"a completed stage whose next call waits for an admission slot is not released while the call waits (#4309)",
 		async () => {
-			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
 			const service = new FakeCiService();
 			const events: StageLifecycleEvent[] = [];
 			let releasedWhileQueued: string[] | undefined;
@@ -155,7 +155,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 	test(
 		"a finished task's stage that cannot be released is not polled while the run goes on (#4309)",
 		async () => {
-			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
 			let reads = 0;
 			let readsAfterTask: number | undefined;
 			const quiet = Promise.withResolvers<void>();
@@ -206,7 +206,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 	test(
 		"a stage waiting released on its tool keeps the run's idle scan off while it waits (#4309)",
 		async () => {
-			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
 			const service = new FakeCiService();
 			const waiting = Promise.withResolvers<void>();
 			let armedWhileWaiting: number | undefined;
@@ -250,7 +250,7 @@ describe("the run's idle scan watches a stage from the end of its call (#4309)",
 	test(
 		"a stage someone watches through its handle is not released however long the workflow holds it (#4309)",
 		async () => {
-			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
 			const service = new FakeCiService();
 			const registry = createStageControlRegistry();
 			const store = createStore();
