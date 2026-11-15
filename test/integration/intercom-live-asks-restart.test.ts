@@ -17,6 +17,7 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { requestBrokerShutdown } = await import("../../packages/intercom/broker/broker-stop.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
+const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN } = await import("../../packages/intercom/broker/crash-points.js");
 
 type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
@@ -29,10 +30,15 @@ const SETTLE_MS = 300;
 
 let broker: ChildProcess | undefined;
 
-async function startBroker(): Promise<void> {
+/** `crashAt`: the broker crashes at this point of its work instead of carrying on (see the broker's crash points). */
+async function startBroker(options: { crashAt?: string } = {}): Promise<void> {
 	const extensionDir = join(repoRoot, "packages/intercom");
 	broker = spawn(process.execPath, [getJitiCliPath(extensionDir), join(extensionDir, "broker/broker.ts")], {
-		env: { ...process.env, ATOMIC_CODING_AGENT_DIR: brokerFixture.agentDir },
+		env: {
+			...process.env,
+			ATOMIC_CODING_AGENT_DIR: brokerFixture.agentDir,
+			...(options.crashAt === undefined ? {} : { [BROKER_CRASH_AT_ENV]: options.crashAt }),
+		},
 		stdio: "ignore",
 	});
 	brokerFixture.trackBroker(broker);
@@ -67,13 +73,16 @@ const RESTARTS = [
 	},
 ] as const;
 
-async function restartBroker(stop: (running: ChildProcess) => Promise<void>): Promise<void> {
+async function restartBroker(
+	stop: (running: ChildProcess) => Promise<void>,
+	options: { crashAt?: string } = {},
+): Promise<void> {
 	const running = broker;
 	assert.ok(running !== undefined && running.exitCode === null && running.signalCode === null);
 	const exited = new Promise<void>((resolveExit) => running.once("exit", () => resolveExit()));
 	await stop(running);
 	await exited;
-	await startBroker();
+	await startBroker(options);
 }
 
 /** A real client that records what arrives and confirms each save, as a session does. */
@@ -114,6 +123,14 @@ async function connect(
 	);
 	brokerFixture.onCleanup(() => client.disconnect().catch(() => undefined));
 	return { client, received, peerGone };
+}
+
+/** Wait until the broker has handled `sessionId`'s departure, as the session's listing shows. */
+async function untilDeparted(observer: Client, sessionId: string): Promise<void> {
+	await vi.waitFor(
+		async () => assert.ok(!(await observer.listSessions()).some((session) => session.id === sessionId)),
+		WAIT,
+	);
 }
 
 function idOf(client: Client): string {
@@ -168,7 +185,7 @@ function outcomes(session: { received: readonly Message[]; peerGone: readonly st
 	];
 }
 
-beforeAll(startBroker, REAL_BROKER_TEST_TIMEOUT_MS);
+beforeAll(() => startBroker(), REAL_BROKER_TEST_TIMEOUT_MS);
 afterAll(() => brokerFixture.cleanup());
 
 for (const restart of RESTARTS) {
@@ -321,7 +338,7 @@ test(
  * A subagent asks a connected recipient, then its owner releases it between turns: the ask's route waits for the
  * subagent, kept by its owner, while both the subagent and the broker are away.
  */
-async function releasedSubagentAsks(label: string) {
+async function releasedSubagentAsks(label: string, options: { departure?: "handled" | "unhandled" } = {}) {
 	const owner = { name: `owner-${label}`, returnAddress: randomUUID(), ownerToken: randomUUID() };
 	const ownerFirst = await connect(owner.name, owner);
 	const child = { name: `subagent-${label}`, returnAddress: randomUUID() };
@@ -342,6 +359,9 @@ async function releasedSubagentAsks(label: string) {
 	const childId = idOf(childFirst.client);
 	await ownerFirst.client.reserveReleasedChildren([{ childName: child.name, wake: true }]);
 	await childFirst.client.disconnect({ resumable: true });
+	// On Windows `disconnect()` can resolve before the broker has handled the subagent's goodbye (#4894): a pipe has no
+	// half-close. A crash before then is a different case (the test above), so wait until the broker no longer lists it.
+	if (options.departure !== "unhandled") await untilDeparted(ownerFirst.client, childId);
 	return {
 		owner,
 		child: { ...child, id: childId },
@@ -412,6 +432,39 @@ for (const restart of RESTARTS) {
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+test(
+	"a released subagent's ask survives a broker crash in the middle of its departure",
+	async () => {
+		// The broker crashes while it handles the subagent's departure, after it took the subagent's asks off its live
+		// routes and before it kept them for the subagent's return.
+		await restartBroker(RESTARTS[0].stop, { crashAt: DEPARTURE_ASKS_TAKEN });
+		const crashing = broker;
+		assert.ok(crashing !== undefined);
+		const crashed = new Promise<void>((resolveExit) => crashing.once("exit", () => resolveExit()));
+		const { owner, child, recipient, questionId } = await releasedSubagentAsks(
+			`mid-departure-${randomUUID().slice(0, 8)}`,
+			{ departure: "unhandled" },
+		);
+		await crashed;
+		await startBroker();
+
+		const recipientBack = await reconnect(recipient);
+		const replyId = randomUUID();
+		const replied = await recipientBack.client.send(child.id, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: child.id,
+		});
+		assert.equal(replied.queued, true, JSON.stringify(replied));
+		assert.equal(replied.target, HELD_FOR_AWAY_ASKER_TARGET);
+		const childBack = await restoreSubagent(owner, child);
+		await vi.waitFor(() => assert.deepEqual(outcomes(childBack, questionId), [{ id: replyId, failed: false }]), WAIT);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"a released subagent back after a restart is answered directly by its recipient (#4829, #4852)",
