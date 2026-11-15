@@ -701,15 +701,45 @@ export function takeSubagentChildStop(taskId: string): SubagentChildStopStatus |
 	return status;
 }
 
-/** Append a new latest observation of a child that changes only its terminal status. */
+/**
+ * Append a new latest observation of a child that changes only its state and terminal status. Written in the owner's
+ * order over the child's latest record, never over `record`, the caller's earlier copy: that copy would write back
+ * what it held then, such as results held or messages queued for the child since (#4845). `record` is used only for a
+ * child the index has no record of.
+ */
 export async function recordSubagentChildStatus(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	record: SubagentChildRecord,
 	terminalStatus: string,
 ): Promise<void> {
-	const next = observeSubagentChildRecord({ ...record, state: "terminal", terminalStatus });
-	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, next);
-	settleSubagentChildRecord(next);
+	await inOrder(record.owner.sessionId, async () => {
+		const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+		await appendObserved(pi, observeSubagentChildRecord({ ...latest, state: "terminal", terminalStatus }));
+	});
+}
+
+/**
+ * Record a pause or quit of a child that is not running in this process, in the owner's order, against its latest
+ * record (#4845): a released child, or for `quit` a paused one, takes `status`; any other record is left as it is.
+ * Returns the child's latest record after it, which tells the caller what the child now is.
+ */
+export async function recordSubagentChildStop(
+	pi: Pick<ExtensionAPI, "appendEntry">,
+	record: SubagentChildRecord,
+	status: SubagentChildStopStatus,
+): Promise<SubagentChildRecord> {
+	let result = record;
+	await inOrder(record.owner.sessionId, async () => {
+		const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
+		result = latest;
+		if (latest.state !== "terminal") return;
+		const released = latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS;
+		const paused = latest.terminalStatus === "paused" || latest.terminalStatus === SUBAGENT_CHILD_STAGE_PAUSED_STATUS;
+		if (!released && !(status === "quit" && paused)) return;
+		result = observeSubagentChildRecord({ ...latest, terminalStatus: status });
+		await appendObserved(pi, result);
+	});
+	return result;
 }
 
 /**
@@ -880,13 +910,7 @@ export async function recordSubagentChildGone(
 	pi: Pick<ExtensionAPI, "appendEntry">,
 	record: SubagentChildRecord,
 ): Promise<void> {
-	const gone = observeSubagentChildRecord({
-		...record,
-		state: "terminal",
-		terminalStatus: SUBAGENT_CHILD_GONE_STATUS,
-	});
-	await pi.appendEntry(SUBAGENT_CHILD_RECORD_TYPE, gone);
-	settleSubagentChildRecord(gone);
+	await recordSubagentChildStatus(pi, record, SUBAGENT_CHILD_GONE_STATUS);
 }
 
 /**

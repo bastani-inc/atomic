@@ -278,6 +278,14 @@ const ENDED: ReadonlySet<string | undefined> = new Set([
 /** Statuses run control set: results wait in the record for `resume`, and messages do not wake the child. */
 const STOPPED: ReadonlySet<string | undefined> = new Set(["paused", "quit", SUBAGENT_CHILD_STAGE_PAUSED_STATUS]);
 
+/**
+ * Whether a wake may still relaunch a child with this latest record: it is released or has ended on its own, and run
+ * control has not stopped it, it has not ended for good, and it is not running again (#4845).
+ */
+export function isRelaunchableChildRecord(record: SubagentChildRecord | undefined): boolean {
+	return record?.state === "terminal" && !ENDED.has(record.terminalStatus) && !STOPPED.has(record.terminalStatus);
+}
+
 /** What the owner does with a batch of wakes for one child, by the child's latest record. */
 export type ReleasedChildWakeDecision =
 	| { readonly kind: "ignore" }

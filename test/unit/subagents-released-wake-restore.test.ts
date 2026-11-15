@@ -664,7 +664,7 @@ test("a child that completes normally under a release policy completes and is re
 	assert.equal(observed.value.result.kind, "completed");
 	const record = await h.waitForLatest("completes:0", (candidate) => candidate.state === "terminal");
 	assert.equal(record.terminalStatus, "ok");
-	assert.equal(record.waitingOn, undefined);
+	assert.deepEqual(record.waitingOn ?? [], [], "it waits on nothing");
 	assert.deepEqual(
 		h.holds.filter((hold) => "dormant" in hold),
 		[],
@@ -684,7 +684,7 @@ test("a child released just as pause stops it is paused, not released (#4326)", 
 	assert.match(text(paused), /Paused worker/);
 	const record = await h.waitForLatest("stop-race:0", (candidate) => candidate.state === "terminal");
 	assert.equal(record.terminalStatus, "paused");
-	assert.equal(record.waitingOn, undefined);
+	assert.deepEqual(record.waitingOn ?? [], [], "it waits on nothing");
 	assert.deepEqual(
 		h.holds.filter((hold) => "dormant" in hold),
 		[],

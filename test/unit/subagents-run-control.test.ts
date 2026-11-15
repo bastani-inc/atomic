@@ -28,7 +28,10 @@ import { runSync } from "../../packages/subagents/src/runs/foreground/execution.
 import { takeStoppedQueuedOwnerlessChild } from "../../packages/subagents/src/runs/foreground/ownerless-children.js";
 import { isReleasedChildError } from "../../packages/subagents/src/runs/foreground/released-child-errors.js";
 import {
+	endedChildMark,
 	type ReleasedChildReservation,
+	releasedChildReservation,
+	reserveReleasedChildrenOf,
 	SUBAGENT_ACKNOWLEDGE_RELEASED_CHILD_WAKE_EVENT,
 	SUBAGENT_DROP_RELEASED_CHILDREN_EVENT,
 	SUBAGENT_RESERVE_RELEASED_CHILDREN_EVENT,
@@ -4005,4 +4008,191 @@ test("a wake saves the results it carries in the child's record before the child
 	const done = await h.waitForLatest("save-first:0", clearedOk);
 	await settled(h, done.taskId ?? "");
 	assert.equal(h.runs.filter((run) => run.task === lateToolResultMessage(green)).length, 1);
+});
+
+/** Hold the supervisor capability a restore of `childName` asks for until `gate` settles: a restore stopped mid-way. */
+function gateRestoreOf(h: Harness, childName: string) {
+	const gate = Promise.withResolvers<void>();
+	const reached = Promise.withResolvers<void>();
+	const events = h.deps.pi.events as unknown as { emit(channel: string, data: object): void };
+	const emit = events.emit.bind(events);
+	let armed = true;
+	events.emit = (channel, data) => {
+		emit(channel, data);
+		const request = data as { childName?: string; completion?: Promise<object> };
+		if (!armed || channel !== SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT || request.childName !== childName) return;
+		armed = false;
+		const granted = request.completion;
+		request.completion = gate.promise.then(() => granted as Promise<object>);
+		reached.resolve();
+	};
+	return { gate, reached: reached.promise };
+}
+
+/** Run `during` when run control cancels `taskId`, before the cancel goes ahead: a sibling stopped first. */
+function duringCancelOf(h: Harness, taskId: string, during: () => Promise<void>): void {
+	const cancel = h.host.cancelTask.bind(h.host);
+	h.host.cancelTask = (async (id: TaskId, ...rest: unknown[]) => {
+		if (String(id) === taskId) await during();
+		return (cancel as (...args: unknown[]) => unknown)(id, ...rest);
+	}) as typeof h.host.cancelTask;
+}
+
+for (const action of ["pause", "quit"] as const) {
+	const status = action === "pause" ? "paused" : "quit";
+	test(`${action} during a released child's in-flight wake relaunches nothing and keeps its result for resume (#4845)`, async () => {
+		const h = harness();
+		const runId = `inflight-${action}`;
+		const dispatcher = await releasedWithWakes(h, runId);
+		const { gate, reached } = gateRestoreOf(h, `subagent-worker-${runId}`);
+		const runsBefore = h.runs.length;
+		const green = waitResult("CI green");
+		const wake = dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), `${runId}:0`), {
+			id: "tool-result:ci-1",
+			kind: "tool-result",
+			toolResult: green,
+		});
+		await reached;
+
+		const stopped = h.call({ action, id: `${runId}:0` });
+		gate.resolve();
+		const result = await stopped;
+		await wake;
+
+		assert.notEqual(result.isError, true, text(result));
+		assert.equal(result.details.runControl?.children[0]?.state, status);
+		assert.equal(h.runs.length, runsBefore, "the wake relaunched nothing");
+		const latest = h.latest(`${runId}:0`);
+		assert.equal(latest?.state, "terminal");
+		assert.equal(latest?.terminalStatus, status);
+		assert.deepEqual(latest?.heldToolResults, [green], "the wake's result is held for resume");
+
+		const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "go on" });
+		await settled(h, resumedTaskId(resumed));
+		assert.equal(h.runs.length, runsBefore + 1);
+		assert.equal(h.runs.at(-1)?.task, lateToolResultMessage(green), "resume delivers the held result once");
+	});
+}
+
+test("pause with all: true stops the run a released child's wake started while a busy sibling was stopped first (#4845)", async () => {
+	const h = harness();
+	const dispatcher = agentWakeDispatcher();
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => unbind());
+	h.wakeDispatcher = dispatcher;
+	const sibling = await h.launch("busy-sibling");
+	h.releaseOriginal = true;
+	const releasedTask = await h.admit("woken-meanwhile");
+	await settled(h, releasedTask);
+	await h.waitForLatest("woken-meanwhile:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	const runGate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", runGate);
+	cleanups.push(async () => runGate.resolve());
+	let wokenTask: string | undefined;
+	duringCancelOf(h, sibling.taskId, async () => {
+		void dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "woken-meanwhile:0"), {
+			id: "tool-result:ci-1",
+			kind: "tool-result",
+			toolResult: waitResult("CI green"),
+		});
+		const running = await h.waitForLatest(
+			"woken-meanwhile:0",
+			(record) => record.state === "running" && record.taskId !== releasedTask,
+		);
+		wokenTask = running.taskId;
+	});
+
+	const paused = await h.call({ action: "pause", all: true });
+
+	assert.notEqual(paused.isError, true, text(paused));
+	assert.ok(wokenTask);
+	assert.deepEqual(
+		paused.details.runControl?.children.map((child) => [child.childId, child.state]),
+		[
+			["busy-sibling:0", "paused"],
+			["woken-meanwhile:0", "paused"],
+		],
+	);
+	const latest = await h.waitForLatest(
+		"woken-meanwhile:0",
+		(record) => record.state === "terminal" && record.terminalStatus === "paused" && record.taskId === wokenTask,
+	);
+	assert.equal(latest.taskId, wokenTask, "the record names the run the wake started, which pause stopped");
+	await settled(h, wokenTask);
+});
+
+test("quit with all: true keeps a result held for a paused child while a sibling was stopped first, and resume delivers it (#4845)", async () => {
+	const h = harness();
+	const dispatcher = agentWakeDispatcher();
+	const unbind = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+	cleanups.push(async () => unbind());
+	h.wakeDispatcher = dispatcher;
+	const sibling = await h.launch("quit-sibling");
+	h.releaseOriginal = true;
+	await settled(h, await h.admit("held-meanwhile"));
+	await h.waitForLatest("held-meanwhile:0", (record) => record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS);
+	h.releaseOriginal = false;
+	await h.call({ action: "pause", id: "held-meanwhile:0" });
+	await h.waitForLatest("held-meanwhile:0", (record) => record.terminalStatus === "paused");
+	const key = subagentWakeKey(h.sessionManager.getSessionId(), "held-meanwhile:0");
+	const green = waitResult("CI green");
+	await dispatcher.deliver(key, { id: "tool-result:ci-1", kind: "tool-result", toolResult: green });
+	await h.waitForLatest("held-meanwhile:0", (record) => (record.heldToolResults ?? []).length === 1);
+	const deployed = { ...waitResult("deploy done"), toolCallId: "deploy-2", toolName: "deploy" };
+	duringCancelOf(h, sibling.taskId, async () => {
+		await dispatcher.deliver(key, { id: "tool-result:deploy-2", kind: "tool-result", toolResult: deployed });
+	});
+	const runsBefore = h.runs.length;
+
+	const quit = await h.call({ action: "quit", all: true });
+
+	assert.notEqual(quit.isError, true, text(quit));
+	const latest = h.latest("held-meanwhile:0");
+	assert.equal(latest?.terminalStatus, "quit");
+	assert.deepEqual(
+		latest?.heldToolResults,
+		[green, deployed],
+		"quit keeps the result held while it stopped the sibling",
+	);
+	assert.equal(h.runs.length, runsBefore, "a paused child is not woken by the result");
+
+	const resumed = await h.call({ action: "resume", id: "held-meanwhile:0", message: "go on" });
+	await settled(h, resumedTaskId(resumed));
+	const run = h.runs.at(-1);
+	assert.equal(run?.task, lateToolResultMessage(green), "resume delivers each held result once");
+	assert.deepEqual(run?.options.resumeFollowUps, [
+		lateToolResultMessage(deployed),
+		"go on",
+		SUBAGENT_RUN_CONTROL_CONTINUATION_PROMPT,
+	]);
+});
+
+test("a child woken from its release and then paused while it waits on nothing is stopped, not parked at the broker (#4845)", async () => {
+	const h = harness();
+	const dispatcher = await releasedWithWakes(h, "rewoken");
+	const runGate = Promise.withResolvers<void>();
+	h.finishOn.set("CI green", runGate);
+	cleanups.push(async () => runGate.resolve());
+	void dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), "rewoken:0"), {
+		id: "tool-result:ci-1",
+		kind: "tool-result",
+		toolResult: waitResult("CI green"),
+	});
+	const woken = await h.waitForLatest("rewoken:0", (record) => record.state === "running");
+	assert.deepEqual(woken.waitingOn ?? [], [], "the woken run waits on nothing yet");
+
+	const paused = await h.call({ action: "pause", id: "rewoken:0" });
+	assert.notEqual(paused.isError, true, text(paused));
+	const latest = await h.waitForLatest(
+		"rewoken:0",
+		(record) => record.state === "terminal" && record.terminalStatus === "paused" && record.taskId === woken.taskId,
+	);
+
+	assert.deepEqual(latest.waitingOn ?? [], [], "the calls its earlier run waited on are no longer waited on");
+	assert.equal(releasedChildReservation(latest), undefined, "the broker does not hold sends to it");
+	assert.equal(endedChildMark(latest)?.outcome, "stopped", "a send to it is told it is stopped");
+	const requests = h.releasedChildRequests.length;
+	await reserveReleasedChildrenOf(h.deps.pi.events, h.sessionManager.getSessionId());
+	assert.deepEqual(h.releasedChildRequests.slice(requests), [], "a reconnect reserves nothing for it");
 });

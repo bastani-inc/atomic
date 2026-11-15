@@ -22,10 +22,16 @@ import {
 	SUBAGENT_HOLD_FAILURE_EVENT,
 	SUBAGENT_HOLD_RECOVERED_EVENT,
 } from "./released-child-reservations.js";
-import { bindResumeDispatcher } from "./released-child-resume.js";
+import {
+	bindResumeDispatcher,
+	isReleasedChildStopPending,
+	openReleasedChildRelaunch,
+	settleReleasedChildRelaunch,
+} from "./released-child-resume.js";
 import {
 	handleReleasedChildWakes,
 	holdToolResultsInRecord,
+	isRelaunchableChildRecord,
 	SUBAGENT_RELEASED_WAKE_PROMPT,
 	subagentWakeKey,
 	subagentWakeNamespace,
@@ -36,6 +42,7 @@ import { RELEASED_CHILD_REPLY_EVENT, type ReleasedChildReplyRequest } from "./re
 import {
 	indexSubagentChildOwner,
 	subagentChildRecordForTarget,
+	subagentChildRecordOf,
 	subagentChildRecordsOf,
 } from "./subagent-child-card-state.js";
 import {
@@ -141,12 +148,30 @@ export function bindReleasedChildWakes(
 		void markEndedChildrenOf(events, ownerSessionId);
 	};
 	reserveAll();
+	/**
+	 * The child's latest record when a wake must not relaunch it after all: a pause or quit of it is in flight, or its
+	 * latest record is no longer released or ended on its own (#4845). Undefined when it may run.
+	 */
+	const refuseRelaunch = (record: SubagentChildRecord) => (): SubagentChildRecord | undefined => {
+		const latest = subagentChildRecordOf(ownerSessionId, record.childId);
+		const key = subagentWakeKey(ownerSessionId, record.childId);
+		if (!isReleasedChildStopPending(key) && isRelaunchableChildRecord(latest)) return undefined;
+		return latest ?? record;
+	};
 	const restore = async (record: SubagentChildRecord, request: SubagentChildResumeRequest) => {
-		const outcome = await restoreSubagentChild(deps, ctx, record.childId, request);
+		const key = subagentWakeKey(ownerSessionId, record.childId);
+		const outcome = await restoreSubagentChild(deps, ctx, record.childId, request, refuseRelaunch(record));
 		if (outcome.kind === "unrestorable")
 			throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
+		if (outcome.kind !== "restored") {
+			// It was not relaunched: what the wake carried stays held in its record for its resume.
+			settleReleasedChildRelaunch(key, undefined);
+			return;
+		}
+		settleReleasedChildRelaunch(key, outcome.taskId);
 		const host = ctx.getAgentTaskHost?.();
-		if (outcome.kind === "restored" && host !== undefined) await awaitTaskSettlement(host, outcome.taskId);
+		if (host !== undefined) await awaitTaskSettlement(host, outcome.taskId);
+		openReleasedChildRelaunch(key);
 	};
 	const holdResults = holdToolResultsInRecord(deps.pi);
 	const disposeHandler = handleReleasedChildWakes(
@@ -157,6 +182,10 @@ export function bindReleasedChildWakes(
 					(result) => !(record.heldToolResults ?? []).some((held) => held.toolCallId === result.toolCallId),
 				);
 				if (unsaved.length > 0) await holdResults(record, unsaved);
+				if (refuseRelaunch(record)() !== undefined) {
+					settleReleasedChildRelaunch(subagentWakeKey(ownerSessionId, record.childId), undefined);
+					return;
+				}
 				if (record.intercomTarget !== undefined) void acknowledgeReleasedChildWake(events, record.intercomTarget);
 				await restore(record, {
 					prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
@@ -169,6 +198,11 @@ export function bindReleasedChildWakes(
 				const outcome = await restoreSubagentChild(deps, ctx, record.childId, request);
 				if (outcome.kind === "unrestorable")
 					throw new ReleasedChildError("child-unrestorable", { childId: record.childId, reason: outcome.reason });
+				// A pause or quit waiting on this wake stops the task the resume started.
+				settleReleasedChildRelaunch(
+					subagentWakeKey(ownerSessionId, record.childId),
+					outcome.kind === "restored" ? outcome.taskId : undefined,
+				);
 				return outcome;
 			},
 			redispatch: (record) => restore(record, { prompt: SUBAGENT_RELEASED_WAKE_PROMPT, redispatch: true }),
