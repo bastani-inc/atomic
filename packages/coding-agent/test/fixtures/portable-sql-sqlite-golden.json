@@ -110,6 +110,12 @@
 		},
 		{
 			"type": "table",
+			"name": "session_open",
+			"tbl_name": "session_open",
+			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
 			"name": "session_search_texts",
 			"tbl_name": "session_search_texts",
 			"sql": "CREATE TABLE session_search_texts (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL,\n\t\t\t\t\ttext_json TEXT NOT NULL CHECK(json_valid(text_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
@@ -197,6 +203,12 @@
 			"name": "team_session_meta",
 			"tbl_name": "team_session_meta",
 			"sql": "CREATE TABLE team_session_meta (schema_version INTEGER NOT NULL) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_open",
+			"tbl_name": "team_session_open",
+			"sql": "CREATE TABLE team_session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -535,6 +547,12 @@
 			"name": "session_meta",
 			"tbl_name": "session_meta",
 			"sql": "CREATE TABLE session_meta (schema_version INTEGER NOT NULL) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_open",
+			"tbl_name": "session_open",
+			"sql": "CREATE TABLE session_open (\n\t\t\t\tsession_id TEXT NOT NULL, token TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT NOT NULL,\n\t\t\t\theartbeat_at INTEGER NOT NULL, PRIMARY KEY(session_id, token)\n\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
