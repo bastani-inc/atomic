@@ -16,6 +16,11 @@ export interface LockWait {
 	readonly pollMaxMs: number;
 	/** Whether `error` from an attempt means another process holds the lock, so the wait goes on. */
 	readonly retryable: (error: unknown) => boolean;
+	/**
+	 * Frees the lock when its holder is proven gone, true when it did, so the next attempt follows at once instead of
+	 * waiting for the lock to go stale (#5161).
+	 */
+	readonly takeOver?: () => boolean;
 	/** The error when one holder kept the lock for {@link LockWait.holderWaitMs}. */
 	readonly stuck: (error: unknown) => Error;
 	/** The error when the lock kept changing hands for {@link LockWait.contentionWaitMs}. */
@@ -23,7 +28,7 @@ export interface LockWait {
 }
 
 /** Which lock holds `lockPath` now, or undefined when none does or it is being removed. */
-function lockHolder(lockPath: string): string | undefined {
+export function lockHolder(lockPath: string): string | undefined {
 	try {
 		const stats = statSync(lockPath, { throwIfNoEntry: false });
 		return stats === undefined ? undefined : `${stats.ino}:${stats.birthtimeMs}`;
@@ -54,6 +59,7 @@ class LockWaiter {
 	/** How long to sleep before the next attempt after `error`; throws when the wait is over. */
 	next(error: unknown): number {
 		if (!this.wait.retryable(error)) throw error;
+		if (this.wait.takeOver?.()) return 0;
 		const now = Date.now();
 		const holder = lockHolder(this.wait.lockPath);
 		if (holder !== this.holder) {

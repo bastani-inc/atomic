@@ -626,6 +626,11 @@ export class SettingsManager {
 		await this.writeQueue;
 	}
 
+	/** Why the global settings could not be read, so this manager uses the defaults for them; null when they were read. */
+	getGlobalSettingsLoadError(): Error | null {
+		return this.globalSettingsLoadError;
+	}
+
 	drainErrors(): SettingsError[] {
 		const drained = [...this.errors];
 		this.errors = [];

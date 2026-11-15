@@ -130,6 +130,7 @@ import {
 	isTruthyEnvFlag,
 	readPipedStdin,
 	reportDiagnostics,
+	unreadableTrustSettingsDiagnostics,
 } from "./main-stdio.ts";
 import type { MainOptions } from "./main-types.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -573,7 +574,10 @@ export async function main(argv: string[], options?: MainOptions) {
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	setCapabilityOverrides(startupSettingsManager.getTerminalCapabilityOverrides());
-	const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager, "startup session lookup");
+	const startupSettingsDiagnostics = [
+		...unreadableTrustSettingsDiagnostics(startupGlobalSettingsManager, parsed.projectTrustOverride),
+		...collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"),
+	];
 
 	// --use-theme steers this run only: the override lives in the startup
 	// manager's effective settings and never reaches its global settings file.
