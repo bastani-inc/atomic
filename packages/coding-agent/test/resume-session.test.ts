@@ -8,7 +8,6 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
-	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -16,6 +15,7 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox, gitConfigPath } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import { holdsSnapshotCommit } from "../src/core/resume/session-resume.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.js";
@@ -162,7 +162,7 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 	test("restores a byte-identical fresh worktree, runs the setup command once and maps old-root tool paths", async () => {
 		const { clone, head } = await editedClone();
 		const manager = await recordSession(clone, join(clone, "notes"));
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const io = new CountingGitIo();
 
 		const prepared = await prepareSessionResume(manager, options({ io }));
@@ -201,7 +201,7 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 	test("continues without the checkout, writing no worktree, when Git cannot be started and a restore is needed (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const io = new CountingGitIo(missingGit());
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 
@@ -226,7 +226,7 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 	test("Git that cannot be provisioned is probed once, before the launch checkout is read, and is named in the notice (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const timeout = new GitProvisionTimeoutError({ phase: "download", timeoutMs: 600_000, elapsedMs: 600_004 });
 		const unavailable = new GitUnavailableError(
 			{ code: "not-installed", platform: "linux", arch: "x64", installDir: "/home/u/.atomic/agent/bin/git" },
@@ -257,7 +257,7 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 		sandbox.write(join(clone, "deploy.key"), "PRIVATE\n");
 		const denied = await sandbox.commitAll(clone, "unpushed key");
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const prepared = await prepareSessionResume(
 			manager,
 			options({ blueprint: setupBlueprint({ setupCommand: undefined }) }),
@@ -276,7 +276,7 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 	test("does nothing when snapshots are disabled or the session recorded none", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const io = new CountingGitIo();
 		const disabled = await prepareSessionResume(
 			manager,
@@ -311,7 +311,7 @@ describe("prepareSessionResume on a node without the recorded checkout (#4329)",
 	test("restores every recorded checkout when the session works outside all of them (review findings 1 and 2)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone, sandbox.root);
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const io = new CountingGitIo();
 		const launchClone = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
@@ -352,7 +352,7 @@ describe.skipIf(process.platform === "win32")(
 		async function launchedInAnotherClone() {
 			const { clone } = await editedClone();
 			const manager = await recordSession(clone);
-			renameSync(clone, sandbox.path("node-a-gone"));
+			renameReplacing(clone, sandbox.path("node-a-gone"));
 			const launch = sandbox.path("node-b", "repo");
 			mkdirSync(sandbox.path("node-b"));
 			await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), launch);
@@ -389,7 +389,7 @@ describe("prepareSessionResume started in a checkout of the session's repository
 		const manager = await recordSession(clone, join(clone, "notes"));
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		return { clone, manager, checkout };
 	}
 
@@ -508,7 +508,7 @@ describe("prepareSessionResume started in a checkout of the session's repository
 		const manager = await recordSession(clone, join(clone, "notes"));
 		const matching = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, matching);
+		renameReplacing(clone, matching);
 		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), clone);
 		sandbox.write(join(clone, "README.md"), "node B's own tree at the recorded path\n");
 
@@ -554,7 +554,7 @@ describe("prepareSessionResume started in a checkout of the session's repository
 			await recordSession(clone),
 			await recordSession(clone),
 		] as const;
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const prompts: DirtyCheckoutPrompt[] = [];
 		const ask = async (prompt: DirtyCheckoutPrompt): Promise<DirtyCheckoutChoice> => {
 			prompts.push(prompt);
@@ -594,7 +594,7 @@ describe("prepareSessionResume started in a checkout of the session's repository
 	test("a checkout of another repository is never reused", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("node-a-gone"));
+		renameReplacing(clone, sandbox.path("node-a-gone"));
 		const { clone: other } = await sandbox.remoteWithClone("other");
 		let asked = false;
 		await prepareSessionResume(
@@ -630,7 +630,7 @@ describe("prepareSessionResume matches a launch checkout by repository, not by r
 		assert.deepEqual(manager.getLatestWorktreeSnapshots().get(clone)!.remotes, [recorded]);
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		await sandbox.git(checkout, "remote", "set-url", "origin", launch);
 		return { clone, manager, checkout };
 	}
@@ -712,7 +712,7 @@ describe("prepareSessionResume details (#4329)", () => {
 		const manager = await recordSession(clone);
 		const id = manager.getLatestWorktreeSnapshots().get(clone)!.id;
 		const checkout = sandbox.path("moved");
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		const matched = await prepareSessionResume(manager, options({ launchCwd: checkout }));
 		assert.deepEqual(matched.status === "ready" && matched.notices, [
 			{ type: "info", message: `Resuming in ${checkout}, which matches snapshot ${id.slice(0, 12)} of ${clone}` },
@@ -724,7 +724,7 @@ describe("prepareSessionResume details (#4329)", () => {
 		const manager = await recordSession(clone);
 		const id = manager.getLatestWorktreeSnapshots().get(clone)!.id;
 		const checkout = sandbox.path("moved");
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 		const used = await prepareSessionResume(
 			manager,
@@ -742,7 +742,7 @@ describe("prepareSessionResume details (#4329)", () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("moved");
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		await sandbox.git(checkout, "remote", "add", "mirror", sandbox.path("mirror.git"));
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout }));
 		assert.equal(cwdOf(prepared), checkout);
@@ -756,7 +756,7 @@ describe("prepareSessionResume details (#4329)", () => {
 		await sandbox.commitAll(root, "initial");
 		const manager = await recordSession(root);
 		const checkout = sandbox.path("moved");
-		renameSync(root, checkout);
+		renameReplacing(root, checkout);
 		let asked = false;
 		const prepared = await prepareSessionResume(
 			manager,
@@ -783,7 +783,7 @@ describe("prepareSessionResume details (#4329)", () => {
 		if (capture.status !== "captured") throw new Error(capture.status);
 		await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 		const checkout = sandbox.path("moved");
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout, settings: narrow }));
 		assert.equal(prepared.status === "ready" && prepared.notices[0]?.type, "info");
 		assert.equal(cwdOf(prepared), checkout);
@@ -803,7 +803,7 @@ describe("prepareSessionResume details (#4329)", () => {
 		async () => {
 			const { clone } = await editedClone();
 			const manager = await recordSession(clone);
-			renameSync(clone, sandbox.path("gone"));
+			renameReplacing(clone, sandbox.path("gone"));
 			mkdirSync(dirname(clone), { recursive: true });
 			writeFileSync(clone, "now a file");
 			const underFile = await prepareSessionResume(manager, options());
@@ -834,7 +834,7 @@ describe("prepareSessionResume: failure paths and notices (#4329)", () => {
 		await sandbox.commitAll(clone, "initial");
 		await sandbox.git(clone, "push", "-q", "origin", "HEAD:main");
 		const manager = await recordSession(clone);
-		renameSync(dirname(clone), sandbox.path("gone"));
+		renameReplacing(dirname(clone), sandbox.path("gone"));
 		writeFileSync(dirname(clone), "now a file");
 		const prepared = await prepareSessionResume(manager, options());
 		assert.ok(cwdOf(prepared)?.startsWith(sandbox.path("host")));
@@ -861,7 +861,7 @@ describe("prepareSessionResume: failure paths and notices (#4329)", () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const checkout = sandbox.path("moved");
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		let asked = false;
 		await assert.rejects(
 			prepareSessionResume(
@@ -899,7 +899,7 @@ describe("prepareSessionResume: failure paths and notices (#4329)", () => {
 	test("without Git a session already in a restored worktree continues there without running setup (#4733)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 		const first = await prepareSessionResume(manager, options());
 		assert.equal(first.status, "ready");
 		assert.equal(setupRuns(), 1);
@@ -914,7 +914,7 @@ describe("prepareSessionResume: failure paths and notices (#4329)", () => {
 	test("a restore with no setup command shows only the restore notice", async () => {
 		const { clone } = await sandbox.remoteWithClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 		const prepared = await prepareSessionResume(
 			manager,
 			options({ blueprint: setupBlueprint({ setupCommand: undefined }) }),
@@ -930,7 +930,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("an untrusted restore runs nothing and still succeeds, with only the restore notice (#4588)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -999,11 +999,11 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a session moved into a restored worktree returns to the checkout it was restored from (#4660)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone, join(clone, "notes"));
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		const first = await prepareSessionResume(manager, options());
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
 		assert.equal(cwdOf(first), join(worktree, "notes"));
-		renameSync(sandbox.path("away"), clone);
+		renameReplacing(sandbox.path("away"), clone);
 		sandbox.write(join(clone, "README.md"), "merged later\n");
 		await sandbox.commitAll(clone, "work merged after the snapshot");
 
@@ -1041,7 +1041,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		assert.deepEqual(steps, ["Checking 1 checkout against the session's snapshots"]);
 
 		steps.length = 0;
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		await prepareSessionResume(restored, options({ onProgress: (step) => steps.push(step) }));
 		assert.deepEqual(steps, [
 			"Checking 1 checkout against the session's snapshots",
@@ -1055,13 +1055,13 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		const { clone: sibling } = await sandbox.remoteWithClone("sibling");
 		sandbox.write(join(sibling, "sibling-work.txt"), "saved sibling work\n");
 		const manager = await recordSession(clone, join(clone, "notes"), [sibling]);
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		const first = await prepareSessionResume(manager, options());
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
-		renameSync(sandbox.path("away"), clone);
+		renameReplacing(sandbox.path("away"), clone);
 		sandbox.write(join(clone, "README.md"), "merged later\n");
 		await sandbox.commitAll(clone, "work merged after the snapshot");
-		renameSync(sibling, sandbox.path("sibling-gone"));
+		renameReplacing(sibling, sandbox.path("sibling-gone"));
 
 		const reopened = first.status === "ready" ? first.sessionManager : manager;
 		const second = await prepareSessionResume(reopened, options());
@@ -1077,7 +1077,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a Git failure while looking for the checkout a session came from keeps it where it is, and the resume completes (#4660)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone, join(clone, "notes"));
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		const first = await prepareSessionResume(manager, options());
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
 		rmSync(sandbox.path("away"), { recursive: true, force: true });
@@ -1106,7 +1106,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		assert.deepEqual(steps, ["Checking 2 checkouts against the session's snapshots"]);
 
 		const restoring = await recordSession(clone);
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		steps.length = 0;
 		await prepareSessionResume(restoring, options({ blueprints: "skip", onProgress: (step) => steps.push(step) }));
 		assert.equal(steps.length, 2);
@@ -1116,10 +1116,10 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a session in a restored worktree whose latest snapshot is a later one stays there (#4660)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		const first = await prepareSessionResume(manager, options());
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
-		renameSync(sandbox.path("away"), clone);
+		renameReplacing(sandbox.path("away"), clone);
 		const reopened = first.status === "ready" ? first.sessionManager : manager;
 		const current = reopened.getLatestWorktreeSnapshots().get(worktree)!;
 		await reopened.appendWorktreeSnapshot(worktree, "abcdef012345", { ...current, id: "abcdef012345" });
@@ -1164,10 +1164,10 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 		async () => {
 			const { clone } = await editedClone();
 			const manager = await recordSession(clone, join(clone, "notes"));
-			renameSync(clone, sandbox.path("away"));
+			renameReplacing(clone, sandbox.path("away"));
 			const first = await prepareSessionResume(manager, options());
 			const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
-			renameSync(sandbox.path("away"), clone);
+			renameReplacing(sandbox.path("away"), clone);
 			const shim = gitFailingCommandIn(clone, "cat-file*^{commit}");
 			setWorktreeSnapshotGit(async () => ({ path: shim, env: {} }));
 
@@ -1187,10 +1187,10 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a session that worked in its restored worktree stays there (#4660)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		const first = await prepareSessionResume(manager, options());
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
-		renameSync(sandbox.path("away"), clone);
+		renameReplacing(sandbox.path("away"), clone);
 		sandbox.write(join(worktree, "README.md"), "the session's own work\n");
 
 		const reopened = first.status === "ready" ? first.sessionManager : manager;
@@ -1203,7 +1203,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a restored worktree is kept when the checkout it came from is another clone (#4660)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("away"));
+		renameReplacing(clone, sandbox.path("away"));
 		const first = await prepareSessionResume(manager, options());
 		const worktree = manager.getWorktreeRootMappings().at(-1)!.to;
 		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("repo.git"), clone);
@@ -1217,7 +1217,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a repository with no blueprint and no setup command is restored, recorded and kept (#4588)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 		const trustedPaths: string[] = [];
 
 		const prepared = await prepareSessionResume(
@@ -1248,7 +1248,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a failing setup command keeps the restored worktree and warns; the next resume builds it again (#4588)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 
 		const failed = await prepareSessionResume(
 			manager,
@@ -1279,7 +1279,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a setup command stopped before it finished runs again on the next resume", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 		const controller = new AbortController();
 		const started = sandbox.path("setup-started");
 		const pending = prepareSessionResume(
@@ -1306,7 +1306,7 @@ describe("a setup command or blueprint never blocks a restore (#4329)", () => {
 	test("a worktree an earlier resume restored and built is not built again after the session changes its files", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 		const first = await prepareSessionResume(manager, options());
 		if (first.status !== "ready") throw new Error(first.status);
 		const restored = cwdOf(first)!;
@@ -1350,7 +1350,7 @@ describe("resume failure presentation (#4329)", () => {
 		const recorded = manager.getLatestWorktreeSnapshots().get(clone)!;
 		const unsafe = { ...recorded, remotes: ["https://user:token@example.invalid/repo.git"] };
 		await manager.appendWorktreeSnapshot(clone, unsafe.id, unsafe);
-		renameSync(clone, sandbox.path("gone"));
+		renameReplacing(clone, sandbox.path("gone"));
 		const error = await prepareSessionResume(manager, options()).then(
 			() => assert.fail("the resume must be refused"),
 			(failure: Error) => failure,
@@ -1407,8 +1407,8 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 	test("every checkout a resume restores gets its setup command", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
-		renameSync(clone, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, sandbox.path("first-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(manager, options());
 
@@ -1423,7 +1423,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
 		sandbox.write(join(clone, "README.md"), "changed after the release\n");
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 		const prompts: DirtyCheckoutPrompt[] = [];
 
 		const prepared = await prepareSessionResume(
@@ -1451,8 +1451,8 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 	test("a setup command that fails in every restored checkout keeps both worktrees and warns (#4588)", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
-		renameSync(clone, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, sandbox.path("first-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -1474,8 +1474,8 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const { second, manager } = await twoCheckoutSession(clone);
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, checkout);
+		renameReplacing(second, sandbox.path("second-gone"));
 		setWorktreeSnapshotGit(async () => ({ path: sandbox.path("no-git"), env: {} }));
 
 		const prepared = await prepareSessionResume(
@@ -1504,8 +1504,8 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		await manager.appendWorktreeSnapshot(keyed, capture.snapshot.id, capture.snapshot);
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
-		renameSync(keyed, sandbox.path("keyed-gone"));
+		renameReplacing(clone, checkout);
+		renameReplacing(keyed, sandbox.path("keyed-gone"));
 
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout }));
 
@@ -1527,8 +1527,8 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const { second, manager } = await twoCheckoutSession(clone);
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, checkout);
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: checkout }));
 
@@ -1559,9 +1559,9 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const { second, manager } = await twoCheckoutSession(clone);
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -1590,7 +1590,7 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 		const { manager } = await twoCheckoutSession(clone);
 		const checkout = sandbox.path("node-b", "repo");
 		mkdirSync(sandbox.path("node-b"));
-		renameSync(clone, checkout);
+		renameReplacing(clone, checkout);
 		sandbox.write(join(checkout, "README.md"), "user edit\n");
 
 		const prepared = await prepareSessionResume(
@@ -1605,8 +1605,8 @@ describe("prepareSessionResume for a session that recorded two checkouts (#4329)
 	test("a missing Git leaves out every checkout the resume would restore, with one notice each (#4733)", async () => {
 		const { clone } = await editedClone();
 		const { second, manager } = await twoCheckoutSession(clone);
-		renameSync(clone, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, sandbox.path("first-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 		const snapshots = manager.getLatestWorktreeSnapshots();
 		const io = new CountingGitIo(missingGit());
 
@@ -1682,7 +1682,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -1760,8 +1760,8 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const removed = await recordOtherCheckout(manager, "removed");
 		const alsoRemoved = await recordOtherCheckout(manager, "also-removed");
 		const changed = await recordOtherCheckout(manager, "changed");
-		renameSync(removed, sandbox.path("removed-gone"));
-		renameSync(alsoRemoved, sandbox.path("also-removed-gone"));
+		renameReplacing(removed, sandbox.path("removed-gone"));
+		renameReplacing(alsoRemoved, sandbox.path("also-removed-gone"));
 		sandbox.write(join(changed, "README.md"), "changed after the snapshot\n");
 
 		const prepared = await prepareSessionResume(
@@ -1782,8 +1782,8 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(clone, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, sandbox.path("first-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 		const io = new CountingGitIo(missingGit());
 
 		const prepared = await prepareSessionResume(manager, options({ io }));
@@ -1805,8 +1805,8 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(clone, sandbox.path("first-gone"));
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(clone, sandbox.path("first-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -1829,7 +1829,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 	test("a session that works outside every recorded checkout has no checkout whose restore can refuse the resume (#4584)", async () => {
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone, sandbox.root);
-		renameSync(clone, sandbox.path("first-gone"));
+		renameReplacing(clone, sandbox.path("first-gone"));
 
 		const prepared = await prepareSessionResume(manager, options({ io: new CountingGitIo(missingGit()) }));
 
@@ -1842,7 +1842,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -1870,7 +1870,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		});
 		if (capture.status !== "captured") throw new Error(capture.status);
 		await manager.appendWorktreeSnapshot(keyed, capture.snapshot.id, capture.snapshot);
-		renameSync(keyed, sandbox.path("keyed-gone"));
+		renameReplacing(keyed, sandbox.path("keyed-gone"));
 
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone }));
 
@@ -1892,7 +1892,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 
 		const prepared = await prepareSessionResume(
 			manager,
@@ -1924,7 +1924,7 @@ describe("prepareSessionResume when a checkout other than the current one needs 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(second, sandbox.path("second-original"));
+		renameReplacing(second, sandbox.path("second-original"));
 		await sandbox.git(sandbox.root, "clone", "-q", sandbox.path("second.git"), second);
 
 		const prepared = await prepareSessionResume(manager, options({ launchCwd: clone }));
@@ -1981,7 +1981,7 @@ describe("prepareSessionResume cases the other-checkout planning leaves as they 
 		const { clone } = await editedClone();
 		const manager = await recordSession(clone);
 		const second = await recordOtherCheckout(manager, "second");
-		renameSync(second, sandbox.path("second-gone"));
+		renameReplacing(second, sandbox.path("second-gone"));
 		const controller = new AbortController();
 		const started = sandbox.path("setup-started");
 		const pending = prepareSessionResume(

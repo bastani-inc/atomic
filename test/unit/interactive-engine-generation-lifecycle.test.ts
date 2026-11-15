@@ -120,7 +120,9 @@ test.sequential("a dead generation's buffered custom-UI frames are never deliver
 			// which is exactly the state the assertions below examine.
 			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
 		}
-		await sleep(150);
+		// The host sees the death when Node reports the child's exit, which a loaded runner can delay past any fixed
+		// wait. Subscribing does not consume the retained death, so waiting for it leaves the checks below unchanged.
+		await waitForRetainedGenerationEnd(client);
 
 		const messages: InteractiveEngineMessage[] = [];
 		const deaths: InteractiveEngineGenerationEnded[] = [];

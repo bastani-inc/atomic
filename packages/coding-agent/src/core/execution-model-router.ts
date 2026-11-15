@@ -21,6 +21,7 @@ import {
 	rankCandidates,
 } from "./model-routing-candidates.js";
 import {
+	billedModelCost,
 	eligiblePair,
 	type ModelConstraints,
 	type ModelRouterOutput,
@@ -140,7 +141,7 @@ export function routingCandidate(
 	return {
 		model: `${model.provider}/${model.id}`,
 		name: model.name,
-		cost: routeCost ?? model.cost,
+		cost: billedModelCost(model),
 		input: model.input,
 		efforts,
 		...(model.fastRoute
