@@ -829,7 +829,7 @@ const { session } = await createAgentSession({
   settingsManager: SettingsManager.create(),
 });
 
-// With overrides
+// With overrides: never saved, and kept for the run (through setting writes, reload() and trust changes) until a setter changes the same setting
 const settingsManager = SettingsManager.create();
 settingsManager.applyOverrides({
   compaction: { enabled: false },

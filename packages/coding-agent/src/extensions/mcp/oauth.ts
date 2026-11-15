@@ -489,8 +489,8 @@ async function listenForCallback(
 }
 
 /**
- * Sign in to an MCP server. Uses the stored refresh token when possible; otherwise runs the browser
- * authorization code flow. The client and tokens are saved to `store` once the sign-in completes.
+ * Sign in to an MCP server. Uses the stored refresh token when possible, or the tokens a refresh that
+ * finished meanwhile saved; otherwise runs the browser authorization code flow. The client and tokens are saved to `store` once the sign-in completes.
  * Aborting `signal` stops the sign-in at any step with `McpSignInCancelledError`; requests to the
  * authorization server are also time-limited.
  */
@@ -555,7 +555,19 @@ export async function signInMcpServer(options: {
 		};
 		// A refresh keeps the granted scope; a server asking for more needs the browser flow.
 		const skipRefresh = stepUp;
-		if ((await authorizeMcp(provider, { ...flow, skipRefresh })) === "AUTHORIZED") return await complete();
+		const authorize = async () => {
+			if ((await authorizeMcp(provider, { ...flow, skipRefresh })) !== "AUTHORIZED") return false;
+			await complete();
+			return true;
+		};
+		// Refresh tokens may rotate, so a refresh runs under the lock that connection refreshes take, and
+		// tokens another holder saved meanwhile are kept instead of refreshed again with a used refresh token.
+		const authorized = skipRefresh
+			? await authorize()
+			: await options.store.withRefreshLock(
+					async () => (await store.load())?.tokens?.access_token !== stored?.tokens?.access_token || authorize(),
+				);
+		if (authorized) return;
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 
 		const state = await provider.state();
