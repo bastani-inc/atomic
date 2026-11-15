@@ -36,10 +36,13 @@ chmod 600 ~/.atomic/postgres-password
 | `auth` | no | `"password"` (default), or `"azure-entra"`, `"aws-iam"` or `"gcp-iam"` to sign in with a cloud identity instead of a password; see [Cloud IAM authentication](#cloud-iam-authentication). A cloud `auth` with a `password` is refused (`conflicting-token`). |
 | `maxConnections` | no | Connections each process keeps open at most. Default 8. |
 | `statementTimeoutMs` | no | How long one statement may run before the server cancels it. Default 30000. |
+| `listenUrl` | no | A direct (session) endpoint for the connection that listens for wake-ups, when `url` goes through a transaction pooler. Default `url`. |
 
 PostgreSQL 14 or newer is required. A URL that names no `sslmode` gets `sslmode=verify-full` when its host is not this machine, so the connection is encrypted and the server certificate is checked. Name a CA with `sslrootcert=/path/to/ca.pem` when the server's certificate is not signed by a CA Node trusts, or set `sslmode` yourself.
 
 The adapter works through a transaction-mode connection pooler (PgBouncer, Supavisor, and the poolers of managed services): it sets nothing outside a transaction, takes no session locks, and uses no named prepared statements.
+
+Each process also keeps one connection outside the pool that `LISTEN`s for wake-ups (`notifications` on the opened database), so worker hosts and Intercom brokers find new work at once. A transaction-mode pooler does not deliver notifications to it: the adapter detects that with a probe and falls back to polling alone, unless `listenUrl` names the server's direct endpoint. Nothing is lost without wake-ups; work is found at the next poll. `atomic storage status` says which applies.
 
 A failure that passes, such as a refused or lost connection, a lock conflict (SQLSTATE `40001`, `40P01`, `55P03`) or a cancelled statement (`57014`), is reported as `StorageTransientError`, and a call that wrote nothing runs again. Refused credentials (`28P01`), a missing database (`3D000`) and missing privileges (`42501`) fail at once. The password is redacted from error messages and diagnostics. Add a `prefix` to the `storage` block to keep projects or teams apart in one database. See [Storage](../coding-agent/docs/storage.md) for selection precedence and the other storage options.
 

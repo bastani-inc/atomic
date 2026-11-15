@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Added
+
+- On PostgreSQL, a broker learns at once that a message or an outcome is waiting for it, through `LISTEN`/`NOTIFY`, instead of at its next half-second check, which stays as the fallback ([#5103](https://github.com/bastani-inc/atomic/issues/5103))
+
 ### Fixed
 
 - Intercom messages and session details no longer pass 8-bit control sequences or bidirectional overrides to the terminal
