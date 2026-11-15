@@ -9,7 +9,7 @@
   "main": "./postgres.js",
   "types": "./postgres.d.ts",
   "exports": { ".": { "types": "./postgres.d.ts", "import": "./postgres.js", "default": "./postgres.js" } },
-  "files": ["postgres.js", "postgres.d.ts", "auth.js", "auth.d.ts", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": ["postgres.js", "postgres.d.ts", "auth.js", "auth.d.ts", "listen.js", "listen.d.ts", "README.md", "CHANGELOG.md", "LICENSE"],
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

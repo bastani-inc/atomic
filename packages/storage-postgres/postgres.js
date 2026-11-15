@@ -9,6 +9,7 @@ import {
 	StorageUnavailableError,
 } from "@bastani/atomic/storage";
 import { createCloudPasswordProvider } from "./auth.js";
+import { createPostgresListener } from "./listen.js";
 
 /**
  * @typedef {import("@bastani/atomic/storage").SqliteDriverResult} SqliteDriverResult
@@ -23,6 +24,7 @@ import { createCloudPasswordProvider } from "./auth.js";
  *   auth?: PostgresAuth,
  *   maxConnections?: number,
  *   statementTimeoutMs?: number,
+ *   listenUrl?: string,
  * }} PostgresDatabaseOptions
  */
 
@@ -32,6 +34,8 @@ export const DEFAULT_MAX_CONNECTIONS = 8;
 export const DEFAULT_STATEMENT_TIMEOUT_MS = 30_000;
 /** How long opening a connection, or waiting for a free one, may take. */
 const CONNECT_TIMEOUT_MS = 10_000;
+/** How long the listening connection stays idle before TCP keepalive probes start. */
+const LISTEN_KEEPALIVE_IDLE_MS = 10_000;
 /** An idle connection is closed after this long. */
 const IDLE_TIMEOUT_MS = 10_000;
 /**
@@ -85,22 +89,23 @@ function isTlsParameter(/** @type {string} */ name) {
  * when it names none and its host is not this machine. A TLS parameter whose name is not lowercase, or an `sslmode`
  * libpq does not know, is refused.
  * @param {unknown} url
+ * @param {"url" | "listenUrl"} [field] The option that holds the URL, which a refusal names.
  * @returns {string}
  */
-function connectionUrl(url) {
+function connectionUrl(url, field = "url") {
 	/** @type {URL} */
 	let parsed;
 	try {
 		parsed = new URL(/** @type {string} */ (url));
 	} catch {
-		throw configError("url", "unsupported-url", "Use a postgres:// or postgresql:// URL");
+		throw configError(field, "unsupported-url", "Use a postgres:// or postgresql:// URL");
 	}
 	if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:")
-		throw configError("url", "unsupported-url", "Use a postgres:// or postgresql:// URL");
+		throw configError(field, "unsupported-url", "Use a postgres:// or postgresql:// URL");
 	const names = [...parsed.searchParams.keys()].map((name) => name.toLowerCase());
 	if (parsed.password !== "" || names.includes("password"))
 		throw configError(
-			"url",
+			field,
 			"credential-in-url",
 			"Remove the password from the URL and pass it through the storage secrets instead",
 		);
@@ -227,6 +232,114 @@ export function numberPlaceholders(sql) {
 		} else index++;
 	}
 	return numbered + sql.slice(copied);
+}
+
+/** The longest identifier Postgres keeps whole; it truncates a longer one. */
+const IDENTIFIER_BYTES = 63;
+
+/**
+ * `sql` with every unquoted identifier longer than Postgres keeps whole replaced by the name the storage dialect gives
+ * it (`postgresDialect.identifier`: its head and a hash of the whole name), in every statement, DDL and DML alike, and
+ * in the bodies of functions and `DO` blocks. Created objects, the statements that use them, and the dialect's catalog
+ * probes then always name one object by one identifier, whatever prefix a store was given, rather than Postgres
+ * truncating each occurrence on its own. Values are never changed: string literals, every other dollar-quoted string,
+ * quoted identifiers and comments (nested as Postgres nests them) are left as written.
+ * @param {string} sql
+ */
+export function physicalIdentifiers(sql) {
+	if (!/[A-Za-z0-9_$]{64}/.test(sql)) return sql;
+	let mapped = "";
+	let copied = 0;
+	let index = 0;
+	// Where the current statement starts, after the last `;` outside quotes and comments.
+	let statement = 0;
+	while (index < sql.length) {
+		const character = /** @type {string} */ (sql[index]);
+		if (/[A-Za-z_]/.test(character) && !isWordCharacter(sql[index - 1])) {
+			let end = index + 1;
+			while (end < sql.length && isWordCharacter(sql[end])) end++;
+			const word = sql.slice(index, end);
+			if (word.length > IDENTIFIER_BYTES && /^[A-Za-z0-9_]+$/.test(word)) {
+				mapped += `${sql.slice(copied, index)}${postgresDialect.identifier(word)}`;
+				copied = end;
+			}
+			index = end;
+		} else if (character === "'") {
+			const escapes = /[eE]/.test(sql[index - 1] ?? "") && !isWordCharacter(sql[index - 2]);
+			index++;
+			while (index < sql.length) {
+				if (escapes && sql[index] === "\\") index += 2;
+				else if (sql[index] !== "'") index++;
+				else if (sql[index + 1] === "'") index += 2;
+				else break;
+			}
+			index++;
+		} else if (character === '"') {
+			index = sql.indexOf('"', index + 1);
+			index = index === -1 ? sql.length : index + 1;
+		} else if (character === "-" && sql[index + 1] === "-") {
+			index = sql.indexOf("\n", index);
+			if (index === -1) index = sql.length;
+		} else if (character === "/" && sql[index + 1] === "*") {
+			index = blockCommentEnd(sql, index);
+		} else if (character === "$" && !isWordCharacter(sql[index - 1])) {
+			const tag = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+			if (tag === undefined) index++;
+			else {
+				const start = index + tag.length;
+				const close = sql.indexOf(tag, start);
+				const end = close === -1 ? sql.length : close;
+				// A function's or `DO` block's body is SQL: its identifiers are mapped, its literals kept. Any other
+				// dollar-quoted string is a value, kept as written.
+				if (isRoutineBody(sql.slice(statement, index))) {
+					mapped += `${sql.slice(copied, start)}${physicalIdentifiers(sql.slice(start, end))}`;
+					copied = end;
+				}
+				index = close === -1 ? sql.length : close + tag.length;
+			}
+		} else {
+			if (character === ";") statement = index + 1;
+			index++;
+		}
+	}
+	return mapped + sql.slice(copied);
+}
+
+/** The index after the block comment that opens at `index`, which nests as Postgres nests comments. */
+function blockCommentEnd(/** @type {string} */ sql, /** @type {number} */ index) {
+	let depth = 1;
+	let at = index + 2;
+	while (at < sql.length && depth > 0) {
+		if (sql.startsWith("/*", at)) {
+			depth++;
+			at += 2;
+		} else if (sql.startsWith("*/", at)) {
+			depth--;
+			at += 2;
+		} else at++;
+	}
+	return at;
+}
+
+/**
+ * Whether a dollar-quoted string after `before`, the text of its statement up to it, is the body of a routine: the
+ * string after `AS` in `CREATE [OR REPLACE] FUNCTION|PROCEDURE`, or after `DO [LANGUAGE …]`.
+ * @param {string} before
+ */
+function isRoutineBody(before) {
+	let text = "";
+	for (let at = 0; at < before.length; ) {
+		if (before.startsWith("/*", at)) {
+			at = blockCommentEnd(before, at);
+			text += " ";
+		} else if (before.startsWith("--", at)) {
+			const end = before.indexOf("\n", at);
+			at = end === -1 ? before.length : end;
+			text += " ";
+		} else text += before[at++];
+	}
+	if (/^\s*DO(?:\s+LANGUAGE\s+\w+)?\s*$/i.test(text)) return true;
+	return /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b[\s\S]*\bAS\s*$/i.test(text);
 }
 
 /** Whether `sql` is a single SQLite `PRAGMA` statement, which Postgres has no use for. */
@@ -398,23 +511,35 @@ export async function openPostgresDatabase(options) {
 	}
 
 	// The URL is parsed here rather than passed as `connectionString`, whose empty password would replace `password`.
-	const connection = clientConfig(parseUrl, connectionString);
-	delete connection.password;
+	/** @param {string} url */
+	const parseConnection = (url) => {
+		const parsed = clientConfig(parseUrl, url);
+		delete parsed.password;
+		return parsed;
+	};
+	const connection = parseConnection(connectionString);
+	// Notifications reach only a session of their own: through a transaction pooler `listenUrl` names a direct endpoint.
+	const listenConnection =
+		options.listenUrl === undefined ? connection : parseConnection(connectionUrl(options.listenUrl, "listenUrl"));
 
 	/** Every password the pool was given, so the redactor can remove them from failures. */
 	const passwords = new Set(typeof options.password === "string" ? [options.password] : []);
-	const source =
-		cloud === undefined
-			? options.password
-			: createCloudPasswordProvider({
-					auth: cloud,
-					host: connection.host ?? "",
-					port: connection.port ?? 5432,
-					user: connection.user ?? "",
-				});
-	/** @type {(() => Promise<string>) | undefined} */
-	const password =
-		source === undefined
+	/**
+	 * The password function for connections to `target`: cloud IAM tokens are issued per host.
+	 * @param {typeof connection} target
+	 * @returns {(() => Promise<string>) | undefined}
+	 */
+	const passwordFor = (target) => {
+		const source =
+			cloud === undefined
+				? options.password
+				: createCloudPasswordProvider({
+						auth: cloud,
+						host: target.host ?? "",
+						port: target.port ?? 5432,
+						user: target.user ?? "",
+					});
+		return source === undefined
 			? undefined
 			: async () => {
 					const value = typeof source === "string" ? source : await source();
@@ -423,6 +548,8 @@ export async function openPostgresDatabase(options) {
 					passwords.add(value);
 					return value;
 				};
+	};
+	const password = passwordFor(connection);
 
 	// pg leaves the socket of a connection that failed to start open, for instance when the password source failed while
 	// the server waited for the password; the server keeps that half-started backend until its authentication timeout,
@@ -529,7 +656,7 @@ export async function openPostgresDatabase(options) {
 	 * @param {readonly SqliteValue[]} params
 	 */
 	const statement = (client, sql, params) =>
-		client.query({ text: numberPlaceholders(sql), values: [...params], rowMode: "array" });
+		client.query({ text: numberPlaceholders(physicalIdentifiers(sql)), values: [...params], rowMode: "array" });
 
 	/**
 	 * @param {import("pg").QueryResult<SqliteValue[]>} result
@@ -558,7 +685,7 @@ export async function openPostgresDatabase(options) {
 	 */
 	const executeMultiple = async (client, sql, timeoutMs) => {
 		if (isPragma(sql)) return;
-		await watched(client, () => client.query(sql), timeoutMs);
+		await watched(client, () => client.query(physicalIdentifiers(sql)), timeoutMs);
 	};
 
 	/**
@@ -639,6 +766,32 @@ export async function openPostgresDatabase(options) {
 		);
 	};
 
+	const listenPassword = passwordFor(listenConnection);
+	const listener = createPostgresListener({
+		async connect() {
+			const client = new ClosingClient({
+				...listenConnection,
+				...(listenPassword === undefined ? {} : { password: listenPassword }),
+				connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+				// A short keepalive notices a peer that vanished without a reset sooner than the system's two hours; the
+				// listener's own health probe catches the rest.
+				keepAlive: true,
+				keepAliveInitialDelayMillis: LISTEN_KEEPALIVE_IDLE_MS,
+				application_name: "atomic-listen",
+			});
+			// An error before the listener attaches its own handler must not end the process unheard.
+			client.on("error", () => {});
+			await new Promise((resolve, reject) =>
+				client.connect((/** @type {Error | undefined} */ error) => (error ? reject(error) : resolve(undefined))),
+			);
+			return client;
+		},
+		send: async (channel, payload) => {
+			await autocommit((client) => client.query("SELECT pg_notify($1, $2)", [channel, payload]));
+		},
+		channelName: (channel) => postgresDialect.identifier(channel),
+	});
+
 	const database = createSqliteDatabase({
 		descriptor: { adapter: "postgres", location: connectionString },
 		redact: (text) => {
@@ -709,7 +862,11 @@ export async function openPostgresDatabase(options) {
 				close: () => client.release(lost.has(client)),
 			};
 		},
-		close: () => pool.end(),
+		notifications: listener,
+		close: async () => {
+			await listener.close();
+			await pool.end();
+		},
 	});
 	try {
 		const row = await database.get("SELECT current_setting('server_version_num') AS version");
@@ -757,6 +914,7 @@ const adapter = {
 			...(typeof options.auth === "string" ? { auth: /** @type {PostgresAuth} */ (options.auth) } : {}),
 			...(typeof options.maxConnections === "number" ? { maxConnections: options.maxConnections } : {}),
 			...(typeof options.statementTimeoutMs === "number" ? { statementTimeoutMs: options.statementTimeoutMs } : {}),
+			...(typeof options.listenUrl === "string" ? { listenUrl: options.listenUrl } : {}),
 		});
 	},
 };

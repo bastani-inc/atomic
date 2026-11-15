@@ -12,6 +12,10 @@ export type {
 	SqliteTransactionOptions,
 	SqliteValue,
 	StorageDescriptor,
+	StorageListenerState,
+	StorageNotificationEvent,
+	StorageNotificationSubscription,
+	StorageNotifications,
 	TransactionConcurrency,
 } from "./database.js";
 export * from "./dialect.js";
@@ -29,7 +33,9 @@ export {
 	wrapNodeSqliteDatabase,
 } from "./node-sqlite.js";
 export {
+	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
 	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
+	POSTGRES_POOL_SESSION_PREFIX,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 	renderStorageIdentifiers,
 	validateStoragePrefix,

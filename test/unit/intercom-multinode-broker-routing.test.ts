@@ -76,7 +76,7 @@ const BUS_POLL_INTERVAL_MS = 20;
 const ATTACHMENTS = [{ type: "snippet" as const, name: " a.ts ", content: "const x = 1;\r\n", language: "ts" }];
 const VERBATIM = "  cross-node\tparity\u0000 ünïcödé ✓  \n";
 
-type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[] };
+type FakeSocket = net.Socket & { frames: BrokerOutboundFrame[]; written?: () => void };
 
 function fakeSocket(): FakeSocket {
 	return { destroyed: false, writableEnded: false, frames: [] } as unknown as FakeSocket;
@@ -138,8 +138,10 @@ class Node {
 
 	write(socket: net.Socket, frame: BrokerOutboundFrame): boolean {
 		const fake = socket as Partial<FakeSocket>;
-		if (fake.frames !== undefined) fake.frames.push(frame);
-		else writeMessage(socket, frame);
+		if (fake.frames !== undefined) {
+			fake.frames.push(frame);
+			fake.written?.();
+		} else writeMessage(socket, frame);
 		return true;
 	}
 
@@ -1297,6 +1299,53 @@ test("an ask whose route write fails is redelivered and keeps its reply route in
 	assert.deepEqual(frame, { type: "message", from: replier.info, message: reply });
 });
 
+test("an away session's asks move to the shared state only once it has them, and stay here otherwise (#4997)", async () => {
+	const [a] = await cluster(1);
+	const pendingAsks = a!.opened.state.pendingAsks;
+	const record = pendingAsks.record.bind(pendingAsks);
+	const question = () => ({ senderSessionId: randomUUID(), targetSessionId: randomUUID(), messageId: randomUUID() });
+	const [moved, refused, takenUp, failed] = [question(), question(), question(), question()];
+	let failedAttempted = false;
+	Object.assign(pendingAsks, {
+		record: async (ask: Parameters<typeof record>[0]) => {
+			if (ask.messageId === refused.messageId) return { status: "invalid", reason: "empty-target-identity" };
+			if (ask.messageId === failed.messageId) {
+				failedAttempted = true;
+				throw new Error("shared database stopped answering");
+			}
+			const recorded = await record(ask);
+			// This broker answers it while its shared route is being written.
+			if (ask.messageId === takenUp.messageId) a!.pendingQuestions.forgetDormant(takenUp);
+			return recorded;
+		},
+	});
+	const shared = async (route: typeof moved) =>
+		(
+			await pendingAsks.matchesReply({
+				replySenderSessionId: route.targetSessionId,
+				replyTargetSessionId: route.senderSessionId,
+				replyTo: route.messageId,
+			})
+		).status;
+	const kept = [moved, refused, takenUp, failed];
+	a!.pendingQuestions.keepDormant(kept, "asker-return-address");
+	void a!.router.publishAwayRoutes(kept);
+
+	await vi.waitFor(() => assert.equal(failedAttempted, true), { timeout: CROSS_NODE_WAIT_MS, interval: 10 });
+	// Taken up here while its shared route was written, so the shared route is settled.
+	await vi.waitFor(async () => assert.equal(await shared(takenUp), "no-match"), { timeout: CROSS_NODE_WAIT_MS });
+	assert.equal(await shared(moved), "match", "the shared state has the moved ask");
+	assert.equal(a!.pendingQuestions.isDormant(refused), true, "a refused ask stays kept here");
+	assert.equal(a!.pendingQuestions.isDormant(failed), true, "an ask the shared state failed to take stays kept here");
+	assert.equal(await shared(refused), "no-match");
+	assert.equal(await shared(failed), "no-match");
+	assert.equal(a!.pendingQuestions.isDormant(takenUp), false);
+
+	// Both of its peers are back on this broker, which takes the moved ask up again: its shared route is settled.
+	a!.router.settleRestoredRoutes([moved]);
+	await vi.waitFor(async () => assert.equal(await shared(moved), "no-match"), { timeout: CROSS_NODE_WAIT_MS });
+});
+
 test(
 	"a session that stays connected past the known-session retention is still known after its broker stops",
 	async () => {
@@ -1719,10 +1768,30 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 	}
 });
 
-/** Send and wait for the sender's outcome of that send. */
+/**
+ * Send and wait for the sender's outcome of that send, as the broker writes it: a flood of sends each polled for its
+ * outcome took a timer tick apiece (about 16 ms on Windows) on top of the send itself.
+ */
 async function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sent: Message) {
-	node.send(from, to, sent);
-	return waitFor(() => outcomeOf(from, sent.id));
+	const socket = from.socket as FakeSocket;
+	const { promise, resolve, reject } = Promise.withResolvers<BrokerOutboundFrame>();
+	const check = () => {
+		const outcome = outcomeOf(from, sent.id);
+		if (outcome !== undefined) resolve(outcome);
+	};
+	const timer = setTimeout(
+		() => reject(new Error(`no outcome for ${sent.id} within ${CROSS_NODE_WAIT_MS} ms`)),
+		CROSS_NODE_WAIT_MS,
+	);
+	socket.written = check;
+	try {
+		node.send(from, to, sent);
+		check();
+		return await promise;
+	} finally {
+		clearTimeout(timer);
+		socket.written = undefined;
+	}
 }
 
 test(

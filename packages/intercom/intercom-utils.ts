@@ -1,4 +1,4 @@
-import { type ExtensionAPI, type SubagentChildPolicy } from "@bastani/atomic";
+import { type ExtensionAPI, sliceHead, type SubagentChildPolicy } from "@bastani/atomic";
 import type { Attachment, Message, SessionInfo, SupervisorRegistration } from "./types.js";
 import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
@@ -460,5 +460,5 @@ export function previewText(value: unknown, maxLength = 72): string | undefined 
   if (!normalized) {
     return undefined;
   }
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1)}…` : normalized;
+  return normalized.length > maxLength ? `${sliceHead(normalized, maxLength - 1)}…` : normalized;
 }

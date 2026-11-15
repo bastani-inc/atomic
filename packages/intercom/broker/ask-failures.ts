@@ -1,5 +1,6 @@
 import type net from "node:net";
 import type { BrokerMessage, Message, SessionInfo } from "../types.js";
+import type { HeldAwayMessage } from "./away-asks.js";
 import type { PendingQuestion, PendingQuestionIndex } from "./pending-question-index.js";
 import { type BrokerConnectedSession, messageFrameFor } from "./send-handler.js";
 
@@ -53,4 +54,41 @@ export function deliverHeldToAsker(
 	// registration is sent it again until then.
 	pending.holdForAwayAsker({ ...question, senderReturnAddress: returnAddress }, from, message);
 	write(asker.socket, messageFrameFor(asker, from, message));
+}
+
+/**
+ * #5095: a reply never reached its asker after its recipient ended (its write failed, or it lapsed unsaved), so the
+ * ask fails now with the failure prepared when the recipient ended: delivered like any failed ask to a connected
+ * asker, held for an away asker that can prove itself by its return address.
+ */
+export function failLostReply(lost: {
+	readonly question: PendingQuestion;
+	readonly held: HeldAwayMessage;
+	readonly askerReturnAddress: string | undefined;
+	readonly asker: BrokerConnectedSession | undefined;
+	readonly pending: PendingQuestionIndex;
+	readonly write: (socket: net.Socket, frame: BrokerMessage) => unknown;
+}): void {
+	const { question, held, askerReturnAddress, asker, pending } = lost;
+	if (asker !== undefined) {
+		deliverHeldToAsker(
+			{
+				asker,
+				question,
+				from: held.from,
+				pending,
+				write: lost.write,
+				legacy: {
+					type: "peer_disconnected",
+					replyTo: question.messageId,
+					peerSessionId: question.targetSessionId,
+					...(held.from.name === undefined ? {} : { peerName: held.from.name }),
+				},
+			},
+			held.message,
+		);
+		return;
+	}
+	if (askerReturnAddress !== undefined && askerReturnAddress !== "")
+		pending.holdForAwayAsker({ ...question, senderReturnAddress: askerReturnAddress }, held.from, held.message);
 }

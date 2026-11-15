@@ -339,9 +339,15 @@ function outboxStore(shared: OutboxState): OutboxStore {
 			const record = shared.rows.get(messageId);
 			return record === undefined ? { status: "missing" } : { status: "found", row: row(record) };
 		},
-		async listUndelivered(targetIdentity) {
+		async listUndelivered(targetIdentity, limit) {
 			if (targetIdentity.length === 0) return invalid("empty-target-identity");
-			return { status: "listed", rows: undelivered(targetIdentity).map(row) };
+			return { status: "listed", rows: undelivered(targetIdentity).slice(0, limit).map(row) };
+		},
+		async undeliveredPosition(targetIdentity, messageId) {
+			if (targetIdentity.length === 0) return invalid("empty-target-identity");
+			if (messageId.length === 0) return invalid("empty-message-id");
+			const position = undelivered(targetIdentity).findIndex((record) => record.messageId === messageId) + 1;
+			return position === 0 ? { status: "missing" } : { status: "positioned", position };
 		},
 		async prune(settledOlderThanMs) {
 			let removed = 0;
@@ -656,7 +662,9 @@ const plainAsk = (entry: PendingAskEntry): PendingAsk => ({
 	messageId: entry.messageId,
 });
 
-function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
+function pendingAskStore(asks: PendingAskEntry[], settled: Set<string>): PendingAskStore {
+	const settledKey = (senderSessionId: string, targetSessionId: string, messageId: string) =>
+		JSON.stringify([senderSessionId, targetSessionId, messageId]);
 	const invalidPark = (park: PendingAskPark): InvalidStateInput | undefined => {
 		if (park.ownerSessionId.length === 0) return invalid("empty-session-id");
 		return park.reservationKey.length === 0 ? invalid("empty-reservation-key") : undefined;
@@ -693,6 +701,8 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 					entry.targetSessionId === ask.targetSessionId &&
 					entry.messageId === ask.messageId,
 			);
+			if (settled.has(settledKey(ask.senderSessionId, ask.targetSessionId, ask.messageId)))
+				return { status: "settled" };
 			if (exists) return { status: "duplicate" };
 			asks.push(plainAsk(ask));
 			return { status: "recorded" };
@@ -701,6 +711,18 @@ function pendingAskStore(asks: PendingAskEntry[]): PendingAskStore {
 			return invalidRoute(route) ?? (reverseOf(route) >= 0 ? { status: "match" } : { status: "no-match" });
 		},
 		async clearReply(route) {
+			const bad = invalidRoute(route);
+			if (bad !== undefined) return bad;
+			settled.add(settledKey(route.replyTargetSessionId, route.replySenderSessionId, route.replyTo));
+			const index = reverseOf(route);
+			if (index < 0) return { status: "no-match" };
+			asks.splice(index, 1);
+			return { status: "cleared" };
+		},
+		async isSettled(route) {
+			return settled.has(settledKey(route.replyTargetSessionId, route.replySenderSessionId, route.replyTo));
+		},
+		async releaseRoute(route) {
 			const bad = invalidRoute(route);
 			if (bad !== undefined) return bad;
 			const index = reverseOf(route);
@@ -1115,7 +1137,8 @@ export function openMemoryRestoringReservationFixture(): Promise<SharedStoreFixt
 
 export function openMemoryPendingAskFixture(): Promise<SharedStoreFixture<PendingAskStore>> {
 	const asks: PendingAskEntry[] = [];
-	return sharedFixture(() => pendingAskStore(asks));
+	const settled = new Set<string>();
+	return sharedFixture(() => pendingAskStore(asks, settled));
 }
 
 export function openMemoryReleasedAskFixture(): Promise<SharedStoreFixture<ReleasedAskStore>> {

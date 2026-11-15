@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { type SqliteDatabase, StoragePrefixError, StorageProvider } from "@bastani/atomic/storage";
 import { describe, test } from "vitest";
+import { postgresDialect } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import {
+	POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES,
 	POSTGRES_MAX_STORAGE_PREFIX_LENGTH,
 	POSTGRES_STORAGE_IDENTIFIER_SUFFIXES,
 } from "../../packages/coding-agent/src/core/storage/prefix.js";
@@ -17,7 +19,14 @@ import { openSqlPendingAskStore } from "../../packages/intercom/broker/sql-pendi
 import { openSqlReleasedAskStore } from "../../packages/intercom/broker/sql-released-ask-store.js";
 import { openSqlRestoringReservationStore } from "../../packages/intercom/broker/sql-restoring-reservation-store.js";
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { SqlFleetStore } from "../../packages/workflows/src/durable/journal/sql-fleet.js";
+import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
+import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
+import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
+import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
 import { type PostgresScope, postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
 import { moduleDir } from "../helpers/runtime.js";
 
@@ -27,15 +36,37 @@ const earlierStore = join(
 	moduleDir(import.meta.url),
 	"../fixtures/intercom-0.9.88-pre-5067/broker/sql-restoring-reservation-store.ts",
 );
-const openEarlierReservationStore = async (...args: Parameters<OpenReservationStore>) =>
-	(
+/**
+ * Opens the reservation store as it was before #5067, and leaves its wake index under the name an earlier build's
+ * driver gave it: Postgres's truncation of the whole name. This build's driver sends a name that long as the dialect's
+ * hashed form instead (#4793), so the index is renamed to what the earlier build left.
+ */
+const openEarlierReservationStore = async (...args: Parameters<OpenReservationStore>) => {
+	const store = await (
 		(await import(earlierStore)) as { openSqlRestoringReservationStore: OpenReservationStore }
 	).openSqlRestoringReservationStore(...args);
+	const [{ database, prefix = "" }] = args;
+	const index = `${prefix}intercom_restoring_reservations_wake_requested`;
+	if (index.length > POSTGRES_IDENTIFIER_BYTES)
+		await database.exec(
+			`DO $$ BEGIN IF to_regclass('${postgresDialect.identifier(index)}') IS NOT NULL THEN ALTER INDEX ${postgresDialect.identifier(index)} RENAME TO ${index.slice(0, POSTGRES_IDENTIFIER_BYTES)}; END IF; END $$`,
+		);
+	return store;
+};
 
 /** Postgres's identifier limit in bytes; longer names are truncated. */
 const POSTGRES_IDENTIFIER_BYTES = 63;
 
 const prefixOfLength = (length: number) => `${"p".repeat(length - 1)}_`;
+
+/**
+ * What follows `prefix` in every identifier the stores create under it: each listed name whole, and each name too long
+ * to stay whole as Postgres knows it, its head and a hash of the whole name (#4793).
+ */
+const expectedSuffixes = (prefix: string) =>
+	[...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES, ...POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES]
+		.map((suffix) => postgresDialect.identifier(`${prefix}${suffix}`).slice(prefix.length))
+		.sort();
 
 /** Every Intercom store's open function, each of which a caller may use on its own. */
 const INTERCOM_STORES = [
@@ -49,10 +80,23 @@ const INTERCOM_STORES = [
 	openSqlKnownSessionStore,
 ] as const;
 
-/** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal and the Intercom broker state, as a broker does. */
+/** Opens every store Atomic keeps on a PostgreSQL database: sessions, the run journal, the worker pool and the Intercom broker state, as a broker does. */
 async function openEveryStore(scope: PostgresScope, prefix: string): Promise<void> {
 	const database = await scope.open();
 	await (await SqlSessionStore.open(database, { prefix })).close();
+	const journal = await SqlRunJournal.open(database, { prefix });
+	try {
+		// The worker pool's stores, which live beside the run journal (#4793).
+		const queue = await openSqlPoolQueue(journal);
+		await openSqlPoolUsage(journal);
+		await SqlSharedPool.open(journal, queue);
+		await SqlFleetStore.open(journal);
+		await SqlResourceAdmission.open(journal, { root: "root", holder: "holder" });
+		await (await openPoolSessions(sqlPoolStorage(journal)!)).close();
+	} finally {
+		await journal.close();
+	}
+	// The snapshot store indexes the pool's tables once they exist, as the next journal to open finds them.
 	await (await SqlRunJournal.open(database, { prefix })).close();
 	const intercom = await openIntercomBrokerState({ prefix, openDatabase: () => scope.open() });
 	await intercom.bus.close();
@@ -142,13 +186,13 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				assert.equal(await indexOid(`${table}_wake`), earlierOid);
 				const suffixes = async () =>
 					(await createdIdentifiers(database)).map((name) => name.slice(prefix.length)).sort();
-				assert.deepEqual(await suffixes(), [...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES].sort());
+				assert.deepEqual(await suffixes(), expectedSuffixes(prefix));
 
 				// A broker of the earlier version recreates its index beside the renamed one; the next open drops it.
 				await openEarlierReservationStore({ database, prefix });
 				assert.ok((await createdIdentifiers(database)).includes(earlierIndex));
 				const store = await openSqlRestoringReservationStore({ database, prefix });
-				assert.deepEqual(await suffixes(), [...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES].sort());
+				assert.deepEqual(await suffixes(), expectedSuffixes(prefix));
 
 				assert.deepEqual(await store.requestWake("reservation"), { status: "requested" });
 				assert.deepEqual(await store.takeWakeRequests("broker"), {
@@ -167,9 +211,12 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage prefix lengt
 				assert.ok(Buffer.byteLength(name) <= POSTGRES_IDENTIFIER_BYTES, name);
 				assert.ok(name.startsWith(prefix), name);
 			}
-			assert.deepEqual(
-				created.map((name) => name.slice(prefix.length)).sort(),
-				[...POSTGRES_STORAGE_IDENTIFIER_SUFFIXES].sort(),
+			assert.deepEqual(created.map((name) => name.slice(prefix.length)).sort(), expectedSuffixes(prefix));
+			assert.ok(
+				POSTGRES_HASHED_STORAGE_IDENTIFIER_SUFFIXES.every(
+					(suffix) => `${prefix}${suffix}`.length > POSTGRES_IDENTIFIER_BYTES,
+				),
+				"every hashed name is one that does not fit whole under the longest prefix",
 			);
 		});
 	});

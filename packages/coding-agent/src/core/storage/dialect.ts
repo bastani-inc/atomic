@@ -18,6 +18,10 @@ export interface StorageDialectTypes {
 	readonly blob: string;
 	/** A primary key the database assigns, in increasing order: the whole column definition after its name. */
 	readonly serialKey: string;
+	/**
+	 * Like `serialKey`, without its promise never to reuse the key of a deleted last row: SQLite's `INTEGER PRIMARY KEY`.
+	 */
+	readonly rowKey: string;
 }
 
 /**
@@ -56,10 +60,11 @@ export interface StorageDialect {
 	/** A predicate: `column` holds well-formed JSON text. */
 	jsonValid(column: string): string;
 	/**
-	 * A table expression for `FROM`: the elements of the JSON array bound to `parameter`, as one column named `value`.
-	 * On Postgres the values are text. Use it once per query and do not alias it.
+	 * A table expression for `FROM`: the elements of the JSON array in `source`, a bound parameter (`?`) or a column whose
+	 * JSON text the store wrote, as one column named `value`. On Postgres the values are text. Use it once per query and
+	 * do not alias it.
 	 */
-	jsonValues(parameter: "?"): string;
+	jsonValues(source: string): string;
 	/** The larger of two values: scalar `MAX(a, b)` on SQLite, `GREATEST(a, b)` on Postgres. */
 	greatest(a: string, b: string): string;
 	/** The smaller of two values: scalar `MIN(a, b)` on SQLite, `LEAST(a, b)` on Postgres. */
@@ -76,6 +81,17 @@ export interface StorageDialect {
 	 * `rowid` is implicit; `", row_order BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE"` on Postgres.
 	 */
 	readonly rowOrderColumn: string;
+	/**
+	 * The longest identifier the database keeps whole, in bytes: 63 on Postgres, which truncates longer ones; undefined
+	 * on SQLite, which has no limit. A store that adds its own words to a prefixed name keeps them short where it is set.
+	 */
+	readonly maxIdentifierBytes: number | undefined;
+	/**
+	 * The name the database knows `name` by. Every name fits on SQLite. On Postgres a name longer than
+	 * `maxIdentifierBytes` becomes its head and a hash of the whole name, so it is never truncated or merged with
+	 * another; every shorter name is itself. The dialect's catalog probes and trigger statements use it, so they agree.
+	 */
+	identifier(name: string): string;
 	/** A query that returns one row when `table` exists in the current database (or schema). */
 	tableExists(table: string): SqliteStatement;
 	/**
@@ -92,7 +108,10 @@ export interface StorageDialect {
 	renderTrigger(trigger: StorageTrigger): string;
 	/** Drops the trigger `name` on `table` when it exists. */
 	dropTrigger(name: string, table: string): string;
-	/** A query that returns a row `{ name }` for each of `names` that is a table, index or trigger in the database. */
+	/**
+	 * A query that returns a row `{ name }` for each of `names` that is a table, index or trigger in the database, named
+	 * as in `names`.
+	 */
 	schemaObjects(names: readonly string[]): SqliteStatement;
 	/**
 	 * The type of the JSON value at `path` in `column`, as SQLite's `json_type` names it (`'null'`, `'true'`, `'false'`,
@@ -112,6 +131,30 @@ export interface StorageDialect {
 	contains(haystack: string, needle: string): string;
 	/** A predicate: `a` and `b` differ, a `NULL` differing from every value but `NULL`. */
 	isDistinct(a: string, b: string): string;
+	/** A predicate: `a` and `b` are equal, or both `NULL`: SQLite's `a IS b`. */
+	isNotDistinct(a: string, b: string): string;
+	/**
+	 * A JSON object of `entries` (each a key, an identifier, and a SQL value), as text when selected. A text value is
+	 * a JSON string, a value from `jsonObject`, `jsonArray` or `jsonGroupArray` is nested as JSON. Postgres must know
+	 * each value's type: cast a bound parameter, as `CAST(? AS ${types.int})`.
+	 */
+	jsonObject(entries: readonly (readonly [key: string, value: string])[]): string;
+	/** A JSON array of `values`, typed as for `jsonObject`. */
+	jsonArray(values: readonly string[]): string;
+	/**
+	 * An aggregate: a JSON array of `expression` over the group's rows, in `orderBy` order when given; `[]` for no
+	 * rows. SQLite's `json_group_array` takes the order of its input, so callers also feed it rows already ordered.
+	 */
+	jsonGroupArray(expression: string, orderBy?: string): string;
+	/**
+	 * Like `jsonText`, in a form an index expression may use: Postgres indexes only immutable expressions, which
+	 * `jsonText`'s read is not. Reads the same text for every key whose value has no NUL or surrogate escape.
+	 */
+	jsonIndexText(column: string, ...path: readonly string[]): string;
+	/** A query that returns `{ foreign_keys: 1 }` when the connection enforces foreign keys, as Postgres always does. */
+	readonly foreignKeysCheck: SqliteStatement;
+	/** A trigger statement (`StorageTrigger.statements`) that aborts the statement that fired it with `message`. */
+	abort(message: string): string;
 	/** Boolean literals that conditions compare and combine: `1` and `0` on SQLite, `true` and `false` on Postgres. */
 	readonly literals: { readonly true: string; readonly false: string };
 	/** The predicate `predicate` as an integer, 1 or 0, for an integer column. */
@@ -170,6 +213,13 @@ function sqliteSourcePath(source: StorageJsonSource, path: readonly string[]): s
 const sqliteJsonAt = (source: StorageJsonSource, ...path: readonly string[]) =>
 	`json_extract(${source.column}, ${sqliteSourcePath(source, path)})`;
 
+/** A SQL string literal of `text`, which store code writes (never user input). */
+const sqlString = (text: string) => `'${text.replaceAll("'", "''")}'`;
+
+/** `json_object`'s arguments: each key, an identifier, as a string literal, then its value. */
+const jsonEntries = (entries: readonly (readonly [string, string])[]) =>
+	entries.map(([key, value]) => `${sqlString(jsonPath([key])[0]!)}, ${value}`).join(", ");
+
 const columnList = (columns: readonly string[]) => `(${columns.join(", ")})`;
 
 const namedPlaceholders = (names: readonly string[]) => names.map(() => "?").join(", ");
@@ -183,6 +233,7 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 		text: "TEXT",
 		blob: "BLOB",
 		serialKey: "INTEGER PRIMARY KEY AUTOINCREMENT",
+		rowKey: "INTEGER PRIMARY KEY",
 	}),
 	byteOrderCollation: "",
 	tableOptions: " STRICT",
@@ -198,12 +249,14 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 	jsonHasType: (type: StorageJsonType, column: string, ...path: readonly string[]) =>
 		`json_type(${column}, ${sqlitePath(path)}) = '${type}'`,
 	jsonValid: (column: string) => `json_valid(${column})`,
-	jsonValues: (parameter: "?") => `json_each(${parameter})`,
+	jsonValues: (source: string) => `json_each(${source})`,
 	greatest: (a: string, b: string) => `MAX(${a}, ${b})`,
 	least: (a: string, b: string) => `MIN(${a}, ${b})`,
 	lockClause: (_kind: StorageLockKind) => "",
 	rowOrder: (alias?: string) => qualified("rowid", alias),
 	rowOrderColumn: "",
+	maxIdentifierBytes: undefined,
+	identifier: (name: string) => name,
 	tableExists: (table: string) => ({
 		sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
 		params: [table],
@@ -229,6 +282,13 @@ export const sqliteDialect: StorageDialect = Object.freeze({
 		`typeof(${sqliteJsonAt(source, ...path)}) = 'text'`,
 	contains: (haystack: string, needle: string) => `instr(${haystack}, ${needle}) > 0`,
 	isDistinct: (a: string, b: string) => `${a} IS NOT ${b}`,
+	isNotDistinct: (a: string, b: string) => `${a} IS ${b}`,
+	jsonObject: (entries: readonly (readonly [string, string])[]) => `json_object(${jsonEntries(entries)})`,
+	jsonArray: (values: readonly string[]) => `json_array(${values.join(", ")})`,
+	jsonGroupArray: (expression: string, _orderBy?: string) => `json_group_array(${expression})`,
+	jsonIndexText: (column: string, ...path: readonly string[]) => `json_extract(${column}, ${sqlitePath(path)})`,
+	foreignKeysCheck: Object.freeze({ sql: "PRAGMA foreign_keys", params: [] }),
+	abort: (message: string) => `SELECT RAISE(ABORT, ${sqlString(message)})`,
 	literals: Object.freeze({ true: "1", false: "0" }),
 	flag: (predicate: string) => predicate,
 	insertOrIgnore: (table: string, columns: readonly string[], select: string) =>
@@ -280,17 +340,50 @@ function postgresJson(document: string, path: readonly string[], text: boolean):
 const postgresDocument = (source: StorageJsonSource) =>
 	source.element === undefined ? postgresJsonb(source.column) : `${source.element}.value`;
 
-/** Postgres truncates longer identifiers, so two long trigger function names could become one. Names are ASCII. */
+/** Postgres truncates longer identifiers, so two long names could become one. Names are ASCII. */
 const POSTGRES_IDENTIFIER_BYTES = 63;
+/** Hex digits of the hash that ends a shortened Postgres identifier. */
+const POSTGRES_IDENTIFIER_HASH_DIGITS = 8;
+
+const FNV_OFFSET = 0xcbf29ce484222325n;
+const FNV_PRIME = 0x100000001b3n;
+const U64 = (1n << 64n) - 1n;
+
+/**
+ * 64-bit FNV-1a of `name`'s characters, folded to `POSTGRES_IDENTIFIER_HASH_DIGITS` hex digits: computed in plain
+ * JavaScript so storage modules stay free of runtime-specific imports. Names are ASCII, written in store code.
+ */
+function identifierHash(name: string): string {
+	let hash = FNV_OFFSET;
+	for (let index = 0; index < name.length; index++) hash = ((hash ^ BigInt(name.charCodeAt(index))) * FNV_PRIME) & U64;
+	return ((hash ^ (hash >> 32n)) & 0xffffffffn).toString(16).padStart(POSTGRES_IDENTIFIER_HASH_DIGITS, "0");
+}
+
+function postgresIdentifier(name: string): string {
+	if (name.length <= POSTGRES_IDENTIFIER_BYTES) return name;
+	return `${name.slice(0, POSTGRES_IDENTIFIER_BYTES - POSTGRES_IDENTIFIER_HASH_DIGITS - 1)}_${identifierHash(name)}`;
+}
+
+function postgresSchemaObjects(names: readonly string[]): SqliteStatement {
+	const physical = names.map(postgresIdentifier);
+	if (physical.every((name, index) => name === names[index]))
+		return {
+			sql: `SELECT relname AS name FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace AND relname IN (${namedPlaceholders(names)}) UNION ALL SELECT tgname AS name FROM pg_catalog.pg_trigger JOIN pg_catalog.pg_class ON pg_class.oid = tgrelid WHERE relnamespace = current_schema()::regnamespace AND NOT tgisinternal AND tgname IN (${namedPlaceholders(names)})`,
+			params: [...names, ...names],
+		};
+	// A shortened name is found by the name Postgres knows, and reported by the one asked for.
+	return {
+		sql: `SELECT v.name FROM (VALUES ${names.map(() => "(?, ?)").join(", ")}) AS v(name, physical) WHERE v.physical IN (SELECT relname::text FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace) OR v.physical IN (SELECT tgname::text FROM pg_catalog.pg_trigger JOIN pg_catalog.pg_class ON pg_class.oid = tgrelid WHERE relnamespace = current_schema()::regnamespace AND NOT tgisinternal)`,
+		params: names.flatMap((name, index) => [name, physical[index]!]),
+	};
+}
 
 function postgresTrigger({ name, table, timing, event, when, statements }: StorageTrigger): string {
-	const fn = `${name}_fn`;
-	if (fn.length > POSTGRES_IDENTIFIER_BYTES)
-		throw new TypeError(`Trigger function name ${fn} is longer than ${POSTGRES_IDENTIFIER_BYTES} bytes`);
+	const fn = postgresIdentifier(`${name}_fn`);
 	const body = statements.map((statement) => `${statement};`).join(" ");
 	const row = timing === "AFTER" ? "NULL" : event === "DELETE" ? "OLD" : "NEW";
 	return `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN ${when === undefined ? body : `IF (${when}) THEN ${body} END IF;`} RETURN ${row}; END $trigger$;
-CREATE OR REPLACE TRIGGER ${name} ${timing} ${event} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();`;
+CREATE OR REPLACE TRIGGER ${postgresIdentifier(name)} ${timing} ${event} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();`;
 }
 
 /** `value`'s type as SQLite's `json_type` names it, for a `jsonb` expression. */
@@ -311,6 +404,7 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		text: "TEXT",
 		blob: "BYTEA",
 		serialKey: "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
+		rowKey: "BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY",
 	}),
 	byteOrderCollation: ' COLLATE "C"',
 	tableOptions: "",
@@ -323,28 +417,27 @@ export const postgresDialect: StorageDialect = Object.freeze({
 	jsonHasType: (type: StorageJsonType, column: string, ...path: readonly string[]) =>
 		`jsonb_typeof${postgresJson(postgresJsonb(column), path, false)} = '${POSTGRES_JSON_TYPES[type]}'`,
 	jsonValid: (column: string) => `((${column}) IS JSON)`,
-	jsonValues: (parameter: "?") => `jsonb_array_elements_text((${parameter})::jsonb) AS json_values(value)`,
+	jsonValues: (source: string) => `jsonb_array_elements_text((${source})::jsonb) AS json_values(value)`,
 	greatest: (a: string, b: string) => `GREATEST(${a}, ${b})`,
 	least: (a: string, b: string) => `LEAST(${a}, ${b})`,
 	lockClause: (kind: StorageLockKind) => POSTGRES_LOCKS[kind],
 	rowOrder: (alias?: string) => qualified("row_order", alias),
 	rowOrderColumn: ", row_order BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE",
+	maxIdentifierBytes: POSTGRES_IDENTIFIER_BYTES,
+	identifier: postgresIdentifier,
 	tableExists: (table: string) => ({
 		sql: "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
-		params: [table],
+		params: [postgresIdentifier(table)],
 	}),
 	orderedConcat: (expression: string, separator: string, orderBy: string) =>
 		`string_agg(${expression}, ${separator} ORDER BY ${orderBy})`,
 	columnExists: (table: string, column: string) => ({
 		sql: "SELECT column_name AS name, column_default AS default_value FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
-		params: [table, column],
+		params: [postgresIdentifier(table), column],
 	}),
 	renderTrigger: postgresTrigger,
-	dropTrigger: (name: string, table: string) => `DROP TRIGGER IF EXISTS ${name} ON ${table}`,
-	schemaObjects: (names: readonly string[]) => ({
-		sql: `SELECT relname AS name FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace AND relname IN (${namedPlaceholders(names)}) UNION ALL SELECT tgname AS name FROM pg_catalog.pg_trigger JOIN pg_catalog.pg_class ON pg_class.oid = tgrelid WHERE relnamespace = current_schema()::regnamespace AND NOT tgisinternal AND tgname IN (${namedPlaceholders(names)})`,
-		params: [...names, ...names],
-	}),
+	dropTrigger: (name: string, table: string) => `DROP TRIGGER IF EXISTS ${postgresIdentifier(name)} ON ${table}`,
+	schemaObjects: postgresSchemaObjects,
 	jsonType: (column: string, ...path: readonly string[]) =>
 		postgresSqliteJsonType(postgresJson(postgresJsonb(column), path, false)),
 	jsonEach: (source: StorageJsonSource, alias: string, ...path: readonly string[]) =>
@@ -357,6 +450,19 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		`jsonb_typeof${postgresJson(postgresDocument(source), path, false)} = 'string'`,
 	contains: (haystack: string, needle: string) => `strpos(${haystack}, ${needle}) > 0`,
 	isDistinct: (a: string, b: string) => `${a} IS DISTINCT FROM ${b}`,
+	isNotDistinct: (a: string, b: string) => `${a} IS NOT DISTINCT FROM ${b}`,
+	jsonObject: (entries: readonly (readonly [string, string])[]) => `json_build_object(${jsonEntries(entries)})`,
+	jsonArray: (values: readonly string[]) => `json_build_array(${values.join(", ")})`,
+	jsonGroupArray: (expression: string, orderBy?: string) =>
+		`COALESCE(json_agg(${expression}${orderBy === undefined ? "" : ` ORDER BY ${orderBy}`}), '[]'::json)`,
+	jsonIndexText: (column: string, ...path: readonly string[]) =>
+		postgresJson(
+			`(regexp_replace(${column}, ${POSTGRES_UNREPRESENTABLE_ESCAPE}, '\\1\\\\ufffd', 'g'))::jsonb`,
+			path,
+			true,
+		),
+	foreignKeysCheck: Object.freeze({ sql: "SELECT 1 AS foreign_keys", params: [] }),
+	abort: (message: string) => `RAISE EXCEPTION ${sqlString(message)}`,
 	literals: Object.freeze({ true: "true", false: "false" }),
 	flag: (predicate: string) => `(${predicate})::int`,
 	insertOrIgnore: (table: string, columns: readonly string[], select: string) =>

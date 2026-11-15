@@ -8,7 +8,9 @@ import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
 /**
  * A loopback stand-in for a libSQL server (sqld) speaking Hrana 2 over HTTP, the protocol `@libsql/client` uses for
  * `http:` and `libsql:` URLs: one in-memory SQLite database, streams addressed by batons, and stream expiry answered as
- * sqld answers it (HTTP 400 with code `STREAM_EXPIRED`). Faults a test plans are applied to the next pipeline
+ * sqld answers it (HTTP 400 with code `STREAM_EXPIRED`). As in sqld, each request a stream takes gives it a new baton,
+ * and a baton already used is refused (HTTP 400, "Received a baton that has already been used") without running
+ * anything, so a client that lost the answer to a request cannot reach the stream again. Faults a test plans are applied to the next pipeline
  * requests in order.
  */
 
@@ -59,7 +61,9 @@ interface StmtResult {
 }
 
 interface Stream {
-	readonly baton: string;
+	readonly id: number;
+	/** The baton the stream's next request must carry. */
+	baton: string;
 	readonly sqls: Map<number, string>;
 	lastActive: number;
 }
@@ -91,6 +95,8 @@ export interface FakeLibsqlPipeline {
 	readonly sql: readonly string[];
 	/** Whether the request continues a stream, so it may run inside a transaction an earlier request began. */
 	readonly continuesStream: boolean;
+	/** The request's headers, as the server received them. */
+	readonly headers: Readonly<Record<string, string | string[] | undefined>>;
 }
 
 export interface FakeLibsqlServerOptions {
@@ -168,7 +174,10 @@ async function readBody(request: IncomingMessage): Promise<string> {
 export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {}): Promise<FakeLibsqlServer> {
 	const ttlMs = options.streamTtlMs ?? DEFAULT_STREAM_TTL_MS;
 	const database = new DatabaseSync(":memory:");
-	const streams = new Map<string, Stream>();
+	/** The live streams. */
+	const streams = new Set<Stream>();
+	/** Every baton handed out, current or used, and its stream. */
+	const batons = new Map<string, Stream>();
 	const faults: FakeLibsqlFault[] = [];
 	const pipelines: FakeLibsqlPipeline[] = [];
 	const sockets = new Set<Socket>();
@@ -176,6 +185,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	let hook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined;
 	let batchHook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined;
 	let expiredStatements = 0;
+	let nextStream = 0;
 	let nextBaton = 0;
 
 	const rollBack = (stream: Stream) => {
@@ -186,11 +196,11 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	};
 	const expire = (stream: Stream) => {
 		rollBack(stream);
-		streams.delete(stream.baton);
+		streams.delete(stream);
 	};
 	const sweep = () => {
 		const now = performance.now();
-		for (const stream of streams.values()) if (now - stream.lastActive > ttlMs) expire(stream);
+		for (const stream of [...streams]) if (now - stream.lastActive > ttlMs) expire(stream);
 	};
 
 	let busy = false;
@@ -309,16 +319,25 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			if (each.type === "sequence") return [each.sql ?? `#${each.sql_id}`];
 			return [];
 		});
-		const pipeline: FakeLibsqlPipeline = { sql, continuesStream: typeof body.baton === "string" };
+		const pipeline: FakeLibsqlPipeline = {
+			sql,
+			continuesStream: typeof body.baton === "string",
+			headers: { ...request.headers },
+		};
 		pipelines.push(pipeline);
 		const fault = faults.shift();
 		const socket = request.socket;
 		if (fault?.kind === "reset-before") return void socket.resetAndDestroy();
 		if (fault?.kind === "closed-before") return void socket.end();
-		const existing = typeof body.baton === "string" ? streams.get(body.baton) : undefined;
+		const named = typeof body.baton === "string" ? batons.get(body.baton) : undefined;
+		const existing = named !== undefined && streams.has(named) ? named : undefined;
 		if (fault?.kind === "expired" && existing !== undefined) expire(existing);
+		if (existing !== undefined && existing.baton !== body.baton) {
+			response.writeHead(400, { "content-type": "text/plain" });
+			return void response.end("Received a baton that has already been used");
+		}
 		await turn(existing);
-		if (typeof body.baton === "string" && !streams.has(body.baton)) {
+		if (typeof body.baton === "string" && (existing === undefined || !streams.has(existing))) {
 			if (sql.length > 0) expiredStatements++;
 			return answer(response, 400, {
 				message: "The stream has expired due to inactivity",
@@ -329,9 +348,12 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			if (existing !== undefined) expire(existing);
 			return answer(response, 400, { message: "database is locked", code: "SQLITE_BUSY" });
 		}
-		const stream: Stream = existing ?? { baton: `baton-${++nextBaton}`, sqls: new Map(), lastActive: 0 };
+		const stream: Stream = existing ?? { id: ++nextStream, baton: "", sqls: new Map(), lastActive: 0 };
 		stream.lastActive = performance.now();
-		streams.set(stream.baton, stream);
+		streams.add(stream);
+		// The request takes the stream: the baton it carried is used up whether or not its answer reaches the client.
+		stream.baton = `baton-${stream.id}-${++nextBaton}`;
+		batons.set(stream.baton, stream);
 		const timedOut =
 			fault?.kind === "result-error"
 				? { message: `Transaction failed (${fault.code})`, code: fault.code }
@@ -410,7 +432,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 			hook = next;
 		},
 		expireStreams() {
-			for (const stream of [...streams.values()]) expire(stream);
+			for (const stream of [...streams]) expire(stream);
 		},
 		async close() {
 			for (const socket of sockets) socket.destroy();

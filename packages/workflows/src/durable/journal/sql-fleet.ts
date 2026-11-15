@@ -1,4 +1,4 @@
-import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import type { RunJournal } from "./types.js";
 
@@ -7,8 +7,6 @@ import type { RunJournal } from "./types.js";
  * makes, the hosts it asked to drain, and its decisions and provider errors. Every table derives from the journal's own
  * `runs` table name, so it is scoped by the journal's prefix.
  */
-
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 /** How long after its last report a registered worker host still counts as live: six of its 5 s reports. */
 export const FLEET_HOST_LIVE_MS = 30_000;
@@ -24,9 +22,9 @@ export const FLEET_DRAIN_TIMEOUT_MS = 300_000;
 export const FLEET_EVENTS_KEPT = 1_000;
 
 /** The hosts a controller asked to drain, which worker hosts read: worker hosts create it as well. */
-export function fleetDrainsSchema(runs: string): string {
+export function fleetDrainsSchema(runs: string, dialect: StorageDialect): string {
 	return `CREATE TABLE IF NOT EXISTS ${runs}_fleet_drains(
-		host TEXT PRIMARY KEY, provider_id TEXT, requested_at INTEGER NOT NULL
+		host TEXT PRIMARY KEY, provider_id TEXT, requested_at ${dialect.types.int} NOT NULL
 	)`;
 }
 
@@ -90,14 +88,13 @@ export interface FleetSnapshot {
  * A leased row of `w` that may still be running: its work lease has not expired, or its root (lease `l`, pool `p`) still
  * renews its own (#5072). A row missing its root's lease or pool counts.
  */
-function liveLease(): string {
-	return `(w.expires_at >= ${STORE_NOW} OR l.renewed_at IS NULL OR p.timeout IS NULL OR ${STORE_NOW} - l.renewed_at <= p.timeout)`;
+function liveLease(now: string): string {
+	return `(w.expires_at >= ${now} OR l.renewed_at IS NULL OR p.timeout IS NULL OR ${now} - l.renewed_at <= p.timeout)`;
 }
 
-async function tableExists(executor: SqliteExecutor, name: string): Promise<boolean> {
-	return (
-		(await executor.get("SELECT 1 AS held FROM sqlite_master WHERE type = 'table' AND name = ?", name)) !== undefined
-	);
+async function tableExists(executor: SqliteExecutor, dialect: StorageDialect, name: string): Promise<boolean> {
+	const probe = dialect.tableExists(name);
+	return (await executor.get(probe.sql, ...probe.params)) !== undefined;
 }
 
 /** The queue of each running or paused shared root, as the fleet's policy counts it. */
@@ -107,13 +104,13 @@ async function rootDemand(executor: SqliteExecutor, storage: SqlPoolStorage): Pr
 		SqliteRow & { root: string; config: string; blocked: number; ready: number; leased: number }
 	>(
 		`SELECT s.root, s.config,
-		(s.budget_blocked = 1 OR r.status != 'running' OR ${STORE_NOW} - l.renewed_at > p.timeout) AS blocked,
+		(s.budget_blocked = 1 OR r.status != 'running' OR ${storage.dialect.nowMs} - l.renewed_at > p.timeout) AS blocked,
 		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'ready') AS ready,
-		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease()}) AS leased
+		(SELECT COUNT(*) FROM ${runs}_work w WHERE w.root = s.root AND w.state = 'leased' AND ${liveLease(storage.dialect.nowMs)}) AS leased
 		FROM ${runs}_pool_shared s JOIN ${runs} r ON r.run_id = s.root
 		JOIN ${storage.tables.leases} l ON l.run_id = s.root AND l.epoch = s.epoch
 		JOIN ${runs}_pool p ON p.root = s.root
-		WHERE r.status IN ('running', 'paused') ORDER BY s.rowid`,
+		WHERE r.status IN ('running', 'paused') ORDER BY ${storage.dialect.rowOrder("s")}`,
 	);
 	return rows.map((row) => {
 		const session = (JSON.parse(row.config) as { admission?: { limits?: { session?: number } } }).admission?.limits
@@ -136,7 +133,9 @@ export async function readFleetDemand(journal: RunJournal): Promise<FleetRootRow
 	const storage = sqlPoolStorage(journal);
 	if (storage === undefined) return [];
 	return storage.read(async (executor) =>
-		(await tableExists(executor, `${storage.tables.runs}_pool_shared`)) ? rootDemand(executor, storage) : [],
+		(await tableExists(executor, storage.dialect, `${storage.tables.runs}_pool_shared`))
+			? rootDemand(executor, storage)
+			: [],
 	);
 }
 
@@ -157,17 +156,18 @@ export class SqlFleetStore {
 		const storage = sqlPoolStorage(journal);
 		if (storage === undefined) throw new Error("A fleet controller requires a SQL run journal");
 		const store = new SqlFleetStore(storage);
+		const { int, rowKey } = storage.dialect.types;
 		await storage.transaction((tx) =>
 			tx.exec(`
 				CREATE TABLE IF NOT EXISTS ${store.lease}(
-					id INTEGER PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL,
-					lease_ms INTEGER NOT NULL
+					id ${int} PRIMARY KEY CHECK(id = 1), holder TEXT NOT NULL, epoch ${int} NOT NULL, renewed_at ${int} NOT NULL,
+					lease_ms ${int} NOT NULL
 				);
 				CREATE TABLE IF NOT EXISTS ${store.events}(
-					seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, target INTEGER, live INTEGER,
+					seq ${rowKey}, at ${int} NOT NULL, kind TEXT NOT NULL, target ${int}, live ${int},
 					reason TEXT NOT NULL, error TEXT
 				);
-				${fleetDrainsSchema(store.runs)};
+				${fleetDrainsSchema(store.runs, storage.dialect)};
 			`),
 		);
 		return store;
@@ -182,10 +182,12 @@ export class SqlFleetStore {
 		return this.storage.transaction(async (tx) => {
 			const row = await tx.get<
 				SqliteRow & { holder: string; epoch: number; renewed_at: number; lease_ms: number; now: number }
-			>(`SELECT holder, epoch, renewed_at, lease_ms, ${STORE_NOW} AS now FROM ${this.lease} WHERE id = 1`);
+			>(
+				`SELECT holder, epoch, renewed_at, lease_ms, ${this.storage.dialect.nowMs} AS now FROM ${this.lease} WHERE id = 1`,
+			);
 			if (row === undefined) {
 				await tx.run(
-					`INSERT INTO ${this.lease}(id, holder, epoch, renewed_at, lease_ms) VALUES (1, ?, 1, ${STORE_NOW}, ?)`,
+					`INSERT INTO ${this.lease}(id, holder, epoch, renewed_at, lease_ms) VALUES (1, ?, 1, ${this.storage.dialect.nowMs}, ?)`,
 					holder,
 					leaseMs,
 				);
@@ -193,14 +195,17 @@ export class SqlFleetStore {
 			}
 			const current = Number(row.epoch);
 			if (row.holder === holder && current === epoch) {
-				await tx.run(`UPDATE ${this.lease} SET renewed_at = ${STORE_NOW}, lease_ms = ? WHERE id = 1`, leaseMs);
+				await tx.run(
+					`UPDATE ${this.lease} SET renewed_at = ${this.storage.dialect.nowMs}, lease_ms = ? WHERE id = 1`,
+					leaseMs,
+				);
 				return { held: true, epoch: current };
 			}
 			// The lease lasts as long as its holder set, whatever this controller's own lease would be.
 			if (Number(row.now) - Number(row.renewed_at) < Number(row.lease_ms))
 				return { held: false, holder: row.holder, epoch: current };
 			await tx.run(
-				`UPDATE ${this.lease} SET holder = ?, epoch = ?, renewed_at = ${STORE_NOW}, lease_ms = ? WHERE id = 1`,
+				`UPDATE ${this.lease} SET holder = ?, epoch = ?, renewed_at = ${this.storage.dialect.nowMs}, lease_ms = ? WHERE id = 1`,
 				holder,
 				current + 1,
 				leaseMs,
@@ -237,7 +242,7 @@ export class SqlFleetStore {
 	): Promise<boolean> {
 		return this.storage.transaction(async (tx) => {
 			const inserted = await tx.run(
-				`INSERT INTO ${this.events}(at, kind, target, live, reason, error) SELECT ${STORE_NOW}, ?, ?, ?, ?, ? WHERE ${this.fenced()}`,
+				`INSERT INTO ${this.events}(at, kind, target, live, reason, error) SELECT ${this.storage.dialect.nowMs}, ?, ?, ?, ?, ? WHERE ${this.fenced()}`,
 				event.kind,
 				event.target ?? null,
 				event.live ?? null,
@@ -262,13 +267,13 @@ export class SqlFleetStore {
 	async requestDrain(fence: FleetFence, host: string, providerId: string): Promise<boolean> {
 		return this.storage.transaction(async (tx) => {
 			// A journal whose pool never queued work has no work table, and no lease.
-			const idle = (await tableExists(tx, `${this.runs}_work`))
+			const idle = (await tableExists(tx, this.storage.dialect, `${this.runs}_work`))
 				? `AND NOT EXISTS (SELECT 1 FROM ${this.runs}_work w LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
 					LEFT JOIN ${this.runs}_pool p ON p.root = w.root
-					WHERE w.state = 'leased' AND substr(w.worker, 1, length(?) + 1) = ? || '/' AND ${liveLease()})`
-				: "AND ? IS NOT NULL AND ? IS NOT NULL";
+					WHERE w.state = 'leased' AND substr(w.worker, 1, length(CAST(? AS TEXT)) + 1) = CAST(? AS TEXT) || '/' AND ${liveLease(this.storage.dialect.nowMs)})`
+				: "AND CAST(? AS TEXT) IS NOT NULL AND CAST(? AS TEXT) IS NOT NULL";
 			const asked = await tx.run(
-				`INSERT INTO ${this.drains}(host, provider_id, requested_at) SELECT ?, ?, ${STORE_NOW}
+				`INSERT INTO ${this.drains}(host, provider_id, requested_at) SELECT ?, ?, ${this.storage.dialect.nowMs}
 				WHERE ${this.fenced()} ${idle}
 				ON CONFLICT(host) DO NOTHING`,
 				host,
@@ -289,7 +294,7 @@ export class SqlFleetStore {
 	async carryDrain(fence: FleetFence, host: string, providerId: string): Promise<void> {
 		await this.storage.transaction((tx) =>
 			tx.run(
-				`INSERT INTO ${this.drains}(host, provider_id, requested_at) SELECT ?, ?, ${STORE_NOW}
+				`INSERT INTO ${this.drains}(host, provider_id, requested_at) SELECT ?, ?, ${this.storage.dialect.nowMs}
 				WHERE ${this.fenced()}
 				ON CONFLICT(host) DO NOTHING`,
 				host,
@@ -324,9 +329,9 @@ export class SqlFleetStore {
 	): Promise<"free" | "occupied" | "draining"> {
 		const hosts = `${this.runs}_pool_hosts`;
 		return this.storage.read(async (executor) => {
-			if (!(await tableExists(executor, hosts))) return "free";
+			if (!(await tableExists(executor, this.storage.dialect, hosts))) return "free";
 			const rows = await executor.all<SqliteRow & { host: string; draining: number; ago: number }>(
-				`SELECT host, draining, ${STORE_NOW} - heartbeat_at AS ago FROM ${hosts} WHERE provider_id = ? OR host = ?`,
+				`SELECT host, draining, ${this.storage.dialect.nowMs} - heartbeat_at AS ago FROM ${hosts} WHERE provider_id = CAST(? AS TEXT) OR host = CAST(? AS TEXT)`,
 				providerId,
 				host ?? null,
 			);
@@ -339,7 +344,7 @@ export class SqlFleetStore {
 					(await executor.get(
 						`SELECT 1 AS held FROM ${this.runs}_work w LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root
 						LEFT JOIN ${this.runs}_pool p ON p.root = w.root
-						WHERE w.state = 'leased' AND substr(w.worker, 1, length(?) + 1) = ? || '/' AND ${liveLease()} LIMIT 1`,
+						WHERE w.state = 'leased' AND substr(w.worker, 1, length(CAST(? AS TEXT)) + 1) = CAST(? AS TEXT) || '/' AND ${liveLease(this.storage.dialect.nowMs)} LIMIT 1`,
 						holder,
 						holder,
 					)) !== undefined
@@ -377,20 +382,20 @@ export class SqlFleetStore {
 		return this.storage.read(async (executor) => {
 			const drains = (
 				await executor.all<SqliteRow & { host: string; provider_id: string | null; ago: number }>(
-					`SELECT host, provider_id, ${STORE_NOW} - requested_at AS ago FROM ${this.drains} ORDER BY host`,
+					`SELECT host, provider_id, ${this.storage.dialect.nowMs} - requested_at AS ago FROM ${this.drains} ORDER BY host`,
 				)
 			).map((row) => ({
 				host: row.host,
 				...(row.provider_id === null ? {} : { providerId: row.provider_id }),
 				agoMs: Number(row.ago),
 			}));
-			if (!(await tableExists(executor, `${runs}_pool_shared`)))
+			if (!(await tableExists(executor, this.storage.dialect, `${runs}_pool_shared`)))
 				return { roots: [], hosts: [], drains, leased: new Map() };
 			const roots = await rootDemand(executor, this.storage);
 			const leases = await executor.all<SqliteRow & { worker: string; count: number }>(
 				`SELECT w.worker, COUNT(*) AS count FROM ${runs}_work w
 				LEFT JOIN ${this.storage.tables.leases} l ON l.run_id = w.root LEFT JOIN ${runs}_pool p ON p.root = w.root
-				WHERE w.state = 'leased' AND ${liveLease()} GROUP BY w.worker`,
+				WHERE w.state = 'leased' AND ${liveLease(this.storage.dialect.nowMs)} GROUP BY w.worker`,
 			);
 			const heldBy = new Map<string, number>();
 			for (const row of leases) {
@@ -398,7 +403,7 @@ export class SqlFleetStore {
 				heldBy.set(host, (heldBy.get(host) ?? 0) + Number(row.count));
 			}
 			const registered = await executor.all<SqliteRow & { host: string; provider_id?: string | null; ago: number }>(
-				`SELECT *, ${STORE_NOW} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`,
+				`SELECT *, ${this.storage.dialect.nowMs} - heartbeat_at AS ago FROM ${runs}_pool_hosts ORDER BY host`,
 			);
 			return {
 				roots,

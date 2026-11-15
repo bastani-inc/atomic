@@ -486,6 +486,50 @@ export function registerOutboxStoreConformance(
 		assert.ok(inFlight.every((row) => row.state === "claimed" && row.claimAttempts === 1));
 	});
 
+	check(
+		"counts a row's place among its recipient's undelivered rows as rows ahead of it are delivered or fail (#4896)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			await insert(a, frameFor("p1", "one"));
+			await insert(b, frameFor("elsewhere", "other"), { targetIdentity: OTHER_RECIPIENT });
+			await insert(a, frameFor("p2", "two"));
+			await insert(b, frameFor("p3", "three"));
+			await insert(a, frameFor("p4", "four"));
+			const positions = async () =>
+				Promise.all(
+					["p1", "p2", "p3", "p4"].map(async (messageId) => {
+						const counted = await b.undeliveredPosition(RECIPIENT, messageId);
+						return counted.status === "positioned" ? counted.position : counted.status;
+					}),
+				);
+			assert.deepEqual(await positions(), [1, 2, 3, 4]);
+			assert.deepEqual(await a.undeliveredPosition(OTHER_RECIPIENT, "elsewhere"), {
+				status: "positioned",
+				position: 1,
+			});
+			assert.deepEqual(await a.undeliveredPosition(OTHER_RECIPIENT, "p2"), { status: "missing" });
+			const [first, second, third] = await claimAll(a, "broker-a");
+			assert.ok(first && second && third);
+			assert.deepEqual(await positions(), [1, 2, 3, 4], "a claimed row is still undelivered");
+			await a.markDelivered(first.claim);
+			assert.deepEqual(await positions(), ["missing", 1, 2, 3]);
+			await a.markFailed(third.claim, "refused");
+			assert.deepEqual(await positions(), ["missing", 1, "missing", 2]);
+			await a.releaseClaim(second.claim);
+			assert.deepEqual(await positions(), ["missing", 1, "missing", 2], "a released claim keeps its place");
+			assert.deepEqual(await b.undeliveredPosition(RECIPIENT, "unknown"), { status: "missing" });
+			assert.deepEqual(await b.undeliveredPosition("", "p2"), {
+				status: "invalid",
+				reason: "empty-target-identity",
+			});
+			assert.deepEqual(await b.undeliveredPosition(RECIPIENT, ""), {
+				status: "invalid",
+				reason: "empty-message-id",
+			});
+			assert.deepEqual(ids(expectStatus(await b.listUndelivered(RECIPIENT, 1), "listed").rows), ["p2"]);
+		},
+	);
+
 	check("keeps one claimant per recipient while its claims are live", async (connect) => {
 		const [a, b] = [await connect(), await connect()];
 		await insert(a, frameFor("m1", "one"));
@@ -1238,6 +1282,29 @@ export function registerPendingAskStoreConformance(
 		assert.deepEqual(await a.clearReply(reply("target", "sender", "q3")), { status: "cleared" });
 		assert.deepEqual(await b.matchesReply(reply("target", "sender", "q3")), { status: "no-match" });
 	});
+
+	check(
+		"does not record an ask again once it is answered or failed, but does once its route only moved (#4997)",
+		async (connect) => {
+			const [a, b] = [await connect(), await connect()];
+			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "recorded" });
+			assert.deepEqual(await b.clearReply(reply("target", "sender", "q1")), { status: "cleared" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q1")), { status: "settled" });
+			assert.equal(await b.isSettled(reply("target", "sender", "q1")), true);
+			assert.equal(await b.isSettled(reply("target", "other-sender", "q1")), false);
+			assert.deepEqual(await b.matchesReply(reply("target", "sender", "q1")), { status: "no-match" });
+			// Settled even with no route recorded: another broker answered it from its own routes.
+			assert.deepEqual(await a.clearReply(reply("target", "sender", "q2")), { status: "no-match" });
+			assert.deepEqual(await b.record(ask("sender", "target", "q2")), { status: "settled" });
+			// Only the exact ask is settled.
+			assert.deepEqual(await b.record(ask("other-sender", "target", "q1")), { status: "recorded" });
+			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
+			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "cleared" });
+			assert.deepEqual(await b.releaseRoute(reply("target", "sender", "q3")), { status: "no-match" });
+			assert.equal(await a.isSettled(reply("target", "sender", "q3")), false);
+			assert.deepEqual(await a.record(ask("sender", "target", "q3")), { status: "recorded" });
+		},
+	);
 
 	check("prunes a sender's asks and hands a target's asks over in insertion order", async (connect) => {
 		const [a, b] = [await connect(), await connect()];

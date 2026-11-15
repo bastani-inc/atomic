@@ -24,7 +24,7 @@ const workerHost = await startWorkflowWorkerHost({
 		prefix: process.env.SHARED_POOL_PREFIX,
 		...(process.env.SHARED_POOL_TOKEN_FILE === undefined
 			? {}
-			: { secrets: { authToken: { file: process.env.SHARED_POOL_TOKEN_FILE } } }),
+			: { secrets: { [process.env.SHARED_POOL_TOKEN_SECRET ?? "authToken"]: { file: process.env.SHARED_POOL_TOKEN_FILE } } }),
 	},
 	agentDir: process.env.SHARED_POOL_AGENT_DIR,
 	maxWorkers: Number(maxWorkers),
