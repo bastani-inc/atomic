@@ -413,7 +413,9 @@ test("pre-0.9.38 runs are read in place only from tables of schema version 1, th
 		runs: ["old"],
 		tail: { type: RUN_EVENT_TYPES.runStarted, payload: { workflowId: "old" } },
 	});
-	raw(path, "UPDATE meta SET schema_version = 2");
+	raw(path, "INSERT INTO meta VALUES (1)");
+	assert.deepEqual(await listed(), { runs: [], tail: undefined }, "tables with two schema versions are not either");
+	raw(path, "DELETE FROM meta; INSERT INTO meta VALUES (2)");
 	assert.deepEqual(
 		await listed(),
 		{ runs: [], tail: undefined },
