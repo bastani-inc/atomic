@@ -3,10 +3,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inspect } from "node:util";
 import type { SqliteDatabase, SqliteExecutor } from "@bastani/atomic/storage";
 import pg from "pg";
 import { describe, test } from "vitest";
 import { runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
+import { strayPostgresStorageTables } from "../../packages/coding-agent/src/core/storage/postgres-schema.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { openIntercomBrokerState } from "../../packages/intercom/broker/open-broker-state.js";
 import { listenPoolReady, sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
@@ -42,6 +44,8 @@ const rootFixture = fileURLToPath(new URL("../fixtures/shared-pool-root.mjs", im
 const hostFixture = fileURLToPath(new URL("../fixtures/shared-pool-host.mjs", import.meta.url));
 const postgresAdapter = fileURLToPath(new URL("../../packages/storage-postgres/postgres.js", import.meta.url));
 const postgresPackage = resolve(moduleDir(import.meta.url), "../../packages/storage-postgres");
+/** The Intercom broker state as main shipped it before #5218, vendored: an earlier release's broker. */
+const earlierBroker = resolve(moduleDir(import.meta.url), "../fixtures/intercom-pre-5218/broker/open-broker-state.ts");
 const PREFIX = "r5218_";
 const CHILDREN = 3;
 /** Root A's pool and worker host B: two pools cold-start. */
@@ -554,6 +558,115 @@ describe.skipIf(postgresSkipReason !== undefined)("PostgreSQL owner and runtime 
 		},
 		CONCURRENT_HOSTS_TIMEOUT_MS,
 	);
+
+	test("an earlier release's Intercom broker reopening after the move is refused at its first write and creates nothing in public (#5218)", async () => {
+		await withRoles(async (scope, roles) => {
+			await (await scope.open()).exec(`GRANT CREATE ON SCHEMA public TO ${roles.owner}`);
+			const earlier = () => scope.open({ url: roles.urls.owner, password: roles.passwords.owner, schema: "public" });
+			await openEveryStore(earlier, PREFIX);
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const { openIntercomBrokerState: openEarlierBroker } = (await import(earlierBroker)) as {
+				openIntercomBrokerState: typeof openIntercomBrokerState;
+			};
+			const refused = await openEarlierBroker({ prefix: PREFIX, openDatabase: earlier }).then(
+				async (broker) => {
+					// A broker that opened then writes: its first write is refused.
+					await broker.state.close().catch(() => {});
+					await broker.bus.close().catch(() => {});
+					return undefined;
+				},
+				(error: Error) => error,
+			);
+			assert.ok(refused !== undefined, "the earlier broker opened public as if nothing had moved");
+			assert.match(inspect(refused, { depth: null }), /moved its tables to schema atomic/);
+			const current = await roles.open("owner");
+			assert.deepEqual(await strayPostgresStorageTables(current), []);
+			// Re-running migrate finds nothing astray.
+			const again = await migrateAs(roles, "owner");
+			assert.equal(again.code, 0, again.err);
+		});
+	});
+
+	test("a process that opened public before the move refuses to create anything there afterwards, and migrate reports a stray table (#5218)", async () => {
+		await withRoles(async (scope, roles) => {
+			await (await scope.open()).exec(`GRANT CREATE ON SCHEMA public TO ${roles.owner}`);
+			const earlier = () => scope.open({ url: roles.urls.owner, password: roles.passwords.owner, schema: "public" });
+			await openEveryStore(earlier, PREFIX);
+			// Opened during the rollout: it finds the earlier tables in public.
+			const stale = await roles.open("owner");
+			assert.equal((await stale.get("SELECT current_schema() AS schema"))?.schema, "public");
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const refused = await openIntercomBrokerState({ prefix: PREFIX, openDatabase: async () => stale }).then(
+				() => undefined,
+				(error: Error) => error,
+			);
+			assert.ok(refused !== undefined, "the stale process set Intercom up in public again");
+			assert.match(inspect(refused, { depth: null }), /upgraded since this process started/);
+			assert.deepEqual(await strayPostgresStorageTables(await roles.open("owner")), []);
+			// A table an earlier process did create in public after the move is reported, and fails the migration.
+			const admin = await scope.open();
+			await admin.exec(`DROP TABLE public.${PREFIX}intercom_held_sends`);
+			await admin.exec(`CREATE TABLE public.${PREFIX}intercom_held_sends (message_id TEXT)`);
+			const reported = await migrateAs(roles, "owner");
+			assert.equal(reported.code, 1);
+			assert.match(
+				reported.out,
+				new RegExp(`in schema public that a process created after the move.*${PREFIX}intercom_held_sends`),
+			);
+		});
+	});
+
+	test("three concurrent migrations of an earlier release's database move it once, and the others say so (#5218)", async () => {
+		await withRoles(async (scope, roles) => {
+			await (await scope.open()).exec(`GRANT CREATE ON SCHEMA public TO ${roles.owner}`);
+			await openEveryStore(
+				() => scope.open({ url: roles.urls.owner, password: roles.passwords.owner, schema: "public" }),
+				PREFIX,
+			);
+			const runs = await Promise.all([1, 2, 3].map(() => migrateAs(roles, "owner")));
+			for (const run of runs) assert.equal(run.code, 0, run.err);
+			assert.equal(
+				runs.filter((run) => /Moved \d+ tables/.test(run.out)).length,
+				1,
+				runs.map((run) => run.out).join("\n"),
+			);
+			assert.equal(runs.filter((run) => /moved the tables to schema atomic first/.test(run.out)).length, 2);
+		});
+	});
+
+	test("a runtime role missing its table grants, or USAGE on the schema, is told the exact grant before any DDL runs (#5218)", async () => {
+		await withRoles(async (_scope, roles) => {
+			const migrated = await migrateAs(roles, "owner");
+			assert.equal(migrated.code, 0, migrated.err);
+			const owner = await roles.open("owner");
+			const refusal = async () => {
+				const error = await SqlRunJournal.open(await roles.open("runtime"), { prefix: PREFIX }).then(
+					async (journal) => {
+						await journal.close();
+						return undefined;
+					},
+					(caught: Error) => caught,
+				);
+				assert.ok(error !== undefined, "the runtime role opened the journal");
+				return inspect(error, { depth: null });
+			};
+			// No USAGE on the schema.
+			const noUsage = await refusal();
+			assert.match(noUsage, /missing-privilege/);
+			assert.match(noUsage, new RegExp(`GRANT USAGE ON SCHEMA atomic TO "${roles.runtime}"`));
+			// USAGE, but no table grants: the tables exist, and the fix is the table grant, not a migration.
+			await owner.exec(`GRANT USAGE ON SCHEMA atomic TO ${roles.runtime}`);
+			const noTables = await refusal();
+			assert.match(noTables, /missing-privilege/);
+			assert.match(
+				noTables,
+				new RegExp(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA atomic TO "${roles.runtime}"`),
+			);
+			assert.doesNotMatch(noTables, /storage migrate/);
+		});
+	});
 
 	test("a second open of every store on a current schema runs no DDL (#5218)", async () => {
 		await withRoles(async (_scope, roles) => {

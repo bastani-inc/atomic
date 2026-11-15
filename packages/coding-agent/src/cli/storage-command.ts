@@ -31,7 +31,11 @@ import {
 	WORKFLOW_RUN_EXPORT_VERSION,
 	type WorkflowRunTransferStorage,
 } from "../core/storage/journal-transfer.js";
-import { movePostgresStorageToSchema, POSTGRES_ATOMIC_SCHEMA } from "../core/storage/postgres-schema.js";
+import {
+	movePostgresStorageToSchema,
+	POSTGRES_ATOMIC_SCHEMA,
+	strayPostgresStorageTables,
+} from "../core/storage/postgres-schema.js";
 import { StorageProvider, type StorageSelection } from "../core/storage/provider.js";
 import {
 	checkSharedDatabaseArguments,
@@ -701,7 +705,9 @@ async function migrate(
 			if (row?.schema === "public") {
 				const moved = await movePostgresStorageToSchema(opened);
 				log(
-					`Moved ${moved.tables.length} table${moved.tables.length === 1 ? "" : "s"} and ${moved.functions.length} trigger function${moved.functions.length === 1 ? "" : "s"} from schema public to schema ${POSTGRES_ATOMIC_SCHEMA}; processes of an earlier Atomic still using public are refused until they are upgraded.`,
+					moved.skipped
+						? `Another \`${APP_NAME} storage migrate\` moved the tables to schema ${POSTGRES_ATOMIC_SCHEMA} first.`
+						: `Moved ${moved.tables.length} table${moved.tables.length === 1 ? "" : "s"} and ${moved.functions.length} trigger function${moved.functions.length === 1 ? "" : "s"} from schema public to schema ${POSTGRES_ATOMIC_SCHEMA}; processes of an earlier Atomic still using public are refused until they are upgraded.`,
 				);
 			}
 		}
@@ -720,6 +726,20 @@ async function migrate(
 	});
 	await broker.bus.close();
 	await broker.state.close();
+	// Tables created in public after the move hold state the moved ones do not (#5218).
+	const checked = await open("journal");
+	let strays: string[];
+	try {
+		strays = await strayPostgresStorageTables(checked);
+	} finally {
+		await checked.close();
+	}
+	if (strays.length > 0) {
+		log(
+			`Found ${strays.length} of Atomic's table${strays.length === 1 ? "" : "s"} in schema public that a process created after the move to schema ${POSTGRES_ATOMIC_SCHEMA}: ${strays.join(", ")}. A process of an earlier Atomic, or one started before the move, still uses public, and what it wrote there is not in schema ${POSTGRES_ATOMIC_SCHEMA}. Stop or upgrade it, then drop those tables, or copy what you need into schema ${POSTGRES_ATOMIC_SCHEMA} first.`,
+		);
+		return 1;
+	}
 	log(
 		`Atomic's tables in ${describeStorageSelection(selection)} are set up for this version: sessions, workflow runs, worker pools and Intercom.`,
 	);

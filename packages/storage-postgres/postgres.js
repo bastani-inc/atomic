@@ -132,8 +132,9 @@ function configError(field, reason, hint) {
  * @param {string} role
  * @param {string} schema
  * @param {string} database
+ * @param {string} [sql] The statement refused, when known.
  */
-function missingPrivilege(cause, role, schema, database) {
+function missingPrivilege(cause, role, schema, database, sql = "") {
 	const who = role === "" ? "This role" : `Role "${role}"`;
 	const denied = cause.message;
 	/** @type {string} */
@@ -142,17 +143,21 @@ function missingPrivilege(cause, role, schema, database) {
 		fix = `Changing Atomic's tables needs their owner: the schema is behind this version of Atomic. Run \`atomic storage migrate\` as the owner role (the role that owns schema ${schema}), then start again.`;
 	else if (/permission denied for database/.test(denied))
 		fix = `Creating schema ${schema} needs CREATE on the database: run \`atomic storage migrate\` as the owner role, or GRANT CREATE ON DATABASE ${database} TO <owner role>.`;
+	else if (/no schema has been selected/.test(denied))
+		fix = `The role cannot use schema ${schema}: grant it as the schema's owner, GRANT USAGE ON SCHEMA ${schema} TO "${role}"; with the table grants of a runtime role.`;
+	else if (/permission denied for schema/.test(denied) && /^\s*(CREATE|ALTER|DROP|COMMENT)\b/i.test(sql))
+		fix = `Creating or changing Atomic's tables in schema ${schema} needs the owner role: the schema is behind this version of Atomic. Run \`atomic storage migrate\` as the owner role, then start again.`;
 	else if (/permission denied for schema/.test(denied))
-		fix = `A runtime role needs USAGE on schema ${schema} (GRANT USAGE ON SCHEMA ${schema} TO <runtime role>); creating tables there needs its owner: run \`atomic storage migrate\` as the owner role when the schema is behind this version of Atomic.`;
+		fix = `The role needs USAGE on schema ${schema}: GRANT USAGE ON SCHEMA ${schema} TO "${role}";`;
 	else if (/permission denied for (table|relation|sequence)/.test(denied))
-		fix = `A runtime role needs SELECT, INSERT, UPDATE and DELETE on every table in schema ${schema} and USAGE, SELECT on its sequences: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schema} TO <runtime role>; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO <runtime role>, and ALTER DEFAULT PRIVILEGES as the owner for tables created later.`;
+		fix = `A runtime role needs SELECT, INSERT, UPDATE and DELETE on every table in schema ${schema}: GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${schema} TO "${role}"; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO "${role}"; and ALTER DEFAULT PRIVILEGES as the owner for tables created later.`;
 	else if (/permission denied for function/.test(denied))
-		fix = `A runtime role needs EXECUTE on Atomic's trigger functions in schema ${schema}: GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ${schema} TO <runtime role>.`;
+		fix = `A runtime role needs EXECUTE on Atomic's trigger functions in schema ${schema}: GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ${schema} TO "${role}";`;
 	else fix = `Grant the role the privilege, or run \`atomic storage migrate\` as the owner role.`;
 	return configError(
 		"privileges",
 		"missing-privilege",
-		`${who} lacks a privilege PostgreSQL requires: ${denied} (SQLSTATE 42501). ${fix} See "PostgreSQL roles" in docs/storage.md`,
+		`${who} lacks a privilege PostgreSQL requires: ${denied} (SQLSTATE ${/** @type {{ code?: string }} */ (cause).code ?? "42501"}). ${fix} See "Set up the database" in docs/storage.md`,
 	);
 }
 
@@ -603,6 +608,8 @@ export async function openPostgresDatabase(options) {
 	let schema = options.schema ?? DEFAULT_SCHEMA;
 	/** Whether `schema` exists; until it does, the first statement that creates something creates it first. */
 	let schemaReady = true;
+	/** Whether `schema` is `public` because an earlier release's tables were there when the database opened. */
+	let legacy = false;
 	/** @type {Promise<void> | undefined} */
 	let creatingSchema;
 	const searchPathSql = () => `SET LOCAL search_path TO "${schema}"`;
@@ -753,9 +760,10 @@ export async function openPostgresDatabase(options) {
 	 * @param {PoolClient} client
 	 * @param {() => Promise<T>} query
 	 * @param {number} timeoutMs
+	 * @param {string} [sql] The statement, which a missing privilege's message reads to name the fix.
 	 * @returns {Promise<T>}
 	 */
-	const watched = async (client, query, timeoutMs) => {
+	const watched = async (client, query, timeoutMs, sql = "") => {
 		let expired = false;
 		const timer = setTimeout(() => {
 			expired = true;
@@ -772,9 +780,9 @@ export async function openPostgresDatabase(options) {
 				lost.add(client);
 			if (!(cause instanceof pg.DatabaseError) && lost.has(client))
 				throw new PostgresConnectionFailure("lost", /** @type {StorageFailureCause} */ (cause));
-			if (cause instanceof pg.DatabaseError && cause.code === "42501")
+			if (cause instanceof pg.DatabaseError && (cause.code === "42501" || cause.code === "3F000"))
 				throw Object.defineProperty(
-					missingPrivilege(cause, connection.user ?? "", schema, connection.database ?? ""),
+					missingPrivilege(cause, connection.user ?? "", schema, connection.database ?? "", sql),
 					"cause",
 					{ value: cause, configurable: true },
 				);
@@ -797,10 +805,32 @@ export async function openPostgresDatabase(options) {
 	 * own, which commits at once, so the transaction `sql` runs in finds it. Opening a database, `atomic storage status`
 	 * and `atomic storage join` create nothing; the first store that sets up its tables creates the schema too, under an
 	 * advisory lock, so hosts that start together on a new database create it once.
+	 * A database resolved to `public` because an earlier release's tables were there is checked again before each
+	 * statement that creates something: once `atomic storage migrate` has moved them, this process must not create
+	 * Atomic's tables in `public` again, apart from the moved ones (#5218).
+	 * @param {PoolClient} client
 	 * @param {string} sql
 	 */
-	const schemaFor = async (sql) => {
-		if (schemaReady || !/(?:^|;)\s*CREATE\s/i.test(sql)) return;
+	const schemaFor = async (client, sql) => {
+		if (!/(?:^|;)\s*CREATE\s/i.test(sql)) return;
+		// A statement that names `public` itself, as `atomic storage migrate` does for the fences it leaves there, or
+		// that creates a schema, is meant for where it says.
+		if (legacy && !/\bpublic\./i.test(sql) && !/^\s*CREATE\s+SCHEMA\b/i.test(sql)) {
+			const moved = await watched(
+				client,
+				() =>
+					client.query(
+						"SELECT count(*)::int AS ledgers FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind = 'r' AND c.relname ~ 'atomic_migrations$'",
+						[DEFAULT_SCHEMA],
+					),
+				clientTimeoutMs,
+			);
+			if (Number(moved.rows[0]?.ledgers) > 0)
+				throw new StorageError(
+					`This database was upgraded since this process started: \`atomic storage migrate\` moved Atomic's tables from schema public to schema ${DEFAULT_SCHEMA}. Restart this process (#5218)`,
+				);
+		}
+		if (schemaReady) return;
 		creatingSchema ??= (async () => {
 			const client = new ClosingClient({
 				...connection,
@@ -853,8 +883,8 @@ export async function openPostgresDatabase(options) {
 	 * @returns {Promise<SqliteDriverResult>}
 	 */
 	const execute = async (client, sql, params, timeoutMs) => {
-		await schemaFor(sql);
-		return driverResult(await watched(client, () => statement(client, sql, params), timeoutMs));
+		await schemaFor(client, sql);
+		return driverResult(await watched(client, () => statement(client, sql, params), timeoutMs, sql));
 	};
 
 	/**
@@ -864,8 +894,8 @@ export async function openPostgresDatabase(options) {
 	 */
 	const executeMultiple = async (client, sql, timeoutMs) => {
 		if (isPragma(sql)) return;
-		await schemaFor(sql);
-		await watched(client, () => client.query(physicalIdentifiers(sql)), timeoutMs);
+		await schemaFor(client, sql);
+		await watched(client, () => client.query(physicalIdentifiers(sql)), timeoutMs, sql);
 	};
 
 	/**
@@ -929,7 +959,7 @@ export async function openPostgresDatabase(options) {
 	const executeAutocommit = (client, sql, params) =>
 		withTimeout(
 			async () => {
-				await schemaFor(sql);
+				await schemaFor(client, sql);
 				const result = await watched(
 					client,
 					async () => {
@@ -943,6 +973,7 @@ export async function openPostgresDatabase(options) {
 						return /** @type {PromiseFulfilledResult<import("pg").QueryResult<SqliteValue[]>>} */ (answers[1]).value;
 					},
 					clientTimeoutMs,
+					sql,
 				);
 				return driverResult(result);
 			},
@@ -1092,7 +1123,10 @@ export async function openPostgresDatabase(options) {
 			LEGACY_MARKERS,
 		);
 		if (options.schema === undefined && Number(found?.preferred) === 0 && Number(found?.legacy) > 0)
+		{
 			schema = LEGACY_SCHEMA;
+			legacy = true;
+		}
 		else schemaReady = Number(found?.present) > 0;
 		return database;
 	} catch (error) {

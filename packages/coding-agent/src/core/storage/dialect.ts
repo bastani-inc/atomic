@@ -430,7 +430,9 @@ export const postgresDialect: StorageDialect = Object.freeze({
 	maxIdentifierBytes: POSTGRES_IDENTIFIER_BYTES,
 	identifier: postgresIdentifier,
 	tableExists: (table: string) => ({
-		sql: "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = ?",
+		// The catalog, not information_schema, which hides a table the role has no privilege on: a role missing a grant
+		// must not take an existing table for one to create (#5218).
+		sql: "SELECT c.relname AS name FROM pg_catalog.pg_class c WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname = ?",
 		params: [postgresIdentifier(table)],
 	}),
 	orderedConcat: (expression: string, separator: string, orderBy: string) =>

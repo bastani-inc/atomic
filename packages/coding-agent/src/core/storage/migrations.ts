@@ -54,9 +54,31 @@ async function tableExists(executor: SqliteExecutor, dialect: StorageDialect, ta
 	return (await executor.get(probe.sql, ...probe.params)) !== undefined;
 }
 
+/**
+ * Refuses, before any DDL, a role that cannot use the schema the database runs in: the setup would fail with a bare
+ * `3F000` or `42501` that names neither the grant nor the role (#5218). PostgreSQL only.
+ */
+async function assertSchemaUsage(executor: SqliteExecutor, dialect: StorageDialect): Promise<void> {
+	if (dialect.name !== "postgres") return;
+	const access = await executor.get<SqliteRow & { schema: string; role: string; present: number; usage: number }>(
+		`SELECT s.name AS schema, current_user AS role, (n.oid IS NOT NULL)::int AS present,
+			coalesce(has_schema_privilege(n.oid, 'USAGE'), false)::int AS usage
+		FROM (SELECT trim(both '"' from split_part(current_setting('search_path'), ',', 1)) AS name) s
+		LEFT JOIN pg_catalog.pg_namespace n ON n.nspname = s.name`,
+	);
+	if (access === undefined || Number(access.present) === 0 || Number(access.usage) === 1) return;
+	throw new StorageConfigError(
+		"sdk",
+		"privileges",
+		"missing-privilege",
+		`Role "${access.role}" has no USAGE on schema ${access.schema}, so it can neither find Atomic's tables there nor create them. Grant it as the schema's owner: GRANT USAGE ON SCHEMA ${access.schema} TO "${access.role}"; and, for a runtime role, the table grants in "Set up the database" in docs/storage.md`,
+	);
+}
+
 /** Creates the ledger `table` unless it exists, so a current schema runs no DDL (#5218). */
 async function createLedger(executor: SqliteExecutor, dialect: StorageDialect, table: string): Promise<void> {
 	if (await tableExists(executor, dialect, table)) return;
+	await assertSchemaUsage(executor, dialect);
 	// Two stores that set up their schemas at once never race to create the ledger they share.
 	if (dialect.name === "postgres") {
 		await executor.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked", `${table}:schema`);
@@ -230,6 +252,7 @@ export async function ensureStorageSchema(
 		// that create a table they share never race to create it.
 		await executor.get("SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked", `${ledger}:schema`);
 		if ((await recordedVersion(executor, dialect, ledger, key)) >= revision) return;
+		await assertSchemaUsage(executor, dialect);
 		await underShortLockWaits(executor, setup);
 	} else await setup();
 	await createLedger(executor, dialect, ledger);
