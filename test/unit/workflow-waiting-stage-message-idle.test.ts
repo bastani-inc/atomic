@@ -11,8 +11,9 @@ afterEach(() => {
 });
 
 test("a stage that took a message is idle from when the turn it started ended, not from when it was sent (#4309)", async () => {
-	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.useFakeTimers({ toFake: ["Date", "performance"] });
 	vi.setSystemTime(T0);
+	const start = performance.now();
 	const turnEnds = Promise.withResolvers<void>();
 	const rig = makeRig({
 		customize: () => ({
@@ -24,9 +25,9 @@ test("a stage that took a message is idle from when the turn it started ended, n
 
 	const sent = rig.ctx.__sendUserMessage("report");
 	await until(() => rig.created() === 1);
-	vi.setSystemTime(T0 + TURN_MS);
+	vi.advanceTimersByTime(TURN_MS);
 	turnEnds.resolve();
 
 	assert.equal(await sent, "prompt");
-	assert.equal(rig.ctx.__idleSince?.(), T0 + TURN_MS);
+	assert.equal(rig.ctx.__idleSince?.(), start + TURN_MS);
 });

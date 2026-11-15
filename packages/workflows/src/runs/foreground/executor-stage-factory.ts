@@ -783,7 +783,7 @@ export function createWorkflowStageFactory(input: {
 		 */
 		const awaitPromptAnswer = async <T>(answer: Promise<T>): Promise<T> => {
 			if (releasePolicy === undefined) return answer;
-			const askedAt = Date.now();
+			const askedAt = performance.now();
 			/** Settles with whether the stage gave its session up for the question, however its release ended. */
 			const gate: { released?: Promise<boolean> } = {};
 			idleReleaser.watch(stageId, {

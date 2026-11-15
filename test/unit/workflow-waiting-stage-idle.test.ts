@@ -39,7 +39,7 @@ describe("the run's idle scan (#4309)", () => {
 		const released: string[] = [];
 		const timers = vi.spyOn(globalThis, "setTimeout");
 		const releaser = new StageIdleReleaser(() => {});
-		const idleFrom = Date.now();
+		const idleFrom = performance.now();
 		try {
 			for (let index = 0; index < STAGES; index++) {
 				const stage: IdleStage = {
@@ -71,13 +71,13 @@ describe("the run's idle scan (#4309)", () => {
 			afterMs: 30,
 			idleSince: () => idleSince,
 			release: async () => {
-				releasedAt = Date.now();
+				releasedAt = performance.now();
 			},
 		};
 		releaser.watch("stage", stage);
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		assert.equal(releasedAt, undefined);
-		idleSince = Date.now();
+		idleSince = performance.now();
 		// The stage's own call ended: it is watched afresh from now.
 		releaser.watch("stage", stage);
 		await until(() => releasedAt !== undefined);
