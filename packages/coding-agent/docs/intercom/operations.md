@@ -266,6 +266,8 @@ A session that quit cleanly or crashed stays known to every broker for about 7 d
 - The message stays in the shared database and is delivered, in order, when that same Atomic session connects to Intercom again with the same home group, on any machine that uses the same storage.
 - A message queued for a [released subagent](/subagents#released-subagents) wakes it. The session that launched the subagent wakes it when it next holds sends for it, for example after that session or its broker restarts, and otherwise within about 30 seconds. The subagent then receives each queued message once, in order, even when its session returns more than seven days after the subagent last connected. A paused or quit subagent is not woken; its messages wait until it is resumed.
 - The broker reports the later delivery only to a sender that is still connected. The tool result that already returned stays queued, so check with the recipient if you need confirmation.
+- One session can have at most **1,000 queued messages, or 64 MiB of queued messages**, waiting for it. A send past that limit is refused with `The recipient already has the most queued Intercom messages it accepts (1000 messages or 64 MiB); this message was not queued`. The messages already queued are kept and delivered when it returns.
+- A message queued for a session that does not return within the 7 days expires undelivered. A retry of that message is refused with `The recipient did not return within the known-session retention of 7 days; the queued message expired undelivered`.
 
 A target that no session has used in that time, or never used, still returns `Session not found`.
 
@@ -273,7 +275,7 @@ When a whole machine or its broker stops, its sessions still look connected for 
 
 ### Data and security
 
-- Message text and attachments are stored in the shared database until they are delivered, together with the sender's identity. Delivered messages are deleted about 12 minutes later, which keeps duplicate protection for retries. Messages for an offline session stay until it reconnects.
+- Message text and attachments are stored in the shared database until they are delivered, together with the sender's identity. Delivered messages are deleted about 12 minutes later, which keeps duplicate protection for retries. Messages for an offline session stay until it reconnects, or until they expire after about 7 days.
 - Session names, session IDs, and group memberships are stored there too, so brokers can list and route to sessions on other machines.
 - Anyone who can read the database can read Intercom messages that cross machines, just as they can read sessions stored there: database access means full read access. A session in `default` can be messaged by every teammate's sessions, which is a prompt-injection path between people; project groups keep that from happening by accident. Protect it with the database's own credentials and transport security, and pass credentials through `secrets` (`{ "env": ... }` or `{ "file": ... }`) rather than `options`. The broker reads `env` secrets, including `ATOMIC_TEAM_TOKEN` under `ATOMIC_PROFILE=ci`, from the environment of the Atomic process that started it.
 - Intercom opens no network port and no broker-to-broker connection. Its security across machines is the database's security.
