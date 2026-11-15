@@ -158,6 +158,19 @@ describe("settings type validation (#4902)", () => {
 		assert.equal(manager.getGlobalSettings().streamDeadlineMs, true);
 	});
 
+	test("a setting limited to a list of words accepts those words and drops other types (#4902)", () => {
+		writeJson(globalPath, { defaultThinkingLevel: "high" });
+		writeJson(projectPath, { defaultThinkingLevel: 3 });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.equal(manager.getDefaultThinkingLevel(), "high");
+		assert.deepEqual(
+			manager.drainErrors().map(({ scope, error }) => ({ scope, message: error.message })),
+			[{ scope: "project", message: '"defaultThinkingLevel" must be string, not number; ignoring it.' }],
+		);
+	});
+
 	test("a right-typed word outside the allowed values is not a type error (#4902)", () => {
 		writeJson(globalPath, { transport: "pigeon" });
 

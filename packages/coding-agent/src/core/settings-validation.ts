@@ -16,6 +16,7 @@ export interface InvalidSettingValue {
 interface SchemaNode {
 	type?: string | string[];
 	const?: string | number | boolean | null;
+	enum?: (string | number | boolean | null)[];
 	anyOf?: SchemaNode[];
 	items?: SchemaNode;
 	properties?: Record<string, SchemaNode>;
@@ -30,20 +31,24 @@ function jsonTypeOf(value: JsonValue): string {
 	return typeof value;
 }
 
-/** Every JSON type the schema accepts. Every settings schema node is a union, a literal, or names its type. */
-function acceptedTypes(schema: SchemaNode): string[] {
-	if (schema.anyOf) return schema.anyOf.flatMap(acceptedTypes);
+/** Every JSON type the schema accepts, or `undefined` for a node that does not constrain the type. */
+function acceptedTypes(schema: SchemaNode): string[] | undefined {
+	if (schema.anyOf) {
+		const members = schema.anyOf.map(acceptedTypes);
+		return members.includes(undefined) ? undefined : (members.flat() as string[]);
+	}
 	if (schema.const !== undefined) return [jsonTypeOf(schema.const)];
-	return [schema.type ?? []].flat();
+	if (schema.enum) return schema.enum.map(jsonTypeOf);
+	return schema.type === undefined ? undefined : [schema.type].flat();
 }
 
 /** Top-level settings and list entries never use `integer`; integer fields live inside objects, which are not checked. */
 function hasType(schema: SchemaNode, value: JsonValue): boolean {
-	return acceptedTypes(schema).includes(jsonTypeOf(value));
+	return acceptedTypes(schema)?.includes(jsonTypeOf(value)) ?? true;
 }
 
 function describe(schema: SchemaNode): string {
-	const types = [...new Set(acceptedTypes(schema))];
+	const types = [...new Set(acceptedTypes(schema)!)];
 	return types.map((type) => (type === "array" ? `array of ${describe(arrayItems(schema))}` : type)).join(" or ");
 }
 
