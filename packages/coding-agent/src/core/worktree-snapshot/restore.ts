@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import lockfile from "proper-lockfile";
 import { releaseLock } from "../lock-release.ts";
-import { noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
+import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
 	locateCheckout,
 	readRepositoryConfig,
@@ -65,6 +65,14 @@ export interface RestoreWorktreeSnapshotOptions {
 	readonly storeDir?: string;
 	readonly onWarning?: (warning: WorktreeRestoreWarning) => void;
 	readonly signal?: AbortSignal;
+	/**
+	 * Takes the Git LFS download of an exact restore off the restore (#5099): the restore verifies and publishes the
+	 * worktree with its LFS files still holding pointers, then hands `pull` to this callback instead of downloading.
+	 * `pull` downloads the objects into `worktree` as the restore would have, and resolves to the files that still hold
+	 * pointers, for which the restore would have warned `lfs-objects-unavailable`. A degraded restore still downloads
+	 * before it records the tree it holds.
+	 */
+	readonly deferLfs?: (worktree: string, pull: () => Promise<readonly string[]>) => void;
 	/**
 	 * The Git this restore runs, with the environment it needs. Default: the Git every snapshot operation resolves,
 	 * provisioned when this machine has none.
@@ -1147,6 +1155,10 @@ async function restoreValidated(
 			warn,
 			signal,
 			verify: "tree",
+			// The download runs later, with the Git this restore runs.
+			deferLfs:
+				options.deferLfs &&
+				((worktree, pull) => options.deferLfs!(worktree, () => withWorktreeSnapshotGit(options.git, pull))),
 		});
 		if (snapshot) for (const warning of snapshotRestoreWarnings(snapshot)) warn(warning);
 		return {
@@ -1716,6 +1728,8 @@ interface PublishWorktree {
 	readonly scratch: string;
 	readonly warn: (warning: WorktreeRestoreWarning) => void;
 	readonly signal: AbortSignal | undefined;
+	/** Where an exact restore hands its LFS download instead of running it (#5099). */
+	readonly deferLfs?: RestoreWorktreeSnapshotOptions["deferLfs"];
 	/**
 	 * What the staged worktree is checked against before it is moved to `path`: its HEAD and recomputed tree (`tree`),
 	 * or its HEAD alone (`head`), for a degraded restore whose content this host's filters may change.
@@ -1729,6 +1743,8 @@ interface PublishWorktree {
  */
 async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	const { git, store, storeDir, path, head, tree, snapshot, scratch, warn, signal } = publish;
+	// Only an exact restore defers its download: a degraded one records the tree it holds after it (#5099).
+	const deferred = publish.verify === "tree" ? publish.deferLfs : undefined;
 	let measured = tree;
 	const snapshotId = snapshot?.id ?? null;
 	await checkTarget(path, snapshotId);
@@ -1742,9 +1758,10 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 	await withRestoreRecord(storeDir, id, record, snapshotId, warn, signal, async (assertActive) => {
 		await timeRestorePhase("materialize", () => materialize(git, staging, head, tree, scratch, snapshotId, signal));
 		assertActive();
-		if (snapshot?.filters?.drivers.includes("lfs")) {
+		const lfs = snapshot?.filters?.drivers.includes("lfs") ? snapshot.remotes : undefined;
+		if (lfs !== undefined && deferred === undefined) {
 			const worktree: GitRunOptions = { cwd: staging, signal };
-			const pointers = await timeRestorePhase("lfs", () => pullLfsObjects(worktree, head, tree, snapshot.remotes));
+			const pointers = await timeRestorePhase("lfs", () => pullLfsObjects(worktree, head, tree, lfs));
 			if (pointers.length > 0) warn({ code: "lfs-objects-unavailable", paths: pointers });
 		}
 		measured = await timeRestorePhase("verify", () =>
@@ -1753,6 +1770,12 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		assertActive();
 		await timeRestorePhase("publish", () => moveIntoPlace(publish, staging, createdTarget, snapshotId));
 		assertActive();
+		if (lfs !== undefined && deferred !== undefined) {
+			deferred(
+				path,
+				deferRestorePhase("lfs", () => pullLfsObjects({ cwd: path, signal }, head, tree, lfs)),
+			);
+		}
 	});
 	return measured;
 }

@@ -42,6 +42,11 @@ export interface BlueprintRepository {
 	readonly identity: string;
 	/** Run `initialize` whatever the ledger says, as for a worktree a prebuild builds from nothing (#4748). */
 	readonly initialize?: boolean;
+	/**
+	 * Settles once the worktree's files are in place, as when its Git LFS download ends (#5099): no step runs in the
+	 * repository before. Never rejects.
+	 */
+	readonly ready?: Promise<void>;
 }
 
 export interface BlueprintBuildConfig {
@@ -392,6 +397,7 @@ async function buildBlueprint(
 }
 
 async function buildRepository(run: BuildRun, repository: BlueprintRepository, seen: Set<string>): Promise<void> {
+	await repository.ready;
 	const forceRebuild =
 		repository.initialize === true || run.ledger.roots[rootKey(repository.root)]?.state === "running";
 	const root = await loadBlueprint(getProjectBlueprintPath(repository.root), "repository", run.platform);
@@ -446,6 +452,7 @@ async function runGlobalLayers(
 	}
 	if (failed === undefined && alias !== undefined) {
 		for (const repository of repositories) {
+			await repository.ready;
 			const result = await runSection("maintenance", [aliasStep(alias)], {
 				...context(repository.root, SETUP_COMMAND_ALIAS),
 				logPrefix: `${run.buildId}-${tagOf(repository.root, "alias")}`,
