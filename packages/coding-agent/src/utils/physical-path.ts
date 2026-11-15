@@ -1,6 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { constants } from "node:os";
-import { basename, dirname, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 
 /** Matches the Linux limit on symbolic links followed while resolving one path. */
 const MAX_SYMLINK_HOPS = 40;
@@ -10,8 +10,9 @@ function isMissing(error: unknown): boolean {
 	return code === "ENOENT" || code === "ENOTDIR";
 }
 
+/** Path components; empty, `.` and `..` ones are kept, since `join` applies them to an already resolved directory. */
 function components(path: string): string[] {
-	return path.split(/[\\/]+/).filter((part) => part !== "" && part !== ".");
+	return path.split(sep === "\\" ? /[\\/]/ : "/");
 }
 
 /** Whether `path` is a symbolic link, or undefined when it or one of its parents is missing. */
@@ -38,12 +39,7 @@ export function resolvePhysicalPath(path: string): string {
 	const pending = components(absolute.slice(resolved.length));
 	let hops = 0;
 	while (pending.length > 0) {
-		const part = pending.shift() as string;
-		if (part === "..") {
-			resolved = dirname(resolved);
-			continue;
-		}
-		const next = join(resolved, part);
+		const next = join(resolved, pending.shift() as string);
 		if (lstatIsLink(next) !== true) {
 			resolved = next;
 			continue;
@@ -67,7 +63,7 @@ export function resolvePhysicalPath(path: string): string {
 function normalizeExisting(path: string): string {
 	const missing: string[] = [];
 	let existing = path;
-	while (lstatIsLink(existing) === undefined && dirname(existing) !== existing) {
+	while (lstatIsLink(existing) === undefined) {
 		missing.unshift(basename(existing));
 		existing = dirname(existing);
 	}

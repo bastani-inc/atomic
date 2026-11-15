@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
 import { resolvePhysicalPath } from "../src/utils/physical-path.js";
@@ -45,7 +45,20 @@ describe.skipIf(process.platform === "win32")(
 
 		it("fails on a link cycle instead of guessing (#5045)", () => {
 			symlinkSync(join(root, "loop"), join(root, "loop"));
-			assert.throws(() => resolvePhysicalPath(join(root, "loop", "x")), { code: "ELOOP" });
+			const absolute = join(root, "loop", "x");
+			assert.throws(() => resolvePhysicalPath(absolute), {
+				code: "ELOOP",
+				errno: -constants.errno.ELOOP,
+				syscall: "lstat",
+				path: absolute,
+				message: `ELOOP: too many symbolic links encountered, lstat '${absolute}'`,
+			});
+		});
+
+		it("follows forty links in a row and refuses the forty-first (#5045)", () => {
+			for (let link = 1; link <= 41; link++) symlinkSync(`l${link - 1}`, join(root, `l${link}`));
+			assert.equal(resolvePhysicalPath(join(root, "l40")), join(root, "l0"));
+			assert.throws(() => resolvePhysicalPath(join(root, "l41")), { code: "ELOOP" });
 		});
 	},
 );
