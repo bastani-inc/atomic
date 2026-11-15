@@ -1,7 +1,11 @@
 import type { BoundWorkspace, WorkspaceWriterLease } from "@bastani/atomic";
 import type { WorkflowChildResult, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
-import { boundaryTransitionError, resolveBoundaryLifecycle } from "./boundary-lifecycle.js";
+import {
+	boundaryTerminalAdmitsNewAttempt,
+	boundaryTransitionError,
+	resolveBoundaryLifecycle,
+} from "./boundary-lifecycle.js";
 import type { DurableScope } from "./scoped-backend.js";
 import {
 	DURABLE_BOUNDARY_TOPOLOGY_VERSION,
@@ -91,7 +95,7 @@ export function prepareDurableChildInvocation(input: DurableBoundaryDescriptor):
 		const resolved = resolveBoundaryLifecycle(start, stages, false);
 		if ("error" in resolved) throw invalid(input, resolved.error);
 		const terminalStatus = resolved.lifecycle.latestTerminal?.topology?.boundary?.status;
-		if (terminalStatus !== undefined && terminalStatus !== "failed") {
+		if (terminalStatus !== undefined && !boundaryTerminalAdmitsNewAttempt(terminalStatus)) {
 			throw invalid(input, "terminal boundary has no valid replayable child result");
 		}
 	}
