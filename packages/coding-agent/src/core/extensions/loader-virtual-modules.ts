@@ -626,12 +626,84 @@ export const extensionLoaderTestHooks = {
 };
 
 /**
- * Extension paths already evaluated via native import() in this process. Bun on
- * Windows ignores the cache-busting query on file URLs, so re-loads of these
+ * Extension paths already evaluated via native import() in this process. A
+ * native import leaves the extension's whole module graph in the runtime's
+ * module registry: the cache-busting query reaches only the entry file (and Bun
+ * on Windows ignores even that), never its relative imports. Re-loads of these
  * paths (e.g. /reload) must go through jiti's transformed-import path to get a
- * fresh module evaluation.
+ * fresh evaluation of every file (#4986), which also keeps each reload's
+ * evaluation collectable instead of adding one registry entry per reload.
  */
 const nativelyImportedPaths = new Set<string>();
+
+interface FileSignature {
+	mtimeMs: number;
+	size: number;
+}
+
+/**
+ * jiti imports an ESM JavaScript file (`.mjs`, or `.js` in a `"type": "module"`
+ * package) natively even on its transformed path, and Node and Bun keep that
+ * module for the life of the process. Such an extension keeps its first
+ * evaluation until a restart, so its entry file's signature at that evaluation
+ * is kept here (one per path) to warn, once per edit, that a reload cannot run
+ * the edited code (#4986).
+ */
+const nativeEsmEntries = new Map<string, { evaluated: FileSignature; warned?: FileSignature }>();
+
+function fileSignature(filePath: string): FileSignature | undefined {
+	try {
+		const stats = fs.statSync(filePath);
+		return { mtimeMs: stats.mtimeMs, size: stats.size };
+	} catch {
+		return undefined;
+	}
+}
+
+function sameSignature(a: FileSignature | undefined, b: FileSignature | undefined): boolean {
+	return a !== undefined && b !== undefined && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+
+/** Mirrors jiti's ESM test: `.mjs`, or `.js` whose nearest package.json declares `"type": "module"`. */
+function isNativeEsmJavaScript(filePath: string): boolean {
+	const extension = path.extname(filePath).toLowerCase();
+	if (extension === ".mjs") return true;
+	if (extension !== ".js") return false;
+	for (let dir = path.dirname(filePath); ; dir = path.dirname(dir)) {
+		let manifest: string;
+		try {
+			manifest = fs.readFileSync(path.join(dir, "package.json"), "utf8");
+		} catch {
+			if (path.dirname(dir) === dir) return false;
+			continue;
+		}
+		try {
+			return (JSON.parse(manifest) as { type?: unknown }).type === "module";
+		} catch {
+			return false;
+		}
+	}
+}
+
+function rememberNativeEsmEntry(extensionPath: string, importPath: string): void {
+	if (nativeEsmEntries.has(extensionPath) || !isNativeEsmJavaScript(importPath)) return;
+	const evaluated = fileSignature(importPath);
+	if (evaluated) nativeEsmEntries.set(extensionPath, { evaluated });
+}
+
+/**
+ * A warning for a reload of an ESM JavaScript extension whose entry file changed
+ * since this process evaluated it: the runtime still runs the old code. Each
+ * edit is reported once.
+ */
+export function staleNativeEsmExtensionWarning(extensionPath: string): string | undefined {
+	const entry = nativeEsmEntries.get(extensionPath);
+	if (!entry) return undefined;
+	const current = fileSignature(canonicalizePath(extensionPath));
+	if (!current || sameSignature(current, entry.evaluated) || sameSignature(current, entry.warned)) return undefined;
+	entry.warned = current;
+	return 'This ESM JavaScript extension (.mjs, or .js in a package with "type": "module") changed since it was loaded, but its module cannot be re-evaluated in a running process. It still runs the code it was loaded with: restart Atomic to run the edited code.';
+}
 
 async function importExtensionModule(
 	extensionPath: string,
@@ -654,7 +726,9 @@ async function importExtensionModule(
 	});
 	// Import the real path so a symlinked entry (a pnpm store package) resolves its dependencies next to the real
 	// file; extensionPath stays the cache and graph key.
-	const specifier = extensionImportSpecifier(canonicalizePath(extensionPath), cacheToken);
+	const importPath = canonicalizePath(extensionPath);
+	const specifier = extensionImportSpecifier(importPath, cacheToken);
+	rememberNativeEsmEntry(extensionPath, importPath);
 	// Transformed evaluations are the loads whose repeat cost is the Windows
 	// /reload regression, so they are also the loads whose file graph is
 	// recorded into a content-hash manifest. Without a transpile cache there is
@@ -670,7 +744,9 @@ async function importExtensionModule(
 	} else {
 		module = await jiti.import(specifier, { default: true });
 	}
-	if (isWindows && !forceTransformedImports) {
+	// jiti tries native imports first under Bun; under Node it transforms, except on Windows where re-loads keep
+	// using the transformed path and its retained-evaluation reuse.
+	if ((isWindows || jiti.options.tryNative) && !forceTransformedImports) {
 		nativelyImportedPaths.add(extensionPath);
 	}
 	let factory = module as ExtensionFactory;
@@ -737,13 +813,12 @@ export async function loadExtensionModule(
 		if (cachedFactory) return cachedFactory;
 	}
 
-	const isWindows = process.platform === "win32";
 	// Single-file builds (compiled binary or dev bundle) cannot alias host
 	// package specifiers to files on disk: extensions must share the live
 	// module instances baked into the build, so virtualModules is used instead
 	// (which requires jiti's transformed-import path).
 	// Every editable path retains the existing jiti/virtualModules behavior.
-	// Windows first-load fast path: native import() (jiti's default tryNative)
+	// First-load fast path: native import() (jiti's default tryNative under Bun)
 	// skips per-launch transpilation of the extension module graph. Re-loads of
 	// the same path fall back to transformed imports for fresh evaluation.
 	//
@@ -754,7 +829,7 @@ export async function loadExtensionModule(
 	// cost is correctness-driven and is paid interactively on every Windows
 	// `/reload`; removing it needs a content-hash-keyed evaluation cache or a
 	// narrower trigger, not a larger timeout.
-	const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
+	const forceTransformedImports = isSingleFileBuild || nativelyImportedPaths.has(extensionPath);
 	const cacheDir = resolveTranspileCacheDir(agentDir ?? cacheToken?.agentDir);
 	if (forceTransformedImports) {
 		return loadTransformedExtensionModule(extensionPath, cacheToken, cacheDir);

@@ -21,7 +21,12 @@ import {
 } from "./loader-resources.ts";
 import { factoryAcquisitions, factoryRollbackError, rollbackExtensionFactories } from "./loader-rollback.ts";
 import { createExtensionRuntime } from "./loader-runtime.ts";
-import { type ExtensionCacheToken, loadExtensionModule, useExtensionCacheCwd } from "./loader-virtual-modules.js";
+import {
+	type ExtensionCacheToken,
+	loadExtensionModule,
+	staleNativeEsmExtensionWarning,
+	useExtensionCacheCwd,
+} from "./loader-virtual-modules.js";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
 /** Associate extension runtimes with the event bus used to construct their APIs. */
@@ -158,7 +163,7 @@ async function loadExtension(
 	resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 	cacheToken?: ExtensionCacheToken,
 	agentDir?: string,
-): Promise<{ extension: Extension | null; error: string | null }> {
+): Promise<{ extension: Extension | null; error: string | null; warning?: string }> {
 	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
 	try {
@@ -184,7 +189,8 @@ async function loadExtension(
 			createExtension(extensionPath, resolvedPath),
 		);
 		endTimingSpan(factorySpan);
-		return { extension, error: null };
+		const warning = staleNativeEsmExtensionWarning(resolvedPath);
+		return warning ? { extension, error: null, warning } : { extension, error: null };
 	} catch (err) {
 		// Ordinary discovery failures remain diagnostics; failed cleanup must reject creation.
 		if (err instanceof Error && "code" in err && err.code === "ShutdownFailed") throw err;
@@ -278,6 +284,7 @@ async function loadExtensionsInternal(
 ): Promise<LoadExtensionsResult> {
 	const extensions: Extension[] = [];
 	const errors: Array<{ path: string; error: string }> = [];
+	const warnings: Array<{ path: string; warning: string }> = [];
 	const cacheToken = useCache ? useExtensionCacheCwd(cwd, agentDir) : undefined;
 	const resolvedCwd = cacheToken?.cwd ?? resolvePath(cwd);
 	const resolvedEventBus = eventBus ?? createEventBus();
@@ -295,7 +302,7 @@ async function loadExtensionsInternal(
 			lastYieldAt = Date.now();
 		}
 		const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`, "extensions");
-		const { extension, error } = await loadExtension(
+		const { extension, error, warning } = await loadExtension(
 			extPath,
 			resolvedCwd,
 			resolvedEventBus,
@@ -307,6 +314,7 @@ async function loadExtensionsInternal(
 		);
 		endTimingSpan(extensionSpan);
 		processedExtensionCount += 1;
+		if (warning) warnings.push({ path: extPath, warning });
 		if (error) {
 			errors.push({ path: extPath, error });
 			continue;
@@ -320,7 +328,7 @@ async function loadExtensionsInternal(
 	return {
 		extensions,
 		errors,
-		warnings: [],
+		warnings,
 		runtime: resolvedRuntime,
 	};
 }
