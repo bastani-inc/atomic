@@ -1485,18 +1485,27 @@ export class StageSessionController {
 		this.releasedWaitEnded = undefined;
 		const held = this.heldWhileReleased ?? [];
 		this.heldWhileReleased = undefined;
+		// One input the session refuses neither drops the rest nor leaves callers waiting for the session (#5156); the
+		// refusals fail the turn once the session is reopened.
+		const refusals: unknown[] = [];
 		for (const input of held) {
 			const { text, images } = splitStageContent(input.content);
 			const options =
 				input.expandPromptTemplates === undefined
 					? undefined
 					: { expandPromptTemplates: input.expandPromptTemplates };
-			if (input.kind === "steer") await session.steer(text, images, options);
-			else await session.followUp(text, images, options);
+			try {
+				if (input.kind === "steer") await session.steer(text, images, options);
+				else await session.followUp(text, images, options);
+			} catch (error) {
+				refusals.push(error);
+			}
 		}
 		this.lastActivityAt = performance.now();
 		ended?.resolve();
 		await hooks.rehydrated(wait);
+		if (refusals.length === 1) throw refusals[0];
+		if (refusals.length > 1) throw new AggregateError(refusals, "The reopened session refused held input.");
 	}
 
 	/**
