@@ -2388,7 +2388,11 @@ export class PoolCoordinator {
 						const superseded = work !== undefined && !settled && (await this.superseded(work));
 						if (work !== undefined && exhausted && !superseded)
 							// The worker's exit is the fault; process groups it left running are a cleanup that failed after it.
-							this.failWork(work, this.retryLimit(work, "worker-lost", undefined, logPath, unconfirmed));
+							// Its attempts are counted from the work as the queue holds it, which carries its handoffs.
+							this.failWork(
+								work,
+								this.retryLimit(current ?? work, "worker-lost", undefined, logPath, unconfirmed),
+							);
 						// Workers that crash without work are a pool-wide fault. A child that lost its worker consumes its own
 						// attempts, so those replacements are bounded by the children and never count toward this limit. A
 						// worker that ended itself between children for its memory did not crash: it is replaced without
@@ -2512,7 +2516,7 @@ export class PoolCoordinator {
 								const fault = message.fault === undefined ? undefined : rehydrateError(message.fault);
 								this.failWork(
 									fenced,
-									this.retryLimit(fenced, fault === undefined ? "refused-stale" : "pool-fault", fault),
+									this.retryLimit(current, fault === undefined ? "refused-stale" : "pool-fault", fault),
 								);
 							}
 						}

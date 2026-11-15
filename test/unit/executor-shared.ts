@@ -30,6 +30,7 @@ import { createRegistry } from "../../packages/workflows/src/workflows/registry.
 import { configureCurrentTestStoreBackend as setDurableBackend } from "../helpers/store-backend.js";
 import { decisionMessage } from "../helpers/structured-output.js";
 import { createMemoryTestBackend } from "../helpers/workflow-journal.js";
+import { emitMessageEndOnPush } from "./stage-runner-helpers.js";
 import { executeWorkflowDecision, workflowDecisionArgs } from "./structured-output-workflow-fixture.js";
 
 async function waitForExecutorStagePendingPrompt(
@@ -270,6 +271,9 @@ function structuredOutputMockSession(
 ): StageSessionRuntime {
 	const listeners = new Set<(e: { type: string; [k: string]: unknown }) => void>();
 	const messages: AgentSession["messages"] = [] as AgentSession["messages"];
+	emitMessageEndOnPush(messages, (event) => {
+		for (const listener of listeners) listener(event);
+	});
 	const base = mockSession(options.sessionManager);
 	const structuredTool = options.customTools?.find(
 		(tool): tool is ToolDefinition => tool.name === "structured_output",
