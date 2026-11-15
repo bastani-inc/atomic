@@ -25,7 +25,7 @@ afterEach(() => {
 	configureCurrentTestStoreBackend(undefined);
 });
 
-type Shape = "stages" | "tools" | "child-stages" | "child-tools" | "beside-child";
+type Shape = "stages" | "tools" | "tool-then-stages" | "child-stages" | "child-tools" | "beside-child";
 let failing: string | undefined;
 
 function definitions(shape: Shape) {
@@ -34,9 +34,14 @@ function definitions(shape: Shape) {
 			if (failing === name) throw new Error(`planned ${name} failure`);
 			return name;
 		});
-	// `start → [a ‖ b] → finish → c`: by stages, or with both stages created before the tool `start` (#4888).
+	// `start → [a ‖ b] → finish → c`: by stages, by tools around stages created in parallel, or with both stages created
+	// before the tool `start` (#4888).
 	const body = async (ctx: any, kind: string) => {
-		if (kind === "stages") {
+		if (kind === "tool-then-stages") {
+			await tool(ctx, "start");
+			await Promise.all([ctx.stage("a").prompt("a"), ctx.stage("b").prompt("b")]);
+			await tool(ctx, "finish");
+		} else if (kind === "stages") {
 			await ctx.stage("start").prompt("start");
 			await Promise.all([ctx.stage("a").prompt("a"), ctx.stage("b").prompt("b")]);
 			await ctx.stage("finish").prompt("finish");
@@ -163,7 +168,7 @@ async function fork(shape: Shape, backend: JournalTestBackend, runId: string, fr
 	return forked.runId;
 }
 
-for (const shape of ["stages", "tools", "child-stages", "child-tools", "beside-child"] as const)
+for (const shape of ["stages", "tools", "tool-then-stages", "child-stages", "child-tools", "beside-child"] as const)
 	test(`a fork from each stage of a parallel ${shape} run keeps the source's parent edges (#5042)`, async () => {
 		const origin = await source(shape);
 		assert.ok(origin.points.length >= 3, JSON.stringify(origin.points));
@@ -185,3 +190,33 @@ test("a fork from a parallel stage that fails after it resumes with the source's
 	assert.equal(run?.status, "completed", String(run?.error));
 	assert.deepEqual(durableEdges(origin.backend, forkId), origin.edges);
 });
+
+for (const shape of ["stages", "tool-then-stages"] as const)
+	test(`a fork from each stage of a resumed parallel ${shape} run reads back as its live run, with the source's edges (#5042)`, async () => {
+		const backend = await JournalTestBackend.create();
+		configureCurrentTestStoreBackend(backend);
+		failing = "a";
+		const started = await definitions(shape).runtime.dispatch({
+			action: "run",
+			workflow: "fork-parents",
+			inputs: {},
+		});
+		assert.ok("runId" in started);
+		assert.equal((await settled(started.runId))?.status, "failed");
+		failing = undefined;
+		const resumed = await resume(shape, started.runId);
+		assert.equal(resumed?.status, "completed", String(resumed?.error));
+		const sourceEdges = durableEdges(backend, started.runId);
+		assert.deepEqual(edges([resumed!]), sourceEdges, "the resumed source reads back as it ran");
+		const points: string[] = [];
+		for await (const point of durableForkPoints(backend, started.runId, { cwd: process.cwd() } as never))
+			points.push(point.stagePath);
+		assert.ok(points.includes("a"), JSON.stringify(points));
+		for (const fromStage of points) {
+			const forkId = await fork(shape, backend, started.runId, fromStage);
+			const run = await resume(shape, forkId);
+			assert.equal(run?.status, "completed", `from ${fromStage}: ${String(run?.error)}`);
+			assert.deepEqual(edges([run!]), sourceEdges, `from ${fromStage}: live`);
+			assert.deepEqual(durableEdges(backend, forkId), sourceEdges, `from ${fromStage}: durable`);
+		}
+	});

@@ -844,7 +844,7 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 }
 
 /**
- * The fork point's place in the graph: the stage id and parents the source recorded for it, as a run-level record the
+ * The fork point's place in the graph: the stage id, parents and source order the source recorded for it, as a run-level record the
  * fork's stage resumes with (`forkPointStageTopology`). The fork's events end before the fork point's first record, so
  * without it the stage would take the fork's frontier when it is created, which can hold a stage that ran beside it
  * (#5042). A child workflow's boundary records its parents with its own lifecycle, so its fork point has none.
@@ -866,7 +866,11 @@ function forkPointTopologyRecord(
 			checkpointId: key,
 			name: key,
 			argsHash: key,
-			output: { stageId: checkpoint.topology.stageId, parentIds: [...checkpoint.topology.parentIds] },
+			output: {
+				stageId: checkpoint.topology.stageId,
+				parentIds: [...checkpoint.topology.parentIds],
+				...(checkpoint.topology.sourceOrder === undefined ? {} : { sourceOrder: checkpoint.topology.sourceOrder }),
+			},
 			completedAt: checkpoint.completedAt,
 		},
 	};

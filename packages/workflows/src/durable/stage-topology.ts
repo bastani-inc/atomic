@@ -19,9 +19,10 @@ export function forkPointCheckpointKey(replayKey: string): string {
 }
 
 /**
- * The stage id and parents a fork's source recorded for its fork point (#5042), as the topology the stage resumes with.
- * The fork's events end before the fork point's first record; without these, the stage would take the frontier the
- * fork has when it is created, which can hold a stage that ran beside it.
+ * The stage id, parents and source order a fork's source recorded for its fork point (#5042), as the topology the stage
+ * resumes with. The fork's events end before the fork point's first record; without these, the stage would take the
+ * frontier the fork has when it is created, which can hold a stage that ran beside it, and the place in the run's stages
+ * of a replayed sibling that sorted ahead of it.
  */
 export function forkPointStageTopology(
 	backend: DurableWorkflowBackend,
@@ -30,10 +31,20 @@ export function forkPointStageTopology(
 ): DurableStageTopology | undefined {
 	const output = backend.getToolCheckpoint(workflowId, forkPointCheckpointKey(replayKey))?.output;
 	if (typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
-	const { stageId, parentIds } = output as { readonly stageId?: unknown; readonly parentIds?: unknown };
+	const { stageId, parentIds, sourceOrder } = output as {
+		readonly stageId?: unknown;
+		readonly parentIds?: unknown;
+		readonly sourceOrder?: unknown;
+	};
 	if (typeof stageId !== "string" || !Array.isArray(parentIds) || !parentIds.every((id) => typeof id === "string"))
 		return undefined;
-	return { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId, parentIds: [...parentIds], status: "pending" };
+	return {
+		version: DURABLE_STAGE_TOPOLOGY_VERSION,
+		stageId,
+		parentIds: [...parentIds],
+		...(typeof sourceOrder === "number" ? { sourceOrder } : {}),
+		status: "pending",
+	};
 }
 
 /** Find source identity for the latest active session at an exact replay key. */
