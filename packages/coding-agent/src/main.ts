@@ -666,6 +666,8 @@ export async function main(argv: string[], options?: MainOptions) {
 			sessionStorage,
 			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
 			blueprints: engineEnv.child === "1" ? "skip" : "build",
+			// Without a UI (-p, json, rpc), the first turn starts while the blueprint build runs (#4748).
+			interactive: appMode === "interactive" || engineEnv.child === "1",
 			progress: startupProgress,
 			chooseDirtyCheckout:
 				appMode === "interactive"
@@ -1098,6 +1100,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			promptTemplates: resolvedPromptTemplatePaths,
 			themes: resolvedThemePaths,
 		},
+		appMode === "interactive" || engineEnv.child === "1",
 	);
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;

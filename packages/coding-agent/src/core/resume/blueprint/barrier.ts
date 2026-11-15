@@ -4,22 +4,6 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ResumeTimings } from "../timings.ts";
 
-/**
- * Built-in tools that run project code or read the worktree, and so wait for a blueprint build that runs behind the
- * first turn (`resume.waitForBlueprint: "tools"`). An extension tool that declares `writesFiles` waits too.
- */
-export const BLUEPRINT_GATED_TOOLS: ReadonlySet<string> = new Set([
-	"bash",
-	"powershell",
-	"edit",
-	"write",
-	"read",
-	"ls",
-	"find",
-	"grep",
-	"search",
-]);
-
 /** A build the session's tools wait for: settles with what the agent is told once it ends. */
 interface PendingBuild {
 	readonly settled: Promise<string | undefined>;
@@ -38,6 +22,15 @@ export function holdToolsUntilBuilt(sessionId: string, build: Promise<string | u
 /** Whether tools of session `sessionId` wait for a blueprint build, or the agent has not yet been told how it ended. */
 export function blueprintBuildPending(sessionId: string): boolean {
 	return pending.has(sessionId);
+}
+
+/**
+ * Resolves once the blueprint build the tools of session `sessionId` wait for has settled, whatever its status, and at
+ * once when they wait for none. The report stays for the next tool that waits; a run without a UI waits here before it
+ * ends, so it never exits with the build half done.
+ */
+export async function blueprintBuildSettled(sessionId: string): Promise<void> {
+	await pending.get(sessionId)?.settled;
 }
 
 /**

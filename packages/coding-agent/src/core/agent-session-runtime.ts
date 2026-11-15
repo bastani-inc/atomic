@@ -248,6 +248,8 @@ export class AgentSessionRuntime {
 	private declare _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private declare _modelFallbackMessage?: string;
 	private declare _modelFallbackReason?: ModelFallbackReason;
+	/** Whether a user interface shows this runtime's sessions, which decides how a resume waits for its build. */
+	private declare readonly interactive: boolean;
 
 	constructor(
 		_session: AgentSession,
@@ -256,7 +258,9 @@ export class AgentSessionRuntime {
 		_diagnostics: AgentSessionRuntimeDiagnostic[] = [],
 		_modelFallbackMessage?: string,
 		_modelFallbackReason?: ModelFallbackReason,
+		interactive = false,
 	) {
+		this.interactive = interactive;
 		this._session = _session;
 		this.retainSessionStore(_session);
 		this._services = _services;
@@ -660,6 +664,7 @@ export class AgentSessionRuntime {
 				this.services.agentDir,
 				settings,
 				savedProjectTrust(this.services.agentDir, settings),
+				this.interactive,
 			),
 			blueprints: this.resumeBlueprints,
 		};
@@ -994,6 +999,11 @@ export async function createAgentSessionRuntime(
 		agentDir: string;
 		sessionManager: SessionManager;
 		sessionStartEvent?: SessionStartEvent;
+		/**
+		 * Whether a user interface shows the runtime's sessions. Without one (the default), a resume that restores a
+		 * worktree starts the first turn while its blueprint build runs, unless `resume.waitForBlueprint` is set.
+		 */
+		interactive?: boolean;
 	},
 ): Promise<AgentSessionRuntime> {
 	try {
@@ -1006,6 +1016,7 @@ export async function createAgentSessionRuntime(
 			result.diagnostics,
 			result.modelFallbackMessage,
 			result.modelFallbackReason,
+			options.interactive,
 		);
 	} catch (error) {
 		const store = ownedSessionManagerStores.get(options.sessionManager);

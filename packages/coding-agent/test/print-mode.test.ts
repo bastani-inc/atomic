@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, AgentSessionEventListener, ExtensionBindings } from "../src/core/agent-session.ts";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
 import type { CustomMessage } from "../src/core/messages.ts";
+import { awaitBlueprintReady, holdToolsUntilBuilt } from "../src/core/resume/blueprint/barrier.ts";
 import { createStructuredOutputTool } from "../src/core/tools/structured-output.ts";
 import type { SessionShutdownEvent } from "../src/index.ts";
 import { type PrintModeOptions, runPrintMode } from "../src/modes/print-mode.ts";
@@ -30,7 +31,7 @@ const MISSING_INPUT_ERROR = "WorkflowHeadlessCommandError: missing input";
 const RUN_MISSING_ERROR = "WorkflowHeadlessCommandError: run missing";
 
 type FakeSession = {
-	sessionManager: { getHeader: () => object | undefined };
+	sessionManager: { getHeader: () => object | undefined; getSessionId: () => string };
 	agent: { waitForIdle: () => Promise<void> };
 	state: { messages: FakeMessage[] };
 	extensionRunner: FakeExtensionRunner;
@@ -163,7 +164,7 @@ function createRuntimeHost(
 	const eventListeners: AgentSessionEventListener[] = [];
 
 	const session: FakeSession = {
-		sessionManager: { getHeader: () => undefined },
+		sessionManager: { getHeader: () => undefined, getSessionId: () => "print-session" },
 		agent: { waitForIdle: async () => {} },
 		state,
 		extensionRunner,
@@ -267,6 +268,26 @@ describe("runPrintMode", () => {
 		assert.equal(exitCode, 1);
 		assert.equal(stdoutChunks.join(""), "");
 		assert.deepEqual(errorSpy.mock.calls, [["Response was truncated: the model reached its output token limit."]]);
+	});
+
+	it("prints the answer, then waits for the resumed session's blueprint build before it ends (#4748)", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "done" }));
+		const stdoutChunks = captureStdout();
+		const build = Promise.withResolvers<string | undefined>();
+		holdToolsUntilBuilt("print-session", build.promise);
+		let exited = false;
+		const running = runPrintModeWithFakeHost(runtimeHost, { mode: "text", initialMessage: "hello" }).then((code) => {
+			exited = true;
+			return code;
+		});
+		await vi.waitFor(() => assert.equal(stdoutChunks.join(""), "done\n"));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(exited, false, "the run waits for the build");
+		assert.equal(runtimeHost.dispose.mock.calls.length, 0, "the session stays open while the build runs");
+		build.resolve("built");
+		assert.equal(await running, 0);
+		assert.equal(runtimeHost.dispose.mock.calls.length, 1);
+		assert.equal(await awaitBlueprintReady("print-session"), "built", "the report is left for a later tool");
 	});
 
 	it("emits session_shutdown in text mode", async () => {

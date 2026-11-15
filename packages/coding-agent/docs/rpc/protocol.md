@@ -868,7 +868,7 @@ Response:
 {"type": "response", "command": "switch_session", "success": true, "data": {"cancelled": false, "notices": []}}
 ```
 
-`notices` lists the warnings the resume earned, such as a [blueprint](/guides/resume-on-any-machine) build that was Partial, each as `{"type": "warning", "message": "..."}`. A client that shows resume warnings shows them once.
+`notices` lists the warnings the resume earned, such as a [blueprint](/guides/resume-on-any-machine) build that was Partial, each as `{"type": "warning", "message": "..."}`. A client that shows resume warnings shows them once. A switch that restores a worktree answers once the worktree is restored; its blueprint build goes on behind the first turn, every tool call waits for it, and the first such call reports how the build went. Set `resume.waitForBlueprint` to `"prompt"` to answer only after the build ([details](/guides/resume-on-any-machine#start-the-first-turn-while-the-build-runs)).
 
 If an extension cancelled the switch:
 ```json

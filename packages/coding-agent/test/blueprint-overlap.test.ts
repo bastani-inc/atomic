@@ -7,11 +7,12 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { parseArgs } from "../src/cli/args.ts";
 import type { ToolDefinition } from "../src/core/extensions/index.ts";
 import {
 	awaitBlueprintReady,
-	BLUEPRINT_GATED_TOOLS,
 	blueprintBuildPending,
+	blueprintBuildSettled,
 	holdToolsUntilBuilt,
 	holdToolsUntilOwnerBuilt,
 } from "../src/core/resume/blueprint/barrier.ts";
@@ -32,6 +33,7 @@ import {
 	type PrepareSessionResumeOptions,
 	prepareSessionResume,
 } from "../src/index.ts";
+import { openCliSession } from "../src/main-session.ts";
 import { forThisHost } from "./helpers/blueprint-fixtures.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
 
@@ -319,41 +321,99 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 		assert.equal(await awaitBlueprintReady(sessionId), undefined, "the report is told once");
 	});
 
-	test("tools that neither run project code nor read the worktree run during the build; a tool that declares writesFiles waits (#4748)", async () => {
+	test("every tool call waits for the build, also one that neither runs project code nor reads the worktree (#4748)", async () => {
 		const manager = await recordedProject();
 		const prepared = ready(await prepareSessionResume(manager, options("tools")));
 		const executed: string[] = [];
-		const tool = (name: string, writesFiles: boolean): ToolDefinition => ({
-			name,
-			label: name,
-			description: name,
-			parameters: Type.Object({}),
-			...(writesFiles ? { writesFiles: true } : {}),
-			execute: async () => {
-				executed.push(`${name} ${ran().includes("built") ? "after" : "during"} the build`);
-				return { content: [{ type: "text", text: `${name} done` }], details: undefined };
-			},
-		});
 		const harness = await createHarness({
 			sessionManager: prepared.sessionManager,
 			cwd: prepared.sessionManager.getCwd(),
-			customTools: [tool("note", false), tool("generate", true)],
+			customTools: [
+				{
+					name: "note",
+					label: "note",
+					description: "note",
+					parameters: Type.Object({}),
+					execute: async () => {
+						executed.push(`note ${ran().includes("built") ? "after" : "during"} the build`);
+						return { content: [{ type: "text", text: "note done" }], details: undefined };
+					},
+				} satisfies ToolDefinition,
+			],
 		});
 		cleanups.push(() => harness.cleanup());
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("note", {}, { id: "n-1" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage([fauxToolCall("generate", {}, { id: "g-1" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
 		const run = harness.session.prompt("go on");
-		await until(() => harness.eventsOfType("tool_execution_start").length > 1, "the generate call");
+		await until(() => harness.eventsOfType("tool_execution_start").length > 0, "the note call");
 		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.deepEqual(executed, ["note during the build"]);
-		assert.equal(toolResultText(harness, "n-1"), "note done");
+		assert.deepEqual(executed, [], "the note call waits for the build");
 		writeFileSync(gate(), "");
 		await run;
-		assert.deepEqual(executed, ["note during the build", "generate after the build"]);
-		assert.match(toolResultText(harness, "g-1"), /^<blueprint_build_finished>[\s\S]*\ngenerate done$/);
+		assert.deepEqual(executed, ["note after the build"]);
+		assert.match(toolResultText(harness, "n-1"), /^<blueprint_build_finished>[\s\S]*\nnote done$/);
+	});
+
+	test("a run without a UI waits for the build before it ends, even when no tool waited (#4748)", async () => {
+		const manager = await recordedProject();
+		const prepared = ready(await prepareSessionResume(manager, options("tools")));
+		let settled = false;
+		const waiting = blueprintBuildSettled(prepared.sessionManager.getSessionId()).then(() => {
+			settled = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 200));
+		assert.equal(settled, false, "the build still runs");
+		writeFileSync(gate(), "");
+		await waiting;
+		assert.deepEqual(ran(), ["started", "built"]);
+		assert.deepEqual(
+			latestResumeTimings(prepared.sessionManager)?.blueprint.map((step) => step.name),
+			["Install dependencies"],
+			"the build's timings were recorded before the wait ended",
+		);
+		assert.match((await awaitBlueprintReady(prepared.sessionManager.getSessionId())) ?? "", /has finished\./);
+	});
+
+	test("atomic --session without a UI opens the session during the build and holds its tools (#4748)", async () => {
+		const recorded = await recordedProject();
+		const store = recorded.getSessionStore();
+		const sessionId = recorded.getSessionId();
+		const opened = await openCliSession(
+			parseArgs(["--session", sessionId]),
+			sandbox.root,
+			SettingsManager.inMemory(),
+			{
+				agentDir: sandbox.path("agent"),
+				sessionStorage: store,
+				trusted: () => true,
+				interactive: false,
+			},
+		);
+		if (opened === "cancelled") throw new Error("the resume was cancelled");
+		assert.deepEqual(ran(), ["started"], "the session opened while the build runs");
+		assert.equal(blueprintBuildPending(sessionId), true);
+		writeFileSync(gate(), "");
+		await blueprintBuildSettled(sessionId);
+		assert.deepEqual(ran(), ["started", "built"]);
+	});
+
+	test("an SDK session resumed without a UI is created during the build and holds its tools (#4748)", async () => {
+		const manager = await recordedProject();
+		const { createAgentSession } = await import("../src/core/sdk.ts");
+		const { session } = await createAgentSession({
+			agentDir: sandbox.path("agent"),
+			builtins: { workflows: false, subagents: false, mcp: false, "web-access": false, intercom: false },
+			settingsManager: SettingsManager.inMemory({ defaultProjectTrust: "always" }),
+			sessionManager: await SessionManager.open(manager.getSessionStore(), manager.getSessionId()),
+		});
+		cleanups.push(() => session.dispose());
+		assert.deepEqual(ran(), ["started"], "the session was created while the build runs");
+		assert.equal(blueprintBuildPending(session.sessionManager.getSessionId()), true);
+		writeFileSync(gate(), "");
+		await blueprintBuildSettled(session.sessionManager.getSessionId());
+		assert.deepEqual(ran(), ["started", "built"]);
 	});
 
 	test('"tools" changes nothing when the resume restores no worktree or builds no blueprint (#4748)', async () => {
@@ -373,20 +433,6 @@ describe("resume.waitForBlueprint lets the first turn overlap the blueprint buil
 });
 
 describe("the blueprint barrier (#4748)", () => {
-	test("the built-in tools that wait for the build are the ones the settings guide names (#4748)", () => {
-		assert.deepEqual([...BLUEPRINT_GATED_TOOLS].sort(), [
-			"bash",
-			"edit",
-			"find",
-			"grep",
-			"ls",
-			"powershell",
-			"read",
-			"search",
-			"write",
-		]);
-	});
-
 	test("an abort rejects the wait with its reason and leaves the build pending (#4748)", async () => {
 		const build = Promise.withResolvers<string | undefined>();
 		holdToolsUntilBuilt("abort-session", build.promise);
@@ -496,10 +542,19 @@ test("the report of an overlapped build says whether it finished cleanly, with i
 	);
 });
 
-test('resume.waitForBlueprint defaults to "prompt" and reaches the resume options (#4748)', () => {
+test('resume.waitForBlueprint defaults to "prompt" with a UI and to "tools" without one, and a setting wins (#4748)', () => {
 	const trusted = () => true;
-	const defaults = sessionResumeOptions("cli", "/work", "/agent", SettingsManager.inMemory(), trusted);
-	assert.equal(defaults.waitForBlueprint, "prompt");
-	const overlapping = SettingsManager.inMemory({ resume: { waitForBlueprint: "tools" } });
-	assert.equal(sessionResumeOptions("cli", "/work", "/agent", overlapping, trusted).waitForBlueprint, "tools");
+	const wait = (configured: "prompt" | "tools" | undefined, interactive: boolean) =>
+		sessionResumeOptions(
+			"cli",
+			"/work",
+			"/agent",
+			SettingsManager.inMemory(configured === undefined ? {} : { resume: { waitForBlueprint: configured } }),
+			trusted,
+			interactive,
+		).waitForBlueprint;
+	assert.equal(wait(undefined, true), "prompt");
+	assert.equal(wait(undefined, false), "tools");
+	assert.equal(wait("tools", true), "tools");
+	assert.equal(wait("prompt", false), "prompt");
 });

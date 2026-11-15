@@ -121,13 +121,17 @@ Every step writes a log under `~/.atomic/agent/worktree-snapshots/blueprint-logs
 
 ### Start the first turn while the build runs
 
-By default a resume opens the session once the build has finished. To send the first request while the build still runs, set `resume.waitForBlueprint` to `"tools"` in your settings:
+`resume.waitForBlueprint` decides what waits for the build. In the interactive TUI it defaults to `"prompt"`: the session opens once the build has finished. Without a UI (`atomic -p`, `--mode json`, `--mode rpc`, and sessions created with the SDK) it defaults to `"tools"`: the session opens once the worktrees are restored, and the first request goes out while the build still runs.
+
+With `"tools"`, the agent is told that the environment is still being built, and every tool call waits until the build ends, so nothing runs in a half-built environment. The first call that waited then shows how the build went, with the same warnings a resume shows when it waits, before its own output. A failed build releases the tools as a finished one does; it never blocks the session. Interrupting the turn stops the wait, not the build. `atomic -p` and `--mode json` print their answer and then exit once the build has ended. If Atomic exits before the build ends, the next resume builds the worktree again.
+
+A setting always wins. To wait for the build without a UI too, as before, set:
 
 ```json
-{ "resume": { "waitForBlueprint": "tools" } }
+{ "resume": { "waitForBlueprint": "prompt" } }
 ```
 
-The agent is told that the environment is still being built. Tools that run project code or read the worktree (`bash`, `powershell`, `edit`, `write`, `read`, `ls`, `find`, `grep`, `search`, and extension tools that write files) wait until the build ends. The first of them then shows how the build went, with the same warnings a resume shows when it waits, before its own output. A failed build releases the tools as a finished one does. Interrupting the turn stops the wait, not the build. If Atomic exits before the build ends, the next resume builds the worktree again.
+To start the first turn early in the TUI as well, set it to `"tools"`.
 
 ### What the agent sees
 

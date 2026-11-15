@@ -16,12 +16,7 @@ import { getParentToolCallId } from "./agent-session-nested-tools.js";
 import { rethrowUnlessReportedPersistenceFailure } from "./agent-session-persistence-failures.ts";
 import { estimateContextTokens } from "./compaction/compaction.ts";
 import { assertToolPairingInvariant } from "./context-tool-pairing.js";
-import {
-	awaitBlueprintReady,
-	BLUEPRINT_GATED_TOOLS,
-	blueprintBuildPending,
-	holdToolsUntilBuilt,
-} from "./resume/blueprint/barrier.ts";
+import { awaitBlueprintReady, blueprintBuildPending, holdToolsUntilBuilt } from "./resume/blueprint/barrier.ts";
 import { sessionBlobOutput } from "./session-tool-output.ts";
 import { projectToolLoadout } from "./tool-loadout.js";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
@@ -72,7 +67,7 @@ async function checkToolCall(
 	if (this._persistenceFailure !== undefined) return { block: true, reason: this._persistenceFailure };
 	const sandboxDenial = workspaceSandboxDenial(this._workspace, toolCall.name);
 	if (sandboxDenial !== undefined) return { block: true, reason: sandboxDenial.message };
-	const blueprintWait = await waitForBlueprintBuild(this, toolCall, signal, waited);
+	const blueprintWait = await waitForBlueprintBuild(this, signal, waited);
 	if (blueprintWait !== undefined) return blueprintWait;
 	if (!runner.hasHandlers("tool_call")) {
 		return undefined;
@@ -127,22 +122,17 @@ function keepBlueprintReport(
 }
 
 /**
- * With `resume.waitForBlueprint: "tools"`, holds a tool that runs project code or reads the worktree until the
- * blueprint build of the session's resume has settled, and puts the build's report in `waited`. Returns the block of
- * a call whose turn was aborted during the wait; the build goes on.
+ * With `resume.waitForBlueprint: "tools"`, holds every tool call until the blueprint build of the session's resume has
+ * settled, so none runs against a half-built environment, and puts the build's report in `waited`. Returns the block
+ * of a call whose turn was aborted during the wait; the build goes on.
  */
 async function waitForBlueprintBuild(
 	session: AgentSession,
-	toolCall: Pick<ToolCall, "id" | "name">,
 	signal: AbortSignal | undefined,
 	waited: WaitedBuild,
 ): Promise<{ block: true; reason: string } | undefined> {
 	const sessionId = session.sessionManager.getSessionId();
 	if (!blueprintBuildPending(sessionId)) return undefined;
-	const gated =
-		BLUEPRINT_GATED_TOOLS.has(toolCall.name) ||
-		session._toolDefinitions.get(toolCall.name)?.definition.writesFiles === true;
-	if (!gated) return undefined;
 	try {
 		waited.report = await awaitBlueprintReady(sessionId, signal);
 	} catch {

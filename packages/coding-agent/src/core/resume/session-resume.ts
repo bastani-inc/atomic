@@ -124,9 +124,9 @@ export interface PrepareSessionResumeOptions {
 	readonly pool?: WorktreePoolSettings;
 	/**
 	 * `"prompt"` (default): the resume returns once the blueprints of the worktrees it restored are built. `"tools"`: it
-	 * returns once they are restored and the build goes on behind the session's first turn; the session's tools that run
-	 * project code or read the worktree wait for it (`awaitBlueprintReady`), and the first of them reports how it
-	 * went. The build's warnings then reach the agent and the user with that tool's result, not `notices`.
+	 * returns once they are restored and the build goes on behind the session's first turn; every tool call of the
+	 * session waits for it (`awaitBlueprintReady`), and the first of them reports how it went. The build's warnings then
+	 * reach the agent and the user with that tool's result, not `notices`.
 	 */
 	readonly waitForBlueprint?: "prompt" | "tools";
 }
@@ -1260,7 +1260,8 @@ function resolveStoreDir(options: Pick<PrepareSessionResumeOptions, "storeDir">)
 
 /**
  * The options a resume from `launchCwd` needs: snapshot settings and the blueprint build configuration from
- * `settingsManager`, and the worktree store of `agentDir`.
+ * `settingsManager`, and the worktree store of `agentDir`. A session without a UI (`interactive` false; default true)
+ * starts its first turn while the build runs unless `resume.waitForBlueprint` says otherwise.
  */
 export function sessionResumeOptions(
 	entryPoint: ResumeEntryPoint,
@@ -1271,6 +1272,7 @@ export function sessionResumeOptions(
 		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand" | "getResumeWaitForBlueprint"
 	>,
 	trusted: (worktree: string) => boolean,
+	interactive = true,
 ): PrepareSessionResumeOptions {
 	return {
 		entryPoint,
@@ -1279,6 +1281,6 @@ export function sessionResumeOptions(
 		pool: settingsManager.getWorktreePoolSettings(),
 		blueprint: { agentDir, setupCommand: settingsManager.getResumeSetupCommand(), trusted },
 		storeDir: resumeStoreDir(agentDir),
-		waitForBlueprint: settingsManager.getResumeWaitForBlueprint(),
+		waitForBlueprint: settingsManager.getResumeWaitForBlueprint(interactive),
 	};
 }
