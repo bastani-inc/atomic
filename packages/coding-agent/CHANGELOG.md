@@ -29,6 +29,7 @@
 
 ### Fixed
 
+- Project workflows and agents are now loaded only for trusted projects, and their presence prompts for trust. A project whose only project resources are `.atomic/workflows`, `.atomic/agents`, `.atomic/mcp.json` or `.atomic/blueprint.yaml`, or a subdirectory of a project whose root holds agent definitions or settings, now asks whether to trust it like one with project extensions
 - Compaction now takes each message's role from where the message starts, not from lines in its text that look like a role header. A tool result can no longer mark its own lines as `<keepContext>`-protected or pass as the latest user message, so the user's spans are no longer released ahead of it. Lines inside a message that look like a role header are written with a leading `\` in the compaction transcript ([#4831](https://github.com/bastani-inc/atomic/issues/4831))
 - Fixed worktree snapshot capture storing a commit that was never checked against the deny-list: the bundle of unpushed commits was built from `HEAD`, so a commit that landed during the capture, such as one adding a `.env`, could reach snapshot blob storage. The bundle is now built from the commit the capture checked, through a temporary ref under `refs/atomic/capture/` that is removed afterwards, and a bundle whose tip or commits differ from the record is discarded instead of stored ([#4900](https://github.com/bastani-inc/atomic/issues/4900))
 - GitHub URLs are now validated, and clones are confined to the clone directory.
