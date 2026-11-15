@@ -204,17 +204,24 @@ const BLOCK: Redaction = (match) => {
 /** A `Cookie` or `Set-Cookie` header or field name, quoted or not, in any case, and its separator. */
 const COOKIE_HEADER = /(?<![A-Za-z0-9-])(set-)?cookie(["']?)[ \t]*:[ \t]*/giu;
 
+/** What may come right before a lower-case `cookie:` header inside a line: `>`/`<` of `curl -v`, `-H`, `headers:`. */
+const COOKIE_HEADER_CONTEXT = /(?:(?:^|\s)[<>*]|(?:^|\s)-H|headers?[ \t]*:|[,{])[ \t]*$/iu;
+
 /**
- * Whether a bare cookie header at `index` of `input` starts a header: at the start of its line, after a `>` or `<`
- * of `curl -v`, or right after a quote, as in `-H 'Cookie: …'`. The quote, when there is one, ends the header.
+ * Whether a bare cookie header at `index` of `input` is a header, and the quote that ends it: `""` for none, undefined
+ * when it is not a header. A `Set-Cookie` header in any case, and a capitalized `Cookie`, are headers anywhere; a
+ * lower-case `cookie:` only at the start of its line, right after a quote, or after a header context such as `>`,
+ * `-H`, `headers:`, `,` or `{`, so `My favourite cookie: oatmeal=great` stays prose.
  */
-function headerQuote(input: string, index: number): string | undefined {
+function headerQuote(input: string, index: number, anywhere: boolean): string | undefined {
 	const before = input.slice(Math.max(0, index - 40), index);
 	const quote = /["'`]$/u.exec(before)?.[0];
 	if (quote !== undefined) return quote;
+	if (anywhere) return "";
 	const lineBreak = before.lastIndexOf("\n");
-	if (lineBreak === -1 && index > before.length) return undefined;
-	return /^[ \t]*(?:[<>*][ \t]*)?$/u.test(before.slice(lineBreak + 1)) ? "" : undefined;
+	const line = before.slice(lineBreak + 1);
+	if ((lineBreak !== -1 || index === before.length) && /^[ \t]*$/u.test(line)) return "";
+	return COOKIE_HEADER_CONTEXT.test(line) ? "" : undefined;
 }
 
 /**
@@ -239,11 +246,12 @@ function cookieValues(input: string, from: number, end: number, setCookie: boole
 				if (first || !setCookie) values.push([nameEnd + 2, valueEnd]);
 				if (valueEnd < end) valueEnd++;
 			} else {
-				while (valueEnd < end && input[valueEnd] !== ";" && !(setCookie && input[valueEnd] === ",")) valueEnd++;
+				// A cookie value holds no whitespace, `,`, `"`, `\` or `}`: it ends there, after any spaces that lead it.
+				while (valueEnd < end && (input[valueEnd] === " " || input[valueEnd] === "\t")) valueEnd++;
 				const valueStart = nameEnd + 1;
-				const trimmed = valueStart + input.slice(valueStart, valueEnd).trimEnd().length;
-				if ((first || !setCookie) && trimmed > valueStart && input.slice(valueStart, trimmed).trim() !== "")
-					values.push([valueStart, trimmed]);
+				const runStart = valueEnd;
+				while (valueEnd < end && !/[;,\s"\\}]/u.test(input[valueEnd]!)) valueEnd++;
+				if ((first || !setCookie) && valueEnd > runStart) values.push([valueStart, valueEnd]);
 			}
 			position = valueEnd;
 		}
@@ -276,15 +284,40 @@ const COOKIE_VALUES: Redaction = (match) => {
 		quote = input[headerEnd];
 		if (quote !== '"' && quote !== "'") return [];
 		from++;
-	} else quote = headerQuote(input, match.index);
+	} else {
+		const anywhere = match[1] !== undefined || match[0].startsWith("C");
+		quote = headerQuote(input, match.index, anywhere);
+		// A lower-case `cookie: "…"` outside quotes is code, such as `{ cookie: "theme=dark" }`.
+		if (quote === "" && !anywhere && /["']/u.test(input[headerEnd] ?? "")) return [];
+	}
 	if (quote === undefined) return [];
 	const lineEnd = input.indexOf("\n", from);
 	let end = lineEnd === -1 ? input.length : lineEnd;
 	if (quote !== "") {
 		const closing = input.slice(from, end).indexOf(quote);
 		if (closing !== -1) end = from + closing;
+		// An escaped quote (`\"` in JSON inside a JSON string) keeps its backslashes.
+		while (end > from && input[end - 1] === "\\") end--;
 	}
 	return cookieValues(input, from, end, match[1] !== undefined).map(([start, valueEnd]) => ({
+		start: start - match.index,
+		end: valueEnd - match.index,
+		replacement: REDACTED,
+	}));
+};
+
+/** A `--cookie` option and its cookies, quoted or not: `--cookie sid=X` or `--cookie "a=1; b=2"`. */
+const COOKIE_OPTION = /(?<![\w-])--cookie(?:=|[ \t]+)(?:"[^"\n]*"?|'[^'\n]*'?|[^\s"']+)/gu;
+
+/** The cookie values of a `--cookie` option. A file name, with no `=`, stays. */
+const COOKIE_OPTION_VALUES: Redaction = (match) => {
+	const text = match[0];
+	const valueStart = /--cookie(?:=|[ \t]+)/u.exec(text)![0].length;
+	const quoted = /["']/u.test(text[valueStart] ?? "");
+	const from = match.index + valueStart + (quoted ? 1 : 0);
+	const end =
+		match.index + text.length - (quoted && text.length - valueStart > 1 && text.endsWith(text[valueStart]!) ? 1 : 0);
+	return cookieValues(match.input, from, end, false).map(([start, valueEnd]) => ({
 		start: start - match.index,
 		end: valueEnd - match.index,
 		replacement: REDACTED,
@@ -344,11 +377,17 @@ const CREDENTIAL_SHAPES: readonly (readonly [RegExp, Redaction])[] = [
 	[PREFIXED_TOKEN, PREFIXED_TOKEN_VALUE],
 ];
 
+/**
+ * A run of an env-style password: past a `;` unless the `;` ends a connection-string field, that is, comes before
+ * another `Name=` (`User Id=`), the end of the line or the end of the text.
+ */
+const ENV_RUN = String.raw`(?:[^\s;]|;(?![ \t]*(?:[A-Za-z_][\w .-]*=|\r?\n|$)))+`;
+
 /** How far the unquoted value of a password-like field runs. */
 const PASSWORD_VALUES: UnquotedValues = {
 	json: String.raw`[^\s,;}\]]+`,
 	bare: String.raw`[^\r\n]+`,
-	env: String.raw`[^\s]+(?:[ \t]+(?![A-Za-z_][\w.-]*=)[^\s]+)*`,
+	env: String.raw`${ENV_RUN}(?:[ \t]+(?![A-Za-z_][\w.-]*=)${ENV_RUN})*`,
 };
 const OTHER_RUN = String.raw`[^\s,;}"'&]+`;
 const OTHER_VALUES: UnquotedValues = { json: OTHER_RUN, bare: OTHER_RUN, env: OTHER_RUN };
@@ -360,6 +399,7 @@ const OTHER_VALUES: UnquotedValues = { json: OTHER_RUN, bare: OTHER_RUN, env: OT
 const STEPS: readonly (readonly [RegExp, Redaction])[] = [
 	[PRIVATE_KEY_BLOCK, WHOLE],
 	[COOKIE_HEADER, COOKIE_VALUES],
+	[COOKIE_OPTION, COOKIE_OPTION_VALUES],
 	[CREDENTIAL_OPTION, OPTION_VALUE],
 	[JOINED_PASSWORD_OPTION, JOINED_PASSWORD],
 	[USER_OPTION, USER_PASSWORD],

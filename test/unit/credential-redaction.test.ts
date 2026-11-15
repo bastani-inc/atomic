@@ -801,8 +801,8 @@ describe("credential redaction boundaries", () => {
 		["  Cookie: a=b", "  Cookie: a=[redacted]"],
 		["* cookie: a=b", "* cookie: a=[redacted]"],
 		["< set-cookie: a=b", "< set-cookie: a=[redacted]"],
-		["x > Cookie: a=b", "x > Cookie: a=b"],
-		[`${"x".repeat(50)} Cookie: a=b`, `${"x".repeat(50)} Cookie: a=b`],
+		["x > Cookie: a=b", "x > Cookie: a=[redacted]"],
+		[`${"x".repeat(50)} cookie: a=b`, `${"x".repeat(50)} cookie: a=b`],
 		["`Cookie: a=b` c=d", "`Cookie: a=[redacted]` c=d"],
 		["Cookie: a=1;b=2", "Cookie: a=[redacted];b=[redacted]"],
 		["Cookie: a=;b= ", "Cookie: a=;b= "],
@@ -882,5 +882,48 @@ describe("configured secret encodings", () => {
 	test("a configured secret shorter than the minimum is not redacted", () => {
 		assert.equal(configuredSecretRedactor(["abc"], { minLength: 6 })("abc abcabc"), "abc abcabc");
 		assert.equal(configuredSecretRedactor(["  abcdef  "], { minLength: 6 })("x abcdef"), "x [redacted]");
+	});
+});
+
+describe("cookie headers inside a line", () => {
+	test("cookie headers after a header context are redacted", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			[`headers: Cookie: sid=${PLAIN_SECRET}`, "headers: Cookie: sid=[redacted]"],
+			[`[info] request Cookie: sid=${PLAIN_SECRET}; a=b`, "[info] request Cookie: sid=[redacted]; a=[redacted]"],
+			[`verbose > cookie: sid=${PLAIN_SECRET}`, "verbose > cookie: sid=[redacted]"],
+			[`curl -H Cookie:sid=${PLAIN_SECRET} https://x`, "curl -H Cookie:sid=[redacted] https://x"],
+			[`curl -H 'Cookie: sid=${PLAIN_SECRET}' https://x`, "curl -H 'Cookie: sid=[redacted]' https://x"],
+			[`curl --cookie sid=${PLAIN_SECRET} https://x`, "curl --cookie sid=[redacted] https://x"],
+			[
+				`curl --cookie "sid=${PLAIN_SECRET}; a=b" https://x`,
+				'curl --cookie "sid=[redacted]; a=[redacted]" https://x',
+			],
+			["curl --cookie cookies.txt https://x", "curl --cookie cookies.txt https://x"],
+			[`{"h":"Cookie: sid=${PLAIN_SECRET}"}`, '{"h":"Cookie: sid=[redacted]"}'],
+			[`{"h":"x=1, cookie: sid=${PLAIN_SECRET}"}`, '{"h":"x=1, cookie: sid=[redacted]"}'],
+			[`{\\"h\\":\\"Cookie: sid=${PLAIN_SECRET}\\"}`, '{\\"h\\":\\"Cookie: sid=[redacted]\\"}'],
+			[`{cookie: sid=${PLAIN_SECRET}}`, "{cookie: sid=[redacted]}"],
+			[`resp set-cookie: sid=${PLAIN_SECRET}; Path=/`, "resp set-cookie: sid=[redacted]; Path=/"],
+			[
+				"My favourite cookie: oatmeal=great; chocolate=better",
+				"My favourite cookie: oatmeal=great; chocolate=better",
+			],
+			['const c = { cookie: "theme=dark" }', 'const c = { cookie: "theme=dark" }'],
+			['const c = { a: 1, cookie: "theme=dark" }', 'const c = { a: 1, cookie: "theme=dark" }'],
+		];
+		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
+	});
+});
+
+describe("connection strings", () => {
+	test("a connection-string password ends at its semicolon", () => {
+		const cases: readonly (readonly [string, string])[] = [
+			[`Server=db;User Id=sa;Password=${PLAIN_SECRET};`, "Server=db;User Id=sa;Password= [redacted];"],
+			[`Server=db;Password=${PLAIN_SECRET};Database=app`, "Server=db;Password= [redacted];Database=app"],
+			[`Password=${PLAIN_SECRET}; Trusted_Connection=no`, "Password= [redacted]; Trusted_Connection=no"],
+			[`Pwd=${PLAIN_SECRET};Initial Catalog=app`, "Pwd= [redacted];Initial Catalog=app"],
+			[`passwd=a;${PLAIN_SECRET}`, "passwd= [redacted]"],
+		];
+		for (const [input, expected] of cases) assert.equal(redactCredentialShapes(input), expected, input);
 	});
 });
