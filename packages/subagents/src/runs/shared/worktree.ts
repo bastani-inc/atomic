@@ -17,6 +17,8 @@ export interface WorktreeInfo {
 	index: number;
 	nodeModulesLinked: boolean;
 	syntheticPaths: string[];
+	/** Setup steps that could not be done, such as copying `.worktreeinclude` files; the worktree works without them. */
+	setupWarnings?: string[];
 }
 interface WorktreeDiff {
 	index: number;
@@ -27,6 +29,12 @@ interface WorktreeDiff {
 	insertions: number;
 	deletions: number;
 	patchPath: string;
+	/** The worktree the diff was captured from. */
+	worktreePath: string;
+	/** Why the diff could not be captured; the worktree is then kept with its work (#4876). */
+	captureError?: string;
+	/** The worktree's setup warnings. */
+	setupWarnings?: string[];
 }
 interface WorktreeTaskCwdConflict {
 	index: number;
@@ -72,10 +80,17 @@ interface RepoState {
 }
 
 const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
+/**
+ * Node and Bun cap `spawnSync` output at 1 MiB by default; status, ls-files and numstat output of a large change can
+ * exceed it (#4876). Patches never go through this buffer: git writes them to the patch file itself.
+ */
+const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
+const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 function runGit(cwd: string, args: string[]): GitResult {
 	const result = spawnSync("git", ["-C", cwd, ...args], {
 		encoding: "utf-8",
 		env: createGitEnvironment({}, createChildProcessEnvironment()),
+		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 	});
 	return {
 		stdout: result.stdout ?? "",
@@ -304,6 +319,8 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 		cwd: input.worktreePath,
 		encoding: "utf-8",
 		input: JSON.stringify(input),
+		// A hook that installs dependencies can log past the default 1 MiB cap, which kills it mid-run (#4876).
+		maxBuffer: HOOK_OUTPUT_MAX_BUFFER,
 		env: createChildProcessEnvironment(),
 		timeout: hook.timeoutMs,
 		shell: false,
@@ -383,8 +400,9 @@ function prepareWorktree(
 	baseCommit: string,
 	setupHook: ResolvedWorktreeSetupHook | undefined,
 	agent: string | undefined,
+	warnings: string[],
 ): string[] {
-	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath);
+	const syntheticPaths = performPostCreationSetup(runGit, mainRoot, worktreePath, warnings);
 	if (setupHook) {
 		syntheticPaths.push(
 			...runWorktreeSetupHook(setupHook, {
@@ -421,6 +439,7 @@ function createSingleWorktree(
 		throw new Error(message);
 	}
 	const agentCwd = cwdRelative ? path.join(worktreePath, cwdRelative) : worktreePath;
+	const warnings: string[] = [];
 	try {
 		const syntheticPaths = prepareWorktree(
 			mainRoot,
@@ -432,6 +451,7 @@ function createSingleWorktree(
 			baseCommit,
 			setupHook,
 			agent,
+			warnings,
 		);
 		return {
 			path: worktreePath,
@@ -440,6 +460,7 @@ function createSingleWorktree(
 			index,
 			nodeModulesLinked: syntheticPaths.includes("node_modules"),
 			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
 		};
 	} catch (error) {
 		cleanupSingleWorktree(mainRoot, { path: worktreePath, branch });
@@ -461,15 +482,21 @@ export function recreateWorktree(
 ): WorktreeInfo {
 	if (fs.existsSync(worktree.path)) {
 		let restored: string[];
+		const warnings: string[] = [];
 		try {
-			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path);
+			restored = performPostCreationSetup(runGit, setup.cwd, worktree.path, warnings);
 		} catch {
 			// The worktree itself is intact: the child resumes in it without the setup that could not be re-applied.
 			return worktree;
 		}
-		if (restored.length === 0) return worktree;
+		if (restored.length === 0 && warnings.length === 0) return worktree;
 		const syntheticPaths = [...new Set([...worktree.syntheticPaths, ...restored])];
-		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+		return {
+			...worktree,
+			nodeModulesLinked: syntheticPaths.includes("node_modules"),
+			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
+		};
 	}
 	runGit(setup.cwd, ["worktree", "prune"]);
 	const branchExists =
@@ -480,6 +507,7 @@ export function recreateWorktree(
 			? ["worktree", "add", worktree.path, worktree.branch]
 			: ["worktree", "add", "-b", worktree.branch, worktree.path, setup.baseCommit],
 	);
+	const warnings: string[] = [];
 	try {
 		const syntheticPaths = prepareWorktree(
 			setup.cwd,
@@ -491,8 +519,15 @@ export function recreateWorktree(
 			setup.baseCommit,
 			resolveWorktreeSetupHook(setup.cwd, options?.setupHook),
 			options?.agent,
+			warnings,
 		);
-		return { ...worktree, nodeModulesLinked: syntheticPaths.includes("node_modules"), syntheticPaths };
+		const { setupWarnings: _earlier, ...recreated } = worktree;
+		return {
+			...recreated,
+			nodeModulesLinked: syntheticPaths.includes("node_modules"),
+			syntheticPaths,
+			...(warnings.length > 0 ? { setupWarnings: warnings } : {}),
+		};
 	} catch (error) {
 		// A branch that already existed may hold commits: remove only the worktree.
 		if (branchExists) removeWorktreeCheckout(setup.cwd, worktree);
@@ -561,16 +596,18 @@ function removeSyntheticPathsBeforeDiff(worktree: WorktreeInfo): void {
 		removeSyntheticPath(worktree, syntheticPath);
 	}
 }
-function emptyDiff(index: number, agent: string, branch: string, patchPath: string): WorktreeDiff {
+function emptyDiff(worktree: WorktreeInfo, agent: string, patchPath: string): WorktreeDiff {
 	return {
-		index,
+		index: worktree.index,
 		agent,
-		branch,
+		branch: worktree.branch,
 		diffStat: "",
 		filesChanged: 0,
 		insertions: 0,
 		deletions: 0,
 		patchPath,
+		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
 function parseNumstat(numstat: string): { filesChanged: number; insertions: number; deletions: number } {
@@ -599,12 +636,10 @@ function captureWorktreeDiff(
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
 	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", "--binary", setup.baseCommit]);
 	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
-	fs.writeFileSync(patchPath, patch, "utf-8");
-	if (!patch.trim()) {
-		return emptyDiff(worktree.index, agent, worktree.branch, patchPath);
-	}
+	writePatchFile(patchPath, (partialPath) =>
+		runGitChecked(worktree.path, ["diff", "--cached", "--binary", `--output=${partialPath}`, setup.baseCommit]),
+	);
 	const parsed = parseNumstat(numstat);
 	return {
 		index: worktree.index,
@@ -615,12 +650,27 @@ function captureWorktreeDiff(
 		insertions: parsed.insertions,
 		deletions: parsed.deletions,
 		patchPath,
+		worktreePath: worktree.path,
+		...(worktree.setupWarnings?.length ? { setupWarnings: [...worktree.setupWarnings] } : {}),
 	};
 }
-function writeEmptyPatch(patchPath: string): void {
+/**
+ * Have git write the patch to a file of its own, so no output buffer caps it, and put it at `patchPath` only once it
+ * is complete: a failed capture never replaces a patch an earlier capture saved there.
+ */
+function writePatchFile(patchPath: string, write: (partialPath: string) => void): void {
+	const partialPath = `${patchPath}.${process.pid}.partial`;
 	try {
-		fs.writeFileSync(patchPath, "", "utf-8");
-	} catch {}
+		write(partialPath);
+		fs.renameSync(partialPath, patchPath);
+	} finally {
+		fs.rmSync(partialPath, { force: true });
+	}
+}
+/** Worktrees whose last diff capture failed: they hold work no patch has, so they are never removed (#4876). */
+const uncapturedWorktrees = new Set<string>();
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 function hasWorktreeChanges(diff: WorktreeDiff): boolean {
@@ -667,35 +717,50 @@ export function diffWorktrees(
 	diffsDir: string,
 	patchPaths?: ReadonlyMap<number, string>,
 ): WorktreeDiff[] {
-	try {
-		fs.mkdirSync(diffsDir, { recursive: true });
-	} catch {
-		return [];
-	}
 	const diffs: WorktreeDiff[] = [];
 	for (const worktree of setup.worktrees) {
 		const index = worktree.index;
 		const agent = agents[index] ?? `task-${index + 1}`;
 		const patchPath = patchPaths?.get(index) ?? path.join(diffsDir, worktreePatchName(index, agent, 1));
 		try {
+			fs.mkdirSync(path.dirname(patchPath), { recursive: true });
 			diffs.push(captureWorktreeDiff(setup, worktree, agent, patchPath));
-		} catch {
-			writeEmptyPatch(patchPath);
-			diffs.push(emptyDiff(index, agent, worktree.branch, patchPath));
+			uncapturedWorktrees.delete(worktree.path);
+		} catch (error) {
+			uncapturedWorktrees.add(worktree.path);
+			diffs.push({ ...emptyDiff(worktree, agent, patchPath), captureError: errorMessage(error) });
 		}
 	}
 	return diffs;
 }
+/** Remove the worktrees, except one whose last diff capture failed: it is kept with its work for the user. */
 export function cleanupWorktrees(setup: WorktreeSetup): void {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
-		cleanupSingleWorktree(setup.cwd, setup.worktrees[index]!);
+		const worktree = setup.worktrees[index]!;
+		if (uncapturedWorktrees.has(worktree.path)) continue;
+		cleanupSingleWorktree(setup.cwd, worktree);
 	}
 }
+/** A worktree's setup warnings, one line each, naming its task. */
+function setupWarningLines(diffs: WorktreeDiff[]): string[] {
+	return diffs.flatMap((diff) =>
+		(diff.setupWarnings ?? []).map((warning) => `Warning: Task ${diff.index + 1} (${diff.agent}): ${warning}`),
+	);
+}
 export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
-	const changed = diffs.filter(hasWorktreeChanges);
-	if (changed.length === 0) return "";
+	const changed = diffs.filter((diff) => diff.captureError !== undefined || hasWorktreeChanges(diff));
+	const warnings = setupWarningLines(diffs);
+	if (changed.length === 0 && warnings.length === 0) return "";
 	const lines: string[] = ["=== Worktree Changes ===", ""];
 	for (const diff of changed) {
+		if (diff.captureError !== undefined) {
+			lines.push(
+				`--- Task ${diff.index + 1} (${diff.agent}): diff capture failed; worktree kept at ${diff.worktreePath} ---`,
+				diff.captureError,
+				"",
+			);
+			continue;
+		}
 		lines.push(
 			`--- Task ${diff.index + 1} (${diff.agent}): ${diff.filesChanged} files changed, +${diff.insertions} -${diff.deletions} ---`,
 		);
@@ -704,7 +769,7 @@ export function formatWorktreeDiffSummary(diffs: WorktreeDiff[]): string {
 		}
 		lines.push("");
 	}
-	const patchesDir = path.dirname(changed[0]!.patchPath);
-	lines.push(`Full patches: ${patchesDir}`);
+	if (changed.length > 0) lines.push(`Full patches: ${path.dirname(changed[0]!.patchPath)}`, "");
+	lines.push(...warnings);
 	return lines.join("\n").trimEnd();
 }

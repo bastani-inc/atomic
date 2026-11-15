@@ -594,9 +594,9 @@ Requirements:
 - configured `worktreeSetupHook` must return valid JSON before timeout
 - `.atomic/settings.local.json` and untracked `.atomic/settings.json` are propagated without overwriting tracked content
 - the main repository's Husky or populated `.git/hooks` directory is shared through `core.hooksPath`
-- gitignored files matched by `.worktreeinclude` are copied into the worktree
+- gitignored files matched by `.worktreeinclude` are copied into the worktree; when git cannot list them, the worktree is created without them and the output carries a warning that names the worktree and git's reason
 
-After a worktree parallel step reaches a terminal result, per-agent diff stats are appended to the output and full patch files are written to artifacts. Intercom observation yielding keeps live and queued children's worktrees intact. Cleanup removes worktrees and `worktree-*` branches only after their executions finish, following the existing brief Git lock-release wait. The same cleanup runs after post-creation setup failures.
+After a worktree parallel step reaches a terminal result, per-agent diff stats are appended to the output and full patch files are written to artifacts. Git writes each patch to its file directly, so a change of any size is saved in full. A worktree whose diff could not be captured is never removed: the output names it and the reason, and a later cleanup removes it only after a capture succeeds. Intercom observation yielding keeps live and queued children's worktrees intact. Cleanup removes worktrees and `worktree-*` branches only after their executions finish, following the existing brief Git lock-release wait. The same cleanup runs after post-creation setup failures.
 
 ## Configuration
 
@@ -730,7 +730,7 @@ For existing subagent integrations and agent definitions:
 
 Foreground runs show compact live progress for single and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and artifact paths when available.
 
-File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
+File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. Parallel tasks with `progress` enabled share one run-scoped `progress.md` in the same artifact storage, never in a task's working directory or the project. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 

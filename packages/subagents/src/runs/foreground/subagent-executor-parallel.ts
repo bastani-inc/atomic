@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { AgentConfig } from "../../agents/agents.js";
 import { normalizeSkillInput } from "../../agents/skills.js";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.js";
@@ -224,8 +225,10 @@ export async function runParallelPath(
 			if (validationError) return buildParallelModeError(validationError);
 		}
 
-		const parallelProgressPrecreated = firstProgressIndex !== -1;
-		if (parallelProgressPrecreated) writeInitialProgressFile(effectiveCwd);
+		// #4976: the run's shared progress.md lives in run-scoped artifact storage, never in the project directory,
+		// where it would overwrite a project's own progress.md.
+		const progressDir = firstProgressIndex === -1 ? undefined : join(artifactsDir, "progress", runId);
+		if (progressDir) writeInitialProgressFile(progressDir);
 
 		if (params.context === "fork") {
 			for (let i = 0; i < taskTexts.length; i++) {
@@ -276,7 +279,7 @@ export async function runParallelPath(
 			modelOverrides,
 			modelRoutes,
 			behaviors,
-			firstProgressIndex: parallelProgressPrecreated ? -1 : firstProgressIndex,
+			...(progressDir ? { progressDir } : {}),
 			controlConfig,
 			onControlEvent,
 			childIntercomTarget: childIntercomTarget

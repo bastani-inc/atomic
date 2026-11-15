@@ -2,6 +2,21 @@ import type { AssistantMessage, TextContent, UserMessage } from "@bastani/pi-ai/
 import type { SessionEntry } from "../../session-manager-types.ts";
 import type { SessionRecordHeader, SessionSnapshot, SessionSummary } from "./types.js";
 
+/**
+ * The most UTF-16 code units of one message a session listing keeps: its first message, and each message's
+ * contribution to the search text. A listing never carries a whole pasted log, and a search matches only this prefix
+ * of a longer message. Every store applies it, so each lists a session the same way (#4954).
+ */
+export const SESSION_SUMMARY_TEXT_CHARS = 64 * 1024;
+
+/** `text` cut to {@link SESSION_SUMMARY_TEXT_CHARS}, never between the two halves of a surrogate pair. */
+function boundSummaryText(text: string): string {
+	if (text.length <= SESSION_SUMMARY_TEXT_CHARS) return text;
+	const end = SESSION_SUMMARY_TEXT_CHARS;
+	const splitsPair = /[\uD800-\uDBFF]/.test(text[end - 1]!) && /[\uDC00-\uDFFF]/.test(text[end]!);
+	return text.slice(0, splitsPair ? end - 1 : end);
+}
+
 /** Metadata stays bounded by the first message and latest metadata, not the transcript. */
 export interface SessionSummaryState {
 	readonly messageCount: number;
@@ -47,7 +62,7 @@ export function applySessionSummaryEntries(
 			if (Number.isFinite(time) && (latestMessageTime === null || time > latestMessageTime)) {
 				latestMessageTime = time;
 			}
-			const text =
+			const text = boundSummaryText(
 				typeof message.content === "string"
 					? message.content
 					: message.content
@@ -57,7 +72,8 @@ export function applySessionSummaryEntries(
 								): block is TextContent => block.type === "text",
 							)
 							.map((block: TextContent) => block.text)
-							.join(" ");
+							.join(" "),
+			);
 			if (text) {
 				texts.push({ index, text });
 				if (!firstMessage && message.role === "user") firstMessage = text;

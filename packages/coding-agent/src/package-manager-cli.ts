@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ModelsError } from "@bastani/pi-ai";
 import chalk from "chalk";
@@ -491,7 +492,13 @@ export async function handlePackageCommand(
 				return true;
 
 			case "remove": {
+				const installedPath = packageManager.getInstalledPath(source!, options.local ? "project" : "user");
 				const removed = await packageManager.removeAndPersist(source!, { local: options.local });
+				if (!removed && installedPath && !existsSync(installedPath)) {
+					// A leftover install, e.g. from an interrupted `install`, that settings never listed.
+					console.log(chalk.green(`Removed ${installedPath}; ${source} was not in your settings`));
+					return true;
+				}
 				if (!removed) {
 					console.error(chalk.red(`No matching package found for ${source}`));
 					process.exitCode = 1;

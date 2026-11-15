@@ -104,14 +104,45 @@ function symlinkConfiguredDirectories(
 	return synthetic;
 }
 
-function copyWorktreeIncludes(mainRoot: string, worktreeRoot: string): void {
-	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return;
-	const ignored = runGit(mainRoot, ["ls-files", "--others", "--ignored", "--exclude-standard"]);
-	const included = runGit(mainRoot, ["ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude"]);
-	if (ignored.status !== 0 || included.status !== 0) return;
-	const ignoredPaths = new Set(ignored.stdout.split(/\r?\n/).filter(Boolean));
-	for (const relativePath of included.stdout.split(/\r?\n/).filter(Boolean)) {
-		if (!ignoredPaths.has(relativePath) || hasTrackedPathComponent(worktreeRoot, relativePath)) continue;
+/** Paths per `git ls-files` call: 100 paths of up to 260 characters stay inside Windows' 32,767-character command line. */
+const PATHSPEC_BATCH_SIZE = 100;
+/**
+ * The paths among `candidates` that git ignores by its standard rules. Only the candidates are listed, as literal
+ * pathspecs in batches: listing every ignored file (an installed `node_modules`) can run to many megabytes (#4876).
+ */
+function ignoredAmong(mainRoot: string, candidates: readonly string[]): string[] {
+	const ignored: string[] = [];
+	for (let start = 0; start < candidates.length; start += PATHSPEC_BATCH_SIZE) {
+		const batch = candidates.slice(start, start + PATHSPEC_BATCH_SIZE);
+		const args = ["--literal-pathspecs", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--"];
+		const listed = runGit(mainRoot, [...args, ...batch]);
+		if (listed.status !== 0)
+			throw new Error(`could not list ignored .worktreeinclude files: ${listed.stderr.trim()}`);
+		ignored.push(...listed.stdout.split("\0").filter(Boolean));
+	}
+	return ignored;
+}
+/** The ignored files `.worktreeinclude` names, which a new worktree gets a copy of. */
+function includedFiles(mainRoot: string): string[] {
+	const included = runGit(mainRoot, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"]);
+	if (included.status !== 0) throw new Error(`could not list .worktreeinclude files: ${included.stderr.trim()}`);
+	return ignoredAmong(mainRoot, included.stdout.split("\0").filter(Boolean));
+}
+/**
+ * Copy the files `.worktreeinclude` names into the new worktree. When git cannot list them, the worktree is still set
+ * up, without them, and a warning saying so is returned (#4876).
+ */
+function copyWorktreeIncludes(mainRoot: string, worktreeRoot: string): string | undefined {
+	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return undefined;
+	let files: string[];
+	try {
+		files = includedFiles(mainRoot);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return `.worktreeinclude files were not copied into ${worktreeRoot}: ${reason}`;
+	}
+	for (const relativePath of files) {
+		if (hasTrackedPathComponent(worktreeRoot, relativePath)) continue;
 		const source = path.join(mainRoot, relativePath);
 		const destination = path.join(worktreeRoot, relativePath);
 		try {
@@ -122,16 +153,23 @@ function copyWorktreeIncludes(mainRoot: string, worktreeRoot: string): void {
 			// A concurrently removed ignored file is harmless.
 		}
 	}
+	return undefined;
 }
 
+/**
+ * Set up a new worktree and return the synthetic paths it created. A step that could not be done but is not needed to
+ * work in the worktree adds a message to `warnings` instead of failing the setup.
+ */
 export function performPostCreationSetup(
 	mainRoot: string,
 	worktreeRoot: string,
 	symlinkDirectories: readonly string[],
+	warnings: string[] = [],
 ): string[] {
 	const syntheticPaths = propagateLocalSettings(mainRoot, worktreeRoot);
 	configureSharedHooksPath(mainRoot);
 	syntheticPaths.push(...symlinkConfiguredDirectories(mainRoot, worktreeRoot, symlinkDirectories));
-	copyWorktreeIncludes(mainRoot, worktreeRoot);
+	const includeWarning = copyWorktreeIncludes(mainRoot, worktreeRoot);
+	if (includeWarning !== undefined) warnings.push(includeWarning);
 	return syntheticPaths;
 }
