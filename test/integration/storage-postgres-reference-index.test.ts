@@ -315,7 +315,12 @@ describe.skipIf(postgresSkipReason !== undefined)("the reference index on Postgr
 			);
 			await write(database, LATE_WRITES);
 			await upgraded.completeIndex();
-			assert.deepEqual(await referenceIndex(database), expected);
+			// The rebuild indexes every entry again, so only its progress row differs from an index that never rebuilt.
+			const { snapshot_index_sources: progress, ...rebuilt } = await referenceIndex(database);
+			const { snapshot_index_sources: _fresh, ...references } = expected;
+			assert.deepEqual(rebuilt, references);
+			const sessions = progress!.find((row) => row.includes("source=session-entries"))!;
+			assert.match(sessions, /^backfilled_through=(\d+) source=session-entries watermark=\1$/);
 		});
 	});
 
