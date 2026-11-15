@@ -235,6 +235,26 @@ describe("RPC mode shutdown failure", () => {
 	});
 });
 
+describe("RPC mode shutdown failure without an Error", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	test("a disposal that rejects with no error object is still reported (#5166)", async () => {
+		const child = await startChild(false, () => Promise.reject(null));
+		try {
+			child.endInput();
+			await child.disposeOptions();
+			assert.deepEqual(
+				rpcIo.output.map((line) => JSON.parse(line)).filter((event) => event.type === "shutdown_error"),
+				[{ type: "shutdown_error", error: "null", exitCode: 1 }],
+			);
+		} finally {
+			child.cleanup();
+		}
+	});
+});
+
 describe("RPC mode extension UI reset", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();

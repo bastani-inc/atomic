@@ -94,3 +94,13 @@ test("an SDK abort that pauses queued messages lets dispose save a queued task c
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+test("a plain SDK abort leaves queued messages unpaused (#5166)", async () => {
+	const harness = await createHarness();
+	try {
+		await harness.session.abort();
+		assert.equal(harness.session.queuedMessagesPaused, false);
+	} finally {
+		await harness.cleanup();
+	}
+});
