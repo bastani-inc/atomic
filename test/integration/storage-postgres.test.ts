@@ -34,18 +34,26 @@ const AUTOCOMMIT_TIMEOUT_MS = 1000;
 const AUTOCOMMIT_RETRIES_BOUND_MS = 5 * (AUTOCOMMIT_TIMEOUT_MS + 1000) + 4500;
 /** How long a cancelled statement may take to leave pg_stat_activity. */
 const CANCEL_SETTLE_MS = 2000;
-/** A comment that makes `startStallingProxy` stop passing the server's answers on a connection. */
+/** A comment that marks the statement whose answers the stalling proxy drops. */
 const STALL_MARKER = "/* stall */";
 
+/** What a proxy does with the server's answers once the client sent a chunk. */
+type ProxyControl = "hold" | "release" | "stall" | undefined;
+
 /**
- * A TCP proxy to `target` that stops passing the server's answers to the client on a connection once the client sends
- * a statement containing `marker` on its own (not after `SET LOCAL`), as a network that stopped answering would.
+ * A TCP proxy to `target` that passes each connection's traffic on, except as `control` decides from each chunk the
+ * client sends: `"hold"` keeps the server's answers back, `"release"` passes the held ones on and stops holding, and
+ * `"stall"` drops every later answer, as a network that stopped answering would.
  */
-async function startStallingProxy(target: URL, marker: string): Promise<{ port: number; close(): Promise<void> }> {
+async function startProxy(
+	target: URL,
+	control: (clientText: string) => ProxyControl,
+): Promise<{ port: number; close(): Promise<void> }> {
 	const sockets = new Set<Socket>();
 	const server = createServer((client) => {
 		const upstream = connect(Number(target.port || 5432), target.hostname);
 		let stalled = false;
+		let held: Buffer[] | undefined;
 		for (const socket of [client, upstream]) {
 			sockets.add(socket);
 			socket.on("error", () => {});
@@ -55,12 +63,19 @@ async function startStallingProxy(target: URL, marker: string): Promise<{ port: 
 			});
 		}
 		client.on("data", (chunk: Buffer) => {
-			const text = chunk.toString("latin1");
-			if (text.includes(marker) && !text.includes("SET LOCAL")) stalled = true;
+			const decision = control(chunk.toString("latin1"));
+			if (decision === "stall") stalled = true;
+			else if (decision === "hold") held ??= [];
+			else if (decision === "release" && held !== undefined) {
+				for (const answer of held) client.write(answer);
+				held = undefined;
+			}
 			upstream.write(chunk);
 		});
 		upstream.on("data", (chunk: Buffer) => {
-			if (!stalled) client.write(chunk);
+			if (stalled) return;
+			if (held !== undefined) held.push(chunk);
+			else client.write(chunk);
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -493,7 +508,10 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		"a statement the client gives up on is cancelled on the server, outcome unknown (#4901)",
 		async () => {
 			await withPostgresDatabase(async ({ open, admin, name, url }) => {
-				const proxy = await startStallingProxy(new URL(url), STALL_MARKER);
+				// The marker on its own, not after `SET LOCAL`, is the attempt outside a transaction block.
+				const proxy = await startProxy(new URL(url), (text) =>
+					text.includes(STALL_MARKER) && !text.includes("SET LOCAL") ? "stall" : undefined,
+				);
 				try {
 					const holder = await open();
 					const proxied = new URL(url);
@@ -528,6 +546,28 @@ describe.skipIf(postgresSkipReason !== undefined)("Postgres storage adapter (#47
 		},
 		TRANSIENT_RETRIES_TIMEOUT_MS,
 	);
+
+	test("sends an autocommit statement with its BEGIN and COMMIT before any answer, in one round trip (#4901)", async () => {
+		await withPostgresDatabase(async ({ open, url }) => {
+			// The server's answers are held from the BEGIN until the COMMIT arrives, so a client that waited for the
+			// answer to its BEGIN before sending the rest would never get one.
+			const proxy = await startProxy(new URL(url), (text) =>
+				text.includes("COMMIT")
+					? "release"
+					: text.includes("BEGIN; SET LOCAL statement_timeout")
+						? "hold"
+						: undefined,
+			);
+			try {
+				const proxied = new URL(url);
+				proxied.host = `127.0.0.1:${proxy.port}`;
+				const database = await open({ url: proxied.href, statementTimeoutMs: 100 });
+				assert.deepEqual(await database.get("SELECT ?::int AS answer", 42), { answer: 42 });
+			} finally {
+				await proxy.close();
+			}
+		});
+	});
 
 	test("a failed autocommit statement leaves its connection outside a transaction (#4901)", async () => {
 		await withPostgresDatabase(async ({ open, admin, name }) => {
