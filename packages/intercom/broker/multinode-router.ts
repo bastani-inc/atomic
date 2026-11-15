@@ -202,8 +202,11 @@ export interface MultiNodeRouterOptions {
 	 * names the earlier instances, whose leases and claims this one retires as it starts once their process exited.
 	 */
 	readonly instanceKey?: string;
-	/** #5038: tells this host from another with the same name (`brokerHostIdentity`). */
-	readonly hostIdentity?: string;
+	/**
+	 * #5038: tells this host from another with the same name (`brokerHostIdentity`); `null` when there is no reliable
+	 * one, so no earlier instance is retired early.
+	 */
+	readonly hostIdentity?: string | null;
 	/** #5038: this broker's process id; `process.pid` by default. */
 	readonly pid?: number;
 	/** #5038: whether a process of this host still runs (`isProcessAlive`). */
@@ -393,8 +396,11 @@ export class MultiNodeRouter {
 		this.brokerId = options.brokerId ?? randomUUID();
 		this.nodeId = options.nodeId ?? hostname();
 		// Without a key of its own, no earlier broker can be this one.
-		const hostIdentity = options.hostIdentity ?? brokerHostIdentity();
-		this.instanceKey = `${this.nodeId}:${hostIdentity}:${options.instanceKey ?? this.brokerId}`;
+		const hostIdentity = options.hostIdentity === undefined ? brokerHostIdentity() : options.hostIdentity;
+		this.instanceKey =
+			hostIdentity == null || options.instanceKey === undefined
+				? `${this.nodeId}:${this.brokerId}`
+				: `${this.nodeId}:${hostIdentity}:${options.instanceKey}`;
 		this.pid = options.pid ?? process.pid;
 		this.isProcessAlive = options.isProcessAlive ?? isProcessAlive;
 	}
