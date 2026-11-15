@@ -360,7 +360,14 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 				(await other.recent(10)).map((event) => [event.seq, event.kind, event.target, event.live]),
 				[[1, "scale", 2, 1]],
 			);
-			assert.deepEqual((await other.snapshot()).drains, [{ host: "idle-host", providerId: "vm-9" }]);
+			const [drain, ...more] = (await other.snapshot()).drains;
+			assert.deepEqual(more, []);
+			assert.deepEqual(
+				{ host: drain?.host, providerId: drain?.providerId },
+				{ host: "idle-host", providerId: "vm-9" },
+			);
+			// How long ago it was asked, on the database clock: a controller times a drain out by it (#5072).
+			assert.ok(drain !== undefined && drain.agoMs >= 0 && drain.agoMs < 60_000, String(drain?.agoMs));
 		});
 
 		test("resource admission grants up to the root's limit across connections and waits for released capacity", async (f) => {
