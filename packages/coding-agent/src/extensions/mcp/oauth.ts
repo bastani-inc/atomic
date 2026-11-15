@@ -16,6 +16,7 @@ import { oauthErrorHtml, oauthSuccessHtml } from "@bastani/pi-ai/utils/oauth-pag
 import lockfile from "proper-lockfile";
 import { APP_NAME, getAgentDir } from "../../config.js";
 import { type AuthStorageBackend, FileAuthStorageBackend } from "../../core/auth-storage.ts";
+import { releaseLock } from "../../core/lock-release.ts";
 import { mcpNamespace } from "../../core/mcp-servers.ts";
 import type { AuthProvider, McpFetch } from "./client/index.js";
 import {
@@ -201,7 +202,8 @@ export class McpOAuthCredentialStore {
 		if (!this.lockDir) return fn();
 		mkdirSync(this.lockDir, { recursive: true, mode: 0o700 });
 		const hash = createHash("sha256").update(key).digest("hex").slice(0, 16);
-		const release = await lockfile.lock(join(this.lockDir, `mcp-auth-refresh-${hash}`), {
+		const lockPath = join(this.lockDir, `mcp-auth-refresh-${hash}`);
+		const release = await lockfile.lock(lockPath, {
 			realpath: false,
 			stale: REFRESH_LOCK_STALE_MS,
 			retries: {
@@ -216,7 +218,7 @@ export class McpOAuthCredentialStore {
 		try {
 			return await fn();
 		} finally {
-			await release().catch(() => undefined);
+			await releaseLock(release, lockPath);
 		}
 	}
 

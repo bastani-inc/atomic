@@ -28,7 +28,7 @@ import {
 	replacementAbortContent,
 } from "./agent-session-types.js";
 import { formatCodexProviderError } from "./codex-errors.ts";
-import { assignMissingToolCallIds } from "./context-tool-pairing.ts";
+import { assignMissingToolCallIds } from "./context-tool-pairing.js";
 import {
 	cancelSessionSubscriptions,
 	type SessionEventHandler,
