@@ -506,4 +506,40 @@ describe("OpenAI Codex OAuth", () => {
 		);
 		assert.equal(new URL(authUrl).searchParams.get("originator"), "my-app");
 	});
+
+	it("keeps the refresh token when a refresh issues none, but still requires an access token (#4959)", async () => {
+		const stored = { type: "oauth" as const, access: "old", refresh: "R0", expires: 0 };
+		vi.stubGlobal("fetch", async () => jsonResponse({ access_token: createAccessToken("acct") }));
+		const refreshed = await openaiCodexOAuth.refresh(stored, neverAbortedSignal);
+		assert.equal(refreshed.refresh, "R0");
+		assert.equal(refreshed.accountId, "acct");
+		assert.ok(Number.isFinite(refreshed.expires));
+
+		for (const body of [{ refresh_token: "R1", expires_in: 3600 }, null]) {
+			vi.stubGlobal("fetch", async () => jsonResponse(body));
+			await assert.rejects(
+				openaiCodexOAuth.refresh(stored, neverAbortedSignal),
+				/OpenAI Codex token refresh response missing fields/,
+			);
+		}
+	});
+
+	it("still requires a refresh token from the login code exchange (#4959)", async () => {
+		vi.stubGlobal("fetch", async () => jsonResponse({ access_token: createAccessToken("acct"), expires_in: 3600 }));
+		let authUrl = "";
+		await assert.rejects(
+			openaiCodexOAuth.login({
+				signal: neverAbortedSignal,
+				notify: (event) => {
+					if (event.type === "auth_url") authUrl = event.url;
+				},
+				prompt: async (prompt) => {
+					if (prompt.type === "select") return "browser";
+					const state = new URL(authUrl).searchParams.get("state");
+					return `http://localhost:1455/auth/callback?code=pasted-code&state=${state}`;
+				},
+			}),
+			/OpenAI Codex token exchange response missing fields/,
+		);
+	});
 });

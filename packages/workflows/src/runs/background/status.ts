@@ -693,6 +693,15 @@ async function pauseRunWithAction(
 	return { ok: true, runId, paused: await pauseHandles() };
 }
 
+/** Stages of the given unfinished runs that run on local workers, whatever their status. */
+function workerStages(activeStore: Store, runIds: readonly string[]): StageSnapshot[] {
+	const ids = new Set(runIds);
+	return activeStore
+		.runs()
+		.filter((run) => ids.has(run.id) && run.endedAt === undefined)
+		.flatMap((run) => run.stages.filter((stage) => stage.workerExecution !== undefined));
+}
+
 /** Unfinished stages that run on local workers, in the given runs. */
 function liveWorkerStages(activeStore: Store, runIds: readonly string[]): StageSnapshot[] {
 	const ids = new Set(runIds);
@@ -724,14 +733,17 @@ export async function pauseRun(
 	if (opts?.stageId === undefined) {
 		const activeStore = opts?.store ?? defaultStore;
 		const toolControls = opts?.toolControlRegistry ?? defaultToolControlRegistry;
-		const hasTaskTail = expandedControlRunIds(activeStore, runId).some((controlRunId) =>
-			toolControls
-				.active(controlRunId)
-				.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX)),
-		);
-		if (hasTaskTail) {
+		const controlRunIds = expandedControlRunIds(activeStore, runId);
+		const activeTools = controlRunIds.flatMap((controlRunId) => toolControls.active(controlRunId));
+		const hasTaskTail = activeTools.some((handle) => handle.nodeId.startsWith(TASK_RESULT_CHECKPOINT_CONTROL_PREFIX));
+		// The pool of a root whose stages run on local workers holds them while the root's own calls keep running.
+		const poolHoldsWorkers =
+			toolControls.runControl(runId) !== undefined && workerStages(activeStore, controlRunIds).length > 0;
+		// Otherwise an in-flight ctx.tool call cannot be held, only stopped: the run pauses through a graceful quit, which
+		// stops the call without failing the run and runs it again on resume (#4878). A task tail pauses its whole root.
+		if (hasTaskTail || (activeTools.length > 0 && !poolHoldsWorkers)) {
 			const quit = await quitRunWithAction(
-				aggregateWorkflowRootRunId(activeStore, runId),
+				hasTaskTail ? aggregateWorkflowRootRunId(activeStore, runId) : runId,
 				{
 					store: activeStore,
 					stageControlRegistry: opts?.stageControlRegistry,

@@ -83,17 +83,18 @@ const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/shell/i,
 	/missing file/i,
 	/no such file/i,
-	/cancel/i,
-	/abort/i,
-	/interrupted/i,
 ];
 
-const CANCELLED_FAILURE_PATTERNS: readonly RegExp[] = [/cancel/i, /abort/i, /interrupted/i];
+// "cancel" as a word of its own: an HTTP/2 stream error code such as `NGHTTP2_CANCEL` is a transport reset, not a user
+// cancellation (#4918).
+const CANCELLED_FAILURE_PATTERNS: readonly RegExp[] = [/(?<![a-z0-9_])cancel/i, /abort/i, /interrupted/i];
 
 const TRANSPORT_CANCELLATION_FAILURE_PATTERNS: readonly RegExp[] = [
 	/getaddrinfo|ENOTFOUND|EAI_AGAIN/i,
 	/(?<![a-z0-9_])ECONNABORTED(?![a-z0-9_])|software caused connection abort/i,
 	/pending stream has been canceled/i,
+	// An HTTP/2 stream reset by the peer or a proxy, such as `Stream closed with error code NGHTTP2_CANCEL`.
+	/(?<![a-z0-9])NGHTTP2_[A-Z_]+|(?<![a-z0-9_])ERR_HTTP2_STREAM_(?:ERROR|CANCEL)(?![a-z0-9_])/i,
 ];
 
 export type ModelFallbackFailureKind =
@@ -176,7 +177,9 @@ function statusFrom(value: unknown): number | undefined {
 	return (
 		integerFrom(field(value, "status")) ??
 		integerFrom(field(value, "statusCode")) ??
-		integerFrom(field(value, "httpStatus"))
+		integerFrom(field(value, "httpStatus")) ??
+		// Provider failure diagnostics (`bedrock_response_failure`) keep the HTTP status in `details.status` (#4918).
+		integerFrom(field(field(value, "details"), "status"))
 	);
 }
 
@@ -346,6 +349,9 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "timeout_error":
 		case "und_err_connect_timeout":
 			return "network_timeout";
+		case "err_http2_stream_error":
+		case "err_http2_stream_cancel":
+			return "transport_error";
 		case "rate_limit":
 		case "rate_limit_exceeded":
 		case "too_many_requests":
@@ -375,6 +381,10 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 		case "service_unavailable":
 		case "temporarily_unavailable":
 		case "overloaded":
+		// Amazon Bedrock's transient service exceptions (#4918).
+		case "serviceunavailableexception":
+		case "internalserverexception":
+		case "modelnotreadyexception":
 			return "provider_unavailable";
 		default:
 			return undefined;
@@ -543,10 +553,33 @@ function fallbackSignalFromMessage(
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
-	const message = errorMessage(value);
-	if (!message.trim()) return undefined;
+	const message = classifiableMessage(value);
+	if (message === undefined) return undefined;
 	const kind = fallbackKindFromMessage(message, errorName(value));
 	return kind === undefined ? undefined : makeSignal(kind, value, source);
+}
+
+/** Kinds that condemn the model for the turn: message text alone must not assign one over a transient status. */
+const MODEL_BLOCKING_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Set([
+	"auth_on_candidate_provider",
+	"model_unavailable",
+	"request_incompatible",
+]);
+
+/**
+ * The direct message's signal, unless the failure's own HTTP status or provider code names a transient failure and
+ * the text would condemn the model instead. Structured fields decide first; text is the fallback (#4918).
+ */
+function directMessageSignalUnlessTransient(
+	value: unknown,
+	source: ModelFallbackFailureSource | undefined,
+): ModelFallbackFailureSignal | undefined {
+	const signal = fallbackSignalFromDirectMessage(value, source);
+	if (signal === undefined || !MODEL_BLOCKING_FAILURE_KINDS.has(signal.kind)) return signal;
+	const structuredKinds = [kindFromStatus(statusFrom(value)), kindFromCode(codeFrom(value))];
+	return structuredKinds.some((kind) => kind !== undefined && SAME_MODEL_RETRYABLE_FAILURE_KINDS.has(kind))
+		? undefined
+		: signal;
 }
 
 function classifyAssistantRefusalSignal(
@@ -662,8 +695,10 @@ function structuredSignal(
 		directRefusalSignal,
 		directCancellationSignal,
 		providerTransportSignal,
-		fallbackSignalFromDirectMessage(value, source),
-		kindFromStatus(statusFrom(value)) === undefined
+		directMessageSignalUnlessTransient(value, source),
+		// A provider error code names the cause more exactly than its HTTP status: Bedrock answers a service-quota
+		// exception with a generic 400.
+		kindFromStatus(statusFrom(value)) === undefined || kindFromCode(codeFrom(value)) !== undefined
 			? undefined
 			: makeSignal(kindFromStatus(statusFrom(value))!, value, source),
 		kindFromCode(codeFrom(value)) === undefined
@@ -688,7 +723,12 @@ function structuredSignal(
 	return undefined;
 }
 
-function messageFromUnknown(value: unknown, seen: Set<unknown>): string | undefined {
+/**
+ * A message to describe the failure. With `describeStatusAndCode`, a failure with only a status or code gets a
+ * generated sentence naming it; text classification never reads that sentence, because its words are ours, not the
+ * provider's: "Model request failed with code ServiceUnavailableException" reads as an unavailable model (#4918).
+ */
+function messageFromUnknown(value: unknown, seen: Set<unknown>, describeStatusAndCode = true): string | undefined {
 	if (value === undefined || value === null || seen.has(value)) return undefined;
 	if (typeof value === "string") return value.trim().length > 0 ? value : undefined;
 	if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
@@ -699,15 +739,16 @@ function messageFromUnknown(value: unknown, seen: Set<unknown>): string | undefi
 	const directMessage = directMessageFrom(value);
 	if (directMessage !== undefined) return directMessage;
 	for (const diagnosticError of diagnosticErrors(value)) {
-		const diagnosticMessage = messageFromUnknown(diagnosticError, seen);
+		const diagnosticMessage = messageFromUnknown(diagnosticError, seen, describeStatusAndCode);
 		if (diagnosticMessage !== undefined) return diagnosticMessage;
 	}
-	const causeMessage = messageFromUnknown(causeOf(value), seen);
+	const causeMessage = messageFromUnknown(causeOf(value), seen, describeStatusAndCode);
 	if (causeMessage !== undefined) return causeMessage;
 	const finishReason = finishReasonFrom(value);
 	if (finishReason !== undefined) return `Model request finished with finish_reason:${finishReason}`;
 	const stopReason = stopReasonFrom(value);
 	if (stopReason !== undefined) return `Assistant message ended with stopReason:${stopReason}`;
+	if (!describeStatusAndCode) return undefined;
 	const status = statusFrom(value);
 	if (status !== undefined) return `Model request failed with status ${status}`;
 	const code = codeFrom(value);
@@ -720,6 +761,11 @@ export function errorMessage(error: unknown): string {
 	if (structuredMessage !== undefined) return structuredMessage;
 	const rendered = String(error);
 	return rendered === "[object Object]" ? "Model request failed" : rendered;
+}
+
+/** The failure's own text, for text classification: never a sentence generated from its status or code. */
+function classifiableMessage(error: unknown): string | undefined {
+	return messageFromUnknown(error, new Set(), false);
 }
 
 /** Alias used by the subagent package's older public helper name. */
@@ -779,7 +825,8 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 	if (structured !== undefined) return structured;
 	const message = errorMessage(error);
 	const name = errorName(error);
-	const fallbackKind = message.trim().length > 0 ? fallbackKindFromMessage(message, name) : undefined;
+	const textToClassify = classifiableMessage(error);
+	const fallbackKind = textToClassify === undefined ? undefined : fallbackKindFromMessage(textToClassify, name);
 	return {
 		kind: fallbackKind ?? "unknown",
 		message,

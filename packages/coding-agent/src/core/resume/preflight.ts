@@ -89,7 +89,7 @@ async function secretProblem(
 	const why = `storage secret ${name} of ${module} reads it to authenticate to the shared storage`;
 	if ("env" in ref) {
 		const value = io.env(ref.env);
-		if (value !== undefined && value.length > 0) return undefined;
+		if (value !== undefined && value.trim().length > 0) return undefined;
 		return {
 			code: "credential-missing",
 			subject: `environment variable ${ref.env}`,

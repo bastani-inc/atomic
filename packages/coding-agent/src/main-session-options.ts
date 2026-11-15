@@ -1,10 +1,26 @@
 import { modelsAreEqual } from "@bastani/pi-ai/compat";
 import type { Args } from "./cli/args.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
+import { resolveFallbackModel } from "./core/fallback-models.ts";
 import { resolveCliModel, type ScopedModel } from "./core/model-resolver.ts";
 import type { ModelRuntime } from "./core/model-runtime.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
+
+/** One warning per distinct fallback entry that names no model with configured credentials; the chain skips it. */
+function unresolvedFallbackDiagnostics(
+	entries: readonly string[],
+	source: string,
+	modelRuntime: ModelRuntime,
+	preferredProvider: string | undefined,
+): AgentSessionRuntimeDiagnostic[] {
+	return [...new Set(entries)]
+		.filter((entry) => !resolveFallbackModel(entry, modelRuntime, preferredProvider))
+		.map((entry) => ({
+			type: "warning",
+			message: `${source} entry "${entry}" does not match a model with configured credentials, so model fallback skips it. Use --list-models to see available models.`,
+		}));
+}
 
 export function buildSessionOptions(
 	parsed: Args,
@@ -91,6 +107,14 @@ export function buildSessionOptions(
 	} else if (parsed.model !== undefined) {
 		options.fallbackModels = [];
 	}
+	diagnostics.push(
+		...unresolvedFallbackDiagnostics(
+			options.fallbackModels ?? settingsManager.getFallbackModels(),
+			parsed.fallbackModels !== undefined ? "--fallback-models" : "fallbackModels setting",
+			modelRuntime,
+			options.model?.provider ?? settingsManager.getDefaultProvider(),
+		),
+	);
 
 	// Scoped models for CTRL+P cycling
 	// Keep thinking level undefined when not explicitly set in the model pattern.

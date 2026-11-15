@@ -19,6 +19,7 @@ export {
 	OAuthInsecureEndpointError,
 	OAuthIssuerMismatchError,
 	OAuthRegistrationError,
+	OAuthTemporarilyUnavailableError,
 } from "./errors.js";
 export {
 	type AddClientAuthentication,
