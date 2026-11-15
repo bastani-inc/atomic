@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 // `lstatSync`, `chmodSync` and `symlinkSync` have no equivalent in test/helpers/runtime.ts: the socket directory's
 // owner, mode and kind are what these tests pin.
+import { randomUUID } from "node:crypto";
 import { chmodSync, chownSync, existsSync, lstatSync, symlinkSync } from "node:fs";
 import net from "node:net";
 import { basename, dirname, join, sep } from "node:path";
@@ -45,6 +46,8 @@ const extensionDir = join(moduleDir(import.meta.url), "../../packages/intercom")
 const BROKER_BUDGET_MS = 10_000;
 
 const POLL_INTERVAL_MS = 20;
+/** How long one health request waits for the broker's reply before the wait asks again. */
+const HEALTH_REPLY_TIMEOUT_MS = 2_000;
 
 const unixOnly = process.platform === "win32" ? test.skip : test;
 
@@ -228,9 +231,41 @@ function spawnBroker(agentDir: string, preload?: string, env: Record<string, str
 	return { broker, stderr: readStreamText(broker.stderr) };
 }
 
+/**
+ * Whether the broker answers a health request on `socketPath`. A socket that accepts a connection may belong to a broker
+ * still starting, before it handles signals; one that answers a request has started.
+ */
+async function answersHealth(socketPath: string): Promise<boolean> {
+	if (!(await isSocketAnswering(socketPath))) return false;
+	return new Promise((resolve) => {
+		const requestId = randomUUID();
+		const socket = net.connect(socketPath);
+		let received = Buffer.alloc(0);
+		const finish = (answered: boolean) => {
+			clearTimeout(timer);
+			socket.destroy();
+			resolve(answered);
+		};
+		const timer = setTimeout(() => finish(false), HEALTH_REPLY_TIMEOUT_MS);
+		socket.on("error", () => finish(false));
+		socket.on("connect", () => {
+			const payload = Buffer.from(JSON.stringify({ type: "health", requestId }));
+			const header = Buffer.alloc(4);
+			header.writeUInt32BE(payload.length);
+			socket.write(Buffer.concat([header, payload]));
+		});
+		socket.on("data", (data) => {
+			received = Buffer.concat([received, data]);
+			if (received.length < 4 || received.length < received.readUInt32BE(0) + 4) return;
+			const reply = JSON.parse(received.subarray(4, received.readUInt32BE(0) + 4).toString("utf8"));
+			finish(reply.type === "health" && reply.requestId === requestId);
+		});
+	});
+}
+
 async function waitUntilAnswering(broker: SpawnedProcess, socketPath: string, stderr: Promise<string>): Promise<void> {
 	const deadline = performance.now() + BROKER_BUDGET_MS;
-	while (broker.exitCode === null && !(await isSocketAnswering(socketPath)) && performance.now() < deadline) {
+	while (broker.exitCode === null && !(await answersHealth(socketPath)) && performance.now() < deadline) {
 		await sleep(POLL_INTERVAL_MS);
 	}
 	if (broker.exitCode !== null) assert.fail(`the broker exited with ${broker.exitCode}:\n${await stderr}`);
