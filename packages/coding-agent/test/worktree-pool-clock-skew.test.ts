@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { type ChildProcessByStdio, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import type { Readable, Writable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, test, vi } from "vitest";
@@ -106,13 +105,11 @@ function assertNoProbes(directory: string): void {
 	);
 }
 
-type Child = ChildProcessByStdio<Writable, Readable, null>;
-
-/** Runs `source` in a Bun child, resolving once it prints its first line. */
+/** Runs `source` in a Bun child, resolving once it prints its first line; `ask` sends it a line and resolves its answer. */
 async function runChild(
 	name: string,
 	source: string,
-): Promise<{ child: Child; first: string; kill: () => Promise<void> }> {
+): Promise<{ first: string; kill: () => Promise<void>; ask: (question: string) => Promise<string> }> {
 	const script = sandbox.path(name);
 	writeFileSync(script, source);
 	const child = spawn(bunExecutable(), [script], { stdio: ["pipe", "pipe", "inherit"] });
@@ -122,9 +119,16 @@ async function runChild(
 		await exited;
 	};
 	cleanups.push(kill);
-	const line = await createInterface({ input: child.stdout })[Symbol.asyncIterator]().next();
+	const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+	const line = await lines.next();
 	if (line.done) throw new Error(`${name} exited`);
-	return { child, first: line.value, kill };
+	const ask = async (question: string) => {
+		child.stdin.write(`${question}\n`);
+		const answer = await lines.next();
+		if (answer.done) throw new Error(`${name} exited`);
+		return answer.value;
+	};
+	return { first: line.value, kill, ask };
 }
 
 /** A process of another host whose clock is `skewMs` off, holding the pooled worktree at `root` for `owner`. */
@@ -140,20 +144,27 @@ process.stdin.resume();
 	);
 }
 
-/** A process of another host whose clock is `skewMs` off, holding a lock of `path` refreshed every second. */
+/**
+ * A process of another host whose clock is `skewMs` off, holding a lock of `path` refreshed every second. Asked
+ * anything, it answers whether it still holds the lock.
+ */
 function lockerChild(skewMs: number, path: string) {
 	return runChild(
 		"locker.ts",
 		`${skewedClock(skewMs)}
+import { createInterface } from "node:readline";
 const { lockShared } = await import(${JSON.stringify(CLOCK_MODULE)});
+let compromised = false;
 await lockShared(${JSON.stringify(path)}, {
 	realpath: false,
 	stale: ${STALE_MS},
 	update: 1_000,
-	onCompromised: () => process.stdout.write("compromised\\n"),
+	onCompromised: () => {
+		compromised = true;
+	},
 });
 process.stdout.write("locked\\n");
-process.stdin.resume();
+for await (const _ of createInterface({ input: process.stdin })) process.stdout.write(compromised ? "lost\\n" : "held\\n");
 `,
 	);
 }
@@ -238,15 +249,14 @@ test(
 	async () => {
 		const path = sandbox.path("locked.json");
 		writeFileSync(path, "{}");
-		const { child, first } = await lockerChild(BEHIND_MS, path);
+		const { ask, first } = await lockerChild(BEHIND_MS, path);
 		assert.equal(first, "locked");
-		const lines: string[] = [];
-		createInterface({ input: child.stdout }).on("line", (line) => lines.push(line));
 		await sleep(2_500);
 		skewThisProcess(2 * 60_000);
 
 		await assert.rejects(lockShared(path, { realpath: false, stale: STALE_MS }), { code: "ELOCKED" });
-		assert.deepEqual(lines, []);
+		// Its holder refreshed it twice meanwhile, each time finding the lock as it left it.
+		assert.equal(await ask("status"), "held");
 		assertNoProbes(sandbox.path("."));
 	},
 	TIMEOUT_MS,
