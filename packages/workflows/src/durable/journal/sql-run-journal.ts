@@ -352,31 +352,25 @@ export class SqlRunJournal implements RunJournal {
 		}
 	}
 
-	/** `executor`, checking the journal's schema version with {@link assertVersion} before its first statement. */
-	private versionChecked(executor: SqliteExecutor): SqliteExecutor {
+	/**
+	 * `executor`, checking the journal's schema version with {@link assertVersion} before its first statement. Everything
+	 * else is the executor itself, so a caller that needs the database handle (its writer queue, its class) still gets it.
+	 */
+	private versionChecked<E extends SqliteExecutor>(executor: E): E {
 		let checked: Promise<void> | undefined;
-		const first = () => {
-			checked ??= this.assertVersion(executor);
-			return checked;
-		};
-		return {
-			exec: async (sql) => {
-				await first();
-				return executor.exec(sql);
+		const checking = new Set(["exec", "run", "get", "all"]);
+		return new Proxy(executor, {
+			get: (target, property) => {
+				const value = Reflect.get(target, property, target) as unknown;
+				if (typeof value !== "function") return value;
+				if (typeof property !== "string" || !checking.has(property)) return value.bind(target);
+				return async (...args: unknown[]) => {
+					checked ??= this.assertVersion(target);
+					await checked;
+					return (value as (...params: unknown[]) => unknown).apply(target, args);
+				};
 			},
-			run: async (sql, ...params) => {
-				await first();
-				return executor.run(sql, ...params);
-			},
-			get: async (sql, ...params) => {
-				await first();
-				return executor.get(sql, ...params);
-			},
-			all: async (sql, ...params) => {
-				await first();
-				return executor.all(sql, ...params);
-			},
-		} as SqliteExecutor;
+		});
 	}
 
 	/** The column that reads the journal's schema version in a read's own statement. */
