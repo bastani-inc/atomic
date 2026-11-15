@@ -7,7 +7,7 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@bastani/atomic-tui";
 
 const ENTRY_TYPE = "debug-provider-events";
 const STATUS_KEY = "debug-provider";

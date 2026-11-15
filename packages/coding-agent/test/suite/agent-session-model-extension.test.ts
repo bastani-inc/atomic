@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { getCurrentSystemPrompt } from "@bastani/pi-ai";
-import { fauxAssistantMessage, fauxToolCall, type Model } from "@bastani/pi-ai/compat";
-import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentTool, ThinkingLevel } from "@bastani/atomic-agent-core";
+import { getCurrentSystemPrompt } from "@bastani/atomic-ai";
+import { fauxAssistantMessage, fauxToolCall, type Model } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "../../src/index.ts";

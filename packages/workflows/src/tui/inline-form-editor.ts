@@ -39,7 +39,7 @@
  * cross-ref:
  *  - src/tui/inputs-picker.ts (handler logic shared, adapted here)
  *  - src/tui/keybindings-adapter.ts (Pi keybindings + edit helpers)
- *  - @earendil-works/pi-tui EditorComponent interface
+ *  - @bastani/atomic-tui EditorComponent interface
  */
 
 import type { WorkflowInputEntry } from "../extension/render-result.js";

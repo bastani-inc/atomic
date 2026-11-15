@@ -6,7 +6,7 @@ import type {
 	ProviderClassifier,
 	ProviderImages,
 	RefreshModelsContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import type {
 	Api,
 	AssistantMessageEventStream,
@@ -15,7 +15,7 @@ import type {
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import type { AtomicProviderCompat } from "../model-capabilities.ts";
 import type { ExtensionAPI } from "./api-types.ts";
 

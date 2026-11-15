@@ -1,11 +1,11 @@
-import { type Component, ScrollView, VStack } from "@earendil-works/pi-tui";
+import { type Component, ScrollView, VStack } from "@bastani/atomic-tui";
 import {
 	getScrollViewBox,
 	type LayoutBox,
 	type LayoutFrame,
 	renderLayoutFrame,
 	type ScrollbarGeometry,
-} from "@earendil-works/pi-tui/dist/layout.js";
+} from "@bastani/atomic-tui/dist/layout.js";
 import { isTerminalLeftMousePress, parseTerminalMouseInput } from "./mouse-input.js";
 import { sliceColumns, visibleWidth } from "./text-helpers.js";
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { Container, type Terminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { Container, type Terminal, TuiMainScreen } from "@bastani/atomic-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import { KeybindingsManager } from "../src/core/keybindings.ts";

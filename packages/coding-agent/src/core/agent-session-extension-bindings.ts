@@ -1,6 +1,6 @@
 import { basename, dirname } from "node:path";
-import type { Provider } from "@bastani/pi-ai";
-import { clampThinkingLevel, resetApiProviders } from "@bastani/pi-ai/compat";
+import type { Provider } from "@bastani/atomic-ai";
+import { clampThinkingLevel, resetApiProviders } from "@bastani/atomic-ai/compat";
 import { resolveWorkflowStageDeliveryTarget } from "./agent-session-delivery-forwarding.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";

@@ -1,4 +1,4 @@
-import { compositeTuiLine, visibleWidth } from "@earendil-works/pi-tui";
+import { compositeTuiLine, visibleWidth } from "@bastani/atomic-tui";
 import { describe, expect, it } from "vitest";
 import { compositeOverlayLine } from "../src/modes/interactive/overlay-line-composite.ts";
 

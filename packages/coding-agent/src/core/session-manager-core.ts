@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { getCurrentSystemMessage } from "@bastani/pi-ai";
-import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
+import { getCurrentSystemMessage } from "@bastani/atomic-ai";
+import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { getAgentDir } from "../config.js";
 import { createSessionCwdMatcher, normalizePath, pathsEqual, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
@@ -1004,7 +1004,7 @@ export class SessionManager {
 		summary: string,
 		details?: T,
 		fromHook?: boolean,
-		usage?: import("@bastani/pi-ai/compat").Usage,
+		usage?: import("@bastani/atomic-ai/compat").Usage,
 		fromId?: string,
 	): Promise<string> {
 		return this.runMutation(async () => {

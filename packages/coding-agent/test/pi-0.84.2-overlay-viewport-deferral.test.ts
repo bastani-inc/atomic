@@ -15,7 +15,7 @@ import {
 	type TuiMouseEventResult,
 	VStack,
 	type WheelScrollLines,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { KEYBINDINGS, type KeybindingsConfig, KeybindingsManager } from "../src/core/keybindings.ts";
 import { shouldHandleFullscreenViewportInput } from "../src/modes/interactive/interactive-mode-base.ts";

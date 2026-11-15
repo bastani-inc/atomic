@@ -1,5 +1,5 @@
 import { keyHintIfBound, type ToolDefinition } from "@bastani/atomic";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@bastani/atomic-tui";
 import { formatSeconds } from "./utils.js";
 
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;

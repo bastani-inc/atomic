@@ -8,7 +8,7 @@
  * private sidecar; validation integration.
  */
 
-import type { Api, AssistantMessage, Model, Usage } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, Model, Usage } from "@bastani/atomic-ai/compat";
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";

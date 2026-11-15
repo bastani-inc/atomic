@@ -10,7 +10,7 @@ description: OAuth login callbacks, credential storage, and dynamic catalog refr
 Add OAuth/SSO authentication that integrates with `/login`:
 
 ```typescript
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@bastani/atomic-ai";
 
 await pi.registerProvider("corporate-ai", {
   baseUrl: "https://ai.corp.com/v1",

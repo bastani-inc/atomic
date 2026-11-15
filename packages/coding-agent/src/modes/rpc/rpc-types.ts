@@ -5,6 +5,7 @@
  * Responses and events are emitted as JSON lines on stdout.
  */
 
+import type { AgentMessage, ThinkingLevel } from "@bastani/atomic-agent-core";
 import type {
 	AuthInfoLink,
 	Credential,
@@ -12,9 +13,8 @@ import type {
 	OAuthDeviceCodeInfo,
 	OAuthPrompt,
 	OAuthSelectPrompt,
-} from "@bastani/pi-ai";
-import type { Api, ImageContent, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai";
+import type { Api, ImageContent, Model } from "@bastani/atomic-ai/compat";
 import type {
 	ClearedQueue,
 	CompactionReason,

@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import {
-	type Component,
-	getOsc8LinkAtColumn,
-	hyperlink,
-	Text,
-	type TuiAltScreen,
-	VStack,
-} from "@earendil-works/pi-tui";
+import { type Component, getOsc8LinkAtColumn, hyperlink, Text, type TuiAltScreen, VStack } from "@bastani/atomic-tui";
 import { beforeEach, describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { TRANSCRIPT_JUMP_TO_END_URL } from "../src/modes/interactive/components/transcript-follow-indicator.js";

@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { Component } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import type { Component } from "@bastani/atomic-tui";
 import type { Details } from "../../packages/subagents/src/shared/types.js";
 import { PULSE_FRAMES, RUNNING_FRAMES, type renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
 

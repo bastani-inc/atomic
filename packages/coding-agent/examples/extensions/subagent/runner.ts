@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME, withFileMutationQueue } from "@bastani/atomic";
-import type { Message } from "@bastani/pi-ai/compat";
+import type { Message } from "@bastani/atomic-ai/compat";
 import type { AgentConfig } from "./agents.ts";
 import { getFinalOutput } from "./display.js";
 import type { SingleResult, SubagentDetails } from "./types.js";

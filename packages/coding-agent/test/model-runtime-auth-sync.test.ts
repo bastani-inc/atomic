@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Api, Model, OAuthCredential } from "@bastani/pi-ai";
+import type { Api, Model, OAuthCredential } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { ProviderConfig } from "../src/core/extensions/provider-types.js";

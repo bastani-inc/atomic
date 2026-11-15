@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type Api, getServiceTierCost, type Model } from "@bastani/pi-ai";
-import { getModel, getModels, getProviders } from "@bastani/pi-ai/compat";
+import { type Api, getServiceTierCost, type Model } from "@bastani/atomic-ai";
+import { getModel, getModels, getProviders } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { routingCandidate } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { resolveFallbackModel } from "../../packages/coding-agent/src/core/fallback-models.js";

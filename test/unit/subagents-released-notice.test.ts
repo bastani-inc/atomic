@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@bastani/atomic";
-import { fauxAssistantMessage, fauxToolCall, type Message } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, type Message } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { AgentWakeDispatcher } from "../../packages/coding-agent/src/core/agent-wake-dispatcher.js";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";

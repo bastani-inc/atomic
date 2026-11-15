@@ -2,8 +2,9 @@
  * Fixtures for the detached tool call suites (#4309): tools whose calls end only when a test says so, harnesses over a
  * shared session store, and the few assertions about transcripts those suites repeat.
  */
-import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
+
+import type { AgentTool, AgentToolResult } from "@bastani/atomic-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import type { DetachedToolResult } from "../../src/core/agent-session-detached-tools.js";
 import type { ExtensionFactory, ToolDefinition } from "../../src/core/extensions/index.js";

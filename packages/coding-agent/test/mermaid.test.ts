@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { resetCapabilitiesCache, setCapabilities } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it } from "vitest";
 import type { MarkdownTransformContext } from "../src/core/extensions/types.ts";
 import type { MermaidRenderingMode } from "../src/core/settings-manager.ts";

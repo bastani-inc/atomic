@@ -1,4 +1,4 @@
-import type { EditorComponent, EditorTheme, Focusable, TUI } from "@earendil-works/pi-tui";
+import type { EditorComponent, EditorTheme, Focusable, TUI } from "@bastani/atomic-tui";
 import { openExternalEditorForText, pasteClipboardImageToEditor } from "../chat-input-actions.ts";
 import {
 	isChatSessionBashRunning,

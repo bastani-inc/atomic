@@ -22,7 +22,7 @@ import {
 	streamSimpleOpenAIResponses,
 	type ThinkingLevelMap,
 	type TranscriptContext,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 
 // =============================================================================
 // Constants

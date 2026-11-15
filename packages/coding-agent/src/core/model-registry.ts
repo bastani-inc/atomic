@@ -24,7 +24,7 @@ import type {
 	ModelTypeMap,
 	Provider,
 	ProviderHeaders,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { AuthStatus, ProviderConfigInput } from "./provider-composer.ts";
 

@@ -70,14 +70,66 @@ const MAX_ABANDONED_STREAM_CLOSES = 16;
  * sends once for a stream it gave up on, `{"baton":…,"requests":[{"type":"close"}]}`. `@libsql/client` speaks Hrana 2
  * over HTTP, whose bodies are JSON; any other body is never taken for a close.
  * @param {Uint8Array} body
+ * @param {boolean} [withoutBaton] whether the close names no stream instead, as a stream's first request that failed
+ * leaves it
  */
-function closesStream(body) {
+function closesStream(body, withoutBaton = false) {
 	try {
 		const { baton, requests } = JSON.parse(new TextDecoder().decode(body));
-		return typeof baton === "string" && Array.isArray(requests) && requests.length === 1 && requests[0]?.type === "close";
+		return (
+			(withoutBaton ? baton === null || baton === undefined : typeof baton === "string") &&
+			Array.isArray(requests) &&
+			requests.length === 1 &&
+			requests[0]?.type === "close"
+		);
 	} catch {
 		return false;
 	}
+}
+
+/** The most bytes a request body that only closes a stream takes: `{"baton":null,"requests":[{"type":"close"}]}`. */
+const LONE_CLOSE_MAX_BYTES = 64;
+
+/**
+ * Whether `request` only closes a stream the server never gave a baton for. The Hrana client sends one when a
+ * stream's first request fails; the server keeps no stream for it to close, so it opens one only to close it. A stream
+ * reused across statements (#5151) has its first request fail in an outage, so that close would reach a server just
+ * back for nothing, ahead of the next real request.
+ * @param {Request} request an unread copy
+ */
+async function closesNoStream(request) {
+	const reader = request.body?.getReader();
+	if (reader === undefined) return false;
+	/** @type {Uint8Array[]} */
+	const chunks = [];
+	let length = 0;
+	try {
+		// Reads no further than a lone close's size, so a large request is never read twice.
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			chunks.push(value);
+			length += value.byteLength;
+			if (length > LONE_CLOSE_MAX_BYTES) return false;
+		}
+	} finally {
+		await reader.cancel().catch(() => {});
+	}
+	const body = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of chunks) {
+		body.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return closesStream(body, true);
+}
+
+/** The answer a server gives a request that only closes a stream. */
+function closedResponse() {
+	return new Response(JSON.stringify({ baton: null, base_url: null, results: [{ type: "ok", response: { type: "close" } }] }), {
+		status: 200,
+		headers: { "content-type": "application/json" },
+	});
 }
 
 /**
@@ -172,6 +224,7 @@ function fetchWith(headers, abandoned) {
 		const request = new Request(input, init);
 		for (const [name, value] of headers) request.headers.set(name, value);
 		const copy = request.clone();
+		if (await closesNoStream(request.clone())) return closedResponse();
 		const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
 		try {
 			return await fetch(request, { signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
@@ -208,15 +261,193 @@ function urlCredentials(url) {
 }
 
 /**
+ * How long a reused stream may sit idle before a statement opens a new one instead. sqld expires a stream idle for 10
+ * seconds; a stream reused well inside that never meets its expiry, which costs a request sent for nothing.
+ */
+const STREAM_REUSE_IDLE_MS = 5_000;
+/** How long one stream is reused at most, however busy: a later statement opens a new one. */
+const STREAM_REUSE_MAX_AGE_MS = 60_000;
+/**
+ * How long closing a database waits for its reused stream's close to be answered. A server that does not answer in
+ * time expires the stream itself; the stream runs outside any transaction, so it holds no lock meanwhile.
+ */
+const STREAM_CLOSE_WAIT_MS = 1_000;
+
+/**
+ * The statement a kept stream runs before each statement, in the same request, so its connection rereads a schema
+ * another connection changed (#5151). `PRAGMA schema_version` reads the cookie but does not reload the schema; a read of
+ * `sqlite_schema` does, and returns no row.
+ */
+const SCHEMA_CHECK = "SELECT 1 FROM sqlite_schema LIMIT 0";
+
+/**
+ * What sqld answers, as plain text with HTTP 400, for a request whose baton it refuses when it looks the stream up,
+ * before it runs any request of the pipeline (`stream::acquire` and `Guard::get_db` in sqld's
+ * `hrana/http/stream.rs`): the stream was cleaned up after expiring, the baton was used already, or the stream was
+ * closed. Any other HTTP 400 can follow a request of the same pipeline that ran, so it is never taken for a refusal.
+ */
+const REFUSED_BATON = [
+	"Received an invalid baton",
+	"Received a baton that has already been used",
+	"Stream for this baton was closed",
+];
+
+/**
+ * Statements that run on the reused stream: reads and writes that leave the connection as they found it. Anything
+ * else, such as `BEGIN`, a `PRAGMA`, a temporary table or a schema change, runs on a stream of its own, so the
+ * connection a reused stream holds never carries a transaction or a setting from one call into the next.
+ */
+const REUSABLE_STATEMENT = /^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*(?:SELECT|INSERT|UPDATE|DELETE|REPLACE|WITH|VALUES)\b/i;
+
+/**
+ * Whether `sql`, one statement, runs on the reused stream.
+ * @param {string} sql
+ */
+function reusable(sql) {
+	return REUSABLE_STATEMENT.test(sql) && isOneStatement(sql);
+}
+
+/**
+ * The Hrana code `@libsql/client` gives a failure of the protocol, as its `mapHranaError` does, so a statement on the
+ * reused stream fails with the same `LibsqlError` it fails with through the client.
+ * @param {typeof import("@libsql/hrana-client")} hrana
+ * @param {unknown} error
+ * @returns {string}
+ */
+function hranaCode(hrana, error) {
+	if (error instanceof hrana.ResponseError && error.code !== undefined) return error.code;
+	if (error instanceof hrana.ProtoError) return "HRANA_PROTO_ERROR";
+	if (error instanceof hrana.ClosedError)
+		return error.cause instanceof hrana.ClientError ? hranaCode(hrana, error.cause) : "HRANA_CLOSED_ERROR";
+	if (error instanceof hrana.WebSocketError) return "HRANA_WEBSOCKET_ERROR";
+	if (error instanceof hrana.HttpServerError) return "SERVER_ERROR";
+	if (error instanceof hrana.ProtocolVersionError) return "PROTOCOL_VERSION_ERROR";
+	if (error instanceof hrana.InternalError) return "INTERNAL_ERROR";
+	return "UNKNOWN";
+}
+
+/**
+ * One Hrana stream that statements outside a transaction take in turn (#5151). sqld loads the database's schema for
+ * every stream it opens, so a request that opens, uses and closes a stream costs time that grows with the number of
+ * tables; a stream kept open loads it once. A stream that failed, sat idle `STREAM_REUSE_IDLE_MS` or lived
+ * `STREAM_REUSE_MAX_AGE_MS` is closed and a new one opened. A statement is sent again only when the server refused its
+ * request without running it: it found the stream expired, or refused its baton (`REFUSED_BATON`). A request whose
+ * answer was lost may have run, so its failure is the caller's, as it is for a statement on a stream of its own.
+ */
+class ReusedStream {
+	/** @type {import("@libsql/hrana-client").HttpStream | undefined} */
+	stream;
+	openedAt = 0;
+	usedAt = 0;
+	/** Whether a statement is on the stream now; a statement arriving meanwhile takes a stream of its own. */
+	busy = false;
+
+	/**
+	 * @param {typeof import("@libsql/hrana-client")} hrana
+	 * @param {typeof import("@libsql/core/api").LibsqlError} LibsqlError
+	 * @param {() => import("@libsql/hrana-client").HttpClient} client
+	 */
+	constructor(hrana, LibsqlError, client) {
+		this.hrana = hrana;
+		this.LibsqlError = LibsqlError;
+		this.client = client;
+	}
+
+	/**
+	 * Runs `sql` on the stream, or answers undefined when another statement is on it.
+	 * @param {string} sql
+	 * @param {readonly unknown[]} params
+	 * @returns {Promise<import("@bastani/atomic/storage").SqliteDriverResult | undefined>}
+	 */
+	async execute(sql, params) {
+		if (this.busy) return undefined;
+		this.busy = true;
+		try {
+			for (let resent = false; ; resent = true) {
+				const now = performance.now();
+				const kept = this.stream;
+				if (
+					kept !== undefined &&
+					(kept.closed || now - this.usedAt > STREAM_REUSE_IDLE_MS || now - this.openedAt > STREAM_REUSE_MAX_AGE_MS)
+				)
+					this.drop();
+				const fresh = this.stream === undefined;
+				const stream = (this.stream ??= this.client().openStream());
+				if (fresh) this.openedAt = now;
+				try {
+					const statement = new this.hrana.Stmt(sql);
+					statement.bindIndexes(/** @type {import("@libsql/hrana-client").InValue[]} */ ([...params]));
+					// A kept connection compiles a statement against the schema it read last, and SQLite rereads the schema
+					// only when a statement's transaction finds the schema cookie changed. A statement compiled against a
+					// stale schema expands `SELECT *` to the old columns, or fails to compile at all. Reading
+					// `sqlite_schema` first, in the same request, makes the connection reread a schema changed elsewhere.
+					// A new stream's connection reads the schema afresh.
+					const checked = fresh ? undefined : stream.query(new this.hrana.Stmt(SCHEMA_CHECK));
+					checked?.catch(() => {});
+					const rows = await stream.query(statement);
+					return {
+						columns: rows.columnNames.map((name) => name ?? ""),
+						rows: /** @type {import("@bastani/atomic/storage").SqliteDriverResult["rows"]} */ (rows.rows),
+						changes: rows.affectedRowCount,
+					};
+				} catch (error) {
+					if (stream.closed && this.stream === stream) this.stream = undefined;
+					if (fresh || resent || !this.ranNothing(error)) throw this.libsqlError(error);
+				} finally {
+					this.usedAt = performance.now();
+				}
+			}
+		} finally {
+			this.busy = false;
+		}
+	}
+
+	/**
+	 * Whether the server refused a request on a kept stream without running it: it found the stream expired, or refused
+	 * the stream's baton (`REFUSED_BATON`).
+	 * @param {unknown} error
+	 */
+	ranNothing(error) {
+		const { hrana } = this;
+		if (error instanceof hrana.ResponseError) return error.code === "STREAM_EXPIRED";
+		return (
+			error instanceof hrana.HttpServerError &&
+			error.status === 400 &&
+			REFUSED_BATON.some((refusal) => error.message.endsWith(`: ${refusal}`))
+		);
+	}
+
+	/**
+	 * `error` as `@libsql/client` reports it.
+	 * @param {unknown} error
+	 */
+	libsqlError(error) {
+		return error instanceof this.hrana.ClientError
+			? new this.LibsqlError(error.message, hranaCode(this.hrana, error), undefined, undefined, error)
+			: error;
+	}
+
+	/** Closes the stream, if one is open; its close is sent in the background. */
+	drop() {
+		this.stream?.close();
+		this.stream = undefined;
+	}
+}
+
+/**
  * @param {() => Promise<import("@libsql/client").Client | import("@libsql/client").Transaction>} connection
  * @param {<T>(operation: () => Promise<T>) => Promise<T>} watch
  * @param {<T>(operation: () => Promise<T>) => Promise<T>} [single] runs one statement, which a failure may run again
+ * @param {() => Promise<ReusedStream | undefined>} [shared] the stream statements outside a transaction reuse
  * @returns {import("@bastani/atomic/storage").SqliteDriverExecutor}
  */
-function statements(connection, watch, single = watch) {
+function statements(connection, watch, single = watch, shared = async () => undefined) {
 	return {
 		execute: (sql, params) =>
-			single(async () => driverResult(await (await connection()).execute({ sql, args: [...params] }))),
+			single(async () => {
+				const reused = reusable(sql) ? await (await shared())?.execute(sql, params) : undefined;
+				return reused ?? driverResult(await (await connection()).execute({ sql, args: [...params] }));
+			}),
 		// An `exec` of one statement wrote nothing when it fails, as one `execute` did; one of several statements may
 		// fail after the statements before it committed.
 		executeMultiple: (sql) =>
@@ -591,6 +822,23 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		throw new StorageAdapterLoadError("@libsql/client", /** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause));
 	}
 	const local = /^file:/i.test(url);
+	/** @type {[typeof import("@libsql/hrana-client"), typeof import("@libsql/core/config"), typeof import("@libsql/core/uri"), typeof import("@libsql/core/api")] | undefined} */
+	let protocol;
+	if (!local) {
+		try {
+			protocol = await Promise.all([
+				import("@libsql/hrana-client"),
+				import("@libsql/core/config"),
+				import("@libsql/core/uri"),
+				import("@libsql/core/api"),
+			]);
+		} catch (cause) {
+			throw new StorageAdapterLoadError(
+				"@libsql/hrana-client",
+				/** @type {import("@bastani/atomic/storage").StorageFailureCause} */ (cause),
+			);
+		}
+	}
 	if (local) {
 		try {
 			closeLocalConnectionsOnce(createRequire(import.meta.url).resolve("@libsql/client"));
@@ -612,6 +860,34 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			...(local ? { timeout: FILE_BUSY_TIMEOUT_MS } : {}),
 			...(local ? {} : { fetch: fetchWith(added, abandoned) }),
 		});
+	// The Hrana client whose stream statements outside a transaction reuse, made on first use inside a driver call, as the
+	// client is, so the facade redacts credentials from a failure to read the URL.
+	/** @type {import("@libsql/hrana-client").HttpClient | undefined} */
+	let hranaClient;
+	/** @type {ReusedStream | undefined} */
+	let reused;
+	/** The requests of the reused stream's client not yet answered, which a close waits for. @type {Set<Promise<Response>>} */
+	const streamRequests = new Set();
+	const shared = async () => {
+		if (protocol === undefined) return undefined;
+		const [hrana, { expandConfig }, { encodeBaseUrl }, { LibsqlError }] = protocol;
+		return (reused ??= new ReusedStream(hrana, LibsqlError, () => {
+			if (hranaClient === undefined) {
+				const config = expandConfig({ url, authToken }, true);
+				const send = fetchWith(added, abandoned);
+				/** @type {(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>} */
+				const tracked = (input, init) => {
+					const sent = send(input, init);
+					streamRequests.add(sent);
+					void sent.finally(() => streamRequests.delete(sent)).catch(() => {});
+					return sent;
+				};
+				hranaClient = hrana.openHttp(encodeBaseUrl(config.scheme, config.authority, config.path), config.authToken, tracked);
+				hranaClient.intMode = "bigint";
+			}
+			return hranaClient;
+		}));
+	};
 	// A local statement that fails part way, as a write does when another process holds the lock past the busy timeout,
 	// stays active on its connection: the driver resets and finalizes a statement only when it is garbage collected.
 	// Until then that connection commits nothing ("cannot commit transaction - SQL statements in progress"), and a
@@ -682,7 +958,7 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 		// One statement outside a transaction, run alone or as an `exec` of one statement, that waited out the busy
 		// timeout wrote nothing and runs again. Several statements in one `exec` do not: the ones before the failed
 		// statement were committed.
-		...statements(connection, watch, waitForLock),
+		...statements(connection, watch, waitForLock, shared),
 		// One request for the whole batch, in a write transaction: the journal sends a batch of appends this way. Only
 		// its `BEGIN IMMEDIATE` waits for the write lock, so a batch the busy timeout ended wrote nothing (`lockBusy`). A
 		// server's batch counts against this process's writes in flight to that server, unless it has priority.
@@ -746,6 +1022,22 @@ export async function openLibsqlDatabase({ url, authToken, namespace, headers })
 			};
 		},
 		async close() {
+			reused?.drop();
+			hranaClient?.close();
+			if (hranaClient !== undefined) {
+				// The stream's close is sent on a later turn; wait for it a little, so it neither outlives the database for
+				// long nor is left to a server that would otherwise keep the stream until it expires.
+				await new Promise((resolve) => setImmediate(resolve));
+				/** @type {ReturnType<typeof setTimeout> | undefined} */
+				let timer;
+				await Promise.race([
+					Promise.allSettled([...streamRequests]),
+					new Promise((resolve) => {
+						timer = setTimeout(resolve, STREAM_CLOSE_WAIT_MS);
+					}),
+				]);
+				clearTimeout(timer);
+			}
 			client?.close();
 			probe?.close();
 			abandoned.close();

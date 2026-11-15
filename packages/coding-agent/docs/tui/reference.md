@@ -43,7 +43,7 @@ Bundled MCP tools render their server name in the call header before results arr
 Components that display a text cursor and need IME (Input Method Editor) support should implement the `Focusable` interface:
 
 ```typescript
-import { CURSOR_MARKER, type Component, type Focusable, renderFakeCursor } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, type Component, type Focusable, renderFakeCursor } from "@bastani/atomic-tui";
 
 class MyInput implements Component, Focusable {
   focused: boolean = false;  // Set by TUI when focus changes
@@ -71,7 +71,7 @@ The hardware cursor remains hidden by default. This keeps the fake cursor render
 When a container component (dialog, selector, etc.) contains an `Input` or `Editor` child, the container must implement `Focusable` and propagate the focus state to the child. Otherwise, the hardware cursor won't be positioned correctly for IME input.
 
 ```typescript
-import { Container, type Focusable, Input } from "@earendil-works/pi-tui";
+import { Container, type Focusable, Input } from "@bastani/atomic-tui";
 
 class SearchDialog extends Container implements Focusable {
   private searchInput: Input;
@@ -101,7 +101,7 @@ Without this propagation, typing with an IME (Chinese, Japanese, Korean, etc.) w
 Use `matchesKey()` for key detection:
 
 ```typescript
-import { matchesKey, Key } from "@earendil-works/pi-tui";
+import { matchesKey, Key } from "@bastani/atomic-tui";
 
 handleInput(data: string): boolean {
   if (matchesKey(data, Key.up)) {
@@ -132,7 +132,7 @@ handleInput(data: string): boolean {
 **Critical:** Each line from `render()` must not exceed the `width` parameter.
 
 ```typescript
-import { visibleWidth, truncateToWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, truncateToWidth } from "@bastani/atomic-tui";
 
 render(width: number): string[] {
   // Truncate long lines
@@ -249,10 +249,10 @@ This pattern is NOT needed when:
 
 ## Debug logging
 
-Set `PI_TUI_WRITE_LOG` to capture the raw ANSI stream written to stdout. A directory path writes one `tui-<timestamp>-<pid>.log` file per process. Review logs for sensitive content before sharing.
+Set `ATOMIC_TUI_WRITE_LOG` (legacy `PI_TUI_WRITE_LOG`) to capture the raw ANSI stream written to stdout. A directory path writes one `tui-<timestamp>-<pid>.log` file per process. Review logs for sensitive content before sharing.
 
 ```bash
-PI_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
+ATOMIC_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
 ```
 
 Use this capture when reporting a terminal-rendering problem.

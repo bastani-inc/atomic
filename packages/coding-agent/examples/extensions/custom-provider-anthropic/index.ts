@@ -22,7 +22,7 @@ import {
 	ToolCallArgumentsStream,
 	type ToolResultMessage,
 	type TranscriptContext,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");

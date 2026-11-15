@@ -1,5 +1,5 @@
-import type { Message, TextContent } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Message, TextContent } from "@bastani/atomic-ai/compat";
 import { existsSync, type Stats } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { basename, join } from "path";

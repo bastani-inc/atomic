@@ -1,6 +1,6 @@
 # Notice
 
-`@bastani/pi-ai` is a Bastani-branded fork of the `packages/ai` package from
+`@bastani/atomic-ai` (formerly `@bastani/pi-ai`) is a Bastani-branded fork of the `packages/ai` package from
 [earendil-works/pi](https://github.com/earendil-works/pi). It lives in this
 monorepo at `packages/ai` and publishes at the same version as `@bastani/atomic`.
 
@@ -12,5 +12,5 @@ monorepo at `packages/ai` and publishes at the same version as `@bastani/atomic`
 Original work is Copyright (c) 2025 Mario Zechner and is licensed under the MIT License.
 Bastani modifications are Copyright (c) 2026 Bastani, Inc. and are also licensed under the MIT License.
 
-Import from `@bastani/pi-ai` instead of `@earendil-works/pi-ai`. Telemetry types still come from the
-upstream `@earendil-works/pi-telemetry` package.
+Import from `@bastani/atomic-ai` instead of `@earendil-works/pi-ai`. Schema validation and telemetry types come
+from Atomic's forks `@bastani/atomic-schema` and `@bastani/atomic-telemetry`.

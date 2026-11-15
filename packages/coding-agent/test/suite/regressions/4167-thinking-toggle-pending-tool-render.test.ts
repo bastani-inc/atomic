@@ -1,6 +1,6 @@
-import type { AssistantMessage, ToolResultMessage, Usage } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { type Component, Container, Text } from "@earendil-works/pi-tui";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, ToolResultMessage, Usage } from "@bastani/atomic-ai/compat";
+import { type Component, Container, Text } from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionContext } from "../../../src/core/session-manager.ts";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Container, Text } from "@earendil-works/pi-tui";
+import type { AssistantMessage } from "@bastani/atomic-ai";
+import { Container, Text } from "@bastani/atomic-tui";
 import { describe, expect, test } from "vitest";
 import type { SessionEntry } from "../src/core/session-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";

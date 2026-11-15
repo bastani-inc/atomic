@@ -1,6 +1,6 @@
 import { keyHintIfBound } from "@bastani/atomic";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type Component, Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
+import { type Component, Container, Text, truncateToWidth } from "@bastani/atomic-tui";
 import {
 	type SubagentChildIndexEntry,
 	subagentChildCardRecord,

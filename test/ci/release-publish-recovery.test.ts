@@ -192,7 +192,7 @@ function publishNpm(rel: Release, npmTag = "latest"): StepRun {
 }
 
 describe("publish-npm", () => {
-	test("publishes the eight native leaves, then the native root, pi-ai, the libSQL adapter and atomic", () => {
+	test("publishes the eight native leaves, then the native root, the forked pi packages in dependency order, the libSQL adapter and atomic", () => {
 		const rel = release();
 		writeNpmPayload(rel);
 		const run = publishNpm(rel);
@@ -232,7 +232,7 @@ describe("publish-npm", () => {
 	});
 	test("a native leaf whose provenance upload hits a transparency-log 409 is retried, and the release completes (#4217)", () => {
 		// 0.9.66-alpha.1: seven leaves published, win32-x64-msvc failed with TLOG_CREATE_ENTRY_ERROR (409),
-		// and the native root, pi-ai, the adapter and atomic were never published.
+		// and the native root, pi-ai (now atomic-ai), the adapter and atomic were never published.
 		const rel = release();
 		writeNpmPayload(rel);
 		const leaf = "@bastani/atomic-natives-win32-x64-msvc";
@@ -292,10 +292,10 @@ describe("publish-npm", () => {
 	test("a permission error is not retried (#4217)", () => {
 		const rel = release();
 		writeNpmPayload(rel);
-		scriptPublish(rel, "@bastani/pi-ai", ["e403"]);
+		scriptPublish(rel, "@bastani/atomic-ai", ["e403"]);
 		const run = publishNpm(rel);
 		assert.notEqual(run.exitCode, 0);
-		assert.equal(publishAttempts(run, "@bastani/pi-ai"), 1);
+		assert.equal(publishAttempts(run, "@bastani/atomic-ai"), 1);
 		assert.deepEqual(run.sleeps, []);
 		assert.equal(isPublished(rel, "@bastani/atomic"), false);
 	});

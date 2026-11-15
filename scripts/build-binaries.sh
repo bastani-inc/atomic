@@ -10,7 +10,7 @@
 #   --skip-deps          Skip installing cross-platform native bindings
 #   --skip-install       Reuse dependencies installed by the caller
 #   --skip-package-build Reuse packages/coding-agent/dist built by the caller
-#   --offline-model-data Build @bastani/pi-ai with bundled model data instead of refreshing it
+#   --offline-model-data Build @bastani/atomic-ai with bundled model data instead of refreshing it
 #   --skip-windows       Build every default platform except the Windows targets
 #   --platform <name>    Build only for specified platform
 #                        (darwin-arm64, darwin-x64, linux-x64, linux-arm64,
@@ -117,19 +117,18 @@ if [[ "$SKIP_WINDOWS" == "true" && "$PLATFORM" == windows-* ]]; then
     exit 1
 fi
 
-alias_pi_ai() {
-    echo "==> Aliasing @earendil-works/pi-ai onto packages/ai..."
-    node scripts/alias-pi-ai.mjs
-}
-
-build_pi_ai() {
+build_forked_packages() {
+    echo "==> Building @bastani/atomic-schema and @bastani/atomic-telemetry..."
+    npm --workspace=@bastani/atomic-schema --workspace=@bastani/atomic-telemetry run build
     if [[ "$OFFLINE_MODEL_DATA" == "true" ]]; then
-        echo "==> Building @bastani/pi-ai with bundled model data..."
-        npm run build:offline --workspace=@bastani/pi-ai
+        echo "==> Building @bastani/atomic-ai with bundled model data..."
+        npm run build:offline --workspace=@bastani/atomic-ai
     else
-        echo "==> Building @bastani/pi-ai..."
-        npm run build --workspace=@bastani/pi-ai
+        echo "==> Building @bastani/atomic-ai..."
+        npm --workspace=@bastani/atomic-ai run build
     fi
+    echo "==> Building @bastani/atomic-tui, @bastani/atomic-agent-core and @bastani/atomic-codemode..."
+    npm --workspace=@bastani/atomic-tui --workspace=@bastani/atomic-agent-core --workspace=@bastani/atomic-codemode run build
 }
 
 if [[ "$SKIP_INSTALL" == "false" ]]; then
@@ -139,8 +138,7 @@ else
     echo "==> Reusing caller-installed dependencies (--skip-install)"
 fi
 
-alias_pi_ai
-build_pi_ai
+build_forked_packages
 
 if [[ "$SKIP_DEPS" == "false" ]]; then
     echo "==> Installing cross-platform Atomic native bindings..."
@@ -163,7 +161,7 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
         # publish.yml stages the just-built bindings before this script. Fetching
         # @bastani/atomic-natives-*@$VERSION from npm can only fail: this release
         # is what would publish them. The failed --force install then requires
-        # npm ci, which drops the pi-ai alias and breaks the coding-agent build.
+        # npm ci, which removes the built forked packages and breaks the coding-agent build.
         echo "==> Skipping registry install of @bastani/atomic-natives-*: local native artifacts are already staged"
     elif ! npm install --include=optional --no-save --package-lock=false --force --ignore-scripts \
         "${natives_targets[@]}"; then
@@ -172,8 +170,7 @@ if [[ "$SKIP_DEPS" == "false" ]]; then
         # broke the release binary). Put the tree back before continuing.
         echo "==> Cross-platform bindings unavailable; restoring the dependency tree"
         npm ci --ignore-scripts
-        alias_pi_ai
-        build_pi_ai
+        build_forked_packages
     fi
 
     echo "==> Staging cross-platform native bindings for clipboard..."
@@ -197,7 +194,7 @@ if compgen -G "packages/natives/native/*.node" >/dev/null; then
     echo "==> Using existing Atomic native binding artifacts..."
 else
     echo "==> Building Atomic native bindings for host platform..."
-    npm run build --workspace=@bastani/atomic-natives
+    npm --workspace=@bastani/atomic-natives run build
 fi
 
 if [[ "$SKIP_PACKAGE_BUILD" == "false" ]]; then
@@ -268,9 +265,9 @@ echo "==> Copying runtime dependencies..."
 runtime_deps_dir="binaries/.runtime-node_modules"
 rm -rf "$runtime_deps_dir"
 bun run scripts/copy-runtime-dependencies.ts "$runtime_deps_dir"
-cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-modifiers.js" "$shared_app_dir/native-modifiers.js"
-cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-module-path.js" "$shared_app_dir/native-module-path.js"
-cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-platform.js" "$shared_app_dir/native-platform.js"
+cp "$runtime_deps_dir/@bastani/atomic-tui/dist/native-modifiers.js" "$shared_app_dir/native-modifiers.js"
+cp "$runtime_deps_dir/@bastani/atomic-tui/dist/native-module-path.js" "$shared_app_dir/native-module-path.js"
+cp "$runtime_deps_dir/@bastani/atomic-tui/dist/native-platform.js" "$shared_app_dir/native-platform.js"
 bun run scripts/assert-pi-runtime-assets.ts --node-modules "$runtime_deps_dir" --app "$shared_app_dir/app.js"
 clipboard_copy_args=()
 if [[ "$SKIP_DEPS" == "true" ]]; then
@@ -443,7 +440,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp -r dist/builtin "binaries/$platform/"
     bun run ../../scripts/assert-builtin-set.ts "binaries/$platform/builtin"
     if console_arch="$(win32_console_mode_arch "$platform")"; then
-        console_src="../../node_modules/@earendil-works/pi-tui/native/win32/prebuilds/win32-$console_arch/win32-platform.node"
+        console_src="../../node_modules/@bastani/atomic-tui/native/win32/prebuilds/win32-$console_arch/win32-platform.node"
         console_dst="binaries/$platform/native/win32/prebuilds/win32-$console_arch"
         if [ -f "$console_src" ]; then
             mkdir -p "$console_dst"

@@ -137,8 +137,7 @@ describe("lazy OAuth flow loading", () => {
 		vi.resetModules();
 		const load = await import("../src/auth/oauth/load.ts");
 		const { registerLazyOAuthFlows } = await import("../src/lazy-oauth.ts");
-		const { createRadiusOAuth } = await import("../src/auth/oauth/radius.ts");
-		const placeholder: OAuthAuth = createRadiusOAuth({ name: "Placeholder", gateway: "https://placeholder.example" });
+		const placeholder: OAuthAuth = { ...(await import("../src/auth/oauth/meta.ts")).metaOAuth, name: "Placeholder" };
 		const usePlaceholder = () => placeholder;
 		load.registerBundledOAuthFlowLoaders({
 			anthropic: usePlaceholder,
@@ -149,7 +148,6 @@ describe("lazy OAuth flow loading", () => {
 			kimiCoding: usePlaceholder,
 			meta: usePlaceholder,
 			xai: usePlaceholder,
-			radius: usePlaceholder,
 		});
 		assert.equal(await load.loadAnthropicOAuth(), placeholder);
 
@@ -181,8 +179,5 @@ describe("lazy OAuth flow loading", () => {
 			assert.equal(await loadFlow(), flow, `${id} loads its flow module's export`);
 		}
 
-		const radius = await load.loadRadiusOAuth({ name: "Team Radius", gateway: "https://radius.example" });
-		assert.notEqual(radius, placeholder);
-		assert.equal(radius.name, "Team Radius");
 	});
 });

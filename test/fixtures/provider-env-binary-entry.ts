@@ -15,8 +15,8 @@ async function main(): Promise<void> {
 	assert.equal(flags.get("provider-env-process")?.default, "process-value");
 	assert.equal(flags.get("provider-env-scoped")?.default, "scoped-value");
 
-	const hosted = (await getVirtualModules())["@bastani/pi-ai/utils/provider-env"] as
-		| typeof import("@bastani/pi-ai/utils/provider-env")
+	const hosted = (await getVirtualModules())["@bastani/atomic-ai/utils/provider-env"] as
+		| typeof import("@bastani/atomic-ai/utils/provider-env")
 		| undefined;
 	assert.equal(hosted?.getProviderEnvValue("ATOMIC_PROVIDER_ENV_PROBE"), "process-value");
 	console.log("compiled provider-env extension: OK");

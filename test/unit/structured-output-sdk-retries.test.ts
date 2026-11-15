@@ -1,7 +1,7 @@
 // Single-inference transport regression coverage for #3089 / #3090.
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { normalizeContext } from "@bastani/pi-ai";
+import { normalizeContext } from "@bastani/atomic-ai";
 import type { HttpRequest } from "@smithy/types";
 import { afterEach, test, vi } from "vitest";
 
@@ -28,12 +28,12 @@ vi.mock(bedrockSdkPath, async (importOriginal) => {
 // Load unbuilt serializers at runtime without pulling the entire AI source graph into
 // the root test typecheck (the AI package has its own no-emit typecheck).
 const { streamSimple: bedrockStream } = await vi.importActual<
-	typeof import("@bastani/pi-ai/api/bedrock-converse-stream")
+	typeof import("@bastani/atomic-ai/api/bedrock-converse-stream")
 >("../../packages/ai/src/api/bedrock-converse-stream.ts");
-const { streamSimple: googleStream } = await vi.importActual<typeof import("@bastani/pi-ai/api/google-generative-ai")>(
-	"../../packages/ai/src/api/google-generative-ai.ts",
-);
-const { streamSimple: vertexStream } = await vi.importActual<typeof import("@bastani/pi-ai/api/google-vertex")>(
+const { streamSimple: googleStream } = await vi.importActual<
+	typeof import("@bastani/atomic-ai/api/google-generative-ai")
+>("../../packages/ai/src/api/google-generative-ai.ts");
+const { streamSimple: vertexStream } = await vi.importActual<typeof import("@bastani/atomic-ai/api/google-vertex")>(
 	"../../packages/ai/src/api/google-vertex.ts",
 );
 

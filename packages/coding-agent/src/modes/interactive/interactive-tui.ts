@@ -8,7 +8,7 @@ import {
 	type TuiInputListener,
 	TuiMainScreen,
 	type WheelScrollLines,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { stripOsc133Marks, stripOverlayActiveRowMarker } from "../../core/extensions/ui-types.js";
 import { isLifecycleTimingEnabled, markLifecycleTiming } from "../../core/lifecycle-timings.ts";
 import { copyToClipboard } from "../../utils/clipboard.js";

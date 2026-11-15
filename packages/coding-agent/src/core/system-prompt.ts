@@ -3,7 +3,7 @@
  */
 
 import { dirname, join } from "node:path";
-import { getSystemMessageText } from "@bastani/pi-ai";
+import { getSystemMessageText } from "@bastani/atomic-ai";
 import { getAgentDir, getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import { formatSkillsForPrompt, type Skill } from "./skills.ts";

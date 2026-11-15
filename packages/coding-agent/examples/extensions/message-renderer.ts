@@ -8,7 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@bastani/atomic-tui";
 
 export default function (pi: ExtensionAPI) {
 	// Register custom renderer for "status-update" messages

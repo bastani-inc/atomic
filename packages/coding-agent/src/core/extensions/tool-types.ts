@@ -1,6 +1,6 @@
-import type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
-import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@earendil-works/pi-agent-core";
-import type { Component } from "@earendil-works/pi-tui";
+import type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode } from "@bastani/atomic-agent-core";
+import type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
+import type { Component } from "@bastani/atomic-tui";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { SourceInfo } from "../source-info.ts";
@@ -79,9 +79,9 @@ export interface ToolNamespace {
 }
 
 export interface ToolLoadout {
-	readonly declared: readonly import("@earendil-works/pi-agent-core").AgentTool[];
-	readonly callable: readonly import("@earendil-works/pi-agent-core").AgentTool[];
-	readonly registered: readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	readonly declared: readonly import("@bastani/atomic-agent-core").AgentTool[];
+	readonly callable: readonly import("@bastani/atomic-agent-core").AgentTool[];
+	readonly registered: readonly import("@bastani/atomic-agent-core").AgentTool[];
 	getExposure(name: string): ToolExposure;
 	getNamespace(name: string): ToolNamespace | undefined;
 	/** A tool's prompt guidelines, omitted from system prompt rules when its declaration is hidden. */
@@ -220,7 +220,7 @@ export function defineTool<TParams extends TSchema, TDetails = unknown, TState =
 }
 
 /** Public constrained-sampling shape inherited from pi-ai. */
-export type { ConstrainedSamplingConfig } from "@bastani/pi-ai/compat";
+export type { ConstrainedSamplingConfig } from "@bastani/atomic-ai/compat";
 
 /** Tool info with name, description, parameter schema, constraint, and source metadata */
 export type ToolInfo = Pick<

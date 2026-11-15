@@ -201,7 +201,7 @@ async function owner() {
 	if (children === 0) throw new RangeError("released owner --children must be at least 1");
 	writeStorageSetting();
 	const { atomic, records } = await loadSessionModules();
-	const compat = await import(pathToFileURL(join(packageDir("@bastani/pi-ai"), "dist", "compat.js")).href);
+	const compat = await import(pathToFileURL(join(packageDir("@bastani/atomic-ai"), "dist", "compat.js")).href);
 	mkdirSync(join(cwd, ".atomic", "agents"), { recursive: true });
 	writeFileSync(
 		join(cwd, ".atomic", "agents", "worker.md"),

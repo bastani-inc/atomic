@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
-import { Container } from "@earendil-works/pi-tui";
+import { getModel } from "@bastani/atomic-ai/compat";
+import { Container } from "@bastani/atomic-tui";
 import { beforeAll, test } from "vitest";
 import { AgentSessionRuntime, type CreateAgentSessionRuntimeFactory } from "../src/core/agent-session-runtime.js";
 import {

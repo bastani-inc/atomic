@@ -1,4 +1,4 @@
-import type { Component, Container, TUI } from "@earendil-works/pi-tui";
+import type { Component, Container, TUI } from "@bastani/atomic-tui";
 import type { TaskId } from "../../core/tasks/contracts.js";
 import { getOwnerTaskStore, type OwnerTaskStore, watchOwnerTaskStoreBinding } from "../../core/tasks/owner-store.js";
 import { TaskRow } from "./components/task-row.js";

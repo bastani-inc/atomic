@@ -14,7 +14,7 @@ import {
 	type ReadonlyFooterDataProvider,
 	TRANSCRIPT_JUMP_TO_END_URL,
 } from "@bastani/atomic";
-import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import type { Component, EditorComponent, EditorTheme, TUI } from "@bastani/atomic-tui";
 import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
 import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { stageQueuedUserMessageCount } from "../runs/foreground/stage-queued-user-messages.js";

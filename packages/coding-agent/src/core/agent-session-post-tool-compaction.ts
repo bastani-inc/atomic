@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import { createAutoCompactionCompletion, hasPendingManualCompactionTakeover } from "./agent-session-auto-compaction.ts";
 import type { CommittedBackgroundCompaction } from "./agent-session-background-compaction.ts";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";

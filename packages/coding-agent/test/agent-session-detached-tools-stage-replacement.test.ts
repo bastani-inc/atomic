@@ -4,7 +4,7 @@
  * starts its own turn (#4309).
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test, vi } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 import { WorkflowStageAdmissionBoundary } from "../src/core/workflow-stage-admission.js";

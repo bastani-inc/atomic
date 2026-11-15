@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@bastani/pi-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test } from "vitest";
 import { DefaultResourceLoader } from "../src/core/resource-loader.js";
 import { withWorktreeRestoreNotices } from "../src/core/resume/path-mapping.js";

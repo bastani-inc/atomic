@@ -1,4 +1,4 @@
-import type { Usage } from "@bastani/pi-ai/compat";
+import type { Usage } from "@bastani/atomic-ai/compat";
 import type { AgentSessionEvent } from "./agent-session-types.js";
 
 /**

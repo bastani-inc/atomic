@@ -1,4 +1,4 @@
-import { closeOpenAICodexWebSocketSessions } from "@bastani/pi-ai/api/openai-codex-responses";
+import { closeOpenAICodexWebSocketSessions } from "@bastani/atomic-ai/api/openai-codex-responses";
 import {
 	type Api,
 	type AssistantMessageEventStream,
@@ -17,7 +17,7 @@ import {
 	streamSimple,
 	type ThinkingLevel,
 	type TranscriptContext,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import {
 	CODEX_FAST_ROUTE_HEADER,
 	CODEX_FAST_ROUTE_ORIGINATOR,

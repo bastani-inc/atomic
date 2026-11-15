@@ -1,4 +1,4 @@
-import type { Api, ClassifierAnswer, ClassifierApi, ClassifierModel, Model, RetryPolicy } from "@bastani/pi-ai";
+import type { Api, ClassifierAnswer, ClassifierApi, ClassifierModel, Model, RetryPolicy } from "@bastani/atomic-ai";
 import type { Static, TSchema } from "typebox";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SettingsManager } from "../settings-manager.ts";

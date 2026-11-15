@@ -1,4 +1,4 @@
-import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 import { CONFIG_DIR_NAME } from "../../config.js";
 import { collectCacheMisses, createCacheMissModelSource, formatCacheMissNotice } from "../../core/cache-stats.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";

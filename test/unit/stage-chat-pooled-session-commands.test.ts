@@ -3,7 +3,7 @@
  * worker, as the chat of an in-process stage runs them on its own session (#3996).
  */
 import type { BashResult } from "@bastani/atomic";
-import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { getKeybindings, setKeybindings } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.js";
 import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";

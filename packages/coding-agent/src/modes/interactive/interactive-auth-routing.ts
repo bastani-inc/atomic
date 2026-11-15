@@ -1,4 +1,4 @@
-import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { CredentialSynchronizationError } from "../../core/model-runtime.js";
 import { compareProviders } from "../../core/preferred-providers.ts";
 import type { AuthStatus } from "../../core/provider-composer.ts";

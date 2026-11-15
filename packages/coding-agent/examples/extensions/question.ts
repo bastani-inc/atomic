@@ -5,15 +5,7 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import {
-	Editor,
-	type EditorTheme,
-	Key,
-	matchesKey,
-	Text,
-	visibleWidth,
-	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, Text, visibleWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 
 interface OptionWithDesc {

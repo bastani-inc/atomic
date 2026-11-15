@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import { type ModelReferenceRequest, resolveCliModel, resolveModelReference } from "../src/core/model-resolver.ts";
 import { findPreferredAvailableModel } from "../src/core/model-resolver-defaults.ts";
@@ -355,6 +355,16 @@ describe("resolveModelReference", () => {
 });
 
 describe("resolveCliModel", () => {
+	test("rejects the removed Radius provider with a clear message (#5174)", () => {
+		const registry = {
+			getModels: () => [...allModels],
+		} as unknown as Parameters<typeof resolveCliModel>[0]["modelRuntime"];
+		for (const options of [{ cliModel: "radius/balanced" }, { cliProvider: "radius", cliModel: "balanced" }]) {
+			const result = resolveCliModel({ ...options, modelRuntime: registry });
+			expect(result.model).toBeUndefined();
+			expect(result.error).toMatch(/^Provider "radius" was removed from Atomic: /u);
+		}
+	});
 	test("separates thinking from an unknown provider-prefixed custom model id", () => {
 		const registry = {
 			getModels: () => [...allModels, openaiCodexBaseModel],

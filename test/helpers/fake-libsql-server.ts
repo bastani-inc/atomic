@@ -76,7 +76,7 @@ interface Stream {
  * `closed-before`: the connection is closed without an answer before the request runs. `gateway-after`: the request
  * runs and commits, and a gateway in front of the server then answers HTTP `status` (502 by default) with an HTML
  * page instead. `busy`: the request's first
- * statement fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
+ * statement other than a kept stream's read of `sqlite_schema` fails with `SQLITE_BUSY` without running, as sqld answers a writer that meets its checkpoint; the rest of
  * a batch runs as its conditions say. `stream-busy`: the request fails as a whole with `SQLITE_BUSY`, which ends its
  * stream and rolls back the stream's open transaction.
  */
@@ -88,7 +88,9 @@ export type FakeLibsqlFault =
 	| { readonly kind: "reset-before" }
 	| { readonly kind: "reset-after" }
 	| { readonly kind: "closed-before" }
-	| { readonly kind: "gateway-after"; readonly status?: number };
+	| { readonly kind: "gateway-after"; readonly status?: number }
+	/** A plain-text HTTP 400 sent before anything runs, as sqld answers a request it refuses as a protocol error. */
+	| { readonly kind: "bad-request"; readonly message: string };
 
 export interface FakeLibsqlPipeline {
 	/** The SQL texts the request runs, in order. */
@@ -127,6 +129,11 @@ export interface FakeLibsqlServer {
 	 * hook. A batch is a write transaction in one request, so it never leaves one open. `undefined` removes it.
 	 */
 	onBatch(hook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined): void;
+	/**
+	 * Calls `hook` when a pipeline request closes a stream, before the answer is sent; the answer waits for the hook.
+	 * `undefined` removes it.
+	 */
+	onStreamClose(hook: (() => Promise<void> | void) | undefined): void;
 	/** Expires every open stream at once, rolling back the open transaction. */
 	expireStreams(): void;
 	close(): Promise<void>;
@@ -184,6 +191,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 	let owner: Stream | undefined;
 	let hook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined;
 	let batchHook: ((pipeline: FakeLibsqlPipeline) => Promise<void> | void) | undefined;
+	let closeHook: (() => Promise<void> | void) | undefined;
 	let expiredStatements = 0;
 	let nextStream = 0;
 	let nextBaton = 0;
@@ -205,11 +213,13 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 
 	let busy = false;
 	const execute = (stream: Stream, stmt: HranaStmt): StmtResult => {
-		if (busy) {
+		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
+		// The read of `sqlite_schema` a kept stream sends before its statement takes no write lock, so the server never
+		// answers it busy.
+		if (busy && !sql?.startsWith("SELECT 1 FROM sqlite_schema")) {
 			busy = false;
 			throw Object.assign(new Error("database is locked"), { errstr: "busy" });
 		}
-		const sql = stmt.sql ?? stream.sqls.get(stmt.sql_id ?? -1);
 		if (sql === undefined) throw Object.assign(new Error("SQL text not found"), { errstr: "error" });
 		const statement = database.prepare(sql);
 		statement.setReadBigInts(true);
@@ -329,6 +339,10 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		const socket = request.socket;
 		if (fault?.kind === "reset-before") return void socket.resetAndDestroy();
 		if (fault?.kind === "closed-before") return void socket.end();
+		if (fault?.kind === "bad-request") {
+			response.writeHead(400, { "content-type": "text/plain" });
+			return void response.end(fault.message);
+		}
 		const named = typeof body.baton === "string" ? batons.get(body.baton) : undefined;
 		const existing = named !== undefined && streams.has(named) ? named : undefined;
 		if (fault?.kind === "expired" && existing !== undefined) expire(existing);
@@ -390,6 +404,7 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		}
 		if (owner === stream && hook !== undefined) await hook(pipeline);
 		if (batchHook !== undefined && body.requests.some((each) => each.type === "batch")) await batchHook(pipeline);
+		if (closing && closeHook !== undefined) await closeHook();
 		stream.lastActive = performance.now();
 		answer(response, 200, { baton: closing ? null : stream.baton, base_url: null, results });
 	};
@@ -430,6 +445,9 @@ export async function startFakeLibsqlServer(options: FakeLibsqlServerOptions = {
 		},
 		onOpenTransaction(next) {
 			hook = next;
+		},
+		onStreamClose(next) {
+			closeHook = next;
 		},
 		expireStreams() {
 			for (const stream of [...streams]) expire(stream);

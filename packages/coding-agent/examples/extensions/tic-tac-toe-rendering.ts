@@ -1,5 +1,5 @@
 import type { Theme } from "@bastani/atomic";
-import { type Component, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, matchesKey, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { type BoardDetails, type Cell, type GameState, type GameStatus, getWinLine } from "./tic-tac-toe-state.js";
 
 // ---------------------------------------------------------------------------

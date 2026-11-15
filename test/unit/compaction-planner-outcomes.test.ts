@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RetryCallbacks } from "@bastani/pi-ai";
+import type { RetryCallbacks } from "@bastani/atomic-ai";
 import { test } from "vitest";
 import { planDeletedLineRanges } from "../../packages/coding-agent/src/core/compaction/range-planner.js";
 import { borrowed, PARAMETERS, region, scriptedStream, testModel } from "./compaction-rung-support.js";

@@ -209,7 +209,7 @@ export {
 	isRetryableGitHubCopilotError,
 	type SerializedGitHubCopilotError,
 	serializeGitHubCopilotError,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 export { type Args, parseArgs } from "./cli/args.ts";
 // Config paths
 export {

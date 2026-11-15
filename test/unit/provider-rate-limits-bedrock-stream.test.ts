@@ -50,8 +50,8 @@ vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	};
 });
 
-import { stream as streamBedrock } from "@bastani/pi-ai/api/bedrock-converse-stream";
-import { getModel, normalizeContext } from "@bastani/pi-ai/compat";
+import { stream as streamBedrock } from "@bastani/atomic-ai/api/bedrock-converse-stream";
+import { getModel, normalizeContext } from "@bastani/atomic-ai/compat";
 import { normalizeModelFailureSignal } from "../../packages/coding-agent/src/core/model-fallback-failures.js";
 import {
 	providerCooldownMs,

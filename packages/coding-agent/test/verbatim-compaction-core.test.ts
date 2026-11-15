@@ -1,4 +1,4 @@
-import type { Message } from "@bastani/pi-ai/compat";
+import type { Message } from "@bastani/atomic-ai/compat";
 import { describe, expect, it } from "vitest";
 import type { RawLineRange } from "../src/core/compaction/compaction-types.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "../src/core/compaction/deleted-ranges.js";

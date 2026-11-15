@@ -6,7 +6,7 @@ import {
 	setKittyProtocolActive,
 	type Terminal,
 	TuiMainScreen,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.ts";

@@ -1,6 +1,6 @@
 // Regression for #3090: full model/effort catalogs must retain strict pair validation.
 import assert from "node:assert/strict";
-import type { ClassifierApi, ClassifierModel, JsonObject } from "@bastani/pi-ai";
+import type { ClassifierApi, ClassifierModel, JsonObject } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { test, vi } from "vitest";
 

@@ -6,7 +6,7 @@
  * `✓ ✗ ● ○` are used. The status reads the same without color; with `NO_COLOR` set it drops foreground color and
  * keeps the weight.
  */
-import { type Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { type Container, Spacer, Text } from "@bastani/atomic-tui";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { VisualLinePreview } from "../../modes/interactive/components/visual-truncate.ts";
 import { theme } from "../../modes/interactive/theme/theme.js";

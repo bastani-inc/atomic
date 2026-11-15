@@ -4,7 +4,7 @@
  * (earendil-works/pi#11060).
  */
 
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSessionRuntime } from "../src/core/agent-session-runtime.ts";
 import { isMissingSessionCwdError, MissingSessionCwdError } from "../src/core/session-cwd.ts";

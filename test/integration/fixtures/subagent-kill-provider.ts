@@ -5,7 +5,7 @@ import {
 	createAssistantMessageEventStream,
 	getCurrentSystemPrompt,
 	type JsonObject,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 
 export default function (pi: ExtensionAPI): void {
 	let taskId: string | undefined;

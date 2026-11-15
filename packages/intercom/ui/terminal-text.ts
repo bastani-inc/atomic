@@ -1,5 +1,5 @@
 import { terminalDisplayText } from "@bastani/atomic";
-import { replaceControlCharacters } from "@earendil-works/pi-tui";
+import { replaceControlCharacters } from "@bastani/atomic-tui";
 
 /** Make peer-supplied text inert for the terminal, keeping its newlines and tabs. */
 export function terminalSafeText(text: string): string {

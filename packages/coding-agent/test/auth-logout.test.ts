@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Credential, Provider } from "@bastani/pi-ai";
+import type { Credential, Provider } from "@bastani/atomic-ai";
 import { afterEach, describe, test, vi } from "vitest";
 import { runAuthLogout } from "../src/cli/auth-logout.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
@@ -55,7 +55,7 @@ afterEach(() => {
 describe("atomic auth logout", () => {
 	test("requires exactly one provider", async () => {
 		const { errors, run } = await setup({});
-		for (const args of [[], ["--api-key"], ["radius", "extra"]]) {
+		for (const args of [[], ["--api-key"], ["kimi-coding", "extra"]]) {
 			errors.length = 0;
 			assert.equal(await run(args), 1);
 			assert.deepEqual(errors, ["Usage: atomic auth logout <provider>"]);
@@ -63,34 +63,34 @@ describe("atomic auth logout", () => {
 	});
 
 	test("removes a stored account login", async () => {
-		const { credentials, modelRuntime, lines, errors, run, signal } = await setup({ radius: oauthCredential });
+		const { credentials, modelRuntime, lines, errors, run, signal } = await setup({ "kimi-coding": oauthCredential });
 		const logout = vi.spyOn(modelRuntime, "logout");
-		assert.equal(await run(["radius"]), 0);
-		assert.deepEqual(lines, ["Logged out of Radius."]);
+		assert.equal(await run(["kimi-coding"]), 0);
+		assert.deepEqual(lines, ["Logged out of Kimi For Coding."]);
 		assert.deepEqual(errors, []);
-		assert.deepEqual(logout.mock.calls, [["radius", { signal }]]);
-		assert.equal(await credentials.read("radius"), undefined);
+		assert.deepEqual(logout.mock.calls, [["kimi-coding", { signal }]]);
+		assert.equal(await credentials.read("kimi-coding"), undefined);
 	});
 
 	test("removes a stored API key by provider name and keeps other credentials", async () => {
 		const { credentials, lines, run } = await setup({
 			openai: { type: "api_key", key: "sk-test" },
-			radius: oauthCredential,
+			"kimi-coding": oauthCredential,
 		});
 		assert.equal(await run(["OpenAI"]), 0);
 		assert.deepEqual(lines, [
 			"Removed stored API key for OpenAI. Environment variables and models.json config are unchanged.",
 		]);
 		assert.equal(await credentials.read("openai"), undefined);
-		assert.equal((await credentials.read("radius"))?.type, "oauth");
+		assert.equal((await credentials.read("kimi-coding"))?.type, "oauth");
 	});
 
 	test("succeeds when nothing is stored, so it can be repeated", async () => {
 		const { modelRuntime, lines, run } = await setup({});
 		const logout = vi.spyOn(modelRuntime, "logout");
-		assert.equal(await run(["radius"]), 0);
+		assert.equal(await run(["kimi-coding"]), 0);
 		assert.deepEqual(lines, [
-			"No stored credentials for Radius. Environment variables and models.json config are unchanged.",
+			"No stored credentials for Kimi For Coding. Environment variables and models.json config are unchanged.",
 		]);
 		assert.equal(logout.mock.calls.length, 0);
 	});
@@ -140,44 +140,46 @@ describe("atomic auth logout", () => {
 	});
 
 	test("reports credentials that cannot be read", async () => {
-		const { modelRuntime, lines, errors, run } = await setup({ radius: oauthCredential });
+		const { modelRuntime, lines, errors, run } = await setup({ "kimi-coding": oauthCredential });
 		const logout = vi.spyOn(modelRuntime, "logout");
 		vi.spyOn(modelRuntime, "listCredentials").mockRejectedValueOnce(new Error("auth.json is malformed"));
-		assert.equal(await run(["radius"]), 1);
+		assert.equal(await run(["kimi-coding"]), 1);
 		assert.deepEqual(errors, ["Could not read stored credentials: auth.json is malformed"]);
 		vi.spyOn(modelRuntime, "listCredentials").mockRejectedValueOnce("locked");
-		assert.equal(await run(["radius"]), 1);
+		assert.equal(await run(["kimi-coding"]), 1);
 		assert.equal(errors[1], "Could not read stored credentials: locked");
 		assert.deepEqual(lines, []);
 		assert.equal(logout.mock.calls.length, 0);
 	});
 
 	test("reports credential removal failures", async () => {
-		const { modelRuntime, errors, run } = await setup({ radius: oauthCredential });
+		const { modelRuntime, errors, run } = await setup({ "kimi-coding": oauthCredential });
 		vi.spyOn(modelRuntime, "logout").mockRejectedValueOnce(new Error("storage failed"));
-		assert.equal(await run(["radius"]), 1);
+		assert.equal(await run(["kimi-coding"]), 1);
 		assert.deepEqual(errors, ["Logout failed: storage failed"]);
 		vi.spyOn(modelRuntime, "logout").mockRejectedValueOnce("storage locked");
-		assert.equal(await run(["radius"]), 1);
+		assert.equal(await run(["kimi-coding"]), 1);
 		assert.equal(errors[1], "Logout failed: storage locked");
 	});
 
 	test("reports committed credential removal separately from a failed logout", async () => {
-		const { modelRuntime, lines, errors, run } = await setup({ radius: oauthCredential });
+		const { modelRuntime, lines, errors, run } = await setup({ "kimi-coding": oauthCredential });
 		vi.spyOn(modelRuntime, "logout").mockRejectedValue(
-			new CredentialSynchronizationError("radius", "logout", undefined, { cause: new Error("snapshot failed") }),
+			new CredentialSynchronizationError("kimi-coding", "logout", undefined, {
+				cause: new Error("snapshot failed"),
+			}),
 		);
-		assert.equal(await run(["radius"]), 1);
+		assert.equal(await run(["kimi-coding"]), 1);
 		assert.deepEqual(errors, [
-			"Credentials removed for Radius, but local model state could not be synchronized: Credential logout committed for radius, but local synchronization failed",
+			"Credentials removed for Kimi For Coding, but local model state could not be synchronized: Credential logout committed for kimi-coding, but local synchronization failed",
 		]);
 		assert.deepEqual(lines, []);
 	});
 
 	test("rejects an unknown provider and lists the stored credentials", async () => {
-		const stored = await setup({ radius: oauthCredential, openai: { type: "api_key", key: "sk-test" } });
+		const stored = await setup({ "kimi-coding": oauthCredential, openai: { type: "api_key", key: "sk-test" } });
 		assert.equal(await stored.run(["nope\u001b[2J"]), 1);
-		assert.deepEqual(stored.errors, ['Unknown provider "nope [2J".', "Stored credentials: openai, radius"]);
+		assert.deepEqual(stored.errors, ['Unknown provider "nope [2J".', "Stored credentials: kimi-coding, openai"]);
 
 		const empty = await setup({});
 		assert.equal(await empty.run(["nope"]), 1);

@@ -1,4 +1,4 @@
-import type { RetryCallbacks } from "@bastani/pi-ai";
+import type { RetryCallbacks } from "@bastani/atomic-ai";
 import type { AgentSessionInternalSurface } from "./agent-session-methods.ts";
 
 export type SummarizationRetrySource =

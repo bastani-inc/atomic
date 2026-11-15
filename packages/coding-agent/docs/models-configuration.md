@@ -22,7 +22,6 @@ Each key under `providers` is a provider ID. A built-in provider ID changes that
 | `baseUrl` | string |  | API base URL. Also applies to the provider's built-in models. |
 | `apiKey` | string |  | Literal key, "$NAME" environment interpolation, or "!command" output. |
 | `api` | string |  | API for the provider's models, such as "openai-completions", "openai-responses", "anthropic-messages", or "google-generative-ai". |
-| `oauth` | `"radius"` |  | OAuth login flow. Requires baseUrl. |
 | `headers` | object |  | Request headers. Values resolve like apiKey. |
 | `compat` | [object](#compatibility) |  | Provider and model compatibility overrides. |
 | `authHeader` | boolean | `false` | Whether to send the resolved API key as Authorization: Bearer. |

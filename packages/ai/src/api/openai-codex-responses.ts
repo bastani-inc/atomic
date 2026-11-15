@@ -317,7 +317,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			assertPayloadPreservesFastRoute(model, body);
 			const websocketRequestId = codexSessionId || uuidv7();
 			// Codex expects an originator on every request; it is not attribution.
-			const identityHeaders = { originator: "pi", ...getIdentityHeaders(model, options?.identity) };
+			const identityHeaders = { originator: "atomic", ...getIdentityHeaders(model, options?.identity) };
 			const sseHeaders = buildSSEHeaders(
 				identityHeaders,
 				model.headers,

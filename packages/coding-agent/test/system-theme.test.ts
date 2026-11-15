@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { colorToOklch, colorToRgb, parseColor, rgbColor } from "@earendil-works/pi-tui";
+import { colorToOklch, colorToRgb, parseColor, rgbColor } from "@bastani/atomic-tui";
 import { afterEach, test } from "vitest";
 import { generateSystemThemeColors, wcagContrast } from "../src/modes/interactive/theme/system-theme.js";
 import { detectTerminalTheme, setTerminalColors } from "../src/modes/interactive/theme/terminal-colors.js";

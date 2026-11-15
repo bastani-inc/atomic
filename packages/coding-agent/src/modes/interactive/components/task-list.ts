@@ -1,4 +1,4 @@
-import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import { type Component, truncateToWidth } from "@bastani/atomic-tui";
 import type { TaskId, TaskRecord } from "../../../core/tasks/contracts.js";
 import { theme } from "../theme/theme.js";
 import { TaskRow, taskLabel, taskTitle } from "./task-row.js";

@@ -91,6 +91,10 @@ const PRIVATE_HOST_SUFFIX = /(^|\.)(localhost|localdomain|local|internal|lan|hom
  * True when a URL must not be handed to a third-party fallback service: it is not http(s), carries
  * credentials, or names a loopback, private, link-local, or intranet host that such a service could
  * not reach anyway. http(s) hosts arrive lowercased, with every IPv4 notation normalized to dotted quads.
+ *
+ * This is not the fetch tool's address guard (`url-ip-guards.ts` in coding-agent), which refuses every reserved and
+ * non-public range. It only keeps addresses that are private to this machine or network away from remote services,
+ * so reserved but non-private ranges such as the documentation prefix 2001:db8::/32 count as public here on purpose.
  */
 function isPrivateUrl(url: string): boolean {
 	const parsed = new URL(url);

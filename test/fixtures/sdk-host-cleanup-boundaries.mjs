@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as tick, setTimeout as delay } from "node:timers/promises";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent } from "@bastani/atomic-agent-core";
 import {
 	AgentSession, createAgentSession, createEventBus, DefaultResourceLoader,
 	ModelRuntime, SessionManager, SettingsManager,

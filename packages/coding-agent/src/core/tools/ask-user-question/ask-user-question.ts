@@ -1,4 +1,4 @@
-import type { OverlayOptions } from "@earendil-works/pi-tui";
+import type { OverlayOptions } from "@bastani/atomic-tui";
 import { experimentalToolSamplingProperty } from "../../experimental.ts";
 import { getHostQuestionnaire } from "../../extensions/host-input.js";
 import type { ToolDefinition } from "../../extensions/types.ts";
