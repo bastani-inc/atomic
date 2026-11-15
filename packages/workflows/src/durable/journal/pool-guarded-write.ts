@@ -78,6 +78,25 @@ function isFenceAbort(error: unknown): boolean {
 }
 
 /**
+ * How a planned pool write goes to the database as one unit, or undefined when it plans and writes inside one
+ * transaction instead: a libSQL database's batch, or, for an audited path on a database that locks rows, one fenced
+ * transaction whose fences lock what the plan decided on (#5102).
+ */
+export function poolWriteBatch(
+	storage: Pick<SqlPoolStorage, "batch" | "fenced">,
+	options?: SqlPoolBatchOptions,
+): ((statements: readonly SqliteStatement[], options?: SqlPoolBatchOptions) => Promise<SqliteRow[][]>) | undefined {
+	const { batch } = storage;
+	// The audit means nothing to a libSQL batch, which runs under the database's write lock anyway.
+	if (batch !== undefined)
+		return (statements, options) => batch(statements, options && { priority: options.priority });
+	const { fenced } = storage;
+	const audit = options?.audit;
+	if (fenced === undefined || audit === undefined) return undefined;
+	return (statements) => fenced(statements, audit);
+}
+
+/**
  * One pool write that never holds the write lock across a round trip (#4768). On a database that sends a batch in one
  * request, `plan` reads outside the lock, and its fences, writes and reads go as one batch: a fence that no longer
  * holds aborts it, and the write is planned again from a new read after a short random wait, for up to the journal's
@@ -91,7 +110,7 @@ export async function guardedPoolWrite<T>(
 	plan: PoolWritePlanner<T>,
 	options?: SqlPoolBatchOptions,
 ): Promise<T> {
-	const batch = storage.batch;
+	const batch = poolWriteBatch(storage, options);
 	if (batch === undefined)
 		return storage.transaction(async (tx) => {
 			const planned = await plan(tx, false, false);

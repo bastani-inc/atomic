@@ -85,6 +85,13 @@ export interface SqliteDriver extends SqliteDriverExecutor {
 	 */
 	readonly concurrentTransactions?: boolean;
 	/**
+	 * Optional. A transaction's connection takes a statement before the one before it is answered, and runs them in the
+	 * order it took them (a pipelined connection): the facade then sends each call of a transaction as it is made, so a
+	 * body that makes several calls without awaiting each sends them in one round trip. Otherwise each call waits for
+	 * the one before it to settle.
+	 */
+	readonly pipelinedTransactions?: boolean;
+	/**
 	 * Begins a write transaction. With `options.concurrency` `{ kind: "serial" }` (the default) it holds the write lock of the whole database
 	 * or of `concurrency.domain`, like `BEGIN IMMEDIATE`; with `fenced` it may take no lock, and the body locks its rows.
 	 * A SQLite driver runs both as `BEGIN IMMEDIATE` and may ignore the argument.
@@ -259,6 +266,26 @@ class CallQueue {
 
 	drained(): Promise<void> {
 		return this.tail;
+	}
+}
+
+/** Starts each operation as it is pushed, so a pipelined connection receives them in push order without waiting. */
+class PipelineQueue {
+	private readonly started = new Set<Promise<void>>();
+
+	push<T>(operation: () => Promise<T>): Promise<T> {
+		const result = operation();
+		const settled = result.then(
+			() => {},
+			() => {},
+		);
+		this.started.add(settled);
+		void settled.then(() => this.started.delete(settled));
+		return result;
+	}
+
+	drained(): Promise<void> {
+		return Promise.all(this.started).then(() => {});
 	}
 }
 
@@ -560,7 +587,8 @@ class DriverDatabase implements SqliteDatabase {
 		begin: SqliteDriverTransactionOptions,
 	): Promise<T> {
 		const connection = await this.call(() => this.driver.beginTransaction(begin), attempt);
-		const handleQueue = new CallQueue();
+		const pipelined = this.driver.pipelinedTransactions === true;
+		const handleQueue = pipelined ? new PipelineQueue() : new CallQueue();
 		let active = true;
 		let result: T;
 		const handle = this.createExecutor(
@@ -570,18 +598,30 @@ class DriverDatabase implements SqliteDatabase {
 			false,
 		);
 		const close = () => this.call(() => connection.close?.());
+		// Once the callback has returned, the commit's own failure decides whether the transaction runs again: a commit
+		// that may have applied, or that failed for a reason the driver does not recognize, never does, whatever the
+		// callback met before it. A committed transaction never runs again either.
+		const commit = () => {
+			attempt.transient = undefined;
+			return this.call(() => connection.commit(), attempt, true);
+		};
 		try {
+			let committing: Promise<void> | undefined;
 			try {
 				result = await callback(handle);
+				active = false;
+				// A pipelined connection takes the commit behind statements the callback left unanswered, so locks they take
+				// are held for one round trip. The driver's commit fails when one of them failed, so nothing commits then;
+				// a statement that fails as transient after this point lets the transaction run again, having written nothing.
+				if (pipelined) {
+					committing = commit();
+					committing.catch(() => {});
+				}
 			} finally {
 				active = false;
 				await handleQueue.drained();
 			}
-			// Once the callback has returned, the commit's own failure decides whether the transaction runs again: a commit
-			// that may have applied, or that failed for a reason the driver does not recognize, never does, whatever the
-			// callback met before it. A committed transaction never runs again either.
-			attempt.transient = undefined;
-			await this.call(() => connection.commit(), attempt, true);
+			await (committing ?? commit());
 		} catch (cause) {
 			let failure = cause as StorageFailureCause;
 			try {

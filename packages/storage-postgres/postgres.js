@@ -603,6 +603,8 @@ export async function openPostgresDatabase(options) {
 		execute: (sql, params) => autocommit((client) => executeAutocommit(client, sql, params)),
 		executeMultiple: (sql) => autocommit((client) => executeMultipleAutocommit(client, sql)),
 		concurrentTransactions: true,
+		// The connection is pipelined: a transaction's statements go out without waiting for the answers before them.
+		pipelinedTransactions: true,
 		dialect: postgresDialect,
 		// The facade always says how the transaction excludes other writers.
 		async beginTransaction(/** @type {import("@bastani/atomic/storage").SqliteDriverTransactionOptions} */ begin) {

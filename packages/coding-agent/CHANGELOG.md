@@ -23,6 +23,7 @@
 - Added `isPathInside(parent, child)` to the SDK exports: it tells whether a path is its parent or inside it, and treats a child named like `..cache` as inside ([#4836](https://github.com/bastani-inc/atomic/issues/4836))
 - Added `boundOversizedText()` to the extension API: it bounds text an extension adds to the model's context the way oversized tool results are bounded, saving longer text to a session file and returning a short preview with its path ([#4907](https://github.com/bastani-inc/atomic/issues/4907))
 - `atomic worker start`, `status`, `metrics` and `controller --db postgres://…` now serve and report worker pools on PostgreSQL, so a fleet can share one managed PostgreSQL database instead of libSQL. The storage SDK's `StorageDialect` gains `identifier()` and `maxIdentifierBytes`, which shorten a PostgreSQL name longer than 63 bytes to its head and a hash of the whole name instead of letting the server truncate it, and `jsonObject`, `jsonArray`, `jsonGroupArray`, `jsonIndexText`, `isNotDistinct`, `foreignKeysCheck`, `abort` and `types.rowKey` for stores that run on both engines ([#4793](https://github.com/bastani-inc/atomic/issues/4793))
+- The storage SDK's `StorageDialect.lockClause` takes `"key-share"` (`FOR KEY SHARE` on PostgreSQL), and a driver given to `createSqliteDatabase` can set `pipelinedTransactions` to receive a transaction's calls without waiting for each answer, with the commit sent behind them ([#5102](https://github.com/bastani-inc/atomic/issues/5102))
 
 ### Changed
 

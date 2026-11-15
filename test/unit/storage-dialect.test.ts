@@ -93,6 +93,7 @@ const renderings: readonly (readonly [string, (dialect: StorageDialect) => strin
 	["lockClause update", (d) => d.lockClause("update"), "", " FOR UPDATE"],
 	["lockClause share", (d) => d.lockClause("share"), "", " FOR SHARE"],
 	["lockClause skip", (d) => d.lockClause("update-skip-locked"), "", " FOR UPDATE SKIP LOCKED"],
+	["lockClause key share (#5102)", (d) => d.lockClause("key-share"), "", " FOR KEY SHARE"],
 	["rowOrder", (d) => d.rowOrder(), "rowid", "row_order"],
 	["rowOrder alias", (d) => d.rowOrder("e"), "e.rowid", "e.row_order"],
 	["rowOrderColumn", (d) => d.rowOrderColumn, "", ", row_order BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE"],

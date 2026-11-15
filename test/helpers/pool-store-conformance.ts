@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { SessionEntry } from "@bastani/atomic";
-import type { SqliteDatabase } from "@bastani/atomic/storage";
+import type { SqliteDatabase, SqliteValue } from "@bastani/atomic/storage";
 import { describe } from "vitest";
 import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
 import { JournalDurableBackend } from "../../packages/workflows/src/durable/journal/journal-backend.js";
@@ -10,10 +10,12 @@ import { openSqlPoolQueue } from "../../packages/workflows/src/durable/journal/s
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
 import { SqlSharedPool } from "../../packages/workflows/src/durable/journal/sql-shared-pool.js";
-import type { Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import { isStaleLeaseError, type Lease, RUN_EVENT_TYPES } from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
+import { isStaleWorkLeaseError } from "../../packages/workflows/src/shared/worker-pool-errors.js";
 import { openPoolSessions } from "../../packages/workflows/src/workers/pool-session-store.js";
 import { SqlResourceAdmission } from "../../packages/workflows/src/workers/resource-admission.js";
+import { interceptingDatabase } from "./intercepting-database.js";
 import { staleWorkLease } from "./pool-errors.js";
 import { poolWorkFixture } from "./pool-journal.js";
 
@@ -106,9 +108,23 @@ async function rootFixture(scope: PoolStoreScope) {
 		lease,
 		/** A table of this scope's journal. */
 		table: (name: string) => `${scope.prefix}${name}`,
-		/** A journal on another connection to the same database, as another host opens. */
-		async peer() {
-			const peer = await SqlRunJournal.open(await scope.connect(), { prefix: scope.prefix });
+		/**
+		 * A journal on another connection to the same database, as another host opens. `failures` collects every lock
+		 * conflict (deadlock or serialization failure) a statement of it met, including those its writes ran again.
+		 */
+		async peer(failures?: Error[]) {
+			const connection = await scope.connect();
+			const database =
+				failures === undefined
+					? connection
+					: interceptingDatabase(connection, {
+							all: (sql: string, params: readonly SqliteValue[], next) =>
+								next(sql, ...params).catch((error: Error) => {
+									if ((error as Error & { code?: string }).code === "lock-conflict") failures.push(error);
+									throw error;
+								}),
+						});
+			const peer = await SqlRunJournal.open(database, { prefix: scope.prefix });
 			peers.push(peer);
 			return peer;
 		},
@@ -382,7 +398,196 @@ export function registerPoolStoreConformance(run_: Runner, name: string, openSco
 			);
 			await granted();
 		});
+
+		test("many hosts claim, commit and complete concurrently: no double claim, no lost settle (#5102)", async (f) => {
+			const children = Array.from({ length: 24 }, (_, index) => poolWorkFixture(`many-${index}`));
+			for (const item of children) await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const failures: Error[] = [];
+			const hosts = await Promise.all(
+				Array.from({ length: 6 }, async () => openSqlPoolQueue(await f.peer(failures))),
+			);
+			const claimed: string[] = [];
+			const settled: string[] = [];
+			await Promise.all(
+				hosts.flatMap((queue, host) =>
+					Array.from({ length: 4 }, async (_, slot) => {
+						for (;;) {
+							const attempt = await queue.claim(f.lease, `h${host}/w${slot}`, [definition], 60_000);
+							if (attempt === undefined) {
+								if ((await queue.readyCandidates(f.lease, [definition], 1)).length === 0) return;
+								continue;
+							}
+							claimed.push(attempt.id);
+							const item = children.find((candidate) => candidate.work.childRunId === attempt.childRunId)!;
+							for (let step = 0; step < 2; step++)
+								await queue.commit(f.lease, attempt, `step-${step}`, {
+									kind: "checkpoint",
+									checkpoint: toolCheckpointOf(item, step),
+								});
+							await queue.complete(f.lease, attempt, { runId: attempt.childRunId, status: "completed" });
+							settled.push(attempt.id);
+						}
+					}),
+				),
+			);
+			assert.equal(claimed.length, children.length);
+			assert.equal(new Set(claimed).size, children.length, "no child was claimed twice");
+			assert.deepEqual([...settled].sort(), [...claimed].sort());
+			const work = await f.pool.inspect("root");
+			assert.deepEqual(
+				work.map((item) => [item.state, item.generation]),
+				work.map(() => ["completed", 1]),
+			);
+			for (const item of work) assert.ok(await f.pool.result("root", item.id), "every completion kept its result");
+			await assertDenseEvents(f, children.length * 3);
+			assert.deepEqual(failures, []);
+		});
+
+		test("32 concurrent writers commit one event per key with a dense sequence (#5102)", async (f) => {
+			const children = Array.from({ length: 32 }, (_, index) => poolWorkFixture(`writer-${index}`));
+			for (const item of children) await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const failures: Error[] = [];
+			const hosts = await Promise.all(
+				Array.from({ length: 8 }, async () => openSqlPoolQueue(await f.peer(failures))),
+			);
+			const attempts = [];
+			for (let index = 0; index < children.length; index++)
+				attempts.push((await hosts[index % hosts.length]!.claim(f.lease, `w${index}`, [definition], 60_000))!);
+			const receipts = await Promise.all(
+				attempts.map(async (attempt, index) => {
+					const queue = hosts[index % hosts.length]!;
+					const item = children.find((candidate) => candidate.work.childRunId === attempt.childRunId)!;
+					const seqs: number[] = [];
+					for (let step = 0; step < 3; step++) {
+						const checkpoint = toolCheckpointOf(item, step);
+						// The same operation twice at once is one event.
+						const [first, again] = await Promise.all([
+							queue.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint }),
+							queue.commit(f.lease, attempt, `step-${step}`, { kind: "checkpoint", checkpoint }),
+						]);
+						assert.deepEqual(again, first);
+						seqs.push(first.seq!);
+					}
+					return seqs;
+				}),
+			);
+			const seqs = receipts.flat();
+			assert.equal(new Set(seqs).size, seqs.length, "every commit took its own sequence number");
+			await assertDenseEvents(f, children.length * 4);
+			assert.deepEqual(failures, [], "no writer met a deadlock");
+		});
+
+		test("claim, commit, heartbeat, complete and takeover run concurrently without a deadlock (#5102)", async (f) => {
+			const children = Array.from({ length: 16 }, (_, index) => poolWorkFixture(`mixed-${index}`));
+			for (const item of children) await f.pool.enqueue(f.lease, item.work, item.boundary);
+			const failures: Error[] = [];
+			const journals = await Promise.all(Array.from({ length: 4 }, () => f.peer(failures)));
+			const hosts = await Promise.all(journals.map((journal) => openSqlPoolQueue(journal)));
+			const ledgers = await Promise.all(journals.map((journal) => openSqlPoolUsage(journal)));
+			const refused: Error[] = [];
+			const fenced = (error: Error) => {
+				if (!isStaleLeaseError(error) && !isStaleWorkLeaseError(error)) throw error;
+				refused.push(error);
+			};
+			let takenOver: Lease | undefined;
+			const worker = async (host: number, slot: number) => {
+				const queue = hosts[host]!;
+				for (let round = 0; round < 4 && takenOver === undefined; round++) {
+					const attempt = await queue.claim(f.lease, `h${host}/w${slot}`, [definition], 60_000).catch(fenced);
+					if (!attempt) return;
+					const item = children.find((candidate) => candidate.work.childRunId === attempt.childRunId)!;
+					try {
+						for (let step = 0; step < 3; step++) {
+							await queue.heartbeat(
+								f.lease,
+								attempt,
+								60_000,
+								ledgers[host]!.recording(f.lease, attempt, [
+									{
+										key: `usage:${attempt.id}`,
+										usage: { input: step, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 },
+									},
+								]),
+							);
+							await queue.commit(f.lease, attempt, `step-${step}`, {
+								kind: "checkpoint",
+								checkpoint: toolCheckpointOf(item, step),
+							});
+						}
+						await queue.complete(f.lease, attempt, { runId: attempt.childRunId, status: "completed" });
+					} catch (error) {
+						fenced(error as Error);
+					}
+				}
+			};
+			const takeover = (async () => {
+				await delay(50);
+				const outcome = await journals[0]!.takeover("root", "replacement", f.backend.holderId);
+				if (outcome.status !== "acquired") assert.fail("No takeover");
+				takenOver = outcome.lease;
+			})();
+			await Promise.all([
+				takeover,
+				...hosts.flatMap((_, host) => Array.from({ length: 4 }, (_, slot) => worker(host, slot))),
+			]);
+			assert.deepEqual(failures, [], "no statement met a deadlock");
+			// Every write under the replaced lease is refused from now on.
+			const leased = (await f.pool.inspect("root")).find((item) => item.state === "leased");
+			if (leased !== undefined)
+				await assert.rejects(
+					hosts[0]!.commit(f.lease, leased, "late", {
+						kind: "checkpoint",
+						checkpoint: toolCheckpointOf(children.find((item) => item.work.childRunId === leased.childRunId)!, 9),
+					}),
+					(error: Error) => isStaleLeaseError(error) || isStaleWorkLeaseError(error),
+				);
+			await assert.rejects(hosts[1]!.claim(f.lease, "late", [definition], 60_000), isStaleLeaseError);
+			await assertDenseEvents(f);
+		});
 	});
+}
+
+/** The `step`th tool checkpoint of the child `item` queues. */
+function toolCheckpointOf(item: ReturnType<typeof poolWorkFixture>, step: number): DurableToolCheckpoint {
+	const { scope } = item.work;
+	return {
+		kind: "tool",
+		workflowId: "root",
+		checkpointId: `${scope}:tool:${step}`,
+		name: "tool",
+		argsHash: `${scope}:args:${step}`,
+		output: { step },
+		completedAt: 1,
+		topology: {
+			version: 1,
+			nodeId: `tool-${step}`,
+			parentIds: [],
+			ordinal: step,
+			order: step,
+			run: { ...item.boundary.topology!.boundary!.child },
+		},
+	};
+}
+
+/** The root's events: one per key, numbered 1 to their count, with `count` checkpoints when given. */
+async function assertDenseEvents(f: { database: SqliteDatabase; table: (name: string) => string }, count?: number) {
+	const events = await f.database.all<{ seq: number; key: string | null }>(
+		`SELECT seq, key FROM ${f.table("wf_events")} WHERE run_id = ? ORDER BY seq`,
+		"root",
+	);
+	assert.deepEqual(
+		events.map((event) => Number(event.seq)),
+		events.map((_, index) => index + 1),
+		"the sequence is dense",
+	);
+	const keys = events.flatMap((event) => (event.key === null ? [] : [event.key]));
+	assert.equal(new Set(keys).size, keys.length, "one event per key");
+	if (count !== undefined)
+		assert.equal(
+			keys.filter((key) => key.startsWith(`[${JSON.stringify(RUN_EVENT_TYPES.checkpointRecorded)},`)).length,
+			count,
+			"every checkpoint was recorded",
+		);
 }
 
 function delay(ms: number): Promise<void> {

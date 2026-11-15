@@ -1,6 +1,7 @@
 import type { SqliteExecutor, SqliteStatement, StorageDialect } from "@bastani/atomic/storage";
 import { fold_usage } from "../../../builtin/verification-usage.js";
 import type { DurableCheckpoint } from "../types.js";
+import { locksRows } from "./internal.js";
 
 export const POOL_USAGE_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "cost"] as const;
 export type PoolUsage = Readonly<Record<(typeof POOL_USAGE_FIELDS)[number], number>>;
@@ -81,6 +82,25 @@ export function poolUsageSchema(runs: string, dialect: StorageDialect): string {
 		${columns.map((column) => `${column} ${real} NOT NULL, ${column}_err ${real} NOT NULL`).join(", ")}
 	);
 	${triggers.map((trigger) => dialect.renderTrigger(trigger)).join("\n")}`;
+}
+
+/**
+ * Creates `root`'s usage totals row from the usage recorded so far, unless it exists: a write that records usage runs it
+ * first. Where writes run concurrently (PostgreSQL, #5102) a second writer waits for the first's row and leaves it, so
+ * the totals row is created once and every later usage write's trigger adds to it.
+ */
+export function poolUsageTotalsSeed(dialect: StorageDialect, runs: string, root: string): SqliteStatement {
+	const table = poolUsageTable(runs);
+	const totals = poolUsageTotalsTable(runs);
+	const columns = POOL_USAGE_FIELDS.map((field) => field.toLowerCase());
+	return {
+		sql: `INSERT INTO ${totals}(root, ${columns.map((column) => `${column}, ${column}_err`).join(", ")})
+					SELECT ?, ${columns.map((column) => `s.${column}, 0`).join(", ")} FROM (
+						SELECT ${columns.map((column) => `COALESCE(SUM(u.${column}), 0) AS ${column}`).join(", ")}
+						FROM ${table} u JOIN ${runs}_work w ON w.id = u.work WHERE w.root = ?
+					) s WHERE NOT EXISTS (SELECT 1 FROM ${totals} WHERE root = ?) AND EXISTS (SELECT 1 FROM ${runs}_pool WHERE root = ?)${locksRows(dialect) ? " ON CONFLICT(root) DO NOTHING" : ""}`,
+		params: [root, root, root, root],
+	};
 }
 
 export function poolStageUsageKey(runId: string, stageId: string): string {
