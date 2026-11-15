@@ -29,6 +29,7 @@
 
 ### Fixed
 
+- Compaction now takes each message's role from where the message starts, not from lines in its text that look like a role header. A tool result can no longer mark its own lines as `<keepContext>`-protected or pass as the latest user message, so the user's spans are no longer released ahead of it. Lines inside a message that look like a role header are written with a leading `\` in the compaction transcript ([#4831](https://github.com/bastani-inc/atomic/issues/4831))
 - Fixed worktree snapshot capture storing a commit that was never checked against the deny-list: the bundle of unpushed commits was built from `HEAD`, so a commit that landed during the capture, such as one adding a `.env`, could reach snapshot blob storage. The bundle is now built from the commit the capture checked, through a temporary ref under `refs/atomic/capture/` that is removed afterwards, and a bundle whose tip or commits differ from the record is discarded instead of stored ([#4900](https://github.com/bastani-inc/atomic/issues/4900))
 - GitHub URLs are now validated, and clones are confined to the clone directory.
 - Fixed a session resume reusing or removing an idle restored worktree that held an unsaved edit to a tracked file that snapshots leave out, such as a tracked `.env.example`, a file listed in `.atomic/snapshot-ignore` or a file over the size cap: the reuse put back the committed content and the edit was lost. Such a worktree is now kept as it is, and the resume restores a new one ([#4897](https://github.com/bastani-inc/atomic/issues/4897))
