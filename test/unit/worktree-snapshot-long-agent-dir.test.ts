@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.ts";
 import {
@@ -15,6 +15,7 @@ import { isWorkspaceRestoreError } from "../../packages/coding-agent/src/core/wo
 import {
 	assertRestorePathBudget,
 	stagingWorktreeName,
+	WINDOWS_GIT_DIR_LIMIT,
 	WINDOWS_WORKTREE_GIT_DIR_LIMIT,
 	WINDOWS_WORKTREE_ROOT_LIMIT,
 	worktreeGitDir,
@@ -129,12 +130,16 @@ test("a pooled workflow's restore under a 120-character agent directory restores
 });
 
 test.runIf(process.platform === "win32")(
-	"a restore whose paths would pass Windows' limit fails before writing, naming the agent directory (#5139)",
+	"a 159-character agent directory restores and leases, and a 160-character one fails before writing, naming it (#5139)",
 	async () => {
-		const agentDir = agentDirOf(200);
-		const storeDir = join(agentDir, "worktree-snapshots");
 		const { snapshot } = await recordedSnapshot();
+		const fits = join(agentDirOf(159), "worktree-snapshots");
+		const restored = await restoreWorktreeSnapshot(snapshot, { blobs: store.snapshotBlobs, storeDir: fits });
+		const lease = await acquireWorkspaceWriterLease({ worktree: restored }, { owner: "run/stage" });
+		await lease.release();
 
+		const agentDir = agentDirOf(160);
+		const storeDir = join(agentDir, "worktree-snapshots");
 		const error = await restoreWorktreeSnapshot(snapshot, { blobs: store.snapshotBlobs, storeDir }).then(
 			() => undefined,
 			(failure: unknown) => failure,
@@ -142,21 +147,49 @@ test.runIf(process.platform === "win32")(
 
 		assert.ok(isWorkspaceRestoreError(error), `expected a restore error, got ${String(error)}`);
 		assert.equal(error.code, "path-too-long");
-		assert.ok(error.message.includes(agentDir), error.message);
-		assert.equal(existsSync(join(storeDir, "worktrees")), false, "nothing was checked out");
+		// The object store Git runs in is the first path past its limit.
+		assert.equal(error.limit, 220);
+		assert.equal(dirname(error.target!), join(storeDir, "repositories"));
+		assert.ok(error.message.includes(`under ${agentDir} (160 characters)`), error.message);
+		assert.equal(existsSync(storeDir), false, "nothing was written");
 	},
 );
 
+/** The configuration file of the one object store under `storeDir`. */
+function storeConfig(storeDir: string): string {
+	const repositories = join(storeDir, "repositories");
+	return join(repositories, readdirSync(repositories).find((name) => name.endsWith(".git"))!, "config");
+}
+
 test.runIf(process.platform === "win32")(
-	"the object stores Atomic creates on Windows turn on core.longpaths for their worktrees (#5139)",
+	"the object stores Atomic creates or restores from on Windows turn on core.longpaths for their worktrees (#5139)",
 	async () => {
 		const storeDir = join(agentDirOf(120), "worktree-snapshots");
 		const { snapshot } = await recordedSnapshot();
-
-		const restored = await restoreWorktreeSnapshot(snapshot, { blobs: store.snapshotBlobs, storeDir });
+		const restore = () => restoreWorktreeSnapshot(snapshot, { blobs: store.snapshotBlobs, storeDir });
+		const longPaths = (worktree: string) =>
+			sandbox.git(worktree, "config", "--local", "--type=bool", "--get", "core.longpaths");
 
 		// The store's own configuration, which its worktrees share; the host's system configuration may say so too.
-		assert.equal(await sandbox.git(restored, "config", "--local", "--type=bool", "--get", "core.longpaths"), "true");
+		assert.equal(await longPaths(await restore()), "true");
+		// A store an earlier version created gets it too.
+		await sandbox.git(sandbox.root, "config", "--file", storeConfig(storeDir), "--unset", "core.longpaths");
+		assert.equal(await longPaths(await restore()), "true");
+		// A store that has it is not rewritten.
+		const written = statSync(storeConfig(storeDir)).mtimeMs;
+		await new Promise((settle) => setTimeout(settle, 50));
+		await restore();
+		assert.equal(statSync(storeConfig(storeDir)).mtimeMs, written);
+	},
+);
+
+test.runIf(process.platform !== "win32")(
+	"object stores on other platforms keep their configuration (#5139)",
+	async () => {
+		const storeDir = join(agentDirOf(120), "worktree-snapshots");
+		const { snapshot } = await recordedSnapshot();
+		await restoreWorktreeSnapshot(snapshot, { blobs: store.snapshotBlobs, storeDir });
+		assert.equal(readFileSync(storeConfig(storeDir), "utf8").includes("longpaths"), false);
 	},
 );
 
@@ -181,30 +214,31 @@ describe("the restore path budget on Windows (#5139)", () => {
 		cleanups.push(replaceEnvironmentVariable("ATOMIC_CODING_AGENT_DIR", agentDir));
 		const storeDir = join(agentDir, "worktree-snapshots");
 		const store = join(storeDir, "repositories", `${"f".repeat(24)}.git`);
-		const root = (name: string) => join(storeDir, "worktrees", name);
-		return { agentDir, storeDir, store, root };
+		const staging = join(storeDir, "worktrees", stagingWorktreeName("0".repeat(12)));
+		return { agentDir, storeDir, store, staging };
 	}
 
-	function budgetError(check: () => void) {
+	function budgetError(budget: Omit<Parameters<typeof assertRestorePathBudget>[0], "platform">) {
 		try {
-			check();
+			assertRestorePathBudget({ ...budget, platform: "win32" });
 		} catch (error) {
 			return error;
 		}
 		return undefined;
 	}
 
-	test("a worktree root of 212 characters fits and one of 213 fails, naming the agent directory", () => {
-		const { agentDir, storeDir, store } = layout(120);
-		// A restore `into` a deep directory: its root is long while Git's directory for it, named after its last component, is not.
-		const fits = `/${"r".repeat(212 - 3)}/w`;
-		assert.equal(fits.length, WINDOWS_WORKTREE_ROOT_LIMIT);
-		assertRestorePathBudget({ storeDir, store, roots: [fits], snapshotId: "s1", platform: "win32" });
+	/** A path of exactly `length` characters whose last component is `w`, so Git's directory for it stays short. */
+	const deep = (length: number) => join(resolve("/"), "r".repeat(length - resolve("/").length - 2), "w");
 
-		const over = `/${"r".repeat(212 - 2)}/w`;
-		const error = budgetError(() =>
-			assertRestorePathBudget({ storeDir, store, roots: [fits, over], snapshotId: "s1", platform: "win32" }),
-		);
+	test("a target root of 212 characters fits and one of 213 fails, naming the agent directory", () => {
+		const { agentDir, storeDir, store, staging } = layout(120);
+		const fits = deep(212);
+		assert.equal(fits.length, WINDOWS_WORKTREE_ROOT_LIMIT);
+		const budget = { storeDir, store: () => store, staging, snapshotId: "s1" };
+		assert.equal(budgetError({ ...budget, target: fits }), undefined);
+
+		const over = deep(213);
+		const error = budgetError({ ...budget, target: over });
 
 		assert.ok(isWorkspaceRestoreError(error));
 		assert.equal(error.code, "path-too-long");
@@ -215,42 +249,70 @@ describe("the restore path budget on Windows (#5139)", () => {
 		);
 	});
 
-	test("Git's own directory for a worktree is held to 247 characters", () => {
-		const { storeDir, store, root } = layout(120);
-		const gitDirs = join(store, "worktrees");
-		const fits = root(`.${"g".repeat(247 - gitDirs.length - 2)}`);
-		assert.equal(worktreeGitDir(store, fits).length, WINDOWS_WORKTREE_GIT_DIR_LIMIT);
-		assert.ok(fits.length <= WINDOWS_WORKTREE_ROOT_LIMIT);
-		assertRestorePathBudget({ storeDir, store, roots: [fits], snapshotId: null, platform: "win32" });
-
-		const error = budgetError(() =>
-			assertRestorePathBudget({ storeDir, store, roots: [`${fits}g`], snapshotId: null, platform: "win32" }),
-		);
-
+	test("a staging root is held to 212 characters too", () => {
+		const { storeDir, store } = layout(40);
+		const target = join(storeDir, "worktrees", "w");
+		const budget = { storeDir, store: () => store, target, snapshotId: null };
+		assert.equal(budgetError({ ...budget, staging: deep(212) }), undefined);
+		const error = budgetError({ ...budget, staging: deep(213) });
 		assert.ok(isWorkspaceRestoreError(error));
-		assert.equal(error.target, worktreeGitDir(store, `${fits}g`));
+		assert.equal(error.target, deep(213));
+	});
+
+	test("the Git directory of the staging worktree is held to 247 characters, and the store to 220", () => {
+		const { storeDir, store, staging } = layout(120);
+		const target = join(storeDir, "worktrees", "w");
+		const named = (length: number) =>
+			join(dirname(staging), `.${"g".repeat(length - worktreeGitDir(store, "/x").length - 1)}x`);
+		assert.equal(worktreeGitDir(store, named(247)).length, WINDOWS_WORKTREE_GIT_DIR_LIMIT);
+		const budget = { storeDir, store: () => store, target, snapshotId: null };
+		assert.equal(budgetError({ ...budget, staging: named(247) }), undefined);
+
+		const error = budgetError({ ...budget, staging: named(248) });
+		assert.ok(isWorkspaceRestoreError(error));
+		assert.equal(error.target, worktreeGitDir(store, named(248)));
 		assert.equal(error.limit, 247);
 		assert.ok(error.message.startsWith("Cannot restore: "), error.message);
+
+		const longStore = (length: number) => `${store}${"s".repeat(length - store.length)}`;
+		assert.equal(budgetError({ ...budget, staging, store: () => longStore(WINDOWS_GIT_DIR_LIMIT) }), undefined);
+		const storeError = budgetError({ ...budget, staging, store: () => longStore(221) });
+		assert.ok(isWorkspaceRestoreError(storeError));
+		assert.equal(storeError.target, longStore(221));
+		assert.equal(storeError.limit, 220);
 	});
 
 	test("a store outside the agent directory is the directory the error names", () => {
 		const { store } = layout(40);
 		const storeDir = `/${"s".repeat(230)}`;
-		const error = budgetError(() =>
-			assertRestorePathBudget({
-				storeDir,
-				store,
-				roots: [join(storeDir, "worktrees", "w")],
-				snapshotId: null,
-				platform: "win32",
-			}),
-		);
+		const error = budgetError({
+			storeDir,
+			store: () => store,
+			staging: join(storeDir, "worktrees", ".s"),
+			target: join(storeDir, "worktrees", "w"),
+			snapshotId: null,
+		});
 		assert.ok(isWorkspaceRestoreError(error));
 		assert.equal(error.agentDir, resolve(storeDir));
 	});
 
+	test("a store that cannot be named is left for the restore to report", () => {
+		const { storeDir, staging } = layout(40);
+		const unnamed = () => {
+			throw new Error("no store");
+		};
+		assert.equal(budgetError({ storeDir, store: unnamed, staging, target: deep(400), snapshotId: null }), undefined);
+	});
+
 	test("other platforms have no budget", () => {
 		const { storeDir, store } = layout(120);
-		assertRestorePathBudget({ storeDir, store, roots: [`/${"r".repeat(400)}`], snapshotId: null, platform: "linux" });
+		assertRestorePathBudget({
+			storeDir,
+			store: () => store,
+			staging: deep(400),
+			target: deep(400),
+			snapshotId: null,
+			platform: "linux",
+		});
 	});
 });

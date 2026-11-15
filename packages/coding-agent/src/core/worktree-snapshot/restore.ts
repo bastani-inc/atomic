@@ -613,26 +613,16 @@ async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<v
  * On Windows, turns on `core.longpaths` in `store`'s configuration, which its worktrees share, so Git run in a restored
  * worktree by the user or an agent handles that worktree's files past 260 characters as Atomic's own Git does (#5139).
  * A store that has it is left alone, so its configuration is rewritten at most once; a failure to write it costs only
- * that, since Atomic's own Git commands set it on their command lines.
+ * that, since Atomic's own Git commands set it on their command lines. Run only under the store's repository lock.
  */
 async function enableLongPaths(store: string, signal?: AbortSignal): Promise<void> {
-	if (process.platform !== "win32" || longPathStores.has(store)) return;
+	if (process.platform !== "win32") return;
 	const config = join(store, "config");
 	const git: GitRunOptions = { cwd: store, signal, allowExitCodes: [1] };
 	const current = await runGit(["config", "--file", config, "--type=bool", "--get", "core.longpaths"], git);
-	if (current.stdout.toString("utf8").trim() !== "true") {
-		const written = await runGit(["config", "--file", config, "core.longpaths", "true"], git).then(
-			() => true,
-			() => false,
-		);
-		signal?.throwIfAborted();
-		if (!written) return;
-	}
-	longPathStores.add(store);
+	if (current.stdout.toString("utf8").trim() === "true") return;
+	await runGit(["config", "--file", config, "core.longpaths", "true"], git).catch(() => signal?.throwIfAborted());
 }
-
-/** Stores this process found or made long-path enabled, which it does not check again. */
-const longPathStores = new Set<string>();
 
 function bundlePrerequisites(bundle: Uint8Array): string[] {
 	const end = Buffer.from(bundle).indexOf("\n\n");
@@ -1774,9 +1764,8 @@ function stagingPath(storeDir: string, path: string, into: string | undefined, i
 }
 
 /**
- * On Windows, fails a restore into `path` over the object store `store` names before it writes anything when a worktree
- * root or Git directory it would create is longer than Git for Windows accepts (#5139). A store that cannot be named
- * fails later, where the restore needs it, as on every other platform.
+ * On Windows, fails a restore into `path` over the object store `store` names before it writes anything when a path it
+ * would create is longer than Git for Windows accepts (#5139). Staging names have one length, whatever the id.
  */
 function checkPathBudget(
 	storeDir: string,
@@ -1785,15 +1774,8 @@ function checkPathBudget(
 	into: string | undefined,
 	snapshotId: string | null,
 ): void {
-	if (process.platform !== "win32") return;
-	let named: string;
-	try {
-		named = store();
-	} catch {
-		return;
-	}
 	const staging = stagingPath(storeDir, path, into, "0".repeat(12));
-	assertRestorePathBudget({ storeDir, store: named, roots: [staging, path], snapshotId });
+	assertRestorePathBudget({ storeDir, store, staging, target: path, snapshotId });
 }
 
 /**

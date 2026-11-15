@@ -41,6 +41,8 @@ export function stagingWorktreeName(id: string): string {
 	return `.s-${id.replaceAll("-", "").slice(0, 12)}`;
 }
 
+/** Longest `GIT_DIR` Git for Windows accepts, as the object store a restore runs Git in: longer is "'$GIT_DIR' too big" (#5139). */
+export const WINDOWS_GIT_DIR_LIMIT = 220;
 /** Longest worktree root Git for Windows accepts: longer, `git worktree add` fails with "'$GIT_DIR' too big" (#5139). */
 export const WINDOWS_WORKTREE_ROOT_LIMIT = 212;
 /** Longest administrative directory, `<store>/worktrees/<name>`, Git for Windows can create and read back (#5139). */
@@ -53,34 +55,46 @@ export function worktreeGitDir(store: string, root: string): string {
 
 export interface RestorePathBudget {
 	readonly storeDir: string;
-	readonly store: string;
-	/** The worktree roots the restore creates: its staging worktree and its final path. */
-	readonly roots: readonly string[];
+	/** The object store the restore checks out of; called only on Windows, and a failure to name it skips the check. */
+	readonly store: () => string;
+	/** The staging worktree the restore checks out first. Git names the worktree's own directory after it. */
+	readonly staging: string;
+	/** Where the restore moves the staging worktree. */
+	readonly target: string;
 	readonly snapshotId: string | null;
 	readonly platform?: NodeJS.Platform;
 }
 
 /**
  * Fails a restore on Windows before it writes anything when a path it would create is longer than Git for Windows
- * accepts even with `core.longpaths`: a worktree root, or the administrative directory Git names after it. The error
- * names the agent directory, whose depth sets these lengths, or `storeDir` when the restore was given one elsewhere.
- * Atomic opens its own files there in long-path forms, so these two are the paths that bound it (#5139).
+ * accepts even with `core.longpaths`: the object store, the staging worktree's or the target's root, or the directory Git keeps the
+ * worktree's own files in, named after the staging worktree and kept after the move. The error names the agent
+ * directory, whose depth sets these lengths, or `storeDir` when the restore was given one elsewhere. Atomic opens its
+ * own files there in long-path forms, so these are the paths that bound it (#5139). A store that cannot be named is
+ * not checked: the restore fails where it needs it, as on every other platform.
  */
 export function assertRestorePathBudget(budget: RestorePathBudget): void {
 	if ((budget.platform ?? process.platform) !== "win32") return;
-	const agentDir = resolve(getAgentDir());
-	const storeDir = resolve(budget.storeDir);
-	const owner = dirname(storeDir) === agentDir ? agentDir : storeDir;
-	const checks = budget.roots.flatMap((root) => [
-		{ path: root, limit: WINDOWS_WORKTREE_ROOT_LIMIT },
-		{ path: worktreeGitDir(budget.store, root), limit: WINDOWS_WORKTREE_GIT_DIR_LIMIT },
-	]);
+	let store: string;
+	try {
+		store = budget.store();
+	} catch {
+		return;
+	}
+	const checks = [
+		{ path: store, limit: WINDOWS_GIT_DIR_LIMIT },
+		{ path: budget.staging, limit: WINDOWS_WORKTREE_ROOT_LIMIT },
+		{ path: budget.target, limit: WINDOWS_WORKTREE_ROOT_LIMIT },
+		{ path: worktreeGitDir(store, budget.staging), limit: WINDOWS_WORKTREE_GIT_DIR_LIMIT },
+	];
 	const over = checks.find((check) => check.path.length > check.limit);
 	if (over === undefined) return;
+	const agentDir = resolve(getAgentDir());
+	const storeDir = resolve(budget.storeDir);
 	throw new WorkspaceRestoreError("path-too-long", {
 		snapshotId: budget.snapshotId,
 		target: over.path,
 		limit: over.limit,
-		agentDir: owner,
+		agentDir: dirname(storeDir) === agentDir ? agentDir : storeDir,
 	});
 }

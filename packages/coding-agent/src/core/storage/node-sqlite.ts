@@ -1403,7 +1403,7 @@ function groupCommitHold(value: number | undefined): number {
  * in-memory and temporary databases, `:memory:` and the empty path, and every path elsewhere are passed unchanged.
  */
 export function sqliteFilePath(path: string, platform: NodeJS.Platform = process.platform): string {
-	if (platform !== "win32" || path === "" || path === ":memory:" || path.startsWith("file:")) return path;
+	if (platform !== "win32" || path === ":memory:" || path.startsWith("file:")) return path;
 	return win32.toNamespacedPath(path);
 }
 
