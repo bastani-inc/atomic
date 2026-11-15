@@ -17,7 +17,9 @@ const { getJitiCliPath } = await import("../../packages/intercom/broker/spawn.js
 const { requestBrokerShutdown } = await import("../../packages/intercom/broker/broker-stop.js");
 const { IntercomClient } = await import("../../packages/intercom/broker/client.js");
 const { HELD_FOR_AWAY_ASKER_TARGET } = await import("../../packages/intercom/broker/held-reply-targets.js");
-const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN } = await import("../../packages/intercom/broker/crash-points.js");
+const { BROKER_CRASH_AT_ENV, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } = await import(
+	"../../packages/intercom/broker/crash-points.js"
+);
 
 type Client = InstanceType<typeof IntercomClient>;
 type Message = import("../../packages/intercom/types.js").Message;
@@ -258,6 +260,89 @@ for (const restart of RESTARTS) {
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
 }
+
+/**
+ * The recipient of a live ask between connected sessions closes, to be resumed, and the broker crashes while it handles
+ * that departure: after it took the ask off its live routes and before it kept it for the recipient's return.
+ */
+async function recipientDepartsIntoACrash(label: string) {
+	await restartBroker(RESTARTS[0].stop, { crashAt: DEPARTURE_ASKS_TO_IT_TAKEN });
+	const crashing = broker;
+	assert.ok(crashing !== undefined);
+	const crashed = new Promise<void>((resolveExit) => crashing.once("exit", () => resolveExit()));
+	const asker = { name: `asker-${label}`, returnAddress: randomUUID() };
+	const recipient = { name: `recipient-${label}`, returnAddress: randomUUID() };
+	const askerFirst = await connect(asker.name, asker);
+	const recipientFirst = await connect(recipient.name, recipient);
+	const askerId = idOf(askerFirst.client);
+	const recipientId = idOf(recipientFirst.client);
+	const questionId = randomUUID();
+	const asked = await askerFirst.client.send(recipient.name, {
+		messageId: questionId,
+		text: "which port?",
+		expectsReply: true,
+	});
+	assert.equal(asked.delivered, true, asked.reason);
+	await vi.waitFor(() => assert.ok(recipientFirst.received.some((message) => message.id === questionId)), WAIT);
+	await recipientFirst.client.disconnect({ resumable: true });
+	await crashed;
+	await startBroker();
+	return {
+		asker: { ...asker, id: askerId },
+		recipient: { ...recipient, id: recipientId },
+		askerFirst,
+		questionId,
+	};
+}
+
+test(
+	"a live ask whose recipient departs into a broker crash is answered once when both are back",
+	async () => {
+		const { asker, recipient, askerFirst, questionId } = await recipientDepartsIntoACrash(
+			`answered-mid-departure-${randomUUID().slice(0, 8)}`,
+		);
+		const askerBack = await reconnect(asker);
+		const recipientBack = await reconnect(recipient);
+		const replyId = randomUUID();
+		const replied = await recipientBack.client.send(asker.id, {
+			messageId: replyId,
+			text: "port 8080",
+			replyTo: questionId,
+			requirePendingReply: true,
+			expectedRecipientId: asker.id,
+		});
+		assert.equal(replied.delivered, true, replied.reason);
+		await vi.waitFor(() => assert.equal(outcomes(askerBack, questionId).length, 1), WAIT);
+		await recipientBack.client.disconnect();
+		await sleep(SETTLE_MS);
+		assert.deepEqual(
+			[...outcomes(askerFirst, questionId), ...outcomes(askerBack, questionId)],
+			[{ id: replyId, failed: false }],
+		);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
+
+test(
+	"a live ask whose recipient departs into a broker crash fails once when that recipient ends",
+	async () => {
+		const { asker, recipient, askerFirst, questionId } = await recipientDepartsIntoACrash(
+			`ended-mid-departure-${randomUUID().slice(0, 8)}`,
+		);
+		const askerBack = await reconnect(asker);
+		const recipientBack = await reconnect(recipient);
+		await recipientBack.client.disconnect();
+		await vi.waitFor(() => assert.equal(outcomes(askerBack, questionId).length, 1), WAIT);
+		await sleep(SETTLE_MS);
+		assert.equal(
+			[...outcomes(askerFirst, questionId), ...outcomes(askerBack, questionId)].length,
+			1,
+			"the asker is told once",
+		);
+		assert.equal(outcomes(askerBack, questionId)[0]?.failed, true);
+	},
+	REAL_BROKER_TEST_TIMEOUT_MS,
+);
 
 test(
 	"a session holding a live ask's recipient id after a restart can neither answer nor fail it (#4829)",

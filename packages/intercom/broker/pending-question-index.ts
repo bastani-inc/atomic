@@ -291,9 +291,10 @@ export class PendingQuestionIndex {
     return pending;
   }
 
-  takeForTarget(targetSessionId: string): PendingQuestion[] {
+  /** `keepLiveRecords`: as for {@link takeForSender}, the caller forgets them once what replaces them is written. */
+  takeForTarget(targetSessionId: string, options: { readonly keepLiveRecords?: boolean } = {}): PendingQuestion[] {
     const pending = this.removeForTarget(targetSessionId);
-    this.forgetLive(pending);
+    if (options.keepLiveRecords !== true) this.forgetLive(pending);
     return pending;
   }
 

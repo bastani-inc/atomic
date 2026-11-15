@@ -108,7 +108,7 @@ import { type IntercomRecipientGoneError, serializeIntercomRecipientGoneError } 
 import { NotHostedSessionError, serializeIntercomHostedSessionError } from "./hosted-session-errors.js";
 import { type ParsedHostedSession, validateHostSessionsFrame, validateUnhostSessionsFrame } from "./hosted-sessions.js";
 import { ReleasedAskerReplies, type ReleasedAskerReplyRoute } from "./released-asker-replies.js";
-import { crashPoint, DEPARTURE_ASKS_TAKEN } from "./crash-points.js";
+import { crashPoint, DEPARTURE_ASKS_TAKEN, DEPARTURE_ASKS_TO_IT_TAKEN } from "./crash-points.js";
 import { releasedAskerReplyRefusal } from "./released-asker-remote-replies.js";
 import { hasGroup, normalizeGroup, normalizeGroups, workflowInvocationRefusalFor } from "../group.js";
 import { handleBrokerPresence } from "./presence-handler.js";
@@ -3291,7 +3291,11 @@ class IntercomBroker {
       this.pendingQuestions.parkTarget(sessionId, childName, releasedOwner);
     } else if (!ended && departed.supervisorId === undefined && departed.hostedBy === undefined) {
       // #4751: a recipient whose connection dropped without ending its session may restart; its asks stay pending.
-      this.pendingQuestions.keepDormant(this.pendingQuestions.takeForTarget(sessionId));
+      // Each ask keeps its live record until its away record is written, so a crash in between loses none.
+      const askedOfIt = this.pendingQuestions.takeForTarget(sessionId, { keepLiveRecords: true });
+      crashPoint(DEPARTURE_ASKS_TO_IT_TAKEN);
+      this.pendingQuestions.keepDormant(askedOfIt);
+      this.pendingQuestions.forgetLive(askedOfIt);
     } else {
       if (ended) {
         // #4751: an away asker's ask to it fails with a message held until the asker is back; a session that ended
