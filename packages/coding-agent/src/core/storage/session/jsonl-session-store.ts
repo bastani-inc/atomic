@@ -17,7 +17,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { createSessionCwdMatcher } from "../../../utils/canonical-path.ts";
-import { readLines } from "../../../utils/lines.js";
+import { readLines } from "../../../utils/lines.ts";
 import type { SessionEntry } from "../../session-manager-types.ts";
 import { validateSessionEntryStructure } from "./entry-structure.js";
 import {
