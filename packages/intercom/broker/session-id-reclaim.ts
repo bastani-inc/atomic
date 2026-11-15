@@ -8,7 +8,9 @@ const DEFAULT_MAX_ENTRIES = 10_000;
  * A requested id is granted only when no live session holds it, so a registration never displaces a
  * live session. While this broker remembers who last held an id, only a registration with that same
  * return address (the host's session identity) gets it back. A broker that restarted remembers
- * nothing; its sessions and their routing state are gone too, so a free id carries no authority.
+ * nothing; its sessions and their routing state are gone too, so on a single node a free id carries no authority. In
+ * multi-node mode it does (shared ask routes and known sessions outlive any one broker), so the broker also claims the
+ * id from its binding in shared storage (`MultiNodeRouter.claimSessionId`) before granting it.
  */
 export class SessionIdReclaim {
 	private readonly retired = new Map<string, string | undefined>();

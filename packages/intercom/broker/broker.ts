@@ -252,6 +252,16 @@ interface PendingReleasedReplyAck {
   readonly route: ReleasedAskerReplyRoute;
 }
 
+/** What registering a session reads from its validated `register` message. */
+interface SessionRegistrationRequest {
+  readonly session: Omit<SessionInfo, "id">;
+  readonly registrationGroup?: unknown;
+  readonly returnAddress?: unknown;
+  readonly supervisorOwnerToken?: unknown;
+  readonly acknowledgesReceipt?: unknown;
+  readonly supervisor?: unknown;
+}
+
 function isSupervisorRegistration(value: unknown): value is SupervisorRegistration {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const registration = value as Record<string, unknown>;
@@ -403,6 +413,8 @@ class IntercomBroker {
   }
   private supervisorChannel = new SupervisorChannelCache();
   private sessionIdReclaim = new SessionIdReclaim();
+  /** Connections whose requested id is being checked against its multi-node binding before they register. */
+  private claimingSessionIds = new WeakSet<net.Socket>();
   private pendingQuestions = new PendingQuestionIndex();
   private receipts = new RecipientReceipts<ConnectedSession>();
   // #4751: an ask has no expiry, so a released asker's route lasts until the child or its owner ends or it is back.
@@ -1790,120 +1802,14 @@ class IntercomBroker {
 		});
 	}
 
-  private handleMessage(
+  /** Register the session under the id it was granted, and complete its registration (see `register`). */
+  private completeSessionRegistration(
     socket: net.Socket,
-    msg: JsonWireValue,
-    currentId: string | null,
+    clientMessage: SessionRegistrationRequest,
+    id: string,
+    supervisorId: string | undefined,
     setId: (id: string | null) => void,
   ): void {
-    if (typeof msg !== "object" || msg === null || Array.isArray(msg) || typeof msg.type !== "string") {
-      throw new Error("Invalid client message");
-    }
-
-    const clientMessage = msg;
-
-    if (clientMessage.type === "health") {
-      if (typeof clientMessage.requestId !== "string" || clientMessage.requestId.length > 128) {
-        throw new Error("Invalid health request");
-      }
-      writeMessageIfOpen(socket, { type: "health", requestId: clientMessage.requestId, instanceId: this.instanceId });
-      return;
-    }
-
-    // Control requests need no registration: `atomic intercom restart` and `atomic storage status` send them.
-    if (clientMessage.type === "broker_status" || clientMessage.type === "shutdown") {
-      if (typeof clientMessage.requestId !== "string") throw new Error(`Invalid ${clientMessage.type} message`);
-      const requestId = clientMessage.requestId;
-      if (clientMessage.type === "broker_status") {
-        void this.statusReport().then((report) => writeMessageIfOpen(socket, { type: "broker_status", requestId, report }));
-        return;
-      }
-      console.error("Intercom broker shutting down on request, so its sessions reconnect to a new broker");
-      writeMessageWithOutcome(socket, { type: "shutdown_ack", requestId }, () => this.shutdown());
-      return;
-    }
-
-    if (currentId === null && clientMessage.type !== "register" && clientMessage.type !== "register_verified") {
-      throw new Error(`Received ${clientMessage.type} before register`);
-    }
-
-    switch (clientMessage.type) {
-      case "register":
-      case "register_verified": {
-        if (this.shuttingDown) {
-          // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
-          // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
-          writeMessageIfOpen(socket, RETIRING_REFUSAL);
-          socket.end();
-          return;
-        }
-        if (clientMessage.type === "register_verified") {
-          const expected = clientMessage.expectedRouting;
-          if (typeof expected !== "object" || expected === null || Array.isArray(expected) || typeof expected.acrossMachines !== "boolean") {
-            throw new Error("Invalid expected routing");
-          }
-          if (expected.acrossMachines !== (this.multiNodeStatus !== "off")) {
-            writeMessageIfOpen(socket, ROUTING_CHANGED_REFUSAL);
-            socket.end();
-            return;
-          }
-        }
-        if (!isSessionRegistration(clientMessage.session)) {
-          throw new Error("Invalid register message");
-        }
-		if (clientMessage.registrationGroup !== undefined &&
-			(typeof clientMessage.registrationGroup !== "string" || clientMessage.registrationGroup.trim().length === 0)) {
-			throw new Error("Invalid registration group");
-		}
-		if (clientMessage.returnAddress !== undefined &&
-			(typeof clientMessage.returnAddress !== "string" || clientMessage.returnAddress.length === 0)) {
-			throw new Error("Invalid return address");
-		}
-		if (clientMessage.supervisorOwnerToken !== undefined
-			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
-			throw new Error("Invalid supervisor owner token");
-		}
-		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
-			throw new Error("Invalid preferred session id");
-		}
-		if (clientMessage.acknowledgesReceipt !== undefined && clientMessage.acknowledgesReceipt !== true) {
-			throw new Error("Invalid receipt acknowledgement capability");
-		}
-		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
-			throw new Error("Invalid protocol range");
-		}
-
-        if (currentId) {
-          throw new Error("Received duplicate register message");
-        }
-        // #4538: a client that names no range is a 0.9.71-or-older client, which drops its connection over a frame
-        // type it does not know; such frames are never written to it.
-        recordClientProtocol(
-          socket,
-          protocolRangeOf(isBrokerProtocolRange(clientMessage.protocol) ? clientMessage.protocol : undefined),
-        );
-
-        let supervisorId: string | undefined;
-        if (clientMessage.supervisor !== undefined) {
-          const childName = clientMessage.session.name?.trim();
-          const claimedSupervisorId = isSupervisorRegistration(clientMessage.supervisor) && childName
-            ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
-            : undefined;
-          if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
-            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
-            this.endRefusedConnection(socket, currentId, setId);
-            return;
-          }
-          supervisorId = claimedSupervisorId;
-        }
-
-        this.openDeliveredMessages();
-        // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
-        const id = this.sessionIdReclaim.grant(
-          clientMessage.preferredSessionId,
-          clientMessage.returnAddress,
-          (sessionId) => this.sessions.has(sessionId),
-        ) ?? randomUUID();
         setId(id);
         const initialGroups = normalizeGroups(clientMessage.session.groups, clientMessage.session.group);
         const legacyGroup = normalizeGroup(clientMessage.session.group ?? initialGroups.values().next().value);
@@ -2050,6 +1956,151 @@ class IntercomBroker {
             else discardHeldWrites(held);
           });
         }
+  }
+
+  private handleMessage(
+    socket: net.Socket,
+    msg: JsonWireValue,
+    currentId: string | null,
+    setId: (id: string | null) => void,
+  ): void {
+    if (typeof msg !== "object" || msg === null || Array.isArray(msg) || typeof msg.type !== "string") {
+      throw new Error("Invalid client message");
+    }
+
+    const clientMessage = msg;
+
+    if (clientMessage.type === "health") {
+      if (typeof clientMessage.requestId !== "string" || clientMessage.requestId.length > 128) {
+        throw new Error("Invalid health request");
+      }
+      writeMessageIfOpen(socket, { type: "health", requestId: clientMessage.requestId, instanceId: this.instanceId });
+      return;
+    }
+
+    // Control requests need no registration: `atomic intercom restart` and `atomic storage status` send them.
+    if (clientMessage.type === "broker_status" || clientMessage.type === "shutdown") {
+      if (typeof clientMessage.requestId !== "string") throw new Error(`Invalid ${clientMessage.type} message`);
+      const requestId = clientMessage.requestId;
+      if (clientMessage.type === "broker_status") {
+        void this.statusReport().then((report) => writeMessageIfOpen(socket, { type: "broker_status", requestId, report }));
+        return;
+      }
+      console.error("Intercom broker shutting down on request, so its sessions reconnect to a new broker");
+      writeMessageWithOutcome(socket, { type: "shutdown_ack", requestId }, () => this.shutdown());
+      return;
+    }
+
+    if (currentId === null && clientMessage.type !== "register" && clientMessage.type !== "register_verified") {
+      throw new Error(`Received ${clientMessage.type} before register`);
+    }
+
+    switch (clientMessage.type) {
+      case "register":
+      case "register_verified": {
+        if (this.shuttingDown) {
+          // A client that connected while this broker was closing (a multi-node broker takes up to two seconds to give
+          // its leases up) learns it lost the race and spawns the replacement, instead of finding its socket reset.
+          writeMessageIfOpen(socket, RETIRING_REFUSAL);
+          socket.end();
+          return;
+        }
+        if (clientMessage.type === "register_verified") {
+          const expected = clientMessage.expectedRouting;
+          if (typeof expected !== "object" || expected === null || Array.isArray(expected) || typeof expected.acrossMachines !== "boolean") {
+            throw new Error("Invalid expected routing");
+          }
+          if (expected.acrossMachines !== (this.multiNodeStatus !== "off")) {
+            writeMessageIfOpen(socket, ROUTING_CHANGED_REFUSAL);
+            socket.end();
+            return;
+          }
+        }
+        if (!isSessionRegistration(clientMessage.session)) {
+          throw new Error("Invalid register message");
+        }
+		if (clientMessage.registrationGroup !== undefined &&
+			(typeof clientMessage.registrationGroup !== "string" || clientMessage.registrationGroup.trim().length === 0)) {
+			throw new Error("Invalid registration group");
+		}
+		if (clientMessage.returnAddress !== undefined &&
+			(typeof clientMessage.returnAddress !== "string" || clientMessage.returnAddress.length === 0)) {
+			throw new Error("Invalid return address");
+		}
+		if (clientMessage.supervisorOwnerToken !== undefined
+			&& (typeof clientMessage.supervisorOwnerToken !== "string" || !clientMessage.supervisorOwnerToken)) {
+			throw new Error("Invalid supervisor owner token");
+		}
+		if (clientMessage.preferredSessionId !== undefined && typeof clientMessage.preferredSessionId !== "string") {
+			throw new Error("Invalid preferred session id");
+		}
+		if (clientMessage.acknowledgesReceipt !== undefined && clientMessage.acknowledgesReceipt !== true) {
+			throw new Error("Invalid receipt acknowledgement capability");
+		}
+		if (clientMessage.protocol !== undefined && !isBrokerProtocolRange(clientMessage.protocol)) {
+			throw new Error("Invalid protocol range");
+		}
+
+        if (currentId || this.claimingSessionIds.has(socket)) {
+          throw new Error("Received duplicate register message");
+        }
+        // #4538: a client that names no range is a 0.9.71-or-older client, which drops its connection over a frame
+        // type it does not know; such frames are never written to it.
+        recordClientProtocol(
+          socket,
+          protocolRangeOf(isBrokerProtocolRange(clientMessage.protocol) ? clientMessage.protocol : undefined),
+        );
+
+        let supervisorId: string | undefined;
+        if (clientMessage.supervisor !== undefined) {
+          const childName = clientMessage.session.name?.trim();
+          const claimedSupervisorId = isSupervisorRegistration(clientMessage.supervisor) && childName
+            ? this.supervisorChannel.claim(clientMessage.supervisor.capability, childName)
+            : undefined;
+          if (!claimedSupervisorId || !this.sessions.has(claimedSupervisorId)) {
+            writeMessageIfOpen(socket, { type: "registration_failed", reason: "Invalid supervisor authorization" });
+            this.endRefusedConnection(socket, currentId, setId);
+            return;
+          }
+          supervisorId = claimedSupervisorId;
+        }
+
+        this.openDeliveredMessages();
+        // #3760: a restored or reconnected session keeps the id peers know when it is free; never a live one.
+        const preferred = this.sessionIdReclaim.grant(
+          clientMessage.preferredSessionId,
+          clientMessage.returnAddress,
+          (sessionId) => this.sessions.has(sessionId),
+        );
+        const multiNode = this.multiNode;
+        const returnAddress = clientMessage.returnAddress;
+        const registration: SessionRegistrationRequest = { ...clientMessage, session: clientMessage.session };
+        if (preferred !== undefined && multiNode !== undefined && typeof returnAddress === "string") {
+          // In multi-node mode the id carries authority on every broker (shared ask routes and known sessions name
+          // sessions by id), so it is granted only to the return address it is bound to in shared storage.
+          this.claimingSessionIds.add(socket);
+          void multiNode
+            .claimSessionId(preferred, returnAddress)
+            .then((claimed) => {
+              this.claimingSessionIds.delete(socket);
+              if (socket.destroyed || socket.writableEnded) return;
+              if (this.shuttingDown) {
+                writeMessageIfOpen(socket, RETIRING_REFUSAL);
+                socket.end();
+                return;
+              }
+              this.completeSessionRegistration(
+                socket,
+                registration,
+                claimed && !this.sessions.has(preferred) ? preferred : randomUUID(),
+                supervisorId,
+                setId,
+              );
+            })
+            .catch((error: unknown) => socket.destroy(error instanceof Error ? error : new Error(String(error))));
+          break;
+        }
+        this.completeSessionRegistration(socket, registration, preferred ?? randomUUID(), supervisorId, setId);
         break;
       }
 
