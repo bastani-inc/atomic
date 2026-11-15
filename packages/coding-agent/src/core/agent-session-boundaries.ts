@@ -23,6 +23,7 @@ import {
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
 } from "./compaction/index.ts";
+import { uniquifyToolCallIds } from "./context-tool-pairing.js";
 import type { AgentActivityOutcome, BoundaryContextPreview, SessionBoundaryDraft } from "./extensions/index.js";
 import { convertToLlm, deferMessagesInterleavedWithToolBatch, repairOrphanToolResults } from "./messages.ts";
 import { type SessionEntry, SessionManager } from "./session-manager.ts";
@@ -49,7 +50,8 @@ function projectSessionMessages(session: AgentSession): AgentMessage[] {
 
 function finalizeProjectedMessages(session: AgentSession, messages: AgentMessage[]): AgentMessage[] {
 	// While a run is active the loop owns pairing for the in-flight tool batch.
-	const repaired = repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(messages), {
+	// Unique ids first: deferral and repair pair results with calls by id (#5056).
+	const repaired = repairOrphanToolResults(deferMessagesInterleavedWithToolBatch(uniquifyToolCallIds(messages)), {
 		repairTrailing: !session.isStreaming,
 		inFlightToolCallIds: session._reissuedToolCallIds,
 	});
