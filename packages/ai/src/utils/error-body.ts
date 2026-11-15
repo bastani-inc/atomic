@@ -68,8 +68,7 @@ export function appendProviderResponseFailureDiagnostic(
 	error: unknown,
 	errorCode?: string,
 ): void {
-	if (!(error instanceof Error)) return;
-	const status = extractStatus(error);
+	const { status } = normalizeProviderError(error);
 	if (status === undefined) return;
 	appendAssistantMessageDiagnostic(output, {
 		type: "provider_response_failure",

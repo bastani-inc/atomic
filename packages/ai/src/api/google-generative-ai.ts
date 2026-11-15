@@ -308,7 +308,7 @@ export const stream: StreamFunction<"google-generative-ai", GoogleOptions> = (
 		} catch (error) {
 			output.stopReason = options?.signal?.aborted ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
-			appendProviderResponseFailureDiagnostic(output, error, googleErrorStatus(error));
+			appendProviderResponseFailureDiagnostic(output, error, googleErrorStatus(output.errorMessage));
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

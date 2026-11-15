@@ -29,8 +29,9 @@ function createModel<TApi extends Api>(api: TApi): Model<TApi> {
 }
 
 function answering(status: number, body: unknown): FetchFunction {
+	// Pretty-printed, as Google sends its error bodies.
 	return async () =>
-		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+		new Response(JSON.stringify(body, null, 2), { status, headers: { "content-type": "application/json" } });
 }
 
 const failingFetch: FetchFunction = async () => {

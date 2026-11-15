@@ -574,9 +574,8 @@ export function mapStopReason(reason: FinishReason): StopReason {
  * The provider status of a failed Google request, such as `UNAVAILABLE` or `RESOURCE_EXHAUSTED`: the SDK's error
  * message is the response's JSON error body, which carries it as `error.status`.
  */
-export function googleErrorStatus(error: unknown): string | undefined {
-	if (!(error instanceof Error)) return undefined;
-	return /"status"\s*:\s*"([A-Z_]+)"/.exec(error.message)?.[1];
+export function googleErrorStatus(errorMessage: string): string | undefined {
+	return /"status"\s*:\s*"([A-Z_]+)"/.exec(errorMessage)?.[1];
 }
 
 /**
