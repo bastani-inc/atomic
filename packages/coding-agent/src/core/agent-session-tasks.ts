@@ -13,7 +13,7 @@ import { flushTaskCompletionMessages } from "./tasks/completion-ordering.js";
 import type * as C from "./tasks/contracts.js";
 import { TASK_HEARTBEAT_MESSAGE_TYPE, type TaskHeartbeatDelivery } from "./tasks/heartbeat.js";
 import { bindOwnerTaskStore, getOwnerTaskStore, OwnerTaskStore } from "./tasks/owner-store.js";
-import { taskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
+import { loadTaskOwnTranscriptEntries, taskTranscriptSource } from "./tasks/supervisor.js";
 import type { SupervisedCommandOwner } from "./tools/bash-pty-native.js";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import { recordParkedStageTasks } from "./workflow-stage-parked-tasks.ts";
@@ -70,22 +70,16 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			// Settlement can precede the UI projection's next drain. Read the owner
 			// snapshot, not the display store, when attaching completion context.
 			const host = this._agentTaskHost;
-			const watched = host?.watchOwnerTasks();
-			const task = watched?.ok
-				? watched.value.snapshot.tasks.find(
-						(item) =>
-							item.ref.taskId === envelope.taskId &&
-							item.ref.ownerId === envelope.ownerId &&
-							settledWithCompletion(host!, envelope),
-					)
-				: undefined;
-			if (watched?.ok) watched.value.dispose();
+			const task = host
+				?.taskRecords(new Set([envelope.taskId as C.TaskId]))
+				.find((item) => item.ref.ownerId === envelope.ownerId && settledWithCompletion(host, envelope));
 			// Foreground shell results already return through their tool call. Do not
 			// create a second model turn or background card for that same execution.
 			if (task?.kind === "command" && !task.wasBackground) return;
 			const lease = task ? host?.resolveTask(envelope.taskId) : undefined;
 			const source = lease?.ok ? taskTranscriptSource(lease.value) : undefined;
-			const ownEntries = lease?.ok ? taskOwnTranscriptEntries(lease.value) : undefined;
+			// A finished child keeps its history in its session store, not in memory (#5186).
+			const ownEntries = lease?.ok ? await loadTaskOwnTranscriptEntries(lease.value) : undefined;
 			const response = ownEntries
 				? ownEntries
 						.slice()
@@ -182,11 +176,9 @@ export function getAgentTaskHost(this: AgentSession): AgentTaskHost {
 			...[ref, receipt]: Parameters<NonNullable<import("./tasks/supervisor.js").TrustedTaskHost["onTaskSettled"]>>
 		) => {
 			// Save the task's kind with the intent: a notice replayed after a restart has no task record to read it from.
-			const watched = this._agentTaskHost?.watchOwnerTasks();
-			const kind = watched?.ok
-				? watched.value.snapshot.tasks.find((task) => task.ref.taskId === receipt.taskId)?.kind
-				: closingTaskKinds.get(this)?.get(receipt.taskId);
-			if (watched?.ok) watched.value.dispose();
+			const kind =
+				closingTaskKinds.get(this)?.get(receipt.taskId) ??
+				this._agentTaskHost?.taskRecords(new Set([receipt.taskId]))[0]?.kind;
 			this._agentTaskHost?.retainTaskRecord(receipt.taskId);
 			outbox.record(ref.ownerId, receipt, kind);
 			void outbox.flush();

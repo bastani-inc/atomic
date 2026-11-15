@@ -221,6 +221,28 @@ test("picker moves from the re-anchored selection after a live reorder (#3824)",
 	assert.equal(state.selectedRunId, "beta");
 });
 
+test("picker clamps the selection to the last row when the selected last run disappears", () => {
+	const alpha = makeRun({ id: "alpha", status: "running", startedAt: 300 });
+	const beta = makeRun({ id: "beta", status: "running", startedAt: 200 });
+	const gamma = makeRun({ id: "gamma", status: "running", startedAt: 100 });
+	const state = createSessionPickerState();
+	const before = selectRunsForPicker([alpha, beta, gamma], "", true, NOW);
+	syncSessionPickerSelection(state, before);
+	handleSessionPickerInput("\x1b[B", state, before);
+	handleSessionPickerInput("\x1b[B", state, before);
+	assert.equal(state.selectedRunId, "gamma");
+
+	const after = selectRunsForPicker([alpha, beta], "", true, NOW);
+	syncSessionPickerSelection(state, after);
+	assert.equal(state.selectedIndex, 1);
+	assert.equal(state.selectedRunId, "beta");
+	assert.deepEqual(handleSessionPickerInput("\r", state, after), { kind: "connect", runId: "beta" });
+
+	syncSessionPickerSelection(state, []);
+	assert.equal(state.selectedIndex, 0);
+	assert.equal(state.selectedRunId, undefined);
+});
+
 test("shared indicator resolver matches per-run resolution across nested and cyclic ancestry (#3824)", () => {
 	const root = makeRun({ id: "root", status: "running" });
 	const middle = makeRun({ id: "middle", status: "running", parentRunId: "root" });
