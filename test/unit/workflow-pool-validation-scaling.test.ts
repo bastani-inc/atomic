@@ -248,6 +248,10 @@ test("a root's usage total always equals SUM over its usage rows, through every 
 async function usageHistory(seed: number): Promise<void> {
 	const f = await poolFixture();
 	const other = await openNodeSqliteDatabase(f.database.descriptor.location);
+	// Thousands of commits, each flushed to disk under the store's `synchronous=FULL`, cost 34–43 s on a loaded Windows
+	// host (#4823). The totals' triggers, not durability, are under test: neither connection waits for a flush.
+	await f.database.exec("PRAGMA synchronous=OFF");
+	await other.exec("PRAGMA synchronous=OFF");
 	try {
 		const ledger = await openSqlPoolUsage(f.journal);
 		const next = seeded(seed);

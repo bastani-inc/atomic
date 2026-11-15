@@ -46,6 +46,11 @@ export function buildStructuredCompactionInput(
 	};
 }
 
+/**
+ * Message spans read from a region's role header lines, for a region built from flat text without
+ * recorded `messageSpans`. Only the serializer writes header lines; it escapes header-like lines
+ * inside message bodies, so a body cannot start a message here either.
+ */
 export function inferMessageSpans(region: NumberedRegion): NonNullable<NumberedRegion["messageSpans"]> {
 	const spans: NonNullable<NumberedRegion["messageSpans"]> = [];
 	for (let index = 0; index < region.lines.length; index++) {

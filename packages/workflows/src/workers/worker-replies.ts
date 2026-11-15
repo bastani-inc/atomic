@@ -14,6 +14,11 @@ export interface PendingWorkerRequest {
 	 * that keeps its attempt while its lease lasts does (#4768).
 	 */
 	readonly outageTolerant?: boolean;
+	/**
+	 * The attempt the request was made for (#4768). Refused after the worker moved on from it, the request rejects
+	 * without fencing the attempt the worker holds now: an ended attempt's late write is not the new attempt's fault.
+	 */
+	readonly attempt?: { readonly workId: string; readonly generation: number };
 }
 
 /** What a worker learned from its replies about its attempt and its root: once set, neither goes back. */
@@ -60,6 +65,13 @@ export function receiveWorkerReply(
 		return undefined;
 	}
 	const error = rehydrateError(reply.error);
+	if (
+		receiver?.attempt !== undefined &&
+		(held === undefined || held.id !== receiver.attempt.workId || held.generation !== receiver.attempt.generation)
+	) {
+		receiver.reject(error);
+		return undefined;
+	}
 	if (receiver?.outageTolerant === true && infrastructureFaultOf(error) === "storage_unavailable") {
 		receiver.reject(error);
 		return undefined;

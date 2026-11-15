@@ -11,6 +11,7 @@ import { registerPendingStageIntercomBridge } from "../../packages/workflows/src
 import { createDurableResumeRuntime } from "../../packages/workflows/src/extension/runtime-durable-resume.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
+import { PENDING_STAGE_MESSAGE_LIMIT } from "../../packages/workflows/src/shared/pending-stage-delivery.js";
 import { createStore, type Store } from "../../packages/workflows/src/shared/store.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { countRunListScans, holdFinishedRuns } from "../helpers/finished-runs.js";
@@ -522,4 +523,19 @@ test("a store change and a message for an interrupted run do not scan the runs t
 		position: 1,
 	});
 	assert.equal(scans.reads, 0, `a message to an interrupted run scanned the run list ${scans.reads} times`);
+});
+
+test("an interrupted run refuses a send past the per-target queue limit and keeps what it queued (#4896)", async () => {
+	const { host } = await restartedSession();
+	for (let index = 1; index <= PENDING_STAGE_MESSAGE_LIMIT; index++) {
+		assert.deepEqual(await host.send(`${GROUP}/future`, `flood-${index}`, "update"), {
+			outcome: "queued",
+			position: index,
+		});
+	}
+	assert.deepEqual(await host.send(`${GROUP}/future`, "one-too-many", "update"), {
+		outcome: "refused",
+		reason: `Pending stage message queue is full (limit ${PENDING_STAGE_MESSAGE_LIMIT}) for ${GROUP}/future`,
+	});
+	assert.deepEqual(await host.send(`${GROUP}/future`, "flood-1", "update"), { outcome: "queued", position: 50 });
 });

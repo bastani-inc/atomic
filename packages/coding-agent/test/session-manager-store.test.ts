@@ -94,6 +94,45 @@ test("a failed commit rejects the calling mutation unchanged and permits a later
 	assert.equal((await store.load(manager.getSessionId())).entries.length, 2);
 });
 
+test("an entry joined to a message is written in the message's own store write, so a session holds both or neither (#4839)", async () => {
+	class CountingStore extends ControlledStore {
+		readonly writes: (readonly SessionEntry[])[] = [];
+		override async append(id: string, entries: readonly SessionEntry[], options: SessionWriteOptions) {
+			const result = await super.append(id, entries, options);
+			this.writes.push(entries);
+			return result;
+		}
+	}
+	const store = new CountingStore();
+	const manager = await SessionManager.create(store, "/project");
+	await manager.appendMessage(message("first"));
+	const failed = message("refused");
+	manager.appendWithMessage(failed, () => ({ customType: "receipt", data: { op: "refused-op" } }));
+	store.failure = new SessionConflictError(manager.getSessionId(), 1, 2);
+	await assert.rejects(manager.appendMessage(failed));
+	store.failure = undefined;
+	const joined = message("joined");
+	manager.appendWithMessage(joined, () => ({ customType: "receipt", data: { op: "joined-op" } }));
+	const alone = message("alone");
+	manager.appendWithMessage(alone, () => undefined);
+	const joinedId = await manager.appendMessage(joined);
+	const aloneId = await manager.appendMessage(alone);
+	assert.deepEqual(
+		store.writes.slice(1).map((write) => write.map((entry) => entry.type)),
+		[["message", "custom"], ["message"]],
+		"the receipt goes in its message's write; a message whose companion returns nothing goes alone",
+	);
+	const reopened = await SessionManager.open(store, manager.getSessionId());
+	const receipts = reopened.getEntries().filter((entry) => entry.type === "custom");
+	assert.deepEqual(
+		receipts.map((entry) => (entry.type === "custom" ? entry.data : undefined)),
+		[{ op: "joined-op" }],
+		"the refused write left neither its message nor its receipt",
+	);
+	assert.equal(receipts[0]?.parentId, joinedId);
+	assert.equal(reopened.getEntry(aloneId)?.parentId, receipts[0]?.id, "the next entry follows the receipt");
+});
+
 test("concurrent mutations preserve invocation order and branch parentage", async () => {
 	const store = new ControlledStore();
 	const manager = await SessionManager.create(store, "/project");
