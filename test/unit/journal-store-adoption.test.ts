@@ -2511,7 +2511,25 @@ test("a journal and a store whose database paths pass 240 characters adopt and c
 		assert.deepEqual(report.adopted, [{ path, status: "adopted", shardId: 1, runs: 1 }]);
 		assert.deepEqual(report.discovered, []);
 	});
-	const consolidated = await consolidateJournalStore(store);
+	// What a reader of a connection's location sees, as the interference hooks above read it with `realpathSync`.
+	const locations = new Set<string>();
+	const exec = DatabaseSync.prototype.exec;
+	DatabaseSync.prototype.exec = function (this: DatabaseSync, sql: string) {
+		const location = this.location();
+		if (location !== null) locations.add(location);
+		exec.call(this, sql);
+	} as typeof exec;
+	let consolidated: Awaited<ReturnType<typeof consolidateJournalStore>>;
+	try {
+		consolidated = await consolidateJournalStore(store);
+	} finally {
+		DatabaseSync.prototype.exec = exec;
+	}
+	assert.ok(locations.size > 0);
+	for (const location of locations) {
+		assert.ok(location.startsWith(deep), location);
+		assert.ok(realpathSync(location).length > 240, location);
+	}
 	assert.deepEqual(
 		consolidated.runs.map((run) => [run.runId, run.outcome]),
 		[["a1", "moved"]],
