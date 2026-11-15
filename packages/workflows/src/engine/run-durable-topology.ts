@@ -145,22 +145,20 @@ export function createDurableStageTopologyResolver(
 }
 
 /**
- * What a prior process recorded for each completed prompt node of `workflowId` (#4941): the answer its completion
- * record holds, or, for a record written before answers were recorded with it, whether anything of the run was
- * recorded after it. Only then can the lost answer have reached anything; a record its attempt ended right after
- * is safe to ask again.
+ * What a prior process recorded, in `checkpoints` (the run's listing), for each completed prompt node of `workflowId`
+ * (#4941): the answer its completion record holds, or, for a record written before answers were recorded with it,
+ * whether anything of the run was recorded after it. Only then can the lost answer have reached anything; a record
+ * its attempt ended right after is safe to ask again.
  */
 export function createDurablePromptAnswerResolver(
-	backend: DurableWorkflowBackend,
+	checkpoints: readonly DurableCheckpoint[],
 	workflowId: string,
 ): (stageId: string) => DurablePromptStageAnswer | undefined {
-	const owned = backend
-		.listCheckpoints(workflowId)
-		.filter(
-			(checkpoint): checkpoint is DurableCheckpoint & { kind: "stage" | "tool" } =>
-				(checkpoint.kind === "stage" || checkpoint.kind === "tool") &&
-				(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === workflowId),
-		);
+	const owned = checkpoints.filter(
+		(checkpoint): checkpoint is DurableCheckpoint & { kind: "stage" | "tool" } =>
+			(checkpoint.kind === "stage" || checkpoint.kind === "tool") &&
+			(checkpoint.topology?.run === undefined || checkpoint.topology.run.runId === workflowId),
+	);
 	const nodeId = (checkpoint: (typeof owned)[number]): string | undefined =>
 		checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
 	return (stageId) => {

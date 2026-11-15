@@ -61,7 +61,7 @@ async function resolverOver(checkpoints: readonly DurableCheckpoint[]) {
 		status: "running",
 	});
 	for (const checkpoint of checkpoints) await backend.commitCheckpoint(checkpoint);
-	return createDurablePromptAnswerResolver(backend, RUN);
+	return createDurablePromptAnswerResolver(backend.listCheckpoints(RUN), RUN);
 }
 
 test("a completed prompt's answer is read from its completion record (#4941)", async () => {
