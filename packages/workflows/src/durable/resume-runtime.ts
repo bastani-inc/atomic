@@ -22,7 +22,6 @@ import {
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { isFullRunId, resolveRunIdTarget } from "../shared/run-id.js";
-import type { RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues } from "../shared/types.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import { type DurableWorkflowBackend, resumableEntryFromHandle } from "./backend.js";
@@ -319,23 +318,26 @@ async function resumeDurableWorkflowClaimed(
 		(handle.failedToolNodeId !== undefined ||
 			/^atomic-workflows: ctx\.tool .* aborted by node abort$/s.test(handle.error ?? ""))
 	) {
-		const source = withRecordedFailedTool(
-			durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId),
-			handle.failedToolNodeId,
-			deps.baseRunOpts.store?.run(resolved.workflowId),
-		);
-		const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);
-		if (frontier?.ok !== true)
+		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
+		// A failed tool the store refused the failure record of is not among the run's records: it has no checkpoint, so
+		// the run resumes from its records and runs it again (#5027).
+		const unrecorded =
+			handle.failedToolNodeId !== undefined &&
+			source !== undefined &&
+			!source.toolNodes.some((node) => node.id === handle.failedToolNodeId);
+		const frontier = source === undefined || unrecorded ? undefined : resolveToolResumeFrontier(source, backend);
+		if (!unrecorded && frontier?.ok !== true)
 			return {
 				ok: false,
 				reason: "startup_failed",
 				message: frontier?.message ?? `insufficient_state: missing tool frontier in run ${handle.workflowId}`,
 			};
-		toolContinuation = {
-			source: source!,
-			resumeFromToolNodeId: frontier.toolNodeId,
-			retryToolNodes: frontier.retryToolNodes,
-		};
+		if (frontier?.ok === true)
+			toolContinuation = {
+				source: source!,
+				resumeFromToolNodeId: frontier.toolNodeId,
+				retryToolNodes: frontier.retryToolNodes,
+			};
 	}
 	deps.signal?.throwIfAborted();
 	// Before the claim writes anything: every stage the previous process left waiting must be able to reopen (#4309).
@@ -670,19 +672,4 @@ export async function prepareRuntimeDurableResumable(
 		if (resolved !== undefined && !("kind" in resolved)) await backend.hydrateWorkflow(resolved.workflowId);
 	}
 	return backend.listResumableWorkflows();
-}
-
-/**
- * The run as its records show it, with the failed tool its failure names taken from the run's own record of its end
- * when the store refused the tool's failure record (#5027): the tool is still the frontier the run resumes from.
- */
-function withRecordedFailedTool(
-	source: RunSnapshot | undefined,
-	failedToolNodeId: string | undefined,
-	recorded: RunSnapshot | undefined,
-): RunSnapshot | undefined {
-	const failed = recorded?.toolNodes.find((node) => node.id === failedToolNodeId);
-	if (source === undefined || failed === undefined || source.toolNodes.some((node) => node.id === failed.id))
-		return source;
-	return { ...source, toolNodes: [...source.toolNodes, failed] };
 }

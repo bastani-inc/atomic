@@ -297,13 +297,7 @@ export function createDurableCachedStageRecorder(input: {
 					? immutableStageGroupError([checkpoint, replayRecord])
 					: undefined;
 			if (drift !== undefined) throw new DurableNestedTopologyError(`${drift} at ${replayKey}`);
-			// The stage's output is already among this run's records (a fork holds a copy of its source's): this record only
-			// says that this attempt reached the stage, which a later record of the attempt says as well, so a refusal of
-			// it does not fail the attempt (#5027).
-			const persistence =
-				replayRecord === undefined
-					? undefined
-					: input.backend.commitAdditiveCheckpointBestEffort(replayRecord).then(() => {});
+			const persistence = replayRecord === undefined ? undefined : input.backend.commitCheckpoint(replayRecord);
 			for (const childRun of cachedDescendants ?? []) {
 				const existingRun = input.store.run(childRun.id);
 				const isDirectChild =

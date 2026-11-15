@@ -314,7 +314,14 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 		backend: DurableWorkflowBackend,
 		stageId?: string,
 	):
-		| { ok: true; stageId?: string; toolNodeId?: string; retryToolNodes?: readonly ToolNodeSnapshot[] }
+		| {
+				ok: true;
+				stageId?: string;
+				toolNodeId?: string;
+				retryToolNodes?: readonly ToolNodeSnapshot[];
+				/** Resume from the run's durable records alone, without the live run as its continuation (#5027). */
+				fromRecords?: true;
+		  }
 		| { ok: false; message: string } {
 		const budgetExceededSource =
 			source.result?.status === "budget_exceeded" && source.budgetState?.systemOwnedStop === true;
@@ -327,12 +334,18 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 			return { ok: true, stageId: stage.id };
 		}
 		if (source.failedToolNodeId !== undefined && source.failedStageId === undefined) {
-			return resolveToolResumeFrontier(source, backend);
+			const frontier = resolveToolResumeFrontier(source, backend);
+			// The run's records name a frontier its live view cannot: the store refused a record of this session's
+			// attempt. The run resumes from its records, as it would after a restart (#5027).
+			return frontier.ok ? frontier : { ok: true, fromRecords: true };
 		}
 		const failedStageId = source.failedStageId ?? source.stages.find((stage) => stage.status === "failed")?.id;
 		if (failedStageId !== undefined) return { ok: true, stageId: failedStageId };
 		if (budgetExceededSource && source.stages.length === 0) return { ok: true };
-		if (source.toolNodes.length > 0) return resolveToolResumeFrontier(source, backend);
+		// Nothing the live run holds failed: plain workflow code threw after its tools, or the store refused a record the
+		// attempt wrote before it reached a node. The run resumes from its records, as it would after a restart (#5027).
+		if (source.toolNodes.length > 0 || source.failureCode === "storage_unavailable")
+			return { ok: true, fromRecords: true };
 		return { ok: false, message: `insufficient_state: failed run ${source.id} does not identify a failed stage` };
 	}
 
@@ -396,14 +409,20 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 					...(options?.actor === undefined ? {} : { resumeActor: options.actor }),
 					...(options?.budget === undefined ? {} : { budget: options.budget }),
 					...(options?.acceptEntryChanges === true ? { acceptEntryChanges: true } : {}),
-					continuation: {
-						source,
-						...(resolvedStage.stageId === undefined ? {} : { resumeFromStageId: resolvedStage.stageId }),
-						...(resolvedStage.toolNodeId === undefined ? {} : { resumeFromToolNodeId: resolvedStage.toolNodeId }),
-						...(resolvedStage.retryToolNodes === undefined
-							? {}
-							: { retryToolNodes: resolvedStage.retryToolNodes }),
-					},
+					...(resolvedStage.fromRecords === true
+						? {}
+						: {
+								continuation: {
+									source,
+									...(resolvedStage.stageId === undefined ? {} : { resumeFromStageId: resolvedStage.stageId }),
+									...(resolvedStage.toolNodeId === undefined
+										? {}
+										: { resumeFromToolNodeId: resolvedStage.toolNodeId }),
+									...(resolvedStage.retryToolNodes === undefined
+										? {}
+										: { retryToolNodes: resolvedStage.retryToolNodes }),
+								},
+							}),
 				},
 			},
 			[resumableEntryFromHandle(handle)],
