@@ -254,6 +254,8 @@ function fakeSources(
 }
 
 const WINDOWS_REG = "reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid";
+/** Where the fake host keeps its saved machine id, in this platform's path form. */
+const SAVED_ID_PATH = join("/config/intercom", "machine-id");
 const MAC_IOREG = "ioreg -rd1 -c IOPlatformExpertDevice";
 const MAC_SESSION = "sysctl -n kern.bootsessionuuid";
 const WINDOWS_BOOT = WINDOWS_BOOT_TIME_COMMAND.join(" ");
@@ -324,12 +326,9 @@ test("without an OS machine id a host keeps a random id saved once in the config
 	const first = brokerHostIdentity(host);
 	assert.match(first ?? "", /^[0-9a-f-]{36}\/boot-30$/);
 	assert.equal(brokerHostIdentity(host), first);
-	assert.equal(host.files.get("/config/intercom/machine-id"), first?.split("/")[0]);
+	assert.equal(host.files.get(SAVED_ID_PATH), first?.split("/")[0]);
 	assert.notEqual(brokerHostIdentity(fakeSources({ platform: "darwin" })), first);
-	assert.equal(
-		persistedMachineId(fakeSources({ platform: "win32", files: { "/config/intercom/machine-id": " kept\n" } })),
-		"kept",
-	);
+	assert.equal(persistedMachineId(fakeSources({ platform: "win32", files: { [SAVED_ID_PATH]: " kept\n" } })), "kept");
 });
 
 test("a host with no machine id it can read or save has no identity (#5038)", () => {
