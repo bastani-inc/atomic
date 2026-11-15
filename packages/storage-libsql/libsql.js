@@ -63,36 +63,23 @@ const ABANDONED_STREAM_CLOSE_MAX_AGE_MS = 5 * 60_000;
 /** How long one resend of an abandoned stream's close may go unanswered; a later resend tries again. */
 const ABANDONED_STREAM_CLOSE_TIMEOUT_MS = 5_000;
 /** The most abandoned stream closes kept for resending; the oldest is dropped past it, its stream long expired. */
-const MAX_ABANDONED_STREAM_CLOSES = 64;
+const MAX_ABANDONED_STREAM_CLOSES = 16;
 
 /**
  * Whether `body`, a Hrana pipeline request body, only closes the stream its baton names: the request the HTTP client
- * sends once for a stream it gave up on, in JSON (`{"baton":…,"requests":[{"type":"close"}]}`) or Protobuf (field 1
- * the baton, then one field 2 holding a `close`).
+ * sends once for a stream it gave up on, `{"baton":…,"requests":[{"type":"close"}]}`. `@libsql/client` speaks Hrana 2
+ * over HTTP, whose bodies are JSON; any other body is never taken for a close.
  * @param {Uint8Array} body
  * @param {string | null} contentType
  */
 function closesStream(body, contentType) {
-	if (contentType === "application/json") {
-		try {
-			const { baton, requests } = JSON.parse(new TextDecoder().decode(body));
-			return (
-				typeof baton === "string" && Array.isArray(requests) && requests.length === 1 && requests[0]?.type === "close"
-			);
-		} catch {
-			return false;
-		}
+	if (contentType !== "application/json") return false;
+	try {
+		const { baton, requests } = JSON.parse(new TextDecoder().decode(body));
+		return typeof baton === "string" && Array.isArray(requests) && requests.length === 1 && requests[0]?.type === "close";
+	} catch {
+		return false;
 	}
-	if (contentType !== "application/x-protobuf" || body[0] !== 0x0a) return false;
-	let length = 0;
-	let index = 1;
-	for (let shift = 0; index < body.length && shift < 35; shift += 7) {
-		const byte = body[index++];
-		length += (byte & 0x7f) * 2 ** shift;
-		if (byte < 0x80) break;
-	}
-	const rest = body.subarray(index + length);
-	return rest.length === 4 && rest[0] === 0x12 && rest[1] === 0x02 && rest[2] === 0x0a && rest[3] === 0x00;
 }
 
 /**
@@ -125,7 +112,7 @@ class AbandonedStreams {
 
 	/** Sends the kept closes again after the current wait, unless a resend is already planned. */
 	schedule() {
-		if (this.closed || this.timer !== undefined || this.pending.length === 0) return;
+		if (this.timer !== undefined || this.pending.length === 0) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
 			void this.send().then(() => this.schedule());
