@@ -74,7 +74,7 @@ import {
 import { WorkflowProjectNotTrustedError } from "./project-trust.js";
 import { FOREIGN_LIVE_WORKFLOW_WINDOW_MS } from "./resume-eligibility.js";
 import { claimsOf, hasForkClaim, hasResumeClaim, pendingForks } from "./run-claims.js";
-import { RUN_END_CHECKPOINT_NAME } from "./run-end.js";
+import { completedRunAttempt } from "./run-end.js";
 import { RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
 import { type ForkPointTopology, forkPointCheckpointKey } from "./stage-topology.js";
 import { durableStageGroupKey } from "./stage-topology-validation.js";
@@ -820,7 +820,7 @@ function selectForkEvents(source: ForkSource, request: DurableForkRequest): Fork
 		// An attempt that began after the cut is not part of the fork (#4874).
 		if (seq >= cut) return carryAll && checkpoint.kind === "ui" && workflowAttemptOf(checkpoint) === undefined;
 		// A fork has not completed because its source did (#5133).
-		if (checkpoint.kind === "tool" && checkpoint.name === RUN_END_CHECKPOINT_NAME) return false;
+		if (completedRunAttempt(checkpoint) !== undefined) return false;
 		if (target === undefined) return true;
 		if (checkpoint.kind === "tool") return checkpoint.name !== RUN_RESULT_CHECKPOINT_NAME;
 		if (checkpoint.kind === "ui") return true;

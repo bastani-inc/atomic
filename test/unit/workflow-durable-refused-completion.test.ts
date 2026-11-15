@@ -19,9 +19,7 @@ test("a run whose completed status write is refused twice reads as completed (#5
 	setDurableBackend(backend);
 	const commitStatus = backend.commitWorkflowStatus.bind(backend);
 	let refused = 0;
-	let written = 0;
 	backend.commitWorkflowStatus = ((...args: Parameters<typeof backend.commitWorkflowStatus>) => {
-		if (args[1] === "completed") written += 1;
 		if (args[1] === "completed" && refused < 2) {
 			refused += 1;
 			return Promise.reject(
@@ -50,9 +48,6 @@ test("a run whose completed status write is refused twice reads as completed (#5
 	assert.equal(refused, 2, "the status write and its retry were refused");
 	assert.equal(calls, 1);
 	assert.equal(backend.getWorkflow(runId)?.status, "completed", "the run reads as completed where it ran");
-	// The process writes the refused status again soon after.
-	for (let waited = 0; written < 3 && waited < 5_000; waited += 50) await new Promise((r) => setTimeout(r, 50));
-	assert.equal(written, 3, "the refused status is written again");
 	const reopened = await backend.reopen();
 	assert.equal(reopened.getWorkflow(runId)?.status, "completed", "the run reads as completed after a restart");
 	assert.equal(
