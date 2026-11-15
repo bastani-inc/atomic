@@ -110,6 +110,7 @@ test("session and journal stores isolate records in one caller-owned database ac
 			"session_entries",
 			"session_entry_chunks",
 			"session_meta",
+			"session_open",
 			"session_search_texts",
 			"session_sessions",
 			"snapshot_blob_chunks",

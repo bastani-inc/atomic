@@ -78,6 +78,7 @@ class Planner {
 			if (!this.#released) await new Promise<void>((resolve) => this.#releaseWaiters.push(resolve));
 			if (this.failures > 0) {
 				this.failures -= 1;
+				// No override: the model planner runs and fails on the scripted prose answer.
 				return { compactedText: "   " };
 			}
 			return this.text === undefined ? undefined : { compactedText: this.text };
@@ -467,7 +468,7 @@ describe("background compaction (#4330)", () => {
 		const planner = new Planner(true);
 		planner.failures = 1;
 		const harness = await createBackgroundHarness(
-			[...TRIGGER, { text: "still busy", usage: { input: 780, output: 10 } }],
+			[...TRIGGER, "not a deletion plan", { text: "still busy", usage: { input: 780, output: 10 } }],
 			planner,
 		);
 		harnesses.push(harness);
@@ -478,7 +479,8 @@ describe("background compaction (#4330)", () => {
 		assert.equal(failed.error.code, "planner-failed");
 		assert.equal(failed.error.attempt, 1);
 		assert.equal(failed.error.retryable, true);
-		assert.equal((failed.error.cause as Error).message, "No compacted text provided by extension");
+		// Empty extension text falls through to the model planner, which fails on its prose answer (#4977).
+		assert.equal((failed.error.cause as Error).message, "Compaction range planning returned malformed output");
 		assert.equal(failed.upToEntryId, planner.calls[0].branchIds.at(-1));
 		assert.equal(failed.startedAt, "2026-11-05T00:08:00.000Z");
 		assert.equal(resultEntries(harness.sessionManager).length, 0);
@@ -1776,6 +1778,211 @@ describe("background compaction task lifecycle (#4330)", () => {
 		assert.equal(end?.result?.compactedText.includes("[User]: small"), true);
 	});
 
+	test("a post-tool commit that brings the context under the hard limit does not clear a small remaining region (#4977)", async () => {
+		const planner = new Planner();
+		// Few long lines: the committed context sits between the threshold and the hard limit, and the
+		// region left for the foreground is below the planner minimum.
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		const harness = await harnessFor([...TRIGGER, "after"], planner);
+		// A one-line prompt as large as `longPrompt` keeps the region left after the commit small.
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt.replaceAll("\n", " ")} second`);
+		await planner.called();
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+		planner.text = undefined;
+		const use = harness.session._useReadyBackgroundCompaction.bind(harness.session);
+		let committed: Awaited<ReturnType<typeof use>>;
+		harness.session._useReadyBackgroundCompaction = async (model) => {
+			committed = await use(model);
+			return committed;
+		};
+		await harness.session._preflightPostToolContext(oversizedContext());
+		harness.session._finishPostToolCompactionPreflight(harness.session.agent.state.messages.slice());
+
+		// The commit left the context over the 800-token threshold but under the 1,000-token window.
+		assert.equal(committed?.sufficient, false);
+		assert.ok((committed?.projectedTokens ?? 0) <= 1_000);
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "only the stored result; nothing was cleared");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.background, true);
+		assert.equal(end?.errorMessage, undefined);
+	});
+
+	test("a foreground failure after a committed post-tool result reports that result and lets the turn continue (#4977)", async () => {
+		const planner = new Planner();
+		// The committed result leaves the context over the threshold but within the window.
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		const harness = await ready([...TRIGGER, "after"], planner);
+		planner.text = "[User]: small";
+		const append = harness.sessionManager.appendCompaction.bind(harness.sessionManager);
+		let appends = 0;
+		harness.sessionManager.appendCompaction = async (...args) => {
+			appends += 1;
+			if (appends > 1) throw new Error("injected foreground boundary write failure");
+			return append(...args);
+		};
+
+		await harness.session._preflightPostToolContext(oversizedContext());
+		harness.session._finishPostToolCompactionPreflight(harness.session.agent.state.messages.slice());
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.background, true);
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.match(end?.errorMessage ?? "", /injected foreground boundary write failure/);
+	});
+
+	test("a threshold compaction that fails after committing a ready result reports that result (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 200 }, (_, line) => `[User]: kept line ${line}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					text: "over the hard threshold",
+					usage: { input: 850, output: 10 },
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						// No override: the model planner runs and fails on its prose answer.
+						planner.text = undefined;
+					},
+				},
+				"not a deletion plan",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "the stored result stays committed");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.reason, "threshold");
+		assert.equal(end?.background, true);
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.match(
+			end?.errorMessage ?? "",
+			/^Auto-compaction failed: Compaction range planning returned malformed output/,
+		);
+	});
+
+	test("a threshold compaction cancelled after committing a ready result reports it as aborted with that result (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 200 }, (_, line) => `[User]: kept line ${line}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					text: "over the hard threshold",
+					usage: { input: 850, output: 10 },
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = undefined;
+					},
+				},
+				{ text: "1:1,2", beforeEmit: () => harness.session.abortCompaction() },
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "the stored result stays committed");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.aborted, true);
+		assert.equal(end?.background, true);
+		assert.equal(end?.willRetry, false);
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.equal(end?.errorMessage, undefined);
+	});
+
+	test("an overflow whose ready result already fits the window does not clear a small remaining region (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					stopReason: "error",
+					error: "prompt is too long",
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = undefined;
+					},
+				},
+				"recovered after the retry",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt.replaceAll("\n", " ")} second`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		const boundaries = compactionEntries(harness.sessionManager);
+		assert.equal(boundaries.length, 1, "only the stored result; nothing was cleared");
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.reason, "overflow");
+		assert.equal(end?.background, true);
+	});
+
+	test("an overflow recovery that fails after committing a ready result still retries the turn (#4977)", async () => {
+		const planner = new Planner();
+		planner.text = Array.from({ length: 3 }, (_, line) => `[User]: kept ${line} ${"k".repeat(600)}`).join("\n");
+		let harness!: Harness;
+		harness = await createBackgroundHarness(
+			[
+				SEED,
+				{ toolCalls: [{ id: "call-a", name: "echo", args: {} }], usage: { input: 760, output: 10 } },
+				{
+					stopReason: "error",
+					error: "prompt is too long",
+					beforeEmit: async () => {
+						planner.release();
+						await harness.session.awaitBackgroundCompaction();
+						planner.text = "[User]: small";
+						const append = harness.sessionManager.appendCompaction.bind(harness.sessionManager);
+						let appends = 0;
+						harness.sessionManager.appendCompaction = async (...args) => {
+							appends += 1;
+							if (appends > 1) throw new Error("injected foreground boundary write failure");
+							return append(...args);
+						};
+					},
+				},
+				"recovered after the retry",
+			],
+			planner,
+		);
+		harnesses.push(harness);
+		await harness.session.prompt(longPrompt);
+		await harness.session.prompt(`${longPrompt}\nsecond`);
+		await harness.session._awaitPendingPostCompactionContinuation();
+
+		const end = harness.eventsOfType("compaction_end").at(-1);
+		assert.equal(end?.reason, "overflow");
+		assert.ok(end?.result, "the committed background boundary is reported");
+		assert.equal(end?.willRetry, true);
+		assert.match(
+			end?.errorMessage ?? "",
+			/^Context overflow recovery failed: injected foreground boundary write failure/,
+		);
+		assert.equal(harness.session.getLastAssistantText(), "recovered after the retry");
+	});
+
 	test("a background task can plan with the session model and records the planner's usage", async () => {
 		const planner = new Planner(true);
 		planner.text = undefined;
@@ -2032,7 +2239,7 @@ describe("background compaction commit failures (#4330)", () => {
 		assert.equal(discarded?.discarded?.fields.reason, "superseded");
 	});
 
-	test("a JSONL session whose backup fails reports the storage error as the cause", async () => {
+	test("a JSONL session whose backup fails still commits the result without a backup path (#4977)", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "background-compaction-commit-failure-"));
 		try {
 			const sessionManager = await SessionManager.create(directory, join(directory, "sessions"));
@@ -2042,10 +2249,10 @@ describe("background compaction commit failures (#4330)", () => {
 				throw unavailable;
 			};
 			assert.equal(await promptAndCountRequests(harness, "next"), 1);
-			const state = harness.session.compaction;
-			assert.equal(state.error?.code, "commit-failed");
-			assert.equal(state.error?.cause, unavailable);
-			assert.equal(compactionEntries(harness.sessionManager).length, 0);
+			assert.equal(harness.session.compaction.error, undefined);
+			const [boundary] = compactionEntries(harness.sessionManager);
+			assert.ok(boundary);
+			assert.equal((boundary.details as { backupPath?: string }).backupPath, undefined);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
