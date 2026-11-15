@@ -111,6 +111,11 @@ const HOLD_CHECK_GRACE_MS = 500;
 const PRESENCE_HANDOVER_ATTEMPTS = 4;
 const PRESENCE_HANDOVER_RETRY_MS = 50;
 /**
+ * #5138: how many times a registration's store steps (ending its reservations, rebinding its parked asks) are tried,
+ * once at registration and then at each renewal, before a failure that keeps recurring is given up.
+ */
+const REGISTRATION_STEP_ATTEMPTS = 30;
+/**
  * The longest a registration waits for its presence lease. A hung shared database must not hang registration (the
  * client gives up after 10 s); the lease is still written when the database answers.
  */
@@ -284,11 +289,21 @@ interface PresenceEntry {
 	terminal?: boolean;
 	/** #4386: a released subagent that registered before the broker it left gave up its presence rebinds once it has it. */
 	rebind?: ReleasedRegistration;
+	/** #5138: the registration's store steps not yet done, recorded before they run so a failed one is retried. */
+	unfinished?: UnfinishedRegistration;
 	/**
 	 * Its Intercom id is bound to another session's return address: it is never known, present or routed to under that
 	 * id across nodes, and its departure leaves that session's shared state alone.
 	 */
 	unbound?: true;
+}
+
+interface UnfinishedRegistration {
+	consume?: ConsumedReservation;
+	/** The reservations' insertion mark read as the registration began, until `consume` takes it. */
+	mark?: Promise<number>;
+	rebind?: ReleasedRegistration;
+	attempts: number;
 }
 
 interface ConsumedReservation {
@@ -502,26 +517,18 @@ export class MultiNodeRouter {
 						await new Promise<void>((wait) => setTimeout(wait, PRESENCE_HANDOVER_RETRY_MS * 2 ** attempt).unref());
 					}
 					if (consumed !== undefined) {
-						// #4488: the child may have been released since the registration began, while its presence was being
-						// taken over. A reservation its owner made for that release must stay, or the released child is
-						// unreachable: by the child's name, only reservations older than the registration end, and none
-						// once the session left; the capability's own one always ends.
-						const ownOnly: ConsumedReservation = {
-							groups: consumed.groups,
-							...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
-						};
-						const mark = await insertedBy;
-						await this.consumeReservation(
-							this.presence.get(session) !== entry
-								? ownOnly
-								: { ...consumed, ...(mark === undefined ? {} : { insertedBy: mark }) },
-						);
+						// #5138: recorded before the store is asked, so a step a store error interrupts is retried at renewal.
 						const { childName, authorizedBy } = consumed;
-						if (childName !== undefined && authorizedBy !== undefined) {
-							const registration = { childName, authorizedBy };
-							if (entry.lease === undefined) entry.rebind = registration;
-							await this.rebindParked(session, registration);
-						}
+						const registration =
+							childName !== undefined && authorizedBy !== undefined ? { childName, authorizedBy } : undefined;
+						if (registration !== undefined && entry.lease === undefined) entry.rebind = registration;
+						entry.unfinished = {
+							consume: consumed,
+							...(insertedBy === undefined ? {} : { mark: insertedBy }),
+							...(registration === undefined ? {} : { rebind: registration }),
+							attempts: 0,
+						};
+						await this.finishRegistration(session, entry);
 					}
 				} finally {
 					clearTimeout(bound);
@@ -530,6 +537,71 @@ export class MultiNodeRouter {
 				this.scanIdentity(identity);
 			});
 		});
+	}
+
+	/**
+	 * #5138: run the registration's store steps not yet done. Each runs once more after a failure, at each renewal, until
+	 * it succeeds or `REGISTRATION_STEP_ATTEMPTS` attempts failed; a failure is reported.
+	 */
+	private async finishRegistration(session: BrokerConnectedSession, entry: PresenceEntry): Promise<void> {
+		const unfinished = entry.unfinished;
+		if (unfinished === undefined) return;
+		unfinished.attempts++;
+		const failures: unknown[] = [];
+		const { consume } = unfinished;
+		if (consume !== undefined) {
+			try {
+				await this.consumeReservation(await this.registeredConsumption(session, entry, unfinished, consume));
+				delete unfinished.consume;
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		const { rebind } = unfinished;
+		if (rebind !== undefined) {
+			try {
+				await this.rebindParked(session, rebind);
+				delete unfinished.rebind;
+			} catch (error) {
+				failures.push(error);
+			}
+		}
+		const done = unfinished.consume === undefined && unfinished.rebind === undefined;
+		if ((done || unfinished.attempts >= REGISTRATION_STEP_ATTEMPTS) && entry.unfinished === unfinished) {
+			delete entry.unfinished;
+		}
+		if (failures.length > 0) throw failures[0];
+	}
+
+	/**
+	 * What a registration's consume ends. #4488: the child may have been released since the registration began, while
+	 * its presence was being taken over. A reservation its owner made for that release must stay, or the released child
+	 * is unreachable: by the child's name, only reservations older than the registration end, none once the session
+	 * left, and none when the mark could not be read (#5138); the capability's own one always ends.
+	 */
+	private async registeredConsumption(
+		session: BrokerConnectedSession,
+		entry: PresenceEntry,
+		unfinished: UnfinishedRegistration,
+		consumed: ConsumedReservation,
+	): Promise<ConsumedReservation> {
+		const ownOnly: ConsumedReservation = {
+			groups: consumed.groups,
+			...(consumed.capability === undefined ? {} : { capability: consumed.capability }),
+		};
+		if (this.presence.get(session) !== entry) return ownOnly;
+		const { mark } = unfinished;
+		if (mark === undefined) return consumed;
+		try {
+			// A retried consume ends the same reservations: the mark is read once, as the registration began.
+			const insertedBy = await mark;
+			unfinished.consume = { ...consumed, insertedBy };
+		} catch (error) {
+			this.report(error);
+			unfinished.consume = ownOnly;
+		}
+		delete unfinished.mark;
+		return unfinished.consume;
 	}
 
 	/** Presence or memberships changed: the shared subject follows them. */
@@ -2377,17 +2449,26 @@ export class MultiNodeRouter {
 					// A live session stays known: retention counts from its last renewal, not from its registration.
 					this.serial(deliveryTargetIdentity(session), () => this.recordKnown(session, entry));
 				}
+				if (entry.unfinished !== undefined) {
+					this.serial(deliveryTargetIdentity(session), async () => {
+						if (this.presence.get(session) === entry) await this.finishRegistration(session, entry);
+					});
+				}
 			} else {
 				this.serial(deliveryTargetIdentity(session), async () => {
 					if (this.presence.get(session) !== entry || entry.unbound === true) return;
 					await this.acquirePresence(session, entry);
-					if (entry.lease === undefined) return;
 					const { rebind } = entry;
-					if (rebind !== undefined) {
+					if (entry.lease !== undefined && rebind !== undefined) {
+						// #5138: kept as an unfinished step until it succeeds, so a store error does not lose it.
 						delete entry.rebind;
-						await this.rebindParked(session, rebind);
+						entry.unfinished = { ...(entry.unfinished ?? { attempts: 0 }), rebind };
 					}
-					this.scanIdentity(deliveryTargetIdentity(session));
+					try {
+						await this.finishRegistration(session, entry);
+					} finally {
+						if (entry.lease !== undefined) this.scanIdentity(deliveryTargetIdentity(session));
+					}
 				});
 			}
 		}
