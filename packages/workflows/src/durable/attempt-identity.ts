@@ -202,37 +202,6 @@ export function attemptReachedCheckpoints(
 		const attempt = anchor(ownerRunId(checkpoint, rootRunId));
 		if (attempt === undefined || checkpointAttempt(checkpoint) === attempt) reached.add(nodeKey(checkpoint));
 	}
-	// An attempt that reached a node reached the nodes it depends on, though the store may have refused the record that
-	// says so (#5027): those show as the latest attempt that recorded them.
-	const byNodeId = new Map<string, string>();
-	const latestOf = new Map<string, number>();
-	for (const checkpoint of nodes) {
-		const key = nodeKey(checkpoint);
-		const id = checkpoint.kind === "stage" ? checkpoint.topology?.stageId : checkpoint.topology?.nodeId;
-		if (id !== undefined) byNodeId.set(JSON.stringify([ownerRunId(checkpoint, rootRunId), id]), key);
-		latestOf.set(key, Math.max(latestOf.get(key) ?? 0, checkpointAttempt(checkpoint)));
-	}
-	const derived = new Set<string>();
-	/** The attempt whose records show a node: its run's, or for a node reached only through another, the latest. */
-	const shownAttempt = (checkpoint: DurableStageCheckpoint | DurableToolCheckpoint): number | undefined => {
-		const key = nodeKey(checkpoint);
-		return derived.has(key) ? latestOf.get(key) : anchor(ownerRunId(checkpoint, rootRunId));
-	};
-	for (let grew = true; grew; ) {
-		grew = false;
-		for (const checkpoint of nodes) {
-			if (!reached.has(nodeKey(checkpoint))) continue;
-			const attempt = shownAttempt(checkpoint);
-			if (attempt !== undefined && checkpointAttempt(checkpoint) !== attempt) continue;
-			for (const parent of checkpoint.topology?.parentIds ?? []) {
-				const parentKey = byNodeId.get(JSON.stringify([ownerRunId(checkpoint, rootRunId), parent]));
-				if (parentKey === undefined || reached.has(parentKey)) continue;
-				reached.add(parentKey);
-				derived.add(parentKey);
-				grew = true;
-			}
-		}
-	}
 	const shownRuns = new Map<string, boolean>();
 	const shown = (runId: string): boolean => {
 		const known = shownRuns.get(runId);
@@ -246,7 +215,7 @@ export function attemptReachedCheckpoints(
 	const kept = new Set<DurableCheckpoint>(
 		nodes.filter((checkpoint) => {
 			const owner = ownerRunId(checkpoint, rootRunId);
-			const attempt = shownAttempt(checkpoint);
+			const attempt = anchor(owner);
 			if (!shown(owner) || !reached.has(nodeKey(checkpoint))) return false;
 			if (attempt === undefined || checkpointAttempt(checkpoint) === attempt) return true;
 			return (
