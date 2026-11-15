@@ -3,6 +3,7 @@ import { StorageUnavailableError } from "@bastani/atomic/storage";
 import { Type } from "typebox";
 import { afterEach, test } from "vitest";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { openSqlRunJournal } from "../../packages/workflows/src/durable/journal/sqlite-run-journal.js";
 import { RUN_TIMING_CHECKPOINT_NAME } from "../../packages/workflows/src/durable/run-timing.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -55,6 +56,13 @@ test("a run whose completed status write is refused twice reads as completed (#5
 	assert.equal(record?.kind === "tool" ? record.name : undefined, RUN_TIMING_CHECKPOINT_NAME);
 	const reopened = await backend.reopen();
 	assert.equal(reopened.getWorkflow(runId)?.status, "completed", "the run reads as completed after a restart");
+	// Opening it wrote the refused status: a reader of the journal's run rows alone sees it completed too.
+	const journal = await openSqlRunJournal(reopened.databasePath);
+	try {
+		assert.equal((await journal.getRun(runId))?.status, "completed", "the run's own row says completed");
+	} finally {
+		await journal.close();
+	}
 	assert.equal(
 		reopened.listResumableWorkflows().some((entry) => entry.workflowId === runId),
 		false,
