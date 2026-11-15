@@ -343,3 +343,24 @@ test("an asker that cannot prove itself keeps nothing for a crash when its recip
 	assert.deepEqual(before.takeForTarget("recipient", { ended: info("recipient") }), []);
 	assert.deepEqual(broker(path).heldForAsker(undefined), []);
 });
+
+test("asks kept for an away peer are kept once, as movable when they may follow it to another broker (#4997)", () => {
+	const path = fileIn();
+	const first = broker(path);
+	first.record("asker", "recipient", "moves");
+	first.record("asker", "recipient", "stays");
+	const taken = first.takeForTarget("recipient", { keepLiveRecords: true });
+	first.keepDormant(taken, undefined, (question) => question.messageId === "moves");
+
+	const restarted = broker(path);
+	assert.deepEqual(restarted.movableDormant(), [
+		{ messageId: "moves", senderSessionId: "asker", targetSessionId: "recipient" },
+	]);
+	assert.deepEqual(
+		restarted
+			.restoreDormant("recipient", ADDRESSES.recipient, connected("asker", "recipient"))
+			.map((question) => question.messageId)
+			.sort(),
+		["moves", "stays"],
+	);
+});

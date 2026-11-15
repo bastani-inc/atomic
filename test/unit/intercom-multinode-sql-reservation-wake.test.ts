@@ -114,7 +114,7 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		}
 		const indexes = await indexesOf(database);
 		const child = indexes.find((index) => index.name === `${TABLE}_child`);
-		const wakeRequested = indexes.find((index) => index.name === `${TABLE}_wake_requested`);
+		const wakeRequested = indexes.find((index) => index.name === `${TABLE}_wake`);
 		assert.match(child?.sql ?? "", /\(child_target\) WHERE end_json IS NULL$/);
 		assert.match(wakeRequested?.sql ?? "", /\(owner_broker_id\) WHERE wake_requested = 1$/);
 	});
@@ -142,8 +142,8 @@ describe("SQL reservation store wake schema (#4326)", () => {
 		assert.equal(read.status === "active" && read.reservation.wake, false);
 		assert.deepEqual(await store.requestWake("legacy"), { status: "not-wakeable" });
 		assert.deepEqual(
-			(await indexesOf(database)).map((index) => index.name).filter((name) => name.endsWith("_wake_requested")),
-			[`${TABLE}_wake_requested`],
+			(await indexesOf(database)).map((index) => index.name).filter((name) => name.startsWith(`${TABLE}_wake`)),
+			[`${TABLE}_wake`],
 		);
 	});
 

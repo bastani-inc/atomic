@@ -235,6 +235,10 @@ test("the reference index holds the same rows for backfilled and triggered write
 	await database.run("UPDATE wf_runs_work SET descriptor = '{}' WHERE id = 'work-after'");
 	await database.run("DELETE FROM wf_runs WHERE run_id = 'done-before'");
 	await store.create(header("new"), [message("n1", null), snapshotEntry("t1", "n1", 3)]);
+	// An appended snapshot record is written only while its blobs are stored (#5077).
+	await store.snapshotBlobs.putBlobs(
+		["s-patch-4", "s-bundle-4"].map((hash) => ({ hash, data: new TextEncoder().encode(hash) })),
+	);
 	const { lastSeq } = await store.append("new", [snapshotEntry("t2", "t1", 4), message("n2", "n1")], { expectSeq: 2 });
 	await store.replace("old", header("old"), [message("m1", null), snapshotEntry("s1", "m1", 1)], { expectSeq: 6 });
 	assert.equal(lastSeq, 4);

@@ -26,6 +26,7 @@ import type { ParallelFailFastScope, RunOpts } from "../runs/foreground/executor
 import type { Store } from "../shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { infrastructureFaultOf } from "../shared/workflow-infrastructure-error.js";
 import {
 	authoritativeWorkflowChildRunId,
 	type RunsById,
@@ -94,6 +95,8 @@ export function createDurableStageEndRecorder(input: {
 	readonly deps: DurableStageDeps;
 	readonly user?: RunOpts["onStageEnd"];
 	readonly metadataOnly?: boolean;
+	/** Fail, in the live run, a completed stage whose record the store refused (#5027). */
+	readonly failStage: (runId: string, snapshot: StageSnapshot, error: unknown) => void;
 }): (
 	runId: string,
 	snapshot: StageSnapshot,
@@ -101,10 +104,20 @@ export function createDurableStageEndRecorder(input: {
 ) => Promise<void> {
 	return async (runId, snapshot, promptAnswer): Promise<void> => {
 		if (runId === input.rootRunId) {
-			await recordStageCheckpoint(input.deps, snapshot, {
-				metadataOnly: input.metadataOnly,
-				...(promptAnswer === undefined ? {} : { promptAnswer }),
-			});
+			try {
+				await recordStageCheckpoint(input.deps, snapshot, {
+					metadataOnly: input.metadataOnly,
+					...(promptAnswer === undefined ? {} : { promptAnswer }),
+				});
+			} catch (error) {
+				if (snapshot.status !== "completed" || infrastructureFaultOf(error) !== "storage_unavailable") throw error;
+				// The attempt fails with the refusal, at this stage: a stage that reads as completed with no record of its
+				// completion leaves the failed run naming no node to resume from (#5027). Its failure is recorded if the
+				// store takes it; the live run names the stage either way.
+				input.failStage(runId, snapshot, error);
+				await recordStageCheckpoint(input.deps, snapshot).catch(() => {});
+				throw error;
+			}
 		}
 		await input.user?.(runId, snapshot);
 	};
@@ -307,8 +320,14 @@ export function createDurableCachedStageRecorder(input: {
 					}
 					continue;
 				}
+				// The subtree's spend was charged by the execution that ran it: its stages replay, so no meter charges them
+				// again (#5053).
+				const replayedRun = {
+					...childRun,
+					stages: childRun.stages.map((cached) => ({ ...cached, replayed: true })),
+				};
 				const hydratedRun =
-					isDirectChild && stage !== undefined ? { ...childRun, parentStageId: stage.id } : childRun;
+					isDirectChild && stage !== undefined ? { ...replayedRun, parentStageId: stage.id } : replayedRun;
 				input.store.recordRunStart(hydratedRun);
 			}
 			return persistence;

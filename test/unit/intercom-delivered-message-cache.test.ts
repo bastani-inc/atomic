@@ -7,8 +7,62 @@ import { test } from "vitest";
 import {
 	DELIVERED_MESSAGE_MAX_ENTRIES,
 	DeliveredMessageCache,
+	FORGET_BUSY_TIMEOUT_MS,
 } from "../../packages/intercom/broker/delivered-message-cache.js";
 import { buildMessageSendSignature, buildSendSignature } from "../../packages/intercom/broker/send-signature.js";
+
+test("a delete blocked by another writer fails within its short busy timeout, and later deletes still land (#5096)", () => {
+	const directory = mkdtempSync(join(tmpdir(), "intercom-forget-busy-"));
+	const path = join(directory, "delivered.db");
+	try {
+		const cache = new DeliveredMessageCache(undefined, undefined, path);
+		assert.equal(cache.reserve("held", "signature-held"), "recorded");
+		const other = new DatabaseSync(path);
+		other.exec("BEGIN IMMEDIATE");
+		const started = Date.now();
+		assert.throws(() => cache.forget("held", "signature-held"), /database is locked/);
+		const elapsed = Date.now() - started;
+		assert.ok(elapsed < FORGET_BUSY_TIMEOUT_MS + 1_000, `a locked delete stalled the caller for ${elapsed} ms`);
+		other.exec("ROLLBACK");
+		other.close();
+
+		cache.forget("held", "signature-held");
+		assert.equal(cache.lookup("held", "signature-held"), "miss");
+		cache.close();
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("other durable writes keep the full busy timeout, before and after a short-timeout delete (#5096)", () => {
+	const directory = mkdtempSync(join(tmpdir(), "intercom-forget-busy-restore-"));
+	const path = join(directory, "delivered.db");
+	const cache = new DeliveredMessageCache(undefined, undefined, path);
+	const other = new DatabaseSync(path);
+	try {
+		const lockedWriteWaits = (messageId: string): number => {
+			other.exec("BEGIN IMMEDIATE");
+			const started = performance.now();
+			try {
+				assert.throws(() => cache.reserve(messageId, `signature-${messageId}`), /database is locked/);
+				return performance.now() - started;
+			} finally {
+				other.exec("ROLLBACK");
+			}
+		};
+		const minimumWaitMs = FORGET_BUSY_TIMEOUT_MS * 20;
+		assert.ok(lockedWriteWaits("before") >= minimumWaitMs, "a write waits out the full busy timeout");
+		assert.equal(cache.reserve("held", "signature-held"), "recorded");
+		other.exec("BEGIN IMMEDIATE");
+		assert.throws(() => cache.forget("held", "signature-held"), /database is locked/);
+		other.exec("ROLLBACK");
+		assert.ok(lockedWriteWaits("after") >= minimumWaitMs, "the delete's short timeout does not stick");
+	} finally {
+		cache.close();
+		other.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+}, 30_000);
 
 test("successful message ids fail closed at capacity without evicting live acceptance proof", () => {
 	const cache = new DeliveredMessageCache(100, 2);
