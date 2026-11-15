@@ -110,6 +110,9 @@ export function sqliteLocationPath(location: SqliteLocation): string | undefined
 	if (location instanceof URL) return location.protocol === "file:" ? fileURLToPath(location) : undefined;
 	const text = location.toString();
 	if (text === "" || text === ":memory:") return undefined;
+	// Atomic opens a long Windows path in its `\\?\` form (#5139): the guard compares the path it names.
+	if (text.startsWith("\\\\?\\UNC\\")) return `\\\\${text.slice("\\\\?\\UNC\\".length)}`;
+	if (text.startsWith("\\\\?\\")) return text.slice("\\\\?\\".length);
 	if (!text.startsWith("file:")) return text;
 	const withoutAuthority = text.slice("file:".length).replace(/^\/\/[^/]*/u, "");
 	const path = decodeURIComponent(withoutAuthority.split(/[?#]/u, 1)[0]!);

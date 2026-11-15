@@ -196,14 +196,17 @@ test("an idle host is drained when the only leased work on it belongs to a dead 
 			events,
 			{ idleDrainMs: 0, minHosts: 0 },
 		);
-		// The host on vm-1 keeps reporting itself, idle (its worker lost the child when the root died).
-		for (let i = 0; i < 20; i++) {
-			await f.report("h1", "vm-1");
-			await sleep(TICK_MS);
-		}
-		assert.ok(
-			events.some((e) => e.kind === "drain-requested"),
-			"an idle host whose only lease belongs to a dead root, with an expired work lease, should be drained to the floor",
+		// The host on vm-1 keeps reporting itself, idle (its worker lost the child when the root died), until the drain
+		// comes: however few ticks a loaded machine runs meanwhile.
+		await vi.waitFor(
+			async () => {
+				await f.report("h1", "vm-1");
+				assert.ok(
+					events.some((e) => e.kind === "drain-requested"),
+					"an idle host whose only lease belongs to a dead root, with an expired work lease, should be drained to the floor",
+				);
+			},
+			{ ...TICKS_WAIT, interval: TICK_MS },
 		);
 	} finally {
 		await f.close();

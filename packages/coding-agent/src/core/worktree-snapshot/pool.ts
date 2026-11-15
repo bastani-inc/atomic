@@ -160,12 +160,17 @@ const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
 
 export { processStartToken };
 
-const PROCESS_START = processStartToken(process.pid);
+let processLease: string | undefined;
 /**
  * Names this process's leases: its host and pid, a random part, as the pid alone could be reused by a later process,
- * and when this process started, where that can be read (#4990).
+ * and when this process started, where that can be read (#4990, #5141). Read once, on first use.
  */
-const PROCESS_LEASE = `${HOST}-${process.pid}-${randomUUID().slice(0, 8)}${PROCESS_START === undefined ? "" : `-${PROCESS_START}`}`;
+function ownLease(): string {
+	if (processLease !== undefined) return processLease;
+	const started = processStartToken(process.pid);
+	processLease = `${HOST}-${process.pid}-${randomUUID().slice(0, 8)}${started === undefined ? "" : `-${started}`}`;
+	return processLease;
+}
 /**
  * A lease name after the record's: the holder's host and pid, and when the holder started. Leases written before
  * #4830 name no host, and those written before #4990 no start.
@@ -175,8 +180,8 @@ const LEASE_NAME = /^([0-9a-f]{12})-(\d+)-[0-9a-f]{8}(?:-([0-9a-f]{12}))?\.lease
 /**
  * Whether the lease named `name` belongs to a process of this host that still runs (#4830): a holder stalled for
  * minutes may still write to its slot. A process this one may not signal runs too. A lease that names when its holder
- * started belongs to a process of that id that started then, never to a later one given the id (#4990). A lease of
- * another host, or one naming no host, is judged by its age alone.
+ * started belongs to a process of that id that started then, never to a later one given the id (#4990), on Windows too
+ * (#5141). A lease of another host, or one naming no host, is judged by its age alone.
  */
 function holderRuns(name: string, age: number): boolean {
 	const lease = LEASE_NAME.exec(name);
@@ -267,8 +272,8 @@ async function withSlotLock<T>(file: string, wait: boolean, action: (lock: SlotL
 	const token = randomUUID();
 	let named = false;
 	try {
-		await writeFile(`${lockTokenFile(file)}.${PROCESS_LEASE}.tmp`, token, { mode: 0o600 });
-		await rename(`${lockTokenFile(file)}.${PROCESS_LEASE}.tmp`, lockTokenFile(file));
+		await writeFile(`${lockTokenFile(file)}.${ownLease()}.tmp`, token, { mode: 0o600 });
+		await rename(`${lockTokenFile(file)}.${ownLease()}.tmp`, lockTokenFile(file));
 		named = true;
 	} catch (error) {
 		reportDebug("storage", "worktree-pool-lock-token-failed", { file, ...failureDebugFields(error) });
@@ -291,7 +296,7 @@ async function withSlotLock<T>(file: string, wait: boolean, action: (lock: SlotL
  * Until {@link giveBackRecord} or {@link putRecord}, the slot has no record: no hold, claim or eviction takes it.
  */
 async function takeRecord(file: string, expected: PoolSlotRecord): Promise<string | undefined> {
-	const taken = `${file}.${PROCESS_LEASE}.taken`;
+	const taken = `${file}.${ownLease()}.taken`;
 	try {
 		await rename(file, taken);
 	} catch (error) {
@@ -325,7 +330,7 @@ async function giveBackRecord(file: string, taken: string): Promise<void> {
  * wrote one meanwhile; resolves to false, writing nothing, when one did, whose record stands (#4991).
  */
 async function putRecord(file: string, taken: string, record: PoolSlotRecord): Promise<boolean> {
-	const temporary = `${file}.${PROCESS_LEASE}.tmp`;
+	const temporary = `${file}.${ownLease()}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	try {
 		await link(temporary, file);
@@ -353,7 +358,7 @@ function lockLostError(file: string): NodeJS.ErrnoException {
  * share it. Losing the lock marks `held` compromised. Ending the lease removes its lock even once it was compromised.
  */
 async function leaseSlot(file: string, held: Pick<HeldSlot, "compromised">): Promise<() => Promise<void>> {
-	const lease = `${file}.${PROCESS_LEASE}.lease`;
+	const lease = `${file}.${ownLease()}.lease`;
 	const unlock = await lockPath(lease, false, () => {
 		held.compromised = true;
 	});
@@ -375,7 +380,7 @@ async function takeSlot(file: string, owner: PoolOwner, record: PoolSlotRecord):
  */
 async function otherLeases(file: string, grace: boolean): Promise<number> {
 	const prefix = `${basename(file)}.`;
-	const own = `${basename(file)}.${PROCESS_LEASE}.lease.lock`;
+	const own = `${basename(file)}.${ownLease()}.lease.lock`;
 	let live = 0;
 	// Ages are measured by the clock of the filesystem holding the leases, which their holders stamp refreshes in, so a
 	// holder on a host whose clock is off is judged by when it last refreshed its lease (#5050).
@@ -432,7 +437,7 @@ async function stillHolds(file: string, storeDir: string, held: HeldSlot): Promi
 }
 
 async function writeRecord(file: string, record: PoolSlotRecord): Promise<void> {
-	const temporary = `${file}.${PROCESS_LEASE}.tmp`;
+	const temporary = `${file}.${ownLease()}.tmp`;
 	await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
 	await rename(temporary, file);
 }
