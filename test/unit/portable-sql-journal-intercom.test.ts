@@ -5,7 +5,6 @@ import type {
 	SqliteDatabase,
 	SqliteExecutor,
 	SqliteRow,
-	SqliteValue,
 } from "../../packages/coding-agent/src/core/storage/database.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { openDatabaseWakeUpBus } from "../../packages/intercom/broker/database-wake-up-bus.js";
@@ -20,6 +19,7 @@ import { openSqlRestoringReservationStore } from "../../packages/intercom/broker
 import { openSqlSentMessageAuthority } from "../../packages/intercom/broker/sql-sent-message-authority.js";
 import type { SessionInfo } from "../../packages/intercom/types.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
+import { interceptingDatabase } from "../helpers/intercepting-database.js";
 import { makeTempDirectory, moduleDir, readJson, removeTempDirectory } from "../helpers/runtime.js";
 
 /**
@@ -323,13 +323,13 @@ test("an outbox claim's age is null while unclaimed and clamped to zero once cla
 
 /** `db`, where every column probe finds nothing and every `ALTER TABLE` fails with `failure`. */
 function failingAlters(db: SqliteDatabase, failure: Error): SqliteDatabase {
-	return {
-		...batchingFacade(db),
-		batch: undefined,
-		all: ((sql: string, ...params: SqliteValue[]) =>
-			/table_info/i.test(sql) ? Promise.resolve([]) : db.all(sql, ...params)) as SqliteDatabase["all"],
-		exec: (sql) => (sql.startsWith("ALTER TABLE") ? Promise.reject(failure) : db.exec(sql)),
-	};
+	return interceptingDatabase(
+		{ ...batchingFacade(db), batch: undefined },
+		{
+			all: async (sql, params, next) => (/table_info/i.test(sql) ? [] : next(sql, ...params)),
+			exec: (sql, next) => (sql.startsWith("ALTER TABLE") ? Promise.reject(failure) : next(sql)),
+		},
+	);
 }
 
 test("a column another broker added meanwhile is not an error in Postgres's wording either (#4793)", async () => {
