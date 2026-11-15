@@ -283,10 +283,14 @@ describe("session claims (#5135)", () => {
 		assert.ok(claimedByThisProcess(sessionId), "once released, the dead claim is taken over");
 	});
 
-	test("a takeover directory an earlier version left behind does not stop the advisory lock (#5193)", async () => {
+	test("a takeover directory a killed process left behind does not stop the takeover (#5193)", async () => {
 		const sessionId = newSessionId();
 		writeClaim(sessionId, { token: "dead", pid: await deadPid(), host: hostname() });
 		mkdirSync(`${claimFile(sessionId)}.takeover`);
+		writeFileSync(
+			join(`${claimFile(sessionId)}.takeover`, "owner"),
+			JSON.stringify({ host: hostname(), pid: await deadPid(), id: "killed" }),
+		);
 		claim(sessionId);
 		assert.ok(claimedByThisProcess(sessionId));
 	});

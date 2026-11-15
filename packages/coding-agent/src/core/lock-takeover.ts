@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
 import {
+	existsSync,
 	linkSync,
 	mkdirSync,
 	readdirSync,
@@ -76,6 +77,7 @@ function locks(): NativeLocks | null {
 export function setNativeLocksForTesting(value: NativeLocks | null | undefined): void {
 	nativeLocks = value;
 	warnedFallback = false;
+	warnedUnopenable.clear();
 }
 
 function warnFallback(): void {
@@ -187,9 +189,13 @@ function removeStaleMutex(mutexPath: string): boolean {
 
 /**
  * Takes the takeover mutex of the lock at `lockPath` (#5193): the advisory lock of {@link takeoverLockPath}, waiting
- * up to `waitMs` while another process holds it. Undefined while another process holds it, or when its file cannot be
- * opened. The lock is held on an open file until released, and the kernel releases it when this process dies.
- * Without the native lock, the directory mutex of {@link takeDirectoryMutex} is taken instead.
+ * up to `waitMs` while another process holds it, and then the owner-checked directory mutex of
+ * {@link takeDirectoryMutex}, so a process without the native lock never takes over while one with it does. Undefined
+ * while another process holds either. The advisory lock is held on an open file until released, and the kernel
+ * releases it when this process dies; the directory mutex of a dead holder is freed by its owner check.
+ *
+ * Without the native lock, or when the lock file cannot be opened (as one left by `sudo atomic`, owned by root), only
+ * the directory mutex is taken, with a one-time warning.
  */
 export function takeTakeoverMutex(
 	lockPath: string,
@@ -200,22 +206,42 @@ export function takeTakeoverMutex(
 		warnFallback();
 		return takeDirectoryMutex(lockPath);
 	}
+	const file = takeoverLockPath(lockPath);
 	let lock: { release(): void } | null;
 	try {
-		lock = native.tryAdvisoryLock(takeoverLockPath(lockPath), waitMs);
-	} catch {
-		return undefined;
+		lock = native.tryAdvisoryLock(file, waitMs);
+	} catch (error) {
+		// A missing directory is no lock to take at all: the directory mutex cannot be made either.
+		if (existsSync(dirname(lockPath))) warnUnopenable(file, error);
+		return takeDirectoryMutex(lockPath);
 	}
 	if (lock === null) return undefined;
+	const directory = takeDirectoryMutex(lockPath);
+	if (directory === undefined) {
+		lock.release();
+		return undefined;
+	}
 	let held = true;
 	return {
-		owned: () => held,
+		owned: () => held && directory.owned(),
 		release: () => {
 			held = false;
+			directory.release();
 			// Releasing the native lock again does nothing.
 			lock.release();
 		},
 	};
+}
+
+const warnedUnopenable = new Set<string>();
+
+function warnUnopenable(file: string, error: unknown): void {
+	if (warnedUnopenable.has(file)) return;
+	warnedUnopenable.add(file);
+	const reason = error instanceof Error ? error.message : String(error);
+	process.emitWarning(
+		`The lock file ${file} cannot be opened (${reason}); lock takeovers use a directory mutex instead, which a paused process can lose. Remove the file, or give it to your user (for example \`sudo chown $USER ${file}\`), as one an \`atomic\` run as another user can leave behind (#5193).`,
+	);
 }
 
 /**

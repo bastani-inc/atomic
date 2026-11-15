@@ -275,6 +275,57 @@ describe("takeovers under an OS advisory lock (#5193)", () => {
 		CHILD_TIMEOUT_MS * 4,
 	);
 
+	test(
+		"a takeover on the directory-mutex fallback and a native takeover exclude each other: one holder of the settings lock (#5193)",
+		() => {
+			const lockPath = join(directory, "settings.json.lock");
+			const deadHolder = spawnSync(
+				"bun",
+				[
+					"--eval",
+					`const { mkdirSync } = await import("node:fs");
+					const { recordLockHolder } = await import(${JSON.stringify(MODULE("lock-holder.ts"))});
+					mkdirSync(${JSON.stringify(lockPath)});
+					recordLockHolder(${JSON.stringify(lockPath)});`,
+				],
+				{ encoding: "utf8" },
+			);
+			assert.equal(deadHolder.status, 0, deadHolder.stderr);
+			const body = (fallback: boolean) => `
+				const { mkdirSync, statSync } = await import("node:fs");
+				const { setNativeLocksForTesting } = await import(${JSON.stringify(MODULE("lock-takeover.ts"))});
+				if (${fallback}) setNativeLocksForTesting(null);
+				const { takeOverDeadHolder, recordLockHolder } = await import(${JSON.stringify(MODULE("lock-holder.ts"))});
+				const lockPath = ${JSON.stringify(lockPath)};
+				takeOverDeadHolder(lockPath);
+				try {
+					mkdirSync(lockPath);
+					recordLockHolder(lockPath);
+					outcome = { held: true, pid: process.pid, lock: String(statSync(lockPath).ino) };
+				} catch (error) {
+					outcome = { held: false, pid: process.pid, error: error.code };
+				}
+			`;
+			// A process whose native module has no advisory lock is paused inside its takeover, before its move.
+			const fallback = startTaker(body(true), { path: lockPath, mutex: false });
+			settle(fallback, CHILD_TIMEOUT_MS);
+			assert.equal(fallback.paused(), true, `the fallback taker is paused: ${JSON.stringify(fallback.outcome())}`);
+			const native = startTaker(body(false));
+			settle(native);
+			fallback.resume();
+			const outcomes = [reported(fallback), reported(native)];
+			const holders = outcomes.filter((outcome) => outcome.held);
+			assert.equal(holders.length, 1, `exactly one process holds the settings lock: ${JSON.stringify(outcomes)}`);
+			assert.equal(existsSync(lockPath) ? String(statSync(lockPath).ino) : undefined, holders[0]!.lock);
+			assert.deepEqual(
+				readdirSync(directory).filter((name) => name.endsWith(".dead")),
+				[],
+				"no live lock is left aside",
+			);
+		},
+		CHILD_TIMEOUT_MS * 2,
+	);
+
 	test("a live claim moved aside by a takeover is linked back while no claim is in its place (#5193)", () => {
 		const agentDir = join(directory, "agent");
 		const sessionId = `race-${randomUUID()}`;

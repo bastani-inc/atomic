@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -336,11 +337,27 @@ describe("the advisory takeover mutex (#5193)", () => {
 		}
 	});
 
-	it("is not stopped by a takeover directory an earlier version left behind (#5193)", () => {
-		mutexOf({ host: hostname(), pid: process.pid, id: "earlier" });
+	it("is not taken while a process without the native lock holds the directory mutex (#5193)", () => {
+		mutexOf({ host: hostname(), pid: process.pid, started: processStartToken(process.pid), id: "fallback" });
+		assert.equal(takeTakeoverMutex(lockPath, 0), undefined, "a live fallback holder keeps it");
+		const again = takeTakeoverMutex(lockPath, 0);
+		assert.equal(again, undefined, "and the advisory lock is not kept by the refused taker");
+	});
+
+	it("also holds the owner-checked directory mutex, freed once its owner is dead (#5193)", () => {
 		const mutex = takeTakeoverMutex(lockPath, 0);
 		assert.ok(mutex);
+		assert.equal(
+			existsSync(join(takeoverMutexPath(lockPath), "owner")),
+			true,
+			"the directory mutex names this process",
+		);
 		mutex.release();
+		assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
+		mutexOf({ host: hostname(), pid: exitedPid(), id: "killed" });
+		const after = takeTakeoverMutex(lockPath, 0);
+		assert.ok(after, "a killed holder's directory mutex is freed by its owner check");
+		after.release();
 	});
 
 	it("is not taken when its file cannot be opened (#5193)", () => {
@@ -408,11 +425,39 @@ describe("a native module without the advisory lock (#5193)", () => {
 		const rename = "renameNoReplace: () => false";
 		assert.deepEqual(anotherProcessWithBinding(`{ ${lock} }`), { directory: true, warnings: 1 });
 		assert.deepEqual(anotherProcessWithBinding(`{ ${rename} }`), { directory: true, warnings: 1 });
-		assert.deepEqual(anotherProcessWithBinding(`{ ${lock}, ${rename} }`), { directory: false, warnings: 0 });
+		assert.deepEqual(anotherProcessWithBinding(`{ ${lock}, ${rename} }`), { directory: true, warnings: 0 });
 	});
 
 	it("that fails to load, falls back to the directory mutex with one warning (#5193)", () => {
 		assert.deepEqual(anotherProcessWithBinding(undefined), { directory: true, warnings: 1 });
+	});
+});
+
+describe("an advisory lock file that cannot be opened (#5193)", () => {
+	it("falls back to the directory mutex, so a stale lock is still removed, and warns once naming the file (#5193)", async () => {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		staleLock(lockPath);
+		// As left by one `sudo atomic`: a lock file this user may not open for writing.
+		writeFileSync(takeoverLockPath(lockPath), "");
+		chmodSync(takeoverLockPath(lockPath), 0o444);
+		const warnings: string[] = [];
+		const listen = (warning: Error) => warnings.push(warning.message);
+		process.on("warning", listen);
+		try {
+			removeStaleLock(lockPath, STALE_MS);
+			assert.equal(existsSync(lockPath), false, "the stale lock is removed under the directory mutex");
+			const mutex = takeTakeoverMutex(lockPath, 0);
+			assert.ok(mutex, "the takeover mutex is taken");
+			mutex.release();
+			assert.equal(existsSync(takeoverMutexPath(lockPath)), false, "the directory mutex is released");
+			await new Promise((resolve) => setImmediate(resolve));
+		} finally {
+			process.off("warning", listen);
+			chmodSync(takeoverLockPath(lockPath), 0o644);
+		}
+		const named = warnings.filter((message) => message.includes(takeoverLockPath(lockPath)));
+		assert.equal(named.length, 1, JSON.stringify(warnings));
+		assert.match(named[0]!, /remove|chown/i);
 	});
 });
 
