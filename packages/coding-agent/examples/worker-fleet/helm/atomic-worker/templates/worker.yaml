@@ -47,7 +47,7 @@ spec:
           env:
             - name: ATOMIC_DB
               value: "{{ .Values.database }}"
-            - name: ATOMIC_WORKER_PROVIDER_ID
+            - name: ATOMIC_PROVIDER_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
