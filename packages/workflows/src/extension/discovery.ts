@@ -376,7 +376,8 @@ export async function discoverWorkflows(options?: Partial<DiscoveryOptions>): Pr
 	}
 
 	// 2. project-local
-	for (const dir of projectTrusted ? [join(cwd, CONFIG_DIR_NAME, "workflows")] : []) {
+	if (projectTrusted) {
+		const dir = join(cwd, CONFIG_DIR_NAME, "workflows");
 		const candidates = await loadFromDir(dir, "project-local", diagnostics, getWorkflowHostModules);
 		registry = await applyBatch(candidates, registry, sources, diagnostics);
 	}

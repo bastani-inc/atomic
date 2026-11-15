@@ -386,10 +386,7 @@ export async function loadWorkflowConfig(opts: LoadWorkflowConfigOpts = {}): Pro
 		join(agentDir, "extensions", "workflow", "config.json"),
 	);
 
-	const projectCandidates =
-		opts.projectTrusted === false
-			? []
-			: [join(projectRoot, CONFIG_DIR_NAME, "extensions", "workflow", "config.json")];
+	const projectCandidates = [join(projectRoot, CONFIG_DIR_NAME, "extensions", "workflow", "config.json")];
 
 	let globalConfig: WorkflowExtensionConfig | null = null;
 	for (let i = globalCandidates.length - 1; i >= 0; i--) {
@@ -403,16 +400,18 @@ export async function loadWorkflowConfig(opts: LoadWorkflowConfigOpts = {}): Pro
 		// "missing" → silently skip
 	}
 
-	// Load the current project-local config.
+	// Load the current project-local config, only for a trusted project.
 	let projectConfig: WorkflowExtensionConfig | null = null;
-	for (let i = projectCandidates.length - 1; i >= 0; i--) {
-		const candidatePath = projectCandidates[i]!;
-		const outcome = await loadConfigFile(candidatePath);
-		if (outcome.kind === "missing") continue;
-		if (outcome.kind === "error") {
-			diagnostics.push(outcome.diagnostic);
-		} else {
-			projectConfig = projectConfig ? mergeConfigs(projectConfig, outcome.parsed) : outcome.parsed;
+	if (opts.projectTrusted !== false) {
+		for (let i = projectCandidates.length - 1; i >= 0; i--) {
+			const candidatePath = projectCandidates[i]!;
+			const outcome = await loadConfigFile(candidatePath);
+			if (outcome.kind === "missing") continue;
+			if (outcome.kind === "error") {
+				diagnostics.push(outcome.diagnostic);
+			} else {
+				projectConfig = projectConfig ? mergeConfigs(projectConfig, outcome.parsed) : outcome.parsed;
+			}
 		}
 	}
 

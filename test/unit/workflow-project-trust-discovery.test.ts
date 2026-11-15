@@ -4,6 +4,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "vitest";
+import { loadWorkflowConfig } from "../../packages/workflows/src/extension/config-loader.js";
+import { discoverWorkflows } from "../../packages/workflows/src/extension/discovery.js";
+import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
 import factory, {
 	type ExtensionAPI,
 	type PiExecuteContext,
@@ -157,5 +160,84 @@ describe("project workflow discovery follows project trust", () => {
 		trusted = true;
 		assert.ok((await extension.listedAfterReload()).includes("project-local-flow"));
 		assert.equal(existsSync(localMarker), true);
+	});
+});
+
+/** The workflow runtime state of a host whose session started with the trust decision `sessionTrusted`. */
+function startSession(
+	project: string,
+	sessionTrusted: boolean,
+	live: "no-api" | "no-snapshot" | boolean,
+): ReturnType<typeof createWorkflowExtensionRuntimeState> {
+	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
+	const pi = {
+		on: (event: string, handler: (event: unknown, ctx: unknown) => void) => handlers.set(event, handler),
+		refreshWorkflowResources: async () => [],
+		...(live === "no-api"
+			? {}
+			: {
+					getResourceLoaderInheritanceSnapshot: () =>
+						live === "no-snapshot" ? undefined : { projectTrusted: live },
+				}),
+	} as unknown as ExtensionAPI;
+	const state = createWorkflowExtensionRuntimeState(pi, {} as never);
+	handlers.get("session_start")?.({ reason: "startup" }, { cwd: project, isProjectTrusted: () => sessionTrusted });
+	return state;
+}
+
+describe("workflow resources follow the host's trust decision", () => {
+	for (const live of ["no-api", "no-snapshot"] as const)
+		test.sequential(`the session's decision applies when the host reports no live decision (${live})`, async () => {
+			const { project, localMarker } = await makeProject(`workflow-session-untrusted-${live}`);
+			const state = startSession(project, false, live);
+
+			await state.ensureWorkflowConfigLoaded();
+			assert.equal(state.configLoadRef.current?.projectConfig, null);
+			const report = await state.reloadWorkflowResources();
+			assert.equal(report.outcome, "applied");
+			assert.equal(state.configLoadRef.current?.projectConfig, null);
+			assert.equal(state.discoveryRef.current?.registry.has("project-local-flow"), false);
+			assert.equal(existsSync(localMarker), false);
+		});
+
+	test.sequential("the host's live decision wins over the session's earlier one", async () => {
+		const { project, localMarker } = await makeProject("workflow-live-trusted");
+		const state = startSession(project, false, true);
+
+		await state.ensureWorkflowConfigLoaded();
+		assert.notEqual(state.configLoadRef.current?.projectConfig, null);
+		const report = await state.reloadWorkflowResources();
+		assert.equal(report.outcome, "applied");
+		assert.notEqual(state.configLoadRef.current?.projectConfig, null);
+		assert.equal(state.discoveryRef.current?.registry.has("project-local-flow"), true);
+		assert.equal(existsSync(localMarker), true);
+	});
+});
+
+describe("workflow discovery and config loading take the trust decision", () => {
+	test.sequential("discovery reads no project workflow paths for an untrusted project", async () => {
+		const { project, configuredMarker } = await makeProject("discovery-config-untrusted");
+		const config = { projectWorkflows: [join(project, "configured/configured.ts")] };
+
+		const untrusted = await discoverWorkflows({ cwd: project, config, projectTrusted: false, includeBundled: false });
+		assert.equal(untrusted.registry.has("project-configured-flow"), false);
+		assert.equal(existsSync(configuredMarker), false);
+
+		const trusted = await discoverWorkflows({ cwd: project, config, projectTrusted: true, includeBundled: false });
+		assert.equal(trusted.registry.has("project-configured-flow"), true);
+		assert.equal(existsSync(configuredMarker), true);
+	});
+
+	test.sequential("an untrusted project's workflow config is not read", async () => {
+		const { project } = await makeProject("config-untrusted");
+		await writeFile(join(project, ".atomic/extensions/workflow/config.json"), "{ not json");
+
+		const untrusted = await loadWorkflowConfig({ projectRoot: project, projectTrusted: false });
+		assert.equal(untrusted.projectConfig, null);
+		assert.deepEqual(untrusted.diagnostics, []);
+
+		const trusted = await loadWorkflowConfig({ projectRoot: project, projectTrusted: true });
+		assert.equal(trusted.diagnostics.length, 1);
+		assert.equal(trusted.diagnostics[0]?.code, "CONFIG_INVALID");
 	});
 });

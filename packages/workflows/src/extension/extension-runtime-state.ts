@@ -153,9 +153,10 @@ export function createWorkflowExtensionRuntimeState(
 		options.runState ?? currentWorkflowSessionRunState();
 	let projectTrusted: boolean | undefined;
 	// Discovery reads the host's live decision first, so trust granted later in the
-	// session (deferred startup trust) applies to the next discovery.
-	const isProjectTrustedForDiscovery = (): boolean =>
-		pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? projectTrusted ?? true;
+	// session (deferred startup trust) applies to the next discovery. No decision
+	// at all (a host without project trust) discovers the project as before.
+	const isProjectTrustedForDiscovery = (): boolean | undefined =>
+		pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? projectTrusted;
 	const stagePredictor = new StagePredictor();
 	const scopedRunOptions = {
 		store,
