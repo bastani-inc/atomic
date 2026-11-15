@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "vitest";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.ts";
+import { sqlPoolStorage } from "../../packages/workflows/src/durable/journal/internal.js";
+import { PoolRemoteJournal } from "../../packages/workflows/src/durable/journal/pool-remote-journal.js";
 import {
 	openSqlPoolQueue,
 	type PoolWork,
@@ -191,6 +193,90 @@ test("a host that starts again ships what it left while its attempt still owns t
 	await replaced.shipping.recover();
 	assert.deepEqual(await recorded(), [1, 2], "the replaced attempt's checkpoint is never recorded");
 	assert.deepEqual(await replaced.shard.pending(attempt), [], "and the host drops it");
+});
+
+/** One event of a batch, as a host seals it, for `checkpoint`. */
+function eventOf(localSeq: number, checkpoint: DurableToolCheckpoint) {
+	return {
+		localSeq,
+		key: JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, "tool", checkpoint.checkpointId]),
+		payload: JSON.stringify(checkpoint),
+	};
+}
+
+test("the root's journal refuses a batch whose attempt no longer may write, and records nothing of it (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, database, journal } = await claimedAttempt();
+	const batch = (id: string, ...checkpoints: DurableToolCheckpoint[]) => ({
+		id,
+		host: "host-A",
+		events: checkpoints.map((checkpoint, index) => eventOf(index + 1, checkpoint)),
+	});
+	// A key that does not name its checkpoint is an identity conflict.
+	await assert.rejects(
+		queue.shipBatch(lease, attempt, {
+			id: "mismatch",
+			host: "host-A",
+			events: [{ ...eventOf(1, tool(1)), key: eventOf(1, tool(2)).key }],
+		}),
+		/Pool checkpoint identity conflict/,
+	);
+	// A checkpoint from the future, and one that bills model usage, are refused.
+	await assert.rejects(
+		queue.shipBatch(lease, attempt, batch("future", { ...tool(1), completedAt: Date.now() + 3_600_000 })),
+		/Pool checkpoint timestamp is in the future/,
+	);
+	assert.deepEqual(await recorded(), []);
+	// A paused root takes a batch only under a persisted pause.
+	await journal.append(lease, { type: RUN_EVENT_TYPES.statusChanged, payload: { status: "paused" } });
+	await assert.rejects(
+		queue.shipBatch(lease, attempt, batch("paused", tool(1))),
+		(error: unknown) => error instanceof StaleWorkLeaseError && error.reason === "root-not-running",
+	);
+	await queue.setControl(lease, "paused");
+	await queue.shipBatch(lease, attempt, batch("paused", tool(1)));
+	assert.deepEqual(await recorded(), [1]);
+	await queue.setControl(lease, "running");
+	await journal.append(lease, { type: RUN_EVENT_TYPES.statusChanged, payload: { status: "running" } });
+	// An attempt whose work lease ran out is refused.
+	await database.run("UPDATE wf_runs_work SET expires_at = 1");
+	await assert.rejects(
+		queue.shipBatch(lease, attempt, batch("expired", tool(2))),
+		(error: unknown) => error instanceof StaleWorkLeaseError && error.reason === "expired",
+	);
+	assert.deepEqual(await recorded(), [1]);
+	// An empty batch is nothing to record.
+	await queue.shipBatch(lease, attempt, { id: "empty", host: "host-A", events: [] });
+	assert.deepEqual(
+		(await database.all<{ batch: string }>("SELECT batch FROM wf_runs_ship_batches")).map((row) => row.batch),
+		["paused"],
+	);
+});
+
+test("checkpoints of one batch are recorded densely in order, once each, beside one the root holds already (#4768)", async () => {
+	const { queue, lease, attempt, tool, recorded, journal } = await claimedAttempt();
+	await queue.commit(lease, attempt, "op-2", { kind: "checkpoint", checkpoint: tool(2) });
+	await queue.shipBatch(lease, attempt, {
+		id: "dense",
+		host: "host-A",
+		events: [1, 2, 3, 4].map((index) => eventOf(index, tool(index))),
+	});
+	assert.deepEqual(await recorded(), [2, 1, 3, 4]);
+	const seqs: number[] = [];
+	for await (const entry of journal.read("root")) seqs.push(entry.seq);
+	assert.deepEqual(
+		seqs,
+		seqs.map((_, index) => seqs[0]! + index),
+		"one sequence, without a gap",
+	);
+});
+
+test("a pool whose root journal is in another database ships nothing (#4768)", async () => {
+	const { journal, lease, attempt, tool } = await claimedAttempt();
+	const remote = await openSqlPoolQueue(journal, new PoolRemoteJournal(journal, sqlPoolStorage(journal)!));
+	await assert.rejects(
+		remote.shipBatch(lease, attempt, { id: "remote", host: "host-A", events: [eventOf(1, tool(1))] }),
+		/does not ship checkpoints/,
+	);
 });
 
 /** A small deterministic generator, so a failing seed reproduces. */
