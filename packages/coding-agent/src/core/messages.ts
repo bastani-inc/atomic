@@ -376,11 +376,13 @@ export function repairOrphanToolResults<TMessage extends AgentMessage>(
 	messages: TMessage[],
 	options: ToolCallPairRepairOptions = {},
 ): (TMessage | ToolResultMessage)[] {
+	// Pair by id only once every call has a unique, non-empty id (#5056).
+	const uniquified = uniquifyToolCallIds(messages);
 	let allowedToolCallIds: Set<string> | undefined;
 	let answeredToolCallIds: Set<string> | undefined;
 	let pendingToolCalls: AssistantToolCallRef[] = [];
 	let pendingTimestamp = 0;
-	let changed = false;
+	let changed = uniquified !== messages;
 	const repaired: (TMessage | ToolResultMessage)[] = [];
 	const flushUnanswered = (): void => {
 		for (const call of pendingToolCalls) {
@@ -405,7 +407,7 @@ export function repairOrphanToolResults<TMessage extends AgentMessage>(
 		answeredToolCallIds = undefined;
 		pendingToolCalls = [];
 	};
-	for (const message of messages) {
+	for (const message of uniquified) {
 		// Instruction/tool updates never close a pending tool batch.
 		if (message.role === "system") {
 			repaired.push(message);
@@ -505,5 +507,5 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 			}
 		})
 		.filter((m) => m !== undefined);
-	return repairOrphanToolResults(uniquifyToolCallIds(converted));
+	return repairOrphanToolResults(converted);
 }

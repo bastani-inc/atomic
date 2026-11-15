@@ -38,6 +38,18 @@ function toolCallBlocks(message: AgentMessage): ToolCallBlock[] {
 	return Array.isArray(content) ? content.filter(isToolCallBlock) : [];
 }
 
+/** A tool call whose id may be missing; a missing id is treated like an empty one. */
+function isToolCallWithOptionalId(block: unknown): block is { type: "toolCall"; id?: string } {
+	if (!block || typeof block !== "object") return false;
+	const candidate = block as { type?: unknown; id?: unknown };
+	return candidate.type === "toolCall" && (candidate.id === undefined || typeof candidate.id === "string");
+}
+
+function rawToolCallIds(message: AgentMessage): string[] {
+	const content = (message as { content?: unknown }).content;
+	return Array.isArray(content) ? content.filter(isToolCallWithOptionalId).map((block) => block.id ?? "") : [];
+}
+
 function responseId(message: AgentMessage): string | undefined {
 	const id = (message as { responseId?: unknown }).responseId;
 	return typeof id === "string" && id !== "" ? id : undefined;
@@ -91,9 +103,9 @@ function uniqueToolCallId(original: string, turn: number, used: ReadonlySet<stri
 	return candidate;
 }
 
-function needsToolCallRename(blocks: readonly ToolCallBlock[], used: ReadonlySet<string>): boolean {
+function needsToolCallRename(ids: readonly string[], used: ReadonlySet<string>): boolean {
 	const seen = new Set<string>();
-	for (const { id } of blocks) {
+	for (const id of ids) {
 		if (id === "" || used.has(id) || seen.has(id)) return true;
 		seen.add(id);
 	}
@@ -102,6 +114,10 @@ function needsToolCallRename(blocks: readonly ToolCallBlock[], used: ReadonlySet
 
 /**
  * Give every tool call a non-empty id that no earlier call in the context uses.
+ *
+ * Run this before any id-based pairing or repair: an empty or missing id is
+ * otherwise indistinguishable from "no result", and parallel calls sharing it
+ * would collapse into one. A missing id is treated as empty.
  *
  * A reused or empty id is renamed after its assistant turn, and the tool results
  * following that turn (up to the next assistant message) are renamed with it in
@@ -118,17 +134,18 @@ export function uniquifyToolCallIds<TMessage extends AgentMessage>(messages: TMe
 		if (message.role === "assistant") {
 			turn++;
 			renamedResultIds = undefined;
-			const blocks = toolCallBlocks(message);
-			if (!needsToolCallRename(blocks, used)) {
-				for (const block of blocks) used.add(block.id);
+			const ids = rawToolCallIds(message);
+			if (!needsToolCallRename(ids, used)) {
+				for (const id of ids) used.add(id);
 				return message;
 			}
 			const pairing = new Map<string, string[]>();
 			const content = (message as { content: unknown[] }).content.map((block) => {
-				if (!isToolCallBlock(block)) return block;
-				const id = block.id !== "" && !used.has(block.id) ? block.id : uniqueToolCallId(block.id, turn, used);
+				if (!isToolCallWithOptionalId(block)) return block;
+				const original = block.id ?? "";
+				const id = original !== "" && !used.has(original) ? original : uniqueToolCallId(original, turn, used);
 				used.add(id);
-				pairing.set(block.id, [...(pairing.get(block.id) ?? []), id]);
+				pairing.set(original, [...(pairing.get(original) ?? []), id]);
 				return id === block.id ? block : { ...block, id };
 			});
 			renamedResultIds = pairing;
@@ -136,8 +153,9 @@ export function uniquifyToolCallIds<TMessage extends AgentMessage>(messages: TMe
 			return { ...message, content } as TMessage;
 		}
 		if (message.role !== "toolResult" || !renamedResultIds) return message;
-		const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
-		if (typeof toolCallId !== "string") return message;
+		const rawToolCallId = (message as { toolCallId?: unknown }).toolCallId;
+		if (rawToolCallId !== undefined && typeof rawToolCallId !== "string") return message;
+		const toolCallId = rawToolCallId ?? "";
 		const id = renamedResultIds.get(toolCallId)?.shift();
 		if (id === undefined || id === toolCallId) return message;
 		return { ...message, toolCallId: id } as TMessage;

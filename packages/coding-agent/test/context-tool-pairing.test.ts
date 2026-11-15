@@ -6,7 +6,7 @@ import {
 	findDuplicateToolCallIds,
 	uniquifyToolCallIds,
 } from "../src/core/context-tool-pairing.ts";
-import { convertToLlm } from "../src/core/messages.ts";
+import { convertToLlm, deferMessagesInterleavedWithToolBatch, repairOrphanToolResults } from "../src/core/messages.ts";
 
 function assistantWithToolCalls(ids: string[], timestamp = 1): AssistantMessage {
 	return {
@@ -201,5 +201,25 @@ describe("tool call ids reused across assistant turns (#3243)", () => {
 		convertToLlm(messages);
 
 		expect(JSON.stringify(messages)).toBe(before);
+	});
+});
+
+describe("tool calls with an empty id (#5056)", () => {
+	test("finalized context keeps the result of each parallel empty-id call (#5056)", () => {
+		const finalized = repairOrphanToolResults(
+			deferMessagesInterleavedWithToolBatch([
+				{ role: "user", content: "read both", timestamp: 1 },
+				assistantWithToolCalls(["", ""], 10),
+				toolResult("", "first"),
+				toolResult("", "second"),
+				{ role: "user", content: "next", timestamp: 30 },
+			] as AgentMessage[]),
+			{ repairTrailing: true },
+		);
+
+		expect(resultPairs(convertToLlm(finalized))).toEqual([
+			["call_1", "first"],
+			["call_1_1", "second"],
+		]);
 	});
 });
