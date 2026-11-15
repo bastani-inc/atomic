@@ -193,7 +193,8 @@ test("an escaping GitHub URL reports an error and removes nothing outside the cl
 		"https://github.com/owner/repo/tree/..%2F..%2F..%2F..%2Fvictim",
 	]) {
 		const result = await extractGitHub(url, undefined, true);
-		assert.match(result?.error ?? "", /Invalid GitHub URL/, url);
+		assert.deepEqual({ ...result, error: "" }, { url, title: "", content: "", error: "" }, url);
+		assert.match(result?.error ?? "", /^Invalid GitHub URL: /, url);
 	}
 	assert.equal(await readText(join(victim, "keep.txt")), "keep");
 	assert.equal(await readText(join(sibling, "keep.txt")), "keep");
@@ -370,6 +371,13 @@ test("a repository size is only requested for valid owner and repo names", async
 	assert.equal(await checkRepoSize("..", "widgets"), null);
 	assert.equal(await checkRepoSize("octo", ".."), null);
 	assert.deepEqual(apiEndpoints(), []);
+});
+
+test("a file in the way of the clone directory refuses the clone", async () => {
+	writeFileSync(join(clonePath, "octo"), "not a directory");
+	assert.equal(await extractGitHub("https://github.com/octo/widgets", undefined, true), null);
+	assert.deepEqual(cloneTargets(), []);
+	assert.equal(await readText(join(clonePath, "octo")), "not a directory");
 });
 
 test("a failed clone leaves nothing behind", async () => {

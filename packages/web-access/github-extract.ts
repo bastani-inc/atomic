@@ -52,12 +52,7 @@ function isInside(root: string, candidate: string): boolean {
 }
 
 function pathExists(path: string): boolean {
-	try {
-		lstatSync(path);
-		return true;
-	} catch {
-		return false;
-	}
+	return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
 }
 
 /** True when `path` is strictly inside the clone root after resolving every symlink that exists along it. */
