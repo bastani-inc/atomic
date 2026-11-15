@@ -173,6 +173,7 @@ export function createTrackedToolPrimitive(input: {
 	readonly beforeToolCall?: () => void | Promise<void>;
 	readonly beforeCheckpoint?: () => void | Promise<void>;
 	readonly recordLiveCheckpoint?: CreateToolPrimitiveInput["recordLiveCheckpoint"];
+	readonly recordReplayRefusal: NonNullable<CreateToolPrimitiveInput["recordReplayRefusal"]>;
 }): {
 	readonly tool: WorkflowToolPrimitive;
 	readonly admittedTools: AdmittedToolExecutionTracker;
@@ -216,6 +217,7 @@ export function createTrackedToolPrimitive(input: {
 			? {}
 			: { checkpointSourceWorkflowId: input.checkpointSourceWorkflowId }),
 		backend: input.backend,
+		recordReplayRefusal: input.recordReplayRefusal,
 		onFailureObserved: admittedTools.observeFailure,
 		nextCheckpointId: input.nextCheckpointId,
 		throwIfCancelled: () => {
