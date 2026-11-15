@@ -6,6 +6,7 @@ import type { SessionEntry } from "../../packages/coding-agent/src/core/session-
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
 import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { openLibsqlDatabase } from "../../packages/storage-libsql/libsql.js";
+import { dropLibsqlScope } from "../helpers/storage-backends.js";
 
 /**
  * Session listings on a real libSQL server (sqld) over HTTP, where each request runs on a new stream (#4805). Runs only
@@ -57,6 +58,8 @@ describe.skipIf(serverUrl === undefined)("session listings on a libSQL server (#
 				await store.delete(id);
 			} finally {
 				for (const opened of stores) await opened.close();
+				// Tables left on the server slow every later request to it: sqld loads the whole schema for each (#4768).
+				await dropLibsqlScope(databases[0]!, prefix);
 				for (const database of databases) await database.close();
 			}
 		},

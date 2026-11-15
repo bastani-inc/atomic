@@ -67,7 +67,7 @@ In this release:
 - **Worker pools**: roots with shared placement and their worker hosts, with `atomic worker start`, `status`, `metrics` and `controller --db postgres://…`. The pool's queue, leases, resource admission, pooled-stage transcripts and fleet controller live in the database. See [Running workers on many machines](/guides/worker-hosts).
 - **Setup and checks**: `atomic storage join`, `atomic storage status`, password files, rotated token files, cloud identities, TLS and connection poolers, as described below.
 
-A worker pool's writes on PostgreSQL take turns, one at a time across every machine that shares the database and prefix, as they do on libSQL. Hosts that wait for a claim poll the database; they are not woken by `LISTEN`/`NOTIFY`.
+A worker pool's writes on PostgreSQL take turns, one at a time across every machine that shares the database, whatever its prefix, as they do on libSQL. Hosts that wait for a claim poll the database; they are not woken by `LISTEN`/`NOTIFY`.
 
 ### Set up the database
 
@@ -122,7 +122,7 @@ You can write this block by hand as well. `secrets.password` takes `{ "file": �
 | `statementTimeoutMs` | 30000 | How long one statement may run before the server cancels it |
 | `listenUrl` | `url` | A direct endpoint for [wake-ups](#wake-ups), when `url` goes through a transaction pooler |
 
-`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
+`atomic team join` takes libSQL URLs only; use `atomic storage join` for PostgreSQL. To run worker hosts and a fleet controller on a managed service, follow [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres). SDK callers can import `openPostgresDatabase` from `@bastani/atomic-storage-postgres`.
 
 ### TLS
 
@@ -130,13 +130,14 @@ Atomic connects with TLS to every host except the local machine, and checks the 
 
 By provider:
 
-- Azure Database for PostgreSQL, Neon, and Supabase use certificates that Node.js trusts: no option is needed.
+- Azure Database for PostgreSQL and Neon use certificates that Node.js trusts: no option is needed.
+- Supabase: download the project's CA certificate (**Project Settings → Database → SSL Configuration**) and add `?sslrootcert=/path/to/supabase-ca.pem`. Its certificates chain to Supabase's own CA.
 - Amazon RDS and Aurora: download your region's certificate bundle from `https://truststore.pki.rds.amazonaws.com/<region>/<region>-bundle.pem` and add `?sslrootcert=/path/to/bundle.pem`.
 - Google Cloud SQL: save the instance's server CA certificate (`gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`) and add `?sslmode=verify-ca&sslrootcert=/path/to/server-ca.pem` when you connect by private IP address, which is not among the certificate's names.
 
 ### Connection poolers
 
-Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections.
+Atomic works through transaction-mode poolers: PgBouncer, the PgBouncer built into Azure Database for PostgreSQL (port 6432), Supabase's Supavisor (port 6543), and Neon's pooled endpoint (the `-pooler` host name). Point the URL at the pooler. A pooler lets many machines share a small number of server connections. Use transaction or session mode, not statement mode. For a worker fleet's connection count and pooler settings, see [Worker fleets on managed PostgreSQL](/guides/worker-fleets-postgres#connection-poolers).
 
 A transaction-mode pooler does not pass on [wake-ups](#wake-ups). To keep them, set `listenUrl` to the server's direct endpoint, such as port 5432 instead of 6432 on Azure, or Neon's host name without `-pooler`. Everything else still goes through the pooler.
 
@@ -189,7 +190,7 @@ The first machine to join also needs `CREATE` on the schema, to create the table
 
 ## Turso and libSQL
 
-`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and in this release the store for [worker fleets](/guides/worker-hosts). See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
+`@bastani/atomic-storage-libsql` is the maintained adapter for Turso and other libSQL databases. It stores sessions, workflow runs, and Intercom's multi-node routing in the database. It is the lightweight shared store, one URL and a token, and holds [worker fleets](/guides/worker-hosts) as PostgreSQL does. See [Which store to choose](#which-store-to-choose). Install it once per machine, in user scope so Atomic can find it:
 
 ```bash
 atomic install npm:@bastani/atomic-storage-libsql
@@ -491,6 +492,10 @@ Atomic does not bundle remote database drivers. Install your chosen SQLite-compa
 Driver calls may return values or promises. The returned facade follows the rules described above: it queues operations in call order and keeps them outside active transactions, snapshots binary parameters when a call is made, rejects NUL text with `StorageInvalidTextError` before SQL runs, returns safe-range integers as numbers and blobs as `Uint8Array` copies, expires transaction handles when their callback settles, and closes the driver once after draining accepted work. A failed driver call rejects with `StorageUnavailableError`, whose `cause` is the driver error with credentials redacted. A failed rollback rejects with `StorageRollbackError`, and callback failures are preserved. Do not fall back to memory after an opening failure.
 
 When `transientFailure` recognizes a failure, the call rejects with `StorageTransientError` instead. A statement or batch that such a failure ended before it wrote anything runs again after 250 ms, then after waits that double, each varying by up to a fifth, up to `STORAGE_TRANSIENT_RETRY_ATTEMPTS` (5) runs in all. A failure inside an open transaction ends that transaction uncommitted, so the transaction counts as not applied whatever the request; only a commit, a batch, or a statement outside a transaction can be `"unknown"`, and such a call never runs again. A transaction runs again, callback included, only when you pass `{ retryTransientFailures: true }`: set it only for callbacks that do nothing but use the transaction handle. It runs again when the callback fails after a transient failure, or when the commit itself fails without having written anything; once the callback has returned, a failure the callback caught no longer counts, so a commit that may have applied, or that failed for a reason the driver does not recognize, never runs again. A value that is not a boolean rejects with `StorageConfigError` (field `retryTransientFailures`) before anything runs. Closing the database stops the waits and rejects with the last failure. The first failure a database runs a call again after is emitted once as a process warning.
+
+The facade runs one call at a time. Once the running call has run `STORAGE_PRIORITY_CALL_MAX_WAIT_MS` (10 seconds, a third of a worker host's 30 s lease) without settling, every priority call waiting behind it, such as a heartbeat or a lease renewal, fails with `StorageUnavailableError` without running, so nothing of it was written and its caller tries it again while its lease still holds; once the running call has run `STORAGE_QUEUED_CALL_MAX_WAIT_MS` (60 seconds), every other waiting call fails the same way. Both bounds count from when the running call started, and each call that starts gets them afresh, so calls queued behind work that keeps settling never fail however long the queue.
+
+On a libSQL server, an outage that cuts a stream inside a write transaction leaves the server holding the transaction and the database's write lock. The adapter sends the stream's close again, waiting 250 ms and then twice as long each time up to 8 s, until the server answers it, for at most 5 minutes, and stops when the database closes; a close that reaches the server frees the lock at once. When the outage lost the answer to a request the server had already run, the server has moved the stream to a new baton the client never received, refuses the close (`Received a baton that has already been used`), and keeps the lock until the stream expires: on sqld that is about 5 seconds, and writers, a worker host's heartbeat included, resume then.
 
 For a local file that several processes share, switch it to the write-ahead log with `switchToWriteAheadLog(exec, busyTimeoutMs)` from `@bastani/atomic/storage`, passing a call that runs SQL on the database, such as `(sql) => database.exec(sql)`, and the connection's busy timeout. SQLite does not wait for another connection's lock while it changes a file's journal mode, so a plain `PRAGMA journal_mode = WAL` fails at once with `SQLITE_BUSY` while another process writes the file or switches it at the same moment. The helper retries `SQLITE_BUSY` until `busyTimeoutMs` has passed, as other statements wait. It also retries `SQLITE_IOERR_TRUNCATE` for at most 5 seconds or `busyTimeoutMs`, whichever is shorter. This can occur on Windows just after another process using the database exits. Other failures are thrown immediately, and a zero busy timeout disables both waits.
 

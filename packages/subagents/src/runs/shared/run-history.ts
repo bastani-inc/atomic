@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentConfigPaths } from "@bastani/atomic";
+import { getAgentConfigPaths, sliceHead } from "@bastani/atomic";
 
 export interface RunEntry {
 	agent: string;
@@ -21,7 +21,7 @@ export function recordRun(agent: string, task: string, status: RunEntry["status"
 	try {
 		const entry: RunEntry = {
 			agent,
-			task: task.slice(0, 200),
+			task: sliceHead(task, 200),
 			ts: Math.floor(Date.now() / 1000),
 			status,
 			duration: durationMs,
