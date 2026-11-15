@@ -886,6 +886,8 @@ describe("sweeping a record under faults", () => {
 		const { storeDir, record, staging } = await staleRecord();
 		faults.lock = async (file, options, real) => {
 			const release = await real(file, options);
+			// The record's lock is the one lost, not the shared store's lock the cleanup also takes (#4951).
+			if (file !== record) return release;
 			faults.spawnHook = (args) => {
 				if (is(args, "worktree", "prune")) {
 					options.onCompromised(Object.assign(new Error("lock lost"), { code: "ECOMPROMISED" }));
