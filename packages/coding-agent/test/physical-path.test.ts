@@ -43,6 +43,10 @@ describe.skipIf(process.platform === "win32")(
 			assert.equal(resolvePhysicalPath(join(root, "missing", "deeper")), join(root, "missing", "deeper"));
 		});
 
+		it("rethrows an lstat failure other than a missing component (#5045)", () => {
+			assert.throws(() => resolvePhysicalPath(join(root, "x".repeat(300), "below")), { code: "ENAMETOOLONG" });
+		});
+
 		it("fails on a link cycle instead of guessing (#5045)", () => {
 			symlinkSync(join(root, "loop"), join(root, "loop"));
 			const absolute = join(root, "loop", "x");
