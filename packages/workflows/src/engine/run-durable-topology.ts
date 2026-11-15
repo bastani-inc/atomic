@@ -307,8 +307,14 @@ export function createDurableCachedStageRecorder(input: {
 					}
 					continue;
 				}
+				// The subtree's spend was charged by the execution that ran it: its stages replay, so no meter charges them
+				// again (#5053).
+				const replayedRun = {
+					...childRun,
+					stages: childRun.stages.map((cached) => ({ ...cached, replayed: true })),
+				};
 				const hydratedRun =
-					isDirectChild && stage !== undefined ? { ...childRun, parentStageId: stage.id } : childRun;
+					isDirectChild && stage !== undefined ? { ...replayedRun, parentStageId: stage.id } : replayedRun;
 				input.store.recordRunStart(hydratedRun);
 			}
 			return persistence;

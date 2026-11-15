@@ -21,6 +21,8 @@ export interface DurableStageSessionRecorderInput {
 	readonly runSnapshot?: RunSnapshot;
 	/** Cadence declared by the live definition that minted `runSnapshot`. */
 	readonly heartbeatIntervalMinutes: number;
+	/** A child run's durable budget accounting writer, run after each of its own stage-session checkpoints (#5053). */
+	readonly recordUsage?: () => Promise<void>;
 }
 
 export function createDurableStageSessionRecorder(
@@ -29,6 +31,7 @@ export function createDurableStageSessionRecorder(
 	return async (stageRunId, snapshot, options) => {
 		if (stageRunId === input.runId) {
 			await recordStageSessionCheckpoint(input.deps, snapshot, { force: options?.forceDurable === true });
+			await input.recordUsage?.();
 			if (input.runSnapshot !== undefined) {
 				await recordRunTimingCheckpointAsync(input.deps.backend, input.runSnapshot, {
 					debounce: options?.forceDurable !== true,
