@@ -1,4 +1,4 @@
-import type { SqliteExecutor, SqliteRow } from "@bastani/atomic/storage";
+import type { SqliteExecutor, SqliteRow, StorageDialect } from "@bastani/atomic/storage";
 import { StaleWorkLeaseError, type StaleWorkLeaseReason } from "../../shared/worker-pool-errors.js";
 import { type SqlPoolStorage, sqlPoolStorage } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
@@ -14,8 +14,6 @@ import {
 import { openSqlPoolQueue, type PoolHeartbeatRecord } from "./sql-pool-queue.js";
 import { type Lease, type RunJournal, StaleLeaseError } from "./types.js";
 import { validateText } from "./values.js";
-
-const STORE_NOW = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";
 
 export type { PoolUsage };
 export interface PoolUsageReport {
@@ -53,6 +51,7 @@ export class SqlPoolUsage {
 		private readonly transaction: SqlPoolStorage["transaction"],
 		private readonly read: SqlPoolStorage["read"],
 		private readonly journal: SqlPoolStorage["tables"],
+		private readonly dialect: StorageDialect,
 	) {
 		this.table = poolUsageTable(journal.runs);
 		this.totals = poolUsageTotalsTable(journal.runs);
@@ -61,9 +60,10 @@ export class SqlPoolUsage {
 		transaction: SqlPoolStorage["transaction"],
 		read: SqlPoolStorage["read"],
 		journal: SqlPoolStorage["tables"],
+		dialect: StorageDialect,
 	): Promise<SqlPoolUsage> {
-		const usage = new SqlPoolUsage(transaction, read, journal);
-		await transaction((tx) => tx.exec(poolUsageSchema(journal.runs)));
+		const usage = new SqlPoolUsage(transaction, read, journal, dialect);
+		await transaction((tx) => tx.exec(poolUsageSchema(journal.runs, dialect)));
 		return usage;
 	}
 	private async keptTotal(executor: SqliteExecutor, root: string): Promise<PoolUsage | undefined> {
@@ -133,7 +133,7 @@ export class SqlPoolUsage {
 					params: [lease.runId, lease.runId, lease.runId, lease.runId],
 				},
 				...snapshot.map(({ key, usage }) =>
-					poolUsageUpsert(this.journal.runs, token.id, token.generation, key, usage),
+					poolUsageUpsert(this.dialect, this.journal.runs, token.id, token.generation, key, usage),
 				),
 			],
 			reads: [{ sql: `SELECT * FROM ${this.totals} WHERE root = ?`, params: [lease.runId] }],
@@ -149,7 +149,7 @@ export class SqlPoolUsage {
 		};
 		const record = async (tx: SqliteExecutor): Promise<PoolUsage> => {
 			const authority = await tx.get(
-				`SELECT l.epoch, l.holder_id, l.renewed_at, p.timeout, ${STORE_NOW} AS now FROM ${this.journal.leases} l
+				`SELECT l.epoch, l.holder_id, l.renewed_at, p.timeout, ${this.dialect.nowMs} AS now FROM ${this.journal.leases} l
 				 LEFT JOIN ${this.journal.runs}_pool p ON p.root = l.run_id WHERE l.run_id = ?`,
 				lease.runId,
 			);
@@ -175,7 +175,7 @@ export class SqlPoolUsage {
 			if (work.worker !== token.worker) throw stale("worker-mismatch");
 			if (work.state === "leased" && Number(work.expires_at) < Number(authority.now)) throw stale("expired");
 			for (const { key, usage } of snapshot)
-				await upsertPoolUsage(tx, this.journal.runs, token.id, token.generation, key, usage);
+				await upsertPoolUsage(tx, this.dialect, this.journal.runs, token.id, token.generation, key, usage);
 			return this.totalIn(tx, lease.runId);
 		};
 		return Object.assign(record, { batched });
@@ -190,5 +190,5 @@ export async function openSqlPoolUsage(journal: RunJournal): Promise<SqlPoolUsag
 	const storage = sqlPoolStorage(journal);
 	if (!storage) throw new Error("Worker pool requires a SQL run journal");
 	await openSqlPoolQueue(journal);
-	return SqlPoolUsage.open(storage.transaction, storage.read, storage.tables);
+	return SqlPoolUsage.open(storage.transaction, storage.read, storage.tables, storage.dialect);
 }

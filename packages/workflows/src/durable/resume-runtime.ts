@@ -319,18 +319,34 @@ async function resumeDurableWorkflowClaimed(
 			/^atomic-workflows: ctx\.tool .* aborted by node abort$/s.test(handle.error ?? ""))
 	) {
 		const source = durableWorkflowRunSnapshots(backend, handle).find((run) => run.id === handle.workflowId);
-		const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);
-		if (frontier?.ok !== true)
-			return {
-				ok: false,
-				reason: "startup_failed",
-				message: frontier?.message ?? `insufficient_state: missing tool frontier in run ${handle.workflowId}`,
+		// The run's failure says the store refused every record of its failed tool's failure: the tool never completed,
+		// so the run resumes from its records and runs it again, unless a record says it completed (#5027).
+		const unrecorded =
+			handle.failedToolUnrecorded === true &&
+			source !== undefined &&
+			!source.toolNodes.some((node) => node.id === handle.failedToolNodeId) &&
+			!backend
+				.listCheckpoints(handle.workflowId)
+				.some(
+					(checkpoint) =>
+						checkpoint.kind === "tool" &&
+						checkpoint.topology?.nodeId === handle.failedToolNodeId &&
+						checkpoint.throwingFailureError === undefined,
+				);
+		if (!unrecorded) {
+			const frontier = source === undefined ? undefined : resolveToolResumeFrontier(source, backend);
+			if (frontier?.ok !== true)
+				return {
+					ok: false,
+					reason: "startup_failed",
+					message: frontier?.message ?? `insufficient_state: missing tool frontier in run ${handle.workflowId}`,
+				};
+			toolContinuation = {
+				source: source!,
+				resumeFromToolNodeId: frontier.toolNodeId,
+				retryToolNodes: frontier.retryToolNodes,
 			};
-		toolContinuation = {
-			source: source!,
-			resumeFromToolNodeId: frontier.toolNodeId,
-			retryToolNodes: frontier.retryToolNodes,
-		};
+		}
 	}
 	deps.signal?.throwIfAborted();
 	// Before the claim writes anything: every stage the previous process left waiting must be able to reopen (#4309).

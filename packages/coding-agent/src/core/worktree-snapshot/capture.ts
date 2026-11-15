@@ -405,7 +405,13 @@ async function copyRecorded(from: string, hash: string, to: string): Promise<boo
 async function writeAtomically(file: string, data: string): Promise<void> {
 	const temporary = `${file}.${process.pid}.tmp`;
 	await writeFile(temporary, data);
-	await rename(temporary, file);
+	try {
+		await rename(temporary, file);
+	} catch (error) {
+		// Windows refuses to replace a file another process has open, which concurrent captures do.
+		await rm(temporary, { force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 /** Files staged in the user's index that an ignore rule matches and the private index, read from the seed, lacks. */
@@ -876,6 +882,40 @@ export async function captureWorktreeSnapshot(
 		if (isWorkspaceSnapshotError(error)) return { status: "unavailable", reason: error };
 		throw error;
 	}
+}
+
+/**
+ * Captures a checkout with `capture` and records the result with `record`, which writes the session entry that
+ * references it and rejects with a `blobs-collected` {@link WorkspaceSnapshotError}, writing nothing, when a collection
+ * deleted one of its blobs after the capture stored them (#5077). The capture's blobs are then stored again and the
+ * record retried; when that fails too, the checkout is captured once more and recorded. A third failure rejects with
+ * the error, so a snapshot is recorded only with its blobs, or not at all.
+ */
+export async function recordWorktreeCapture(
+	blobs: SnapshotBlobStore,
+	capture: () => Promise<WorktreeSnapshotCapture>,
+	record: (capture: WorktreeSnapshotCapture) => Promise<void>,
+): Promise<void> {
+	const first = await capture();
+	try {
+		return await record(first);
+	} catch (error) {
+		if (!isBlobsCollectedError(error)) throw error;
+	}
+	if (first.status === "captured") {
+		await blobs.putBlobs(first.blobs);
+		try {
+			return await record(first);
+		} catch (error) {
+			if (!isBlobsCollectedError(error)) throw error;
+		}
+	}
+	return record(await capture());
+}
+
+/** Whether `error` says a snapshot was not recorded because a collection deleted one of its blobs (#5077). */
+export function isBlobsCollectedError(error: unknown): error is WorkspaceSnapshotError {
+	return isWorkspaceSnapshotError(error) && error.code === "blobs-collected";
 }
 
 async function captureCheckout(
