@@ -181,6 +181,8 @@ interface Harness {
 	resumedRunsWait: boolean;
 	/** Whether the original launch ends released, waiting on a detached `wait_for_ci` call (#4326). */
 	releaseOriginal: boolean;
+	/** Runs whose prompt contains one of these also end released, waiting on the same call. */
+	readonly releaseOn: Set<string>;
 	/** The task heartbeat cadence `admit` launches with; omitted uses the owner default. */
 	launchHeartbeatMs?: number;
 	/** The still-running calls a stubbed released outcome hands back, and the dispatcher their results wake through. */
@@ -357,6 +359,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 		completesWhenStopped: false,
 		resumedRunsWait: false,
 		releaseOriginal: false,
+		releaseOn: new Set(),
 		releasedCalls: [],
 		notices,
 		firstNotice: firstNotice.promise,
@@ -436,7 +439,7 @@ function harness(options: { stage?: boolean; ownerless?: boolean } = {}): Harnes
 				...(options.resumeFollowUps?.length ? { pendingMessages: options.resumeFollowUps } : {}),
 			};
 		}
-		if (original && state.releaseOriginal) {
+		if (original ? state.releaseOriginal : [...state.releaseOn].some((marker) => task.includes(marker))) {
 			const waiting = await runSync(parentCwd, agents, agentName, task, {
 				...options,
 				testSession: { output: "waiting" },
@@ -4424,4 +4427,80 @@ test("pause while a wake still saves the result it carries neither wakes the chi
 	assert.equal(acknowledged(), acknowledgedBefore, "the broker is not told the child wakes");
 	assert.equal(h.latest("saving:0")?.terminalStatus, "paused");
 	assert.deepEqual(h.latest("saving:0")?.heldToolResults, [green]);
+});
+
+for (const action of ["pause", "quit"] as const) {
+	test(`a released child ${action === "pause" ? "paused" : "quit"}, resumed and released again is woken by its next result exactly once (#4845)`, async () => {
+		const h = harness();
+		const runId = `again-${action}`;
+		const dispatcher = await releasedWithWakes(h, runId);
+		const stopped = await h.call({ action, id: `${runId}:0` });
+		assert.notEqual(stopped.isError, true, text(stopped));
+		h.releaseOn.add("release once more");
+		const resumed = await h.call({ action: "resume", id: `${runId}:0`, message: "release once more" });
+		await settled(h, resumedTaskId(resumed));
+		const released = await h.waitForLatest(
+			`${runId}:0`,
+			(record) =>
+				record.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS && record.taskId === resumedTaskId(resumed),
+		);
+		h.releaseOn.clear();
+		const runsBefore = h.runs.length;
+
+		await dispatcher.deliver(subagentWakeKey(h.sessionManager.getSessionId(), `${runId}:0`), {
+			id: "tool-result:ci-1",
+			kind: "tool-result",
+			toolResult: waitResult("CI green"),
+		});
+
+		assert.equal(h.runs.length, runsBefore + 1, "the earlier stop does not keep the wake from relaunching it");
+		assert.equal(h.runs.filter((run) => run.task.includes("CI green")).length, 1);
+		await h.waitForLatest(
+			`${runId}:0`,
+			(record) => record.state === "terminal" && record.terminalStatus === "ok" && record.taskId !== released.taskId,
+		);
+	});
+}
+
+test("a restore told to refuse its relaunch runs nothing, reports the child's latest record and releases its hold (#4845)", async () => {
+	const h = harness();
+	await releasedWithWakes(h, "refused");
+	const latest = h.latest("refused:0");
+	assert.ok(latest);
+	const runsBefore = h.runs.length;
+	const outcome = await restoreSubagentChild(h.deps, h.ctx, "refused:0", { prompt: "go" }, () => latest);
+	assert.deepEqual(outcome, { kind: "terminal", record: latest });
+	assert.equal(h.runs.length, runsBefore);
+	const reserved = h.holds.flatMap((hold) => ("reserve" in hold ? [hold.reserve] : []));
+	assert.ok(reserved.length > 0);
+	for (const capability of reserved)
+		assert.ok(h.holds.some((hold) => "release" in hold && hold.release === capability));
+});
+
+test("pause of a released child whose resume is starting it stops the resumed run (#4845)", async () => {
+	const h = harness();
+	await releasedWithWakes(h, "resuming");
+	h.resumedRunsWait = true;
+	const { gate, reached } = gateRestoreOf(h, "subagent-worker-resuming");
+	const resume = h.call({ action: "resume", id: "resuming:0", message: "keep going" });
+	await reached;
+
+	const paused = h.call({ action: "pause", id: "resuming:0" });
+	gate.resolve();
+	const resumed = await resume;
+	const result = await paused;
+
+	assert.notEqual(resumed.isError, true, text(resumed));
+	assert.notEqual(result.isError, true, text(result));
+	const taskId = resumedTaskId(resumed);
+	assert.deepEqual(
+		result.details.runControl?.children.map((child) => [child.childId, child.state, child.taskId]),
+		[["resuming:0", "paused", taskId]],
+	);
+	assert.doesNotMatch(text(result), /released/, "it is stopped as the running child it now is");
+	await settled(h, taskId);
+	await h.waitForLatest(
+		"resuming:0",
+		(record) => record.state === "terminal" && record.terminalStatus === "paused" && record.taskId === taskId,
+	);
 });
