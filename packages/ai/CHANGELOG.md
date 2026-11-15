@@ -14,6 +14,7 @@ This package is a Bastani fork of `@earendil-works/pi-ai`. Upstream history at t
 - Fixed Anthropic tool calls losing their input when a server sends it complete in `content_block_start` with no `input_json_delta` events; the call now keeps that input ([#4899](https://github.com/bastani-inc/atomic/issues/4899))
 - Fixed Anthropic, OpenAI Codex, OpenAI ChatGPT, Kimi Code, and Radius sign-ins asking you to run `/login` again after a token refresh whose response carries no new refresh token, which servers that don't rotate refresh tokens may send. The refresh now keeps the existing refresh token, and a response without `expires_in` takes its expiry from the access token's JWT `exp` claim or assumes one hour, instead of refreshing on every request ([#4959](https://github.com/bastani-inc/atomic/issues/4959))
 - Fixed Gemini 2.x on Google and Vertex rejecting a parallel tool batch when a result other than the last one contains an image: every function response of the batch now stays in one turn, in call order, and the image turns follow it ([#5048](https://github.com/bastani-inc/atomic/issues/5048))
+- Fixed `retryAssistantCall()` and `failureRetryDelayMs()` capping a server retry hint at `RetryPolicy.maxAgentDelayMs` when `maxRetryDelayMs` is not set. An unset `maxRetryDelayMs` now caps the hint at the documented 60 seconds, so a lower agent backoff cap no longer cuts a server's requested wait short; `maxRetryDelayMs: 0` still caps it at `maxAgentDelayMs`
 
 ## [0.9.85] - 2026-11-13
 
