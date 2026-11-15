@@ -728,6 +728,7 @@ function createTestSession(sessionManager: SessionManager, spec: ChildSpec): Age
 		// A scripted session runs no tools, so none of its calls ever detaches.
 		setToolDetachment: () => {},
 		takeDetachedToolCalls: () => [],
+		getPersistenceFailure: () => undefined,
 		dispose: testOptions.dispose ?? (() => {}),
 	} as unknown as AgentSession;
 	testOptions.onSession?.({
@@ -759,9 +760,27 @@ function sessionCommands(session: AgentSession, cwd: string): TranscriptCommands
  * What a settled child keeps for task inspection: its entries and the commands it had when it settled, with no
  * reference back to the disposed session. The task owner holds the last bound source for as long as the task exists.
  */
-function settledTranscript(manager: SessionManager, commands: TranscriptCommands | undefined): TranscriptSource {
+function settledTranscript(
+	manager: SessionManager,
+	commands: TranscriptCommands | undefined,
+	unsavedAnswer: AssistantMessage | undefined,
+): TranscriptSource {
 	const sessionId = manager.getSessionId();
-	const entries = manager.getEntries();
+	const saved = manager.getEntries();
+	// #5210: a final answer its session could not save is still shown, after what it saved.
+	const entries =
+		unsavedAnswer === undefined
+			? saved
+			: [
+					...saved,
+					{
+						type: "message" as const,
+						id: `unsaved-${randomUUID()}`,
+						parentId: manager.getLeafId(),
+						timestamp: new Date(unsavedAnswer.timestamp).toISOString(),
+						message: unsavedAnswer,
+					},
+				];
 	return {
 		getSessionId: () => sessionId,
 		getEntries: () => [...entries],
@@ -829,6 +848,53 @@ function messagesSinceLaunch(manager: SessionManager, launchLeafId: string | nul
 	const launchIndex = launchLeafId === null ? -1 : branch.findIndex((entry) => entry.id === launchLeafId);
 	if (launchLeafId !== null && launchIndex === -1) return [];
 	return branch.slice(launchIndex + 1).flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
+}
+
+/**
+ * #5210: final answers children's sessions could not save, by child session id, held until a resume of that session
+ * saves them. Each child holds at most its one last answer; the oldest go first once too many are held.
+ */
+const unsavedAnswers = new Map<string, AssistantMessage>();
+const MAX_UNSAVED_ANSWERS = 64;
+
+function holdUnsavedAnswer(sessionId: string, answer: AssistantMessage): void {
+	unsavedAnswers.delete(sessionId);
+	unsavedAnswers.set(sessionId, answer);
+	for (const oldest of unsavedAnswers.keys()) {
+		if (unsavedAnswers.size <= MAX_UNSAVED_ANSWERS) break;
+		unsavedAnswers.delete(oldest);
+	}
+}
+
+/**
+ * Saves the final answer the session's last run could not, before the resumed child runs, so it continues after its
+ * answer, once. A session whose save did land after all already ends with it and gets no second copy.
+ */
+async function restoreUnsavedAnswer(manager: SessionManager): Promise<void> {
+	const sessionId = manager.getSessionId();
+	const answer = unsavedAnswers.get(sessionId);
+	if (answer === undefined) return;
+	const last = manager.getBranch().findLast((entry) => entry.type === "message");
+	const saved = last?.type === "message" && JSON.stringify(last.message) === JSON.stringify(answer);
+	if (!saved) await manager.appendMessage(answer);
+	unsavedAnswers.delete(sessionId);
+}
+
+/** The run's final answer among messages its session could not save: an assistant reply that ended its turn. */
+function finalAnswerOf(messages: readonly unknown[]): AssistantMessage | undefined {
+	const last = (messages as readonly TranscriptMessage[]).findLast((message) => message.role === "assistant") as
+		| AssistantMessage
+		| undefined;
+	if (last === undefined || last.stopReason !== "stop") return undefined;
+	if (last.content.some((part) => part.type === "toolCall")) return undefined;
+	return outputFor([last]) === "" ? undefined : last;
+}
+
+/** Why a child whose session could not save its work failed, naming the storage error (#5210). */
+function unsavedWorkCause(error: string, keptAnswer: boolean): string {
+	return keptAnswer
+		? `The child's final answer could not be saved to its session (${error}). Its answer is kept in its result, but its session file does not hold it.`
+		: `The child's session could not save its work (${error}).`;
 }
 
 function outputFor(ownMessages: readonly TranscriptMessage[]): string {
@@ -1333,6 +1399,7 @@ export class SubagentControlRuntime {
 		let effectiveThinking = initialThinkingForAttempt(candidateModelId, configuredThinking);
 		let transcriptManager: SessionManager | undefined;
 		let releasedAttempt = false;
+		let unsavedAnswer: AssistantMessage | undefined;
 		// Open while this attempt's session lives: a status a disposed session writes late is not the task's.
 		let statusesOpen = true;
 		let attemptedModels: string[] = candidateModelId ? [candidateModelId] : [];
@@ -1596,6 +1663,8 @@ export class SubagentControlRuntime {
 				}
 			}
 			const sessionManager = await beforeStartDeadline(opening);
+			// #5210: a resumed child continues after the final answer its last run could not save.
+			if (admitted.spec.resumeSession) await beforeStartDeadline(restoreUnsavedAnswer(sessionManager));
 			transcriptManager = sessionManager;
 			taskHooks?.bindTranscript?.(sessionManager);
 			const childSession = {
@@ -1916,20 +1985,28 @@ export class SubagentControlRuntime {
 					...skillReport,
 				};
 			}
+			// #5210: what the session could not save it still holds in memory; the child's answer is among it.
+			const unsaved = termination === undefined ? session.getPersistenceFailure() : undefined;
+			unsavedAnswer = unsaved === undefined ? undefined : finalAnswerOf(unsaved.unsavedMessages);
+			if (unsavedAnswer !== undefined) holdUnsavedAnswer(sessionManager.getSessionId(), unsavedAnswer);
 			const producedMessages = ownMessages();
-			const output = outputFor(producedMessages);
+			const output = outputFor(
+				unsavedAnswer === undefined ? producedMessages : [...producedMessages, unsavedAnswer],
+			);
 			// A child that settled without a stop failed when its last turn failed or it completed no successful turn of
 			// its own (#3987, #4188). A named model's failure says that no other model ran in its place.
 			const failure = termination === undefined ? failedChildCause(producedMessages) : undefined;
 			const noOutput =
-				failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
-					? namedModelFailureCause(
-							admitted.spec.namedModel,
-							namedModelId(admitted.spec),
-							attemptedModels,
-							failure.modelError,
-						)
-					: failure?.cause;
+				unsaved !== undefined
+					? unsavedWorkCause(unsaved.error, unsavedAnswer !== undefined)
+					: failure?.modelError !== undefined && admitted.spec.namedModel !== undefined
+						? namedModelFailureCause(
+								admitted.spec.namedModel,
+								namedModelId(admitted.spec),
+								attemptedModels,
+								failure.modelError,
+							)
+						: failure?.cause;
 			const status = noOutput === undefined ? attemptStatus(termination) : "error";
 			this.native.publishChildStatus(admitted.identity.path, nativeStatus(status));
 			this.native.finishChildAttempt(token, nativeStatus(status));
@@ -2054,7 +2131,7 @@ export class SubagentControlRuntime {
 				taskHooks?.bindTranscript?.(
 					releasedAttempt
 						? releasedTranscript(transcriptManager.getSessionId(), settledCommands)
-						: settledTranscript(transcriptManager, settledCommands),
+						: settledTranscript(transcriptManager, settledCommands, unsavedAnswer),
 				);
 			};
 			const disposal = (async (): Promise<SessionDisposal> => {
