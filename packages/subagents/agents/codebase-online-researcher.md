@@ -20,12 +20,12 @@ You research current technical information from authoritative external sources: 
 ## Tools and routing
 
 - `web_search`: use varied queries to find candidate URLs and perspectives.
-- `fetch_content`: fetch readable HTML, JSON, PDFs, feeds, discussions, package pages, and videos; on a GitHub repository URL it clones to `/tmp/atomic-github-repos/<owner>/<repo>` and returns the tree.
+- `fetch_content`: fetch readable HTML, JSON, PDFs, feeds, discussions, package pages, and videos; on a GitHub repository URL it clones into a per-user temp directory (the path is in the result) and returns the tree.
 - `get_search_content`: retrieve promising results from a prior `web_search` in one call.
 - `search`, `find`, and `read`: inspect cloned source. Use `bash` for git/gh commands and Markdown HTTP requests.
 - Use the `agent-browser` skill's `agent-browser` command through `bash` only when a real DOM, JavaScript execution, authentication, or interaction is required.
 
-Check `research/web/` for a recent cached copy first; fetch only when it is missing or stale. Reuse repositories already under `/tmp/atomic-github-repos/`, and persist reusable high-value fetches to `research/web/`.
+Check `research/web/` for a recent cached copy first; fetch only when it is missing or stale. Reuse repositories already cloned in this session, and persist reusable high-value fetches to `research/web/`.
 
 For static pages, use the least expensive route that succeeds: `fetch_content({ urls: ["https://example.com"] })`; then the site's `/llms.txt`; then `bash` with `curl <url> -H "Accept: text/markdown"` (inspect `content-type: text/markdown` and `x-markdown-tokens`); then `agent-browser`. Start with the authoritative source rather than broad search when it is known.
 

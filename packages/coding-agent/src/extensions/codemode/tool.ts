@@ -86,7 +86,7 @@ Top-level await and return work. Use tools.name(args), or tools["raw-name"](args
 No Node, filesystem, network, timers, modules or credentials are available directly. Calls go through session validation and permission hooks. They have real side effects and are not undone after script failure.
 Tools with output schemas resolve to structuredContent; others resolve to text. Failed or blocked calls throw, except that a tool with an output schema resolves with its structuredContent on failure too when it returned one; check its fields. Scripts have a 256 MB memory limit.
 Globals: ALL_TOOLS, text(value), image(base64DataUrlOrImageContent), exit(), console.log(...), store(key, value), load(key), await searchTools(query, {limit?, namespace?}), await describeTool(name), await describeNamespace(name).
-tools, ALL_TOOLS and searchTools() matches cover only script-callable tools. Model-only tools such as subagent, workflow, intercom, and ask_user_question are excluded from them, but you can still call them directly. searchTools() and describeTool() answer the exact name of an active model-only tool with a hint to call it directly, not from a script.
+tools, ALL_TOOLS and searchTools() matches cover only script-callable tools. Model-only tools such as subagent, workflow, and ask_user_question are excluded from them, but you can still call them directly. A model-only tool that offers scripts part of its actions, such as intercom, is included, and its script description names the actions scripts may use. searchTools() and describeTool() answer the exact name of an active model-only tool with a hint to call it directly, not from a script.
 With several text items, each starts with a ==> text N/M <== line. Console calls follow the other output in one <console_output> block, with one line per call.
 image() also saves each image to a temp file and the result names its path before the image.
 Successful scripts persist store writes on the current session branch; failed scripts discard writes. Unawaited calls are cancelled when the script ends.
@@ -249,8 +249,12 @@ function prepareLoadout(loadout: ToolLoadout, options: CodemodeToolOptions) {
 	const callable = getCodemodeCallableTools(loadout.callable);
 	const descriptions: Record<string, string> = {};
 	if (!only)
+		// A model-only tool's declaration describes the direct call; its script access describes itself.
 		for (const tool of loadout.declared)
-			if (callable.some((candidate) => candidate.name === tool.name))
+			if (
+				loadout.getExposure(tool.name) !== "model-only" &&
+				callable.some((candidate) => candidate.name === tool.name)
+			)
 				descriptions[tool.name] = describeScriptCall(tool);
 	const listed = only ? callable : callable.filter((tool) => loadout.getExposure(tool.name) !== "direct");
 	const namespaces = new Map(
