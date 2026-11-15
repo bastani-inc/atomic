@@ -213,6 +213,44 @@ describe("snapshot commits survive git gc (#4923)", () => {
 		assert.equal(readFileSync(join(clone, "README.md"), "utf8"), "edited by hand\n");
 	});
 
+	test("a directory that is no longer a repository at the session's path is restored, not kept (#4923)", async () => {
+		const { clone, manager } = await sessionThatEdited();
+		rmSync(join(clone, ".git"), { recursive: true, force: true });
+		sandbox.write(join(clone, "README.md"), "no longer a checkout\n");
+
+		const prepared = await prepareSessionResume(manager, options());
+
+		assert.notEqual(cwdOf(prepared), clone);
+		assert.equal(readFileSync(join(cwdOf(prepared)!, "README.md"), "utf8"), "the session's edit\n");
+	});
+
+	test("an unchanged turn of an older session whose snapshot commit gc pruned records its snapshot and reports nothing (#4923)", async () => {
+		const { clone } = await sandbox.remoteWithClone();
+		const store = await sqlStore();
+		const manager = await SessionManager.create(store, clone);
+		await manager.appendMessage({ role: "user", content: "edit", timestamp: Date.now() });
+		sandbox.write(join(clone, "README.md"), "recorded by an older Atomic\n");
+		const older = await captureWorktreeSnapshot(clone, { settings, blobs: store.snapshotBlobs });
+		if (older.status !== "captured") throw new Error(older.status);
+		await manager.appendWorktreeSnapshot(clone, older.snapshot.id, older.snapshot);
+		await pruneUnreachable(clone);
+		const reported: string[] = [];
+		const recorder = new SessionWorktreeSnapshotRecorder({
+			sessionManager: manager,
+			cwd: () => clone,
+			settings: () => settings,
+			declaresWrites: () => false,
+			onUnavailable: (reason) => reported.push(reason.code),
+		});
+
+		await recorder.recordTurn(writeTurn(join(clone, "README.md")));
+
+		assert.deepEqual(reported, []);
+		const entries = manager.getEntries().filter((entry) => entry.type === "worktree_snapshot");
+		assert.equal(entries.length, 2);
+		assert.deepEqual(await atomicRefs(clone), []);
+	});
+
 	test("another clone at the session's path, without its ref, is still restored after gc (#4923)", async () => {
 		const { remote, clone, manager } = await sessionThatEdited();
 		await sandbox.git(sandbox.root, "clone", "-q", remote, sandbox.path("elsewhere"));

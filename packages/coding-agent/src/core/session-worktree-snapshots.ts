@@ -221,8 +221,7 @@ export class SessionWorktreeSnapshotRecorder {
 /**
  * Keeps the commit of `snapshot`, the session's latest of the checkout at `root`, reachable from the session's ref in
  * that repository, so `git gc` does not prune it and resume still recognises the checkout (#4923). The ref of each
- * checkout the session's work moved from or to by a restore is released, as retention releases its snapshot. A
- * failure goes to the debug log; the snapshot stays recorded.
+ * checkout the session's work in `root` came from through restores is released, as retention releases its snapshot.
  */
 async function keepLatestSnapshotCommit(
 	sessionManager: SessionManager,
@@ -230,40 +229,23 @@ async function keepLatestSnapshotCommit(
 	snapshot: WorktreeSnapshot,
 ): Promise<void> {
 	const sessionId = sessionManager.getSessionId();
-	try {
-		await keepSessionSnapshotCommit(sessionId, root, snapshot.snapshot);
-	} catch (error) {
-		reportDebug("storage", "snapshot-ref-update-failed", { root, ...failureDebugFields(error) });
-	}
+	await keepSessionSnapshotCommit(sessionId, root, snapshot.snapshot);
 	await releaseSessionSnapshotRefs(sessionId, restoredLineage(root, sessionManager.getWorktreeRootMappings()));
 }
 
-/** The other checkouts restores connect `root` to: those the session's work in it came from or moved to. */
+/**
+ * The other checkouts that restores connect `root` to: walking the mappings newest first, each one the work in a
+ * connected checkout was restored from or moved to.
+ */
 function restoredLineage(root: string, mappings: readonly WorktreeRootMapping[]): string[] {
 	const connected = new Set([resolve(root)]);
-	for (let grew = true; grew; ) {
-		grew = false;
-		for (const mapping of mappings) {
-			const from = resolve(mapping.from);
-			const to = resolve(mapping.to);
-			if (connected.has(from) === connected.has(to)) continue;
-			connected.add(from).add(to);
-			grew = true;
-		}
+	for (const mapping of [...mappings].reverse()) {
+		const from = resolve(mapping.from);
+		const to = resolve(mapping.to);
+		if (connected.has(from) || connected.has(to)) connected.add(from).add(to);
 	}
 	connected.delete(resolve(root));
 	return [...connected];
-}
-
-/** Every checkout path `entries` record a snapshot or restore of. */
-export function snapshotCheckoutsOf(entries: readonly SessionEntry[]): Set<string> {
-	const roots = new Set<string>();
-	for (const entry of entries) {
-		if (entry.type !== "worktree_snapshot") continue;
-		roots.add(resolve(entry.root));
-		if (entry.restore) roots.add(resolve(entry.restore.from)).add(resolve(entry.restore.to));
-	}
-	return roots;
 }
 
 /**
@@ -275,11 +257,11 @@ export async function deleteSessionWithSnapshotRefs(
 	sessionId: string,
 ): Promise<void> {
 	const roots = await store.load(sessionId).then(
-		({ entries }) => snapshotCheckoutsOf(entries),
-		() => new Set<string>(),
+		({ entries }) => entries.flatMap((entry) => (entry.type === "worktree_snapshot" ? [entry.root] : [])),
+		() => [],
 	);
 	await store.delete(sessionId);
-	await releaseSessionSnapshotRefs(sessionId, roots, true);
+	await releaseSessionSnapshotRefs(sessionId, new Set(roots));
 }
 
 async function nearestExisting(directory: string): Promise<string> {
