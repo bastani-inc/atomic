@@ -162,6 +162,11 @@ export interface SubagentChildRecord {
 	/** The launch's own `modelConstraints`, which every model its child falls back to must satisfy (#4188). */
 	readonly modelConstraints?: ModelConstraints;
 	/**
+	 * The task heartbeat cadence the launch chose, which every wake, resume and restore launches with again; `0` disables.
+	 * Absent when the launch used the owner default (#4856).
+	 */
+	readonly heartbeatMs?: number;
+	/**
 	 * The detached tool calls a released child is waiting on (#4326): its run ended with them still running, and their
 	 * results wake it. Empty once nothing is outstanding.
 	 */
