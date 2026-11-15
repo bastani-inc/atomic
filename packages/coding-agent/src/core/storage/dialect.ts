@@ -346,26 +346,52 @@ const postgresDocument = (source: StorageJsonSource) =>
 
 /** Postgres truncates longer identifiers, so two long names could become one. Names are ASCII. */
 const POSTGRES_IDENTIFIER_BYTES = 63;
-/** Hex digits of the hash that ends a shortened Postgres identifier. */
-const POSTGRES_IDENTIFIER_HASH_DIGITS = 8;
+/**
+ * Hex digits of the hash that ends a shortened Postgres identifier: the whole 64 bits. Names that share their head
+ * differ only in it, and 32 bits of FNV-1a made two such names under a valid prefix one (#5219).
+ */
+const POSTGRES_IDENTIFIER_HASH_DIGITS = 16;
+/** Hex digits of the 32-bit hash earlier builds ended a shortened identifier with, which an upgrade drops (#5219). */
+const LEGACY_POSTGRES_IDENTIFIER_HASH_DIGITS = 8;
 
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const U64 = (1n << 64n) - 1n;
 
 /**
- * 64-bit FNV-1a of `name`'s characters, folded to `POSTGRES_IDENTIFIER_HASH_DIGITS` hex digits: computed in plain
- * JavaScript so storage modules stay free of runtime-specific imports. Names are ASCII, written in store code.
+ * 64-bit FNV-1a of `name`'s characters: computed in plain JavaScript so storage modules stay free of runtime-specific
+ * imports. Names are ASCII, written in store code.
  */
-function identifierHash(name: string): string {
+function fnv1a64(name: string): bigint {
 	let hash = FNV_OFFSET;
 	for (let index = 0; index < name.length; index++) hash = ((hash ^ BigInt(name.charCodeAt(index))) * FNV_PRIME) & U64;
-	return ((hash ^ (hash >> 32n)) & 0xffffffffn).toString(16).padStart(POSTGRES_IDENTIFIER_HASH_DIGITS, "0");
+	return hash;
 }
 
 function postgresIdentifier(name: string): string {
 	if (name.length <= POSTGRES_IDENTIFIER_BYTES) return name;
-	return `${name.slice(0, POSTGRES_IDENTIFIER_BYTES - POSTGRES_IDENTIFIER_HASH_DIGITS - 1)}_${identifierHash(name)}`;
+	const hash = fnv1a64(name).toString(16).padStart(POSTGRES_IDENTIFIER_HASH_DIGITS, "0");
+	return `${name.slice(0, POSTGRES_IDENTIFIER_BYTES - POSTGRES_IDENTIFIER_HASH_DIGITS - 1)}_${hash}`;
+}
+
+/**
+ * The name an earlier build gave `name` when it did not fit (its first 54 characters and the 64-bit hash folded to 32
+ * bits), or undefined when it fits. Two names could get the same one, so a trigger installed under it may be missing
+ * (#5219): installing a trigger drops it, so no trigger an earlier build installed stays beside its replacement.
+ */
+function legacyPostgresIdentifier(name: string): string | undefined {
+	if (name.length <= POSTGRES_IDENTIFIER_BYTES) return undefined;
+	const hash = fnv1a64(name);
+	const folded = ((hash ^ (hash >> 32n)) & 0xffffffffn)
+		.toString(16)
+		.padStart(LEGACY_POSTGRES_IDENTIFIER_HASH_DIGITS, "0");
+	return `${name.slice(0, POSTGRES_IDENTIFIER_BYTES - LEGACY_POSTGRES_IDENTIFIER_HASH_DIGITS - 1)}_${folded}`;
+}
+
+/** Drops the trigger an earlier build installed as `name` on `table` under its shortened name, if it had one (#5219). */
+function dropLegacyTrigger(name: string, table: string): string {
+	const legacy = legacyPostgresIdentifier(name);
+	return legacy === undefined ? "" : `;\nDROP TRIGGER IF EXISTS ${legacy} ON ${table}`;
 }
 
 function postgresSchemaObjects(names: readonly string[]): SqliteStatement {
@@ -386,8 +412,15 @@ function postgresTrigger({ name, table, timing, event, when, statements }: Stora
 	const fn = postgresIdentifier(`${name}_fn`);
 	const body = statements.map((statement) => `${statement};`).join(" ");
 	const row = timing === "AFTER" ? "NULL" : event === "DELETE" ? "OLD" : "NEW";
-	return `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN ${when === undefined ? body : `IF (${when}) THEN ${body} END IF;`} RETURN ${row}; END $trigger$;
-CREATE OR REPLACE TRIGGER ${postgresIdentifier(name)} ${timing} ${event} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();`;
+	// The function an earlier build named otherwise (#5219), once no trigger runs it; one another trigger of that build
+	// still runs is dropped when that trigger is installed again.
+	const legacyFn = legacyPostgresIdentifier(`${name}_fn`);
+	const dropLegacyFn =
+		legacyFn === undefined
+			? ""
+			: `\nDO $legacy$ BEGIN DROP FUNCTION IF EXISTS ${legacyFn}(); EXCEPTION WHEN dependent_objects_still_exist THEN NULL; END $legacy$;`;
+	return `CREATE OR REPLACE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $trigger$ BEGIN ${when === undefined ? body : `IF (${when}) THEN ${body} END IF;`} RETURN ${row}; END $trigger$${dropLegacyTrigger(name, table)};
+CREATE OR REPLACE TRIGGER ${postgresIdentifier(name)} ${timing} ${event} ON ${table} FOR EACH ROW EXECUTE FUNCTION ${fn}();${dropLegacyFn}`;
 }
 
 /** `value`'s type as SQLite's `json_type` names it, for a `jsonb` expression. */
@@ -440,7 +473,8 @@ export const postgresDialect: StorageDialect = Object.freeze({
 		params: [postgresIdentifier(table), column],
 	}),
 	renderTrigger: postgresTrigger,
-	dropTrigger: (name: string, table: string) => `DROP TRIGGER IF EXISTS ${postgresIdentifier(name)} ON ${table}`,
+	dropTrigger: (name: string, table: string) =>
+		`DROP TRIGGER IF EXISTS ${postgresIdentifier(name)} ON ${table}${dropLegacyTrigger(name, table)}`,
 	schemaObjects: postgresSchemaObjects,
 	jsonType: (column: string, ...path: readonly string[]) =>
 		postgresSqliteJsonType(postgresJson(postgresJsonb(column), path, false)),

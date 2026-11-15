@@ -227,9 +227,12 @@ export class SqlRunJournal implements RunJournal {
 		const batch = database.batch?.bind(database);
 		// Every pool transaction and read checks the schema version before its first statement, and every pool batch fences
 		// on it, so the pool refuses a journal a later build upgraded (#4965). A plan that reads nothing, as an optimistic
-		// pool write's, costs no request: its batch's fence checks the version, and refuses it as a read would.
+		// pool write's, costs no request: its batch's fence checks the version, and refuses it as a read would. On a database
+		// that locks rows, the fence share-locks the meta row it read, so a later build's bump waits until the write commits
+		// rather than slipping in between the fence and the commit (#5219). A libSQL batch runs under the database's write
+		// lock, which the bump takes too, so the version it read holds until the batch commits.
 		const versionFence: SqliteStatement = {
-			sql: `INSERT INTO ${poolFenceTable(this.tables.runs)}(reason) SELECT NULL WHERE NOT EXISTS (SELECT 1 FROM ${this.tables.meta} WHERE ${c.schemaVersion} = ?)`,
+			sql: `INSERT INTO ${poolFenceTable(this.tables.runs)}(reason) SELECT NULL WHERE NOT EXISTS (SELECT 1 FROM ${this.tables.meta} WHERE ${c.schemaVersion} = ?${this.dialect.lockClause("share")})`,
 			params: [JOURNAL_SCHEMA_VERSION],
 		};
 		registerSqlPoolStorage(this, {
