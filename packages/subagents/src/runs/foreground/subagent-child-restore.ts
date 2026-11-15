@@ -522,16 +522,16 @@ async function relaunchChild(
 			`the model it inherited from its parent when it was launched, ${inherited.model}, is no longer available`,
 		);
 	// Calls an earlier owner process told it are still running died with that process: held as interrupted (#5014).
-	const latest =
-		(record.stillRunning?.some((call) => call.ownerGeneration !== SUBAGENT_OWNER_GENERATION) &&
-			(await holdInterruptedStillRunningCalls(
-				deps.pi,
-				record.owner.sessionId,
-				record.childId,
-				SUBAGENT_OWNER_GENERATION,
-				interruptedStillRunningResult,
-			))) ||
-		record;
+	if (record.stillRunning?.some((call) => call.ownerGeneration !== SUBAGENT_OWNER_GENERATION))
+		await holdInterruptedStillRunningCalls(
+			deps.pi,
+			record.owner.sessionId,
+			record.childId,
+			SUBAGENT_OWNER_GENERATION,
+			interruptedStillRunningResult,
+		);
+	// Read again: the owner's wakes may have held them first, after `record` was read.
+	const latest = subagentChildRecordOf(record.owner.sessionId, record.childId) ?? record;
 	// What its transcript already holds was delivered: a run that saved it stopped before it reported it (#5012).
 	const saved =
 		sessionManager && !fresh

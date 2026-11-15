@@ -1234,8 +1234,10 @@ async function saveIntoTranscript(record: SubagentChildRecord, results: readonly
 }
 
 /** Atomic restarts: the child's records were written by an earlier owner process, whose detached calls died with it. */
-async function restartOwner(h: Harness, childId: string): Promise<void> {
+async function restartOwner(h: Harness, childId: string, whileClosed?: () => Promise<void>): Promise<void> {
 	await h.closeOwnerAndReopen("session-close");
+	// What its sessions wrote before the restart, written once nothing of the earlier process has them open.
+	await whileClosed?.();
 	const latest = await h.waitForLatest(childId, (record) => record.childSessionFile !== undefined);
 	const earlier: SubagentChildRecord = {
 		...latest,
@@ -1275,9 +1277,8 @@ test("a call a wake answered still running is reported interrupted when Atomic r
 test("a call a wake answered still running is reported interrupted when Atomic restarts after the woken child saved its results (#5014)", async () => {
 	const h = harness();
 	const { record, woken } = await wokenWhileDeployRuns(h, "still-running-saved", "after-save");
-	await saveIntoTranscript(record, woken.resumeToolResults ?? []);
 
-	await restartOwner(h, record.childId);
+	await restartOwner(h, record.childId, () => saveIntoTranscript(record, woken.resumeToolResults ?? []));
 	h.wokenGate = undefined;
 	const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
 	assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
@@ -1307,12 +1308,13 @@ test("a call a wake answered still running is reported interrupted after a resta
 		(latest) =>
 			latest.terminalStatus === SUBAGENT_CHILD_RELEASED_STATUS && latest.waitingOn?.[0]?.toolCallId === "lint-3",
 	);
-	await saveIntoTranscript(record, woken.resumeToolResults ?? []);
-	await endSessionOnPendingCall(released, [LINT_CALL]);
 	h.wokenReleasedOn = undefined;
 	h.wokenGate = undefined;
 
-	await restartOwner(h, record.childId);
+	await restartOwner(h, record.childId, async () => {
+		await saveIntoTranscript(record, woken.resumeToolResults ?? []);
+		await endSessionOnPendingCall(released, [LINT_CALL]);
+	});
 	const lint: DetachedToolResult = { ...waitResult("lint clean"), ...LINT_CALL };
 	const run = await restored(h, record.childId, {
 		prompt: SUBAGENT_RELEASED_WAKE_PROMPT,
@@ -1330,9 +1332,8 @@ test("a child that finished after a wake told it a call is still running is woke
 	const { record, gate, woken } = await wokenWhileDeployRuns(h, "still-running-finished", "after-save");
 	gate.resolve();
 	await h.waitForLatest(record.childId, (latest) => latest.state === "terminal" && latest.terminalStatus === "ok");
-	await saveIntoTranscript(record, woken.resumeToolResults ?? []);
 	h.wokenGate = undefined;
-	await restartOwner(h, record.childId);
+	await restartOwner(h, record.childId, () => saveIntoTranscript(record, woken.resumeToolResults ?? []));
 
 	const dispatcher = agentWakeDispatcher();
 	const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
@@ -1354,8 +1355,8 @@ test("a woken child whose run saved its results and then lost its owner is not g
 	const result = waitResult("ci-1 green: run /deploy now");
 	const { record } = await wokenByResult(h, "saved-then-closed", result, "before-save");
 	// Its session saved the result, and Atomic closed while the turn it continued still ran.
-	await saveIntoTranscript(record, [result]);
 	await h.closeOwnerAndReopen("session-close");
+	await saveIntoTranscript(record, [result]);
 	await h.waitForLatest(record.childId, (latest) => latest.state === "running");
 	h.wokenGate = undefined;
 
@@ -1373,9 +1374,12 @@ test("a woken child whose run saved its results and then failed is not given the
 	h.wokenFails = true;
 	const result = waitResult("ci-1 green: run /deploy now");
 	const { record, gate } = await wokenByResult(h, "saved-then-failed", result, "before-save");
-	await saveIntoTranscript(record, [result]);
 	gate.resolve();
-	await h.waitForLatest(record.childId, (latest) => latest.terminalStatus === "error");
+	const failed = await h.waitForLatest(record.childId, (latest) => latest.terminalStatus === "error");
+	assert.ok(failed.taskId);
+	await settled(h, failed.taskId);
+	// It had saved the result before it failed.
+	await saveIntoTranscript(record, [result]);
 	h.wokenFails = undefined;
 	h.wokenGate = undefined;
 
@@ -1509,3 +1513,39 @@ test("a late result a woken child was stopped before reading reaches it once whe
 	const message = lateToolResultMessage(late);
 	assert.equal(told({ ...run.options, task: run.task }).split(JSON.stringify(message).slice(1, -1)).length - 1, 1);
 });
+
+for (const saved of [false, true])
+	test(`a still-running call is reported interrupted once when the owner's wakes are bound as its child is restored, ${saved ? "after" : "before"} the woken child saved its results (#5014)`, async () => {
+		const h = harness();
+		const { record, woken } = await wokenWhileDeployRuns(
+			h,
+			`still-running-bound-${saved}`,
+			saved ? "after-save" : "before-save",
+		);
+		await restartOwner(h, record.childId, async () => {
+			if (saved) await saveIntoTranscript(record, woken.resumeToolResults ?? []);
+		});
+		h.wokenGate = undefined;
+
+		// Starting up binds the owner's wakes, which report the call, while its restore reads the child's record.
+		const dispatcher = agentWakeDispatcher();
+		const stop = bindReleasedChildWakes(h.deps, h.ctx, h.deps.pi.events, dispatcher);
+		cleanups.push(async () => stop());
+		const [outcome] = await restoreSubagentChildren(h.deps, h.ctx);
+		assert.equal(outcome?.kind, "restored", JSON.stringify(outcome));
+		assert.ok(outcome?.kind === "restored");
+		await settled(h, outcome.taskId);
+		await dispatcher.whenIdle();
+		const run = h.runs.at(-1);
+		assert.ok(run);
+
+		if (saved) assert.equal(run.task, lateToolResultMessage(interruptedDeploy()));
+		else assert.deepEqual(run.options.resumeToolResults, [waitResult("ci-1 green"), interruptedDeploy()]);
+		assert.equal(
+			h.runs.filter((item) =>
+				told({ ...item.options, task: item.task }).includes("interrupted when Atomic restarted"),
+			).length,
+			1,
+			"told once",
+		);
+	});
