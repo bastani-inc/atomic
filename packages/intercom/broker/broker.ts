@@ -303,6 +303,15 @@ function isSupervisorRegistration(value: unknown): value is SupervisorRegistrati
 const RESTORING_RECIPIENT_ALIASES_MAX = 4;
 const RESTORING_RECIPIENT_GONE_REASON_MAX = 1_000;
 
+/**
+ * At most `max` UTF-16 units of `reason`, never ending in half of a surrogate pair (#5097). The broker cannot load
+ * `@bastani/atomic`, whose `sliceHead` does this for the extensions.
+ */
+function boundedReason(reason: string, max: number): string {
+  const lead = reason.charCodeAt(max - 1);
+  return reason.slice(0, lead >= 0xd800 && lead <= 0xdbff ? max - 1 : max);
+}
+
 function isRestoringRecipientAliasList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= RESTORING_RECIPIENT_ALIASES_MAX && value.every((alias) => typeof alias === "string");
 }
@@ -3308,8 +3317,8 @@ class IntercomBroker {
     const released = this.restoringRecipients.release(
       key,
       ownerSessionId,
-      gone === undefined ? undefined : gone.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX),
-      refusal !== undefined && refusal.trim() ? refusal.slice(0, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
+      gone === undefined ? undefined : boundedReason(gone, RESTORING_RECIPIENT_GONE_REASON_MAX),
+      refusal !== undefined && refusal.trim() ? boundedReason(refusal, RESTORING_RECIPIENT_GONE_REASON_MAX) : undefined,
     );
     if (released === undefined) return;
     this.multiNode?.restoringReleased(key, ownerSessionId, released.gone, released.refusal);

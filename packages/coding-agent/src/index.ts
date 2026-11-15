@@ -946,6 +946,8 @@ export {
 	type ShellToolPresentation,
 	searchToolSystemPromptContribution,
 	serializeFileToolError,
+	sliceHead,
+	sliceTail,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,

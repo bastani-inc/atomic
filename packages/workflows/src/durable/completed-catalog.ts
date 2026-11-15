@@ -1,4 +1,5 @@
 import type { SessionStore } from "@bastani/atomic";
+import { sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "../shared/flat-string.js";
 import { stageStatusFromRecord } from "../shared/legacy-waiting-status.js";
 import { isReopenableSession } from "../shared/session-transcript.js";
@@ -477,8 +478,8 @@ function completedToolNodes(
  */
 function summarizeCompletedToolResult(value: WorkflowSerializableValue): string {
 	const serialized = JSON.stringify(value);
-	if (serialized === undefined) return flattenTruncatedString(String(value).slice(0, 240));
-	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(serialized.slice(0, 237))}...`;
+	if (serialized === undefined) return flattenTruncatedString(sliceHead(String(value), 240));
+	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(sliceHead(serialized, 237))}...`;
 }
 
 interface ReconstructionPolicy {

@@ -13,7 +13,7 @@
  *
  */
 
-import { type AdmittedAgentTask, collectAgentTasks, runCallback, type TaskResult } from "@bastani/atomic";
+import { type AdmittedAgentTask, collectAgentTasks, runCallback, sliceHead, type TaskResult } from "@bastani/atomic";
 import { isWorkflowToolAbortError } from "../engine/workflow-tool-abort.js";
 import { sleepOrAbort } from "../runs/shared/retry.js";
 import { flattenTruncatedString } from "../shared/flat-string.js";
@@ -902,8 +902,8 @@ async function recordReplayedToolTopology(
  */
 function summarizeToolResult(value: WorkflowSerializableValue): string {
 	const serialized = JSON.stringify(value);
-	if (serialized === undefined) return flattenTruncatedString(String(value).slice(0, 240));
-	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(serialized.slice(0, 237))}...`;
+	if (serialized === undefined) return flattenTruncatedString(sliceHead(String(value), 240));
+	return serialized.length <= 240 ? serialized : `${flattenTruncatedString(sliceHead(serialized, 237))}...`;
 }
 
 export async function recordCheckpointDurably(

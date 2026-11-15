@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { sliceHead } from "@bastani/atomic";
 import type {
 	StageOptions,
 	StagePromptOptions,
@@ -177,7 +178,7 @@ function truncateByBytes(text: string, maxBytes: number): { text: string; trunca
 			high = mid - 1;
 		}
 	}
-	return { text: text.slice(0, low), truncated: true };
+	return { text: sliceHead(text, low), truncated: true };
 }
 
 export function structuredTaskOutputText(value: unknown): string {

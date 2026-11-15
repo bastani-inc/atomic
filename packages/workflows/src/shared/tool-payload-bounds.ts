@@ -26,6 +26,7 @@
  * `TOOL_PAYLOAD_UNREADABLE_PLACEHOLDER`. Nothing is silently dropped.
  */
 
+import { sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "./flat-string.js";
 import type { WorkflowSerializableValue } from "./types.js";
 
@@ -381,7 +382,7 @@ function cloneString(state: CloneState, value: string): string {
 	state.remaining = 0;
 	// Flattened: this projection is memoized, so a SlicedString here would keep
 	// the whole original payload alive behind a bounded-looking value.
-	return `${flattenTruncatedString(value.slice(0, keep))}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
+	return `${flattenTruncatedString(sliceHead(value, keep))}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +427,7 @@ function writeString(state: SerializeState, value: string): boolean {
 	// rather than its own length.
 	if (value.length > remaining) {
 		state.truncated = true;
-		writeChunk(state, JSON.stringify(value.slice(0, remaining)));
+		writeChunk(state, JSON.stringify(sliceHead(value, remaining)));
 		return false;
 	}
 	return writeChunk(state, JSON.stringify(value));
@@ -510,7 +511,7 @@ export function boundedToolPayloadText(value: ToolPayloadValue, limit = TOOL_PAY
 	const text = state.parts.join("");
 	if (!state.truncated) return text;
 	const keep = Math.max(0, cap - TOOL_PAYLOAD_TRUNCATION_MARKER.length);
-	return `${text.slice(0, keep)}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
+	return `${sliceHead(text, keep)}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
 }
 
 /**
@@ -521,7 +522,7 @@ export function boundedToolText(value: string, limit = TOOL_PAYLOAD_VALUE_LIMIT)
 	const cap = Math.max(TOOL_PAYLOAD_TRUNCATION_MARKER.length + 1, limit);
 	if (value.length <= cap) return value;
 	const keep = Math.max(0, cap - TOOL_PAYLOAD_TRUNCATION_MARKER.length);
-	return `${flattenTruncatedString(value.slice(0, keep))}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
+	return `${flattenTruncatedString(sliceHead(value, keep))}${TOOL_PAYLOAD_TRUNCATION_MARKER}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -901,10 +901,11 @@ test("a restored child's pre-restart Intercom id is recognized while a sibling i
 			RECORD_WAIT_MS,
 		);
 
-		assert.match(refusal ?? "", /subagent-worker-known1-1.*has not reconnected to Intercom/);
 		slowSibling.reject(new Error("the sibling's session is gone"));
 		await restoring;
+		assert.match(refusal ?? "", /subagent-worker-known1-1.*has not reconnected to Intercom/);
 	} finally {
+		slowSibling.reject(new Error("the sibling's session is gone"));
 		vi.restoreAllMocks();
 		await resumedHost.close("session-close");
 		removeTempDirectory(cwd);

@@ -1,5 +1,5 @@
 import { reportOwnedIntercomDiagnostic } from "./diagnostics.js";
-import { APP_NAME, getEnvValue, type ExtensionAPI, type ExtensionContext, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
+import { APP_NAME, type ExtensionAPI, type ExtensionContext, getEnvValue, type SessionStartEvent, sliceHead, type ToolDefinition } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getExtensionContextOwner } from "./context-owner.js";
@@ -1146,7 +1146,7 @@ ${ASK_USAGE}
 				const preview = input.message?.trim();
 				let text = theme.fg("toolTitle", theme.bold("contact_supervisor ")) + theme.fg(reason === "need_decision" ? "warning" : reason === "progress_update" ? "muted" : "accent", reason);
 				if (title) text += " " + theme.fg("accent", title);
-				if (preview) text += "\n  " + theme.fg("dim", preview.length > 96 ? `${preview.slice(0, 93)}...` : preview);
+				if (preview) text += "\n  " + theme.fg("dim", preview.length > 96 ? `${sliceHead(preview, 93)}...` : preview);
 				return new Text(text, 0, 0);
 			},
 		});

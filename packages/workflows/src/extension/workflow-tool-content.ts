@@ -1,3 +1,4 @@
+import { sliceHead } from "@bastani/atomic";
 import { describeReadinessDecision } from "../runs/foreground/readiness-decision.js";
 import { poolCoordinationLine } from "../shared/pool-coordination.js";
 import { formatStagePredictionStatus } from "../shared/possible-stage-prediction.js";
@@ -48,7 +49,7 @@ const STATUS_SUSPENDED_STAGE_LIMIT = 10;
 function truncateStatusText(text: string): string {
 	const flattened = text.replace(/\s+/g, " ").trim();
 	return flattened.length > STATUS_MESSAGE_CHAR_LIMIT
-		? `${flattened.slice(0, STATUS_MESSAGE_CHAR_LIMIT - 1)}…`
+		? `${sliceHead(flattened, STATUS_MESSAGE_CHAR_LIMIT - 1)}…`
 		: flattened;
 }
 
