@@ -756,9 +756,9 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
+      // Unreadable lock contents are treated as stale so a new broker can start.
       const inspected = readFileOrUndefined(lockPath);
-      if (inspected === undefined) continue;
-      if (!isSpawnLockContentStale(inspected)) return undefined;
+      if (!isSpawnLockContentStale(inspected ?? "")) return undefined;
       replaceStaleSpawnLock(inspected, lockPath);
     }
   }
@@ -768,9 +768,9 @@ export function acquireSpawnLock(lockPath: string = getBrokerSpawnLockPath()): s
 /**
  * Removes the spawn lock a spawner read as `inspected` and judged stale, so the next `wx` attempt can take it. Two
  * spawners that saw the same stale lock never both replace it: the lock is removed only while it is still the inspected
- * one (#5132).
+ * one (#5132). `inspected` is undefined when the lock could not be read.
  */
-export function replaceStaleSpawnLock(inspected: string, lockPath: string = getBrokerSpawnLockPath()): void {
+export function replaceStaleSpawnLock(inspected: string | undefined, lockPath: string = getBrokerSpawnLockPath()): void {
   takeOverStaleLock(lockPath, inspected, `${lockPath}.takeover`);
 }
 
@@ -796,7 +796,7 @@ export function isSpawnLockStale(lockPath: string = getBrokerSpawnLockPath(), no
 }
 
 function isSpawnLockContentStale(content: string, nowMs: number = Date.now()): boolean {
-  const [spawnerLine = "", createdAtLine = "", brokerLine = ""] = content.trim().split("\n");
+  const [spawnerLine = "", createdAtLine = "", brokerLine = ""] = content.split("\n");
   const spawnerPid = Number.parseInt(spawnerLine, 10);
   const createdAt = Number.parseInt(createdAtLine, 10);
   const brokerPid = Number.parseInt(brokerLine, 10);

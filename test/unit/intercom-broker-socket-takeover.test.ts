@@ -557,6 +557,25 @@ describe("socket replacement lock (#3505)", () => {
 		assert.equal(fileExistsSync(path), false);
 	});
 
+	test("a lock still unreadable only briefly is waited on, not taken over (#5132)", async () => {
+		const path = lockPath();
+		writeTextSync(path, "");
+		let waits = 0;
+		let acquired = false;
+		const acquiring = acquireSocketReplacementLock(path, { onWait: () => waits++ }).then((release) => {
+			acquired = true;
+			return release;
+		});
+
+		await sleep(LIVE_HOLDER_OBSERVATION_MS);
+		assert.equal(acquired, false);
+		assert.equal(waits, 1, "the wait is announced once");
+		assert.equal(readTextSync(path, "utf8"), "");
+
+		removePathSync(path, { force: true });
+		(await acquiring)();
+	});
+
 	test("an unreadable lock and an unreadable takeover token left by crashed brokers are both recovered", async () => {
 		const path = lockPath();
 		const abandonedAt = new Date(Date.now() - ABANDONED_FILE_AGE_MS);

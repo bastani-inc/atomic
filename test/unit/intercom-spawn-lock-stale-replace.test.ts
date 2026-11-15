@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-// `readdirSync` has no equivalent in test/helpers/runtime.ts: the spawners report readiness as files in one directory.
-import { readdirSync } from "node:fs";
+// `readdirSync` and `utimesSync` have no equivalent in test/helpers/runtime.ts: the spawners report readiness as files
+// in one directory, and an abandoned takeover token is backdated.
+import { readdirSync, utimesSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,6 +38,12 @@ const STRESS_SPAWNERS = 16;
 
 /** Each spawner is a real node process loading spawn.ts through jiti, which is slow on a loaded Windows runner. */
 const STRESS_TEST_TIMEOUT_MS = 120_000;
+
+/** Older than the 1 s after which an unreadable takeover token counts as left by a crashed process. */
+const ABANDONED_TOKEN_AGE_MS = 10_000;
+
+/** A process that is always running: init on POSIX, the System process on Windows. */
+const UNSIGNALLABLE_PID = process.platform === "win32" ? 4 : 1;
 
 /** How often the spawners and the test poll the gate directory. */
 const START_POLL_MS = 2;
@@ -143,6 +150,25 @@ describe("stale lock file removal (#5132)", () => {
 		assert.deepEqual(leftovers(path), []);
 	});
 
+	test("a lock already gone is not reported removed (#5132)", () => {
+		assert.equal(removeFileIfUnchanged(join(tempDir, "absent-lock"), undefined), false);
+	});
+
+	test("an unreadable takeover token blocks the takeover until it is old enough to have been left by a crash (#5132)", () => {
+		const { path, content } = staleLock();
+		const token = `${path}.takeover`;
+		writeTextSync(token, "");
+
+		takeOverStaleLock(path, content, token);
+		assert.equal(readTextSync(path, "utf8"), content);
+		assert.equal(fileExistsSync(token), true);
+
+		const abandonedAt = new Date(Date.now() - ABANDONED_TOKEN_AGE_MS);
+		utimesSync(token, abandonedAt, abandonedAt);
+		takeOverStaleLock(path, content, token);
+		assert.equal(fileExistsSync(token), false);
+	});
+
 	test("a takeover token held by a live process blocks the takeover and is left alone (#5132)", () => {
 		const { path, content } = staleLock();
 		const token = `${path}.takeover`;
@@ -151,6 +177,16 @@ describe("stale lock file removal (#5132)", () => {
 		takeOverStaleLock(path, content, token);
 		assert.equal(readTextSync(path, "utf8"), content);
 		assert.equal(readTextSync(token, "utf8"), `${process.pid}\n`);
+	});
+
+	test("a takeover token of a live process this user may not signal blocks the takeover (#5132)", () => {
+		const { path, content } = staleLock();
+		const token = `${path}.takeover`;
+		writeTextSync(token, `${UNSIGNALLABLE_PID}\n`);
+
+		takeOverStaleLock(path, content, token);
+		assert.equal(readTextSync(path, "utf8"), content);
+		assert.equal(fileExistsSync(token), true);
 	});
 
 	test("a takeover token left by a dead process is removed, so the next attempt replaces the lock (#5132)", () => {

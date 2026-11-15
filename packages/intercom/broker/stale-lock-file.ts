@@ -1,8 +1,8 @@
 import { randomUUID } from "crypto";
 import { linkSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs";
 
-/** A takeover token gets its pid as it is created, so one still unreadable after this was left by a crash. */
-const UNREADABLE_TOKEN_GRACE_MS = 1_000;
+/** Locks and tokens get their pid as they are created, so one still unreadable after this was left by a crash. */
+const UNREADABLE_FILE_GRACE_MS = 1_000;
 
 /** The file's content, or undefined when it is absent or cannot be read. */
 export function readFileOrUndefined(path: string): string | undefined {
@@ -55,12 +55,21 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-/** A token is abandoned once its pid is dead, or once it stayed unreadable past the grace period. */
-function isTokenAbandoned(content: string | undefined, token: string): boolean {
-  const pid = Number.parseInt(content?.trim() ?? "", 10);
-  if (Number.isFinite(pid)) return !isProcessAlive(pid);
+/** The pid a lock or token holding `${pid}\n` records, or undefined when it records none. */
+export function pidOf(content: string | undefined): number | undefined {
+  const pid = Number.parseInt(content ?? "", 10);
+  return Number.isFinite(pid) ? pid : undefined;
+}
+
+/**
+ * A lock or token read as `content` was left by a crashed process once its pid is dead, or once it stayed unreadable
+ * past the grace period.
+ */
+export function isAbandoned(path: string, content: string | undefined): boolean {
+  const pid = pidOf(content);
+  if (pid !== undefined) return !isProcessAlive(pid);
   try {
-    return Date.now() - statSync(token).mtimeMs >= UNREADABLE_TOKEN_GRACE_MS;
+    return Date.now() - statSync(path).mtimeMs >= UNREADABLE_FILE_GRACE_MS;
   } catch {
     return false;
   }
@@ -78,7 +87,7 @@ export function takeOverStaleLock(lockPath: string, inspected: string | undefine
     writeFileSync(token, tokenContent, { flag: "wx" });
   } catch {
     const holder = readFileOrUndefined(token);
-    if (isTokenAbandoned(holder, token)) removeFileIfUnchanged(token, holder);
+    if (isAbandoned(token, holder)) removeFileIfUnchanged(token, holder);
     return;
   }
   try {
