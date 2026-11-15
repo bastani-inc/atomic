@@ -3,7 +3,7 @@ import type { Theme } from "../modes/interactive/theme/theme.js";
 import { resolvePath } from "../utils/paths.ts";
 import type { ResourceDiagnostic, ResourceOverlap } from "./diagnostics.ts";
 import { createEventBus, createStagedEventBus, type EventBus } from "./event-bus.js";
-import { createExtensionRuntime } from "./extensions/loader.ts";
+import { clearExtensionCache, createExtensionRuntime } from "./extensions/loader.ts";
 import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import type { McpServerContribution } from "./mcp-servers.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
@@ -392,6 +392,9 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const eventBusTransaction = createStagedEventBus(this.eventBus);
 		const candidate = this.createCandidate(settingsManager, eventBusTransaction.bus);
 		sessionLifecycleScopes.set(candidate, lifecycleScopeForOwner(this));
+		// The candidate is a new, never-loaded loader, so its own reload keeps the extension modules cached at
+		// startup. A reload must evaluate the extension files as they are on disk now (#4986).
+		clearExtensionCache();
 		await candidate.reload(options);
 		const prepareCommit = () => {
 			const eventBusCommit = eventBusTransaction.prepareCommit();
