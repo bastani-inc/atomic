@@ -32,7 +32,7 @@ function holdFor(harness: Harness, report?: string): void {
 	});
 }
 
-/** A tool that declares `writesFiles`, so it waits for the build, and whose calls end when the test releases them. */
+/** A tool whose calls wait for the build, like every tool, and end when the test releases them. */
 function generator() {
 	const started: string[] = [];
 	const releases = new Map<string, () => void>();
@@ -41,7 +41,6 @@ function generator() {
 		label: "Generate",
 		description: "Generates files",
 		parameters: Type.Object({}),
-		writesFiles: true,
 		execute: async (toolCallId) => {
 			started.push(toolCallId);
 			await new Promise<void>((resolve) => releases.set(toolCallId, resolve));
@@ -82,6 +81,8 @@ describe("the overlapped blueprint build's tool gate (#4748)", () => {
 				concurrency: "exclusive",
 				parameters: Type.Object({}),
 				execute: async (_id, _args, _signal, _update, ctx): Promise<AgentToolResult<undefined>> => {
+					// Every tool call waits for a pending build, so the build starts once the parent runs.
+					holdFor(harness);
 					const controller = new AbortController();
 					const call = ctx.executeTool("generate", {}, { signal: controller.signal });
 					setTimeout(() => controller.abort(new Error("interrupted")), 100);
@@ -96,7 +97,6 @@ describe("the overlapped blueprint build's tool gate (#4748)", () => {
 			});
 		};
 		const harness = await harnessWith({ extensionFactories: [parent], initialActiveToolNames: ["parent"] });
-		holdFor(harness);
 		harness.setResponses([
 			fauxAssistantMessage([fauxToolCall("parent", {}, { id: "p-1" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
