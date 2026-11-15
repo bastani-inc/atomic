@@ -1,4 +1,4 @@
-# @earendil-works/pi-telemetry
+# @bastani/atomic-telemetry
 
 Vendor-neutral telemetry contracts and typed schema utilities for pi packages.
 
@@ -38,7 +38,7 @@ Applications can use the in-memory reference or provide an adapter for OpenTelem
 ## Installation
 
 ```bash
-npm install @earendil-works/pi-telemetry
+npm install @bastani/atomic-telemetry
 ```
 
 ## Telemetry Concepts
@@ -74,7 +74,7 @@ A `TelemetryContext` starts a span around a callback. The callback receives a `T
 import {
   NOOP_TELEMETRY_CONTEXT,
   type TelemetryContext,
-} from '@earendil-works/pi-telemetry';
+} from '@bastani/atomic-telemetry';
 
 async function loadAccount(
   accountId: string,
@@ -242,7 +242,7 @@ Metric definitions use `kind: 'counter' | 'upDownCounter' | 'histogram'`; only h
 Use `NOOP_TELEMETRY_CONTEXT` when telemetry is optional:
 
 ```typescript
-import { NOOP_TELEMETRY_CONTEXT } from '@earendil-works/pi-telemetry';
+import { NOOP_TELEMETRY_CONTEXT } from '@bastani/atomic-telemetry';
 
 const result = await NOOP_TELEMETRY_CONTEXT.startSpan(
   { name: 'example.operation' },
@@ -263,7 +263,7 @@ The no-op context:
 `InMemoryTelemetryContext` is the backend-neutral reference implementation. It is useful for tests, local diagnostics, and applications that intentionally want process-local capture without an exporter:
 
 ```typescript
-import { InMemoryTelemetryContext } from '@earendil-works/pi-telemetry';
+import { InMemoryTelemetryContext } from '@bastani/atomic-telemetry';
 
 const telemetry = new InMemoryTelemetryContext();
 
@@ -299,7 +299,7 @@ Only settled spans are returned. A trace ID is the root's globally unique span I
 Rendering is a separate subpath, kept out of the root entry graph:
 
 ```typescript
-import { renderTrace } from '@earendil-works/pi-telemetry/render';
+import { renderTrace } from '@bastani/atomic-telemetry/render';
 
 const page = await telemetry.findTraces({ errors: true, limit: 10 });
 for (const trace of page.traces) console.log(renderTrace(trace.spans));
@@ -309,13 +309,13 @@ for (const trace of page.traces) console.log(renderTrace(trace.spans));
 
 ## Adapter Conformance
 
-`@earendil-works/pi-telemetry/testing` exports a runner-independent conformance suite modeled as grouped cases. A fixture supplies a fresh context and converts its backend's finished spans into normalized `RecordedTelemetrySpan` snapshots:
+`@bastani/atomic-telemetry/testing` exports a runner-independent conformance suite modeled as grouped cases. A fixture supplies a fresh context and converts its backend's finished spans into normalized `RecordedTelemetrySpan` snapshots:
 
 ```typescript
 import {
   createTelemetryAdapterConformance,
   type TelemetryAdapterFixture,
-} from '@earendil-works/pi-telemetry/testing';
+} from '@bastani/atomic-telemetry/testing';
 import { describe, it } from 'vitest';
 
 const conformance = createTelemetryAdapterConformance(async () => {
@@ -348,7 +348,7 @@ The low-level span API intentionally accepts open names and attribute bags so ad
 import {
   createTypedSpanStarter,
   defineTelemetrySchema,
-} from '@earendil-works/pi-telemetry';
+} from '@bastani/atomic-telemetry';
 
 export const EXAMPLE_TELEMETRY_SCHEMA = defineTelemetrySchema({
   version: 1,
@@ -455,7 +455,7 @@ Attributes do not end the span. Returning, resolving, throwing, or rejecting fro
 A starter can compose multiple independently versioned schemas:
 
 ```typescript
-import { AGENT_TELEMETRY_SCHEMAS } from '@earendil-works/pi-agent-core';
+import { AGENT_TELEMETRY_SCHEMAS } from '@bastani/atomic-agent-core';
 
 const startAgentSpan = createTypedSpanStarter(
   telemetryContext,
@@ -498,13 +498,13 @@ Adapters do not need to understand schema objects. Instrumentation helpers and t
 
 Package ownership is intentionally split:
 
-- `@earendil-works/pi-telemetry` owns the vendor-neutral contract, no-op and in-memory reference contexts, schema utilities, and adapter conformance suite;
-- `@earendil-works/pi-ai` accepts a parent `TelemetrySpan` through `telemetry` in provider request options and exports `AI_TELEMETRY_SCHEMA` from its root and `./models` entry points;
+- `@bastani/atomic-telemetry` owns the vendor-neutral contract, no-op and in-memory reference contexts, schema utilities, and adapter conformance suite;
+- `@bastani/atomic-ai` accepts a parent `TelemetrySpan` through `telemetry` in provider request options and exports `AI_TELEMETRY_SCHEMA` from its root and `./models` entry points;
 - `@earendil-works/pi-durable` exports `DURABLE_TELEMETRY_SCHEMA` for short task-handler and submission spans, events, and metrics;
-- `@earendil-works/pi-agent-core` retains its existing agent-loop and session instrumentation and schemas.
+- `@bastani/atomic-agent-core` retains its existing agent-loop and session instrumentation and schemas.
 
 ```typescript
-import { AI_TELEMETRY_SCHEMA } from '@earendil-works/pi-ai/models';
+import { AI_TELEMETRY_SCHEMA } from '@bastani/atomic-ai/models';
 import { DURABLE_TELEMETRY_SCHEMA } from '@earendil-works/pi-durable';
 ```
 

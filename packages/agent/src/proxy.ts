@@ -14,7 +14,7 @@ import {
 	type ToolCall,
 	ToolCallArgumentsStream,
 	type TranscriptContext,
-} from "@earendil-works/pi-ai";
+} from "@bastani/atomic-ai";
 
 /**
  * Proxy event types - server sends these with partial field stripped to reduce bandwidth.

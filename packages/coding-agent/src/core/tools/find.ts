@@ -1,8 +1,8 @@
 import { statSync } from "node:fs";
 import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { Text } from "@bastani/atomic-tui";
 import { spawn } from "child_process";
 import { Minimatch } from "minimatch";
 import { type Static, Type } from "typebox";

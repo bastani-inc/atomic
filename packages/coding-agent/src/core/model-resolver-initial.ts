@@ -1,6 +1,6 @@
-import { normalizeProviderId } from "@bastani/pi-ai";
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { normalizeProviderId } from "@bastani/atomic-ai";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import chalk from "chalk";
 import { APP_NAME } from "../config.js";
 import { normalizeProviderKeys } from "./azure-provider-compat.js";

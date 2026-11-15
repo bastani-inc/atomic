@@ -1,6 +1,6 @@
 {
-	"name": "@earendil-works/pi-tui",
-	"version": "1.5.2",
+	"name": "@bastani/atomic-tui",
+	"version": "0.0.0",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"type": "module",
 	"main": "dist/index.js",
@@ -29,7 +29,9 @@
 		"native/linux/src/**/*.{c,h}",
 		"native/linux/build.sh",
 		"native/linux/README.md",
-		"README.md"
+		"README.md",
+		"LICENSE",
+		"NOTICE.md"
 	],
 	"keywords": [
 		"tui",
@@ -42,10 +44,20 @@
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
+	"contributors": [
+		"Bastani, Inc."
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/earendil-works/pi.git",
+		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/tui"
+	},
+	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/tui#readme",
+	"bugs": {
+		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
 	"engines": {
 		"node": ">=22.19.0"

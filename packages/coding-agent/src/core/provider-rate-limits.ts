@@ -1,4 +1,4 @@
-import { getProviderRetryAfterMs } from "@bastani/pi-ai/utils/retry-hints";
+import { getProviderRetryAfterMs } from "@bastani/atomic-ai/utils/retry-hints";
 import { errorMessage, normalizeModelFailureSignal } from "./model-fallback-failures.ts";
 
 export interface ProviderRequestBudget {

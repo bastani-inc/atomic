@@ -5,8 +5,8 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type ProviderHeaders,
-} from "@bastani/pi-ai";
-import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import { complete, getModel, registerApiProvider, unregisterApiProviders } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { generateSummaryDraft, type SummaryGenerationContext } from "../../web-access/summary-review.js";
 import { rewriteSearchQuery } from "../../web-access/web-search-summary.js";

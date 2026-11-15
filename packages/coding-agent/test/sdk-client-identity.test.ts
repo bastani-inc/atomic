@@ -8,7 +8,7 @@ import {
 	getAttributionHeaders,
 	type Model,
 	type SimpleStreamOptions,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { APP_NAME, VERSION } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";

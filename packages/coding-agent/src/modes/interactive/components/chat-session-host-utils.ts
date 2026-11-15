@@ -1,4 +1,4 @@
-import { matchesKey as tuiMatchesKey } from "@earendil-works/pi-tui";
+import { matchesKey as tuiMatchesKey } from "@bastani/atomic-tui";
 import type { ChatMessageEntry } from "./chat-message-renderer.ts";
 import type { CacheKeyPart, ChatSessionHostEntry } from "./chat-session-host-types.ts";
 import type { ChatTranscriptEntryLike } from "./chat-transcript.js";

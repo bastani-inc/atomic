@@ -78,7 +78,7 @@ function workerLauncher(options: CodemodeSandboxOptions): VmLauncher {
  * Runs JavaScript in a QuickJS VM (a separate wasm instance) inside a worker thread. The worker
  * keeps script execution off the host thread: QuickJS runs synchronously, so a spinning script on
  * the host thread would block its event loop. Requires `node:worker_threads` (Node or Bun); see
- * `InlineCodemodeSandbox` and `RemoteCodemodeSandbox` in `@earendil-works/pi-codemode/portable`
+ * `InlineCodemodeSandbox` and `RemoteCodemodeSandbox` in `@bastani/atomic-codemode/portable`
  * for other runtimes.
  */
 export class CodemodeSandbox extends CodemodeSandboxBase {

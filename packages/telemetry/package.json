@@ -1,6 +1,6 @@
 {
-	"name": "@earendil-works/pi-telemetry",
-	"version": "1.5.2",
+	"name": "@bastani/atomic-telemetry",
+	"version": "0.0.0",
 	"description": "Vendor-neutral telemetry contracts and typed schema utilities for pi",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -24,7 +24,9 @@
 	},
 	"files": [
 		"dist",
-		"README.md"
+		"README.md",
+		"LICENSE",
+		"NOTICE.md"
 	],
 	"scripts": {
 		"clean": "node ../../scripts/package-files.mjs clean dist",
@@ -39,10 +41,20 @@
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
+	"contributors": [
+		"Bastani, Inc."
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/earendil-works/pi.git",
+		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/telemetry"
+	},
+	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/telemetry#readme",
+	"bugs": {
+		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
 	"engines": {
 		"node": ">=22.19.0"

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type Credential, OAUTH_REFRESH_LOCK_HOLD_MS, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/pi-ai";
+import { type Credential, OAUTH_REFRESH_LOCK_HOLD_MS, OAUTH_REFRESH_TIMEOUT_MS } from "@bastani/atomic-ai";
 import {
 	chmodSync,
 	existsSync,

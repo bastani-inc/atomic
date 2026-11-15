@@ -10,7 +10,7 @@ import {
 	type Model,
 	type ModelFastRoute,
 	type SimpleStreamOptions,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CODEX_FAST_ROUTE_HEADER } from "../src/core/fast-model-routing-transport.ts";

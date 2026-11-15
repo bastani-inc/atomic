@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { Credential, Provider } from "@bastani/pi-ai";
+import type { Credential, Provider } from "@bastani/atomic-ai";
 import { afterEach, describe, test, vi } from "vitest";
 import { runAuthLogout } from "../src/cli/auth-logout.js";
 import { AuthStorage } from "../src/core/auth-storage.js";

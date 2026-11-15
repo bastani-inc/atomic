@@ -18,7 +18,7 @@
  *  - https://pi.dev/docs/latest/tui (canonical Pi-tui component contract)
  */
 
-import type { Component, Focusable } from "@earendil-works/pi-tui";
+import type { Component, Focusable } from "@bastani/atomic-tui";
 import { fitStageChatFrame, planStageChatFrame } from "./stage-chat-layout.js";
 import {
 	renderBlockedBody,

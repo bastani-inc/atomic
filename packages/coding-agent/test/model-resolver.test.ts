@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { describe, expect, test } from "vitest";
 import { type ModelReferenceRequest, resolveCliModel, resolveModelReference } from "../src/core/model-resolver.ts";
 import { findPreferredAvailableModel } from "../src/core/model-resolver-defaults.ts";

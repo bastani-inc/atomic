@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { builtinProviders } from "@bastani/pi-ai/providers/all";
-import type { TUI } from "@earendil-works/pi-tui";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
+import type { TUI } from "@bastani/atomic-tui";
 import { test } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/model-resolver-defaults.ts";

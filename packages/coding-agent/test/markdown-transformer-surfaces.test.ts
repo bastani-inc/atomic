@@ -1,4 +1,4 @@
-import { Container } from "@earendil-works/pi-tui";
+import { Container } from "@bastani/atomic-tui";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type {
 	Extension,

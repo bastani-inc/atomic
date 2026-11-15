@@ -5,8 +5,8 @@ import {
 	type Model,
 	type ToolResultMessage,
 	type UserMessage,
-} from "@earendil-works/pi-ai";
-import { arr, obj, str } from "@earendil-works/pi-schema";
+} from "@bastani/atomic-ai";
+import { arr, obj, str } from "@bastani/atomic-schema";
 import { describe, expect, it } from "vitest";
 import { agentLoop, agentLoopContinue, runAgentLoop, runToolCall } from "../src/agent-loop.ts";
 import { setDefaultStreamFn } from "../src/index.ts";

@@ -63,7 +63,7 @@ const rendererRegisteredHosts = new WeakSet<object>();
 
 /**
  * Renderer return shape (subset of pi-tui's `Component`). Defined locally so
- * the project doesn't need to import from `@earendil-works/pi-tui` (which is
+ * the project doesn't need to import from `@bastani/atomic-tui` (which is
  * a peer dep of pi-coding-agent that we don't link directly).
  */
 interface CardComponent {

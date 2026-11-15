@@ -1,6 +1,6 @@
 import type { Theme } from "@bastani/atomic";
-import type { TUI } from "@earendil-works/pi-tui";
-import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
+import { matchesKey, truncateToWidth } from "@bastani/atomic-tui";
 import { spawn } from "child_process";
 import { BaseOverlay } from "./overlay-qa-shared.js";
 

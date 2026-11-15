@@ -1,4 +1,4 @@
-import type { ImageContent } from "@bastani/pi-ai/compat";
+import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { QueuedImages, QueuedTexts } from "./agent-session-types.js";
 

@@ -1,4 +1,4 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<string, string> = {

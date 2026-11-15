@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { decide } from "../../packages/coding-agent/src/core/decision/decide.js";
 import {

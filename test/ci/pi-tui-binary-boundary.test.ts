@@ -51,7 +51,7 @@ test("standalone app builds bundle pi-tui but leave its native modifier loader r
 			`${site} must preserve diagnostic and reflection names`,
 		);
 		assert.equal(
-			command.includes("--external @earendil-works/pi-tui"),
+			command.includes("--external @bastani/atomic-tui"),
 			false,
 			`${site} must not leave a bare pi-tui import for the compiled split launcher to resolve`,
 		);
@@ -63,32 +63,32 @@ test("binary payloads stage the runtime-relative modifier loader and Windows nat
 	const releaseBuild = await readText(`${root}/scripts/build-binaries.sh`);
 	assert.ok(
 		manifest.scripts["copy-binary-assets"]?.includes(
-			"../../node_modules/@earendil-works/pi-tui/dist/native-modifiers.js dist/",
+			"../../node_modules/@bastani/atomic-tui/dist/native-modifiers.js dist/",
 		),
 	);
 	assert.ok(
 		manifest.scripts["copy-binary-assets"]?.includes(
-			"../../node_modules/@earendil-works/pi-tui/dist/native-module-path.js dist/",
+			"../../node_modules/@bastani/atomic-tui/dist/native-module-path.js dist/",
 		),
 	);
 	assert.ok(
 		manifest.scripts["copy-binary-assets"]?.includes(
-			"../../node_modules/@earendil-works/pi-tui/dist/native-platform.js dist/",
+			"../../node_modules/@bastani/atomic-tui/dist/native-platform.js dist/",
 		),
 	);
 	assert.ok(
 		releaseBuild.includes(
-			'cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-modifiers.js" "$shared_app_dir/native-modifiers.js"',
+			'cp "$runtime_deps_dir/@bastani/atomic-tui/dist/native-modifiers.js" "$shared_app_dir/native-modifiers.js"',
 		),
 	);
 	assert.ok(
 		releaseBuild.includes(
-			'cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-module-path.js" "$shared_app_dir/native-module-path.js"',
+			'cp "$runtime_deps_dir/@bastani/atomic-tui/dist/native-module-path.js" "$shared_app_dir/native-module-path.js"',
 		),
 	);
 	assert.ok(
 		releaseBuild.includes(
-			'cp "$runtime_deps_dir/@earendil-works/pi-tui/dist/native-platform.js" "$shared_app_dir/native-platform.js"',
+			'cp "$runtime_deps_dir/@bastani/atomic-tui/dist/native-platform.js" "$shared_app_dir/native-platform.js"',
 		),
 	);
 	assert.ok(releaseBuild.includes('cp "$shared_app_dir/native-modifiers.js" "binaries/$platform/"'));
@@ -96,7 +96,7 @@ test("binary payloads stage the runtime-relative modifier loader and Windows nat
 	assert.ok(releaseBuild.includes('cp "$shared_app_dir/native-platform.js" "binaries/$platform/"'));
 	assert.ok(
 		releaseBuild.includes(
-			'console_src="../../node_modules/@earendil-works/pi-tui/native/win32/prebuilds/win32-$console_arch/win32-platform.node"',
+			'console_src="../../node_modules/@bastani/atomic-tui/native/win32/prebuilds/win32-$console_arch/win32-platform.node"',
 		),
 	);
 	assert.ok(releaseBuild.includes('cp "$console_src" "$console_dst/"'));
@@ -114,7 +114,7 @@ test(
 		copyFileSync(join(root, "packages/coding-agent/package.json"), join(runtimeDir, "package.json"));
 
 		try {
-			const piTuiEntryPath = join(root, "node_modules/@earendil-works/pi-tui/dist/index.js").replaceAll("\\", "/");
+			const piTuiEntryPath = join(root, "node_modules/@bastani/atomic-tui/dist/index.js").replaceAll("\\", "/");
 			writeTextSync(
 				join(fixture, "app-entry.ts"),
 				`import { ProcessTerminal, visibleWidth } from ${JSON.stringify(piTuiEntryPath)};\n` +
@@ -144,17 +144,17 @@ test(
 			assert.equal(appBuild.exitCode, 0, appBuild.stderr.toString());
 			const appBundle = readTextSync(join(runtimeDir, "app.js"), "utf8");
 			assert.match(appBundle, /require\(["']\.\/native-modifiers\.js["']\)/u);
-			assert.doesNotMatch(appBundle, /require\(["']@earendil-works\/pi-tui["']\)/u);
+			assert.doesNotMatch(appBundle, /require\(["']@bastani\/atomic-tui["']\)/u);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-modifiers.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-modifiers.js"),
 				join(runtimeDir, "native-modifiers.js"),
 			);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-module-path.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-module-path.js"),
 				join(runtimeDir, "native-module-path.js"),
 			);
 			copyFileSync(
-				join(root, "node_modules/@earendil-works/pi-tui/dist/native-platform.js"),
+				join(root, "node_modules/@bastani/atomic-tui/dist/native-platform.js"),
 				join(runtimeDir, "native-platform.js"),
 			);
 

@@ -1,4 +1,4 @@
-import { type ClientIdentity, PI_ATTRIBUTION } from "@earendil-works/pi-ai";
+import { type ClientIdentity, PI_ATTRIBUTION } from "@bastani/atomic-ai";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -6,8 +6,8 @@ import {
 	getModel,
 	toToolDeclaration,
 	type UserMessage,
-} from "@earendil-works/pi-ai/compat";
-import { obj } from "@earendil-works/pi-schema";
+} from "@bastani/atomic-ai/compat";
+import { obj } from "@bastani/atomic-schema";
 import { describe, expect, it } from "vitest";
 import {
 	Agent,

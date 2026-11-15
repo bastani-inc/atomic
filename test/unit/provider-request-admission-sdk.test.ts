@@ -9,12 +9,12 @@ import {
 	normalizeContext,
 	type Provider,
 	type StreamOptions,
-} from "@bastani/pi-ai";
-import { stream as streamAnthropic } from "@bastani/pi-ai/api/anthropic-messages";
-import { stream as streamMistral } from "@bastani/pi-ai/api/mistral-conversations";
-import { stream as streamCodex } from "@bastani/pi-ai/api/openai-codex-responses";
-import { stream as streamOpenAI } from "@bastani/pi-ai/api/openai-completions";
-import { createFetchWithAdmission, getFetchAdmission } from "@bastani/pi-ai/utils/request-admission";
+} from "@bastani/atomic-ai";
+import { stream as streamAnthropic } from "@bastani/atomic-ai/api/anthropic-messages";
+import { stream as streamMistral } from "@bastani/atomic-ai/api/mistral-conversations";
+import { stream as streamCodex } from "@bastani/atomic-ai/api/openai-codex-responses";
+import { stream as streamOpenAI } from "@bastani/atomic-ai/api/openai-completions";
+import { createFetchWithAdmission, getFetchAdmission } from "@bastani/atomic-ai/utils/request-admission";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { wrapCodexFastRouteFetch } from "../../packages/coding-agent/src/core/fast-model-routing-transport.js";

@@ -10,7 +10,7 @@
  * Home/End, etc. — work consistently with the rest of the agent's TUI.
  *
  * We intentionally avoid a direct `KeybindingsManager` import from
- * `@earendil-works/pi-tui` here:
+ * `@bastani/atomic-tui` here:
  *   - The manager is a runtime singleton owned by the host; constructing
  *     a second one in the extension graph would duplicate state and
  *     fight the host for action resolution.
@@ -18,12 +18,12 @@
  *     this code needs and keeps the per-call surface tiny.
  *
  * Rendering primitives are different — `Box`, `Text`, `Spacer`,
- * `Markdown`, etc. from `@earendil-works/pi-tui` are stateless and SHOULD be
+ * `Markdown`, etc. from `@bastani/atomic-tui` are stateless and SHOULD be
  * imported directly in extension code (per pi.dev/docs/latest/tui).
  *
  * cross-ref:
- *   - node_modules/@earendil-works/pi-tui/src/keybindings.ts → KeybindingsManager
- *   - node_modules/@earendil-works/pi-tui/src/components/editor.ts routes through
+ *   - node_modules/@bastani/atomic-tui/src/keybindings.ts → KeybindingsManager
+ *   - node_modules/@bastani/atomic-tui/src/components/editor.ts routes through
  *     the same action ids (`tui.editor.cursorWordLeft`, etc.).
  */
 

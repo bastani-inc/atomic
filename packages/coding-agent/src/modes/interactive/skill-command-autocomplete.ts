@@ -1,4 +1,4 @@
-import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@earendil-works/pi-tui";
+import { type AutocompleteProvider, CombinedAutocompleteProvider, type SlashCommand } from "@bastani/atomic-tui";
 import type { AgentSession } from "../../core/agent-session.js";
 import { getSkillCatalog, type SkillCatalogCommand } from "../../core/skill-catalog.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";

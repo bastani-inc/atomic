@@ -1,19 +1,19 @@
-# @earendil-works/pi-agent-core
+# @bastani/atomic-agent-core
 
-Stateful agent with tool execution and event streaming. Built on `@earendil-works/pi-ai`.
+Stateful agent with tool execution and event streaming. Built on `@bastani/atomic-ai`.
 
 ## Installation
 
 ```bash
-npm install @earendil-works/pi-agent-core
+npm install @bastani/atomic-agent-core
 ```
 
 ## Quick Start
 
 ```typescript
-import { Agent } from "@earendil-works/pi-agent-core";
-import { createModels } from "@earendil-works/pi-ai";
-import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { Agent } from "@bastani/atomic-agent-core";
+import { createModels } from "@bastani/atomic-ai";
+import { anthropicProvider } from "@bastani/atomic-ai/providers/anthropic";
 
 const models = createModels();
 models.setProvider(anthropicProvider());
@@ -431,7 +431,7 @@ Follow-up messages are checked only when there are no more tool calls and no ste
 Extend `AgentMessage` via declaration merging:
 
 ```typescript
-declare module "@earendil-works/pi-agent-core" {
+declare module "@bastani/atomic-agent-core" {
   interface CustomAgentMessages {
     notification: { role: "notification"; text: string; timestamp: number };
   }
@@ -455,10 +455,10 @@ const agent = new Agent({
 
 ## Tools
 
-Define tools using `AgentTool`. `parameters` is any JSON Schema object; built with `@earendil-works/pi-schema`'s builders, it also types `params` (other schemas give `unknown`, `AgentTool<any>` gives `any`):
+Define tools using `AgentTool`. `parameters` is any JSON Schema object; built with `@bastani/atomic-schema`'s builders, it also types `params` (other schemas give `unknown`, `AgentTool<any>` gives `any`):
 
 ```typescript
-import { obj, str } from "@earendil-works/pi-schema";
+import { obj, str } from "@bastani/atomic-schema";
 
 const readFileParameters = obj({
   path: str({ description: "File path" }),
@@ -512,14 +512,14 @@ Return `terminate: true` from `execute()`, a blocked `beforeToolCall`, or `after
 
 ### MCP and Codemode
 
-`@earendil-works/pi-mcp` connects to MCP servers and `@earendil-works/pi-codemode` runs model-written JavaScript that calls tools. [examples/mcp-codemode](examples/mcp-codemode) wraps both as `AgentTool`s: one tool per MCP tool, and a `codemode` tool whose scripts call the agent's tools through `runToolCall()`, so `beforeToolCall` and `afterToolCall` apply to those calls too.
+`@earendil-works/pi-mcp` connects to MCP servers and `@bastani/atomic-codemode` runs model-written JavaScript that calls tools. [examples/mcp-codemode](examples/mcp-codemode) wraps both as `AgentTool`s: one tool per MCP tool, and a `codemode` tool whose scripts call the agent's tools through `runToolCall()`, so `beforeToolCall` and `afterToolCall` apply to those calls too.
 
 ## Proxy Usage
 
 For browser apps that proxy through a backend:
 
 ```typescript
-import { Agent, streamProxy } from "@earendil-works/pi-agent-core";
+import { Agent, streamProxy } from "@bastani/atomic-agent-core";
 
 const agent = new Agent({
   streamFn: (model, context, options) =>
@@ -536,7 +536,7 @@ const agent = new Agent({
 For direct control without the Agent class:
 
 ```typescript
-import { agentLoop, agentLoopContinue } from "@earendil-works/pi-agent-core";
+import { agentLoop, agentLoopContinue } from "@bastani/atomic-agent-core";
 
 const context: AgentContext = {
   messages: [{ role: "system", content: "You are helpful.", timestamp: Date.now() }],

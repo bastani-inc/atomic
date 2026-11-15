@@ -1,4 +1,4 @@
-import { normalizeProviderId } from "@bastani/pi-ai";
+import { normalizeProviderId } from "@bastani/atomic-ai";
 import { normalizeModelReference } from "./azure-provider-compat.js";
 import { buildFallbackModel, resolveModelReference } from "./model-resolver-patterns.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";

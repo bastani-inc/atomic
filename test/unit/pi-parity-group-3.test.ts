@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { OpenAICompletionsCompat } from "@bastani/pi-ai/compat";
+import type { OpenAICompletionsCompat } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, test } from "vitest";
 import { parseConfigCommand } from "../../packages/coding-agent/src/config-command-parser.ts";
 import {

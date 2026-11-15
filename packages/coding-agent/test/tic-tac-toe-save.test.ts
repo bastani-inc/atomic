@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { test, vi } from "vitest";
 import ticTacToe from "../examples/extensions/tic-tac-toe.ts";
 import type { TicTacToeComponent } from "../examples/extensions/tic-tac-toe-rendering.ts";

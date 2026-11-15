@@ -1,4 +1,4 @@
-import { colorToHex, parseColor } from "@earendil-works/pi-tui";
+import { colorToHex, parseColor } from "@bastani/atomic-tui";
 import type { ColorValue } from "./theme-schema.ts";
 
 export type ColorMode = "truecolor" | "256color";

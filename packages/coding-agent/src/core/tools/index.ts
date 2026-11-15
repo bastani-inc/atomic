@@ -129,7 +129,7 @@ export {
 	writeToolSystemPromptContribution,
 } from "./write.ts";
 
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
 import type { TSchema } from "typebox";
 import { isPowerShellAvailable } from "../../utils/shell.ts";
 import type { ToolDefinition } from "../extensions/types.ts";

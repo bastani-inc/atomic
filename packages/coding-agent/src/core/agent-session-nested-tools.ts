@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type ToolCall, validateToolArguments } from "@bastani/pi-ai";
-import type { ToolResultMessage } from "@bastani/pi-ai/compat";
-import { type AgentTool, runToolCall } from "@earendil-works/pi-agent-core";
+import { type AgentTool, runToolCall } from "@bastani/atomic-agent-core";
+import { type ToolCall, validateToolArguments } from "@bastani/atomic-ai";
+import type { ToolResultMessage } from "@bastani/atomic-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ExecuteToolOptions } from "./extensions/context-types.ts";
 import { NestedToolCallRunner } from "./nested-tool-calls.js";

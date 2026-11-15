@@ -5,8 +5,7 @@
 		"paths": {
 			"@bastani/atomic": ["./src/index.ts"],
 			"@bastani/atomic/hooks": ["./src/core/hooks/index.ts"],
-			"@earendil-works/pi-tui": ["../tui/src/index.ts"],
-			"@bastani/pi-ai": ["../ai/src/index.ts"],
+			"@bastani/atomic-ai": ["../ai/src/index.ts"],
 			"typebox": ["../../node_modules/typebox"]
 		},
 		"skipLibCheck": true

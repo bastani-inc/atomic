@@ -1,4 +1,4 @@
-# @earendil-works/pi-schema
+# @bastani/atomic-schema
 
 JSON Schema builders and validation without `eval`. A schema compiles once into plain closures, so it checks values
 at close to the speed of validators that generate code, also under a strict Content Security Policy, and needs no
@@ -14,13 +14,13 @@ dependencies.
 ## Installation
 
 ```bash
-npm install @earendil-works/pi-schema
+npm install @bastani/atomic-schema
 ```
 
 ## Usage
 
 ```typescript
-import { compile, int, obj, oneOf, opt, type Static, str } from "@earendil-works/pi-schema";
+import { compile, int, obj, oneOf, opt, type Static, str } from "@bastani/atomic-schema";
 
 const Read = obj({
 	path: str({ description: "Path to the file", minLength: 1 }),
@@ -99,7 +99,7 @@ TypeBox kinds (`Intersect`, `Cyclic`, `Ref`, ...) give `unknown` where they stan
 ### Options
 
 ```typescript
-import { formats } from "@earendil-works/pi-schema/formats";
+import { formats } from "@bastani/atomic-schema/formats";
 
 const validator = compile(schema, {
 	draft: "7", // "2020-12" (default) or "7"

@@ -1,5 +1,5 @@
-import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 
 import type { MarkdownTransformer, SessionRecoveryReason, ToolRenderers } from "../../core/extensions/types.ts";

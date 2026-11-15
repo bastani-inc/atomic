@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
-import { isContextOverflow, isRecoverableLength } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { isContextOverflow, isRecoverableLength } from "@bastani/atomic-ai/compat";
 import { emitSessionCompactFailed } from "./agent-session-compaction.ts";
 import type { AgentSessionInternalSurface as AgentSession, AutoCompactionRunOutcome } from "./agent-session-methods.ts";
 import { authForStream } from "./agent-session-models.ts";

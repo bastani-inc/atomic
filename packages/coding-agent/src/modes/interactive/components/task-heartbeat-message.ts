@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import { Box, type Component, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Box, type Component, truncateToWidth, wrapTextWithAnsi } from "@bastani/atomic-tui";
 import {
 	formatTaskHeartbeatDuration,
 	formatTaskHeartbeatStatus,

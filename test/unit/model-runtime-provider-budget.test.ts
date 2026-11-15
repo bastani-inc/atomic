@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { Api, AssistantMessage, AssistantMessageEvent, Model, Provider } from "@bastani/pi-ai";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage, AssistantMessageEvent, Model, Provider } from "@bastani/atomic-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRuntime } from "../../packages/coding-agent/src/core/model-runtime.js";

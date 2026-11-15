@@ -1,4 +1,4 @@
-import { wrapFetchPreservingAdmission } from "@bastani/pi-ai/utils/request-admission";
+import { wrapFetchPreservingAdmission } from "@bastani/atomic-ai/utils/request-admission";
 
 export const CODEX_FAST_ROUTE_ORIGINATOR = "codex_cli_rs";
 export const CODEX_FAST_ROUTE_HEADER = "x-codex-routing-hint";

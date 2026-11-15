@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
-import type { ImageContent, TextContent } from "@bastani/pi-ai/compat";
-import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@earendil-works/pi-tui";
+import type { ImageContent, TextContent } from "@bastani/atomic-ai/compat";
+import { getCapabilities, getImageDimensions, hyperlink, imageFallback } from "@bastani/atomic-tui";
 import type { ThemeColor } from "../../modes/interactive/theme/theme.js";
 import { resolvePath, shortenHomePath } from "../../utils/paths.ts";
 import { terminalDisplayText } from "../../utils/terminal-text.ts";

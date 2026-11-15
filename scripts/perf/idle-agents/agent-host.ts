@@ -7,7 +7,7 @@
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/atomic-ai/compat";
 import type { AgentSession } from "../../../packages/coding-agent/src/core/agent-session.js";
 import type { DetachedToolCall } from "../../../packages/coding-agent/src/core/agent-session-detached-tools.js";
 import {

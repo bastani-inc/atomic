@@ -9,7 +9,7 @@ import type {
 	ModelsRefreshOptions,
 	ModelsStoreEntry,
 	RefreshModelsContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBus } from "../src/core/event-bus.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";

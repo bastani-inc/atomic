@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
-import { AssistantMessageEventStream } from "@bastani/pi-ai";
+import { AssistantMessageEventStream } from "@bastani/atomic-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { noOpUIContext } from "../src/core/extensions/runner-ui.ts";

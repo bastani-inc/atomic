@@ -44,7 +44,7 @@ export const INLINE_MAX_STACK_SIZE = 256 * 1024;
 export interface InlineCodemodeSandboxOptions extends CodemodeSandboxBaseOptions {
 	/**
 	 * Compiled `quickjs-wasi/quickjs.wasm`. On Cloudflare, import it with Wrangler's `CompiledWasm`
-	 * rule (`@earendil-works/pi-codemode/cloudflare` does this); on Node, `loadQuickJSWasm()`.
+	 * rule (`@bastani/atomic-codemode/cloudflare` does this); on Node, `loadQuickJSWasm()`.
 	 */
 	wasm: CodemodeWasmModule | Promise<CodemodeWasmModule>;
 	/**

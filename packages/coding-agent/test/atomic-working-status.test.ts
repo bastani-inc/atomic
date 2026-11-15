@@ -1,4 +1,4 @@
-import { Container, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, visibleWidth } from "@bastani/atomic-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	ATOMIC_WORKING_BOLD_PHASES,

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getServiceTierCost } from "@bastani/pi-ai";
-import type { Api, Model, Provider } from "@bastani/pi-ai/compat";
+import { getServiceTierCost } from "@bastani/atomic-ai";
+import type { Api, Model, Provider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import {

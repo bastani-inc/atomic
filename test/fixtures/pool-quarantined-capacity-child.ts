@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { AuthStorage, ModelRuntime, SettingsManager } from "@bastani/atomic";
 import { workflow } from "@bastani/atomic/workflows";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 
 /** The command the stage's bash tool runs: it needs one process permit and nothing else. */

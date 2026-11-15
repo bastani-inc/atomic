@@ -6,7 +6,7 @@ import {
 	type ModelType,
 	type Provider,
 	type RefreshModelsContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { VERSION } from "../config.js";
 import { fetchWithRetry } from "../utils/management-http.ts";
 import { getPiUserAgent } from "../utils/pi-user-agent.ts";

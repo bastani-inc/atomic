@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { setKeybindings } from "@earendil-works/pi-tui";
+import { setKeybindings } from "@bastani/atomic-tui";
 import { describe, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { SessionManager } from "../src/core/session-manager.js";

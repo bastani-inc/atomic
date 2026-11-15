@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import type { AssistantMessage, Message } from "@bastani/pi-ai/compat";
-import { getModel } from "@bastani/pi-ai/compat";
-import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type StreamFn } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, Message } from "@bastani/atomic-ai/compat";
+import { getModel } from "@bastani/atomic-ai/compat";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type {

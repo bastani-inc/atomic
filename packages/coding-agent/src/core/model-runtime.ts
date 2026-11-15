@@ -44,10 +44,10 @@ import {
 	normalizeProviderId,
 	type Provider,
 	type ProviderHeaders,
-} from "@bastani/pi-ai";
-import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
-import { discoverGitHubCopilotModels } from "@bastani/pi-ai/providers/github-copilot";
-import { personalizeOpenRouterCatalog } from "@bastani/pi-ai/providers/openrouter";
+} from "@bastani/atomic-ai";
+import * as builtinProviderCatalog from "@bastani/atomic-ai/providers/all";
+import { discoverGitHubCopilotModels } from "@bastani/atomic-ai/providers/github-copilot";
+import { personalizeOpenRouterCatalog } from "@bastani/atomic-ai/providers/openrouter";
 import { getAgentDir } from "../config.js";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.js";
 import { normalizePath } from "../utils/paths.ts";

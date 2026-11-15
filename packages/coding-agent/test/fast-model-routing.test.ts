@@ -10,7 +10,7 @@ import {
 	type OpenAICodexResponsesOptions,
 	type OpenAIResponsesOptions,
 	type SimpleStreamOptions,
-} from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai/compat";
 import { describe, expect, it, vi } from "vitest";
 import {
 	buildOpenAIResponsesFastRouteOptions,

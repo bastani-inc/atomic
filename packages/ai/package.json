@@ -1,5 +1,5 @@
 {
-	"name": "@bastani/pi-ai",
+	"name": "@bastani/atomic-ai",
 	"version": "0.0.0",
 	"description": "Bastani-branded unified LLM API with automatic model discovery and provider configuration",
 	"type": "module",
@@ -91,8 +91,8 @@
 	"dependencies": {
 		"@anthropic-ai/sdk": "0.129.0",
 		"@aws-sdk/client-bedrock-runtime": "3.1127.0",
-		"@earendil-works/pi-schema": "1.5.2",
-		"@earendil-works/pi-telemetry": "1.5.2",
+		"@bastani/atomic-schema": "0.0.0",
+		"@bastani/atomic-telemetry": "0.0.0",
 		"@google/genai": "2.32.0",
 		"@smithy/node-http-handler": "4.13.0",
 		"http-proxy-agent": "9.1.0",

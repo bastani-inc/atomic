@@ -7,7 +7,7 @@
  * the dialog builds nothing, and previews and layout are wrapped once per (content, width).
  */
 import assert from "node:assert/strict";
-import { Markdown } from "@earendil-works/pi-tui";
+import { Markdown } from "@bastani/atomic-tui";
 import { afterEach, beforeAll, test, vi } from "vitest";
 import { buildItemsForQuestion } from "../../packages/coding-agent/src/core/tools/ask-user-question/ask-user-question.ts";
 import { QuestionnaireSession } from "../../packages/coding-agent/src/core/tools/ask-user-question/state/questionnaire-session.ts";

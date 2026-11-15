@@ -1,4 +1,4 @@
-import { type SelectItem, SelectList, type SelectListTheme, truncateToWidth } from "@earendil-works/pi-tui";
+import { type SelectItem, SelectList, type SelectListTheme, truncateToWidth } from "@bastani/atomic-tui";
 import { paint } from "./color-utils.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { type KeybindingsLike, matchesAction, TUI_ACTION } from "./keybindings-adapter.js";

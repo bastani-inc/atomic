@@ -1,4 +1,4 @@
-import type { Api, Provider } from "@bastani/pi-ai";
+import type { Api, Provider } from "@bastani/atomic-ai";
 import type { ModelsJsonProvider } from "./model-config.ts";
 import type { ProviderConfigInput } from "./provider-composer.ts";
 

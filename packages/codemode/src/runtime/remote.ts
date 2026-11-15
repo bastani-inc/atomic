@@ -11,7 +11,7 @@
  *
  * Solution: the caller keeps the host role (`RemoteCodemodeSandbox`: tools, call records,
  * deadline, abort) and the remote side only runs the VM (`serveCodemodeRemote`, behind
- * `CodemodeSandboxDurableObject` in `@earendil-works/pi-codemode/cloudflare`).
+ * `CodemodeSandboxDurableObject` in `@bastani/atomic-codemode/cloudflare`).
  *
  * Protocol, one RPC call per execution:
  *

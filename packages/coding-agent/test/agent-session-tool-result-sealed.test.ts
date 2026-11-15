@@ -3,7 +3,7 @@
  * them (#4309): its `tool_result` handlers run, so the result that enters history is the one they leave.
  */
 import assert from "node:assert/strict";
-import { fauxAssistantMessage } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { afterEach, test } from "vitest";
 import { harnessPool, settlesWithin, untilStarted, waitForCiTurn, waitTool } from "./helpers/detached-tools.js";
 import { getMessageText } from "./suite/harness.js";

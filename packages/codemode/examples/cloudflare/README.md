@@ -13,7 +13,7 @@ sandbox must be a separate Worker, and which limits apply.
 
 ## Try it locally
 
-Install `@earendil-works/pi-codemode` and `wrangler` in each directory, then start both Workers in
+Install `@bastani/atomic-codemode` and `wrangler` in each directory, then start both Workers in
 one process:
 
 ```sh

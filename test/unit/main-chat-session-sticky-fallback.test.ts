@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage, Usage } from "@bastani/pi-ai/compat";
-import { createAssistantMessageEventStream, getModel } from "@bastani/pi-ai/compat";
-import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type StreamFn } from "@bastani/atomic-agent-core";
+import type { AssistantMessage, Usage } from "@bastani/atomic-ai/compat";
+import { createAssistantMessageEventStream, getModel } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { AgentSession, type AgentSessionEvent } from "../../packages/coding-agent/src/core/agent-session.js";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";

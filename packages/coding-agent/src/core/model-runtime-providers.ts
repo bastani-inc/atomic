@@ -1,6 +1,6 @@
-import type { Credential, Provider } from "@bastani/pi-ai";
-import * as builtinProviderCatalog from "@bastani/pi-ai/providers/all";
-import { type CopilotRoutingEnv, withCopilotEnvBaseUrl } from "@bastani/pi-ai/providers/github-copilot-env";
+import type { Credential, Provider } from "@bastani/atomic-ai";
+import * as builtinProviderCatalog from "@bastani/atomic-ai/providers/all";
+import { type CopilotRoutingEnv, withCopilotEnvBaseUrl } from "@bastani/atomic-ai/providers/github-copilot-env";
 import type { ModelConfig } from "./model-config.ts";
 
 /** Rebuild the builtin layer, including configured Radius gateways. */

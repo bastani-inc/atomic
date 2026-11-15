@@ -1,4 +1,4 @@
-import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
+import { sliceByColumn, visibleWidth } from "@bastani/atomic-tui";
 import { canonicalizePath, getPathComparisonKey, shortenHomePath } from "../../../utils/paths.ts";
 
 export function shortenPath(path: string): string {

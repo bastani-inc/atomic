@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { OAuthCredential } from "@bastani/pi-ai";
+import type { OAuthCredential } from "@bastani/atomic-ai";
 import { afterEach, test, vi } from "vitest";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.ts";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.ts";

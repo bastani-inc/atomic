@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { type Api, getModel, type Model } from "@bastani/pi-ai/compat";
-import { builtinProviders } from "@bastani/pi-ai/providers/all";
+import { type Api, getModel, type Model } from "@bastani/atomic-ai/compat";
+import { builtinProviders } from "@bastani/atomic-ai/providers/all";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { collectOAuthProviderMetadata } from "../src/core/oauth-provider-metadata.ts";
 import { LoginDialogComponent } from "../src/modes/interactive/components/login-dialog.ts";

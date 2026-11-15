@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { ImageContent } from "@bastani/pi-ai/compat";
+import type { ImageContent } from "@bastani/atomic-ai/compat";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { WorkflowActivityFrame } from "../../core/extensions/workflow-events.js";
 import type { BashOutputChannel } from "../../core/tools/bash.js";

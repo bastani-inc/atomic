@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ModelsError } from "@bastani/pi-ai";
+import { ModelsError } from "@bastani/atomic-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_AGENT_DIR, getAgentDir, getEnvNames, getLegacyAgentDir } from "../src/config.ts";
 import { handlePackageCommand, refreshModelCatalogs } from "../src/package-manager-cli.ts";

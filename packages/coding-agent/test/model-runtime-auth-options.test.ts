@@ -9,8 +9,8 @@ import {
 	InMemoryCredentialStore,
 	type Model,
 	type SimpleStreamOptions,
-} from "@bastani/pi-ai";
-import { createAssistantMessageEventStream } from "@bastani/pi-ai/compat";
+} from "@bastani/atomic-ai";
+import { createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";

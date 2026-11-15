@@ -27,33 +27,29 @@ test("Linux ARM64 prebuild supports 64 KB system pages", () => {
 });
 
 // Opt in on a Windows test desktop: this replaces the system clipboard contents.
-test(
-	"writes Windows clipboard text through the native helper without command fallbacks",
-	{ skip: process.platform !== "win32" || process.env.PI_TEST_NATIVE_CLIPBOARD !== "1" },
-	async () => {
-		const clipboard = getNativeClipboard();
-		assert.ok(clipboard?.setText);
-		for (const text of ["clipboard café 日本語", "", "second write"]) {
-			await clipboard.setText(text);
-			assert.equal(await clipboard.getText(), text);
-			assert.equal(await clipboard.getImage(), null);
-		}
-	},
-);
+test("writes Windows clipboard text through the native helper without command fallbacks", {
+	skip: process.platform !== "win32" || process.env.PI_TEST_NATIVE_CLIPBOARD !== "1",
+}, async () => {
+	const clipboard = getNativeClipboard();
+	assert.ok(clipboard?.setText);
+	for (const text of ["clipboard café 日本語", "", "second write"]) {
+		await clipboard.setText(text);
+		assert.equal(await clipboard.getText(), text);
+		assert.equal(await clipboard.getImage(), null);
+	}
+});
 
-test(
-	"uses the native platform helper directly as the clipboard API",
-	{ skip: !["darwin", "win32"].includes(process.platform) || !["arm64", "x64"].includes(process.arch) },
-	() => {
-		const clipboard = getNativeClipboard();
-		assert.ok(clipboard);
-		assert.equal(typeof clipboard.getText, "function");
-		assert.equal(typeof clipboard.getImage, "function");
-		assert.equal(typeof clipboard.setText, "function");
-		assert.equal(clipboard, getNativePlatformHelper());
-		assert.equal(clipboard, getNativeClipboard());
-	},
-);
+test("uses the native platform helper directly as the clipboard API", {
+	skip: !["darwin", "win32"].includes(process.platform) || !["arm64", "x64"].includes(process.arch),
+}, () => {
+	const clipboard = getNativeClipboard();
+	assert.ok(clipboard);
+	assert.equal(typeof clipboard.getText, "function");
+	assert.equal(typeof clipboard.getImage, "function");
+	assert.equal(typeof clipboard.setText, "function");
+	assert.equal(clipboard, getNativePlatformHelper());
+	assert.equal(clipboard, getNativeClipboard());
+});
 
 test("Linux loads X11 lazily and rechecks DISPLAY", { skip: !["arm64", "x64"].includes(process.arch) }, async (t) => {
 	const require = createRequire(import.meta.url);

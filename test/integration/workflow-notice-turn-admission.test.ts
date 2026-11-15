@@ -15,7 +15,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@bastani/atomic";
-import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/pi-ai/compat";
+import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { PROTECTED_RECONCILIATION_CUSTOM_TYPE } from "../../packages/coding-agent/src/core/agent-session-persistent-custom-messages.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";

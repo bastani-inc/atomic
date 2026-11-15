@@ -1,6 +1,6 @@
 {
-	"name": "@earendil-works/pi-codemode",
-	"version": "1.5.2",
+	"name": "@bastani/atomic-codemode",
+	"version": "0.0.0",
 	"description": "Sandboxed JavaScript execution where the only capability is calling injected tools",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -39,7 +39,9 @@
 	},
 	"files": [
 		"dist",
-		"README.md"
+		"README.md",
+		"LICENSE",
+		"NOTICE.md"
 	],
 	"scripts": {
 		"clean": "node ../../scripts/package-files.mjs clean dist",
@@ -58,16 +60,26 @@
 	],
 	"author": "Earendil Works",
 	"license": "MIT",
+	"contributors": [
+		"Bastani, Inc."
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/earendil-works/pi.git",
+		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/codemode"
+	},
+	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/codemode#readme",
+	"bugs": {
+		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
 	"engines": {
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"quickjs-wasi": "3.6.2"
+		"quickjs-wasi": "3.6.3"
 	},
 	"devDependencies": {
 		"vitest": "4.1.12"

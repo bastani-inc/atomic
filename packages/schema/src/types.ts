@@ -15,7 +15,7 @@ export interface CompileOptions {
 	readonly draft?: "2020-12" | "7";
 	/**
 	 * Format name to check. Without it `format` is an annotation, as draft 2020-12 specifies. The standard formats are
-	 * in `@earendil-works/pi-schema/formats`.
+	 * in `@bastani/atomic-schema/formats`.
 	 */
 	readonly formats?: Readonly<Record<string, FormatCheck>>;
 	/** Schema documents by URI, for `$ref`s to other documents. */

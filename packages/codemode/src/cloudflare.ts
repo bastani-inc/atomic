@@ -3,7 +3,7 @@
  *
  * Wrangler's default `CompiledWasm` rule turns the `.wasm` import below into a
  * `WebAssembly.Module`; Workers cannot compile WebAssembly from bytes at runtime. Other bundlers
- * do not support the import: use `@earendil-works/pi-codemode/portable` with your own module there.
+ * do not support the import: use `@bastani/atomic-codemode/portable` with your own module there.
  *
  * Two ways to run codemode on Cloudflare:
  * - `RemoteCodemodeSandbox` with a {@link CodemodeSandboxDurableObject} deployed as its own

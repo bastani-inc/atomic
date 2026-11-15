@@ -1,4 +1,4 @@
-import type { Input } from "@earendil-works/pi-tui";
+import type { Input } from "@bastani/atomic-tui";
 import type { BindingContext, PerTabBindingContext } from "../state/selectors/contract.ts";
 import { selectActivePreviewPaneIndex } from "../state/selectors/derivations.ts";
 import { selectActiveView } from "../state/selectors/focus.ts";

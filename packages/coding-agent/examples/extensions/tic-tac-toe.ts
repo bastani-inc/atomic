@@ -18,7 +18,7 @@
  */
 
 import { type ExtensionAPI, type ExtensionContext, StringEnum, type ToolExecutionMode } from "@bastani/atomic";
-import { Text } from "@earendil-works/pi-tui";
+import { Text } from "@bastani/atomic-tui";
 import { Type } from "typebox";
 import { buildTicTacToeInstructions } from "./tic-tac-toe-instructions.js";
 import { BannerMessageComponent, GameOverMessageComponent, TicTacToeComponent } from "./tic-tac-toe-rendering.js";

@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type {
 	AssistantMessage,
 	ImageContent,
@@ -6,8 +7,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 	UserMessage,
-} from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import type { CustomMessage } from "./messages.ts";
 import type { SessionManager } from "./session-manager-core.ts";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader } from "./storage/session/types.js";

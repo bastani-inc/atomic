@@ -2,9 +2,9 @@
 // session object, and scripts run in the separately deployed pi-codemode-sandbox Worker.
 //
 //   curl -X POST http://localhost:8787 --data 'const n = await tools.count({ add: 2 }); text("n=" + n); return n'
-import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
+import type { CodemodeSandboxDurableObject } from "@bastani/atomic-codemode/cloudflare";
 // The portable entry has no QuickJS module: the WebAssembly lives only in the sandbox Worker.
-import { type CodemodeTool, RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
+import { type CodemodeTool, RemoteCodemodeSandbox } from "@bastani/atomic-codemode/portable";
 import { DurableObject } from "cloudflare:workers";
 
 interface Env {

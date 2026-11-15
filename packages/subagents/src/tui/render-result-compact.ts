@@ -1,5 +1,5 @@
 import { keyHintIfBound } from "@bastani/atomic";
-import { type Component, Container, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Text } from "@bastani/atomic-tui";
 import { shortenPath } from "../shared/formatters.js";
 import type { AgentProgress, Details } from "../shared/types.js";
 import { getSingleResultOutput } from "../shared/utils.js";

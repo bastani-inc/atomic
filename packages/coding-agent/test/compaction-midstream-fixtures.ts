@@ -1,5 +1,5 @@
-import type { Api, Model } from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
+import type { Api, Model } from "@bastani/atomic-ai/compat";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";
 import type { NumberedRegion, VerbatimCompactionPreparation } from "../src/core/compaction/compaction-types.js";
 import { createConversationRegion } from "../src/core/compaction/transcript-serialization.js";

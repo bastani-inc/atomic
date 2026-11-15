@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { AgentMessage } from "@bastani/atomic-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
@@ -7,8 +8,7 @@ import {
 	registerApiProvider,
 	type ToolResultMessage,
 	unregisterApiProviders,
-} from "@bastani/pi-ai/compat";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+} from "@bastani/atomic-ai/compat";
 import { describe, expect, it } from "vitest";
 import { generateBranchSummary, prepareBranchEntries } from "../src/core/compaction/branch-summarization.ts";
 import { generateSessionSummary } from "../src/core/compaction/session-summarization.ts";
@@ -138,7 +138,7 @@ describe("safe prose summarization", () => {
 		["session", generateSessionSummary],
 	] as const)("does not override tool choice for %s summaries", async (_label, summarize) => {
 		resetIds();
-		let requestOptions: import("@bastani/pi-ai/compat").SimpleStreamOptions | undefined;
+		let requestOptions: import("@bastani/atomic-ai/compat").SimpleStreamOptions | undefined;
 		await summarize([entry(user("summarize safely"))], {
 			model: nonCopilotModel(),
 			signal: new AbortController().signal,
@@ -154,7 +154,7 @@ describe("safe prose summarization", () => {
 
 	it("leaves branch summary output sizing to the provider (#11036)", async () => {
 		resetIds();
-		let requestOptions: import("@bastani/pi-ai/compat").SimpleStreamOptions | undefined;
+		let requestOptions: import("@bastani/atomic-ai/compat").SimpleStreamOptions | undefined;
 		await generateBranchSummary([entry(user("summarize safely"))], {
 			model: nonCopilotModel(),
 			signal: new AbortController().signal,

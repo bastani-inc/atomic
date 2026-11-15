@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { AgentToolResult } from "@bastani/atomic-agent-core";
 import type { ExtensionContext } from "../extensions/types.ts";
 import { withTodoLock } from "./todos-locks.ts";
 import { clearAssignmentIfClosed, formatTodoId, splitTodosByAssignment, validateTodoId } from "./todos-model.ts";

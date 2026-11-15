@@ -3,7 +3,7 @@
  * colors and OpenRouter glows in its brand color. Selectors apply them to the selected row only.
  */
 
-import { type Color, foregroundAnsi, mixColors, parseColor, type TUI } from "@earendil-works/pi-tui";
+import { type Color, foregroundAnsi, mixColors, parseColor, type TUI } from "@bastani/atomic-tui";
 import { RADIUS_PROVIDER_ID } from "../../../core/preferred-providers.ts";
 import { getCurrentThemeName } from "../theme/global-theme.ts";
 import { isLightTheme, theme } from "../theme/theme.js";

@@ -1,4 +1,4 @@
-import { type ImageContent, type ModelImageResizeOptions, type TextContent, toInlineImage } from "@bastani/pi-ai";
+import { type ImageContent, type ModelImageResizeOptions, type TextContent, toInlineImage } from "@bastani/atomic-ai";
 import { processImage } from "./image-process.ts";
 
 export type ToolResultContent = TextContent | ImageContent;

@@ -1,5 +1,5 @@
-import type { Api, ImageContent, Model, TextContent } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import type { Api, ImageContent, Model, TextContent } from "@bastani/atomic-ai/compat";
 import type { VerbatimCompactionResult } from "../compaction/index.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
@@ -13,17 +13,17 @@ import type { ExtensionUIContext } from "./ui-types.js";
 import type { WorkflowActivityObserver, WorkflowActivitySubscription } from "./workflow-events.js";
 export interface ExecuteToolOptions {
 	signal?: AbortSignal;
-	onUpdate?: import("@earendil-works/pi-agent-core").AgentToolUpdateCallback;
+	onUpdate?: import("@bastani/atomic-agent-core").AgentToolUpdateCallback;
 }
 
 /** Tool-only context. Nested calls retain session validation and permission hooks. */
 export interface ExtensionToolContext extends ExtensionContext {
-	readonly tools: readonly import("@earendil-works/pi-agent-core").AgentTool[];
+	readonly tools: readonly import("@bastani/atomic-agent-core").AgentTool[];
 	executeTool(
 		name: string,
 		args: unknown,
 		options?: ExecuteToolOptions,
-	): Promise<import("@earendil-works/pi-agent-core").AgentToolCallOutcome>;
+	): Promise<import("@bastani/atomic-agent-core").AgentToolCallOutcome>;
 }
 
 export interface ContextUsage {

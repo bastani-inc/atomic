@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
-import { type FauxModelDefinition, fauxAssistantMessage } from "@bastani/pi-ai/compat";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { AgentTool } from "@bastani/atomic-agent-core";
+import { type FauxModelDefinition, fauxAssistantMessage } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import type { ExtensionFactory } from "../../src/core/extensions/index.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";

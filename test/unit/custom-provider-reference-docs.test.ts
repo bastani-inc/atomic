@@ -21,11 +21,11 @@ const doc = [
 	.map((path) => readFileSync(join(repoRoot, path), "utf8"))
 	.join("\n");
 
-// npm hoists the six pi packages into the root node_modules; the artifacts
-// suite (pi-0.82.1-artifacts.test.ts) asserts that install, so this suite only
+// npm links the forked packages into the root node_modules; the artifacts
+// suite (forked-packages-artifacts.test.ts) asserts that install, so this suite only
 // has to read it. Every path the doc names is checked against this tree, which
 // is exactly what a reader following the doc would find.
-const piAiDist = join(repoRoot, "node_modules", "@earendil-works", "pi-ai", "dist");
+const piAiDist = join(repoRoot, "node_modules", "@bastani", "atomic-ai", "dist");
 
 /** One heading-bounded slice of the doc, failing loudly when a marker moves. */
 function section(startMarker: string, endMarker: string): string {
@@ -44,7 +44,7 @@ function assertDistModuleExists(directory: "api" | "providers", name: string): v
 		const path = join(piAiDist, directory, `${name}${extension}`);
 		assert.ok(
 			existsSync(path),
-			`docs/custom-provider.md names ${directory}/${name}${extension}, which must exist in the installed @bastani/pi-ai tree`,
+			`docs/custom-provider.md names ${directory}/${name}${extension}, which must exist in the installed @bastani/atomic-ai tree`,
 		);
 	}
 }

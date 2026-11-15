@@ -1,5 +1,5 @@
-import { type Api, type Model, modelsAreEqual } from "@bastani/pi-ai/compat";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@bastani/atomic-agent-core";
+import { type Api, type Model, modelsAreEqual } from "@bastani/atomic-ai/compat";
 import {
 	Container,
 	type Focusable,
@@ -11,7 +11,7 @@ import {
 	Text,
 	type TUI,
 	visibleWidth,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { boundedInteractiveModelRefresh } from "../../../core/bounded-model-refresh.ts";
 import { formatModelLabel, MODEL_LABEL_SEPARATOR } from "../../../core/model-label.ts";
 import type { ModelRuntime } from "../../../core/model-runtime.js";

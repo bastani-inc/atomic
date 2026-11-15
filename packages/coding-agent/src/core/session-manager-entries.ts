@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent, Usage } from "@bastani/pi-ai/compat";
+import type { ImageContent, Message, TextContent, Usage } from "@bastani/atomic-ai/compat";
 import { join } from "path";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { TUI } from "@bastani/atomic-tui";
 import { beforeAll, describe, test } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.js";
 import { createWriteToolDefinition } from "../src/core/tools/write.js";

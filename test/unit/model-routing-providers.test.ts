@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import type { Api, ClassifierContext, ClassifierModel, ClassifierResult, Model } from "@bastani/pi-ai";
-import { getBuiltinClassifierModel } from "@bastani/pi-ai/providers/all";
+import type { Api, ClassifierContext, ClassifierModel, ClassifierResult, Model } from "@bastani/atomic-ai";
+import { getBuiltinClassifierModel } from "@bastani/atomic-ai/providers/all";
 import { afterEach, test, vi } from "vitest";
 import {
 	AutoRoutingInferenceError,

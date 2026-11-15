@@ -9,7 +9,7 @@ import {
 	setCapabilities,
 	setKeybindings,
 	stripTerminalSequences,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { afterEach, beforeAll, beforeEach, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";

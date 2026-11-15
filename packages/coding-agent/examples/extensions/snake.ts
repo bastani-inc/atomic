@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth } from "@bastani/atomic-tui";
 
 const GAME_WIDTH = 40;
 const GAME_HEIGHT = 15;

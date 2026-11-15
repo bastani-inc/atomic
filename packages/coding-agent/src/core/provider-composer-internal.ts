@@ -22,8 +22,8 @@ import type {
 	RefreshModelsContext,
 	SimpleStreamOptions,
 	TranscriptContext,
-} from "@bastani/pi-ai";
-import { isModelType } from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
+import { isModelType } from "@bastani/atomic-ai";
 import { extensionRefreshRejection } from "./extension-oauth-refresh-rejection.ts";
 import type { ModelsJsonModel, ModelsJsonModelOverride, ModelsJsonProvider } from "./model-config.ts";
 import {

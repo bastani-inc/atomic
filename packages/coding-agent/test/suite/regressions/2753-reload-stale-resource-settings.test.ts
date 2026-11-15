@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { registerFauxProvider } from "@bastani/pi-ai/compat";
+import { registerFauxProvider } from "@bastani/atomic-ai/compat";
 import { afterEach, describe, expect, it } from "vitest";
 import { useTemporaryAgentDir } from "../../../../../test/helpers/temporary-agent-dir.js";
 import {

@@ -1,4 +1,4 @@
-import { decodeKittyPrintable, getKeybindings, type Input } from "@earendil-works/pi-tui";
+import { decodeKittyPrintable, getKeybindings, type Input } from "@bastani/atomic-tui";
 import type { Theme } from "../../../../modes/interactive/theme/theme.js";
 import type { QuestionData, QuestionnaireResult, QuestionParams } from "../tool/types.js";
 import type { WrappingSelectItem } from "../view/components/wrapping-select.ts";

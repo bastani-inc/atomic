@@ -5,7 +5,7 @@ import {
 	type KeyId,
 	TUI_KEYBINDINGS,
 	KeybindingsManager as TuiKeybindingsManager,
-} from "@earendil-works/pi-tui";
+} from "@bastani/atomic-tui";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir } from "../config.js";
@@ -166,7 +166,7 @@ const APP_KEYBINDINGS = {
 export type AppKeybinding = keyof typeof APP_KEYBINDINGS;
 export type AppKeybindings = { [K in AppKeybinding]: true };
 
-declare module "@earendil-works/pi-tui" {
+declare module "@bastani/atomic-tui" {
 	interface Keybindings extends AppKeybindings {}
 }
 

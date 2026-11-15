@@ -1,4 +1,4 @@
-import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@earendil-works/pi-tui";
+import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { getHighlightLanguageCount, highlight, supportsLanguage } from "../../../utils/syntax-highlight.ts";
 import { getGlobalTheme, theme } from "./global-theme.ts";
@@ -204,7 +204,7 @@ export function getEditorTheme(): EditorTheme {
 	};
 }
 
-export function getSettingsListTheme(): import("@earendil-works/pi-tui").SettingsListTheme {
+export function getSettingsListTheme(): import("@bastani/atomic-tui").SettingsListTheme {
 	return {
 		label: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : text),
 		value: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),

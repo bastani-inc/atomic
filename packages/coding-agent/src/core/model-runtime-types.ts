@@ -1,4 +1,4 @@
-import type { AuthOperationOptions, CredentialStore, ModelsStore } from "@bastani/pi-ai";
+import type { AuthOperationOptions, CredentialStore, ModelsStore } from "@bastani/atomic-ai";
 
 export interface CreateModelRuntimeOptions {
 	/** Credential storage. Defaults to the file at authPath. */

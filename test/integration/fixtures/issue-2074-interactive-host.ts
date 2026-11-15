@@ -21,7 +21,7 @@
  * bury the pipe under one copy of the screen per animation frame.
  */
 
-import type { Terminal } from "@earendil-works/pi-tui";
+import type { Terminal } from "@bastani/atomic-tui";
 import { main } from "../../../packages/coding-agent/src/main.ts";
 import type { InteractiveMode } from "../../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";
 import { hasInteractiveEngineBootstrapArg } from "../../../packages/coding-agent/src/utils/interactive-engine-bootstrap.ts";

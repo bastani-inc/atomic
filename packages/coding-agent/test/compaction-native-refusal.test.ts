@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { AssistantMessage } from "@bastani/pi-ai/compat";
+import type { AssistantMessage } from "@bastani/atomic-ai/compat";
 import { test } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.js";
 import { runVerbatimCompaction } from "../src/core/compaction/compaction-runner.js";

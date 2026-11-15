@@ -12,9 +12,9 @@ import {
 	isCacheWarmingReplayable,
 	type Model,
 	type TranscriptContext,
-} from "@bastani/pi-ai";
-import type { SimpleStreamOptions } from "@bastani/pi-ai/compat";
-import { getProviderEnvValue } from "@bastani/pi-ai/utils/provider-env";
+} from "@bastani/atomic-ai";
+import type { SimpleStreamOptions } from "@bastani/atomic-ai/compat";
+import { getProviderEnvValue } from "@bastani/atomic-ai/utils/provider-env";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ModelRuntimeSimpleStreamOptions } from "./model-runtime-streaming.ts";

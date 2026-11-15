@@ -95,8 +95,8 @@ async function createStampedShrinkwrapFixture(version: string): Promise<string> 
 	if (codingAgentPackage.dependencies?.["@bastani/atomic-natives"]) {
 		codingAgentPackage.dependencies["@bastani/atomic-natives"] = version;
 	}
-	if (codingAgentPackage.dependencies?.["@bastani/pi-ai"]) {
-		codingAgentPackage.dependencies["@bastani/pi-ai"] = version;
+	if (codingAgentPackage.dependencies?.["@bastani/atomic-ai"]) {
+		codingAgentPackage.dependencies["@bastani/atomic-ai"] = version;
 	}
 	await writePackageJson(join(fixtureRoot, "packages/coding-agent/package.json"), codingAgentPackage);
 

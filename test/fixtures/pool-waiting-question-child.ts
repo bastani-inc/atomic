@@ -1,4 +1,4 @@
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { workflow } from "@bastani/atomic/workflows";
 import { Type } from "typebox";
 import { poolStageOptions } from "./pool-stage-options.js";

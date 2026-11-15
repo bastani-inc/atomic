@@ -1,6 +1,6 @@
 {
-	"name": "@earendil-works/pi-agent-core",
-	"version": "1.5.2",
+	"name": "@bastani/atomic-agent-core",
+	"version": "0.0.0",
 	"description": "General-purpose agent with transport abstraction, state management, and attachment support",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -14,7 +14,9 @@
 	},
 	"files": [
 		"dist",
-		"README.md"
+		"README.md",
+		"LICENSE",
+		"NOTICE.md"
 	],
 	"scripts": {
 		"clean": "node ../../scripts/package-files.mjs clean dist",
@@ -23,8 +25,8 @@
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
-		"@earendil-works/pi-ai": "1.5.2",
-		"@earendil-works/pi-schema": "1.5.2"
+		"@bastani/atomic-ai": "0.0.0",
+		"@bastani/atomic-schema": "0.0.0"
 	},
 	"keywords": [
 		"ai",
@@ -35,10 +37,20 @@
 	],
 	"author": "Mario Zechner",
 	"license": "MIT",
+	"contributors": [
+		"Bastani, Inc."
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/earendil-works/pi.git",
+		"url": "git+https://github.com/bastani-inc/atomic.git",
 		"directory": "packages/agent"
+	},
+	"homepage": "https://github.com/bastani-inc/atomic/tree/main/packages/agent#readme",
+	"bugs": {
+		"url": "https://github.com/bastani-inc/atomic/issues"
 	},
 	"engines": {
 		"node": ">=22.19.0"

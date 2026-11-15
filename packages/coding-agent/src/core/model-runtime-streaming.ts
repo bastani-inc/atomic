@@ -25,7 +25,7 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 	type StreamOptions,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";

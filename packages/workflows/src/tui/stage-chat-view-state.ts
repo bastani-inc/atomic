@@ -4,7 +4,7 @@ import {
 	classifyChatCommand,
 	type ReadonlyFooterDataProvider,
 } from "@bastani/atomic";
-import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
+import { Editor, type EditorComponent } from "@bastani/atomic-tui";
 import { isPooledStageStarting, pooledStageStartingText } from "../shared/stage-display-status.js";
 import { type StageUiBroker, stageUiBroker } from "../shared/stage-ui-broker.js";
 import { isTerminalStageStatus } from "../shared/store-internal.js";

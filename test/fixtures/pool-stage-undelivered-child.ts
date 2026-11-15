@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { workflow } from "@bastani/atomic/workflows";
-import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/pi-ai";
+import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai";
 import { Type } from "typebox";
 import { poolStageOptions } from "./pool-stage-options.js";
 

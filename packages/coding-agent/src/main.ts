@@ -1,5 +1,5 @@
-import { drainPendingOAuthRotations } from "@bastani/pi-ai";
-import { setCapabilityOverrides } from "@earendil-works/pi-tui";
+import { drainPendingOAuthRotations } from "@bastani/atomic-ai";
+import { setCapabilityOverrides } from "@bastani/atomic-tui";
 import chalk from "chalk";
 import { type Args, parseArgs, printHelp } from "./cli/args.ts";
 import {

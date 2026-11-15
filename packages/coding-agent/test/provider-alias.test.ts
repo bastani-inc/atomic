@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Api, InMemoryCredentialStore, InMemoryModelsStore, type Model } from "@bastani/pi-ai";
+import { type Api, InMemoryCredentialStore, InMemoryModelsStore, type Model } from "@bastani/atomic-ai";
 import { test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ModelRuntime } from "../src/core/model-runtime.js";

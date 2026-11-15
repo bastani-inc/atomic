@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/pi-ai/compat";
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
 import { afterEach, describe, test, vi } from "vitest";
 import type { DetachedToolCall } from "../src/core/agent-session-detached-tools.js";

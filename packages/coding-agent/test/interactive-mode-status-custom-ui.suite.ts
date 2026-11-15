@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { type Component, Container, type Focusable, type OverlayHandle, TuiMainScreen } from "@earendil-works/pi-tui";
+import { type Component, Container, type Focusable, type OverlayHandle, TuiMainScreen } from "@bastani/atomic-tui";
 import { describe, expect, test, vi } from "vitest";
 import type { HostCustomUiStateListener } from "../src/core/extensions/types.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";

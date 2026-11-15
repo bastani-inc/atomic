@@ -11,8 +11,8 @@
  * Cancellation is deliberately NOT a variant: an abort still throws.
  */
 
-import type { Api, AssistantMessage } from "@bastani/pi-ai/compat";
-import { isContextOverflow } from "@bastani/pi-ai/compat";
+import type { Api, AssistantMessage } from "@bastani/atomic-ai/compat";
+import { isContextOverflow } from "@bastani/atomic-ai/compat";
 import type { RawLineRange } from "./compaction-types.js";
 import type { DiagnosticFailureCategory } from "./range-planner-diagnostics.js";
 

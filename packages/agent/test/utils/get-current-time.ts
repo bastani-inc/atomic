@@ -1,4 +1,4 @@
-import { obj, opt, type Static, str } from "@earendil-works/pi-schema";
+import { obj, opt, type Static, str } from "@bastani/atomic-schema";
 import type { AgentTool, AgentToolResult } from "../../src/types.ts";
 
 export interface GetCurrentTimeResult extends AgentToolResult<{ utcTimestamp: number }> {}

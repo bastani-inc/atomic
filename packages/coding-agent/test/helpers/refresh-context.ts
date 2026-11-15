@@ -4,7 +4,7 @@ import type {
 	ModelsStore,
 	ModelsStoreEntry,
 	RefreshModelsContext,
-} from "@bastani/pi-ai";
+} from "@bastani/atomic-ai";
 
 /**
  * Test-side mirror of the host half of pi 0.84.1's provider refresh contract.
