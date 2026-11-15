@@ -14,9 +14,17 @@ import type {
 	Store,
 	StoreInvalidationListener,
 } from "./store-public-types.js";
-import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
-import { accumulatePausedDurationMs, elapsedRunMs, nextControlTimestamp } from "./timing.js";
+import type {
+	RunSnapshot,
+	RunStatus,
+	StageSnapshot,
+	StageStatus,
+	StoreSnapshot,
+	WorkflowNotice,
+} from "./store-types.js";
+import { accumulatePausedDurationMs, elapsedRunMs, elapsedStageMs, nextControlTimestamp } from "./timing.js";
 import type { WorkflowOutputValues } from "./types.js";
+import { workflowActivityNodeKey } from "./workflow-activity.js";
 
 type RunStoreMethods = Pick<
 	Store,
@@ -196,6 +204,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 				context.rejectPrompt(pending.id, `atomic-workflows: run ${runId} ended before prompt resolved`);
 			}
 			context.rejectAllStagePrompts(runId, run, `atomic-workflows: run ${runId} ended before prompt resolved`);
+			if (status === "killed" || status === "cancelled") endInFlightWork(context, run, status, error);
 			context.bumpAndNotify({ runId });
 			return true;
 		},
@@ -398,6 +407,68 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
 			return context.batch(update);
 		},
 	};
+}
+
+const IN_FLIGHT_STAGE_STATUSES: ReadonlySet<StageStatus> = new Set([
+	"running",
+	"awaiting_input",
+	"paused",
+	"suspended",
+]);
+
+/**
+ * Ends the work a killed or cancelled run still had in flight (#4875): its stages fail as killed or skip as
+ * cancelled, and its running tool calls are cancelled, so no surface shows a stopped run as still working. Finished,
+ * blocked and never-started stages keep their state. A nested child run ends its own work when it ends.
+ */
+function endInFlightWork(
+	context: StoreContext,
+	run: RunSnapshot,
+	status: "killed" | "cancelled",
+	error?: string,
+): void {
+	const endedAt = run.endedAt ?? Date.now();
+	for (const stage of run.stages) {
+		if (!IN_FLIGHT_STAGE_STATUSES.has(stage.status)) continue;
+		context.observation.executingStageIds.delete(workflowActivityNodeKey(run.id, stage.id));
+		if (status === "killed") {
+			const message = error ?? "workflow killed";
+			Object.assign(stage, {
+				status: "failed",
+				error: message,
+				failureKind: "cancelled",
+				failureCode: "cancelled",
+				failureRecoverability: "non_recoverable",
+				failureDisposition: "terminal_killed",
+				failureMessage: message,
+			} satisfies Partial<StageSnapshot>);
+		} else {
+			stage.status = "skipped";
+			stage.skippedReason = run.exitReason ?? "cancelled";
+		}
+		if (stage.endedAt === undefined) {
+			stage.endedAt = endedAt;
+			if (stage.pausedAt !== undefined) {
+				stage.pausedDurationMs = accumulatePausedDurationMs(stage.pausedDurationMs, stage.pausedAt, endedAt);
+				stage.pausedAt = undefined;
+			}
+			stage.durationMs = elapsedStageMs(stage, endedAt);
+		}
+		delete stage.awaitingInputSince;
+		delete stage.inputRequest;
+		delete stage.wait;
+		context.bumpAndNotify({ runId: run.id, stageId: stage.id });
+	}
+	for (const node of run.toolNodes) {
+		if (node.status !== "running" && node.status !== "pending") continue;
+		context.observation.executingToolNodeIds.delete(workflowActivityNodeKey(run.id, node.id));
+		node.status = "cancelled";
+		if (node.endedAt === undefined) {
+			node.endedAt = endedAt;
+			if (node.startedAt !== undefined) node.durationMs = Math.max(0, endedAt - node.startedAt);
+		}
+		context.bumpAndNotify({ runId: run.id, toolNodeId: node.id });
+	}
 }
 
 function shouldStoreRunResult(status: RunStatus): boolean {
