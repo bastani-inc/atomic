@@ -72,7 +72,7 @@ import {
 	type ToolOutputReference,
 	takeInlineToolOutput,
 } from "./session-tool-output.ts";
-import { adoptInlineSnapshotBlobs } from "./session-worktree-snapshots.ts";
+import { adoptInlineSnapshotBlobs, deleteSessionWithSnapshotRefs } from "./session-worktree-snapshots.ts";
 import { SessionBlobError, type StorageFailureCause, StorageRollbackError } from "./storage/errors.js";
 import {
 	SessionFormatVersionError,
@@ -282,7 +282,7 @@ export class SessionManager {
 			throw new Error(`Cannot delete the session that is currently open: ${sessionId}`);
 		}
 		try {
-			await this.store.delete(sessionId);
+			await deleteSessionWithSnapshotRefs(this.store, sessionId);
 		} catch (error) {
 			if (!(error instanceof SessionNotFoundError)) throw error;
 		}
