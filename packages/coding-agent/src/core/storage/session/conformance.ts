@@ -11,6 +11,7 @@ import {
 	type SessionTextField,
 	StoreClosedError,
 } from "./errors.js";
+import { SESSION_SUMMARY_TEXT_CHARS } from "./session-summary.js";
 import { SESSION_FORMAT_VERSION, type SessionRecordHeader, type SessionStore, type SessionSummary } from "./types.js";
 
 export interface SessionStoreConformanceRunner {
@@ -776,6 +777,42 @@ export function registerSessionStoreConformance(
 					}
 					await store.delete("session");
 					for (const { hash } of stored.values()) assert.equal(await store.getBlob!("session", hash), undefined);
+				},
+			);
+
+			check(
+				"stores a 10 MB entry and a session of more than 10 MB, loads them whole and lists them (#4954)",
+				async (store, reload) => {
+					const MB = 1_000_000;
+					// Multi-byte and astral characters land on chunk boundaries; the text is longer than any listing keeps.
+					const text = Array.from({ length: MB }, (_, index) => `line${index % 10} é😀\n`).join("");
+					const large = message("large", text);
+					await store.create(header(), [large]);
+					const replies: SessionEntry[] = Array.from({ length: 12 }, (_, index) => ({
+						...message(`reply-${index}`, `${index}`.repeat(MB)),
+						parentId: index === 0 ? "large" : `reply-${index - 1}`,
+					}));
+					for (const [index, reply] of replies.entries()) {
+						await store.append("session", [reply], { expectSeq: index + 1 });
+					}
+					store = await reload(store);
+					const loaded = await store.load("session");
+					assert.equal(loaded.lastSeq, 13);
+					assert.equal(loaded.entries.length, 13);
+					assert.ok(
+						JSON.stringify(loaded.entries) === JSON.stringify([large, ...replies]),
+						"every entry loads back exactly, in order",
+					);
+					const [summary] = await collect(store);
+					assert.equal(summary?.messageCount, 13);
+					assert.equal(summary?.firstMessage, text.slice(0, SESSION_SUMMARY_TEXT_CHARS));
+					assert.ok(summary?.searchText.startsWith(text.slice(0, SESSION_SUMMARY_TEXT_CHARS)));
+					assert.ok(summary?.searchText.endsWith("1".repeat(SESSION_SUMMARY_TEXT_CHARS)));
+					await store.replace("session", header(), [large], { expectSeq: 13 });
+					store = await reload(store);
+					assert.ok(JSON.stringify((await store.load("session")).entries) === JSON.stringify([large]));
+					await store.delete("session");
+					await assert.rejects(store.load("session"), notFound("session"));
 				},
 			);
 

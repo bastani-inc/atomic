@@ -100,7 +100,13 @@
 			"type": "table",
 			"name": "session_entries",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_entry_chunks",
+			"tbl_name": "session_entry_chunks",
+			"sql": "CREATE TABLE session_entry_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, seq, idx)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -122,9 +128,15 @@
 		},
 		{
 			"type": "table",
+			"name": "snapshot_blob_chunks",
+			"tbl_name": "snapshot_blob_chunks",
+			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "snapshot_blobs",
 			"tbl_name": "snapshot_blobs",
-			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT"
+			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), chunks INTEGER NOT NULL DEFAULT 0) STRICT"
 		},
 		{
 			"type": "table",
@@ -190,7 +202,13 @@
 			"type": "table",
 			"name": "team_session_entries",
 			"tbl_name": "team_session_entries",
-			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE team_session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "team_session_entry_chunks",
+			"tbl_name": "team_session_entry_chunks",
+			"sql": "CREATE TABLE team_session_entry_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, seq, idx)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -212,9 +230,15 @@
 		},
 		{
 			"type": "table",
+			"name": "team_snapshot_blob_chunks",
+			"tbl_name": "team_snapshot_blob_chunks",
+			"sql": "CREATE TABLE team_snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "team_snapshot_blobs",
 			"tbl_name": "team_snapshot_blobs",
-			"sql": "CREATE TABLE team_snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch())) STRICT"
+			"sql": "CREATE TABLE team_snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT (unixepoch()), chunks INTEGER NOT NULL DEFAULT 0) STRICT"
 		},
 		{
 			"type": "table",
@@ -528,7 +552,13 @@
 			"type": "table",
 			"name": "session_entries",
 			"tbl_name": "session_entries",
-			"sql": "CREATE TABLE session_entries (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), PRIMARY KEY(session_id, seq)\n\t\t\t\t) STRICT"
+			"sql": "CREATE TABLE session_entries (\n\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, entry_id TEXT NOT NULL,\n\t\t\tentry_json TEXT NOT NULL CHECK(json_valid(entry_json)), chunks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(session_id, seq)\n\t\t) STRICT"
+		},
+		{
+			"type": "table",
+			"name": "session_entry_chunks",
+			"tbl_name": "session_entry_chunks",
+			"sql": "CREATE TABLE session_entry_chunks (\n\t\t\t\t\tsession_id TEXT NOT NULL, seq INTEGER NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL,\n\t\t\t\t\tPRIMARY KEY(session_id, seq, idx)\n\t\t\t\t) STRICT"
 		},
 		{
 			"type": "table",
@@ -550,9 +580,15 @@
 		},
 		{
 			"type": "table",
+			"name": "snapshot_blob_chunks",
+			"tbl_name": "snapshot_blob_chunks",
+			"sql": "CREATE TABLE snapshot_blob_chunks (hash TEXT NOT NULL, idx INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (hash, idx)) STRICT, WITHOUT ROWID"
+		},
+		{
+			"type": "table",
 			"name": "snapshot_blobs",
 			"tbl_name": "snapshot_blobs",
-			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT 0) STRICT"
+			"sql": "CREATE TABLE snapshot_blobs (hash TEXT PRIMARY KEY, bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, chunks INTEGER NOT NULL DEFAULT 0) STRICT"
 		},
 		{
 			"type": "table",
@@ -712,74 +748,89 @@
 				{
 					"hash": "p-bundle-after",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "p-bundle-after"
 				},
 				{
 					"hash": "p-bundle-before",
 					"bytes": 15,
+					"chunks": 0,
 					"data": "p-bundle-before"
 				},
 				{
 					"hash": "p-patch-after",
 					"bytes": 13,
+					"chunks": 0,
 					"data": "p-patch-after"
 				},
 				{
 					"hash": "p-patch-before",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "p-patch-before"
 				},
 				{
 					"hash": "r-bundle-after",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "r-bundle-after"
 				},
 				{
 					"hash": "r-bundle-before",
 					"bytes": 15,
+					"chunks": 0,
 					"data": "r-bundle-before"
 				},
 				{
 					"hash": "r-patch-after",
 					"bytes": 13,
+					"chunks": 0,
 					"data": "r-patch-after"
 				},
 				{
 					"hash": "r-patch-before",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "r-patch-before"
 				},
 				{
 					"hash": "s-bundle-1",
 					"bytes": 10,
+					"chunks": 0,
 					"data": "s-bundle-1"
 				},
 				{
 					"hash": "s-bundle-4",
 					"bytes": 10,
+					"chunks": 0,
 					"data": "s-bundle-4"
 				},
 				{
 					"hash": "s-patch-1",
 					"bytes": 9,
+					"chunks": 0,
 					"data": "s-patch-1"
 				},
 				{
 					"hash": "s-patch-4",
 					"bytes": 9,
+					"chunks": 0,
 					"data": "s-patch-4"
 				},
 				{
 					"hash": "w-bundle-before",
 					"bytes": 15,
+					"chunks": 0,
 					"data": "w-bundle-before"
 				},
 				{
 					"hash": "w-patch-before",
 					"bytes": 14,
+					"chunks": 0,
 					"data": "w-patch-before"
 				}
 			],
+			"blobChunks": [],
 			"runRefs": [
 				{
 					"run_id": "done-after",

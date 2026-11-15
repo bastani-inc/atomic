@@ -9,4 +9,5 @@
 
 ### Fixed
 
+- A value over PostgreSQL's limit (`54000`, program limit exceeded) now fails with `StoragePayloadTooLargeError`, which names the 1 GB field limit, instead of being reported as the store being unavailable ([#4954](https://github.com/bastani-inc/atomic/issues/4954))
 - A `?` inside a dollar-quoted string whose tag contains a non-ASCII character that is not a letter, such as `$·$` or an emoji, is no longer treated as a parameter, so the parameters after it are numbered correctly. Identifiers containing such characters are recognised the same way, matching PostgreSQL. A `?` written directly after an identifier or keyword, as in `LIMIT?`, now becomes a separate parameter instead of being read as part of that name ([#4834](https://github.com/bastani-inc/atomic/issues/4834))

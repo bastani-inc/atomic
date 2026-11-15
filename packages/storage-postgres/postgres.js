@@ -487,6 +487,8 @@ export async function openPostgresDatabase(options) {
 			return redacted;
 		},
 		transientFailure: transientFailureOf(pg.DatabaseError),
+		// Postgres's largest field is 1 GB less one byte (#4954).
+		payloadLimits: { value: 1_073_741_823 },
 		execute: (sql, params) => autocommit((client) => execute(client, sql, params, clientTimeoutMs)),
 		executeMultiple: (sql) => autocommit((client) => executeMultiple(client, sql, clientTimeoutMs)),
 		concurrentTransactions: true,

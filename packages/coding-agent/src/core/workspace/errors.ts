@@ -31,6 +31,7 @@ export type WorkspaceSnapshotErrorCode =
 	| "not-a-repository"
 	| "unborn-head"
 	| "blob-store-unsupported"
+	| "blob-store-failed"
 	| "unreadable-path";
 export type WorkspaceRestoreErrorCode =
 	| "snapshot-not-found"
@@ -305,6 +306,10 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 		subject === "workflow journal"
 			? 'Select a SQLite workflow journal, for example `"workflows": { "journal": { "path": "workflows/journal.sqlite" } }` in settings.json, to record snapshots.'
 			: 'Select a SQLite session store, for example `--session-store <path>` or `"sessions": { "storage": { "path": "sessions.sqlite" } }` in settings.json, to record snapshots.',
+	],
+	"blob-store-failed": (subject) => [
+		`Worktree snapshot not recorded: the ${subject} storage could not store or read its blobs`,
+		"The turn went on without a snapshot; the cause says why the storage failed (`atomic storage status` shows the store in use). The next turn that changes files tries again.",
 	],
 	"unreadable-path": (subject) => [
 		`Worktree snapshot unavailable: ${subject} cannot be read`,

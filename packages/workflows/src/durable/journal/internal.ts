@@ -13,6 +13,22 @@ import {
 export type { RunJournalBatchAppend as JournalBatchAppend, RunSnapshotTail, RunVersion } from "./types.js";
 
 export const JOURNAL_READ_PAGE_SIZE = 256;
+/**
+ * The most characters of event payload one journal read returns, by the payload's `length()`, so a page of large
+ * checkpoints stays under a libSQL server's 10 MB response limit: a character is at most four bytes of UTF-8 (#4954).
+ * One event larger than this is a page of its own.
+ */
+export const JOURNAL_READ_PAGE_CHARS = 1024 * 1024;
+
+/** How many of the leading rows of `sizes`, at least one, fit in {@link JOURNAL_READ_PAGE_CHARS}. */
+export function rowsWithinReadPage(sizes: readonly { readonly size: number | bigint | null }[]): number {
+	let chars = 0;
+	for (const [index, row] of sizes.entries()) {
+		chars += Number(row.size ?? 0);
+		if (chars > JOURNAL_READ_PAGE_CHARS) return Math.max(1, index);
+	}
+	return sizes.length;
+}
 
 /**
  * How every journal write transaction waits for the write lock: up to 10 minutes of no commit anywhere, far past the

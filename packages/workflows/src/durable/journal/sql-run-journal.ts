@@ -26,6 +26,7 @@ import {
 	type RunVersion,
 	registerJournalKeyRangeRead,
 	registerSqlPoolStorage,
+	rowsWithinReadPage,
 } from "./internal.js";
 import { isWorkflowLeaseExpired } from "./lease-expiry.js";
 import { LegacyJournalRuns, latestEventColumns, type RunVersionRow } from "./legacy-journal-tables.js";
@@ -841,16 +842,32 @@ export class SqlRunJournal implements RunJournal {
 		const legacy = this.legacy;
 		const readsLegacy = legacy !== undefined && (await this.operation(() => this.isUnconvertedLegacyRun(runId)));
 		for (;;) {
-			const page = await this.operation(async () => {
-				const rows = readsLegacy
-					? ((await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[])
-					: await this.database.all<EventRow>(
-							`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
-							runId,
-							nextSeq,
-							JOURNAL_READ_PAGE_SIZE,
-						);
-				return rows.map(entryFromRow);
+			const { page, more } = await this.operation(async () => {
+				if (readsLegacy) {
+					const rows = (await legacy.events(this.database, runId, nextSeq, JOURNAL_READ_PAGE_SIZE)) as EventRow[];
+					return { page: rows.map(entryFromRow), more: rows.length === JOURNAL_READ_PAGE_SIZE };
+				}
+				// Events never change once appended, so the sizes read first describe the rows read next (#4954).
+				const sizes = await this.database.all<SqliteRow & { size: number | null }>(
+					`SELECT length(${c.payload}) AS size FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+					runId,
+					nextSeq,
+					JOURNAL_READ_PAGE_SIZE,
+				);
+				const limit = rowsWithinReadPage(sizes);
+				const rows =
+					limit === 0
+						? []
+						: await this.database.all<EventRow>(
+								`SELECT * FROM ${this.tables.events} WHERE ${c.runId} = ? AND ${c.seq} >= ? ORDER BY ${c.seq} LIMIT ?`,
+								runId,
+								nextSeq,
+								limit,
+							);
+				return {
+					page: rows.map(entryFromRow),
+					more: rows.length === limit && (limit < sizes.length || sizes.length === JOURNAL_READ_PAGE_SIZE),
+				};
 			});
 			for (const entry of page) {
 				this.assertOpen();
@@ -858,7 +875,7 @@ export class SqlRunJournal implements RunJournal {
 			}
 			this.assertOpen();
 			const last = page.at(-1);
-			if (last === undefined || page.length < JOURNAL_READ_PAGE_SIZE) return;
+			if (last === undefined || !more) return;
 			nextSeq = last.seq + 1;
 		}
 	}
@@ -906,15 +923,24 @@ export class SqlRunJournal implements RunJournal {
 		}
 		let after: string | undefined;
 		for (;;) {
-			const page = await journal.operation(async () => {
-				const rows = await journal.database.all<EventRow>(
-					`SELECT * FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`,
+			const { page, more } = await journal.operation(async () => {
+				const range = `FROM ${journal.tables.events} WHERE ${c.runId} = ? AND ${c.key} ${after === undefined ? ">=" : ">"} ? AND ${c.key} < ? ORDER BY ${c.key} LIMIT ?`;
+				const sizes = await journal.database.all<SqliteRow & { size: number | null }>(
+					`SELECT length(${c.payload}) AS size ${range}`,
 					runId,
 					after ?? fromKey,
 					toKey,
 					JOURNAL_READ_PAGE_SIZE,
 				);
-				return rows.map(entryFromRow);
+				const limit = rowsWithinReadPage(sizes);
+				const rows =
+					limit === 0
+						? []
+						: await journal.database.all<EventRow>(`SELECT * ${range}`, runId, after ?? fromKey, toKey, limit);
+				return {
+					page: rows.map(entryFromRow),
+					more: rows.length === limit && (limit < sizes.length || sizes.length === JOURNAL_READ_PAGE_SIZE),
+				};
 			});
 			for (const entry of page) {
 				journal.assertOpen();
@@ -922,7 +948,7 @@ export class SqlRunJournal implements RunJournal {
 			}
 			journal.assertOpen();
 			const last = page.at(-1);
-			if (last === undefined || page.length < JOURNAL_READ_PAGE_SIZE) return;
+			if (last === undefined || !more) return;
 			after = last.key;
 		}
 	}
