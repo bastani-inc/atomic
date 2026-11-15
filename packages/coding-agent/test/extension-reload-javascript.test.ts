@@ -189,7 +189,7 @@ export default function (pi) {
 				`const path = require("node:path");
 module.exports = function (pi) {
 	pi.registerCommand(${JSON.stringify(COMMAND)}, {
-		description: ["${version}", __dirname === path.dirname(__filename), path.basename(__filename), typeof module.exports].join(" "),
+		description: ["${version}", __dirname === path.dirname(__filename) && path.normalize(__filename) === __filename, path.basename(__filename), typeof module.exports].join(" "),
 		handler: async () => {},
 	});
 };

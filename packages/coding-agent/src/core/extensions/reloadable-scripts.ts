@@ -50,7 +50,11 @@ interface LoadContext {
 
 const SCRIPT_EXTENSIONS = new Set([".js", ".mjs", ".cjs"]);
 const BINDER_KEY = Symbol.for("atomic.extensions.reloadableScripts");
-const PROLOGUE = `{const __atomicReloadable=globalThis[Symbol.for("atomic.extensions.reloadableScripts")];if(__atomicReloadable)[require,jitiImport]=__atomicReloadable(module,require,jitiImport);}`;
+const prologue = (bindings: string) =>
+	`{const __atomicReloadable=globalThis[Symbol.for("atomic.extensions.reloadableScripts")];if(__atomicReloadable)[${bindings}]=__atomicReloadable(module,require,jitiImport);}`;
+const PROLOGUE = prologue("require,jitiImport");
+// CommonJS also gets the platform's own paths, which jiti gives with forward slashes on Windows.
+const COMMONJS_PROLOGUE = prologue("require,jitiImport,__filename,__dirname");
 const USE_STRICT = /^"use strict";/;
 const SOURCE_USE_STRICT = /^\s*(["'])use strict\1/;
 // jiti's own test for ESM in a `.js` file outside a "type": "module" package.
@@ -67,7 +71,7 @@ export function isReloadableScriptPath(filePath: string): boolean {
 }
 
 function packageRootOf(filePath: string): string | undefined {
-	const segments = filePath.split(path.sep);
+	const segments = path.normalize(filePath).split(path.sep);
 	const index = segments.lastIndexOf("node_modules");
 	if (index < 0) return undefined;
 	return segments.slice(0, index + (segments[index + 1]?.startsWith("@") ? 3 : 2)).join(path.sep);
@@ -105,7 +109,7 @@ function isPathSpecifier(id: string): boolean {
 
 /** The JavaScript file a path specifier names, when this load evaluates it itself. */
 function reloadableFile(id: string, require: Jiti, context: LoadContext): string | undefined {
-	const resolved = require.resolve(id.startsWith("file:") ? fileURLToPath(id) : id);
+	const resolved = path.normalize(require.resolve(id.startsWith("file:") ? fileURLToPath(id) : id));
 	if (!isReloadableScriptPath(resolved)) return undefined;
 	return packageRootOf(resolved) === context.packageRoot ? resolved : undefined;
 }
@@ -123,7 +127,11 @@ function evaluate(jiti: Jiti, filename: string, async: boolean, cache: ModuleCac
  * Called by the prologue of each transformed extension module with its own
  * `module`, `require` and `jitiImport`; returns the replacements it uses.
  */
-function bindReloadableScriptLoaders(module: ModuleRecord, require: Jiti, jitiImport: JitiImport): [Jiti, JitiImport] {
+function bindReloadableScriptLoaders(
+	module: ModuleRecord,
+	require: Jiti,
+	jitiImport: JitiImport,
+): [Jiti, JitiImport, string, string] {
 	const load = (filename: string, async: boolean): unknown => {
 		const context = loadContextOf(module);
 		return context.cache[filename]?.exports ?? evaluate(require, filename, async, context.cache);
@@ -163,7 +171,8 @@ function bindReloadableScriptLoaders(module: ModuleRecord, require: Jiti, jitiIm
 		}
 		return import(target);
 	};
-	return [reloadableRequire, reloadableImport];
+	const filename = path.normalize(module.filename);
+	return [reloadableRequire, reloadableImport, filename, path.dirname(filename)];
 }
 
 /** Routes the imports of transformed extension modules as described above; `resolver` is a jiti without host aliases. */
@@ -197,8 +206,9 @@ function isCommonJs(filename: string, source: string): boolean {
 /** Adds the prologue that routes a transformed module's imports as described above. */
 export function withReloadableScriptPrologue(code: string, filename: string, source: string): string {
 	const directive = USE_STRICT.exec(code)?.[0] ?? "";
-	const sloppy = isCommonJs(filename, source) && !SOURCE_USE_STRICT.test(source);
-	return `${sloppy ? "" : directive}${PROLOGUE}${code.slice(directive.length)}`;
+	const commonJs = isCommonJs(filename, source);
+	const sloppy = commonJs && !SOURCE_USE_STRICT.test(source);
+	return `${sloppy ? "" : directive}${commonJs ? COMMONJS_PROLOGUE : PROLOGUE}${code.slice(directive.length)}`;
 }
 
 /**
