@@ -406,11 +406,11 @@ export class AwayAsks {
 	): Array<HeldAwayMessage & { readonly askerReturnAddress: string }> {
 		const targets =
 			childName === undefined
-				? this.statement("SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ?").all(
-						ownerSessionId,
-					)
+				? this.statement(
+						"SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ? ORDER BY parked_at, rowid",
+					).all(ownerSessionId)
 				: this.statement(
-						"SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ? AND child_key = ?",
+						"SELECT child_name, target_session_id FROM parked_targets WHERE owner_session_id = ? AND child_key = ? ORDER BY parked_at, rowid",
 					).all(ownerSessionId, childName.trim().toLowerCase());
 		const failed: Array<HeldAwayMessage & { readonly askerReturnAddress: string }> = [];
 		for (const target of targets) {

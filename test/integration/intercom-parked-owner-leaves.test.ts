@@ -132,6 +132,8 @@ async function untilDeparted(observer: Client, sessionId: string): Promise<void>
  * before or after O releases C; otherwise A stays connected. C then leaves, released, so its ask is parked for O.
  */
 async function parkedAsk(label: string, askerAway?: "before-release" | "after-release") {
+	// Connected first, so it is the first session the broker looks at: it is told nothing.
+	const bystander = await connect({ name: `bystander-${label}`, returnAddress: randomUUID() });
 	const owner: Identity = { name: `owner-${label}`, returnAddress: randomUUID(), ownerToken: randomUUID() };
 	const ownerSession = await connect(owner);
 	const childName = `child-${label}`;
@@ -162,6 +164,7 @@ async function parkedAsk(label: string, askerAway?: "before-release" | "after-re
 	if (askerAway === "after-release") await askerLeaves();
 	assert.deepEqual(askerSession.failures, [], "a released subagent's ask is still open");
 	return {
+		bystander,
 		askId,
 		childName,
 		owner: { ...owner, preferredSessionId: idOf(ownerSession.client) },
@@ -196,7 +199,7 @@ for (const askerAway of ["before-release", "after-release"] as const) {
 		async () => {
 			const scene = await parkedAsk(`away-${askerAway}-${randomUUID().slice(0, 6)}`, askerAway);
 			await scene.ownerSession.client.disconnect();
-			await sleep(SETTLE_MS);
+			await untilDeparted(scene.bystander.client, scene.owner.preferredSessionId ?? "");
 			const back = await connect(scene.asker);
 			assert.equal(idOf(back.client), scene.asker.preferredSessionId);
 			await toldOnce(back, scene.askId);
@@ -204,6 +207,7 @@ for (const askerAway of ["before-release", "after-release"] as const) {
 			const again = await connect(scene.asker);
 			await sleep(SETTLE_MS);
 			assert.deepEqual(again.failures, [], "a saved failure is delivered once");
+			assert.deepEqual(scene.bystander.failures, []);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);
@@ -215,6 +219,7 @@ for (const how of ["restart", "crash"] as const) {
 		async () => {
 			const scene = await parkedAsk(`${how}-${randomUUID().slice(0, 6)}`);
 			await restartBroker(how);
+			const bystander = await connect({ name: `bystander-again-${how}`, returnAddress: randomUUID() });
 			const asker = await connect(scene.asker);
 			assert.equal(idOf(asker.client), scene.asker.preferredSessionId);
 			const owner = await connect(scene.owner);
@@ -222,6 +227,7 @@ for (const how of ["restart", "crash"] as const) {
 			await owner.client.disconnect();
 			await toldOnce(asker, scene.askId);
 			assert.deepEqual(scene.askerSession.failures, [], "the connection the broker closed was told nothing");
+			assert.deepEqual(bystander.failures, []);
 		},
 		REAL_BROKER_TEST_TIMEOUT_MS,
 	);

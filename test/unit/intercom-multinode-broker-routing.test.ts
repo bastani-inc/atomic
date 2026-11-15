@@ -1870,9 +1870,10 @@ function failuresOf(session: BrokerConnectedSession, askId: string) {
 /** Owner and its released subagent on b, asker on a: the asker's ask to the subagent is parked for the owner. */
 async function parkedAskScene() {
 	const [a, b] = await cluster();
-	const asker = await a!.connect("asker");
-	const owner = await b!.connect("owner");
-	const child = await b!.connect("child", { supervisorId: owner.info.id });
+	// Not the default group: the failure is authorized by the subagent's own group, as its sends were.
+	const asker = await a!.connect("asker", { group: "crew" });
+	const owner = await b!.connect("owner", { group: "crew" });
+	const child = await b!.connect("child", { group: "crew", supervisorId: owner.info.id });
 	const ask = await savedAsk(a!, asker, b!, child);
 	b!.sessions.delete(child.info.id);
 	b!.router.sessionLeft(child, { ownerSessionId: owner.info.id, childName: "child" });
@@ -1891,7 +1892,17 @@ async function toldOnce(scene: Awaited<ReturnType<typeof parkedAskScene>>): Prom
 	assert.ok(failure.type === "message");
 	assert.equal(failure.message.id, `ended:${scene.ask.id}`);
 	assert.equal(failure.message.replyError, 'Session "child" ended before replying');
-	assert.equal(failure.from.id, scene.child.info.id);
+	assert.deepEqual(failure.from, {
+		id: scene.child.info.id,
+		name: "child",
+		group: "crew",
+		groups: ["crew"],
+		cwd: "",
+		model: "",
+		pid: 0,
+		startedAt: 0,
+		lastActivity: failure.from.lastActivity,
+	});
 	await new Promise((resolve) => setTimeout(resolve, 10 * BUS_POLL_INTERVAL_MS));
 	assert.equal(failuresOf(scene.asker, scene.ask.id).length, 1, "told once");
 	await vi.waitFor(async () =>
