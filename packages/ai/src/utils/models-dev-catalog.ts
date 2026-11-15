@@ -40,9 +40,14 @@ function assertExactModelIds(label: string, expected: Iterable<string>, actual: 
 	if (expectedIds.length === actualIds.length && expectedIds.every((id, index) => id === actualIds[index])) return;
 	const missing = expectedIds.filter((id) => !actualIds.includes(id));
 	const extra = actualIds.filter((id) => !expectedIds.includes(id));
-	throw new Error(
-		`${label} model IDs do not match (missing: ${missing.join(", ") || "none"}; extra: ${extra.join(", ") || "none"})`,
-	);
+	const difference = [
+		missing.length > 0 ? `missing: ${missing.join(", ")}` : "",
+		extra.length > 0 ? `extra: ${extra.join(", ")}` : "",
+	]
+		.filter(Boolean)
+		.join("; ");
+	// The same message as scripts/model-data.ts, which the generator's strict checks report.
+	throw new Error(`${label} model IDs do not match (${difference})`);
 }
 
 export interface ModelsDevModel {

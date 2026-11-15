@@ -84,6 +84,10 @@ function mergeModels<TModel extends AnyModel>(baseline: readonly TModel[], dynam
 interface RemoteCatalog {
 	readonly byProvider: ReadonlyMap<string, readonly AnyModel[]>;
 	readonly lastModified: number;
+	/** The response's ETag, sent as `if-none-match` on the next refresh. */
+	readonly etag?: string;
+	/** The server answered 304 to the stored ETag: the stored overlay is current. */
+	readonly notModified?: boolean;
 }
 
 /**
@@ -92,18 +96,26 @@ interface RemoteCatalog {
  */
 const inflightCatalogs = new Map<string, Promise<RemoteCatalog>>();
 
-/** The models.dev catalog, mapped with the same transform the build uses for the bundled catalog. */
-export async function loadRemoteCatalog(catalogBaseUrl: string, signal: AbortSignal): Promise<RemoteCatalog> {
-	let download = inflightCatalogs.get(catalogBaseUrl);
+/**
+ * The models.dev catalog, mapped with the same transform the build uses for the bundled catalog. With `etag`, the
+ * request revalidates it, and a 304 answer reports `notModified` instead of a catalog.
+ */
+export async function loadRemoteCatalog(
+	catalogBaseUrl: string,
+	signal: AbortSignal,
+	etag?: string,
+): Promise<RemoteCatalog> {
+	const key = `${catalogBaseUrl}\n${etag ?? ""}`;
+	let download = inflightCatalogs.get(key);
 	if (!download) {
 		// The download is shared, so it is bounded by its own deadline, not by one caller's signal.
-		download = downloadRemoteCatalog(catalogBaseUrl);
-		inflightCatalogs.set(catalogBaseUrl, download);
+		download = downloadRemoteCatalog(catalogBaseUrl, etag);
+		inflightCatalogs.set(key, download);
 		const settled = download;
 		void settled
 			.catch(() => undefined)
 			.finally(() => {
-				if (inflightCatalogs.get(catalogBaseUrl) === settled) inflightCatalogs.delete(catalogBaseUrl);
+				if (inflightCatalogs.get(key) === settled) inflightCatalogs.delete(key);
 			});
 	}
 	return untilAborted(download, signal);
@@ -132,15 +144,18 @@ export function clearRemoteCatalogCache(): void {
 	inflightCatalogs.clear();
 }
 
-async function downloadRemoteCatalog(catalogBaseUrl: string): Promise<RemoteCatalog> {
+async function downloadRemoteCatalog(catalogBaseUrl: string, etag: string | undefined): Promise<RemoteCatalog> {
 	const url = new URL("api.json", catalogBaseUrl.endsWith("/") ? catalogBaseUrl : `${catalogBaseUrl}/`);
+	const headers: Record<string, string> = { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) };
+	if (etag) headers["if-none-match"] = etag;
 	const response = await fetchWithRetry(
 		url,
-		{ headers: { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) } },
+		{ headers },
 		{ attemptTimeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS, timeoutMs: REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS * 3 },
 	);
 	// A server without the catalog (404, 501) means no overlay, not a failed refresh: the bundled catalog stays.
 	if (response.status === 404 || response.status === 501) return { byProvider: new Map(), lastModified: 0 };
+	if (response.status === 304 && etag) return { byProvider: new Map(), lastModified: 0, etag, notModified: true };
 	if (!response.ok) throw new Error(`Model catalog request to ${url.origin} failed: ${response.status}`);
 	const data = (await response.json()) as ModelsDevCatalog;
 	if (typeof data !== "object" || data === null || Array.isArray(data)) {
@@ -155,7 +170,11 @@ async function downloadRemoteCatalog(catalogBaseUrl: string): Promise<RemoteCata
 		byProvider.set(model.provider, list);
 	}
 	const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
-	return { byProvider, lastModified: Number.isNaN(lastModified) ? Date.now() : lastModified };
+	return {
+		byProvider,
+		lastModified: Number.isNaN(lastModified) ? Date.now() : lastModified,
+		etag: response.headers.get("etag") ?? undefined,
+	};
 }
 
 /** Whether a downloaded catalog is newer than the model data shipped with Atomic. */
@@ -226,7 +245,9 @@ export function withRemoteCatalog(
 
 			let catalog: RemoteCatalog;
 			try {
-				catalog = await loadRemoteCatalog(catalogBaseUrl, context.signal);
+				// Revalidate only a stored overlay: an ETag without its body cannot be reused on a 304.
+				const validator = stored?.etag && stored.models.length > 0 ? stored.etag : undefined;
+				catalog = await loadRemoteCatalog(catalogBaseUrl, context.signal, validator);
 			} catch (error) {
 				if (context.signal.aborted) return;
 				// The stored overlay stays; the next refresh after the interval tries again.
@@ -234,6 +255,10 @@ export function withRemoteCatalog(
 				throw error;
 			}
 			if (context.signal.aborted) return;
+			if (catalog.notModified && stored) {
+				await context.publish({ persist: { ...stored, checkedAt: Date.now() } });
+				return;
+			}
 			const entry: ModelsStoreEntry = {
 				models: [...(catalog.byProvider.get(provider.id) ?? [])].map((model) => ({
 					...model,
@@ -241,6 +266,7 @@ export function withRemoteCatalog(
 				})),
 				lastModified: catalog.lastModified,
 				checkedAt: Date.now(),
+				...(catalog.etag ? { etag: catalog.etag } : {}),
 			};
 			const published = remoteModels(entry, localGeneratedAt);
 			await context.publish({
