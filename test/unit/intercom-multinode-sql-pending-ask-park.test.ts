@@ -9,6 +9,7 @@ const { openNodeSqliteDatabase } = await import("@bastani/atomic/storage");
 const { borrowedDatabase } = await import("../../packages/intercom/broker/open-broker-state.js");
 const { openSqlPendingAskStore } = await import("../../packages/intercom/broker/sql-pending-ask-store.js");
 const { makeTempDirectory, removeTempDirectory } = await import("../helpers/runtime.js");
+const { interceptingDatabase } = await import("../helpers/intercepting-database.js");
 
 type SqliteDatabase = import("@bastani/atomic/storage").SqliteDatabase;
 
@@ -46,18 +47,16 @@ function failingAlter(database: SqliteDatabase, failure: () => Error | string, s
 	const alters: string[] = [];
 	return {
 		alters,
-		database: {
-			...borrowed,
-			all: (async (sql: string, ...params: never[]) =>
-				staleColumns && /table_info/i.test(sql) ? [] : borrowed.all(sql, ...params)) as SqliteDatabase["all"],
-			exec: async (sql: string) => {
+		database: interceptingDatabase(borrowed, {
+			all: async (sql, params, next) => (staleColumns && /table_info/i.test(sql) ? [] : next(sql, ...params)),
+			exec: async (sql, next) => {
 				if (sql.startsWith("ALTER TABLE")) {
 					alters.push(sql);
 					throw failure();
 				}
-				return borrowed.exec(sql);
+				return next(sql);
 			},
-		},
+		}),
 	};
 }
 
@@ -67,18 +66,21 @@ test("an older broker's table gains the park columns once, and its asks can be p
 	const borrowed = borrowedDatabase(database);
 	const alters: string[] = [];
 	const store = await openSqlPendingAskStore({
-		database: {
-			...borrowed,
-			exec: async (sql) => {
+		database: interceptingDatabase(borrowed, {
+			exec: async (sql, next) => {
 				if (sql.startsWith("ALTER TABLE")) alters.push(sql);
-				return borrowed.exec(sql);
+				return next(sql);
 			},
-		},
+		}),
 		prefix: "",
 	});
 	assert.deepEqual(alters, [
 		`ALTER TABLE ${TABLE} ADD COLUMN park_owner TEXT`,
 		`ALTER TABLE ${TABLE} ADD COLUMN park_key TEXT`,
+		// #4992: whether a reply to the ask is queued.
+		`ALTER TABLE ${TABLE} ADD COLUMN replied INTEGER`,
+		// #4992: when the ask's target ended, while its asker is owed a failure.
+		`ALTER TABLE ${TABLE} ADD COLUMN ended_at INTEGER`,
 	]);
 	assert.deepEqual(
 		await store.parkForTarget("child", { ownerSessionId: "owner", reservationKey: "released:worker" }),
@@ -106,7 +108,7 @@ test("a park column another broker added meanwhile is not an error, however the 
 		await openSqlPendingAskStore({ database, prefix: "" });
 		const wrapped = failingAlter(database, wording, true);
 		await openSqlPendingAskStore({ database: wrapped.database, prefix: "" });
-		assert.equal(wrapped.alters.length, 2);
+		assert.equal(wrapped.alters.length, 4);
 	}
 });
 

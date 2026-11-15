@@ -1162,6 +1162,7 @@ Events are streamed to stdout as JSON lines. Most events do not include an `id`;
 | `queue_update` | Pending steering/follow-up queue changed |
 | `compaction_start` | Verbatim line compaction begins |
 | `compaction_end` | Verbatim line compaction completes, including a background result applied at a turn boundary |
+| `compaction_usage` | One compaction model request returned usage |
 | `background_compaction` | Background compaction state changed |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
@@ -1380,6 +1381,14 @@ If overflow recovery exhausts the same-model compact-and-retry attempt, `compact
 A background compaction result applied at a turn boundary emits `compaction_end` with `"background": true` and no preceding `compaction_start`. When the last request used the prompt cache it also carries `"cacheMiss": {"expectedMissedTokens": 41000, "expectedMissedCost": 0.11}`, the cached prompt the next request re-bills.
 
 There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`.
+
+### compaction_usage
+
+Emitted once for every model request a compaction run makes: each planner request, classifier request, summary fallback request, and retry of one, for foreground and background runs, including a run that later fails or is cancelled. `usage` is that one request's usage, so summing these events counts every compaction request exactly once. `compaction_end.result.usage` is the total of a successful run's requests; do not add both.
+
+```json
+{"type": "compaction_usage", "reason": "threshold", "usage": {"input": 5000, "output": 20, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 5020, "cost": {"input": 0.5, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0.5}}}
+```
 
 ### background_compaction
 

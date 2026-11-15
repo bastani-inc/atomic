@@ -30,6 +30,7 @@ import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { resolveDurableEntry } from "./resume-runtime.js";
 import { durableRunResult, RUN_RESULT_CHECKPOINT_NAME } from "./run-result.js";
 import { priorRunElapsedMs, RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME } from "./run-timing.js";
+import { FORK_POINT_CHECKPOINT_SUFFIX } from "./stage-topology.js";
 import { isSubscriptionCheckpointHash } from "./subscription-records.js";
 import { WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME } from "./workflow-heartbeat-anchor.js";
 import { stageWorktreeSnapshot } from "./worktree-snapshots.js";
@@ -43,6 +44,7 @@ function isReservedRunCheckpointHash(argsHash: string): boolean {
 	return (
 		[RUN_TIMING_CHECKPOINT_NAME, RUN_USAGE_CHECKPOINT_NAME, RUN_RESULT_CHECKPOINT_NAME].includes(argsHash) ||
 		argsHash === WORKFLOW_HEARTBEAT_ANCHOR_CHECKPOINT_NAME ||
+		argsHash.endsWith(FORK_POINT_CHECKPOINT_SUFFIX) ||
 		isSubscriptionCheckpointHash(argsHash)
 	);
 }
