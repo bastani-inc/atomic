@@ -404,16 +404,17 @@ export class ShardedRunJournal implements RunJournal {
 					new Error(`Journal shard ${reserved.shard.path} cannot create a run with its events in one transaction`),
 				);
 			const created = await shard.createRunWithEvents(recorded, seeded);
+			let status: string | undefined;
+			for (const seed of seeded) status = this.statusOf(seed.event) ?? status;
+			// The catalog takes the status the seeded events leave the run in, also for a retry that finds the run (#5168).
 			if (reserved.status === undefined)
 				await this.catalog.place({
 					runId: header.runId,
 					name: header.name,
 					cwd: header.cwd,
-					status: header.status,
+					status: status ?? header.status,
 				});
-			let status: string | undefined;
-			for (const seed of seeded) status = this.statusOf(seed.event) ?? status;
-			if (created === "created" && status !== undefined) await this.recordStatus(header.runId, status);
+			else if (created === "created" && status !== undefined) await this.recordStatus(header.runId, status);
 			return created;
 		});
 	}
