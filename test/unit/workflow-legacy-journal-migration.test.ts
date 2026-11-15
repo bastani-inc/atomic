@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "vitest";
 import type { SqliteDatabase } from "../../packages/coding-agent/src/core/storage/database.js";
+import { dialectOf } from "../../packages/coding-agent/src/core/storage/dialect.js";
 import { StorageUnavailableError } from "../../packages/coding-agent/src/core/storage/errors.js";
 import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
 import { MemorySessionStore } from "../../packages/coding-agent/src/core/storage/session/memory-session-store.js";
@@ -117,6 +118,26 @@ test("a storage failure while reading the legacy tables fails the open instead o
 	}) as SqliteDatabase;
 	try {
 		await assert.rejects(SqlRunJournal.open(failing), (error) => error === failure);
+	} finally {
+		await database.close();
+	}
+});
+
+test("a database with a migration ledger, as Postgres keeps, is never read for pre-0.9.38 runs (#5065)", async () => {
+	const path = join(tempDirectory(), "journal.sqlite");
+	writeLegacyJournal(path);
+	const database = await openNodeSqliteDatabase(path);
+	const ledgered = new Proxy(database, {
+		get(target, property, receiver) {
+			if (property === "dialect") return { ...dialectOf(target), versionedMigrations: true };
+			const value = Reflect.get(target, property, receiver);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	}) as SqliteDatabase;
+	try {
+		const journal = await SqlRunJournal.open(ledgered);
+		assert.deepEqual(await journal.listRuns({ cwd: legacyRun.cwd }), []);
+		await journal.close();
 	} finally {
 		await database.close();
 	}

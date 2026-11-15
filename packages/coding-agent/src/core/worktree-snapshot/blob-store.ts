@@ -818,7 +818,7 @@ async function readSourceStates(
 		.map((source) => {
 			const row = progress.get(source.name);
 			// A source whose triggers an older build installed is indexed again by collection, as after an upgrade.
-			const foreign = row !== undefined && source.version !== undefined && !progress.has(source.version);
+			const foreign = source.version !== undefined && !progress.has(source.version);
 			return {
 				source,
 				installed:

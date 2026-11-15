@@ -89,6 +89,21 @@ async function tables(database: SqliteDatabase): Promise<string[]> {
 	return rows.map((row) => row.name);
 }
 
+test("a domain that accepts newer versions runs nothing on a newer recorded version and reports it (#5065)", async () => {
+	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, []));
+	try {
+		await applyStorageMigrations(database, "presence", [tableStep(1, "one"), tableStep(2, "two")]);
+		assert.deepEqual(
+			await applyStorageMigrations(database, "presence", [tableStep(1, "one")], { acceptNewer: true }),
+			{ applied: [], version: 2 },
+		);
+		const versions = await database.all("SELECT version FROM atomic_migrations ORDER BY version");
+		assert.deepEqual(versions, [{ version: 1 }, { version: 2 }]);
+	} finally {
+		await database.close();
+	}
+});
+
 test("a versioned store applies only missing steps, once each, and records them (#4793)", async () => {
 	const begun: SqliteDriverTransactionOptions[] = [];
 	const database = createSqliteDatabase(recordingDriver(path, ledgerDialect, begun));

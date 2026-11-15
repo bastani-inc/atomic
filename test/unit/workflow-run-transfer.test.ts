@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { defaultJournalStoreDirectory } from "@bastani/atomic/storage";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { parseStorageCommand, runStorageCommand } from "../../packages/coding-agent/src/cli/storage-command.js";
@@ -427,6 +428,25 @@ test("export and import use a configured SQLite journal file (#4716)", async () 
 	closing.push(() => restored.close());
 	assert.equal((await restored.getRun(RUN_A))?.status, "completed");
 	assert.equal((await entries(restored, RUN_A)).length, 3);
+});
+
+test("export reads a journal an older build left at schema version 1 and skips one of a newer version (#5065)", async () => {
+	const path = join(root, "a", "custom.sqlite");
+	vi.stubEnv("ATOMIC_WORKFLOW_JOURNAL_PATH", path);
+	const journal = await openSqlRunJournal(path);
+	await record(journal, { id: RUN_A, status: "completed", createdAt: 1_000 });
+	await journal.close();
+	const meta = new DatabaseSync(path);
+	try {
+		meta.exec("UPDATE wf_meta SET schema_version = 1");
+		assert.equal((await storage(machine("a"), ["export", exports])).code, 0);
+		assert.deepEqual(Object.keys(files(runs)), [`${RUN_A}.jsonl`]);
+		meta.exec("UPDATE wf_meta SET schema_version = 3");
+		const newer = await storage(machine("a"), ["export", join(root, "newer")]);
+		assert.match([...newer.out, ...newer.err].join("\n"), /unsupported journal schema version 3/);
+	} finally {
+		meta.close();
+	}
 });
 
 test("an interrupted run exported from one machine resumes to completion on another (#4716)", async () => {
