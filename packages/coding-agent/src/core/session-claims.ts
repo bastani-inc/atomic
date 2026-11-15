@@ -130,11 +130,11 @@ function stillDead(claim: ReturnType<typeof readClaim>, token: string | undefine
 }
 
 /**
- * Removes the claim at `path` when it is still the one with `token` that was found dead. Takeovers take turns under
- * the takeover mutex, an advisory lock the kernel releases when its holder dies (#5193), and the whole removal runs
- * while it is held: the claim is judged again inside it and moved aside, and removed only when the moved record is the
- * dead one. A claim moved that is not is linked back only while no claim is in its place, never replacing one. A mutex
- * held elsewhere is contention: the caller looks again.
+ * Removes the claim at `path` when it is still the one with `token` that was found dead (#5179). Takeovers take turns
+ * under the takeover mutex, an advisory lock the kernel releases when its holder dies (#5193), and the whole removal
+ * runs while it is held: the claim is judged again inside it and moved aside, and removed only when the moved record is
+ * the dead one. A claim moved that is not is linked back only while no claim is in its place, never replacing one. A
+ * mutex held elsewhere is contention: the caller looks again.
  */
 function removeDeadClaim(path: string, token: string | undefined): void {
 	const mutex = takeTakeoverMutex(path, TAKEOVER_WAIT_MS);

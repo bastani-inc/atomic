@@ -70,7 +70,8 @@ describe("globs anchored at the filesystem root (#4707)", () => {
 	it("searches the drive or UNC share root for a root-anchored Windows find glob (#4707)", async () => {
 		const searched: string[] = [];
 		const operations: FindOperations = {
-			exists: () => true,
+			// Only the roots exist: a path that exists literally is used exactly, glob characters and all (#5177).
+			exists: (path) => !/[*?[{]/.test(path),
 			stat: () => ({ isFile: false, isDirectory: true }),
 			glob: (_pattern, cwd) => {
 				searched.push(cwd);
