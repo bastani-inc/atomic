@@ -73,6 +73,27 @@ test("a PostgreSQL prefix leaves room for the longest identifier Atomic creates 
 	assert.throws(() => validateStoragePrefix("1".repeat(40), "postgres"), { reason: "pattern" });
 });
 
+test("a storage prefix error keeps its reason, limit and message across processes (#5067)", () => {
+	for (const error of [
+		new StoragePrefixError("1x", "pattern"),
+		new StoragePrefixError("sqlite_", "reserved"),
+		new StoragePrefixError("p".repeat(30), "too-long", 17),
+	]) {
+		const copy = rehydrateStorageError(serializeStorageError(error));
+		assert.ok(copy instanceof StoragePrefixError);
+		assert.equal(copy.prefix, error.prefix);
+		assert.equal(copy.reason, error.reason);
+		assert.equal(copy.maxLength, error.maxLength);
+		assert.equal(copy.message, error.message);
+	}
+	assert.equal(new StoragePrefixError("1x", "pattern").message, "Invalid storage prefix: pattern");
+	assert.equal(new StoragePrefixError("1x", "pattern").maxLength, undefined);
+	assert.equal(
+		new StoragePrefixError("p".repeat(30), "too-long", 17).message,
+		"Invalid storage prefix: too-long (PostgreSQL allows at most 17 characters)",
+	);
+});
+
 test("storage identifier rendering keeps fixed domains and immutable caller maps", () => {
 	const tables = { meta: "meta", runs: "runs", events: "events", leases: "leases" } as const;
 	assert.deepEqual(renderStorageIdentifiers("journal", tables), {

@@ -6,7 +6,6 @@ import type { Jiti, JitiResolveOptions } from "jiti";
 import { createSessionCwdMatcher } from "../../utils/canonical-path.ts";
 import { abortSnapshotCollectionsOn, runningSnapshotCollectionsOn } from "../worktree-snapshot/blob-store.ts";
 import type { SqliteDatabase, SqliteValue, StorageDescriptor } from "./database.js";
-import { dialectOf } from "./dialect.js";
 import {
 	StorageAdapterLoadError,
 	StorageConfigError,
@@ -509,12 +508,7 @@ export const StorageProvider: new (journals?: JournalFactories) => StorageProvid
 			if (factories.jsonl) return withIdempotentClose(await factories.jsonl(selection.dir));
 			throw new StorageConfigError("sdk", "dir", "adapter-domain-unsupported");
 		}
-		// A database selection names its backend, so a prefix too long for it is refused here (#5067); an adapter's
-		// stores refuse it once its database is open, before they create anything.
-		validateStoragePrefix(
-			selection.prefix,
-			selection.kind === "database" ? dialectOf(selection.database).name : undefined,
-		);
+		validateStoragePrefix(selection.prefix);
 		let openDatabase: () => Promise<SqliteDatabase>;
 		if (selection.kind === "adapter") {
 			const adapter = await loadStorageAdapter(selection.module, context, factories.hostModules);
