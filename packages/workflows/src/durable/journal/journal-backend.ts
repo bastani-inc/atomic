@@ -1033,7 +1033,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
-		releasedModelOwner?: string,
+		releasedModelOwner?: string | null,
 	): Promise<boolean> {
 		return await this.serialize(runId, () =>
 			this.transition(
@@ -1056,7 +1056,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
-		releasedModelOwner?: string,
+		releasedModelOwner?: string | null,
 	): Operation<boolean> {
 		yield* this.refresh(runId);
 		const current = this.projection.getWorkflow(runId);
@@ -1066,6 +1066,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			(expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
+		// #5167: a pause leaves the run adoptable when its owner cannot resume it: a released run stays released, and a
+		// running run whose owner's process died (read before this transition takes its expired lease) is released by it.
+		const release =
+			releasedModelOwner !== undefined || modelOwner !== undefined || status !== "paused"
+				? (releasedModelOwner ?? undefined)
+				: current.status === "paused"
+					? current.releasedModelOwner
+					: current.status === "running" && current.modelOwner !== undefined && (yield* this.ownerDied(runId))
+						? current.modelOwner
+						: undefined;
 		const draft = yield* this.draft(runId);
 		const acquired = draft.getWorkflow(runId);
 		if (
@@ -1082,12 +1092,12 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 				{
 					...handle,
 					...(modelOwner !== undefined ? { modelOwner } : {}),
-					...(releasedModelOwner !== undefined ? { releasedModelOwner } : {}),
+					...(release !== undefined ? { releasedModelOwner: release } : {}),
 				},
 				E.statusChanged,
 				seq,
 			);
-			if (releasedModelOwner !== undefined) yield* this.release(runId);
+			if (release !== undefined) yield* this.release(runId);
 			return true;
 		} catch (error) {
 			if (error instanceof JournalCasConflictError) {
@@ -1096,6 +1106,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			}
 			throw error;
 		}
+	}
+	/** Whether the run's last executor lease was left unreleased by another process and has expired: its owner died. */
+	private *ownerDied(runId: string): Operation<boolean> {
+		if (this.leases.has(runId)) return false;
+		const lease = yield* invoke(() => this.journal.leaseState(runId));
+		return (
+			lease !== undefined &&
+			lease.holderId !== this.holderId &&
+			isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs)
+		);
 	}
 	private *promptChange<T>(
 		runId: string,

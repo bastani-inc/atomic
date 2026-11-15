@@ -444,7 +444,10 @@ export interface DurableWorkflowBackend {
 	/**
 	 * Atomically update status only when the authoritative status is expected.
 	 * `modelOwner` adopts the run for a new session. `releasedModelOwner` durably records that
-	 * the session owning the run was disposed; every transition without it clears that record.
+	 * the session owning the run was disposed, so another session may adopt it; `null` clears that record.
+	 * Without either, a run that stays paused keeps its release, and a running run whose owner's process died
+	 * (its executor's lease expired unreleased) is released by that owner as it is paused (#5167). A run that
+	 * leaves paused, or is handed to a new `modelOwner`, loses its release.
 	 */
 	commitWorkflowStatusTransition(
 		workflowId: string,
@@ -454,7 +457,7 @@ export interface DurableWorkflowBackend {
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
-		releasedModelOwner?: string,
+		releasedModelOwner?: string | null,
 	): Promise<boolean>;
 	/** Atomically adjust unresolved UI prompt count, clamped at zero. */
 	commitPendingPromptAdjustment(workflowId: string, delta: number): Promise<void>;
