@@ -444,6 +444,10 @@ class IntercomBroker {
     if (process.platform !== "win32") chmodSync(INTERCOM_DIR, 0o700);
     this.server = net.createServer(this.handleConnection.bind(this));
     this.pendingQuestions.failThroughOwnerWhen((question) => this.releasedAskerReplies.hasOwnedRoute(question));
+    // #4997: an ask between two top-level sessions may follow either of them to another broker, even after a crash.
+    this.pendingQuestions.movableWhen((question) =>
+      [question.senderSessionId, question.targetSessionId].every((id) => this.isTopLevel(this.sessions.get(id))),
+    );
     this.pendingQuestions.failToConnectedAskerWhen((question, returnAddress) =>
       this.isConnectedAs(question.senderSessionId, returnAddress),
     );
@@ -2980,6 +2984,9 @@ class IntercomBroker {
               this.multiNode.restoringReleased(reservation.capability, reservation.ownerSessionId, reservation.gone);
             }
           }
+          // #4997: the asks a crashed or stopped broker left here between two top-level sessions move to the shared
+          // state, as an away session's do, since either session may come back on another broker.
+          this.multiNode.publishAwayRoutes(this.pendingQuestions.movableDormant(), "adopted");
           if (this.shuttingDown) await this.multiNode.close().catch(() => {});
           this.multiNodeReason = undefined;
           const { adapter, prefix } = describeSharedStorage(setting);
@@ -3224,6 +3231,10 @@ class IntercomBroker {
     this.dispatchHeldSends(this.departedChildren.adoptOrphans(ownerSessionId, owner.registrationReturnAddress));
   }
 
+  private isTopLevel(session: ConnectedSession | undefined): boolean {
+    return session !== undefined && session.supervisorId === undefined && session.hostedBy === undefined;
+  }
+
   /**
    * #4751: asks wait here for their away peer. #4997: with multi-node routing that peer may come back on another
    * broker, so the asks between two top-level sessions also move to the shared state, which either broker answers.
@@ -3231,13 +3242,11 @@ class IntercomBroker {
   private keepAwayRoutes(departed: ConnectedSession, questions: readonly PendingQuestion[], senderReturnAddress?: string): void {
     this.pendingQuestions.keepDormant(questions, senderReturnAddress);
     if (this.multiNode === undefined) return;
-    const topLevel = (session: ConnectedSession | undefined) =>
-      session !== undefined && session.supervisorId === undefined && session.hostedBy === undefined;
     // An ask whose other peer is away too, or is a subagent, stays this broker's alone, as before.
-    const movable = topLevel(departed)
+    const movable = this.isTopLevel(departed)
       ? questions.filter((question) =>
           [question.senderSessionId, question.targetSessionId].every(
-            (id) => id === departed.info.id || topLevel(this.sessions.get(id)),
+            (id) => id === departed.info.id || this.isTopLevel(this.sessions.get(id)),
           ),
         )
       : [];

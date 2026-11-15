@@ -91,6 +91,12 @@ export class AwayAsks {
 		const columns = this.statement("PRAGMA table_info(away_questions)").all();
 		if (!columns.some((column) => column.name === "target_return_address"))
 			this.database.exec("ALTER TABLE away_questions ADD COLUMN target_return_address TEXT NOT NULL DEFAULT ''");
+		// #4997: added later, the same way: whether an ask's peers were both top-level sessions, so it may move brokers.
+		for (const table of ["live_questions", "away_questions"]) {
+			const tableColumns = this.statement(`PRAGMA table_info(${table})`).all();
+			if (!tableColumns.some((column) => column.name === "movable"))
+				this.database.exec(`ALTER TABLE ${table} ADD COLUMN movable INTEGER NOT NULL DEFAULT 0`);
+		}
 		this.adoptLiveFromPreviousBrokers();
 		this.purge();
 	}
@@ -109,7 +115,7 @@ export class AwayAsks {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			this.statement(
-				"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at) SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, recorded_at FROM live_questions WHERE broker_instance <> ?",
+				"INSERT OR REPLACE INTO away_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, kept_at, movable) SELECT message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, recorded_at, movable FROM live_questions WHERE broker_instance <> ?",
 			).run(this.instance);
 			this.statement("DELETE FROM live_questions WHERE broker_instance <> ?").run(this.instance);
 			this.statement(
@@ -127,9 +133,14 @@ export class AwayAsks {
 	 * #4829: a live ask's route, written when it is recorded so it outlives this broker (a restart or a crash), with the
 	 * return addresses its asker and recipient registered with. Only an asker that can prove itself is written.
 	 */
-	recordLive(question: PendingQuestion, senderReturnAddress: string, targetReturnAddress: string): void {
+	recordLive(
+		question: PendingQuestion,
+		senderReturnAddress: string,
+		targetReturnAddress: string,
+		movable = false,
+	): void {
 		this.statement(
-			"INSERT OR REPLACE INTO live_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, broker_instance, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO live_questions (message_id, sender_session_id, target_session_id, sender_return_address, target_return_address, broker_instance, recorded_at, movable) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		).run(
 			question.messageId,
 			question.senderSessionId,
@@ -138,7 +149,25 @@ export class AwayAsks {
 			targetReturnAddress,
 			this.instance,
 			this.now(),
+			movable ? 1 : 0,
 		);
+	}
+
+	/**
+	 * #4997: the asks a broker that is gone left behind between two top-level sessions. Either may come back on another
+	 * broker, so with multi-node routing they move to the shared state, as an away session's asks do.
+	 */
+	movable(): PendingQuestion[] {
+		this.adoptLiveFromPreviousBrokers();
+		return this.statement(
+			"SELECT message_id, sender_session_id, target_session_id FROM away_questions WHERE movable = 1 ORDER BY kept_at",
+		)
+			.all()
+			.map((row) => ({
+				messageId: String(row.message_id),
+				senderSessionId: String(row.sender_session_id),
+				targetSessionId: String(row.target_session_id),
+			}));
 	}
 
 	/** The live route was answered, failed, or moved on: it no longer outlives this broker. */

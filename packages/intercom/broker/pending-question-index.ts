@@ -31,7 +31,24 @@ export class PendingQuestionIndex {
   writeLive(question: PendingQuestion): void {
     const senderReturnAddress = this.returnAddressOf(question.senderSessionId);
     if (this.away === undefined || senderReturnAddress === undefined || senderReturnAddress === "") return;
-    this.away.recordLive(question, senderReturnAddress, this.returnAddressOf(question.targetSessionId) ?? "");
+    this.away.recordLive(
+      question,
+      senderReturnAddress,
+      this.returnAddressOf(question.targetSessionId) ?? "",
+      this.isMovable(question),
+    );
+  }
+
+  private isMovable: (question: PendingQuestion) => boolean = () => false;
+
+  /** #4997: a live route whose peers may each come back on another broker, which it then moves to with them. */
+  movableWhen(check: (question: PendingQuestion) => boolean): void {
+    this.isMovable = check;
+  }
+
+  /** #4997: the asks a broker that is gone left between two sessions that may each come back on another broker. */
+  movableDormant(): PendingQuestion[] {
+    return this.away?.movable() ?? [];
   }
 
   forgetLive(questions: readonly PendingQuestion[]): void {
