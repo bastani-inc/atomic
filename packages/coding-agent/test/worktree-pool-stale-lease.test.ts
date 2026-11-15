@@ -89,13 +89,23 @@ const recordText = (snapshot: WorktreeSnapshot, n: number) =>
 const recordOf = (snapshot: WorktreeSnapshot, n: number) => JSON.parse(recordText(snapshot, n)) as PoolSlotRecord;
 const ownerOf = (manager: SessionManager) => ({ kind: "session" as const, id: manager.getSessionId() });
 
-/** Dates the lease lock of process `pid` on `snapshot`'s slot 0 back `ageMs`: when its holder last refreshed it. */
-function ageLease(snapshot: WorktreeSnapshot, pid: number, ageMs: number): string {
-	const name = readdirSync(poolDirectory(snapshot)).find(
-		(entry) => entry.startsWith(`0.json.${pid}-`) && entry.endsWith(".lease.lock"),
-	);
+/** A host other than this one, as a lease names it: a holder there cannot be seen running from here. */
+const OTHER_HOST = "ffffffffffff";
+
+/**
+ * Dates the lease lock of process `pid` on `snapshot`'s slot 0 back `ageMs`: when its holder last refreshed it. With
+ * `elsewhere`, the lease names another host, as when the pool is on a disk several machines share.
+ */
+function ageLease(snapshot: WorktreeSnapshot, pid: number, ageMs: number, elsewhere = false): string {
+	const lease = new RegExp(`^0\\.json\\.(?:[0-9a-f]{12}-)?(${pid}-[0-9a-f]{8}\\.lease\\.lock)$`);
+	const name = readdirSync(poolDirectory(snapshot)).find((entry) => lease.test(entry));
 	assert.ok(name, `process ${pid} leases slot 0`);
-	const lock = join(poolDirectory(snapshot), name);
+	let lock = join(poolDirectory(snapshot), name);
+	if (elsewhere) {
+		const moved = join(poolDirectory(snapshot), `0.json.${OTHER_HOST}-${lease.exec(name)![1]}`);
+		renameSync(lock, moved);
+		lock = moved;
+	}
 	const past = new Date(Date.now() - ageMs);
 	utimesSync(lock, past, past);
 	return lock;
@@ -194,15 +204,15 @@ const posixSignals = process.platform === "win32";
 
 describe("a pooled worktree whose holder stalled (#4830)", () => {
 	test.skipIf(posixSignals)(
-		"a holder stalled past its lease loses the slot to a claim, never writes its record back, and restores fresh (#4830)",
+		"a holder on another host stalled past its lease loses the slot to a claim, never writes its record back, and restores fresh (#4830)",
 		async () => {
 			const { snapshot, clone } = await recordedSnapshot();
 			const s1 = await s1InIdleSlot(snapshot, clone);
 			const holder = await holderChild(slot(snapshot, 0), ownerOf(s1));
 			assert.equal(holder.first, "held");
-			// S1's process stalls past the stale time and the grace period, and its lease is not refreshed meanwhile.
+			// S1's process, on a host sharing the pool, stalls past the stale time and the grace period.
 			holder.child.kill("SIGSTOP");
-			ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
+			ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000, true);
 
 			const s2 = await sessionOf(clone, snapshot);
 			const restored = await resumeSessionWorktree(s2, pool());
@@ -232,14 +242,14 @@ describe("a pooled worktree whose holder stalled (#4830)", () => {
 	);
 
 	test.skipIf(posixSignals)(
-		"a lease that went stale within the grace period keeps its slot from a claim, and its holder releases it (#4830)",
+		"a lease on another host that went stale within the grace period keeps its slot from a claim, and its holder releases it (#4830)",
 		async () => {
 			const { snapshot, clone } = await recordedSnapshot();
 			const s1 = await s1InIdleSlot(snapshot, clone);
 			const holder = await holderChild(slot(snapshot, 0), ownerOf(s1));
 			assert.equal(holder.first, "held");
 			holder.child.kill("SIGSTOP");
-			const lease = ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
+			const lease = ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2, true);
 
 			const s2 = await sessionOf(clone, snapshot);
 			const restored = await resumeSessionWorktree(s2, pool());
@@ -257,6 +267,60 @@ describe("a pooled worktree whose holder stalled (#4830)", () => {
 		CHILD_PROCESS_TIMEOUT_MS,
 	);
 
+	test.skipIf(posixSignals)(
+		"a holder on this host stalled past stale and grace keeps its slot while its process runs, and releases it (#4830)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const s1 = await s1InIdleSlot(snapshot, clone);
+			const holder = await holderChild(slot(snapshot, 0), ownerOf(s1));
+			assert.equal(holder.first, "held");
+			holder.child.kill("SIGSTOP");
+			const lease = ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
+
+			const s2 = await sessionOf(clone, snapshot);
+			const restored = await resumeSessionWorktree(s2, pool());
+			assert.equal(restored.status === "restored" && restored.mappings[0]!.to, slot(snapshot, 1));
+			assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s1));
+			assert.equal(existsSync(lease), true);
+			assert.deepEqual(await pooledWorktreeHolder(storeDir(), slot(snapshot, 0)), {
+				owner: ownerOf(s1),
+				held: true,
+			});
+
+			holder.child.kill("SIGCONT");
+			assert.equal(await holder.send("release"), "release true");
+			assert.equal(recordOf(snapshot, 0).lastState.snapshotId, "s1-later");
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
+	test(
+		"a holder on this host that stopped keeps its slot through the grace period, then a claim takes it (#4830)",
+		async () => {
+			const { snapshot, clone } = await recordedSnapshot();
+			const s1 = await s1InIdleSlot(snapshot, clone);
+			const holder = await holderChild(slot(snapshot, 0), ownerOf(s1));
+			assert.equal(holder.first, "held");
+			const exited = new Promise((resolve) => holder.child.once("exit", resolve));
+			holder.child.kill("SIGKILL");
+			await exited;
+			ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS / 2);
+
+			const s2 = await sessionOf(clone, snapshot);
+			const kept = await resumeSessionWorktree(s2, pool());
+			assert.equal(kept.status === "restored" && kept.mappings[0]!.to, slot(snapshot, 1));
+			assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s1));
+
+			const lease = ageLease(snapshot, holder.child.pid!, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
+			const s3 = await sessionOf(clone, snapshot);
+			const claimed = await resumeSessionWorktree(s3, pool());
+			assert.equal(claimed.status === "restored" && claimed.mappings[0]!.to, slot(snapshot, 0));
+			assert.deepEqual(recordOf(snapshot, 0).holder, ownerOf(s3));
+			assert.equal(existsSync(lease), false);
+		},
+		CHILD_PROCESS_TIMEOUT_MS,
+	);
+
 	test(
 		"a session whose slot was claimed while it stalled records no snapshot of it, warns, and restores fresh (#4830)",
 		async () => {
@@ -265,8 +329,8 @@ describe("a pooled worktree whose holder stalled (#4830)", () => {
 			const result = await resumeSessionWorktree(s1, pool());
 			const root = slot(snapshot, 0);
 			assert.equal(result.status === "restored" && result.mappings[0]!.to, root);
-			// This process stalled: its lease of slot 0 was last refreshed past the stale time and the grace period.
-			ageLease(snapshot, process.pid, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000);
+			// This process stalled, as another host sees it: its lease was last refreshed past the stale time and the grace.
+			ageLease(snapshot, process.pid, LEASE_STALE_MS + LEASE_CLAIM_GRACE_MS + 30_000, true);
 			const s2 = { kind: "session" as const, id: "session-s2" };
 			const claimer = await claimerChild(snapshot, s2);
 			assert.equal(claimer.first, root);
