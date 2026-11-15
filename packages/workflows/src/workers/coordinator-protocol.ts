@@ -7,6 +7,7 @@ import { rehydrateError, type SerializedError, serializeError } from "../shared/
 import type { PoolCoordinationStats, RunSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableObject } from "../shared/types.js";
 import type { WorkerDefinitionSource } from "./definitions.js";
+import type { FleetRateLimits } from "./fleet-rate-types.js";
 import type { PoolDurableJournal } from "./pool-journal.js";
 import type { WorkerDeliver, WorkerRecipient } from "./protocol.js";
 import type { AdmissionConfiguration } from "./resource-admission.js";
@@ -67,6 +68,10 @@ export interface SharedPoolCoordination {
 	readonly host: string;
 	/** Bound work that no capable live host claims within this window fails, typed (the root's coordinator only). */
 	readonly claimWindowMs: number;
+	/** The root's fleet-wide model rate limits (`workers.rateLimits`, #4768). */
+	readonly rateLimits?: FleetRateLimits;
+	/** Whether 429 cooldowns go to every host through the journal (`workers.shareCooldowns`, #4768). */
+	readonly shareCooldowns?: boolean;
 }
 
 interface PoolCoordinatorCommonOptions {

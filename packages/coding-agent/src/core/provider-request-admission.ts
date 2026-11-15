@@ -7,6 +7,7 @@ import {
 	markProviderRateLimitObserved,
 	type ProviderLimitScope,
 	providerLimitScope,
+	providerRequestGate,
 	recordProviderRateLimit,
 	recordProviderRetryHint,
 	recordProviderSuccess,
@@ -94,7 +95,10 @@ async function waitForAdmission(provider: string, model: string, signal?: AbortS
 	while (true) {
 		signal?.throwIfAborted();
 		const delay = tryAdmitProviderRequest(provider, model);
-		if (delay === 0) return;
+		if (delay === 0) {
+			await providerRequestGate()?.(provider, model, signal);
+			return;
+		}
 		await sleepForAdmission(Math.min(delay, 60_000), signal);
 	}
 }

@@ -33,7 +33,16 @@ interface ProviderLimitState {
 	readonly observedFailures: WeakMap<object, ProviderLimitScope>;
 	/** Listeners told when this process records or extends a limit; absent on state created by an older copy. */
 	observers?: Set<(observation: ProviderRateLimitObservation) => void>;
+	/** Waits for a fleet-wide token before each request; absent on state created by an older copy, or when none is set. */
+	gate?: ProviderRequestGate;
 }
+
+/**
+ * Resolves once a request to `provider`'s `model` may start under a limit kept outside this process, such as a worker
+ * pool's fleet-wide rate limit (#4768); rejects only when `signal` aborts. Called after this process's own cooldowns
+ * and budgets admit the request.
+ */
+export type ProviderRequestGate = (provider: string, model: string, signal?: AbortSignal) => Promise<void>;
 
 /**
  * A limit one process recorded, in a form other processes on the same host can apply: the provider, the
@@ -146,6 +155,16 @@ export function tryAdmitProviderRequest(provider: string, model?: string): numbe
 		if (limit?.budget) limit.requests.push(Date.now());
 	}
 	return delay;
+}
+
+/** Sets the gate every request of this process waits on after its own limits, or removes it. */
+export function setProviderRequestGate(gate: ProviderRequestGate | undefined): void {
+	state.gate = gate;
+}
+
+/** The gate set with {@link setProviderRequestGate}, if any. */
+export function providerRequestGate(): ProviderRequestGate | undefined {
+	return state.gate;
 }
 
 export function isProviderRateLimit(error: unknown): boolean {
