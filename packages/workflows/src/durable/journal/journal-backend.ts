@@ -934,6 +934,37 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
 		);
 	}
+	commitAdoptionRollback(
+		runId: string,
+		adopter: string,
+		status: DurableWorkflowStatus,
+		modelOwner: string | undefined,
+		releasedModelOwner: string | undefined,
+	): Promise<boolean> {
+		return this.serialize(runId, () => this.rollBackAdoption(runId, adopter, status, modelOwner, releasedModelOwner));
+	}
+	private *rollBackAdoption(
+		runId: string,
+		adopter: string,
+		status: DurableWorkflowStatus,
+		modelOwner: string | undefined,
+		releasedModelOwner: string | undefined,
+	): Operation<boolean> {
+		yield* this.refresh(runId);
+		const current = this.projection.getWorkflow(runId);
+		if (current === undefined || current.modelOwner !== adopter) return false;
+		if (current.status !== "running" && current.status !== "paused") return false;
+		return yield* this.transition(
+			runId,
+			[current.status],
+			current.status === "running" ? status : current.status,
+			undefined,
+			undefined,
+			current.updatedAt,
+			modelOwner,
+			releasedModelOwner,
+		);
+	}
 	commitClaimedWorkflowRegistration(
 		input: WorkflowRegistrationInput,
 		modelOwner: string | undefined,

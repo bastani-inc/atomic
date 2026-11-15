@@ -387,6 +387,18 @@ async function resumeDurableWorkflowClaimed(
 	 * session that released it even when a write landed meanwhile, which it keeps (#5149).
 	 */
 	const rollbackStartup = async (onRestored?: () => void, restoreOwner = false): Promise<boolean> => {
+		// #5149: an aborted adoption is undone field by field, keeping whatever another write set since the claim.
+		if (adopting && restoreOwner && requestedOwner !== undefined && backend.commitAdoptionRollback !== undefined) {
+			const restored = await backend.commitAdoptionRollback(
+				resolved.workflowId,
+				requestedOwner,
+				handle.status,
+				handle.modelOwner,
+				handle.releasedModelOwner,
+			);
+			if (restored) onRestored?.();
+			return restored;
+		}
 		if (adopting) {
 			const current = backend.getWorkflow(resolved.workflowId);
 			if (current === undefined || current.modelOwner !== requestedOwner) return false;
@@ -538,7 +550,10 @@ async function resumeDurableWorkflowClaimed(
 		await rollbackStartup(() => {
 			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
 		}, deps.signal?.aborted === true);
-		if (deps.signal?.aborted === true) throw deps.signal.reason;
+		if (deps.signal?.aborted === true) {
+			if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
+			throw deps.signal.reason;
+		}
 		return {
 			ok: false,
 			reason: "startup_failed",
@@ -575,7 +590,11 @@ async function resumeDurableWorkflowClaimed(
 			if (adopting) restoreSnapshot();
 			else if (sourceSnapshot !== undefined) deps.baseRunOpts.store?.recordRunStart(sourceSnapshot);
 		}, aborted);
-		if (aborted) throw deps.signal?.reason;
+		if (aborted) {
+			// #5149: the executor stopped, so this session keeps no run of it, whatever became of the durable rollback.
+			if (adopting) restoreSnapshot();
+			throw deps.signal?.reason;
+		}
 		const drift = findWorkspaceError(admission.error, isWorkspaceDriftError);
 		if (drift !== undefined) throw drift;
 		const resumeFailure = findResumeError(admission.error);

@@ -310,6 +310,18 @@ export interface DurableWorkflowBackend {
 		handle: WorkflowRegistrationInput,
 		modelOwner: string | undefined,
 	): Promise<boolean>;
+	/**
+	 * Undo an aborted adoption by `adopter`, merging into whatever was written since: only while `adopter` still owns
+	 * the run, the run goes back to `modelOwner` and `releasedModelOwner`, and back to `status` if it is still `running`
+	 * from the adoption. A pause, its pending prompts and its resumability stay. False when another owner has it.
+	 */
+	commitAdoptionRollback?(
+		workflowId: string,
+		adopter: string,
+		status: DurableWorkflowStatus,
+		modelOwner: string | undefined,
+		releasedModelOwner: string | undefined,
+	): Promise<boolean>;
 	/** Persist one logical run's pending-stage transition under its durable owner. */
 	persistPendingStageMessages(
 		workflowId: string,

@@ -182,9 +182,13 @@ test("aborted adoption claim retains newer running metadata without launching (#
 	const controlled = f.backend.getWorkflow(f.id);
 	release.resolve();
 	await settled.promise;
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	assert.equal(f.backend.getWorkflow(f.id), controlled);
-	assert.equal(f.backend.getWorkflow(f.id)?.modelOwner, "new-session");
+	// #5149: the newer metadata stays, and the aborted adopter gives the run back to its previous owner.
+	await vi.waitFor(() => assert.equal(f.backend.getWorkflow(f.id)?.modelOwner, "old-session"));
+	const handle = f.backend.getWorkflow(f.id);
+	assert.deepEqual(
+		[handle?.status, handle?.pendingPrompts, handle?.resumable],
+		[controlled?.status, controlled?.pendingPrompts, controlled?.resumable],
+	);
 	assert.equal(f.deps.jobs.has(f.id), false);
 });
 
@@ -217,7 +221,6 @@ test("an abort during the adoption claim restores the released run's paused stat
 	const release = Promise.withResolvers<void>();
 	const backend = await createMemoryTestBackend();
 	const claim = backend.commitWorkflowStatusTransition.bind(backend);
-	const rolledBack = Promise.withResolvers<boolean>();
 	let calls = 0;
 	backend.commitWorkflowStatusTransition = async (...args) => {
 		const accepted = await claim(...args);
@@ -225,7 +228,7 @@ test("an abort during the adoption claim restores the released run's paused stat
 		if (calls === 1) {
 			claimed.resolve();
 			await release.promise;
-		} else rolledBack.resolve(accepted);
+		}
 		return accepted;
 	};
 	const f = await fixture(backend, { status: "paused", releasedModelOwner: "old-session", ownerLiveness: "alive" });
@@ -236,11 +239,13 @@ test("an abort during the adoption claim restores the released run's paused stat
 	controller.abort(reason);
 	release.resolve();
 	assert.equal(await pending, reason);
-	assert.equal(await rolledBack.promise, true);
-	const handle = f.backend.getWorkflow(f.id);
-	assert.equal(handle?.status, "paused");
-	assert.equal(handle?.modelOwner, "old-session");
-	assert.equal(handle?.releasedModelOwner, "old-session");
+	await vi.waitFor(() => {
+		const handle = f.backend.getWorkflow(f.id);
+		assert.deepEqual(
+			[handle?.status, handle?.modelOwner, handle?.releasedModelOwner],
+			["paused", "old-session", "old-session"],
+		);
+	});
 	assert.equal(f.deps.jobs.has(f.id), false);
 });
 
@@ -465,6 +470,53 @@ for (const [kind, overrides] of [
 				finish.resolve();
 				await f.deps.jobs.get(f.id)?.promise;
 			}
+		});
+	}
+}
+
+for (const [kind, overrides, preClaim] of [
+	["crashed", {}, "running"],
+	["released", RELEASED, "paused"],
+] as const) {
+	for (const [label, write, status, pendingPrompts] of [
+		["an answer", "running", preClaim, 0],
+		["a pause", "paused", "paused", 1],
+	] as const) {
+		test(`an adoption of a ${kind} run aborted while its executor starts, with ${label} written meanwhile, keeps that write, returns the run to its previous owner and leaves no run behind in the adopting session (#5149)`, async () => {
+			const backend = await createMemoryTestBackend();
+			const f = await fixture(backend, { ...overrides, pendingPrompts: 1, resumable: true });
+			const controller = new AbortController();
+			const reason = new Error("abort adoption");
+			beforeExecutorRegisters(backend, f, async () => {
+				controller.abort(reason);
+				await backend.commitWorkflowStatusTransition(f.id, ["running"], write, write === "paused" ? 1 : 0);
+			});
+			assert.equal(
+				await resumeDurableWorkflow(f.id, { ...f.deps, signal: controller.signal }).catch((error) => error),
+				reason,
+			);
+			await vi.waitFor(() => assert.equal(f.deps.jobs.has(f.id), false));
+			const handle = f.backend.getWorkflow(f.id);
+			assert.deepEqual(
+				{
+					status: handle?.status,
+					pendingPrompts: handle?.pendingPrompts,
+					modelOwner: handle?.modelOwner,
+					releasedModelOwner: handle?.releasedModelOwner,
+				},
+				{
+					status,
+					pendingPrompts,
+					modelOwner: "old-session",
+					releasedModelOwner: kind === "released" ? "old-session" : undefined,
+				},
+			);
+			assert.equal(f.store.run(f.id), f.source);
+			// The adopting session holds no phantom run: its next resume is decided by the run, not refused as its own.
+			const again = await resumeDurableWorkflow(f.id, f.deps);
+			assert.doesNotMatch(again.message, /already running in this session/);
+			if (status !== "paused" || kind === "released") assert.equal(again.ok, true, again.message);
+			await f.deps.jobs.get(f.id)?.promise;
 		});
 	}
 }
