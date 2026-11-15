@@ -98,6 +98,11 @@ export interface DurableWorkflowHandle {
 	readonly failureRecoverability?: WorkflowFailureRecoverability;
 	readonly failureDisposition?: WorkflowFailureDisposition;
 	readonly failedToolNodeId?: string;
+	/**
+	 * Set with `failedToolNodeId` when the run's records hold no failure record of that tool from its last attempt: the
+	 * store refused it. The tool never completed, so a resume runs it again (#5027).
+	 */
+	readonly failedToolUnrecorded?: true;
 	/** Executor id of the Atomic process that last wrote this workflow's metadata. */
 	readonly ownerExecutorId?: string;
 	readonly ownerLiveness?: "alive" | "dead" | "unknown";
@@ -455,4 +460,9 @@ export interface DurableWorkflowFailureMetadata {
 	readonly failureRecoverability?: WorkflowFailureRecoverability;
 	readonly failureDisposition?: WorkflowFailureDisposition;
 	readonly failedToolNodeId?: string;
+	/**
+	 * Set with `failedToolNodeId` when the run's records hold no failure record of that tool from its last attempt: the
+	 * store refused it. The tool never completed, so a resume runs it again (#5027).
+	 */
+	readonly failedToolUnrecorded?: true;
 }
