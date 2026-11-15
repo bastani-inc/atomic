@@ -3,7 +3,7 @@
  */
 
 import * as path from "node:path";
-import { getAgentDir as getAtomicAgentDir } from "@bastani/atomic";
+import { getAgentDir as getAtomicAgentDir, sliceHead } from "@bastani/atomic";
 import type { Message } from "@bastani/pi-ai/compat";
 import { formatToolCall } from "./formatters.js";
 import type { AgentProgress, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.js";
@@ -206,7 +206,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 				hasError: true,
 				exitCode: exitMatch ? parseInt(exitMatch[1], 10) : 1,
 				errorType: toolName || "tool",
-				details: details?.slice(0, 200),
+				details: details === undefined ? undefined : sliceHead(details, 200),
 			};
 		}
 
@@ -220,7 +220,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		if (exitMatch) {
 			const code = parseInt(exitMatch[1], 10);
 			if (code !== 0) {
-				return { hasError: true, exitCode: code, errorType: "bash", details: output.slice(0, 200) };
+				return { hasError: true, exitCode: code, errorType: "bash", details: sliceHead(output, 200) };
 			}
 		}
 
@@ -239,7 +239,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
 		];
 		for (const pattern of fatalPatterns) {
 			if (pattern.test(output)) {
-				return { hasError: true, exitCode: 1, errorType: "bash", details: output.slice(0, 200) };
+				return { hasError: true, exitCode: 1, errorType: "bash", details: sliceHead(output, 200) };
 			}
 		}
 	}
@@ -252,7 +252,7 @@ export function detectSubagentError(messages: Message[]): ErrorInfo {
  */
 export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	const truncatePreview = (value: string, maxLength: number): string =>
-		value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+		value.length > maxLength ? `${sliceHead(value, maxLength - 3)}...` : value;
 
 	const stringifyPreviewValue = (value: unknown): string | undefined => {
 		if (typeof value === "string" && value.trim().length > 0) return value;
@@ -271,7 +271,7 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	// Handle MCP tool calls - show server/tool info
 	if (args.tool && typeof args.tool === "string") {
 		const server = args.server && typeof args.server === "string" ? `${args.server}/` : "";
-		const toolArgs = args.args && typeof args.args === "string" ? ` ${args.args.slice(0, 40)}` : "";
+		const toolArgs = args.args && typeof args.args === "string" ? ` ${sliceHead(args.args, 40)}` : "";
 		return `${server}${args.tool}${toolArgs}`;
 	}
 

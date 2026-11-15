@@ -5,6 +5,7 @@ import {
   isIntercomRoutingError,
   isProjectGroupError,
   isRetryableIntercomRoutingError,
+  sliceHead,
 } from "@bastani/atomic";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
@@ -1559,14 +1560,14 @@ one shared membership; contact_supervisor remains the only cross-group path.`,
           const sections: string[] = [];
           if (pendingAsks.length > 0) {
             const lines = pendingAsks.map(({ from, message, receivedAt }) => {
-              const preview = message.content.text.replace(/\s+/g, " ").slice(0, 80);
+              const preview = sliceHead(message.content.text.replace(/\s+/g, " "), 80);
               return `- ${from.name || from.id} · ${message.id} · ${elapsed(receivedAt)} · ${preview}`;
             });
             sections.push(`**Pending asks:**\n${lines.join("\n")}`);
           }
           if (outbound.length > 0) {
             const lines = outbound.map(({ askId, to, question, askedAt }) =>
-              `- ${askId} → ${to} · ${elapsed(askedAt)} · ${question.replace(/\s+/g, " ").slice(0, 80)}`
+              `- ${askId} → ${to} · ${elapsed(askedAt)} · ${sliceHead(question.replace(/\s+/g, " "), 80)}`
             );
             sections.push(`**Your asks awaiting a reply:**\n${lines.join("\n")}`);
           }

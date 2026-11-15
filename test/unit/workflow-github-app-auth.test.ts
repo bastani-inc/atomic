@@ -275,6 +275,18 @@ describe("GitHub App auth for the command provisioner (#4768)", () => {
 					"auth",
 					`${failed}HTTP 403: token=[redacted] ${"x".repeat(283)}…`,
 				],
+				[
+					403,
+					{ message: `token=ghp_leakedvalue123 ${"x".repeat(283)}` },
+					"auth",
+					`${failed}HTTP 403: token=[redacted] ${"x".repeat(283)}`,
+				],
+				[
+					403,
+					{ message: `token=ghp_leakedvalue123 ${"x".repeat(282)}😀 (#5097)` },
+					"auth",
+					`${failed}HTTP 403: token=[redacted] ${"x".repeat(282)}…`,
+				],
 				[201, { token: 7, expires_at: expiresAt }, "malformed", malformed],
 				[201, { token: "", expires_at: expiresAt }, "malformed", malformed],
 				[201, { token: "ghs_x", expires_at: "soon" }, "malformed", malformed],
