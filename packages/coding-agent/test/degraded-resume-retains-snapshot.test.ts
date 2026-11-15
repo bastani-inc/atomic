@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { renameReplacing } from "../src/core/rename-retry.js";
 import type { WorktreeSnapshotEntry } from "../src/core/session-manager.js";
 import { SessionManager } from "../src/core/session-manager.js";
 import {
@@ -105,7 +106,7 @@ async function machineA() {
 	assert.equal(capture.snapshot.bundle, null, "the unpushed commit touches a denied path and is not bundled");
 	await manager.appendWorktreeSnapshot(clone, capture.snapshot.id, capture.snapshot);
 	const elsewhere = sandbox.path("machine-a");
-	renameSync(clone, elsewhere);
+	renameReplacing(clone, elsewhere);
 	return { manager, snapshot: capture.snapshot, pushed, unpushed, clone: elsewhere };
 }
 
@@ -343,7 +344,7 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 
 		const stored = new Set(await store.snapshotBlobs!.listBlobHashes());
 		assert.ok(snapshotBlobHashes(second.snapshot!).every((hash) => stored.has(hash)));
-		renameSync(clone, sandbox.path("plain-elsewhere"));
+		renameReplacing(clone, sandbox.path("plain-elsewhere"));
 		const resumed = ready(await prepareSessionResume(manager, options("machine-b")));
 		const restored = resumed.sessionManager.getWorktreeRootMappings().at(-1)!;
 		assert.equal(restored.snapshotId, second.snapshotId);
@@ -373,7 +374,7 @@ describe("a degraded resume keeps the snapshot it could not restore fully (#4922
 		);
 		const work = snapshotEntries(onB.sessionManager).at(-1)!;
 		rmSync(b.to, { recursive: true, force: true });
-		renameSync(sandbox.path("repo.git"), sandbox.path("remote-gone"));
+		renameReplacing(sandbox.path("repo.git"), sandbox.path("remote-gone"));
 
 		const onC = ready(await prepareSessionResume(onB.sessionManager, options("machine-c")));
 
@@ -648,12 +649,12 @@ describe("the pin ends only once the carried-over work is recorded (#5009)", () 
 		const latest = onC.sessionManager.getLatestWorktreeSnapshots().get(c.to)!;
 		rmSync(c.to, { recursive: true, force: true });
 		// A machine that can restore nothing keeps naming the kept work.
-		renameSync(sandbox.path("repo.git"), sandbox.path("remote-gone"));
+		renameReplacing(sandbox.path("repo.git"), sandbox.path("remote-gone"));
 		const onE = ready(await prepareSessionResume(onC.sessionManager, options("machine-e")));
 		const left = snapshotEntries(onE.sessionManager).at(-1)!;
 		assert.ok(left.unrestored !== undefined);
 		assert.equal(left.degradedFrom, work.id);
-		renameSync(sandbox.path("remote-gone"), sandbox.path("repo.git"));
+		renameReplacing(sandbox.path("remote-gone"), sandbox.path("repo.git"));
 		await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
 		const stillKept = new Set(await blobs.listBlobHashes());
 		assert.ok(snapshotBlobHashes(work).every((hash) => stillKept.has(hash)));

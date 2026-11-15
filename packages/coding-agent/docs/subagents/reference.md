@@ -71,7 +71,7 @@ For automatic routing, optional `modelConstraints` on a call, parallel task, or 
 | --- | --- |
 | `allowedModels` | Exact provider/model IDs permitted to receive the task. The [`modelRouting`](/settings#modelrouting) `allowedModels` and `excludedModels` settings still apply on top of this list |
 | `allowedProviders`, `excludedProviders` | Provider IDs whose models may or may never be used. On a call, setting either replaces the [`modelRouting`](/settings#modelrouting) provider settings for that call, so set them only when the user asks; in an agent definition they only narrow those settings |
-| `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap |
+| `maxInputCost`, `maxOutputCost` | Maximum catalog price in USD per million input or output tokens, not a total spending cap. A `-fast` or `-ultrafast` model is compared at the service-tier price it is billed at |
 | `minContextWindow` | Minimum advertised context window in tokens |
 | `requiredInputs` | Required input types, `"text"` or `"image"` |
 | `allowedEfforts` | Permitted supported effort values, including `null` for non-reasoning models |
