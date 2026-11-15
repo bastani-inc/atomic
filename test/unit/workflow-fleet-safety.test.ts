@@ -652,6 +652,7 @@ test("an instance removed for its boot timeout is kept while a host that registe
 test("an instance whose late host read its boot-timeout drain and is draining is removed once that host leaves, not after another boot timeout (#5072)", async () => {
 	const f = await fixture();
 	const carryDrain = SqlFleetStore.prototype.carryDrain;
+	const draining = Promise.withResolvers<void>();
 	const spy = vi.spyOn(SqlFleetStore.prototype, "carryDrain").mockImplementation(async function (
 		this: SqlFleetStore,
 		...args: Parameters<typeof carryDrain>
@@ -659,6 +660,7 @@ test("an instance whose late host read its boot-timeout drain and is draining is
 		await carryDrain.apply(this, args);
 		// The host on vm-1 registers right after the drain was written, reads it at its poll, and starts draining.
 		await f.report("h1", "vm-1", true);
+		draining.resolve();
 	});
 	try {
 		const events: WorkflowFleetEvent[] = [];
@@ -677,9 +679,12 @@ test("an instance whose late host read its boot-timeout drain and is draining is
 			events,
 			{ bootTimeoutMs: 1, minHosts: 0 },
 		);
+		// However late the first tick comes under load, the host is draining before the instance is waited on.
+		await draining.promise;
+		spy.mockRestore();
+		// What must not happen is given the ticks it would take to happen.
 		await sleep(3 * TICK_MS);
 		assert.deepEqual(removed, [], "the instance waits for its draining host");
-		spy.mockRestore();
 		// The host finished draining and left the registry.
 		await f.shared.forgetHost("h1");
 		await vi.waitFor(
