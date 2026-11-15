@@ -14,7 +14,6 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { SessionOpenElsewhereError } from "./session-manager-errors.js";
-import { sharedFilesystemNow } from "./shared-file-clock.ts";
 import type {
 	SessionOpenMarker,
 	SessionOpenMarkerAge,
@@ -22,6 +21,7 @@ import type {
 	SessionStore,
 } from "./storage/session/types.js";
 import { processStartToken } from "./worktree-snapshot/pool.ts";
+import { sharedClockNow } from "./worktree-snapshot/shared-clock.ts";
 
 /** How often a held marker's heartbeat is refreshed. */
 const HEARTBEAT_MS = 15_000;
@@ -95,7 +95,7 @@ class FileOpenMarkers implements SessionOpenMarkerStore {
 		}
 		if (names.length === 0) return [];
 		// Ages on the clock that stamps the files, which hosts sharing the agent directory share (#5058).
-		const now = sharedFilesystemNow(dirname(directory));
+		const now = await sharedClockNow(dirname(directory));
 		return names.flatMap((name) => {
 			const path = join(directory, name);
 			try {

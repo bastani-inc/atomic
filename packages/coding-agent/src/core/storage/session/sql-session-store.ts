@@ -235,6 +235,8 @@ export class SqlSessionStore implements SessionStore {
 	private closed = false;
 	private readonly cwdMatcher?: SessionCwdMatcher;
 	readonly snapshotBlobs: SqlSnapshotBlobStore;
+	/** The blob table of this store's database, which appends check snapshot records against (#5077). */
+	private readonly blobTable: SqlSnapshotBlobStore;
 	/** Set by `open`, once the store exists (#4971). */
 	openMarkers!: SqlSessionOpenMarkers;
 	/** Session ids of each recently listed scope, valid while the store's change token is unchanged. */
@@ -261,6 +263,7 @@ export class SqlSessionStore implements SessionStore {
 		this.prefix = prefix ?? "";
 		this.cwdMatcher = cwdMatcher;
 		this.snapshotBlobs = snapshotBlobs;
+		this.blobTable = snapshotBlobs;
 		this.legacyBlobData = legacyBlobData;
 	}
 
@@ -399,6 +402,13 @@ export class SqlSessionStore implements SessionStore {
 		return this.database.transaction(async (tx) => {
 			const previous = await this.forWrite(tx, sessionId, options, true);
 			validateSessionEntries(entries);
+			// A new snapshot record is written only while every blob it references is still stored (#5077).
+			await this.blobTable.assertStored(
+				tx,
+				entries.flatMap((entry) =>
+					entry.type === "worktree_snapshot" && entry.snapshot !== undefined ? [entry.snapshot] : [],
+				),
+			);
 			const lastSeq = previous.last_seq + entries.length;
 			const texts = await this.saveSummary(
 				tx,
