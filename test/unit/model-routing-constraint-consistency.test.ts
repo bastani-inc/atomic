@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { type Api, getServiceTierCost, type Model } from "@bastani/pi-ai";
 import { getModel, getModels, getProviders } from "@bastani/pi-ai/compat";
 import { test } from "vitest";
+import { routingCandidate } from "../../packages/coding-agent/src/core/execution-model-router.js";
 import { resolveFallbackModel } from "../../packages/coding-agent/src/core/fallback-models.js";
 import { deriveFastModelVariants } from "../../packages/coding-agent/src/core/fast-model-variants.js";
-import { eligiblePair } from "../../packages/coding-agent/src/core/model-routing-constraints.js";
+import { billedModelCost, eligiblePair } from "../../packages/coding-agent/src/core/model-routing-constraints.js";
+import { toCodemodeModelInfo } from "../../packages/coding-agent/src/extensions/codemode/execute.js";
 import { modelConstraintsFallbackGate } from "../../packages/subagents/src/runs/shared/model-fallback.js";
 import { resolveCandidateModel } from "../../packages/subagents/src/shared/model-resolution.js";
 
@@ -81,4 +83,23 @@ test("constraints without a cost limit never read a model's price, so unpriced m
 	const unpriced = { provider: "anthropic", id: "claude-haiku-5", reasoning: true } as Model<Api>;
 	const pair = { model: "anthropic/claude-haiku-5", effort: "low" };
 	assert.equal(eligiblePair(unpriced, pair, [{ allowedModels: ["anthropic/claude-haiku-5"] }]), true);
+});
+
+test("a fast route billed above a cost cap is not eligible while its base model is, and is listed at that price (#5156)", () => {
+	const fast = derived("gpt-5.4-mini", "gpt-5.4-mini-fast");
+	const tier = fast.fastRoute!.serviceTier!;
+	const priced: Model<Api> = {
+		...fast,
+		cost: { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 },
+		serviceTiers: [
+			{ ...fast.serviceTiers![0]!, id: tier, cost: { input: 2, output: 20, cacheRead: 0, cacheWrite: 0 } },
+		],
+	};
+	const { fastRoute: _, ...base } = priced;
+	const cap = [{ maxOutputCost: 15 }];
+	assert.equal(eligiblePair(priced, { model: `openai/${priced.id}`, effort: null }, cap), false);
+	assert.equal(eligiblePair(base, { model: `openai/${base.id}`, effort: null }, cap), true);
+	assert.deepEqual(routingCandidate(priced, [null]).cost, billedModelCost(priced));
+	assert.deepEqual(toCodemodeModelInfo(priced).cost, { input: 2, output: 20, cacheRead: 0, cacheWrite: 0 });
+	assert.deepEqual(toCodemodeModelInfo(base).cost, base.cost);
 });

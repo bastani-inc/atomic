@@ -49,8 +49,15 @@ import type {
 	WorktreeSnapshotSettings,
 	WorktreeUnrestored,
 } from "../worktree-snapshot/types.ts";
-import { blueprintBuildShared, handOverBuildTimings, holdToolsUntilBuilt } from "./blueprint/barrier.ts";
+import {
+	announceBlueprintBuildWaiting,
+	type BlueprintBuildResult,
+	blueprintBuildShared,
+	handOverBuildTimings,
+	holdToolsUntilBuilt,
+} from "./blueprint/barrier.ts";
 import type { BlueprintBuildConfig } from "./blueprint/build.ts";
+import { settleOtherBuilds, withBuildLocks } from "./blueprint/build-lock.ts";
 import {
 	BLUEPRINT_BUILDING_CONTEXT,
 	type BlueprintCheckout,
@@ -124,9 +131,9 @@ export interface PrepareSessionResumeOptions {
 	readonly pool?: WorktreePoolSettings;
 	/**
 	 * `"prompt"` (default): the resume returns once the blueprints of the worktrees it restored are built. `"tools"`: it
-	 * returns once they are restored and the build goes on behind the session's first turn; the session's tools that run
-	 * project code or read the worktree wait for it (`awaitBlueprintReady`), and the first of them reports how it
-	 * went. The build's warnings then reach the agent and the user with that tool's result, not `notices`.
+	 * returns once they are restored and the build goes on behind the session's first turn; every tool call of the
+	 * session waits for it (`awaitBlueprintReady`), and the first of them reports how it went. The build's warnings then
+	 * reach the agent and the user with that tool's result, not `notices`.
 	 */
 	readonly waitForBlueprint?: "prompt" | "tools";
 }
@@ -530,13 +537,46 @@ async function prepareResume(
 			.map((mapping) => resolve(mapping.to))
 			.filter((root) => isInside(storeDir, root)),
 	);
+	// A resume that only joins a build this process already runs in its worktree, as a switch back to the session that
+	// started it, waits for nothing: that build holds the session's tools, and tells the user when it ends (#4748).
+	if (
+		restoredNow.size === 0 &&
+		options.blueprints !== "skip" &&
+		options.waitForBlueprint === "tools" &&
+		joinsBuildInProgress(opened.sessionManager)
+	) {
+		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
+		return {
+			status: "ready",
+			sessionManager: opened.sessionManager,
+			notices,
+			blueprintNotices: [],
+			missingRecordNotices: resumed.missingNotices,
+			blueprintContext: BLUEPRINT_BUILDING_CONTEXT,
+		};
+	}
 	if (restoredNow.size > 0 && options.blueprints !== "skip" && options.waitForBlueprint === "tools") {
-		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, options);
-		const report = building.then(async (blueprints) => {
-			await buildSettled(opened.sessionManager);
-			return blueprintBuildReport(blueprints);
+		// The build can be stopped when the process ends before it does (#4748): its steps' process trees end with it,
+		// what ran is recorded, and the ledger keeps the worktrees unbuilt for the next resume.
+		const stopping = new AbortController();
+		const signal =
+			options.signal === undefined ? stopping.signal : AbortSignal.any([options.signal, stopping.signal]);
+		const building = setUpCheckoutBlueprints(opened.sessionManager, restoredNow, storeDir, { ...options, signal });
+		const result = building.then(
+			async (blueprints): Promise<BlueprintBuildResult> => {
+				await buildSettled(opened.sessionManager);
+				return { report: blueprintBuildReport(blueprints), notices: blueprints.notices };
+			},
+			async (error: unknown): Promise<BlueprintBuildResult> => {
+				await buildSettled(opened.sessionManager).catch(() => undefined);
+				const message = `Blueprint build stopped before it finished (${error instanceof Error ? error.message : String(error)}); the next resume builds the restored worktree again.`;
+				return { report: message, notices: [{ type: "warning", message }] };
+			},
+		);
+		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), result, {
+			roots: restoredNow,
+			stop: (reason) => stopping.abort(reason),
 		});
-		holdToolsUntilBuilt(opened.sessionManager.getSessionId(), report);
 		await recordBlueprintContext(opened.sessionManager, BLUEPRINT_BUILDING_CONTEXT);
 		return {
 			status: "ready",
@@ -1015,14 +1055,65 @@ async function setUpCheckoutBlueprints(
 		else if (isInside(storeDir, root)) earlier.push(checkout);
 		else if (await isDirectory(root)) inPlace.push(checkout);
 	}
-	const retried = await checkoutsNeedingRebuild(earlier, storeDir);
-	return setUpResumedBlueprints({
-		restored: [...restoredHere, ...retried],
-		inPlace,
-		earlier: earlier.filter((checkout) => !retried.includes(checkout)),
-		config: { ...options.blueprint, storeDir },
-		signal: options.signal,
-	});
+	// A worktree this process is building already is joined, not built again (#4748): its tools wait for that build.
+	const joined = [...restoredHere, ...earlier].filter((checkout) => buildInProgress(checkout.root) !== undefined);
+	const toBuild = restoredHere.filter((checkout) => !joined.includes(checkout));
+	const candidates = earlier.filter((checkout) => !joined.includes(checkout));
+	// Claimed before anything is awaited, so a resume that starts meanwhile in this process joins this one.
+	const { promise: settled, resolve: settle } = Promise.withResolvers<undefined>();
+	const claimed = [...toBuild, ...candidates].map((checkout) => resolve(checkout.root));
+	for (const root of claimed) buildsInProgress.set(root, settled);
+	try {
+		await Promise.all(joined.map((checkout) => buildInProgress(checkout.root)));
+		// Another process's build of one of them is waited for, or the steps of one whose process died are stopped,
+		// before the ledger says which need building.
+		// Settling another build never fails the resume: a failure to read or clean up its lock is a warning.
+		const lockWarnings = await settleOtherBuilds(storeDir, claimed, {
+			signal: options.signal,
+			onWait: (root, message) => {
+				options.onProgress?.(message);
+				announceBlueprintBuildWaiting(root, message);
+			},
+		}).catch((error: unknown) => {
+			if (options.signal?.aborted) throw error;
+			return [
+				`Could not check for an earlier blueprint build of these worktrees (${error instanceof Error ? describeFailure(error) : String(error)}); building them anyway.`,
+			];
+		});
+		const retried = await checkoutsNeedingRebuild(candidates, storeDir);
+		const restored = [...toBuild, ...retried];
+		const built = await withBuildLocks(
+			storeDir,
+			restored.map((checkout) => checkout.root),
+			() =>
+				setUpResumedBlueprints({
+					restored,
+					inPlace,
+					earlier: [...joined, ...candidates.filter((checkout) => !retried.includes(checkout))],
+					config: { ...options.blueprint, storeDir },
+					signal: options.signal,
+				}),
+		);
+		if (lockWarnings.length === 0) return built;
+		const warnings = lockWarnings.map((message) => ({ type: "warning" as const, message }));
+		return { ...built, notices: [...warnings, ...built.notices] };
+	} finally {
+		for (const root of claimed) if (buildsInProgress.get(root) === settled) buildsInProgress.delete(root);
+		settle(undefined);
+	}
+}
+
+/** The blueprint builds this process runs, by the restored worktree they build, each settling once its build has. */
+const buildsInProgress = new Map<string, Promise<undefined>>();
+
+/** The build this process runs of the worktree at `root`, if one runs. */
+function buildInProgress(root: string): Promise<undefined> | undefined {
+	return buildsInProgress.get(resolve(root));
+}
+
+/** Whether a resume of `sessionManager` joins a blueprint build this process already runs in one of its worktrees. */
+function joinsBuildInProgress(sessionManager: SessionManager): boolean {
+	return [...currentWorktreeSnapshots(sessionManager).keys()].some((root) => buildInProgress(root) !== undefined);
 }
 
 /**
@@ -1260,7 +1351,8 @@ function resolveStoreDir(options: Pick<PrepareSessionResumeOptions, "storeDir">)
 
 /**
  * The options a resume from `launchCwd` needs: snapshot settings and the blueprint build configuration from
- * `settingsManager`, and the worktree store of `agentDir`.
+ * `settingsManager`, and the worktree store of `agentDir`. A session without a UI (`interactive` false; default true)
+ * starts its first turn while the build runs unless `resume.waitForBlueprint` says otherwise.
  */
 export function sessionResumeOptions(
 	entryPoint: ResumeEntryPoint,
@@ -1271,6 +1363,7 @@ export function sessionResumeOptions(
 		"getWorktreeSnapshotSettings" | "getWorktreePoolSettings" | "getResumeSetupCommand" | "getResumeWaitForBlueprint"
 	>,
 	trusted: (worktree: string) => boolean,
+	interactive = true,
 ): PrepareSessionResumeOptions {
 	return {
 		entryPoint,
@@ -1279,6 +1372,6 @@ export function sessionResumeOptions(
 		pool: settingsManager.getWorktreePoolSettings(),
 		blueprint: { agentDir, setupCommand: settingsManager.getResumeSetupCommand(), trusted },
 		storeDir: resumeStoreDir(agentDir),
-		waitForBlueprint: settingsManager.getResumeWaitForBlueprint(),
+		waitForBlueprint: settingsManager.getResumeWaitForBlueprint(interactive),
 	};
 }

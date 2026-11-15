@@ -547,6 +547,39 @@ describe("executor — readiness after a steer decided by the decision model (#4
 		);
 	});
 
+	test("a decision that finishes after a pause is not applied and keeps the user's message (#5159)", async () => {
+		store.clear();
+		let calls = 0;
+		const { result, decide, registry } = launch({
+			decide: async (request) => {
+				calls += 1;
+				if (calls > 1) return classified(0.93, 0.07, 0.91);
+				await new Promise<void>((resolve) => {
+					request.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				return classified(0.07, 0.93, 0.91);
+			},
+		});
+		const deadline = Date.now() + 2_000;
+		while (decide.mock.calls.length < 1 && Date.now() < deadline) await sleep(5);
+		const handle = registry.get(store.runs()[0]!.id, themeStage().id);
+		assert.ok(handle);
+		await handle.pause();
+		await sleep(20);
+		assert.equal(themeStage().readinessDecision, undefined);
+		await handle.resume();
+		assert.equal((await result).status, "completed");
+		assert.equal(readinessQuestionShown(), false);
+		assert.equal(decide.mock.calls.length, 2);
+		assert.equal(decide.mock.calls[1]![0].state.user_message, STEER);
+		assert.deepEqual(
+			themeStage()
+				.notices?.filter((notice) => notice.kind === "decision")
+				.map((notice) => notice.to),
+			["advanced"],
+		);
+	});
+
 	test("a host that does not report the setting keeps its default, on", async () => {
 		store.clear();
 		const { result, decide } = launch({ decide: async () => classified(0.93, 0.07, 0.91), enabled: "unset" });
