@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed a parallel `worktree: true` task whose change was larger than 1 MiB being reported as having no changes and its worktree, with all its work, being deleted. Git now writes each task's patch straight to its file, so a change of any size is saved in full and the summary lists every task. When a diff cannot be captured, the worktree is kept and the summary names it, and it is removed only once a later capture succeeds. A `.worktreeinclude` file such as `.env` is also copied into a new worktree again in a repository with an installed `node_modules`, where it was silently skipped ([#4876](https://github.com/bastani-inc/atomic/issues/4876))
+
 ## [0.9.86] - 2026-11-14
 
 Subagents are easier to reach and to talk to.

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
+import { worktreeDiffCaptureFailed } from "./worktree-diff.js";
 import { runGit, runGitChecked } from "./worktree-git.js";
 import { performPostCreationSetup } from "./worktree-post-create.js";
 import { findCanonicalGitRoot } from "./worktree-root.js";
@@ -17,6 +18,8 @@ import type {
 	WorktreeSetupHookOutput,
 	WorktreeTaskCwdConflict,
 } from "./worktree-types.js";
+
+const HOOK_OUTPUT_MAX_BUFFER = 64 * 1024 * 1024;
 
 const DEFAULT_WORKTREE_SETUP_HOOK_TIMEOUT_MS = 30000;
 
@@ -220,6 +223,8 @@ function runWorktreeSetupHook(hook: ResolvedWorktreeSetupHook, input: WorktreeSe
 		cwd: input.worktreePath,
 		encoding: "utf-8",
 		input: JSON.stringify(input),
+		// A hook that installs dependencies can log past the default 1 MiB cap, which kills it mid-run (#4876).
+		maxBuffer: HOOK_OUTPUT_MAX_BUFFER,
 		env: createChildProcessEnvironment(),
 		timeout: hook.timeoutMs,
 		shell: false,
@@ -411,9 +416,11 @@ export function createWorktrees(
 	return { cwd: repo.mainRoot, worktrees, baseCommit: repo.baseCommit };
 }
 
+/** Remove the worktrees, except one whose last diff capture failed: it is kept with its work for the user (#4876). */
 export function cleanupWorktrees(setup: WorktreeSetup): void {
 	for (let index = setup.worktrees.length - 1; index >= 0; index--) {
 		const worktree = setup.worktrees[index]!;
+		if (worktreeDiffCaptureFailed(worktree.path)) continue;
 		cleanupSingleWorktree(setup.cwd, worktree, worktree.syntheticPaths);
 	}
 }

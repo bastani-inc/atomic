@@ -22,6 +22,10 @@ export interface WorktreeDiff {
 	insertions: number;
 	deletions: number;
 	patchPath: string;
+	/** The worktree the diff was captured from. */
+	worktreePath: string;
+	/** Why the diff could not be captured; the worktree is then kept with its work (#4876). */
+	captureError?: string;
 }
 
 export interface WorktreeTaskCwdConflict {

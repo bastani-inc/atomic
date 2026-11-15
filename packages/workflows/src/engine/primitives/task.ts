@@ -151,7 +151,20 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
 				return preparedTask;
 			});
 			const artifacts = collect();
-			return artifacts.length === 0 ? result : { ...result, artifacts: [...(result.artifacts ?? []), ...artifacts] };
+			if (artifacts.length === 0) return result;
+			// A worktree whose diff could not be captured is kept; the task's result says where (#4876).
+			const captureWarnings = artifacts.flatMap((artifact) =>
+				artifact.captureError === undefined
+					? []
+					: [
+							`Diff capture failed for task ${name}; its worktree was kept at ${artifact.worktreePath}: ${artifact.captureError}`,
+						],
+			);
+			return {
+				...result,
+				artifacts: [...(result.artifacts ?? []), ...artifacts],
+				...(captureWarnings.length === 0 ? {} : { warnings: [...(result.warnings ?? []), ...captureWarnings] }),
+			};
 		} finally {
 			if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
 		}

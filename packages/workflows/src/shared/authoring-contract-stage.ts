@@ -552,6 +552,10 @@ export interface WorkflowArtifact extends WorkflowSerializableObject {
 	readonly filesChanged?: number;
 	readonly insertions?: number;
 	readonly deletions?: number;
+	/** A `diff` artifact whose patch could not be captured: why. Its worktree is kept at `worktreePath` (#4876). */
+	readonly captureError?: string;
+	/** The worktree a `diff` artifact was captured from. */
+	readonly worktreePath?: string;
 }
 
 export interface WorkflowTaskContext extends WorkflowSerializableObject {

@@ -14,6 +14,11 @@ import type { GitResult } from "./worktree-types.js";
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
 const GIT_COMMAND_TIMEOUT_MS = 60_000;
 const GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS = 2;
+/**
+ * Node and Bun cap `spawnSync` output at 1 MiB by default; ls-files, status and numstat output in a large repository or
+ * change can exceed it (#4876). Patches never go through this buffer: git writes them to the patch file itself.
+ */
+const GIT_OUTPUT_MAX_BUFFER = 512 * 1024 * 1024;
 export type GitRunner = (cwd: string, args: readonly string[]) => GitResult;
 let gitRunnerOverride: GitRunner | undefined;
 
@@ -42,11 +47,13 @@ function spawnGit(cwd: string, args: readonly string[], plain: boolean): GitResu
 			createChildProcessEnvironment(undefined, git.env),
 		),
 		timeout: GIT_COMMAND_TIMEOUT_MS,
+		maxBuffer: GIT_OUTPUT_MAX_BUFFER,
 	});
 	return {
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
-		status: result.status ?? null,
+		// Output cut off at the buffer cap, or a git that could not run, is never a success.
+		status: result.error === undefined ? (result.status ?? null) : null,
 		signal: result.signal ?? null,
 		elapsedMs: Math.max(0, Date.now() - startedAt),
 		...(result.error === undefined ? {} : { error: result.error }),

@@ -66,14 +66,44 @@ function configureHooks(runGit: WorktreeGitRunner, mainRoot: string): void {
 	const result = runGit(mainRoot, ["config", "core.hooksPath", desired]);
 	if (result.status !== 0) throw new Error(result.stderr.trim() || "failed to configure shared core.hooksPath");
 }
+const PATHSPEC_BATCH_CHARACTERS = 8_000;
+/**
+ * The paths among `candidates` that git ignores by its standard rules. Only the candidates are listed, as literal
+ * pathspecs in batches that fit any command line: listing every ignored file (an installed `node_modules`) can run to
+ * many megabytes (#4876).
+ */
+function ignoredAmong(runGit: WorktreeGitRunner, mainRoot: string, candidates: readonly string[]): string[] {
+	const ignored: string[] = [];
+	for (let start = 0; start < candidates.length; ) {
+		const batch: string[] = [];
+		let characters = 0;
+		while (start < candidates.length && (batch.length === 0 || characters < PATHSPEC_BATCH_CHARACTERS)) {
+			const candidate = candidates[start++]!;
+			batch.push(candidate);
+			characters += candidate.length + 1;
+		}
+		const listed = runGit(mainRoot, [
+			"--literal-pathspecs",
+			"ls-files",
+			"-z",
+			"--others",
+			"--ignored",
+			"--exclude-standard",
+			"--",
+			...batch,
+		]);
+		if (listed.status !== 0)
+			throw new Error(`could not list ignored .worktreeinclude files: ${listed.stderr.trim()}`);
+		ignored.push(...listed.stdout.split("\0").filter(Boolean));
+	}
+	return ignored;
+}
 function copyIncludes(runGit: WorktreeGitRunner, mainRoot: string, worktreeRoot: string): void {
 	if (!fs.existsSync(path.join(mainRoot, ".worktreeinclude"))) return;
-	const ignored = runGit(mainRoot, ["ls-files", "--others", "--ignored", "--exclude-standard"]);
-	const included = runGit(mainRoot, ["ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude"]);
-	if (ignored.status !== 0 || included.status !== 0) return;
-	const ignoredPaths = new Set(ignored.stdout.split(/\r?\n/).filter(Boolean));
-	for (const relativePath of included.stdout.split(/\r?\n/).filter(Boolean)) {
-		if (!ignoredPaths.has(relativePath) || hasTrackedPathComponent(runGit, worktreeRoot, relativePath)) continue;
+	const included = runGit(mainRoot, ["ls-files", "-z", "--others", "--ignored", "--exclude-from=.worktreeinclude"]);
+	if (included.status !== 0) throw new Error(`could not list .worktreeinclude files: ${included.stderr.trim()}`);
+	for (const relativePath of ignoredAmong(runGit, mainRoot, included.stdout.split("\0").filter(Boolean))) {
+		if (hasTrackedPathComponent(runGit, worktreeRoot, relativePath)) continue;
 		const source = path.join(mainRoot, relativePath);
 		const destination = path.join(worktreeRoot, relativePath);
 		try {
