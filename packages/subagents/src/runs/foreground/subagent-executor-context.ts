@@ -79,7 +79,9 @@ export function prepareExecutionContext(input: {
 	deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 	const initialDiscoveryCwd =
 		(effectiveParams.tasks?.[0] as BurstTaskParam | undefined)?.[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
-	const discoveredAgents = deps.discoverAgents(initialDiscoveryCwd, scope).agents;
+	// Project agents are read only for a trusted project.
+	const discovery = { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+	const discoveredAgents = deps.discoverAgents(initialDiscoveryCwd, scope, discovery).agents;
 	let resolvedTaskAgents: AgentConfig[] | undefined;
 	if (effectiveParams.tasks?.some((task) => (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] !== undefined)) {
 		const agentsByCwd = new Map<string, AgentConfig[]>([[initialDiscoveryCwd, discoveredAgents]]);
@@ -89,7 +91,7 @@ export function prepareExecutionContext(input: {
 			const discoveryCwd = (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
 			let taskAgents = agentsByCwd.get(discoveryCwd);
 			if (!taskAgents) {
-				taskAgents = deps.discoverAgents(discoveryCwd, scope).agents;
+				taskAgents = deps.discoverAgents(discoveryCwd, scope, discovery).agents;
 				agentsByCwd.set(discoveryCwd, taskAgents);
 			}
 			const agent = taskAgents.find((candidate) => candidate.name === task.agent);

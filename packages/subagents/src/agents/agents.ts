@@ -2,7 +2,7 @@
  * Agent discovery and configuration public surface.
  */
 
-export { discoverAgents, discoverAgentsAll } from "./agent-discovery.js";
+export { type AgentDiscoveryOptions, discoverAgents, discoverAgentsAll } from "./agent-discovery.js";
 export type { AgentDirLoadResult, AgentLoadDiagnostic } from "./agent-loaders.js";
 export { loadAgentsFromDir, loadAgentsFromDirWithDiagnostics } from "./agent-loaders.js";
 export {
