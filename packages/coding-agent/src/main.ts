@@ -68,6 +68,7 @@ import { recordResumeTimings } from "./core/resume/timings.ts";
 import { findMissingSessionCwdIssue, MissingSessionCwdError } from "./core/session-cwd.ts";
 import { ownedSessionManagerStores, ownedSessionStores } from "./core/session-lifecycle-work.ts";
 import type { SessionManager } from "./core/session-manager.ts";
+import { SESSION_ALREADY_OPEN_EXIT_CODE, SessionAlreadyOpenError } from "./core/session-manager-errors.js";
 import { canIsolateSessionStore, takeEngineSessionStorageArg } from "./core/session-storage.js";
 import { deduplicateDiagnostics } from "./core/settings-diagnostics.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
@@ -666,6 +667,7 @@ export async function main(argv: string[], options?: MainOptions) {
 			sessionStorage,
 			trusted: cliResumeTrust(parsed.projectTrustOverride, projectTrustStore, startupDefaultProjectTrust),
 			blueprints: engineEnv.child === "1" ? "skip" : "build",
+			claim: engineEnv.child !== "1",
 			progress: startupProgress,
 			chooseDirtyCheckout:
 				appMode === "interactive"
@@ -690,11 +692,13 @@ export async function main(argv: string[], options?: MainOptions) {
 			);
 		}
 	} catch (error) {
-		const message = resumeFailureMessage(error);
+		// Another live process resumed this session (#5135): nothing was changed.
+		const held = error instanceof SessionAlreadyOpenError;
+		const message = held ? error.message : resumeFailureMessage(error);
 		if (message === undefined) throw error;
 		startupEarlyInputCapture?.consume();
 		console.error(chalk.red(`Error: ${message}`));
-		process.exit(1);
+		process.exit(held ? SESSION_ALREADY_OPEN_EXIT_CODE : 1);
 	}
 	const missingSessionCwdIssue = findMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
