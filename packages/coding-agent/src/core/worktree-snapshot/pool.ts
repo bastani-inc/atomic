@@ -157,6 +157,9 @@ const leaseHolds = new WeakMap<WorktreeLease, HeldSlot>();
 const released = new WeakSet<WorktreeLease>();
 /** Names this host in lease names, so a process on the same host can tell whether a lease's holder still runs. */
 const HOST = createHash("sha256").update(hostname()).digest("hex").slice(0, 12);
+
+export { processStartToken };
+
 const PROCESS_START = processStartToken(process.pid);
 /**
  * Names this process's leases: its host and pid, a random part, as the pid alone could be reused by a later process,
