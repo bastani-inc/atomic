@@ -66,11 +66,13 @@ function raw(path: string, sql: string): void {
 	}
 }
 
-/** The longest payload an events row of the file at `path` holds, in characters. */
+/** The most bytes of UTF-8 the payload of one events row of the file at `path` holds. */
 function longestPayload(path: string): number {
 	const database = new DatabaseSync(path, { readOnly: true });
 	try {
-		return Number(database.prepare("SELECT max(length(payload)) AS longest FROM wf_events").get()?.longest ?? 0);
+		return Number(
+			database.prepare("SELECT max(length(CAST(payload AS BLOB))) AS longest FROM wf_events").get()?.longest ?? 0,
+		);
 	} finally {
 		database.close();
 	}
@@ -357,4 +359,39 @@ test("a pool of the previous schema version is upgraded, and a newer one refused
 		assert.deepEqual([error.domain, error.found, error.supported], ["journal", 4, 3]);
 		return true;
 	});
+});
+
+test("pre-0.9.38 runs are read in place only from tables of schema version 1, their snapshot tail included (#4965)", async () => {
+	const path = join(root, "legacy-runs.sqlite");
+	raw(
+		path,
+		`CREATE TABLE meta(schema_version INTEGER NOT NULL);
+		INSERT INTO meta VALUES (1);
+		CREATE TABLE runs(run_id TEXT PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL, created_at INTEGER NOT NULL, status TEXT NOT NULL, header_json TEXT NOT NULL);
+		CREATE TABLE events(run_id TEXT NOT NULL, seq INTEGER NOT NULL, epoch INTEGER NOT NULL, key TEXT, type TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(run_id, seq), UNIQUE(run_id, key));
+		CREATE TABLE leases(run_id TEXT PRIMARY KEY, holder_id TEXT, epoch INTEGER NOT NULL, renewed_at INTEGER NOT NULL);
+		INSERT INTO runs VALUES ('old', 'old', '/repo', 1, 'failed', '{"runId":"old","name":"old","cwd":"/repo","createdAt":1,"status":"failed"}');
+		INSERT INTO events VALUES ('old', 1, 1, NULL, 'RunStarted', '{"workflowId":"old"}', 5);`,
+	);
+	const listed = async () => {
+		const journal = await openSqlRunJournal(path);
+		try {
+			return {
+				runs: (await journal.listRuns()).map((run) => run.runId),
+				tail: (await journal.snapshotTail("old"))?.snapshot.event,
+			};
+		} finally {
+			await journal.close();
+		}
+	};
+	assert.deepEqual(await listed(), {
+		runs: ["old"],
+		tail: { type: RUN_EVENT_TYPES.runStarted, payload: { workflowId: "old" } },
+	});
+	raw(path, "UPDATE meta SET schema_version = 2");
+	assert.deepEqual(
+		await listed(),
+		{ runs: [], tail: undefined },
+		"tables of another version are not a pre-0.9.38 journal",
+	);
 });
