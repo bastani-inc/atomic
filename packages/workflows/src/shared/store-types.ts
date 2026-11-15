@@ -201,7 +201,17 @@ export interface StageNotice {
 	readonly id: string;
 	readonly ts: number;
 	/** `decision`: the decision model judged the stage's readiness after a steer; `to` is the outcome, `meta` its summary. */
-	readonly kind: "model" | "thinking" | "compaction" | "tree" | "abort" | "mcp" | "cleanup" | "decision";
+	/** `undelivered`: a message sent to the stage never reached it before the stage finished; `to` is its text. */
+	readonly kind:
+		| "model"
+		| "thinking"
+		| "compaction"
+		| "tree"
+		| "abort"
+		| "mcp"
+		| "cleanup"
+		| "decision"
+		| "undelivered";
 	readonly from?: string;
 	readonly to: string;
 	readonly meta?: string;
