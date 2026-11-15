@@ -505,6 +505,8 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	/** Runs that kept only their own checkpoints while this backend owned them, and lack the rest until rebuilt. */
 	private readonly partialRuns = new Set<string>();
 	private timer: ReturnType<typeof setInterval> | undefined;
+	/** Runs this backend took up to run, until they stop running or its lease is dropped (#5167). */
+	private readonly takenUp = new Set<string>();
 	private state: BackendState = "open";
 	private closing: Promise<void> | undefined;
 	/** Each run's renewal in flight; a run renews independently of every other run. */
@@ -954,6 +956,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		yield* this.refresh(input.workflowId);
 		const draft = yield* this.draft(input.workflowId);
 		draft.registerWorkflow(input, true);
+		if (input.status === "running") this.takeUp(input.workflowId);
 		yield* this.snapshot(
 			draft.getWorkflow(input.workflowId)!,
 			this.sequences.has(input.workflowId) ? E.statusChanged : E.runStarted,
@@ -994,6 +997,10 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			released,
 		);
 	}
+	/** Mark that this backend took `runId` up to run it: it registered the run, or wrote it running again (#5167). */
+	private takeUp(runId: string): void {
+		this.takenUp.add(runId);
+	}
 	commitClaimedWorkflowRegistration(
 		input: WorkflowRegistrationInput,
 		modelOwner: string | undefined,
@@ -1017,6 +1024,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			},
 			true,
 		);
+		this.takeUp(input.workflowId);
 		yield* this.snapshot(draft.getWorkflow(input.workflowId)!);
 		return true;
 	}
@@ -1094,7 +1102,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
-		releasedModelOwner?: string,
+		releasedModelOwner?: string | null,
 	): Promise<boolean> {
 		return await this.serialize(runId, () =>
 			this.transition(
@@ -1117,7 +1125,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		resumable?: boolean,
 		expectedUpdatedAt?: number,
 		modelOwner?: string,
-		releasedModelOwner?: string,
+		releasedModelOwner?: string | null,
 	): Operation<boolean> {
 		yield* this.refresh(runId);
 		const current = this.projection.getWorkflow(runId);
@@ -1127,6 +1135,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			(expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
 		)
 			return false;
+		// #5167: a pause leaves the run adoptable when its owner cannot resume it: a released run stays released, and a
+		// running or failed run that nothing executes (no executor here, no live lease elsewhere) is released by its owner.
+		const release =
+			releasedModelOwner !== undefined || modelOwner !== undefined || status !== "paused"
+				? (releasedModelOwner ?? undefined)
+				: current.status === "paused"
+					? current.releasedModelOwner
+					: (current.status === "running" || current.status === "failed") && !(yield* this.executing(runId))
+						? current.modelOwner
+						: undefined;
 		const draft = yield* this.draft(runId);
 		const acquired = draft.getWorkflow(runId);
 		if (
@@ -1138,17 +1156,21 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 		const seq = this.sequences.get(runId) ?? 0;
 		draft.setWorkflowStatus(runId, status, pendingPrompts, resumable);
 		const { releasedModelOwner: _oldRelease, ...handle } = draft.getWorkflow(runId)!;
+		// A run written running from another status is taken up here; a run leaving running is no longer run here. A write
+		// that keeps a running run running (an answer, an adoption claim) takes nothing up.
+		if (status === "running" && acquired.status !== "running") this.takeUp(runId);
+		else if (status !== "running") this.takenUp.delete(runId);
 		try {
 			yield* this.snapshot(
 				{
 					...handle,
 					...(modelOwner !== undefined ? { modelOwner } : {}),
-					...(releasedModelOwner !== undefined ? { releasedModelOwner } : {}),
+					...(release !== undefined ? { releasedModelOwner: release } : {}),
 				},
 				E.statusChanged,
 				seq,
 			);
-			if (releasedModelOwner !== undefined) yield* this.release(runId);
+			if (release !== undefined) yield* this.release(runId);
 			return true;
 		} catch (error) {
 			if (error instanceof JournalCasConflictError) {
@@ -1157,6 +1179,16 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 			}
 			throw error;
 		}
+	}
+	/** Whether an executor runs `runId`: one of this process's, or another process's that holds a live lease on it. */
+	private *executing(runId: string): Operation<boolean> {
+		if (this.takenUp.has(runId)) return true;
+		const lease = yield* invoke(() => this.journal.leaseState(runId));
+		return (
+			lease !== undefined &&
+			lease.holderId !== this.holderId &&
+			!isWorkflowLeaseExpired(0, FOREIGN_LIVE_WORKFLOW_WINDOW_MS, lease.ageMs)
+		);
 	}
 	private *promptChange<T>(
 		runId: string,
@@ -1458,6 +1490,9 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	async hydrateWorkflow(runId: string): Promise<void> {
 		await this.serialize(runId, () => this.rebuild(runId), false);
+	}
+	holdsIdleWorkflowLease(runId: string): boolean {
+		return this.leases.has(runId) && !this.takenUp.has(runId);
 	}
 	/** Whether a workflow execution of this process holds `runId` (`withWorkflowLease`). */
 	hasWorkflowExecution(runId: string): boolean {
@@ -1823,6 +1858,7 @@ export class JournalDurableBackend<Journal extends RunJournal = RunJournal> impl
 	}
 	private dropLease(runId: string): void {
 		this.leases.delete(runId);
+		this.takenUp.delete(runId);
 		// Only the run's owner keeps it narrowed; the next full read of the run rebuilds every checkpoint.
 		if (this.ownCheckpoints.delete(runId)) this.partialRuns.add(runId);
 		if (this.leases.size === 0) {

@@ -410,3 +410,51 @@ describe("StageChatView streaming lifecycle", () => {
 		assert.equal(isTerminalOrNonStreamingStageChatStatus(undefined), false);
 	});
 });
+
+describe("stage chat bash (#5168)", () => {
+	test("a bash command is not run on a stage session that closed while it attached (#5168)", async () => {
+		const store = createStore();
+		setupRun(store, "run-1", "stage-a");
+		const commands: string[] = [];
+		const agentSession = {
+			...fakeFooterAgentSession(),
+			executeBash: async (command: string) => {
+				commands.push(command);
+				return { output: "", exitCode: 0, cancelled: false, truncated: false };
+			},
+			abortBash: () => {},
+		} as unknown as AgentSession;
+		const { handle } = makeHandle(undefined, [], "running", agentSession);
+		// The session closes while the command attaches it.
+		let closeOnAttach = false;
+		let attaches = 0;
+		Object.assign(handle, {
+			ensureAttached: async () => {
+				attaches += 1;
+				if (closeOnAttach) Object.assign(handle, { isDisposed: true });
+			},
+		});
+		const view = new StageChatView({
+			store,
+			graphTheme: deriveGraphTheme({}),
+			runId: "run-1",
+			stageId: "stage-a",
+			workflowName: "test-wf",
+			handle,
+			onDetach: () => {},
+			onClose: () => {},
+		});
+		const chatHost = (view as unknown as { chatHost: { submit(mode: "auto", text: string): Promise<void> } })
+			.chatHost;
+		await chatHost.submit("auto", "!echo open");
+		await flush();
+		assert.deepEqual(commands, ["echo open"], "a command runs on the stage's open session");
+		closeOnAttach = true;
+		attaches = 0;
+		await chatHost.submit("auto", "!echo hi").catch(() => {});
+		await flush();
+		assert.ok(attaches > 0, "the command attached the stage's session itself");
+		assert.deepEqual(commands, ["echo open"]);
+		view.dispose();
+	});
+});

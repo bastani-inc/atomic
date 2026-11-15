@@ -323,6 +323,7 @@ test("public URLs still use the remote fallback services (#4898)", async () => {
 		"http://172.32.0.1/",
 		"http://169.1.0.1/",
 		"http://192.1.0.1/",
+		// Reserved but not private: only the fetch tool's guard refuses these; fallback services may receive them.
 		"http://[2001:db8::1]/",
 		"http://1.254.0.1/",
 		"http://1.20.0.1/",

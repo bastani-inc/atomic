@@ -517,8 +517,31 @@ export class SqlPoolQueue {
 			if (remote) pool.outboxPending = (await tx.get(`SELECT 1 AS held FROM ${pool.outbox} LIMIT 1`)) !== undefined;
 			if (version === 1) await pool.migrateFromVersion1(tx);
 			await pool.addChunks(tx);
+			await pool.addShipTables(tx);
 		});
 		return pool;
+	}
+	/**
+	 * The tables a shipping root's hosts record their batches in (#4768): the ledger of delivered batches, and each
+	 * attempt's highest shipped point. Idempotent.
+	 */
+	private async addShipTables(tx: SqliteExecutor): Promise<void> {
+		const { int } = this.dialect.types;
+		const runs = this.journal.runs;
+		await tx.exec(`
+			CREATE TABLE IF NOT EXISTS ${runs}_ship_batches(
+				batch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
+				generation ${int} NOT NULL, worker TEXT, epoch ${int} NOT NULL, host TEXT NOT NULL,
+				first_local_seq ${int} NOT NULL, last_local_seq ${int} NOT NULL, events ${int} NOT NULL,
+				shipped_at ${int} NOT NULL${this.dialect.rowOrderColumn}
+			);
+			CREATE INDEX IF NOT EXISTS ${runs}_ship_batches_work ON ${runs}_ship_batches(work, generation);
+			CREATE TABLE IF NOT EXISTS ${runs}_ship_watermarks(
+				work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
+				host TEXT NOT NULL, last_local_seq ${int} NOT NULL, last_event_key TEXT NOT NULL,
+				shipped_at ${int} NOT NULL${this.dialect.rowOrderColumn}
+			);
+		`);
 	}
 	/**
 	 * Large inputs and results in chunks (#4965): each table's chunk count column, 0 for every row written before it, the
@@ -1672,35 +1695,6 @@ export class SqlPoolQueue {
 		return receipt;
 	}
 	/**
-	 * The tables a shipping root's hosts record their batches in (#4768): the ledger of delivered batches, and each
-	 * attempt's highest shipped point. Created on first use, since only a root that ships checkpoints needs them.
-	 */
-	private shipTables: Promise<void> | undefined;
-	private ensureShipTables(): Promise<void> {
-		const { int } = this.dialect.types;
-		const runs = this.journal.runs;
-		this.shipTables ??= this.transaction(async (tx) => {
-			await tx.exec(`
-				CREATE TABLE IF NOT EXISTS ${runs}_ship_batches(
-					batch TEXT PRIMARY KEY, work TEXT NOT NULL REFERENCES ${this.work}(id) ON DELETE CASCADE,
-					generation ${int} NOT NULL, worker TEXT, epoch ${int} NOT NULL, host TEXT NOT NULL,
-					first_local_seq ${int} NOT NULL, last_local_seq ${int} NOT NULL, events ${int} NOT NULL,
-					shipped_at ${int} NOT NULL${this.dialect.rowOrderColumn}
-				);
-				CREATE INDEX IF NOT EXISTS ${runs}_ship_batches_work ON ${runs}_ship_batches(work, generation);
-				CREATE TABLE IF NOT EXISTS ${runs}_ship_watermarks(
-					work TEXT PRIMARY KEY REFERENCES ${this.work}(id) ON DELETE CASCADE, generation ${int} NOT NULL,
-					host TEXT NOT NULL, last_local_seq ${int} NOT NULL, last_event_key TEXT NOT NULL,
-					shipped_at ${int} NOT NULL${this.dialect.rowOrderColumn}
-				);
-			`);
-		}).catch((error) => {
-			this.shipTables = undefined;
-			throw error;
-		});
-		return this.shipTables;
-	}
-	/**
 	 * Records an attempt's batch of checkpoints, which its host accepted in its local journal, in the root's journal
 	 * (#4768): in one request, under the same fences as a commit of each (the root's lease, the attempt's work lease,
 	 * the root's status), each validated against the root's checkpoints and those before it in the batch. A batch is
@@ -1714,7 +1708,6 @@ export class SqlPoolQueue {
 		if (batch.events.length === 0) return;
 		if (this.remote) throw new Error("A pool whose root journal is in another database does not ship checkpoints");
 		validateText("key", batch.id);
-		await this.ensureShipTables();
 		const runs = this.journal.runs;
 		const parsed = batch.events.map((event) => ({
 			...event,

@@ -5,7 +5,7 @@ import { parseJsonFileContent } from "../utils/json.ts";
 import { normalizeAzureSettings } from "./azure-provider-compat.js";
 import { backgroundCompactionSettingErrors } from "./compaction/background-compaction.ts";
 import { isDecisionConfigError } from "./decision/errors.js";
-import { deepMergeSettings } from "./settings-merge.js";
+import { deepMergeSettings, isPrototypeKey } from "./settings-merge.js";
 import { FileSettingsStorage, InMemorySettingsStorage } from "./settings-storage.ts";
 import type {
 	PackageSource,
@@ -435,11 +435,17 @@ export class SettingsManager {
 
 	/** An explicit change to a setting replaces its override; overrides of other settings and keys stay. */
 	private dropOverride(field: keyof Settings, nestedKey?: string): void {
+		if (isPrototypeKey(field) || (nestedKey !== undefined && isPrototypeKey(nestedKey))) return;
 		for (const overrides of this.overrides) {
+			if (!Object.hasOwn(overrides, field)) continue;
 			const value: unknown = overrides[field];
-			if (nestedKey !== undefined && isPlainObject(value)) delete value[nestedKey];
-			else if (nestedKey === undefined || nestedEntries(field, value)[nestedKey] !== undefined)
-				delete overrides[field];
+			if (nestedKey !== undefined && isPlainObject(value)) {
+				if (Object.hasOwn(value, nestedKey)) delete value[nestedKey];
+			} else {
+				const entries = nestedEntries(field, value);
+				if (nestedKey === undefined || (Object.hasOwn(entries, nestedKey) && entries[nestedKey] !== undefined))
+					delete overrides[field];
+			}
 		}
 	}
 
@@ -527,13 +533,17 @@ export class SettingsManager {
 				: {};
 			const mergedSettings: Settings = { ...currentFileSettings };
 			for (const field of modifiedFields) {
+				if (isPrototypeKey(field)) continue;
 				const value = snapshotSettings[field];
 				if (modifiedNestedFields.has(field)) {
 					const nestedModified = modifiedNestedFields.get(field)!;
 					const inMemoryNested = nestedEntries(field, value);
 					const mergedNested = { ...nestedEntries(field, currentFileSettings[field]) };
 					for (const nestedKey of nestedModified) {
-						mergedNested[nestedKey] = inMemoryNested[nestedKey];
+						if (isPrototypeKey(nestedKey)) continue;
+						mergedNested[nestedKey] = Object.hasOwn(inMemoryNested, nestedKey)
+							? inMemoryNested[nestedKey]
+							: undefined;
 					}
 					const keys = Object.keys(mergedNested).filter((key) => mergedNested[key] !== undefined);
 					// Keep list-form workflow paths a list, and drop an object the setter removed once nothing is left in it.

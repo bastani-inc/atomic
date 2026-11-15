@@ -31,15 +31,21 @@ export function isSdkDurableRunInScope<
 	return handle.modelOwner !== undefined && isProjectRootRun(handle, cwd, canonicalize);
 }
 
+/** A running run whose owner crashed: nothing executes it. */
 export async function isSdkCrashedRunAdoptable(
 	handle: DurableWorkflowHandle,
 	cwd: string | undefined,
 	backend: DurableWorkflowBackend,
 ): Promise<boolean> {
+	if (!isSdkDurableRunInScope(handle, cwd) || handle.status !== "running") return false;
+	const ownership = await backend.workflowOwnership(handle.workflowId);
+	// #5167: a lease this backend took over from the crashed owner (to answer a prompt, say) runs nothing here. A lease
+	// another session of this process holds is that session's, so it is not adoptable.
 	return (
-		isSdkDurableRunInScope(handle, cwd) &&
-		handle.status === "running" &&
-		(await backend.workflowOwnership(handle.workflowId)) === "available"
+		ownership === "available" ||
+		(ownership === "local" &&
+			handle.ownerLiveness !== "alive" &&
+			backend.holdsIdleWorkflowLease?.(handle.workflowId) === true)
 	);
 }
 

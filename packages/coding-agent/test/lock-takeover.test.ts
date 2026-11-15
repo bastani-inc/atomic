@@ -13,6 +13,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "vitest";
+import { HOLDER_TEMP_STALE_MS } from "../src/core/lock-holder.ts";
 import {
 	guardLockRemoval,
 	removeStaleLock,
@@ -62,6 +63,23 @@ describe("removing a stale lock (#5161)", () => {
 		removeStaleLock(lockPath, STALE_MS);
 		assert.equal(existsSync(lockPath), false);
 		assert.equal(existsSync(takeoverMutexPath(lockPath)), false);
+	});
+
+	it("removes the holder-record temporary files killed writers left when it removes a stale lock (#5161)", () => {
+		staleLock(lockPath);
+		const old = `${lockPath}.holder.123.old.tmp`;
+		const recent = `${lockPath}.holder.456.recent.tmp`;
+		const unrelated = join(directory, "settings.json.789.other.tmp");
+		const notTemporary = `${lockPath}.holder.backup`;
+		for (const path of [old, recent, unrelated, notTemporary]) writeFileSync(path, "{");
+		const past = new Date(Date.now() - HOLDER_TEMP_STALE_MS - 1_000);
+		for (const path of [old, unrelated, notTemporary]) utimesSync(path, past, past);
+		removeStaleLock(lockPath, STALE_MS);
+		assert.equal(existsSync(lockPath), false);
+		assert.equal(existsSync(old), false);
+		assert.equal(existsSync(recent), true, "a recent one may still be written");
+		assert.equal(existsSync(unrelated), true, "another file's temporary file is not a holder record's");
+		assert.equal(existsSync(notTemporary), true, "only temporary files are removed");
 	});
 
 	it("keeps a lock taken since it was judged stale (#5161)", () => {

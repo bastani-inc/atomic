@@ -92,9 +92,11 @@ test("a shipped batch records its checkpoints in the root's journal once, with t
 	const { queue, lease, attempt, tool, recorded, database } = await claimedAttempt();
 	const { shipping } = await hostShipping(queue, lease);
 	await shipping.hold(attempt, LEASE_MS);
-	for (const index of [1, 2, 3])
-		await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
+	await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(1) }, noShared);
 	assert.deepEqual(await recorded(), [], "accepted on the host, not yet in the root's journal");
+	// The second fills a batch (maxBatch 2), which starts shipping at once.
+	for (const index of [2, 3])
+		await shipping.commit(attempt, { kind: "checkpoint", checkpoint: tool(index) }, noShared);
 	await shipping.flush(attempt);
 	assert.deepEqual(await recorded(), [1, 2, 3]);
 	const batches = await database.all<{ events: number; host: string; generation: number }>(
