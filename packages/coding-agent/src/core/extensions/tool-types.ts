@@ -99,6 +99,19 @@ export interface ToolLoadoutChanges {
 /** Decides from one call's arguments whether that call may detach. */
 export type DetachableCallPredicate<TParams> = { decide(params: TParams): boolean }["decide"];
 
+/**
+ * Lets codemode scripts call part of a model-only tool. Script calls run the tool's own `execute` through the same
+ * validation and permission hooks as direct calls; `refuse` turns away the calls that stay model-only.
+ */
+export interface ToolScriptAccess<TParams> {
+	/** What scripts see instead of `description` in the codemode description, `ALL_TOOLS`, `searchTools()` and `describeTool()`. */
+	description: string;
+	/** Schema of the `structuredContent` script calls resolve to. */
+	outputSchema?: TSchema;
+	/** Why a script may not make this call, or `undefined` to run it. Runs after schema validation and before permission hooks. */
+	refuse(params: TParams): string | undefined;
+}
+
 export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = unknown, TState = unknown> {
 	/** Tool name (used in LLM tool calls) */
 	name: string;
@@ -127,6 +140,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	outputSchema?: TSchema;
 	/** Direct and model-only tools activate by default; other exposures do not. */
 	exposure?: ToolExposure;
+	/** Makes an active model-only tool callable from codemode scripts, limited to the calls it does not refuse. */
+	scriptAccess?: ToolScriptAccess<Static<TParams>>;
 	namespace?: ToolNamespace;
 	annotations?: ToolAnnotations;
 	/** The tool can change files, so a turn that calls it records a worktree snapshot, as bash, edit and write do. */
