@@ -8,7 +8,11 @@ import { poolUsageTotalsSeed } from "../../packages/workflows/src/durable/journa
 import { openSqlPoolQueue, type SqlPoolQueue } from "../../packages/workflows/src/durable/journal/sql-pool-queue.js";
 import { openSqlPoolUsage } from "../../packages/workflows/src/durable/journal/sql-pool-usage.js";
 import { SqlRunJournal } from "../../packages/workflows/src/durable/journal/sql-run-journal.js";
-import { isStaleLeaseError, type Lease } from "../../packages/workflows/src/durable/journal/types.js";
+import {
+	isStaleLeaseError,
+	JournalSchemaVersionError,
+	type Lease,
+} from "../../packages/workflows/src/durable/journal/types.js";
 import type { DurableToolCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import { poolWorkFixture } from "../helpers/pool-journal.js";
 import { syntheticSnapshot, textBlob } from "../helpers/snapshot-reference-index.js";
@@ -399,6 +403,30 @@ describe.skipIf(postgres.skipReason !== undefined)("the worker pool's fenced wri
 		await collection.done;
 		await carrying;
 		assert.equal(waited, true, "a commit recording a snapshot waits until collection ends");
+	});
+
+	test("a fenced claim, commit and completion are refused once a later build upgraded the journal (#5102)", async () => {
+		await pool.enqueue(lease, item.work, item.boundary);
+		const attempt = (await pool.claim(lease, "worker", [definition], 60_000))!;
+		await pool.commit(lease, attempt, "before", { kind: "checkpoint", checkpoint: toolCheckpoint(item, 0) });
+		const meta = table("wf_meta");
+		const [{ schema_version: version }] = await other.all<{ schema_version: number }>(
+			`SELECT schema_version FROM ${meta}`,
+		);
+		await other.run(`UPDATE ${meta} SET schema_version = ?`, Number(version) + 1);
+		try {
+			await assert.rejects(
+				pool.complete(lease, attempt, { runId: attempt.childRunId, status: "completed" }),
+				JournalSchemaVersionError,
+			);
+			await assert.rejects(
+				pool.commit(lease, attempt, "after", { kind: "checkpoint", checkpoint: toolCheckpoint(item, 1) }),
+				JournalSchemaVersionError,
+			);
+		} finally {
+			await other.run(`UPDATE ${meta} SET schema_version = ?`, Number(version));
+		}
+		assert.equal((await pool.inspect("root"))[0]!.state, "leased", "nothing was written");
 	});
 
 	test("the pool's fenced writes are counted and watched like its other writes (#5102)", async () => {

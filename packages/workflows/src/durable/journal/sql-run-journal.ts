@@ -257,8 +257,18 @@ export class SqlRunJournal implements RunJournal {
 			// A database that locks rows (PostgreSQL) runs the pool's audited hot paths as fenced transactions (#5102).
 			...(batch === undefined && locksRows(this.dialect)
 				? {
+						// Fenced on the schema version as a batch is: an optimistic plan reads nothing (#4965).
 						fenced: (statements, audit, excludesSerial) =>
-							this.operation(() => this.fencedWrite(statements, audit, excludesSerial)),
+							this.operation(async () => {
+								try {
+									return (await this.fencedWrite([versionFence, ...statements], audit, excludesSerial)).slice(
+										1,
+									);
+								} catch (error) {
+									await this.assertVersion(this.database);
+									throw error;
+								}
+							}),
 					}
 				: {}),
 			read: (body) => this.operation(() => this.readSnapshot((executor) => body(this.versionChecked(executor)))),
