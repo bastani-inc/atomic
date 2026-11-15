@@ -107,9 +107,12 @@ function positiveInteger(field, value, fallback) {
 	return value;
 }
 
-/** Whether `character` can continue an identifier, so a `$` or `'` after it does not start a literal. */
+/**
+ * Whether `character` can continue an identifier, so a `$` or `'` after it does not start a literal. Like Postgres's
+ * lexer, any non-ASCII character counts; each UTF-16 code unit of one is at least U+0080.
+ */
 function isWordCharacter(/** @type {string | undefined} */ character) {
-	return character !== undefined && /[\p{L}\p{N}_$]/u.test(character);
+	return character !== undefined && /[A-Za-z0-9_$\u0080-\uffff]/.test(character);
 }
 
 /**
@@ -126,7 +129,9 @@ export function numberPlaceholders(sql) {
 	while (index < sql.length) {
 		const character = sql[index];
 		if (character === "?") {
-			numbered += `${sql.slice(copied, index)}$${++count}`;
+			// After an identifier character `$1` would continue the identifier, so a space keeps the parameter apart.
+			const separator = isWordCharacter(sql[index - 1]) ? " " : "";
+			numbered += `${sql.slice(copied, index)}${separator}$${++count}`;
 			copied = ++index;
 		} else if (character === "'") {
 			const escapes = /[eE]/.test(sql[index - 1] ?? "") && !isWordCharacter(sql[index - 2]);
@@ -158,7 +163,8 @@ export function numberPlaceholders(sql) {
 				} else index++;
 			}
 		} else if (character === "$" && !isWordCharacter(sql[index - 1])) {
-			const tag = /^\$(?:[\p{L}_][\p{L}\p{N}_]*)?\$/u.exec(sql.slice(index))?.[0];
+			// A tag starts with an ASCII letter, `_` or any non-ASCII character, and may continue with digits too.
+			const tag = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
 			if (tag === undefined) index++;
 			else {
 				const end = sql.indexOf(tag, index + tag.length);
