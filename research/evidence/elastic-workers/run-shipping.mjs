@@ -79,7 +79,16 @@ async function waitFor(file, deadline, processes, log) {
 async function openStore(work) {
 	const port = await freePort();
 	const name = `ship-bench-${store}-${port}`;
-	if (store === "sqld")
+	// --native-sqld <binary>: the sqld binary run directly, as the first local runs did, instead of its Docker image.
+	const native =
+		store === "sqld" && args["native-sqld"] !== undefined
+			? spawn(args["native-sqld"], ["--db-path", join(work, "sqld"), "--http-listen-addr", `127.0.0.1:${port}`], {
+					stdio: "ignore",
+					detached: true,
+				})
+			: undefined;
+	if (native !== undefined) {
+	} else if (store === "sqld")
 		spawnSync("docker", [
 			"run", "-d", "--rm", "--name", name, "-e", "SQLD_CHECKPOINT_INTERVAL_S=60", "-p", `127.0.0.1:${port}:8080`,
 			"ghcr.io/tursodatabase/libsql-server:v0.24.33",
@@ -150,12 +159,17 @@ async function openStore(work) {
 		},
 		// The container's CPU time: what the shared store spent serving the trial.
 		cpuMs: () => {
+			if (native !== undefined) {
+				const fields = readFileSync(`/proc/${native.pid}/stat`, "utf8").split(") ")[1].split(" ");
+				return ((Number(fields[11]) + Number(fields[12])) * 1000) / 100;
+			}
 			const stat = spawnSync("docker", ["exec", name, "cat", "/sys/fs/cgroup/cpu.stat"]).stdout.toString();
 			return Number(/usage_usec (\d+)/.exec(stat)?.[1] ?? 0) / 1000;
 		},
 		close: () => {
 			traced?.close();
-			spawnSync("docker", ["rm", "-f", name]);
+			if (native !== undefined) killGroup(native, "SIGKILL");
+			else spawnSync("docker", ["rm", "-f", name]);
 		},
 	};
 }
