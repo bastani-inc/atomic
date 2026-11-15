@@ -556,7 +556,7 @@ async function initializedStore(store: string): Promise<boolean> {
 async function ensureObjectStore(store: string, signal?: AbortSignal): Promise<void> {
 	if (await initializedStore(store)) return;
 	const repositories = dirname(store);
-	const fresh = join(repositories, `.${basename(store)}-${randomUUID()}.init`);
+	const fresh = join(repositories, `.${basename(store)}.${process.pid}.init`);
 	try {
 		await runGit(["init", "-q", "--bare", fresh], { cwd: repositories, signal });
 		try {
