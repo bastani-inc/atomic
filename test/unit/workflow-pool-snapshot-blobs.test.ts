@@ -385,7 +385,11 @@ async function rootWithSeparatePool(subject: (typeof commitSubjects)[number]) {
 		topology: { version: 1, nodeId: "tool-1", parentIds: [], ordinal: 1, order: 1, run },
 		worktreeSnapshots: [snapshot],
 	};
-	const commit = () => queue.commit(lease, attempt, "op-1", { kind: "checkpoint", checkpoint });
+	const commit = (operation = "op-1", snapshots: readonly WorktreeSnapshot[] = [snapshot]) =>
+		queue.commit(lease, attempt, operation, {
+			kind: "checkpoint",
+			checkpoint: { ...checkpoint, worktreeSnapshots: snapshots },
+		});
 	const recorded = async () => {
 		const found: DurableToolCheckpoint[] = [];
 		for await (const entry of journal.read("root"))
@@ -395,7 +399,7 @@ async function rootWithSeparatePool(subject: (typeof commitSubjects)[number]) {
 	};
 	const claimSibling = async () =>
 		(await (await open()).claim(lease, `worker-${randomUUID()}`, [sibling.work], 60_000))?.childRunId;
-	return { lease, remote, open, blobs, commit, recorded, claimSibling, sibling };
+	return { lease, remote, open, blobs, patch, commit, recorded, claimSibling, sibling };
 }
 
 for (const subject of commitSubjects) {
@@ -431,3 +435,32 @@ for (const subject of commitSubjects) {
 		assert.equal(checkpoint?.worktreeSnapshots, undefined, "without the snapshot whose blobs are gone");
 	});
 }
+
+for (const subject of commitSubjects)
+	test(`a checkpoint recorded on ${subject.name} without its collected snapshot, whose receipt was lost, answers its resend and a retry with the snapshot as recorded (#5077)`, async () => {
+		const { lease, remote, open, blobs, patch, commit, recorded, claimSibling, sibling } =
+			await rootWithSeparatePool(subject);
+		const append = remote.append.bind(remote);
+		let calls = 0;
+		vi.spyOn(remote, "append").mockImplementation(async (...args) => {
+			calls++;
+			// Collected after the checkpoint was staged, before its delivery reaches the journal.
+			if (calls === 1) await collectSnapshotGarbage(blobs, { graceSeconds: 0 });
+			const outcome = await append(...args);
+			// The delivery without the snapshot commits, and its answer is lost.
+			if (calls === 2) throw new Error("connection lost after the append committed");
+			return outcome;
+		});
+
+		await assert.rejects(commit("op-X"), /connection lost/);
+		await (await open()).drainOutbox(lease);
+		assert.equal(await (await open()).drainOutbox(lease), 0, "nothing is left to deliver");
+		await commit("op-X");
+		await blobs.putBlobs([patch]);
+		await commit("op-Y");
+		await commit("op-Z", []);
+		assert.equal(await claimSibling(), sibling.work.childRunId);
+		const checkpoints = await recorded();
+		assert.equal(checkpoints.length, 1);
+		assert.equal(checkpoints[0]!.worktreeSnapshots, undefined);
+	});

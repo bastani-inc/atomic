@@ -44,7 +44,12 @@ import {
 	poolTransactionSessionStore,
 	validatePoolMutation,
 } from "./pool-mutations.js";
-import { isRecordedCheckpointValue, isSameCheckpointValue, type PoolRemoteJournal } from "./pool-remote-journal.js";
+import {
+	isRecordedCheckpointValue,
+	isRecordedWithoutSnapshots,
+	isSameCheckpointValue,
+	type PoolRemoteJournal,
+} from "./pool-remote-journal.js";
 import { poolCheckpointUsage, poolUsageSchema, poolUsageUpsert, upsertPoolUsage } from "./pool-stage-usage.js";
 import { fleetDrainsSchema } from "./sql-fleet.js";
 import {
@@ -183,6 +188,16 @@ async function assertSnapshotBlobsHeld(
 	const { snapshotBlobHashes, WorkspaceSnapshotError } = await import("@bastani/atomic");
 	for (const hash of [...new Set(snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes)))])
 		if (!(await blobs.refreshBlobs([hash]))) throw new WorkspaceSnapshotError("blobs-collected", hash);
+}
+/**
+ * Reports, as a process warning, a `blobs-collected` WorkspaceSnapshotError for a checkpoint the journal holds without
+ * `snapshots`, whose blobs were collected before it reached the journal (#5077).
+ */
+function reportCollectedSnapshot(snapshots: readonly WorktreeSnapshot[]): void {
+	void import("@bastani/atomic").then(({ snapshotBlobHashes, WorkspaceSnapshotError }) => {
+		const [hash] = snapshots.flatMap((snapshot) => wellFormed(snapshot, snapshotBlobHashes));
+		process.emitWarning(new WorkspaceSnapshotError("blobs-collected", hash ?? "unknown"));
+	});
 }
 /** `snapshot`'s blob hashes, or none for a record that is not well formed. */
 function wellFormed(snapshot: WorktreeSnapshot, hashesOf: (snapshot: WorktreeSnapshot) => string[]): string[] {
@@ -1453,6 +1468,27 @@ export class SqlPoolQueue {
 		// The journal holds the snapshot's blobs, which this database cannot check as it stages the checkpoint (#5077):
 		// they are checked here, and their age restarts, so collection keeps them while the checkpoint waits to be
 		// delivered for as long as the grace window. A checkpoint whose blobs are gone is refused before it is staged.
+		// A resend of an operation this pool took already is answered from what it took, whatever became of the blobs.
+		const known = await this.transaction(async (tx) => ({
+			previous: await tx.get<SqliteRow & { request: string; receipt: string }>(
+				`SELECT * FROM ${this.operations} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			),
+			held: await tx.get<OutboxRow>(
+				`SELECT * FROM ${this.outbox} WHERE work = ? AND generation = ? AND operation = ?`,
+				token.id,
+				token.generation,
+				operationId,
+			),
+		}));
+		if (known.previous || known.held) {
+			if ((known.previous ?? known.held)!.request !== identity) throw new Error("Pool operation identity conflict");
+			if (known.previous) return JSON.parse(known.previous.receipt) as PoolCommitReceipt;
+			this.outboxPending = true;
+			return this.deliver(lease, known.held!);
+		}
 		await assertSnapshotBlobsHeld(remote.journal.snapshotBlobs, carriedSnapshots(checkpoint));
 		const key = JSON.stringify([RUN_EVENT_TYPES.checkpointRecorded, checkpoint.kind, checkpoint.checkpointId]);
 		const reads = this.checkpoints.begin(lease.runId);
@@ -1495,7 +1531,9 @@ export class SqlPoolQueue {
 			if (checkpoint.completedAt > Math.max(now, Date.now()) + MAX_WORKER_CLOCK_SKEW_MS)
 				throw new Error("Pool checkpoint timestamp is in the future");
 			assertWorkflowSerializableObject(checkpoint, "Pool checkpoint");
-			if (existing && !isRecordedCheckpointValue(existing.event.payload, checkpoint))
+			const strippedEarlier =
+				existing !== undefined && isRecordedWithoutSnapshots(existing.event.payload, checkpoint);
+			if (existing && !strippedEarlier && !isRecordedCheckpointValue(existing.event.payload, checkpoint))
 				throw new Error("Pool checkpoint identity conflict");
 			if (existing && mutation.kind !== "checkpoint") throw new Error("Pool session checkpoint identity conflict");
 			const lastSeq =
@@ -1506,6 +1544,8 @@ export class SqlPoolQueue {
 			if (billed && !existing)
 				await upsertPoolUsage(tx, this.journal.runs, row.id, token.generation, billed.key, billed.usage);
 			if (existing) {
+				// The checkpoint is recorded already, without the snapshot whose blobs were collected before it was (#5077).
+				if (strippedEarlier) reportCollectedSnapshot(carriedSnapshots(checkpoint));
 				const receipt: PoolCommitReceipt = { seq: existing.seq, at: existing.at };
 				await tx.run(
 					`INSERT INTO ${this.operations} VALUES (?, ?, ?, ?, ?)`,
@@ -1567,7 +1607,11 @@ export class SqlPoolQueue {
 				held.generation,
 				held.operation,
 			);
-		if (outcome.status === "exists" && !isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint)) {
+		if (
+			outcome.status === "exists" &&
+			!isRecordedCheckpointValue(outcome.entry.event.payload, checkpoint) &&
+			!isRecordedWithoutSnapshots(outcome.entry.event.payload, checkpoint)
+		) {
 			// Another attempt recorded a different checkpoint under this key first; there is nothing left to record.
 			await this.transaction(forget);
 			throw new Error("Pool checkpoint identity conflict");
