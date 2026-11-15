@@ -15,6 +15,12 @@ import {
 	StoreClosedError as SessionStoreClosedError,
 } from "../src/core/storage/session/errors.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
+import {
+	isWorkspaceSnapshotError,
+	rehydrateWorkspaceError,
+	type SerializedWorkspaceError,
+	serializeWorkspaceError,
+} from "../src/core/workspace/errors.ts";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.ts";
 
 let sandbox: GitSandbox;
@@ -75,6 +81,14 @@ for (const [index, failure] of [
 			"Worktree snapshot not recorded: the node-sqlite storage could not store or read its blobs (blob-store-failed). The turn went on without a snapshot; the cause says why the storage failed (`atomic storage status` shows the store in use). The next turn that changes files tries again.",
 		);
 		assert.equal(manager.getLatestWorktreeSnapshots().size, 0, "no snapshot recorded without its blobs");
+		// The reason crosses a process boundary as the same class and code, as a workflow worker relays it.
+		const relayed = rehydrateWorkspaceError(
+			JSON.parse(JSON.stringify(serializeWorkspaceError(reason as Error))) as SerializedWorkspaceError,
+		);
+		assert.ok(isWorkspaceSnapshotError(relayed));
+		assert.equal(relayed.code, "blob-store-failed");
+		// A copy from another module instance is recognized by its name and code.
+		assert.ok(isWorkspaceSnapshotError({ name: "WorkspaceSnapshotError", code: "blob-store-failed" }));
 
 		store.snapshotBlobs.putBlobs = putBlobs;
 		sandbox.write(join(clone, "c.txt"), "c");

@@ -962,6 +962,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 		"not-a-repository",
 		"unborn-head",
 		"blob-store-unsupported",
+		"blob-store-failed",
 		"unreadable-path",
 		"pooled-worktree-lost",
 	],
