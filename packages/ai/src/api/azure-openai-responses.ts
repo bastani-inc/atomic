@@ -9,6 +9,7 @@ import { getIdentityHeaders } from "../utils/identity.ts";
 import { retryProviderRequest } from "../utils/provider-retry.ts";
 import { admitOpenAIRequests, getFetchAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { getDeclaredTools, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { type AzureEndpointOptions, resolveAzureConfig, resolveDeploymentName } from "./azure-openai-config.ts";
@@ -76,6 +77,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
 
 		try {
 			const thinkingOffFallback =
@@ -105,7 +107,7 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
 			const requestOptions = {
-				...(options?.signal ? { signal: options.signal } : {}),
+				...(streamDeadline.signal ? { signal: streamDeadline.signal } : {}),
 				...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
 				maxRetries: 0,
 			};
@@ -114,16 +116,22 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 				{
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
-					signal: options?.signal,
+					signal: streamDeadline.signal,
 				},
 			);
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 			stream.push({ type: "start", partial: output });
 
-			await processResponsesStream(openaiStream, output, stream, model, {
-				onProviderStreamEvent: options?.onProviderStreamEvent,
-				grammarToolInputProperties,
-			});
+			await processResponsesStream(
+				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
+				output,
+				stream,
+				model,
+				{
+					onProviderStreamEvent: options?.onProviderStreamEvent,
+					grammarToolInputProperties,
+				},
+			);
 
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
@@ -144,6 +152,8 @@ export const stream: StreamFunction<"azure-openai-responses", AzureOpenAIRespons
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 

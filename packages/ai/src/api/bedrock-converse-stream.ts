@@ -59,6 +59,7 @@ import { type ClientIdentity, getClientVersion } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { getSystemMessageText } from "../utils/text.ts";
@@ -269,6 +270,7 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 		// Kept outside the try so the catch can still correlate a mid-stream failure:
 		// exceptions delivered as stream events carry no HTTP metadata of their own.
 		let responseRequestId: string | undefined;
+		const streamDeadline = createStreamDeadline(options.streamDeadlineMs, options.signal);
 
 		try {
 			const supportsStrictMode = model.compat?.supportsStrictMode ?? false;
@@ -320,7 +322,9 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 					commandInput = nextCommandInput as typeof commandInput;
 				}
 				try {
-					response = await client.send(new ConverseStreamCommand(commandInput), { abortSignal: options.signal });
+					response = await client.send(new ConverseStreamCommand(commandInput), {
+						abortSignal: streamDeadline.signal,
+					});
 					break;
 				} catch (error) {
 					// Bedrock checks the tool schemas before it starts the stream, so a retry never repeats streamed output.
@@ -353,7 +357,11 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 				await options?.onResponse?.({ status: response.$metadata.httpStatusCode, headers: responseHeaders }, model);
 			}
 
-			for await (const item of response.stream!) {
+			for await (const item of withStreamDeadline(
+				response.stream!,
+				streamDeadline.deadlineMs,
+				streamDeadline.abort,
+			)) {
 				await options.onProviderStreamEvent?.(item, model);
 				if (item.messageStart) {
 					if (item.messageStart.role !== ConversationRole.ASSISTANT) {
@@ -414,6 +422,8 @@ export const stream: StreamFunction<"bedrock-converse-stream", BedrockOptions> =
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();
+		} finally {
+			streamDeadline.cleanup();
 		}
 	})();
 

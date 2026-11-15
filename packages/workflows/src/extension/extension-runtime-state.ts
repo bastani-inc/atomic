@@ -152,6 +152,11 @@ export function createWorkflowExtensionRuntimeState(
 	const { store, stageUiBroker, cancellationRegistry, jobs, stageControlRegistry, toolControlRegistry } =
 		options.runState ?? currentWorkflowSessionRunState();
 	let projectTrusted: boolean | undefined;
+	// Discovery reads the host's live decision first, so trust granted later in the
+	// session (deferred startup trust) applies to the next discovery. No decision
+	// at all (a host without project trust) discovers the project as before.
+	const isProjectTrustedForDiscovery = (): boolean | undefined =>
+		pi.getResourceLoaderInheritanceSnapshot?.()?.projectTrusted ?? projectTrusted;
 	const stagePredictor = new StagePredictor();
 	const scopedRunOptions = {
 		store,
@@ -508,7 +513,10 @@ export function createWorkflowExtensionRuntimeState(
 
 	async function ensureWorkflowConfigLoaded(): Promise<void> {
 		const generation = workflowDiscoveryGeneration;
-		const configResult = await loadWorkflowConfig({ projectRoot: resolveCwd() });
+		const configResult = await loadWorkflowConfig({
+			projectRoot: resolveCwd(),
+			projectTrusted: isProjectTrustedForDiscovery(),
+		});
 		if (!isWorkflowDiscoveryCurrent(generation)) return;
 		applyWorkflowConfig(configResult);
 		rebuildRuntime();
@@ -567,7 +575,10 @@ export function createWorkflowExtensionRuntimeState(
 		if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
 			return supersededReloadReport(coalescedRequests);
 		}
-		const configResult = await loadWorkflowConfig({ projectRoot: resolveCwd() });
+		const configResult = await loadWorkflowConfig({
+			projectRoot: resolveCwd(),
+			projectTrusted: isProjectTrustedForDiscovery(),
+		});
 		if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
 			return supersededReloadReport(coalescedRequests, configResult);
 		}
@@ -586,6 +597,7 @@ export function createWorkflowExtensionRuntimeState(
 			}
 			const result = await discoverWorkflows({
 				cwd: resolveCwd(),
+				projectTrusted: isProjectTrustedForDiscovery(),
 				config: discoveryConfig,
 				packageWorkflowPaths,
 				getWorkflowHostModules: pi.getWorkflowHostModules,
