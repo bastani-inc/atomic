@@ -1,11 +1,12 @@
-import type {
-	SqliteExecutor,
-	SqliteRow,
-	SqliteStatement,
-	SqliteTransactionOptions,
-	StorageDialect,
-	StorageNotificationSubscription,
-	StorageNotifications,
+import {
+	POSTGRES_POOL_SESSION_PREFIX,
+	type SqliteExecutor,
+	type SqliteRow,
+	type SqliteStatement,
+	type SqliteTransactionOptions,
+	type StorageDialect,
+	type StorageNotificationSubscription,
+	type StorageNotifications,
 } from "@bastani/atomic/storage";
 import {
 	type AppendOutcome,
@@ -133,7 +134,7 @@ const RUNS_TABLE = "wf_runs";
 export function poolSessionPrefix(storage: Pick<SqlPoolStorage, "tables" | "dialect">): string {
 	const { runs } = storage.tables;
 	if (storage.dialect.maxIdentifierBytes === undefined || !runs.endsWith(RUNS_TABLE)) return `${runs}_pool_`;
-	return `${runs.slice(0, -RUNS_TABLE.length)}wf_ps_`;
+	return `${runs.slice(0, -RUNS_TABLE.length)}${POSTGRES_POOL_SESSION_PREFIX}`;
 }
 
 /**

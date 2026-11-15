@@ -90,6 +90,8 @@ async function createSchema(database: SqliteDatabase, table: string): Promise<vo
 async function openSchemaConnection(options: DatabaseWakeUpBusOptions, table: string): Promise<SqliteDatabase> {
 	const database = await options.openDatabase();
 	try {
+		// Refused before anything is created when the prefix is too long for this backend's identifiers (#5067).
+		validateStoragePrefix(options.prefix, dialectOf(database).name);
 		await createSchema(database, table);
 	} catch (cause) {
 		await database.close().catch(() => {});
