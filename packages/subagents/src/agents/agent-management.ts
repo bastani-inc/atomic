@@ -26,6 +26,7 @@ import {
 	type AgentDiscoveryOptions,
 	type AgentSource,
 	buildRuntimeName,
+	contextAgentDiscoveryOptions,
 	defaultInheritProjectContext,
 	defaultInheritSkills,
 	defaultSystemPromptMode,
@@ -37,11 +38,6 @@ type ManagementAction = "list" | "get" | "create" | "update" | "delete";
 export type ManagementScope = "user" | "project";
 export type ManagementContext = Pick<ExtensionContext, "cwd" | "modelRegistry"> &
 	Pick<Partial<ExtensionContext>, "getSkillCatalog" | "isProjectTrusted">;
-
-/** Project agents are read only for a trusted project. */
-function discoveryOptions(ctx: ManagementContext): AgentDiscoveryOptions {
-	return { projectTrusted: ctx.isProjectTrusted?.() ?? true };
-}
 
 interface ManagementParams {
 	action?: string;
@@ -140,7 +136,7 @@ function formatAgentDetail(agent: AgentConfig): string {
 
 export function handleList(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
 	const scope = normalizeListScope(params.agentScope) ?? "both";
-	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
+	const d = discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const agents = allAgents(d)
 		.filter((agent) => !agent.disabled && (scope === "both" || agent.source === "builtin" || agent.source === scope))
 		.sort((a, b) => a.name.localeCompare(b.name));
@@ -158,10 +154,10 @@ export function handleList(params: ManagementParams, ctx: ManagementContext): Su
 
 function handleGet(params: ManagementParams, ctx: ManagementContext): SubagentToolResult {
 	if (!params.agent) return result("Specify 'agent' for get.", true);
-	const matches = findAgents(params.agent, ctx.cwd, discoveryOptions(ctx), "both");
+	const matches = findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), "both");
 	if (!matches.length)
 		return result(
-			`Agent '${params.agent}' not found. Available: ${availableNames(ctx.cwd, discoveryOptions(ctx)).join(", ") || "none"}.`,
+			`Agent '${params.agent}' not found. Available: ${availableNames(ctx.cwd, contextAgentDiscoveryOptions(ctx)).join(", ") || "none"}.`,
 			true,
 		);
 	return result(matches.map(formatAgentDetail).join("\n\n"));
@@ -185,10 +181,10 @@ export function handleCreate(params: ManagementParams, ctx: ManagementContext): 
 	const scopeRaw = cfg.scope ?? "user";
 	if (scopeRaw !== "user" && scopeRaw !== "project") return result("config.scope must be 'user' or 'project'.", true);
 	const scope = scopeRaw as ManagementScope;
-	const d = discoverAgentsAll(ctx.cwd, discoveryOptions(ctx));
+	const d = discoverAgentsAll(ctx.cwd, contextAgentDiscoveryOptions(ctx));
 	const targetDir = scope === "user" ? d.userDir : (d.projectDir ?? path.join(ctx.cwd, CONFIG_DIR_NAME, "agents"));
 	fs.mkdirSync(targetDir, { recursive: true });
-	if (nameExistsInScope(ctx.cwd, discoveryOptions(ctx), scope, runtimeName))
+	if (nameExistsInScope(ctx.cwd, contextAgentDiscoveryOptions(ctx), scope, runtimeName))
 		return result(`Name '${runtimeName}' already exists in ${scope} scope. Use update instead.`, true);
 	const targetPath = path.join(targetDir, `${runtimeName}.md`);
 	if (fs.existsSync(targetPath))
@@ -233,9 +229,9 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 	const scopeHint = asDisambiguationScope(params.agentScope);
 	const targetOrError = resolveTarget(
 		params.agent,
-		findAgents(params.agent, ctx.cwd, discoveryOptions(ctx), scopeHint ?? "both"),
+		findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
 		ctx.cwd,
-		discoveryOptions(ctx),
+		contextAgentDiscoveryOptions(ctx),
 		params.agentScope,
 	);
 	if ("content" in targetOrError) return targetOrError;
@@ -276,7 +272,13 @@ export function handleUpdate(params: ManagementParams, ctx: ManagementContext): 
 		if (warning) warnings.push(warning);
 	}
 	if (updated.name !== oldName) {
-		const renamed = renamePath(target.filePath, updated.name, target.source, ctx.cwd, discoveryOptions(ctx));
+		const renamed = renamePath(
+			target.filePath,
+			updated.name,
+			target.source,
+			ctx.cwd,
+			contextAgentDiscoveryOptions(ctx),
+		);
 		if (renamed.error) return result(renamed.error, true);
 		updated.filePath = renamed.filePath!;
 	}
@@ -293,9 +295,9 @@ function handleDelete(params: ManagementParams, ctx: ManagementContext): Subagen
 	const scopeHint = asDisambiguationScope(params.agentScope);
 	const targetOrError = resolveTarget(
 		params.agent,
-		findAgents(params.agent, ctx.cwd, discoveryOptions(ctx), scopeHint ?? "both"),
+		findAgents(params.agent, ctx.cwd, contextAgentDiscoveryOptions(ctx), scopeHint ?? "both"),
 		ctx.cwd,
-		discoveryOptions(ctx),
+		contextAgentDiscoveryOptions(ctx),
 		params.agentScope,
 	);
 	if ("content" in targetOrError) return targetOrError;

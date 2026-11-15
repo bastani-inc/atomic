@@ -29,6 +29,14 @@ export interface AgentDiscoveryOptions {
 	readonly projectTrusted: boolean;
 }
 
+/**
+ * The discovery options for a host context: its project trust decision, or
+ * trusted for a host without one.
+ */
+export function contextAgentDiscoveryOptions(ctx: { isProjectTrusted?: () => boolean }): AgentDiscoveryOptions {
+	return { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+}
+
 /** Nothing of the project is read when it is not trusted. */
 function projectAgentSources(
 	cwd: string,

@@ -24,6 +24,7 @@ import {
 import type { ModelSingleResponse } from "../../../../coding-agent/src/core/tasks/contracts.js";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
 import type { AgentConfig, AgentScope, AgentSource } from "../../agents/agent-types.js";
+import { contextAgentDiscoveryOptions } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -309,7 +310,7 @@ function rediscoverAgent(
 	const scopes: readonly AgentScope[] = source ? ["both", "user", "project"] : [resolveExecutionAgentScope(undefined)];
 	for (const scope of scopes) {
 		const agent = deps
-			.discoverAgents(cwd, scope, { projectTrusted: ctx.isProjectTrusted?.() ?? true })
+			.discoverAgents(cwd, scope, contextAgentDiscoveryOptions(ctx))
 			.agents.find((candidate) => candidate.name === name && (!source || candidate.source === source));
 		if (agent) return agent;
 	}

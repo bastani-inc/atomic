@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { afterEach, describe, test } from "vitest";
 import type { ExtensionContext } from "../../packages/coding-agent/src/index.js";
-import { handleList } from "../../packages/subagents/src/agents/agent-management.js";
+import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.js";
+import { handleList, handleManagementAction } from "../../packages/subagents/src/agents/agent-management.js";
 import { discoverAgents, discoverAgentsAll } from "../../packages/subagents/src/agents/agents.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import type { ExecutorDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
-import type { SingleResult, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import type { SingleResult, SubagentState, SubagentToolResult } from "../../packages/subagents/src/shared/types.js";
+import { registerSlashCommands } from "../../packages/subagents/src/slash/slash-commands.js";
 
 const originalEnv = {
 	HOME: process.env.HOME,
@@ -105,7 +108,7 @@ describe("project agent discovery follows project trust", () => {
 async function runAgent(
 	project: string,
 	agent: string,
-	trusted: boolean,
+	trusted: boolean | undefined,
 ): Promise<{ launched: string[]; output: SubagentToolResult }> {
 	const launched: string[] = [];
 	const deps: ExecutorDeps = {
@@ -154,7 +157,7 @@ async function runAgent(
 			getEntries: () => [],
 		},
 		isIdle: () => true,
-		isProjectTrusted: () => trusted,
+		...(trusted === undefined ? {} : { isProjectTrusted: () => trusted }),
 		signal: undefined,
 		abort: () => {},
 		hasPendingMessages: () => false,
@@ -187,5 +190,97 @@ describe("the subagent tool follows project trust", () => {
 		const { launched } = await runAgent(project, "project-helper", true);
 
 		assert.deepEqual(launched, ["project-helper"]);
+	});
+});
+
+describe("the subagent tool's host context", () => {
+	test("a host without a trust decision launches project agents as before", async () => {
+		const project = makeProject();
+		const { launched } = await runAgent(project, "project-helper", undefined);
+
+		assert.deepEqual(launched, ["project-helper"]);
+	});
+});
+
+/** The `/agents` browser's text for `project` under the given trust decision. */
+async function browseAgents(project: string, trusted: boolean): Promise<string> {
+	initTheme("dark");
+	let handler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+	registerSlashCommands(
+		{
+			registerCommand: (_name: string, options: { handler: typeof handler }) => {
+				handler = options.handler;
+			},
+		} as never,
+		{} as SubagentState,
+	);
+	let text = "";
+	await handler!("", {
+		cwd: project,
+		hasUI: true,
+		isProjectTrusted: () => trusted,
+		ui: {
+			notify: () => {},
+			custom: async (factory: (...args: unknown[]) => { render(width: number): string[] }) => {
+				const browser = factory({ terminal: { rows: 40 } }, theme, {}, () => {});
+				text = browser.render(120).map(stripVTControlCharacters).join("\n");
+			},
+		},
+	});
+	return text;
+}
+
+describe("/agents follows project trust", () => {
+	test("an untrusted project's agents are not shown", async () => {
+		const project = makeProject();
+		const text = await browseAgents(project, false);
+		assert.doesNotMatch(text, /project-helper/);
+		assert.match(text, /worker/);
+	});
+
+	test("a trusted project's agents are shown", async () => {
+		const project = makeProject();
+		assert.match(await browseAgents(project, true), /project-helper/);
+	});
+});
+
+function managementText(result: SubagentToolResult): string {
+	return result.content[0]?.type === "text" ? result.content[0].text : "";
+}
+
+describe("agent management follows project trust", () => {
+	const context = (project: string, trusted: boolean) =>
+		({
+			cwd: project,
+			modelRegistry: { getAvailable: () => [] },
+			isProjectTrusted: () => trusted,
+		}) as unknown as Parameters<typeof handleManagementAction>[2];
+
+	for (const action of ["get", "update", "delete"] as const)
+		test(`${action} does not find an untrusted project's agent`, () => {
+			const project = makeProject();
+			const params = { action, agent: "project-helper", config: { description: "changed" } };
+
+			const untrusted = handleManagementAction(action, params, context(project, false));
+			assert.equal(untrusted.isError, true);
+			assert.match(managementText(untrusted), /Agent 'project-helper' not found/);
+			assert.doesNotMatch(managementText(untrusted), /Available:.*project-helper/);
+
+			const trusted = handleManagementAction(action, params, context(project, true));
+			assert.equal(trusted.isError, false, managementText(trusted));
+		});
+
+	test("create in project scope does not see an untrusted project's agent names", () => {
+		const project = makeProject();
+		const params = {
+			action: "create",
+			config: { name: "project-helper", description: "Another", scope: "project" },
+		};
+
+		const trusted = handleManagementAction("create", params, context(project, true));
+		assert.match(managementText(trusted), /already exists in project scope/);
+
+		const untrusted = handleManagementAction("create", params, context(project, false));
+		assert.doesNotMatch(managementText(untrusted), /already exists in project scope/);
 	});
 });

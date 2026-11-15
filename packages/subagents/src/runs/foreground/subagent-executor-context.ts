@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext, SessionManager } from "@bastani/atomic";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.js";
-import type { AgentConfig } from "../../agents/agents.js";
+import { type AgentConfig, contextAgentDiscoveryOptions } from "../../agents/agents.js";
 import {
 	applyIntercomBridgeToAgent,
 	resolveIntercomBridge,
@@ -79,8 +79,7 @@ export function prepareExecutionContext(input: {
 	deps.state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
 	const initialDiscoveryCwd =
 		(effectiveParams.tasks?.[0] as BurstTaskParam | undefined)?.[BURST_TASK_DISCOVERY_CWD] ?? effectiveCwd;
-	// Project agents are read only for a trusted project.
-	const discovery = { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+	const discovery = contextAgentDiscoveryOptions(ctx);
 	const discoveredAgents = deps.discoverAgents(initialDiscoveryCwd, scope, discovery).agents;
 	let resolvedTaskAgents: AgentConfig[] | undefined;
 	if (effectiveParams.tasks?.some((task) => (task as BurstTaskParam)[BURST_TASK_DISCOVERY_CWD] !== undefined)) {
