@@ -507,8 +507,7 @@ describe("the runner hands the sidecar directory to every kind of sidecar (#4543
 				preferredProvider: "test",
 				sessionThinkingLevel: "off",
 				registry: {
-					getAvailableSnapshot: () => [plannerModel, fallbackModel],
-					getModel: (_provider, id) => (id === fallbackModel.id ? fallbackModel : plannerModel),
+					getModels: () => [plannerModel, fallbackModel],
 					hasConfiguredAuth: () => true,
 				},
 			},

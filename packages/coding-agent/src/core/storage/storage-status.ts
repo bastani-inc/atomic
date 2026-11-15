@@ -521,7 +521,7 @@ export async function collectStorageStatus(options: StorageStatusOptions): Promi
 	const { cwd, agentDir } = options;
 	const projectTrusted = projectTrust(cwd, agentDir);
 	const manager = SettingsManager.create(cwd, agentDir, { projectTrusted });
-	const settingsErrors = manager.drainErrors();
+	const settingsErrors = manager.drainErrors().filter(({ invalidKey }) => invalidKey === undefined);
 	if (settingsErrors.length > 0) {
 		throw new Error(
 			`Cannot load settings: ${settingsErrors.map(({ scope, error }) => `${scope} settings: ${error.message}`).join("; ")}`,

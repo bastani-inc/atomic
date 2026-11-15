@@ -23,7 +23,8 @@ export interface ResolveProjectTrustedOptions {
 	onExtensionError?: (message: string) => void;
 }
 
-function formatProjectTrustPrompt(cwd: string): string {
+/** The question the trust prompt asks about the project folder `cwd`. */
+export function formatProjectTrustPrompt(cwd: string): string {
 	return `Trust project folder?\n${cwd}\n\nThis allows ${APP_TITLE} to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
 }
 
