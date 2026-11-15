@@ -298,7 +298,7 @@ export async function closeSessionTasks(this: AgentSession): Promise<void> {
 	if (stageAdmission) {
 		getOwnerTaskStore(this)?.dispose();
 		// A released stage's running shells, saved so that a restart before the stage wakes can tell it of them (#5079).
-		await recordParkedStageTasks(this.sessionManager, stageAdmission, stageAdmission.agentTaskHost());
+		await recordParkedStageTasks(this.sessionManager, stageAdmission);
 		return;
 	}
 	this._taskAdmission?.seal();

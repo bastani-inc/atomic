@@ -1,5 +1,4 @@
 import type { SessionManager } from "./session-manager.ts";
-import type { AgentTaskHost } from "./tasks/agent-adapter.js";
 import type { TaskCompletionEnvelope } from "./tasks/completion.js";
 import type { OwnerId, Sequence, TaskId } from "./tasks/contracts.js";
 import type { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
@@ -20,15 +19,12 @@ interface ParkedStageTasks {
 export async function recordParkedStageTasks(
 	sessionManager: Pick<SessionManager, "appendCustomEntry">,
 	boundary: WorkflowStageAdmissionBoundary,
-	host: AgentTaskHost | undefined,
 ): Promise<void> {
-	if (!boundary.isParked() || host === undefined) return;
-	const watched = host.watchOwnerTasks();
-	if (!watched.ok) return;
+	// A boundary parks only once a session bound the stage's task host.
+	const watched = boundary.isParked() ? boundary.agentTaskHost()!.watchOwnerTasks() : undefined;
+	if (!watched?.ok) return;
 	const tasks = watched.value.snapshot.tasks
-		.filter(
-			(task) => task.kind === "command" && (task.execution.kind === "queued" || task.execution.kind === "running"),
-		)
+		.filter((task) => task.kind === "command" && task.execution.kind !== "settled")
 		.map((task) => ({ ownerId: task.ref.ownerId, taskId: task.ref.taskId }));
 	watched.value.dispose();
 	if (tasks.length === 0) return;
@@ -38,32 +34,33 @@ export async function recordParkedStageTasks(
 
 /**
  * Save, once, an interrupted-by-a-restart completion intent for each shell an earlier process's release of the stage
- * left without one. A release in this process still holds their completions, and an intent already saved for a shell,
- * from that process or by an earlier recovery, is its notice. Returns how many were saved.
+ * left without one. A release in this process still holds their completions, and an intent saved after the release for
+ * a shell, by that process or by an earlier recovery, is its notice: task ids restart with each process, so only an
+ * intent saved after the release names that shell. Returns how many were saved.
  */
 export async function recordTasksInterruptedByRestart(
 	sessionManager: Pick<SessionManager, "getEntries" | "appendCustomEntry">,
 	attemptId: string | undefined,
 ): Promise<number> {
 	const entries = sessionManager.getEntries();
-	const intents = new Set<string>();
 	const interrupted: TaskCompletionEnvelope[] = [];
 	for (const [index, entry] of entries.entries()) {
 		if (entry.type !== "custom" || entry.customType !== PARKED_STAGE_TASKS_TYPE) continue;
 		const marker = entry.data as ParkedStageTasks;
 		if (marker.attemptId === attemptId) continue;
-		intents.clear();
-		for (const later of entries.slice(index + 1)) {
-			if (later.type !== "custom" || later.customType !== "task-completion-intent") continue;
-			const envelope = later.data as TaskCompletionEnvelope;
-			intents.add(envelope.completionId);
-			intents.add(`${envelope.ownerId}\0${envelope.taskId}`);
-		}
+		const notified = new Set(
+			entries
+				.slice(index + 1)
+				.flatMap((later) =>
+					later.type === "custom" && later.customType === "task-completion-intent"
+						? [taskKey(later.data as TaskCompletionEnvelope)]
+						: [],
+				),
+		);
 		for (const { ownerId, taskId } of marker.tasks) {
-			const completionId = `restart-interrupted:${marker.attemptId}:${ownerId}:${taskId}`;
-			if (intents.has(completionId) || intents.has(`${ownerId}\0${taskId}`)) continue;
+			if (notified.has(taskKey({ ownerId, taskId }))) continue;
 			interrupted.push({
-				completionId,
+				completionId: `restart-interrupted:${marker.attemptId}:${ownerId}:${taskId}`,
 				ownerId,
 				taskId,
 				terminalSequence: "0" as Sequence,
@@ -76,4 +73,8 @@ export async function recordTasksInterruptedByRestart(
 	}
 	for (const envelope of interrupted) await sessionManager.appendCustomEntry("task-completion-intent", envelope);
 	return interrupted.length;
+}
+
+function taskKey(task: Pick<TaskCompletionEnvelope, "ownerId" | "taskId">): string {
+	return `${task.ownerId}\0${task.taskId}`;
 }

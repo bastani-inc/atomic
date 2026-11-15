@@ -3,15 +3,18 @@
  * in memory and died with a restart, and a session's tasks its close cancelled, whose notices were never saved.
  */
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@bastani/pi-ai/compat";
 import { afterEach, describe, test, vi } from "vitest";
 import type { WorkflowStageOrchestrationContext } from "../src/core/extensions/index.js";
-import { SessionManager } from "../src/core/session-manager.js";
+import { type SessionEntry, SessionManager } from "../src/core/session-manager.js";
 import { MemorySessionStore } from "../src/core/storage/session/memory-session-store.js";
 import { TASK_COMPLETION_MESSAGE_TYPE } from "../src/core/tasks/completion.js";
+import type { Cleanup, OperationId, OwnerId, TaskId, TaskResult } from "../src/core/tasks/contracts.js";
+import { PARKED_STAGE_TASKS_TYPE, recordTasksInterruptedByRestart } from "../src/core/workflow-stage-parked-tasks.js";
 import { parkWorkflowStageForRelease } from "../src/index.js";
 import { createHarness, type Harness } from "./suite/harness.js";
 
@@ -103,6 +106,8 @@ describe("task notices no live session could take (#5079)", () => {
 		const after = { ...stageContext(), workflowRunId: before.workflowRunId };
 		const resumed = await openHarness(store, sessionId, after);
 		resumed.setResponses([fauxAssistantMessage("must not run")]);
+		// A host such as the task UI may open the stage's task owner before recovery runs.
+		resumed.session.getAgentTaskHost();
 		await resumed.session.startPendingRecovery("workflow_stage_resume");
 		await vi.waitFor(() => assert.equal(notices(resumed).length, 1), {
 			timeout: WAIT_TIMEOUT_MS,
@@ -167,7 +172,24 @@ describe("task notices no live session could take (#5079)", () => {
 		first.setResponses([backgroundBash("sleep 30", "bash-1"), fauxAssistantMessage("started it")]);
 		await first.session.prompt("start the build");
 		const sessionId = first.sessionManager.getSessionId();
+		const host = first.session.getAgentTaskHost();
+		const watchOwnerTasks = host.watchOwnerTasks.bind(host);
+		const watches = { opened: 0, disposed: 0 };
+		vi.spyOn(host, "watchOwnerTasks").mockImplementation((...args) => {
+			const watched = watchOwnerTasks(...args);
+			if (watched.ok) {
+				watches.opened++;
+				const dispose = watched.value.dispose.bind(watched.value);
+				watched.value.dispose = () => {
+					watches.disposed++;
+					dispose();
+				};
+			}
+			return watched;
+		});
 		await first.session.dispose();
+		assert.ok(watches.opened > 0, "the close read the kinds of the tasks it stops");
+		assert.equal(watches.disposed, watches.opened, "the close leaves no watch of its tasks open");
 
 		const reopened = await openHarness(store, sessionId);
 		reopened.setResponses([fauxAssistantMessage("must not run")]);
@@ -183,5 +205,107 @@ describe("task notices no live session could take (#5079)", () => {
 		await again.session.startPendingRecovery("resume");
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.equal(notices(again).length, 1);
+	});
+	test("a restart reports only the shells a released stage was running, not its finished shells or its subagents (#5079)", async () => {
+		const store = new MemorySessionStore();
+		const before = stageContext();
+		const first = await openHarness(store, undefined, before);
+		const host = first.session.getAgentTaskHost();
+		const agentResult = Promise.withResolvers<TaskResult>();
+		const agentCleanup = Promise.withResolvers<Cleanup>();
+		const agent = await host.startAgentTask(
+			{ kind: "agent", agent: "worker", task: "Work" },
+			randomUUID() as OperationId,
+			() => ({ result: agentResult.promise, cleanup: agentCleanup.promise }),
+		);
+		assert.ok(agent.ok, "a subagent runs beside the shells");
+		const running = gatedCommand("still-running");
+		first.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "echo finished" }, { id: "bash-done" })], {
+				stopReason: "toolUse",
+			}),
+			backgroundBash(running.command, "bash-running"),
+			fauxAssistantMessage("started it"),
+		]);
+		await first.session.prompt("start the build");
+		const sessionId = first.sessionManager.getSessionId();
+		parkWorkflowStageForRelease(before);
+		await first.session.dispose();
+
+		const resumed = await openHarness(store, sessionId, { ...stageContext(), workflowRunId: before.workflowRunId });
+		await resumed.session.startPendingRecovery("workflow_stage_resume");
+		await vi.waitFor(() => assert.equal(notices(resumed).length, 1), {
+			timeout: WAIT_TIMEOUT_MS,
+			interval: POLL_INTERVAL_MS,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		assert.equal(notices(resumed).length, 1);
+		assert.match(notices(resumed)[0]!, /Background shell interrupted by a restart/);
+		running.open();
+		agentResult.resolve({ kind: "cancelled", cause: "user" });
+		agentCleanup.resolve({ kind: "reaped" });
+		await before.messageAdmission!.boundary.close();
+	});
+});
+
+describe("recordTasksInterruptedByRestart (#5079)", () => {
+	const owner = "owner-1-0" as OwnerId;
+	const task = "task-1-0-0" as TaskId;
+	function sessionOf(entries: SessionEntry[]) {
+		return {
+			getEntries: () => entries,
+			appendCustomEntry: async (customType: string, data?: unknown) => {
+				entries.push({ type: "custom", customType, data } as SessionEntry);
+				return "";
+			},
+		};
+	}
+	const marker = (attemptId: string) =>
+		({
+			type: "custom",
+			customType: PARKED_STAGE_TASKS_TYPE,
+			data: { attemptId, tasks: [{ ownerId: owner, taskId: task }] },
+		}) as SessionEntry;
+	const intent = (completionId: string) =>
+		({
+			type: "custom",
+			customType: "task-completion-intent",
+			data: { completionId, ownerId: owner, taskId: task },
+		}) as SessionEntry;
+
+	test("saves one interrupted intent for a shell an earlier process released, once (#5079)", async () => {
+		const session = sessionOf([marker("earlier")]);
+
+		assert.equal(await recordTasksInterruptedByRestart(session, "now"), 1);
+		assert.deepEqual(session.getEntries().at(-1), {
+			type: "custom",
+			customType: "task-completion-intent",
+			data: {
+				completionId: "restart-interrupted:earlier:owner-1-0:task-1-0-0",
+				ownerId: owner,
+				taskId: task,
+				terminalSequence: "0",
+				result: { kind: "cancelled", cause: "shutdown" },
+				display: false,
+				taskKind: "command",
+				interruptedByRestart: true,
+			},
+		});
+		assert.equal(await recordTasksInterruptedByRestart(session, "now"), 0);
+	});
+
+	test("counts only an intent saved after the release, since task ids restart with each process (#5079)", async () => {
+		assert.equal(await recordTasksInterruptedByRestart(sessionOf([intent("older"), marker("earlier")]), "now"), 1);
+		assert.equal(await recordTasksInterruptedByRestart(sessionOf([marker("earlier"), intent("real")]), "now"), 0);
+		const otherTask = {
+			type: "custom",
+			customType: "task-completion-intent",
+			data: { completionId: "other", ownerId: owner, taskId: "task-1-0-1" },
+		} as SessionEntry;
+		assert.equal(await recordTasksInterruptedByRestart(sessionOf([marker("earlier"), otherTask]), "now"), 1);
+	});
+
+	test("leaves the shells of a release in this process to the completions it holds (#5079)", async () => {
+		assert.equal(await recordTasksInterruptedByRestart(sessionOf([marker("now")]), "now"), 0);
 	});
 });
