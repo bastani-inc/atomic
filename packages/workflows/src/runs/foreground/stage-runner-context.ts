@@ -530,6 +530,14 @@ export function createStageContext(opts: StageRunnerOpts): LiveInternalStageCont
 			return controller.currentModelFallbackMeta();
 		},
 
+		__inFlightAttemptUsage() {
+			return controller.inFlightAttemptUsage();
+		},
+
+		__stopTurns(reason) {
+			controller.stopTurns(reason);
+		},
+
 		async __requestPause() {
 			await controller.requestPause();
 		},

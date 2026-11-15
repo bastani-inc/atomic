@@ -30,6 +30,7 @@ export type {
 	ToolNamespace,
 	ToolRendererResolver,
 	ToolRenderers,
+	ToolScriptAccess,
 } from "./core/extensions/tool-types.ts";
 export { resolveRestoredModelReference } from "./core/model-resolver-initial.ts";
 export * from "./core/resume/index.ts";
@@ -561,6 +562,7 @@ export {
 	validateMcpServerConfig,
 } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
+export { modelCallUsage } from "./core/model-call-usage.ts";
 export type {
 	ModelFallbackFailureKind,
 	ModelFallbackFailureOptions,
