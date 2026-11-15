@@ -271,7 +271,7 @@ export function extractToolArgsPreview(args: Record<string, unknown>): string {
 	// Handle MCP tool calls - show server/tool info
 	if (args.tool && typeof args.tool === "string") {
 		const server = args.server && typeof args.server === "string" ? `${args.server}/` : "";
-		const toolArgs = args.args && typeof args.args === "string" ? ` ${args.args.slice(0, 40)}` : "";
+		const toolArgs = args.args && typeof args.args === "string" ? ` ${sliceHead(args.args, 40)}` : "";
 		return `${server}${args.tool}${toolArgs}`;
 	}
 

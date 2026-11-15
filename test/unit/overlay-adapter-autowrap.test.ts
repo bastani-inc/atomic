@@ -54,7 +54,10 @@ async function registerIsolatedTests(): Promise<void> {
 	// The stage's input label is the shared chat-input label (#4640).
 	const { applyInputLabelToEditorTopRule, buildInputLabel, INPUT_LABEL_MIN_COLUMNS, inputLabelMarker, ruleOpenColor } =
 		await import("../../packages/coding-agent/src/modes/interactive/components/input-label.js");
+	// Pending-input labels cut long prompts with the shared surrogate-safe slice (#5097).
+	const { sliceHead } = await import("../../packages/coding-agent/src/core/tools/truncate.js");
 	mock.module("@bastani/atomic", () => ({
+		sliceHead,
 		ChatSessionHost: TestComponent,
 		formatModelLabel,
 		MODEL_LABEL_SEPARATOR,

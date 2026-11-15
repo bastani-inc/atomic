@@ -407,7 +407,7 @@ function writeChunk(state: SerializeState, chunk: string): boolean {
 		return false;
 	}
 	if (chunk.length > remaining) {
-		state.parts.push(chunk.slice(0, remaining));
+		state.parts.push(sliceHead(chunk, remaining));
 		state.length = state.limit;
 		state.truncated = true;
 		return false;

@@ -1,5 +1,4 @@
-import type { SessionStore } from "@bastani/atomic";
-import { sliceHead } from "@bastani/atomic";
+import { type SessionStore, sliceHead } from "@bastani/atomic";
 import { flattenTruncatedString } from "../shared/flat-string.js";
 import { stageStatusFromRecord } from "../shared/legacy-waiting-status.js";
 import { isReopenableSession } from "../shared/session-transcript.js";

@@ -166,7 +166,7 @@ export function renderSubagentResult(
 				for (const t of r.progress.recentTools.slice(-3)) {
 					const maxArgsLen = Math.max(40, w - 24);
 					const argsPreview =
-						expanded || t.args.length <= maxArgsLen ? t.args : `${t.args.slice(0, maxArgsLen)}...`;
+						expanded || t.args.length <= maxArgsLen ? t.args : `${sliceHead(t.args, maxArgsLen)}...`;
 					c.addChild(new Text(fit(theme.fg("dim", `${t.tool}: ${argsPreview}`)), 0, 0));
 				}
 			}
@@ -418,7 +418,7 @@ export function renderSubagentResult(
 				for (const t of rProg.recentTools.slice(-3)) {
 					const maxArgsLen = Math.max(40, w - 30);
 					const argsPreview =
-						expanded || t.args.length <= maxArgsLen ? t.args : `${t.args.slice(0, maxArgsLen)}...`;
+						expanded || t.args.length <= maxArgsLen ? t.args : `${sliceHead(t.args, maxArgsLen)}...`;
 					c.addChild(new Text(fit(theme.fg("dim", `      ${t.tool}: ${argsPreview}`)), 0, 0));
 				}
 			}
