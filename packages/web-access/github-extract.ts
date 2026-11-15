@@ -1,18 +1,30 @@
-import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, readdirSync, openSync, readSync, closeSync, realpathSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createOwnerState } from "./owner-state.js";
-import { extname, join, resolve as resolvePath, sep as pathSep } from "node:path";
+import { dirname, extname, join, relative, resolve as resolvePath, sep as pathSep } from "node:path";
 import { createChildProcessEnvironment } from "@bastani/atomic";
 import { activityMonitor } from "./activity.js";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import { checkGhAvailable, checkRepoSize, fetchViaApi, showGhHint } from "./github-api.js";
-import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
+import { BINARY_EXTENSIONS, MAX_INLINE_FILE_CHARS, MAX_TREE_ENTRIES, NOISE_DIRS, assertValidGitHubCoordinates, loadGitHubConfig, parseGitHubUrl, resetGitHubConfig, type GitHubCloneConfig, type GitHubUrlInfo } from "./github-config.js";
 export { parseGitHubUrl, type GitHubUrlInfo } from "./github-config.js";
 
+/** Written into every clone directory this tool creates; nothing without it is ever removed. */
+const CLONE_MARKER = ".atomic-web-access-clone";
+
+interface ClonePaths {
+	/** The configured clone directory every clone must stay inside. */
+	root: string;
+	/** The directory this tool creates and marks; removing a clone removes this. */
+	directory: string;
+	/** Where the repository is checked out, inside `directory`. */
+	checkout: string;
+}
+
 interface CachedClone {
-	localPath: string;
+	paths: ClonePaths;
 	clonePromise: Promise<string | null>;
 }
 
@@ -25,23 +37,81 @@ function cacheKey(owner: string, repo: string, ref?: string): string {
 	return ref ? `${owner}/${repo}@${ref}` : `${owner}/${repo}`;
 }
 
-function cloneDir(config: GitHubCloneConfig, owner: string, repo: string, ref?: string): string {
-	const dirName = ref ? `${repo}@${ref}` : repo;
-	return join(config.clonePath, owner, dirName);
+function clonePaths(config: GitHubCloneConfig, owner: string, repo: string, ref?: string): ClonePaths {
+	assertValidGitHubCoordinates(owner, repo, ref);
+	const root = resolvePath(config.clonePath);
+	// A ref may contain "/", so it never becomes a path component as is.
+	const refName = ref
+		? `@${ref.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 40)}-${createHash("sha256").update(ref).digest("hex").slice(0, 12)}`
+		: "";
+	const directory = join(root, owner, `${repo}${refName}`);
+	return { root, directory, checkout: join(directory, repo) };
 }
 
-function execClone(args: string[], localPath: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+function isStrictlyInside(root: string, candidate: string): boolean {
+	const rel = relative(root, candidate);
+	return rel !== "" && rel !== ".." && !rel.startsWith(`..${pathSep}`) && resolvePath(root, rel) === candidate;
+}
+
+function pathExists(path: string): boolean {
+	try {
+		lstatSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** True when `path` stays inside the clone root after resolving every symlink that exists along it. */
+function isConfined(root: string, path: string): boolean {
+	if (!isStrictlyInside(root, path)) return false;
+	const realRoot = realpathSync(root);
+	let existing = path;
+	while (!existsSync(existing)) existing = dirname(existing);
+	const realExisting = realpathSync(existing);
+	return existing === path ? isStrictlyInside(realRoot, realExisting) : realExisting === realRoot || isStrictlyInside(realRoot, realExisting);
+}
+
+/** Removes a clone directory only when it is confined, is a real directory, and carries this tool's marker. */
+function removeOwnedClone(paths: ClonePaths): boolean {
+	const { root, directory } = paths;
+	if (!pathExists(directory)) return true;
+	try {
+		if (!isConfined(root, directory)) return false;
+		if (!lstatSync(directory).isDirectory()) return false;
+		if (!lstatSync(join(directory, CLONE_MARKER)).isFile()) return false;
+		rmSync(directory, { recursive: true, force: true });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Creates a fresh, marked clone directory inside the clone root, or refuses. */
+function prepareCloneDirectory(paths: ClonePaths): boolean {
+	const { root, directory } = paths;
+	try {
+		mkdirSync(root, { recursive: true });
+		if (!isConfined(root, directory) || !removeOwnedClone(paths)) return false;
+		mkdirSync(dirname(directory), { recursive: true });
+		if (!isConfined(root, directory)) return false;
+		mkdirSync(directory);
+		writeFileSync(join(directory, CLONE_MARKER), "", { flag: "wx" });
+		return isConfined(root, directory);
+	} catch {
+		return false;
+	}
+}
+
+function execClone(args: string[], paths: ClonePaths, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
 	return new Promise((resolve) => {
 		const child = execFile(args[0], args.slice(1), { timeout: timeoutMs, env: createChildProcessEnvironment() }, (err) => {
 			if (err) {
-				try {
-					rmSync(localPath, { recursive: true, force: true });
-				} catch {
-				}
+				removeOwnedClone(paths);
 				resolve(null);
 				return;
 			}
-			resolve(localPath);
+			resolve(paths.checkout);
 		});
 
 		if (signal) {
@@ -56,15 +126,12 @@ async function cloneRepo(
 	owner: string,
 	repo: string,
 	ref: string | undefined,
+	paths: ClonePaths,
 	config: GitHubCloneConfig,
 	signal?: AbortSignal,
 ): Promise<string | null> {
-	const localPath = cloneDir(config, owner, repo, ref);
-
-	try {
-		rmSync(localPath, { recursive: true, force: true });
-	} catch {
-	}
+	if (!prepareCloneDirectory(paths)) return null;
+	const localPath = paths.checkout;
 
 	const timeoutMs = config.cloneTimeoutSeconds * 1000;
 	const hasGh = await checkGhAvailable();
@@ -72,7 +139,7 @@ async function cloneRepo(
 	if (hasGh) {
 		const args = ["gh", "repo", "clone", `${owner}/${repo}`, localPath, "--", "--depth", "1", "--single-branch"];
 		if (ref) args.push("--branch", ref);
-		return execClone(args, localPath, timeoutMs, signal);
+		return execClone(args, paths, timeoutMs, signal);
 	}
 
 	showGhHint();
@@ -81,7 +148,7 @@ async function cloneRepo(
 	const args = ["git", "clone", "--depth", "1", "--single-branch"];
 	if (ref) args.push("--branch", ref);
 	args.push(gitUrl, localPath);
-	return execClone(args, localPath, timeoutMs, signal);
+	return execClone(args, paths, timeoutMs, signal);
 }
 
 function isBinaryFile(filePath: string): boolean {
@@ -377,7 +444,12 @@ export async function extractGitHub(
 	signal?: AbortSignal,
 	forceClone?: boolean,
 ): Promise<ExtractedContent | null> {
-	const info = parseGitHubUrl(url);
+	let info: GitHubUrlInfo | null;
+	try {
+		info = parseGitHubUrl(url);
+	} catch (err) {
+		return { url, title: "", content: "", error: err instanceof Error ? err.message : String(err) };
+	}
 	if (!info) return null;
 
 	if (signal?.aborted) return null;
@@ -449,9 +521,9 @@ export async function extractGitHub(
 		return cachedResult;
 	}
 
-	const clonePromise = cloneRepo(owner, repo, info.ref, config, signal);
-	const localPath = cloneDir(config, owner, repo, info.ref);
-	cloneCache.set(key, { localPath, clonePromise });
+	const paths = clonePaths(config, owner, repo, info.ref);
+	const clonePromise = cloneRepo(owner, repo, info.ref, paths, config, signal);
+	cloneCache.set(key, { paths, clonePromise });
 
 	const result = await clonePromise;
 	if (signal?.aborted) {
@@ -485,12 +557,7 @@ export async function extractGitHub(
 
 export function clearCloneCache(): void {
 	const cloneCache = cloneState().cache;
-	for (const entry of cloneCache.values()) {
-		try {
-			rmSync(entry.localPath, { recursive: true, force: true });
-		} catch {
-		}
-	}
+	for (const entry of cloneCache.values()) removeOwnedClone(entry.paths);
 	cloneCache.clear();
 	resetGitHubConfig();
 }

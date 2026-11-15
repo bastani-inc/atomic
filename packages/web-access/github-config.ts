@@ -102,6 +102,42 @@ const NON_CODE_SEGMENTS = new Set([
 	"sponsors", "invitations", "notifications", "insights",
 ]);
 
+const OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const REPO_PATTERN = /^[A-Za-z0-9._-]{1,100}$/;
+const MAX_REF_LENGTH = 255;
+// git check-ref-format: no control characters, space, ~ ^ : ? * [ or backslash anywhere in a ref.
+const REF_FORBIDDEN_CHARACTERS = /[\x00-\x20\x7f~^:?*[\\]/;
+
+function invalidGitHubUrl(reason: string): Error {
+	return new Error(`Invalid GitHub URL: ${reason}`);
+}
+
+export function isValidGitHubOwner(owner: string): boolean {
+	return OWNER_PATTERN.test(owner);
+}
+
+export function isValidGitHubRepo(repo: string): boolean {
+	return REPO_PATTERN.test(repo) && repo !== "." && repo !== "..";
+}
+
+export function isValidGitRef(ref: string): boolean {
+	if (ref.length === 0 || ref.length > MAX_REF_LENGTH || ref === "@") return false;
+	if (REF_FORBIDDEN_CHARACTERS.test(ref) || ref.includes("..") || ref.includes("@{")) return false;
+	if (ref.startsWith("-") || ref.endsWith(".")) return false;
+	return ref.split("/").every((part) => part.length > 0 && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+export function isValidRepoPath(path: string): boolean {
+	return path.split("/").every((part) => part !== "." && part !== "..");
+}
+
+/** Throws an "Invalid GitHub URL" error unless owner, repo and ref are names GitHub and git allow. */
+export function assertValidGitHubCoordinates(owner: string, repo: string, ref?: string): void {
+	if (!isValidGitHubOwner(owner)) throw invalidGitHubUrl(`unsupported owner ${JSON.stringify(owner)}`);
+	if (!isValidGitHubRepo(repo)) throw invalidGitHubUrl(`unsupported repository ${JSON.stringify(repo)}`);
+	if (ref !== undefined && !isValidGitRef(ref)) throw invalidGitHubUrl(`unsupported ref ${JSON.stringify(ref)}`);
+}
+
 export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
 	let parsed: URL;
 	try {
@@ -131,6 +167,7 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
 	if (NON_CODE_SEGMENTS.has(segments[2]?.toLowerCase())) return null;
 
 	if (segments.length === 2) {
+		assertValidGitHubCoordinates(owner, repo);
 		return { owner, repo, refIsFullSha: false, type: "root" };
 	}
 
@@ -142,6 +179,8 @@ export function parseGitHubUrl(url: string): GitHubUrlInfo | null {
 	const refIsFullSha = /^[0-9a-f]{40}$/.test(ref);
 	const pathParts = segments.slice(4);
 	const path = pathParts.length > 0 ? pathParts.join("/") : "";
+	assertValidGitHubCoordinates(owner, repo, ref);
+	if (!isValidRepoPath(path)) throw invalidGitHubUrl(`unsupported path ${JSON.stringify(path)}`);
 
 	return {
 		owner,

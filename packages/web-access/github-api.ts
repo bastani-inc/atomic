@@ -4,6 +4,7 @@ import { createChildProcessEnvironment } from "@bastani/atomic";
 import type { ExtractedContent } from "./extract.js";
 import { flattenTruncatedString } from "./flat-string.js";
 import type { GitHubUrlInfo } from "./github-extract.js";
+import { isValidGitHubOwner, isValidGitHubRepo, isValidGitRef, isValidRepoPath } from "./github-config.js";
 
 const MAX_TREE_ENTRIES = 200;
 const MAX_INLINE_FILE_CHARS = 100_000;
@@ -29,11 +30,25 @@ export function showGhHint(): void {
 	}
 }
 
+/** The `gh api` path for a repository, or null when owner or repo is not a valid GitHub name. */
+function repoEndpoint(owner: string, repo: string): string | null {
+	if (!isValidGitHubOwner(owner) || !isValidGitHubRepo(repo)) return null;
+	return `repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
+/** The `gh api` path below a repository at a ref, or null when any component is invalid. */
+function refEndpoint(owner: string, repo: string, ref: string): { base: string; ref: string } | null {
+	const base = repoEndpoint(owner, repo);
+	if (!base || !isValidGitRef(ref)) return null;
+	return { base, ref: encodeURIComponent(ref) };
+}
+
 export async function checkRepoSize(owner: string, repo: string): Promise<number | null> {
-	if (!(await checkGhAvailable())) return null;
+	const endpoint = repoEndpoint(owner, repo);
+	if (!endpoint || !(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["api", `repos/${owner}/${repo}`, "--jq", ".size"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
+		execFile("gh", ["api", endpoint, "--jq", ".size"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
 			if (err) {
 				resolve(null);
 				return;
@@ -45,27 +60,29 @@ export async function checkRepoSize(owner: string, repo: string): Promise<number
 }
 
 async function getDefaultBranch(owner: string, repo: string): Promise<string | null> {
-	if (!(await checkGhAvailable())) return null;
+	const endpoint = repoEndpoint(owner, repo);
+	if (!endpoint || !(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
-		execFile("gh", ["api", `repos/${owner}/${repo}`, "--jq", ".default_branch"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
+		execFile("gh", ["api", endpoint, "--jq", ".default_branch"], { timeout: 10000, env: createChildProcessEnvironment() }, (err, stdout) => {
 			if (err) {
 				resolve(null);
 				return;
 			}
 			const branch = stdout.trim();
-			resolve(branch || null);
+			resolve(branch && isValidGitRef(branch) ? branch : null);
 		});
 	});
 }
 
 async function fetchTreeViaApi(owner: string, repo: string, ref: string): Promise<string | null> {
-	if (!(await checkGhAvailable())) return null;
+	const endpoint = refEndpoint(owner, repo, ref);
+	if (!endpoint || !(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
 		execFile(
 			"gh",
-			["api", `repos/${owner}/${repo}/git/trees/${ref}?recursive=1`, "--jq", ".tree[].path"],
+			["api", `${endpoint.base}/git/trees/${endpoint.ref}?recursive=1`, "--jq", ".tree[].path"],
 			{ timeout: 15000, maxBuffer: 5 * 1024 * 1024, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {
@@ -86,12 +103,13 @@ async function fetchTreeViaApi(owner: string, repo: string, ref: string): Promis
 }
 
 async function fetchReadmeViaApi(owner: string, repo: string, ref: string): Promise<string | null> {
-	if (!(await checkGhAvailable())) return null;
+	const endpoint = refEndpoint(owner, repo, ref);
+	if (!endpoint || !(await checkGhAvailable())) return null;
 
 	return new Promise((resolve) => {
 		execFile(
 			"gh",
-			["api", `repos/${owner}/${repo}/readme?ref=${ref}`, "--jq", ".content"],
+			["api", `${endpoint.base}/readme?ref=${endpoint.ref}`, "--jq", ".content"],
 			{ timeout: 10000, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {
@@ -110,12 +128,14 @@ async function fetchReadmeViaApi(owner: string, repo: string, ref: string): Prom
 }
 
 async function fetchFileViaApi(owner: string, repo: string, path: string, ref: string): Promise<string | null> {
-	if (!(await checkGhAvailable())) return null;
+	const endpoint = refEndpoint(owner, repo, ref);
+	if (!endpoint || !isValidRepoPath(path) || !(await checkGhAvailable())) return null;
+	const encodedPath = path.split("/").map(encodeURIComponent).join("/");
 
 	return new Promise((resolve) => {
 		execFile(
 			"gh",
-			["api", `repos/${owner}/${repo}/contents/${path}?ref=${ref}`, "--jq", ".content"],
+			["api", `${endpoint.base}/contents/${encodedPath}?ref=${endpoint.ref}`, "--jq", ".content"],
 			{ timeout: 10000, maxBuffer: 2 * 1024 * 1024, env: createChildProcessEnvironment() },
 			(err, stdout) => {
 				if (err) {

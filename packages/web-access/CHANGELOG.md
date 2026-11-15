@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- GitHub URLs are now validated, and clones are confined to the clone directory.
+
 ## [0.9.58] - 2026-11-01
 
 ### Fixed
