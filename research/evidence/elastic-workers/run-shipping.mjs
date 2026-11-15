@@ -42,6 +42,8 @@ const RUN_TIMEOUT_MS = Number(args["run-timeout-ms"] ?? 900_000);
 // --profile 1: what the store spent its time on, by statement (PostgreSQL's pg_stat_statements; for sqld, a proxy that
 // records every request).
 const profile = args.profile === "1";
+// The classes below need more of each statement than the trace keeps by default.
+if (profile) process.env.TRACE_WORDS ??= "40";
 const listen = args.listen;
 const remoteHosts = Number(args["remote-hosts"] ?? 0);
 const join_ = args.join;
@@ -116,7 +118,10 @@ async function waitFor(file, deadline, processes, log) {
 
 /** The shared store of one trial: its URL, its CPU time so far in milliseconds, and how to stop it. */
 async function openStore(work) {
-	const port = listen === undefined ? await freePort() : SHARED_PORT;
+	// Traced across VMs, sqld listens on loopback and the trace proxy on the shared port in its place.
+	const tracedAcross = profile && store === "sqld" && listen !== undefined;
+	const port = listen === undefined ? await freePort() : tracedAcross ? SHARED_PORT + 1 : SHARED_PORT;
+	const bind = tracedAcross ? "127.0.0.1" : (listen ?? "127.0.0.1");
 	const name = `ship-bench-${store}-${port}`;
 	// --native-sqld <binary>: the sqld binary run directly, as the first local runs did, instead of its Docker image.
 	const native =
@@ -131,7 +136,7 @@ async function openStore(work) {
 	if (native !== undefined) {
 	} else if (store === "sqld")
 		spawnSync("docker", [
-			"run", "-d", "--rm", "--name", name, "-e", "SQLD_CHECKPOINT_INTERVAL_S=60", "-p", `${listen ?? "127.0.0.1"}:${port}:8080`,
+			"run", "-d", "--rm", "--name", name, "-e", "SQLD_CHECKPOINT_INTERVAL_S=60", "-p", `${bind}:${port}:8080`,
 			"ghcr.io/tursodatabase/libsql-server:v0.24.33",
 			// --sqld-max-concurrent-requests: sqld's limit (128 by default), past which it answers 429.
 			...(args["sqld-max-concurrent-requests"] === undefined
@@ -140,12 +145,12 @@ async function openStore(work) {
 		]);
 	else
 		spawnSync("docker", [
-			"run", "-d", "--rm", "--name", name, "-p", `${listen ?? "127.0.0.1"}:${port}:5432`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
+			"run", "-d", "--rm", "--name", name, "-p", `${bind}:${port}:5432`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
 			"postgres:16", "-c", "max_connections=1000",
 			...(profile ? ["-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"] : []),
 		]);
 	const url =
-		storeUrl(listen ?? "127.0.0.1", port);
+		storeUrl(bind, port);
 	const ready = () =>
 		store === "sqld"
 			? fetch(`${url}/health`).then((response) => response.ok, () => false)
@@ -158,9 +163,12 @@ async function openStore(work) {
 	const psql = (sql) =>
 		spawnSync("docker", ["exec", name, "psql", "-U", "postgres", "-At", "-F", "\t", "-c", sql]).stdout.toString();
 	if (profile && store === "pg") psql("CREATE EXTENSION IF NOT EXISTS pg_stat_statements");
-	const traced = profile && store === "sqld" ? await startTraceProxy(port) : undefined;
+	const traced =
+		profile && store === "sqld"
+			? await startTraceProxy(port, listen === undefined ? undefined : { host: listen, port: SHARED_PORT })
+			: undefined;
 	return {
-		url: traced === undefined ? url : `http://127.0.0.1:${traced.port}`,
+		url: traced === undefined ? url : `http://${listen ?? "127.0.0.1"}:${traced.port}`,
 		/** Starts counting what the store does from now. */
 		resetProfile: () => {
 			if (store === "pg" && profile) psql("SELECT pg_stat_statements_reset()");
@@ -169,37 +177,29 @@ async function openStore(work) {
 		/** What the store spent its time on since {@link resetProfile}, by statement, busiest first. */
 		profile: () => {
 			if (!profile) return null;
-			if (store === "pg")
-				return Object.fromEntries(
-					["total_exec_time", "calls"].map((order) => [
-						order === "calls" ? "byCalls" : "byTime",
-						psql(
-							`SELECT calls, round(total_exec_time), rows, left(regexp_replace(query, '\\s+', ' ', 'g'), 160) FROM pg_stat_statements ORDER BY ${order} DESC LIMIT 40`,
-						)
-							.trim()
-							.split("\n")
-							.map((line) => {
-								const [calls, ms, rows, sql] = line.split("\t");
-								return { calls: Number(calls), ms: Number(ms), rows: Number(rows), sql };
-							}),
-					]),
-				);
-			const kinds = new Map();
-			for (const record of traced.records) {
-				const kind =
-					record.sql.filter((sql) => !/^(BEGIN|COMMIT|ROLLBACK)/i.test(sql)).slice(0, 2).join(" | ") || record.sql.join("|");
-				const entry = kinds.get(kind) ?? { requests: 0, statements: 0, ms: 0 };
-				entry.requests++;
-				entry.statements += record.sql.length;
-				entry.ms += record.answered - record.arrived;
-				kinds.set(kind, entry);
+			if (store === "pg") {
+				const statements = psql(
+					`SELECT calls, round(total_exec_time), rows, left(regexp_replace(query, '\\s+', ' ', 'g'), 400) FROM pg_stat_statements ORDER BY total_exec_time DESC`,
+				)
+					.trim()
+					.split("\n")
+					.map((line) => {
+						const [calls, ms, rows, sql] = line.split("\t");
+						return { calls: Number(calls), ms: Number(ms), rows: Number(rows), sql };
+					});
+				return { classes: classTotals(statements.map((row) => ({ sql: row.sql, calls: row.calls, statements: row.calls, ms: row.ms }))), top: statements.slice(0, 40) };
 			}
+			// A request counts toward the class of its first statement past transaction control.
 			return {
 				requests: traced.records.length,
-				byKind: [...kinds]
-					.sort((a, b) => b[1].requests - a[1].requests)
-					.slice(0, 30)
-					.map(([kind, entry]) => ({ kind, ...entry, ms: Math.round(entry.ms) })),
+				classes: classTotals(
+					traced.records.map((record) => ({
+						sql: record.sql.find((sql) => !/^(BEGIN|COMMIT|ROLLBACK|SET)\b/i.test(sql)) ?? record.sql.join(" "),
+						calls: 1,
+						statements: record.sql.length,
+						ms: record.answered - record.arrived,
+					})),
+				),
 			};
 		},
 		// The container's CPU time: what the shared store spent serving the trial.
@@ -217,6 +217,54 @@ async function openStore(work) {
 			else spawnSync("docker", ["rm", "-f", name]);
 		},
 	};
+}
+
+/** What a statement does, by the tables it names: how the store's work divides between a pool's activities. */
+const STATEMENT_CLASSES = [
+	["lock wait (PG advisory)", /pg_advisory/],
+	["libSQL stream probe", /sqlite_schema LIMIT 0/],
+	["resource admission", /wf_runs_resource_/],
+	["shipped batch ledger", /ship_batches|ship_watermarks/],
+	["event insert", /INSERT INTO \w*wf_events\b/],
+	["fence check", /pool_fence/],
+	["checkpoint view read", /SELECT run_id, seq, key, payload|json_object\('seq'|json_build_object\(\$\d+, seq/],
+	["usage", /pool_usage/],
+	["operation receipts", /pool_operations/],
+	["session store", /pool_session|_ps_|session_owners/],
+	["work rows (claim, renew, complete)", /wf_runs_work\b|wf_runs_work /],
+	["host registry and activity", /pool_hosts|pool_activity|wf_runs_pool_status/],
+	["root lease and status", /wf_leases|wf_runs\b|wf_runs /],
+	["schema and version checks", /schema_version|_meta\b|information_schema|dflt_value|sqlite_master|pragma/i],
+	["notify / listen", /NOTIFY|LISTEN|pg_notify/i],
+	["transaction control", /^(BEGIN|COMMIT|ROLLBACK|SET|sequence|close)\b/i],
+];
+
+function classTotals(rows) {
+	const totals = new Map();
+	for (const row of rows) {
+		const name = STATEMENT_CLASSES.find(([, pattern]) => pattern.test(row.sql))?.[0] ?? "other";
+		const entry = totals.get(name) ?? { calls: 0, statements: 0, ms: 0, samples: new Map() };
+		if (name === "other") {
+			const sample = row.sql.slice(0, 120);
+			entry.samples.set(sample, (entry.samples.get(sample) ?? 0) + row.calls);
+		}
+		entry.calls += row.calls;
+		entry.statements += row.statements;
+		entry.ms += row.ms;
+		totals.set(name, entry);
+	}
+	return Object.fromEntries(
+		[...totals]
+			.sort((a, b) => b[1].ms - a[1].ms)
+			.map(([name, { samples, ...entry }]) => [
+				name,
+				{
+					...entry,
+					ms: Math.round(entry.ms),
+					...(samples.size === 0 ? {} : { samples: [...samples].sort((a, b) => b[1] - a[1]).slice(0, 8) }),
+				},
+			]),
+	);
 }
 
 function storeUrl(ip, port) {
