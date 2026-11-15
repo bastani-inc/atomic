@@ -31,7 +31,8 @@ export type WorkspaceSnapshotErrorCode =
 	| "not-a-repository"
 	| "unborn-head"
 	| "blob-store-unsupported"
-	| "unreadable-path";
+	| "unreadable-path"
+	| "pooled-worktree-lost";
 export type WorkspaceRestoreErrorCode =
 	| "snapshot-not-found"
 	| "blob-missing"
@@ -309,6 +310,10 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 	"unreadable-path": (subject) => [
 		`Worktree snapshot unavailable: ${subject} cannot be read`,
 		`Make ${subject} readable by the current user (for example \`chmod u+rwX\` on it and its parent directories), replace a symbolic link that loops or points nowhere, or list the path in .gitignore or .atomic/snapshot-ignore, then retry.`,
+	],
+	"pooled-worktree-lost": (subject) => [
+		`Worktree snapshot unavailable: this session no longer holds the pooled worktree ${subject}, which another session may be working in now`,
+		"Stop changing files there, and resume this session (`/resume`) to restore its latest snapshot into a fresh worktree.",
 	],
 };
 
@@ -948,7 +953,13 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 	WorkspaceError: [],
 	WorkspaceConfigError: ["invalid-setting"],
 	WorkspaceGitError: ["git-failed"],
-	WorkspaceSnapshotError: ["not-a-repository", "unborn-head", "blob-store-unsupported", "unreadable-path"],
+	WorkspaceSnapshotError: [
+		"not-a-repository",
+		"unborn-head",
+		"blob-store-unsupported",
+		"unreadable-path",
+		"pooled-worktree-lost",
+	],
 	WorkspaceRestoreError: [
 		"snapshot-not-found",
 		"blob-missing",

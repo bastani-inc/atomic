@@ -1177,9 +1177,75 @@ describe("background compaction scheduling edges (#4330)", () => {
 			harness.session._commitReadyBackgroundCompaction(),
 		]);
 		assert.ok(first);
-		assert.equal(second, undefined);
+		assert.deepEqual(second, { ...first, joined: true }, "the joining caller sees the one commit (#4851)");
 		assert.equal(compactionEntries(harness.sessionManager).length, 1);
 		assert.ok(await harness.session._commitReadyBackgroundCompaction().then((value) => value === undefined));
+	});
+
+	test("a turn boundary that joins another boundary's commit sees it without announcing it again (#4851)", async () => {
+		const { harness } = await readyHarness();
+		const committed = await Promise.all([
+			harness.session._runBackgroundCompactionBoundary(true),
+			harness.session._runBackgroundCompactionBoundary(true),
+		]);
+		assert.deepEqual(committed, [true, true], "both boundaries continue from the committed context");
+		assert.equal(compactionEntries(harness.sessionManager).length, 1);
+		assert.equal(harness.eventsOfType("compaction_end").length, 1, "only the committing boundary announces it");
+	});
+
+	test("overflow recovery that joins a turn-boundary commit reuses its result instead of compacting again (#4851)", async () => {
+		let commitEntered!: () => void;
+		const entered = new Promise<void>((resolve) => {
+			commitEntered = resolve;
+		});
+		let releaseCommit!: () => void;
+		const commitGate = new Promise<void>((resolve) => {
+			releaseCommit = resolve;
+		});
+		const compactHooks: string[] = [];
+		const planner = new Planner();
+		const harness = await createBackgroundHarness([...TRIGGER, "after"], planner, {
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_compact", async (event) => {
+						compactHooks.push(event.reason);
+						commitEntered();
+						await commitGate;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		await startBackgroundTask(harness, planner);
+		planner.release();
+		assert.equal((await harness.session.awaitBackgroundCompaction()).state, "ready");
+
+		const session = harness.session;
+		const commit = session._commitReadyBackgroundCompaction.bind(session);
+		let foregroundJoined!: () => void;
+		const joined = new Promise<void>((resolve) => {
+			foregroundJoined = resolve;
+		});
+		session._commitReadyBackgroundCompaction = (options) => {
+			const flight = commit(options);
+			if (options?.foreground) foregroundJoined();
+			return flight;
+		};
+
+		const boundary = session._runBackgroundCompactionBoundary(true, true);
+		await entered;
+		const recovery = session._runAutoCompaction("overflow", false);
+		await joined;
+		releaseCommit();
+		assert.equal(await boundary, true);
+		assert.equal(await recovery, "compacted");
+
+		assert.equal(compactionEntries(harness.sessionManager).length, 1, "exactly one boundary is written");
+		assert.equal(planner.calls.length, 1, "the committed result fits, so no second planner request is made");
+		assert.deepEqual(compactHooks, ["threshold"], "extensions hear about the one boundary once");
+		const ends = harness.eventsOfType("compaction_end");
+		assert.equal(ends.at(-1)?.reason, "overflow");
+		assert.equal(ends.at(-1)?.background, true);
 	});
 
 	test("a foreground owner may apply a stored result; an ordinary boundary may not while it runs", async () => {

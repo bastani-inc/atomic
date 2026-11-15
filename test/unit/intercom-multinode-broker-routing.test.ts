@@ -21,6 +21,10 @@ import {
 	BROKER_LEASE_RENEW_INTERVAL_MS,
 	type IntercomBrokerStateOptions,
 	KNOWN_SESSION_RETENTION_MS,
+	OUTBOX_BACKUP_POLL_INTERVAL_MS,
+	OUTBOX_EXPIRED_REASON,
+	OUTBOX_TARGET_MAX_BYTES,
+	OUTBOX_TARGET_MAX_ROWS,
 } from "../../packages/intercom/broker/multinode-state-store.js";
 import {
 	borrowedDatabase,
@@ -1191,6 +1195,57 @@ test("a recipient that ends fails an ask from another node with the reason a loc
 	);
 });
 
+test("an asker that shares only one of its groups with an ended recipient gets its failure without a route reopened for it (#4842)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker", { groups: ["default", "elsewhere"] });
+	const recipient = await b!.connect("recipient");
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	b!.leave(recipient);
+	const failure = await waitFor(() =>
+		framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+	// One shared group is enough: a late reply from the ended session is refused.
+	assert.deepEqual(
+		await a!.opened.state.pendingAsks.matchesReply({
+			replySenderSessionId: recipient.info.id,
+			replyTargetSessionId: asker.info.id,
+			replyTo: ask.id,
+		}),
+		{ status: "no-match" },
+	);
+});
+
+test("a recipient that ends still fails a known asker's ask after an ask whose asker is no longer known (#4842)", async () => {
+	const [a, b] = await cluster();
+	const asker = await a!.connect("asker");
+	const recipient = await b!.connect("recipient");
+	// An older ask whose asker is neither live nor remembered any more: no one can be told about it.
+	await b!.opened.state.pendingAsks.record({
+		senderSessionId: randomUUID(),
+		targetSessionId: recipient.info.id,
+		messageId: randomUUID(),
+	});
+	const ask = message({ expectsReply: true });
+	a!.send(asker, "recipient", ask);
+	await waitFor(() => messageFrames(recipient, ask.id)[0]);
+	b!.router.received(recipient, ask.id);
+	assert.equal((await waitFor(() => outcomeOf(asker, ask.id))).type, "delivered");
+
+	b!.leave(recipient);
+	const failure = await waitFor(() =>
+		framesOf(asker).find((frame) => frame.type === "message" && frame.message.replyTo === ask.id),
+	);
+	assert.ok(failure.type === "message");
+	assert.equal(failure.message.replyError, 'Session "recipient" ended before replying');
+});
+
 test("an asker that moved to its recipient's broker while away gets the failure there when the recipient ends (#4842)", async () => {
 	const [a, b] = await cluster();
 	const returnAddress = randomUUID();
@@ -1662,3 +1717,130 @@ test("a hold check whose read answers after the save cap has passed ends the rem
 		vi.useRealTimers();
 	}
 });
+
+/** Send and wait for the sender's outcome of that send. */
+async function sendAndSettle(node: Node, from: BrokerConnectedSession, to: string, sent: Message) {
+	node.send(from, to, sent);
+	return waitFor(() => outcomeOf(from, sent.id));
+}
+
+test(
+	"flooding an offline known session through another broker stops at the per-target outbox cap and keeps every queued message (#4896)",
+	async () => {
+		const [a, b] = await cluster();
+		const sender = await a!.connect("sender");
+		const recipient = await b!.connect("away");
+		const returnAddress = recipient.registrationReturnAddress!;
+		b!.leave(recipient);
+		await waitOffline(a!, recipient);
+
+		const sentIds: string[] = [];
+		for (let index = 0; index < OUTBOX_TARGET_MAX_ROWS; index++) {
+			const sent = message({ content: { text: `flood ${index}` } });
+			sentIds.push(sent.id);
+			assert.equal((await sendAndSettle(a!, sender, "away", sent)).type, "queued");
+		}
+		const overflow = message({ content: { text: "one too many" } });
+		const refused = await sendAndSettle(a!, sender, "away", overflow);
+		assert.equal(refused.type, "delivery_failed");
+		assert.match(
+			reasonOf(refused) ?? "",
+			/already has the most queued Intercom messages it accepts \(1000 messages or 64 MiB\)/,
+		);
+		assert.deepEqual(await a!.opened.state.outbox.read(overflow.id), { status: "missing" });
+
+		// Nothing already queued was lost: every message reaches the recipient when it returns.
+		const back = await b!.connect("away", { returnAddress, id: recipient.info.id });
+		await waitFor(() =>
+			framesOf(back).filter((frame) => frame.type === "message").length === sentIds.length ? true : undefined,
+		);
+		assert.deepEqual(
+			framesOf(back).flatMap((frame) => (frame.type === "message" ? [frame.message.id] : [])),
+			sentIds,
+		);
+	},
+	4 * CROSS_NODE_WAIT_MS,
+);
+
+test("the per-target outbox byte cap refuses a frame that would pass it, across connections (#4896)", async () => {
+	const [a, b] = await cluster();
+	const frame = (id: string, text: string) =>
+		({
+			type: "message",
+			from: { id: "s", name: "s", cwd: "/", model: "m", pid: 1, startedAt: 1, lastActivity: 1 },
+			message: { id, timestamp: 1, content: { text } },
+		}) as const;
+	const big = "x".repeat(OUTBOX_TARGET_MAX_BYTES / 4);
+	const enqueue = (node: Node, id: string, text: string, targetIdentity = "away") =>
+		node.opened.state.outbox.enqueue({
+			targetIdentity,
+			originBrokerId: node.name,
+			digest: id,
+			frame: frame(id, text),
+		});
+	for (let index = 0; index < 3; index++)
+		assert.equal((await enqueue(index % 2 === 0 ? a! : b!, `big-${index}`, big)).status, "inserted");
+	assert.deepEqual(await enqueue(b!, "big-3", big), {
+		status: "full",
+		limit: OUTBOX_TARGET_MAX_ROWS,
+		byteLimit: OUTBOX_TARGET_MAX_BYTES,
+	});
+	assert.equal((await enqueue(a!, "small", "fits")).status, "inserted");
+	// A frame that brings the target to exactly the byte cap is admitted; one more byte is not.
+	const frameBytes = (id: string, text: string) => Buffer.byteLength(JSON.stringify(frame(id, text)));
+	const used = 3 * frameBytes("big-0", big) + frameBytes("small", "fits");
+	const fill = "f".repeat(OUTBOX_TARGET_MAX_BYTES - used - frameBytes("exact", ""));
+	assert.equal((await enqueue(b!, "over-by-one", `${fill}x`)).status, "full");
+	assert.equal((await enqueue(b!, "exact", fill)).status, "inserted");
+	assert.equal((await enqueue(a!, "after-exact", "")).status, "full");
+	assert.equal((await enqueue(b!, "other-target", big, "elsewhere")).status, "inserted");
+	assert.equal((await enqueue(a!, "big-0", big)).status, "duplicate", "a retry of a queued row is still answered");
+});
+
+test(
+	"queued outbox rows expire once their recipient's known-session retention lapses, and a retry is told why (#4896)",
+	async () => {
+		vi.useFakeTimers({ toFake: ["setInterval"] });
+		try {
+			const [a, b] = await cluster();
+			const sender = await a!.connect("sender");
+			const recipient = await b!.connect("away");
+			b!.leave(recipient);
+			await waitOffline(a!, recipient);
+			const old = message({ content: { text: "old" } });
+			const recent = message({ content: { text: "recent" } });
+			assert.equal((await sendAndSettle(a!, sender, "away", old)).type, "queued");
+			assert.equal((await sendAndSettle(a!, sender, "away", recent)).type, "queued");
+			// The clock moves past the retention for the older row only.
+			await a!.database.run(
+				"UPDATE mn_intercom_outbox SET queued_at = queued_at - ? WHERE message_id = ?",
+				KNOWN_SESSION_RETENTION_MS + 60_000,
+				old.id,
+			);
+			await a!.database.run(
+				"UPDATE mn_intercom_outbox SET queued_at = queued_at - ? WHERE message_id = ?",
+				KNOWN_SESSION_RETENTION_MS - 60_000,
+				recent.id,
+			);
+			vi.advanceTimersByTime(OUTBOX_BACKUP_POLL_INTERVAL_MS);
+			const expired = await vi.waitFor(
+				async () => {
+					const read = await a!.opened.state.outbox.read(old.id);
+					assert.ok(read.status === "found" && read.row.state === "failed", "not yet expired");
+					return read.row;
+				},
+				{ timeout: CROSS_NODE_WAIT_MS },
+			);
+			assert.equal(expired.failureReason, OUTBOX_EXPIRED_REASON);
+			const kept = await a!.opened.state.outbox.read(recent.id);
+			assert.equal(kept.status === "found" && kept.row.state, "queued");
+
+			framesOf(sender).length = 0;
+			const retried = await sendAndSettle(a!, sender, "away", old);
+			assert.equal(reasonOf(retried), OUTBOX_EXPIRED_REASON);
+		} finally {
+			vi.useRealTimers();
+		}
+	},
+	2 * CROSS_NODE_WAIT_MS,
+);

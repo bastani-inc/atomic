@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +56,19 @@ describe("local resource parity", () => {
 		);
 		expect(text(write)).toBe(`Successfully wrote to ${join(dir, "a.txt")}`);
 		expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("updated\n");
+	});
+
+	it("resolves local://..notes.md to the workspace file whose name starts with two dots (#4836)", async () => {
+		const dir = await tempDir();
+		await writeFile(join(dir, "..notes.md"), "dotted\n", "utf8");
+		const read = await createReadToolDefinition(dir).execute(
+			"read-local-dotted",
+			{ path: "local://..notes.md" },
+			undefined,
+			undefined,
+			{} as never,
+		);
+		assert.equal(text(read), "dotted");
 	});
 
 	it("rejects local resource traversal outside the workspace", async () => {
