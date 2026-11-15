@@ -426,7 +426,8 @@ test.skipIf(!fileLinksSupported)(
 	"a repository README that links to an absolute path outside the clone is not read",
 	async () => {
 		writeFileSync(join(victim, "notes.txt"), OUTSIDE_TEXT);
-		boundary.files = { "readme.md": "Second readme" };
+		// `README` is the next candidate; `readme.md` would collide with `README.md` on case-insensitive filesystems.
+		boundary.files = { README: "Second readme" };
 		boundary.links = { "README.md": { target: join(victim, "notes.txt"), type: "file" } };
 		const root = await extractGitHub("https://github.com/octo/widgets", undefined, true);
 		assert.equal(root?.error, null);
