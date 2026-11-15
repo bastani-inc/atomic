@@ -232,3 +232,82 @@ describe("concurrent native MCP session expiry", () => {
 		}
 	});
 });
+
+describe("native MCP session expiry during connection setup", () => {
+	afterEach(closeServers);
+
+	it("initializes once more and answers every waiting call when the server forgets a new session (#5019)", async () => {
+		const sessions = new Set<string>();
+		let initializes = 0;
+		let forgotten = false;
+		const origin = await listen(async (request, response) => {
+			const session = String(request.headers["mcp-session-id"] ?? "");
+			if (request.method === "DELETE") {
+				sessions.delete(session);
+				response.writeHead(204).end();
+				return;
+			}
+			if (request.method !== "POST") {
+				response.writeHead(405).end();
+				return;
+			}
+			const message = JSON.parse(await readBody(request)) as {
+				id?: number;
+				method: string;
+				params?: { uri: string };
+			};
+			if (message.id === undefined) {
+				response.writeHead(202).end();
+				return;
+			}
+			const reply = (result: object, headers: Record<string, string> = {}) => {
+				response.writeHead(200, { "content-type": "application/json", ...headers });
+				response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+			};
+			if (message.method === "initialize") {
+				const id = String(++initializes);
+				sessions.add(id);
+				reply(
+					{
+						protocolVersion: LATEST_PROTOCOL_VERSION,
+						capabilities: { tools: {}, resources: {} },
+						serverInfo: { name: "expiry", version: "1" },
+					},
+					{ "mcp-session-id": id },
+				);
+				return;
+			}
+			// The server forgets the first session right after creating it, before setup lists the tools.
+			if (!forgotten) {
+				forgotten = true;
+				sessions.delete(session);
+			}
+			if (!sessions.has(session)) {
+				response.writeHead(404).end("no session");
+				return;
+			}
+			reply(
+				message.method === "tools/list" ? { tools: [] } : { contents: [{ uri: message.params?.uri, text: "ok" }] },
+			);
+		});
+		const connection = new McpServerConnection({
+			entry: { name: "expiry", source: "test", config: { url: `${origin}/mcp` } },
+			cwd: process.cwd(),
+			createTransport: createDefaultTransport,
+			credentials: new McpOAuthCredentialStore(new InMemoryAuthStorageBackend()),
+			onTools: () => {},
+		});
+		try {
+			const uris = ["docs://1", "docs://2", "docs://3", "docs://4", "docs://5"];
+			const results = await Promise.all(uris.map((uri) => connection.readResource(uri, {})));
+			assert.deepEqual(
+				results,
+				uris.map((uri) => ({ contents: [{ uri, text: "ok" }] })),
+			);
+			assert.equal(initializes, 2);
+			assert.equal(connection.state, "connected");
+		} finally {
+			await connection.close();
+		}
+	});
+});
