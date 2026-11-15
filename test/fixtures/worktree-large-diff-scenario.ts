@@ -166,10 +166,12 @@ export function runWorktreeIncludeScenario(root: string, module: WorktreeModule)
 	git(repo, ["add", ".gitignore", ".worktreeinclude"]);
 	git(repo, ["commit", "--no-gpg-sign", "-m", "ignore rules"]);
 	writeFileSync(join(repo, ".env"), "SECRET=1\n");
-	for (let pkg = 0; pkg < 400; pkg++) {
-		const directory = join(repo, "node_modules", `dependency-package-with-a-long-name-${pkg}`, "lib");
+	// Long package names make the listing large from few files: creating files is slow on Windows. Each path stays well
+	// under Windows' 260-character limit.
+	for (let pkg = 0; pkg < 40; pkg++) {
+		const directory = join(repo, "node_modules", `dependency-${pkg}-${"x".repeat(110)}`);
 		mkdirSync(directory, { recursive: true });
-		for (let file = 0; file < 100; file++) writeFileSync(join(directory, `module-file-${file}.js`), "");
+		for (let file = 0; file < 200; file++) writeFileSync(join(directory, `module-file-${file}.js`), "");
 	}
 	const listing = git(repo, ["ls-files", "--others", "--ignored", "--exclude-standard"]);
 	const api = modules(module);
