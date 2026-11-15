@@ -1,0 +1,535 @@
+{
+  "store": "sqld",
+  "slots": 4,
+  "children": 64,
+  "steps": 60,
+  "killAfterMs": null,
+  "trials": [
+    {
+      "store": "sqld",
+      "hosts": 8,
+      "slots": 4,
+      "shipping": "sync",
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 3840,
+      "wallMs": 59768,
+      "activeMs": 48237,
+      "checkpointsPerSec": 79.6,
+      "latencyMs": {
+        "p50": 206.52,
+        "p90": 488.23,
+        "p99": 1107.5,
+        "max": 2302.45
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 4,
+        "h6": 7,
+        "h5": 7,
+        "h7": 8,
+        "h0": 7,
+        "h1": 8,
+        "h2": 8,
+        "h4": 8,
+        "h3": 7
+      },
+      "journal": {
+        "checkpoints": 3842,
+        "spanMs": 48455,
+        "checkpointsPerSec": 79.3
+      },
+      "sharedStoreCpuMs": 59304,
+      "storeCpuMsPerCheckpoint": 15.44,
+      "storeProfile": {
+        "requests": 34325,
+        "byKind": [
+          {
+            "kind": "SELECT 1 FROM | SELECT schema_version FROM",
+            "requests": 7346,
+            "statements": 14692,
+            "ms": 14812
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT *, (SELECT",
+            "requests": 5482,
+            "statements": 10964,
+            "ms": 21862
+          },
+          {
+            "kind": "INSERT INTO s8_wf_runs_pool_fence(reason) | INSERT INTO s8_wf_runs_pool_fence(reason)",
+            "requests": 4882,
+            "statements": 68635,
+            "ms": 220964
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT * FROM",
+            "requests": 3927,
+            "statements": 7854,
+            "ms": 8643
+          },
+          {
+            "kind": "sequence",
+            "requests": 1155,
+            "statements": 1155,
+            "ms": 1437
+          },
+          {
+            "kind": "close",
+            "requests": 1082,
+            "statements": 2125,
+            "ms": 2644
+          },
+          {
+            "kind": "SELECT schema_version FROM",
+            "requests": 1081,
+            "statements": 2122,
+            "ms": 262755
+          },
+          {
+            "kind": "SELECT name, dflt_value",
+            "requests": 962,
+            "statements": 962,
+            "ms": 1257
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT schema_version AS",
+            "requests": 830,
+            "statements": 1660,
+            "ms": 1100
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT l.*, r.status,",
+            "requests": 642,
+            "statements": 1284,
+            "ms": 1680
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT name FROM",
+            "requests": 596,
+            "statements": 1192,
+            "ms": 1305
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT DISTINCT work,",
+            "requests": 588,
+            "statements": 1176,
+            "ms": 1685
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT 1 AS",
+            "requests": 528,
+            "statements": 1056,
+            "ms": 1099
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT p.operation, p.owner,",
+            "requests": 527,
+            "statements": 1054,
+            "ms": 1383
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT s.root, s.config,",
+            "requests": 487,
+            "statements": 974,
+            "ms": 1255
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT state, revision",
+            "requests": 441,
+            "statements": 882,
+            "ms": 645
+          },
+          {
+            "kind": "SELECT name FROM",
+            "requests": 437,
+            "statements": 439,
+            "ms": 756
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT w.*, (SELECT",
+            "requests": 436,
+            "statements": 872,
+            "ms": 2000
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT id, generation,",
+            "requests": 265,
+            "statements": 530,
+            "ms": 370
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT name, dflt_value",
+            "requests": 245,
+            "statements": 490,
+            "ms": 511
+          },
+          {
+            "kind": "SELECT * FROM",
+            "requests": 235,
+            "statements": 235,
+            "ms": 330
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT run_id, seq,",
+            "requests": 208,
+            "statements": 416,
+            "ms": 4953
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT (SELECT json_object('seq',",
+            "requests": 201,
+            "statements": 402,
+            "ms": 485
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT r.result, r.chunks",
+            "requests": 128,
+            "statements": 256,
+            "ms": 253
+          },
+          {
+            "kind": "INSERT INTO s8_wf_runs_pool_fence(reason) | INSERT INTO s8_wf_runs_pool_hosts(host,",
+            "requests": 110,
+            "statements": 660,
+            "ms": 12434
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT EXISTS (SELECT",
+            "requests": 110,
+            "statements": 220,
+            "ms": 272
+          },
+          {
+            "kind": "SELECT COALESCE(MAX(seq), 0)",
+            "requests": 98,
+            "statements": 98,
+            "ms": 137
+          },
+          {
+            "kind": "PRAGMA foreign_keys",
+            "requests": 92,
+            "statements": 92,
+            "ms": 107
+          },
+          {
+            "kind": "SELECT version FROM",
+            "requests": 92,
+            "statements": 92,
+            "ms": 125
+          },
+          {
+            "kind": "UPDATE s8_wf_runs_pool_meta SET",
+            "requests": 92,
+            "statements": 92,
+            "ms": 113
+          }
+        ]
+      },
+      "shippingLagMs": {
+        "n": 3842,
+        "p50": 86,
+        "p90": 245,
+        "p99": 727,
+        "max": 1447
+      },
+      "batches": {
+        "count": 0,
+        "events": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        },
+        "unshippedAtKillPerAttempt": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    },
+    {
+      "store": "sqld",
+      "hosts": 8,
+      "slots": 4,
+      "shipping": {
+        "intervalMs": 1000,
+        "maxBatch": 64,
+        "maxLagMs": 5000
+      },
+      "killedHostAtMs": null,
+      "status": "completed",
+      "children": 64,
+      "completed": 64,
+      "failed": 0,
+      "failureSamples": [],
+      "checkpoints": 3840,
+      "wallMs": 45825,
+      "activeMs": 34472,
+      "checkpointsPerSec": 111.4,
+      "latencyMs": {
+        "p50": 24.27,
+        "p90": 34.31,
+        "p99": 74.19,
+        "max": 865
+      },
+      "stageMs": null,
+      "perHost": {
+        "root": 5,
+        "h5": 10,
+        "h0": 9,
+        "h4": 8,
+        "h3": 8,
+        "h1": 8,
+        "h2": 6,
+        "h7": 5,
+        "h6": 5
+      },
+      "journal": {
+        "checkpoints": 3842,
+        "spanMs": 35032,
+        "checkpointsPerSec": 109.7
+      },
+      "sharedStoreCpuMs": 20952,
+      "storeCpuMsPerCheckpoint": 5.46,
+      "storeProfile": {
+        "requests": 17234,
+        "byKind": [
+          {
+            "kind": "SELECT 1 FROM | SELECT schema_version FROM",
+            "requests": 2612,
+            "statements": 5224,
+            "ms": 9616
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT *, (SELECT",
+            "requests": 2146,
+            "statements": 4292,
+            "ms": 18610
+          },
+          {
+            "kind": "sequence",
+            "requests": 1143,
+            "statements": 1143,
+            "ms": 2602
+          },
+          {
+            "kind": "close",
+            "requests": 1102,
+            "statements": 2145,
+            "ms": 3377
+          },
+          {
+            "kind": "SELECT schema_version FROM",
+            "requests": 1077,
+            "statements": 2121,
+            "ms": 327247
+          },
+          {
+            "kind": "SELECT name, dflt_value",
+            "requests": 919,
+            "statements": 919,
+            "ms": 1736
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT schema_version AS",
+            "requests": 871,
+            "statements": 1742,
+            "ms": 3029
+          },
+          {
+            "kind": "INSERT INTO s8_wf_runs_pool_fence(reason) | INSERT INTO s8_wf_runs_pool_fence(reason)",
+            "requests": 723,
+            "statements": 8459,
+            "ms": 142005
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT l.*, r.status,",
+            "requests": 599,
+            "statements": 1198,
+            "ms": 2539
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT name FROM",
+            "requests": 595,
+            "statements": 1190,
+            "ms": 1547
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT state, revision",
+            "requests": 519,
+            "statements": 1038,
+            "ms": 1845
+          },
+          {
+            "kind": "SELECT name FROM",
+            "requests": 434,
+            "statements": 434,
+            "ms": 816
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT p.operation, p.owner,",
+            "requests": 371,
+            "statements": 742,
+            "ms": 1286
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT 1 AS",
+            "requests": 371,
+            "statements": 742,
+            "ms": 1179
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT s.root, s.config,",
+            "requests": 334,
+            "statements": 668,
+            "ms": 1150
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT id, generation,",
+            "requests": 331,
+            "statements": 662,
+            "ms": 1335
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT w.*, (SELECT",
+            "requests": 284,
+            "statements": 568,
+            "ms": 1699
+          },
+          {
+            "kind": "SELECT * FROM",
+            "requests": 271,
+            "statements": 271,
+            "ms": 682
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT name, dflt_value",
+            "requests": 245,
+            "statements": 490,
+            "ms": 696
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT DISTINCT work,",
+            "requests": 206,
+            "statements": 412,
+            "ms": 883
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT r.result, r.chunks",
+            "requests": 128,
+            "statements": 256,
+            "ms": 570
+          },
+          {
+            "kind": "INSERT INTO s8_wf_runs_pool_fence(reason)",
+            "requests": 116,
+            "statements": 116,
+            "ms": 223
+          },
+          {
+            "kind": "SELECT COALESCE(MAX(seq), 0)",
+            "requests": 109,
+            "statements": 109,
+            "ms": 238
+          },
+          {
+            "kind": "PRAGMA foreign_keys",
+            "requests": 92,
+            "statements": 92,
+            "ms": 220
+          },
+          {
+            "kind": "SELECT version FROM",
+            "requests": 92,
+            "statements": 92,
+            "ms": 204
+          },
+          {
+            "kind": "UPDATE s8_wf_runs_pool_meta SET",
+            "requests": 92,
+            "statements": 92,
+            "ms": 163
+          },
+          {
+            "kind": "INSERT INTO s8_wf_runs_pool_fence(reason) | INSERT INTO s8_wf_runs_pool_hosts(host,",
+            "requests": 88,
+            "statements": 528,
+            "ms": 17235
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT EXISTS (SELECT",
+            "requests": 88,
+            "statements": 176,
+            "ms": 267
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT run_id, seq,",
+            "requests": 81,
+            "statements": 162,
+            "ms": 2815
+          },
+          {
+            "kind": "SELECT 1 FROM | SELECT 1 FROM",
+            "requests": 78,
+            "statements": 156,
+            "ms": 296
+          }
+        ]
+      },
+      "shippingLagMs": {
+        "n": 3842,
+        "p50": 1950,
+        "p90": 3709,
+        "p99": 5408,
+        "max": 5974
+      },
+      "batches": {
+        "count": 170,
+        "events": {
+          "n": 170,
+          "p50": 21,
+          "p90": 41,
+          "p99": 49,
+          "max": 50
+        }
+      },
+      "replayed": {
+        "steps": 0,
+        "children": 0,
+        "perChild": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        },
+        "unshippedAtKillPerAttempt": {
+          "n": 0,
+          "p50": null,
+          "p90": null,
+          "p99": null,
+          "max": null
+        }
+      }
+    }
+  ]
+}
