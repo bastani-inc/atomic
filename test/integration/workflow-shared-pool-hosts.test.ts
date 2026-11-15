@@ -599,12 +599,16 @@ test.skipIf(process.platform === "win32")(
 				inputs.every((input) => input.state === "done"),
 				JSON.stringify(inputs),
 			);
+			// An input's op ends with the generation of the attempt it went into. Under load an earlier attempt can lose its
+			// short lease before its stage asks anything, so the killed host's attempt is the one its steer first went into.
+			const generation = (input: Row) => Number(String(input.op).split(":").at(-1));
+			const killedAttempt = generation(inputs.find((input) => input.kind === "user-message")!);
+			const survivorAttempt = generation(inputs.find((input) => input.kind === "prompt-answer")!);
+			assert.ok(killedAttempt < survivorAttempt, JSON.stringify(inputs));
 			assert.deepEqual(
-				inputs
-					.filter((input) => input.kind === "intercom-message")
-					.map((input) => String(input.op).split(":").at(-1)),
-				["1"],
-				`the Intercom message went in once, on the first attempt: ${JSON.stringify(inputs)}`,
+				inputs.filter((input) => input.kind === "intercom-message").map(generation),
+				[killedAttempt],
+				`the Intercom message went in once, on the killed host's attempt: ${JSON.stringify(inputs)}`,
 			);
 			assert.equal(inputs.filter((input) => input.kind === "prompt-answer").length, 1, JSON.stringify(inputs));
 			for (const host of hosts.values()) await stopHost(host);
