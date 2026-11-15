@@ -33,7 +33,8 @@ export type WorkspaceSnapshotErrorCode =
 	| "blob-store-unsupported"
 	| "blob-store-failed"
 	| "unreadable-path"
-	| "pooled-worktree-lost";
+	| "pooled-worktree-lost"
+	| "blobs-collected";
 export type WorkspaceRestoreErrorCode =
 	| "snapshot-not-found"
 	| "blob-missing"
@@ -319,6 +320,10 @@ const SNAPSHOT_SUMMARIES: Record<WorkspaceSnapshotErrorCode, (subject: string) =
 	"pooled-worktree-lost": (subject) => [
 		`Worktree snapshot unavailable: this session no longer holds the pooled worktree ${subject}, which another session may be working in now`,
 		"Stop changing files there, and resume this session (`/resume`) to restore its latest snapshot into a fresh worktree.",
+	],
+	"blobs-collected": (subject) => [
+		`Worktree snapshot not recorded: snapshot collection deleted its blob ${subject} before the snapshot was recorded`,
+		"A collection with a short grace window ran while the snapshot was being recorded, so nothing was recorded rather than a snapshot that cannot be restored. Raise `snapshots.graceSeconds` (default 3600) if this repeats; the next capture tries again.",
 	],
 };
 
@@ -965,6 +970,7 @@ const CODES: Readonly<Record<WorkspaceErrorName, readonly WorkspaceErrorCode[]>>
 		"blob-store-failed",
 		"unreadable-path",
 		"pooled-worktree-lost",
+		"blobs-collected",
 	],
 	WorkspaceRestoreError: [
 		"snapshot-not-found",

@@ -137,4 +137,135 @@ describe("workflow budget charges (#5053)", () => {
 		]);
 		assert.equal(snapshot.budgetState?.accounting?.cost, 1);
 	});
+
+	test("a 0.29 stage reaches a 29% cost warning of a 1.00 cap (#5053)", () => {
+		const snapshot: RunSnapshot = {
+			id: "r",
+			name: "r",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [pricedStage("s1", 0.29)],
+			startedAt: Date.now(),
+		};
+		const controller = createRunBudgetController({
+			run: snapshot,
+			budget: resolve_budget({ run: { maxCost: 1, warnAtPercent: 29 } }),
+			usageTree: () => ({ run: snapshot }),
+		});
+
+		// 0.29 * 100 is 28.999999999999996 in floating point.
+		assert.equal(controller.checkpoint("s1").kind, "warn");
+	});
+
+	test("pending usage exhausts a budget once it reaches the cap, its root's included (#5053)", () => {
+		const snapshot = (id: string): RunSnapshot => ({
+			id,
+			name: id,
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [pricedStage(`${id}-stage`, 0)],
+			startedAt: Date.now(),
+		});
+		const rootRun = snapshot("root");
+		const root = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 10 } }),
+			usageTree: () => ({ run: rootRun }),
+		});
+		const childRun = snapshot("child");
+		const child = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({ run: { maxTokens: 100 } }),
+			usageTree: () => ({ run: childRun }),
+			rootBudget: root,
+		});
+		const durationOnly = createRunBudgetController({
+			run: snapshot("timed"),
+			budget: resolve_budget({ run: { maxDurationMs: 60_000 } }),
+		});
+
+		// Each stage already holds 1 input token.
+		assert.equal(root.exhaustedWith({ input: 8 }), false, "9 of 10 tokens");
+		assert.equal(root.exhaustedWith({ input: 9 }), true, "10 of 10 tokens");
+		assert.equal(
+			child.exhaustedWith({ input: 9 }),
+			true,
+			"the child's own 100 tokens are left, but its root's are not",
+		);
+		assert.equal(child.exhaustedWith({ input: 8 }), false);
+		assert.equal(durationOnly.exhaustedWith({ input: 1_000_000, cost: 1_000 }), false, "no usage cap to reach");
+		const costRun = snapshot("priced");
+		const costCapped = createRunBudgetController({
+			run: costRun,
+			budget: resolve_budget({ run: { maxCost: 1, maxTokens: 1_000 } }),
+			usageTree: () => ({ run: costRun }),
+		});
+		assert.equal(root.exhaustedWith({ input: 4, output: 5 }), true, "output tokens count toward the cap");
+		assert.equal(costCapped.exhaustedWith({ cost: 0.9 }), false);
+		assert.equal(costCapped.exhaustedWith({ cost: 0.1 * 10 }), true, "pending cost reaches the cost cap");
+	});
+
+	test("a child's own exhaustion with no live stage stops the child, not its root (#5053)", async () => {
+		const snapshot = (id: string): RunSnapshot => ({
+			id,
+			name: id,
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [pricedStage(`${id}-stage`, 0)],
+			startedAt: Date.now(),
+		});
+		const rootRun = snapshot("root");
+		const root = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 1_000 } }),
+			usageTree: () => ({ run: rootRun }),
+		});
+		const childRun = snapshot("child");
+		childRun.stages.push(pricedStage("child-spent", 0), {
+			...pricedStage("child-more", 0),
+			modelAttempts: [{ model: "m", success: true, usage: { input: 30 } }],
+		});
+		const child = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({ run: { maxTokens: 22 } }),
+			usageTree: () => ({ run: childRun }),
+			rootBudget: root,
+		});
+
+		await assert.rejects(child.stopAtBoundaryAsync("c6"), /tokens budget exceeded/);
+		assert.equal(rootRun.budgetState?.systemOwnedStop, undefined, "the root was not stopped");
+		assert.doesNotThrow(() => root.rethrowIfSystemOwnedStop("p1"));
+	});
+
+	test("a child with no budget of its own hands a wrap-up to its root (#5053)", () => {
+		const rootRun: RunSnapshot = {
+			id: "root",
+			name: "root",
+			inputs: {},
+			status: "running",
+			toolNodes: [],
+			stages: [{ ...pricedStage("spent", 0), modelAttempts: [{ model: "m", success: true, usage: { input: 30 } }] }],
+			startedAt: Date.now(),
+		};
+		const root = createRunBudgetController({
+			run: rootRun,
+			budget: resolve_budget({ run: { maxTokens: 22 } }),
+			usageTree: () => ({ run: rootRun }),
+		});
+		const childRun: RunSnapshot = { ...rootRun, id: "child", stages: [] };
+		const child = createRunBudgetController({
+			run: childRun,
+			budget: resolve_budget({}),
+			usageTree: () => ({ run: childRun }),
+			rootBudget: root,
+		});
+
+		assert.equal(root.checkpoint("c1").kind, "wrap_up");
+		assert.throws(() => child.deliverWrapUp("c1"), /tokens budget exceeded/);
+		assert.equal(rootRun.budgetState?.systemOwnedStop, true, "the root owns its own exhaustion");
+		assert.equal(childRun.budgetState, undefined);
+	});
 });

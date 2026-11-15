@@ -35,6 +35,11 @@ function request(message) {
 }
 
 await request({ kind: "ready" });
+// An attempt's end the worker reports while it holds none ends nothing (#4822).
+await request({ kind: "fenced" }).then(
+	() => appendFileSync(replies, `${JSON.stringify({ label: "fenced unheld", outcome: "answered" })}\n`),
+	(error) => appendFileSync(replies, `${JSON.stringify({ label: "fenced unheld", outcome: "refused", name: error?.name })}\n`),
+);
 let work;
 while (!(work = await request({ kind: "claim" }))) await delay(25);
 for (const [label, id, generation] of [
